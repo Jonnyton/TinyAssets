@@ -657,7 +657,9 @@ def test_text_node_runs_through_a_config_accepting_bridge():
 
 
 def test_ordinary_node_still_runs_through_a_config_less_bridge():
-    # Non-sandbox nodes keep the tolerant legacy behavior.
+    # Non-sandbox (text) nodes keep the tolerant legacy behavior — closed-surface
+    # enforcement happens at the router/provider level (C1b), not this test-only
+    # config-less bridge path, so a config-less stub still runs a text node.
     node = NodeDefinition(
         node_id="summarize",
         display_name="Summarize",
@@ -989,6 +991,139 @@ def test_run_universe_context_resolves_the_runs_own_universe(monkeypatch, tmp_pa
     monkeypatch.setattr(
         "tinyassets.config.load_universe_config", lambda _udir: object(),
     )
-    uctx = runs_mod._run_universe_context({"universe_id": "A"})
+    uctx = runs_mod._run_universe_context("A")
     assert uctx is not None
     assert uctx.universe_dir == udir_a
+
+
+def test_run_universe_context_fails_closed_when_bound_universe_broken(monkeypatch, tmp_path):
+    # C2 r2: a BOUND universe whose config can't load must RAISE (fail closed),
+    # never silently fall back to process-global creds.
+    import tinyassets.api.runs as runs_mod
+
+    udir_a = tmp_path / "A"
+    udir_a.mkdir()
+    monkeypatch.setattr(runs_mod, "_request_universe", lambda _x: "A")
+    monkeypatch.setattr(runs_mod, "_universe_dir", lambda _uid: udir_a)
+
+    def _boom(_udir):
+        raise RuntimeError("universe config is broken")
+
+    monkeypatch.setattr("tinyassets.config.load_universe_config", _boom)
+    with pytest.raises(RuntimeError):
+        runs_mod._run_universe_context("A")
+
+
+def test_bind_universe_context_binds_and_resolves_only_the_runs_universe(monkeypatch, tmp_path):
+    # resume_run + run_branch_version both route through _bind_universe_context —
+    # the run's own universe is bound into the bridge, never another tenant's.
+    import functools
+
+    import tinyassets.api.runs as runs_mod
+
+    udir_a = tmp_path / "A"
+    udir_a.mkdir()
+    monkeypatch.setattr(runs_mod, "_request_universe", lambda x: x or "default")
+    monkeypatch.setattr(runs_mod, "_universe_dir", lambda uid: udir_a if uid == "A" else None)
+    monkeypatch.setattr(
+        "tinyassets.config.load_universe_config", lambda _udir: object(),
+    )
+
+    def raw_call(prompt, system, *, role="writer", config=None, universe_context=None):
+        return "ok"
+
+    bound = runs_mod._bind_universe_context(raw_call, "A")
+    assert isinstance(bound, functools.partial)
+    assert bound.keywords["universe_context"].universe_dir == udir_a
+    # No universe bound (id resolves to a non-existent dir) → provider_call unchanged.
+    assert runs_mod._bind_universe_context(raw_call, "B") is raw_call
+
+
+# --------------------------------------------------------------------------- #
+# (13) C1 r2 real-boundary — codex -C is ALWAYS a per-job scratch (never the
+# daemon repo) for EVERY node kind; closed-surface nodes never reach codex.
+# --------------------------------------------------------------------------- #
+
+
+def test_codex_text_node_workdir_is_always_scratch_never_daemon_repo(monkeypatch):
+    # A text / declassified (host ModelConfig) node routed to codex must spawn
+    # with -C = a fresh scratch dir, NEVER the daemon repo checkout — so codex's
+    # workspace-write (--full-auto) lands in an empty scratch, not the checkout.
+    import tinyassets.providers.codex_provider as codex_provider
+
+    captured: dict = {}
+
+    async def _fake_exec(*args, **_k):
+        captured["args"] = list(args)
+        return _mk_proc()
+
+    with (
+        patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
+              return_value=(["codex"], False)),
+        patch("tinyassets.providers.codex_provider.get_sandbox_status",
+              return_value=dict(_BWRAP_ON)),
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+    ):
+        asyncio.run(CodexProvider().complete("p", "", ModelConfig()))  # plain/text
+
+    args = captured["args"]
+    workdir = args[args.index("-C") + 1]
+    assert "tinyassets-sandbox-job-" in workdir  # per-job scratch...
+    repo_root = str(Path(codex_provider.__file__).resolve().parents[2])
+    assert workdir != repo_root  # ...NEVER the daemon repo checkout
+    assert "/data" not in workdir
+
+
+def test_closed_surface_call_routes_only_to_enforcing_provider(monkeypatch):
+    # A closed_tool_surface (text) call must reach ONLY a provider that honors
+    # `--tools ""` (claude); codex (which ignores tool policy) is excluded.
+    from tinyassets.providers.base import BaseProvider, ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
+
+    called: list = []
+
+    class _Claude(BaseProvider):
+        name = "claude-code"
+        family = "anthropic"
+        enforces_closed_tool_surface = True
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            called.append("claude")
+            return ProviderResponse(text="text-ok", provider=self.name, model="m",
+                                    family=self.family, latency_ms=1.0)
+
+    class _Codex(BaseProvider):
+        name = "codex"
+        family = "openai"
+        enforces_closed_tool_surface = False
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            called.append("codex")
+            return ProviderResponse(text="LEAK", provider=self.name, model="m",
+                                    family=self.family, latency_ms=1.0)
+
+    from tinyassets.sandbox_policy import text_node_model_config
+    cfg = text_node_model_config(timeout=60)
+    router = ProviderRouter(providers={"claude-code": _Claude(), "codex": _Codex()})
+    resp = asyncio.run(router.call("writer", "p", "", cfg))
+    assert resp.text == "text-ok"
+    assert "codex" not in called  # codex NEVER served the closed-surface node
+
+
+def test_closed_surface_call_with_only_codex_fails_loud(monkeypatch):
+    from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.providers.base import BaseProvider
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.sandbox_policy import text_node_model_config
+
+    class _Codex(BaseProvider):
+        name = "codex"
+        family = "openai"
+        enforces_closed_tool_surface = False
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            raise AssertionError("codex must NOT serve a closed-surface node")
+
+    router = ProviderRouter(providers={"codex": _Codex()})
+    with pytest.raises(AllProvidersExhaustedError):
+        asyncio.run(router.call("writer", "p", "", text_node_model_config(timeout=60)))

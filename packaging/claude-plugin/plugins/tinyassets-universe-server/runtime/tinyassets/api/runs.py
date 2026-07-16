@@ -526,29 +526,52 @@ def _run_error_detail(
     return detail
 
 
-def _run_universe_context(kwargs: dict[str, Any]) -> Any:
+def _run_universe_context(universe_id: str = "") -> Any:
     """Build the run's per-universe :class:`UniverseContext`, or ``None``.
 
     C2 (Codex S3 REJECT): the run is scoped to a universe; its provider calls
-    must resolve that universe's OWN vault auth and no other's. Returns ``None``
-    when no universe can be resolved (single-universe daemon keeps the
-    process-global fallback — unchanged behavior).
+    must resolve that universe's OWN vault auth and no other's.
+
+    - No universe can be identified (single-universe daemon) → ``None`` (the
+      process-global fallback is acceptable — there is no bound tenant to leak).
+    - A universe IS bound but its config cannot load → **FAIL CLOSED** (raise) —
+      never silently fall back to process-global creds for a scoped run (C2 r2).
     """
+    from pathlib import Path as _Path
+
+    from tinyassets.config import load_universe_config
+    from tinyassets.providers.base import UniverseContext
+
     try:
-        from pathlib import Path as _Path
-
-        from tinyassets.config import load_universe_config
-        from tinyassets.providers.base import UniverseContext
-
-        uid = _request_universe(kwargs.get("universe_id") or "")
+        uid = _request_universe(universe_id or "")
         udir = _universe_dir(uid)
-        if udir is None or not _Path(udir).is_dir():
-            return None
-        return UniverseContext(
-            universe_dir=_Path(udir), config=load_universe_config(udir),
-        )
-    except Exception:  # noqa: BLE001 — resolution failure ⇒ process-global fallback
+    except Exception:  # noqa: BLE001 — can't identify a universe ⇒ no scoping
         return None
+    if udir is None or not _Path(udir).is_dir():
+        return None
+    # Bound universe → its config MUST resolve or we fail closed (do NOT swallow).
+    return UniverseContext(
+        universe_dir=_Path(udir), config=load_universe_config(udir),
+    )
+
+
+def _bind_universe_context(provider_call: Any, universe_id: str) -> Any:
+    """Bind the run's :class:`UniverseContext` into the provider bridge so
+    per-universe vault auth resolves (C2). No-op when there is no provider bridge
+    or no bound universe. Raises (fail closed) when a bound universe cannot
+    resolve — never runs a scoped run on process-global credentials.
+
+    Used by EVERY run path (run_branch, resume_run, run_branch_version) so no
+    path drops the universe scope and cross-resolves another tenant's vault.
+    """
+    if provider_call is None:
+        return provider_call
+    uctx = _run_universe_context(universe_id)
+    if uctx is None:
+        return provider_call
+    import functools as _functools
+
+    return _functools.partial(provider_call, universe_context=uctx)
 
 
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
@@ -673,21 +696,12 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     except ImportError:
         provider_call = None
 
-    # C2 (Codex S3 REJECT): thread an explicit per-universe UniverseContext into
-    # the provider bridge so per-universe vault auth actually resolves. Without
-    # this, universe_dir=None reaches provider.complete → the sandbox spawn's
-    # vault-auth check fails closed and the run can execute NO node needing vault
-    # auth; and in a multi-universe daemon one universe could cross-resolve
-    # another's credentials. Binding the run's own UniverseContext means universe
-    # A's run resolves ONLY A's vault. (Also unblocks the S5 BYO-key path.)
-    if provider_call is not None:
-        _uctx = _run_universe_context(kwargs)
-        if _uctx is not None:
-            import functools as _functools
-
-            provider_call = _functools.partial(
-                provider_call, universe_context=_uctx,
-            )
+    # C2 (Codex S3 REJECT): bind this run's own UniverseContext into the provider
+    # bridge so per-universe vault auth resolves (universe A's run sees ONLY A's
+    # vault; fail closed if a bound universe can't resolve). Also unblocks S5 BYO-key.
+    provider_call = _bind_universe_context(
+        provider_call, kwargs.get("universe_id") or "",
+    )
 
     # Parse + validate recursion_limit_override (10-1000).
     _rl_raw = kwargs.get("recursion_limit_override", "")
@@ -1281,6 +1295,14 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
     except ImportError:
         provider_call = None
 
+    # C2 r2: the resumed run's universe comes from its record — bind it so the
+    # resume path resolves the run's OWN vault (not process-global / another
+    # tenant's), same as run_branch.
+    provider_call = _bind_universe_context(
+        provider_call,
+        _run_universe_id(_resume_record) if _resume_record is not None else "",
+    )
+
     try:
         outcome = resume_run(
             _base_path(),
@@ -1738,6 +1760,12 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
         )
     except ImportError:
         provider_call = None
+
+    # C2 r2: bind this version-run's universe context so its provider calls
+    # resolve the run's OWN vault (same as run_branch / resume_run).
+    provider_call = _bind_universe_context(
+        provider_call, kwargs.get("universe_id") or "",
+    )
 
     # Parse + validate recursion_limit_override (10-1000) — same shape as run_branch.
     _rl_raw = kwargs.get("recursion_limit_override", "")

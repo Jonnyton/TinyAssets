@@ -1045,7 +1045,11 @@ def _build_prompt_template_node(
             # Fail closed (Codex S3 round-3 FINDING 3): a sandbox-required node
             # must NEVER run through a bridge that cannot carry its hardened
             # config — a config-less bridge would bypass the sandbox tool/env
-            # policy entirely (Codex reproduced draft_patch doing exactly this).
+            # policy entirely. (The closed-tool-surface enforcement for a text
+            # node happens at "the selected provider" — the router C1b filter
+            # routes it ONLY to a provider that honors `--tools ""` (claude) and
+            # fails closed if none — so it does not depend on this test-only
+            # config-less bridge path.)
             raise _SandboxUnavailableError(
                 f"Node '{node.node_id}' is sandbox-required but its provider "
                 "bridge cannot carry the hardened sandbox config (the injected "

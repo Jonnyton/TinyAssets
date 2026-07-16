@@ -914,6 +914,15 @@ class BaseProvider(abc.ABC):
     silently ignores the hardened config and would return a fake 'patched'
     without ever confining anything — never let it serve a coding job."""
 
+    enforces_closed_tool_surface: bool = False
+    """Whether this provider actually HONORS a closed / text-only tool surface
+    (``ModelConfig.closed_tool_surface`` → claude ``--tools ""``). TRUE only for
+    claude-code. FALSE for codex — codex ignores tool allow/deny fields entirely,
+    so a ``closed_tool_surface`` node routed to codex would silently keep tools.
+    A call whose config requires the closed surface is HARD-FILTERED to enforcing
+    providers before dispatch (Codex S3 REJECT r2 C1b); if none is available it
+    fails closed rather than run on a provider that can't honor it."""
+
     @classmethod
     def is_available(cls) -> bool:
         """Return True if this provider's binary/dependency is present.

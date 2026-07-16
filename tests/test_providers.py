@@ -765,8 +765,12 @@ class TestCodexProvider:
         assert captured_cmd[captured_cmd.index("-m") + 1] == "gpt-5.4"
 
     @pytest.mark.asyncio
-    async def test_runs_from_repo_root_so_coding_tasks_can_read_source(self):
-        """BUG-060: loop investigations need repo source/tests, not an empty tempdir."""
+    async def test_workdir_is_always_scratch_never_daemon_repo(self):
+        """Codex S3 REJECT r2 C1a: codex `-C` must ALWAYS be a per-job scratch
+        dir, NEVER the daemon repo checkout (supersedes BUG-060 — repo-touching
+        nodes fail closed before reaching any provider, so codex never needs the
+        daemon repo, and its --full-auto workspace-write must land in an empty
+        scratch)."""
         import tinyassets.providers.codex_provider as codex_provider
         from tinyassets.providers.codex_provider import CodexProvider
 
@@ -791,9 +795,11 @@ class TestCodexProvider:
             provider = CodexProvider()
             await provider.complete("prompt", "system", ModelConfig())
 
-        repo_root = Path(codex_provider.__file__).resolve().parents[2]
+        repo_root = str(Path(codex_provider.__file__).resolve().parents[2])
         assert "-C" in captured_cmd
-        assert captured_cmd[captured_cmd.index("-C") + 1] == str(repo_root)
+        workdir = captured_cmd[captured_cmd.index("-C") + 1]
+        assert "tinyassets-sandbox-job-" in workdir  # per-job scratch...
+        assert workdir != repo_root  # ...NEVER the daemon repo checkout
 
     @pytest.mark.asyncio
     async def test_model_can_be_overridden_by_env(self, monkeypatch):

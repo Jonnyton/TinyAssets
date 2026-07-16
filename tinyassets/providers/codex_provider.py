@@ -29,6 +29,7 @@ from tinyassets.providers.base import (
     check_bwrap_failure,
     cleanup_sandbox_job_dir,
     get_sandbox_status,
+    new_sandbox_job_dir,
     os_sandbox_attested,
     sandbox_spawn_env_and_dir,
 )
@@ -184,14 +185,23 @@ class CodexProvider(BaseProvider):
             "--skip-git-repo-check",
             "--ephemeral",
         ]
-        # Defense-in-depth for a SANDBOX-REQUIRED coding node (Codex S3 round-3):
-        # sanitized minimal env (only codex's own auth — no cross-tenant secrets
-        # to `env`-dump) + a fresh per-job scratch workdir (NOT the daemon's repo
-        # checkout, NOT /data). Normal calls keep the full env + repo workdir.
+        # Sanitized env for a sandbox-required coding node (only codex's own auth
+        # — no cross-tenant secrets to `env`-dump); normal calls keep the full env.
         proc_env, scratch_dir = sandbox_spawn_env_and_dir(
             self.name, config, universe_dir=universe_dir,
         )
-        workdir = scratch_dir if scratch_dir is not None else _codex_workdir()
+        # C1(a) (Codex S3 REJECT r2): codex's `-C` workdir MUST ALWAYS be a fresh
+        # per-job SCRATCH dir, NEVER the daemon repo / host checkout — codex honors
+        # NO tool policy and BOTH --full-auto (workspace-write) and the bypass grant
+        # file write, so a text/declassified node routed here would otherwise get
+        # read/edit/commands in the daemon checkout. An empty scratch makes that
+        # workspace-write harmless. This applies to EVERY node kind (text + coding),
+        # under --full-auto AND bypass. `_codex_workdir()` (the repo root) is no
+        # longer used for -C — repo-touching nodes fail closed before reaching any
+        # provider, so codex never legitimately needs the daemon repo.
+        if scratch_dir is None:
+            scratch_dir = new_sandbox_job_dir()
+        workdir = scratch_dir
 
         win_kw = _no_window_kwargs()
         cmd_with_cwd = [*cmd, "-C", workdir]

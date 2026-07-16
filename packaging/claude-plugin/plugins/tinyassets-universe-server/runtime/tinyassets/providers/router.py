@@ -291,6 +291,21 @@ class ProviderRouter:
             if getattr(self._providers.get(name), "supports_coding_sandbox", False)
         ]
 
+    def _filter_closed_tool_surface_capable(self, chain: list[str]) -> list[str]:
+        """Keep only providers that HONOR a closed/text-only tool surface
+        (``enforces_closed_tool_surface``).
+
+        Codex S3 REJECT r2 (C1b): a ``closed_tool_surface`` call routed to codex
+        would silently keep tools (codex ignores tool policy). Filter to enforcing
+        providers (claude-code) before dispatch; empty ⇒ caller fails loud.
+        """
+        return [
+            name for name in chain
+            if getattr(
+                self._providers.get(name), "enforces_closed_tool_surface", False,
+            )
+        ]
+
     async def call(
         self,
         role: str,
@@ -460,6 +475,26 @@ class ProviderRouter:
                     "provider that would fake success (fail closed)."
                 )
             chain = capable
+
+        # Closed-tool-surface filter (C1b): a call requiring an ENFORCED closed
+        # surface must reach ONLY providers that honor `--tools ""` (claude-code)
+        # — never codex, which ignores tool policy. Empty chain ⇒ fail loud.
+        if getattr(cfg, "closed_tool_surface", False):
+            surface_ok = self._filter_closed_tool_surface_capable(chain)
+            dropped = [p for p in chain if p not in surface_ok]
+            if dropped:
+                logger.warning(
+                    "Excluding non-closed-surface providers from closed-surface "
+                    "role=%s chain: %s", role, dropped,
+                )
+            if not surface_ok:
+                raise AllProvidersExhaustedError(
+                    f"Closed-tool-surface call for role={role!r} has no provider "
+                    "that enforces `--tools \"\"` (claude-code). Refusing to run it "
+                    "on a provider that ignores tool policy, e.g. codex (fail "
+                    "closed)."
+                )
+            chain = surface_ok
 
         for provider_name in chain:
             provider = self._providers.get(provider_name)
@@ -750,6 +785,17 @@ class ProviderRouter:
                     role,
                 )
             attempt_order = capable_order
+
+        # Closed-tool-surface filter (C1b) on the policy path: never try a
+        # non-enforcing policy provider (e.g. codex) for a closed-surface call.
+        if getattr(cfg, "closed_tool_surface", False):
+            surface_order = self._filter_closed_tool_surface_capable(attempt_order)
+            if attempt_order and not surface_order:
+                logger.warning(
+                    "All policy providers ignore the closed tool surface for "
+                    "role=%s; falling through to role chain.", role,
+                )
+            attempt_order = surface_order
 
         # Try policy-derived providers
         tried = 0

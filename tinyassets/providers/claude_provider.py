@@ -131,6 +131,9 @@ class ClaudeProvider(BaseProvider):
     # Enforces the hardened coding-sandbox contract (attestation gate + sanitized
     # vault-only env + tool policy + strict MCP config). See FINDING 4.
     supports_coding_sandbox = True
+    # Honors a closed/text-only tool surface via `--tools ""` (C1b). Codex does
+    # NOT (it ignores tool policy), so codex leaves this at the False default.
+    enforces_closed_tool_surface = True
 
     @classmethod
     def is_available(cls) -> bool:
