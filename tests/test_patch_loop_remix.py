@@ -647,6 +647,118 @@ def test_remixed_reference_coding_node_fails_closed_integration(data_dir, monkey
 # ── Binding privacy: values never travel / leak (Codex latest-model F1) ─────
 
 
+def test_bob_cannot_read_or_inherit_bound_value_via_public_or_fork(data_dir, monkeypatch):
+    # SOURCE-level redaction: even when Alice PUBLISHES her remix public, her
+    # bound VALUE never reaches Bob via public-read, export, OR fork/remix.
+    _actor(monkeypatch, "alice")
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
+    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+        {"op": "set_state_field_default", "name": "target_repo",
+         "default_value": "github.com/alice/SECRET"},
+    ]))
+    # Alice explicitly makes the design public to share it.
+    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+        {"op": "set_visibility", "visibility": "public"},
+    ]))
+
+    def _has_secret(blob):
+        return "SECRET" in json.dumps(blob)
+
+    # The owner still sees her own bound value.
+    assert _has_secret(json.loads(read_graph(target="branch", branch_id=child)))
+
+    _actor(monkeypatch, "bob")
+    # (1) public read of the row does NOT expose the value.
+    assert not _has_secret(json.loads(read_graph(target="branch", branch_id=child)))
+    # (2) export does NOT expose it.
+    assert not _has_secret(json.loads(read_graph(target="design", branch_id=child)))
+    # (3) Bob's fork inherits the SLOT to re-bind, never the value or marker.
+    bob_child = json.loads(write_graph(target="remix", branch_id=child))
+    assert bob_child["status"] == "remixed"
+    forked = _load(data_dir, bob_child["branch_def_id"])
+    tr = next(f for f in forked.state_schema if f["name"] == "target_repo")
+    assert not tr.get("default_value")   # empty — Bob must re-bind
+    assert not tr.get("bound")           # marker not inherited as owner-trust
+
+
+def test_policy_budget_survive_publish_remix_rollback_export(data_dir):
+    from tinyassets.api.branches import _ext_branch_build
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+    from tinyassets.rollback import execute_rollback_set
+
+    policy = {"preferred": {"provider": "codex", "model": "gpt-5"}}
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "routed loop 2",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "default_llm_policy": policy,
+        "concurrency_budget": 3,
+    })}))["branch_def_id"]
+    v1 = publish_branch_version(
+        data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+        publisher="alice",
+    ).branch_version_id
+
+    # publish -> remix preserves both (they now live in the snapshot).
+    child = _load(data_dir, json.loads(
+        write_graph(target="remix", branch_id=bid))["branch_def_id"])
+    assert child.default_llm_policy == policy
+    assert child.concurrency_budget == 3
+
+    # active-version export preserves both.
+    exp = json.loads(read_graph(target="design", branch_id=bid))
+    assert exp["artifact"]["spec"]["default_llm_policy"] == policy
+    assert exp["artifact"]["spec"]["concurrency_budget"] == 3
+
+    # after rolling back a newer version, remix from the newest ACTIVE (v1)
+    # still preserves both.
+    b = BranchDefinition.from_dict(get_branch_definition(data_dir, branch_def_id=bid))
+    b.state_schema.append({"name": "extra", "type": "str"})
+    save_branch_definition(data_dir, branch_def=b.to_dict())
+    v2 = publish_branch_version(
+        data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+        publisher="alice",
+    ).branch_version_id
+    execute_rollback_set(data_dir, [v2], reason="bad", set_by="host")
+    child2 = json.loads(write_graph(target="remix", branch_id=bid))
+    assert child2["fork_from"] == v1
+    cf2 = _load(data_dir, child2["branch_def_id"])
+    assert cf2.default_llm_policy == policy
+    assert cf2.concurrency_budget == 3
+
+
+def test_directory_surface_has_designs_parity(data_dir):
+    # F4: the external directory MCP surface must offer the same discover /
+    # import / remix / export design path as the /mcp surface.
+    from tinyassets.directory_server import read_graph as dir_read
+    from tinyassets.directory_server import write_graph as dir_write
+
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+
+    listed = json.loads(dir_read(target="designs"))
+    assert parent in {b["branch_def_id"] for b in listed["branches"]}
+    exported = json.loads(dir_read(target="design", branch_id=parent))
+    assert exported["status"] == "exported"
+    imported = json.loads(
+        dir_write(target="design", artifact_json=exported["artifact_json"]),
+    )
+    assert imported["status"] == "imported"
+    remixed = json.loads(dir_write(target="remix", branch_id=parent))
+    assert remixed["status"] == "remixed"
+
+    r = json.loads(dir_read(target="bogus"))
+    assert {"designs", "design"} <= set(r["allowed_targets"])
+    w = json.loads(dir_write(target="bogus"))
+    assert {"design", "remix"} <= set(w["allowed_targets"])
+
+
 def test_bound_design_is_private_and_hidden_from_other_users(data_dir, monkeypatch):
     _actor(monkeypatch, "alice")
     seed_reference_designs(data_dir)

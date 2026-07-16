@@ -206,12 +206,55 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
         )
 
 
+# A state field carries a personal BINDING value once its owner sets a default
+# via the set_state_field_default op, which stamps the ``bound`` marker. Those
+# values (repo identity, vault/credential refs, intake sources) are owner-private
+# and must NEVER leave the owner (Codex+Fable S2 latest-model). Redacting at the
+# SOURCE — the published version snapshot — closes every downstream egress at
+# once: public reads, remix/fork inheritance, and export all derive from a
+# value-free snapshot. The field SLOT survives so a remixer can re-bind.
+BOUND_FIELD_MARKER = "bound"
+_BOUND_VALUE_KEYS = ("default_value", "default")
+
+
+def redact_bound_state_values(
+    state_schema: Any, *, drop_marker: bool = False,
+) -> list[Any]:
+    """Return ``state_schema`` with personal binding VALUES stripped.
+
+    Only fields stamped ``bound`` are affected; design-level defaults (no
+    marker) pass through untouched. The ``bound`` marker itself is kept by
+    default (it documents the binding slot for readers) but dropped when
+    ``drop_marker`` is set — used by fork/remix inheritance so the child gets a
+    fresh unbound slot to re-bind, never the parent's marker as owner-trust.
+    """
+    out: list[Any] = []
+    for field in state_schema or []:
+        if not isinstance(field, dict):
+            out.append(field)
+            continue
+        entry = dict(field)
+        if entry.get(BOUND_FIELD_MARKER):
+            for value_key in _BOUND_VALUE_KEYS:
+                entry.pop(value_key, None)
+            if drop_marker:
+                entry.pop(BOUND_FIELD_MARKER, None)
+        out.append(entry)
+    return out
+
+
 def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
-    """Extract fields that define published branch behavior."""
+    """Extract fields that define published branch behavior.
+
+    Personal binding VALUES are redacted from ``state_schema`` at this source
+    (the field schema + ``bound`` marker survive, never the value). Branch-level
+    routing/concurrency knobs are included so publish -> remix/rollback/export
+    preserve them (they are behavior-affecting, so they belong in the hash).
+    """
     from tinyassets.branches import BranchDefinition
 
     normalized = BranchDefinition.from_dict(branch_dict).to_dict()
-    return {
+    snapshot = {
         "branch_def_id": normalized.get("branch_def_id", ""),
         "skills": normalized.get("skills", []),
         "entry_point": normalized.get("entry_point", ""),
@@ -219,8 +262,15 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
         "edges": normalized.get("edges", []),
         "conditional_edges": normalized.get("conditional_edges", []),
         "node_defs": normalized.get("node_defs", []),
-        "state_schema": normalized.get("state_schema", []),
+        "state_schema": redact_bound_state_values(
+            normalized.get("state_schema", []),
+        ),
     }
+    if normalized.get("default_llm_policy") is not None:
+        snapshot["default_llm_policy"] = normalized["default_llm_policy"]
+    if normalized.get("concurrency_budget") is not None:
+        snapshot["concurrency_budget"] = normalized["concurrency_budget"]
+    return snapshot
 
 
 def compute_content_hash(snapshot: dict[str, Any]) -> str:

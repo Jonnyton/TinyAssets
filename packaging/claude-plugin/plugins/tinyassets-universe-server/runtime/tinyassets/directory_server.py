@@ -191,18 +191,24 @@ def read_graph(
     tags: str = "",
     author: str = "",
     run_status: str = "",
+    branch_id: str = "",
     limit: int = 30,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
     Args:
-        target: What to read: status, graphs, graph, goals, goal, or runs.
+        target: What to read: status, graphs, graph, goals, goal, runs, designs
+            (list remixable branch designs — public published plus your own;
+            other users' private designs are never listed), or design (export
+            one branch as a portable design artifact).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
         run_status: Optional run status filter.
+        branch_id: Branch identifier for target=design (the branch to export).
+            Falls back to graph_id.
         limit: Maximum number of records to return.
     """
     normalized = (target or "status").strip().lower()
@@ -220,10 +226,23 @@ def read_graph(
         return _goals_impl(action="get", goal_id=goal_id)
     if normalized == "runs":
         return _extensions_impl(action="list_runs", status=run_status, limit=limit)
+    if normalized == "designs":
+        # DISCOVER parity with the /mcp surface: list PUBLISHED remixable branch
+        # designs (per-viewer; other users' private designs never listed).
+        return _extensions_impl(
+            action="list_branches", scope="published",
+            author=author, limit=limit,
+        )
+    if normalized == "design":
+        # EXPORT parity: serialize one branch as the portable design artifact.
+        return _extensions_impl(
+            action="export_design", branch_def_id=(branch_id or graph_id),
+        )
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs"),
+        ("status", "graphs", "graph", "goals", "goal", "runs",
+         "designs", "design"),
     )
 
 
@@ -253,11 +272,14 @@ def write_graph(
     graph_id: str = "",
     request_type: str = "general",
     branch_id: str = "",
+    artifact_json: str = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal or request.
+        target: What to write: goal, request, design (import a portable design
+            artifact as a new owned branch), or remix (fork a published design
+            by branch_id into an owned copy with provenance recorded).
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -265,7 +287,9 @@ def write_graph(
         text: Request text to queue.
         graph_id: Optional target graph/universe identifier.
         request_type: TinyAssets request type.
-        branch_id: Optional target branch identifier.
+        branch_id: Optional target branch identifier (the design to remix).
+        artifact_json: With target=design, the portable design artifact to
+            import — a design envelope OR a raw build_branch spec.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -287,7 +311,17 @@ def write_graph(
             request_type=request_type,
             branch_id=branch_id,
         )
-    return _unknown_target("write_graph", target, ("goal", "request"))
+    if normalized == "design":
+        # IMPORT parity: a design artifact becomes a branch the caller owns.
+        return _extensions_impl(action="import_design", artifact_json=artifact_json)
+    if normalized == "remix":
+        # FORK/REMIX parity: fork a published design into an owned copy.
+        return _extensions_impl(
+            action="remix_design", branch_def_id=branch_id, name=name,
+        )
+    return _unknown_target(
+        "write_graph", target, ("goal", "request", "design", "remix"),
+    )
 
 
 _mcp_write_graph = _register_structured_tool(

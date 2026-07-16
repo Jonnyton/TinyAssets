@@ -445,6 +445,16 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     visibility = branch.get("visibility", "public") or "public"
     if visibility == "private" and branch.get("author", "") != _current_actor():
         return json.dumps({"error": f"Branch '{bid}' not found."})
+    # Binding privacy (Codex+Fable S2): a NON-OWNER reading a public branch must
+    # not see the owner's personal bound VALUES (target_repo/credential/intake).
+    # The field slot + marker survive; the value is redacted. The owner reading
+    # their own branch still sees everything.
+    if branch.get("author", "") != _current_actor():
+        from tinyassets.branch_versions import redact_bound_state_values
+
+        branch["state_schema"] = redact_bound_state_values(
+            branch.get("state_schema", []),
+        )
     # Phase 6.4: non-retracted claims for this Branch across all
     # Goals. Flag-gated placeholder when GATES_ENABLED=0 so UIs
     # render "gates off" distinct from "no claims yet."
@@ -2311,7 +2321,15 @@ def _staged_branch_from_spec(
             if not _spec_has_graph_key("entry_point"):
                 branch.entry_point = parent_copy.entry_point
             if "state_schema" not in spec:
-                branch.state_schema = list(parent_copy.state_schema)
+                # Binding privacy (Codex+Fable S2): a fork inherits the parent's
+                # binding SLOTS to re-bind, never the parent's bound VALUES or
+                # the ``bound`` owner-trust marker. (The snapshot is already
+                # value-free; drop_marker gives the child a fresh unbound slot.)
+                from tinyassets.branch_versions import redact_bound_state_values
+
+                branch.state_schema = redact_bound_state_values(
+                    parent_copy.state_schema, drop_marker=True,
+                )
             # Branch-level routing/concurrency inherit through a fork too, or a
             # remix silently loses them (Codex S2 F2).
             if "default_llm_policy" not in spec:
