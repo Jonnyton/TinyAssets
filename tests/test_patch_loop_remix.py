@@ -11,6 +11,7 @@ Plus the author-gating + published-only-remix + private-export invariants.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -18,6 +19,8 @@ import pytest
 
 from tinyassets.branch_designs import design_tag, seed_reference_designs
 from tinyassets.universe_server import read_graph, write_graph
+
+_S3_SANDBOX_PRESENT = importlib.util.find_spec("tinyassets.sandbox_policy") is not None
 
 
 @pytest.fixture
@@ -436,6 +439,143 @@ def test_remix_design_requires_costly_scope():
     # export_design is read-only.
     assert action_scope_for("extensions", "import_design").effect == "write"
     assert action_scope_for("extensions", "export_design").effect == "read"
+
+
+# ── Discovery visibility is per-viewer (Codex S2 adapt round 3, F2) ─────────
+
+
+def test_designs_listing_is_per_viewer(data_dir, monkeypatch):
+    # Contract check: you see PUBLIC published designs plus your OWN published
+    # designs even when private; other users' private designs are never listed.
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch
+
+    _actor(monkeypatch, "alice")
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "alice private design",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    # Mark private (patch_branch also publishes a version -> it's a "design").
+    _ext_branch_patch({
+        "branch_def_id": bid,
+        "changes_json": json.dumps([
+            {"op": "set_visibility", "visibility": "private"},
+        ]),
+    })
+
+    # Alice sees her OWN private (published) design.
+    alice_ids = {
+        b["branch_def_id"] for b in json.loads(read_graph(target="designs"))["branches"]
+    }
+    assert bid in alice_ids
+
+    # Bob must NOT see Alice's private design (no cross-user private leak).
+    _actor(monkeypatch, "bob")
+    bob_ids = {
+        b["branch_def_id"] for b in json.loads(read_graph(target="designs"))["branches"]
+    }
+    assert bid not in bob_ids
+
+
+# ── Remix guidance is honest about the sandbox gate (F1(i)) ─────────────────
+
+
+def test_remix_guidance_warns_when_design_needs_sandbox(data_dir):
+    # A design containing a sandbox-required (coding) node must NOT be sold as
+    # "bind and run" — the guidance must say the coding node runs only on an
+    # attested-sandbox host. Derived from node DATA, so it holds pre/post S3.
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch
+
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "coding loop",
+        "entry_point": "coder",
+        "node_defs": [{"node_id": "coder", "display_name": "Coder",
+                       "prompt_template": "write code", "requires_sandbox": True}],
+        "edges": [{"from": "START", "to": "coder"},
+                  {"from": "coder", "to": "END"}],
+    })}))["branch_def_id"]
+    _ext_branch_patch({  # publish a version so it is remixable
+        "branch_def_id": bid,
+        "changes_json": json.dumps([
+            {"op": "set_description", "description": "publish"},
+        ]),
+    })
+
+    out = json.loads(write_graph(target="remix", branch_id=bid))
+    assert out["status"] == "remixed", out
+    assert out.get("requires_attested_sandbox") is True
+    low = out["text"].lower()
+    assert "attested" in low and "sandbox" in low
+    # Must NOT promise a plain bind-and-run.
+    assert "then run it" not in low
+
+
+def test_remix_guidance_plain_when_no_sandbox(data_dir):
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch
+
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "prompt only loop",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    _ext_branch_patch({
+        "branch_def_id": bid,
+        "changes_json": json.dumps([
+            {"op": "set_description", "description": "publish"},
+        ]),
+    })
+
+    out = json.loads(write_graph(target="remix", branch_id=bid))
+    assert out["status"] == "remixed"
+    assert out.get("requires_attested_sandbox") is False
+    assert "then run it" in out["text"].lower()
+
+
+@pytest.mark.skipif(
+    not _S3_SANDBOX_PRESENT,
+    reason=(
+        "S3 runtime sandbox enforcement (tinyassets.sandbox_policy) is not on "
+        "this branch; this integration regression auto-activates after the "
+        "S1->S3->S2 merge and locks the fail-closed invariant on main."
+    ),
+)
+def test_remixed_reference_coding_node_fails_closed_integration(data_dir, monkeypatch):
+    # Rebase-time integration lock (Codex S2 adapt round 3, F1(ii)): after the
+    # S1->S3->S2 merge the seeded reference's coding node carries
+    # requires_sandbox/node_kind=coding (S1) and the runtime gate (S3) must
+    # FAIL it closed without TINYASSETS_OS_SANDBOX_ATTESTED. Remix -> run -> the
+    # coding node must refuse, never complete an unattested coding step.
+    from tinyassets.universe_server import run_graph as _run_graph
+
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
+    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+        {"op": "set_state_field_default", "name": "target_repo",
+         "default_value": "github.com/example/repo"},
+    ]))
+
+    result = json.loads(_run_graph(
+        branch_def_id=child,
+        inputs_json=json.dumps({"request_payload": "fix a bug"}),
+    ))
+    blob = json.dumps(result).lower()
+    # The coding node must fail closed: either an explicit sandbox/attestation
+    # refusal surfaces, or the run does not reach clean success (it never
+    # completes an unattested coding step).
+    failed_closed = (
+        "sandbox" in blob or "attest" in blob
+        or result.get("status") not in ("completed", "succeeded", "success")
+    )
+    assert failed_closed, (
+        "remixed reference coding node must fail closed without "
+        f"TINYASSETS_OS_SANDBOX_ATTESTED; got {result}"
+    )
 
 
 # ── Unknown target hygiene ─────────────────────────────────────────────────

@@ -3654,6 +3654,24 @@ def _ext_branch_import_design(kwargs: dict[str, Any]) -> str:
     return json.dumps(out, default=str)
 
 
+def _design_needs_attested_sandbox(node_defs: Any) -> bool:
+    """True when any node in the design must run on an attested-sandbox host.
+
+    Derived purely from NODE DATA — a node with ``requires_sandbox`` set, or
+    ``node_kind == "coding"`` (S3's coding-node capability) — NOT from S3 code.
+    ``getattr`` defaults keep this working on this branch (where NodeDefinition
+    has no ``node_kind`` field yet) AND after the S1->S3->S2 rebase (where the
+    seeded reference carries the flag and the runtime gate fails coding nodes
+    closed without attestation). Codex S2 adapt round 3, finding 1(i).
+    """
+    for nd in node_defs or []:
+        if getattr(nd, "requires_sandbox", False):
+            return True
+        if (getattr(nd, "node_kind", "") or "").strip().lower() == "coding":
+            return True
+    return False
+
+
 def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
     """Fork-copy a PUBLISHED design into the caller's own branch + record it.
 
@@ -3706,6 +3724,29 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
         "contribution_kind": "remix",
         "actor_id": _current_actor(),
     }))
+
+    # Honest next-steps guidance: do NOT promise "bind and run" when the design
+    # carries a coding/sandbox-required node. Such a node runs ONLY on an
+    # attested-sandbox host — after the S1->S3->S2 merge the runtime gate fails
+    # it closed without attestation. Derived from node data so it is correct on
+    # this branch and after rebase (Codex S2 adapt round 3, finding 1(i)).
+    needs_sandbox = _design_needs_attested_sandbox(branch.node_defs)
+    if needs_sandbox:
+        guidance = (
+            f"Remixed '{branch.name}' into your own branch '{child_name}' "
+            f"({child_id}). Bind it (write_graph target=branch, "
+            "set_state_field_default ops for target_repo / credential_ref / "
+            "merge_policy). NOTE: this design has a coding node that runs "
+            "ONLY on an attested-sandbox host — until it runs on one, that "
+            "step is refused (fails closed) and the loop stays inert. Do not "
+            "expect it to open PRs from an unattested host."
+        )
+    else:
+        guidance = (
+            f"Remixed '{branch.name}' into your own branch '{child_name}' "
+            f"({child_id}). Bind it (write_graph target=branch, "
+            "set_state_field_default ops) then run it."
+        )
     return json.dumps({
         "status": "remixed",
         "branch_def_id": child_id,
@@ -3713,12 +3754,9 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
         "parent_branch_def_id": branch.branch_def_id,
         "fork_from": parent_version_id,
         "node_count": out.get("node_count"),
+        "requires_attested_sandbox": needs_sandbox,
         "provenance": provenance,
-        "text": (
-            f"Remixed '{branch.name}' into your own branch '{child_name}' "
-            f"({child_id}). Bind it (write_graph target=branch, "
-            "set_state_field_default ops) then run it."
-        ),
+        "text": guidance,
     }, default=str)
 
 

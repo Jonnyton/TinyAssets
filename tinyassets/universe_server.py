@@ -440,8 +440,9 @@ def read_graph(
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            branch, designs (list published remixable branch designs), or
-            design (export one branch as a portable design artifact).
+            branch, designs (list remixable branch designs — public published
+            ones plus your own; other users' private designs are never listed),
+            or design (export one branch as a portable design artifact).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
@@ -494,10 +495,12 @@ def read_graph(
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
     if normalized == "designs":
-        # DISCOVER (patch-loop S2): enumerate PUBLISHED, remixable branch
-        # designs — the commons any signed-in user's chatbot can take. Only
-        # published designs appear (list_branches scope=published filters on
-        # published branch VERSIONS); private branches are never listed.
+        # DISCOVER (patch-loop S2): enumerate remixable branch designs. The
+        # listing is PER-VIEWER (list_branches scope=published filters on
+        # published branch VERSIONS; storage filters visibility public-or-
+        # author): you see PUBLIC published designs (the shared commons) PLUS
+        # your OWN published designs even when private. Other users' private
+        # designs are never visible, and unpublished drafts never appear.
         return _extensions_impl(
             action="list_branches",
             scope="published",
