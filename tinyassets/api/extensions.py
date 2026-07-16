@@ -709,10 +709,6 @@ def _extensions_impl(
         # head_sha the owner reviewed (head-binds approve/reshape/reject —
         # REQUIRED for approve), ``limit`` the list page size, and ``since_step``
         # the list page offset.
-        # ``review_queue_set_policy`` reuses ``branch_def_id`` (the remix design
-        # id), ``value`` (the merge_policy: manual/auto/timer), ``force`` (the
-        # founder_oauth_per_merge flag), ``field_default`` (the merge_timer_delay_s
-        # seconds), and ``active_only`` (review_required, default True).
         review_kwargs: dict[str, Any] = {
             "universe_id": universe_id or "",
             "item_id": subject_id or "",
@@ -722,11 +718,6 @@ def _extensions_impl(
             "expected_head_sha": expected_version or "",
             "limit": limit,
             "offset": since_step if since_step and since_step > 0 else 0,
-            "branch_def_id": branch_def_id or "",
-            "merge_policy": value or "",
-            "founder_oauth_per_merge": force,
-            "merge_timer_delay_s": field_default or "",
-            "review_required": active_only,
         }
         return review_queue_handler(review_kwargs)
 
@@ -795,8 +786,6 @@ def _extensions_impl(
             "list_effector_consents",
             "review_queue_list", "review_queue_approve",
             "review_queue_reshape", "review_queue_reject",
-            "review_queue_hold", "review_queue_release",
-            "review_queue_set_policy",
         ],
     })
 

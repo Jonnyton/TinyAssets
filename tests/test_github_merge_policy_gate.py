@@ -143,12 +143,12 @@ def _put_fired(fake):
     return any(m == "PUT" for m, _ in fake.calls)
 
 
-# ── Raw merge is a SERVER-AUTHORIZED path -- packet flag can't bypass (C3) ────
+# ── Raw merge is a SERVER-AUTHORIZED path — packet flag can't bypass (C3) ────
 
 
 def test_no_queue_item_no_consent_refuses_merge(monkeypatch, tmp_path):
     """With no queue item and no server-side owner consent grant, the merge is
-    refused -- a packet flag can never authorize a queue bypass (Codex R6 C3)."""
+    refused — a packet flag can never authorize a queue bypass (Codex R6 C3)."""
     _with_capability(monkeypatch)
     fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
@@ -246,7 +246,7 @@ def test_red_github_checks_block_every_policy(monkeypatch, tmp_path, policy):
 
 def test_canonical_verdict_ignores_item_verdict(monkeypatch, tmp_path):
     """A packet/loop that stored verdict=pass cannot force a merge when GitHub's
-    own mergeable_state is not clean -- GitHub checks are canonical (C2)."""
+    own mergeable_state is not clean — GitHub checks are canonical (C2)."""
     _with_capability(monkeypatch)
     _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)  # stored "pass"
     fake = _scripted_api(allow_merge=False, mergeable_state="unstable")
@@ -307,7 +307,7 @@ def test_founder_oauth_requires_fresh_approval_not_standing_consent(
 ):
     _with_capability(monkeypatch)
     _enqueue(tmp_path, policy="auto", oauth=True, verdict=rq.VERIFY_PASS)
-    # A standing effector consent -- the WRONG kind of auth.
+    # A standing effector consent — the WRONG kind of auth.
     grant_consent(
         tmp_path, sink="github_merge", destination=_DEST, granted_by="owner"
     )
@@ -321,7 +321,7 @@ def test_founder_oauth_requires_fresh_approval_not_standing_consent(
 
 def test_founder_oauth_governed_by_item_not_packet(monkeypatch, tmp_path):
     """Codex R6 C1: even if the packet omits the OAuth flag, the item's stored
-    founder_oauth_per_merge governs -- a merge with no fresh approval is blocked."""
+    founder_oauth_per_merge governs — a merge with no fresh approval is blocked."""
     _with_capability(monkeypatch)
     _enqueue(tmp_path, policy="auto", oauth=True, verdict=rq.VERIFY_PASS)
     fake = _scripted_api(allow_merge=False)
@@ -433,7 +433,7 @@ def test_timer_delay_invalid_on_binding_fails_closed(monkeypatch, tmp_path):
     assert not _put_fired(fake)
 
 
-# ── R5 CRITICAL 1: atomic merge claim -- a reject can't overwrite a merge ─────
+# ── R5 CRITICAL 1: atomic merge claim — a reject can't overwrite a merge ─────
 
 
 def test_reject_during_put_cannot_overwrite_merge(monkeypatch, tmp_path):
@@ -514,14 +514,14 @@ def test_verify_flip_between_eligibility_and_claim_refuses_merge(
 ):
     """Codex R6 C2: a same-head re-enqueue that flips verify pass→fail between
     the eligibility read and the claim changes updated_at, so the claim (bound
-    to the eligibility generation token) refuses -- no merge over a now-red PR."""
+    to the eligibility generation token) refuses — no merge over a now-red PR."""
     _with_capability(monkeypatch)
     _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)
     real_claim = rq.claim_for_merge
 
     def racing_claim(universe_dir, **kwargs):
         # Simulate a re-push flipping verify pass→fail AFTER eligibility read
-        # but before the claim commits -- bumps updated_at.
+        # but before the claim commits — bumps updated_at.
         _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_FAIL)
         return real_claim(universe_dir, **kwargs)
 
@@ -544,7 +544,7 @@ def test_autonomous_refused_without_real_required_checks(
     monkeypatch, tmp_path, protection
 ):
     """Auto/timer must refuse unless the base branch has ACTUAL required checks
-    (branch protection) that passed -- fail closed on unprotected / no-required /
+    (branch protection) that passed — fail closed on unprotected / no-required /
     admin-bypassable / failing (Codex R7 F3)."""
     _with_capability(monkeypatch)
     _enqueue(tmp_path, policy="auto", timer_delay=0.0, verdict=rq.VERIFY_PASS)
@@ -584,7 +584,7 @@ def test_autonomous_allowed_with_passing_required_checks(monkeypatch, tmp_path):
 
 def test_tightened_binding_governs_queued_pr(monkeypatch, tmp_path):
     """Codex R7 F2: a PR queued under auto is governed by the owner's TIGHTENED
-    manual binding at merge time -- not the policy stamped at enqueue."""
+    manual binding at merge time — not the policy stamped at enqueue."""
     _with_capability(monkeypatch)
     _enqueue(tmp_path, policy="auto", oauth=False, verdict=rq.VERIFY_PASS)
     # Owner tightens the binding: auto → manual.
@@ -617,51 +617,3 @@ def test_old_token_does_not_satisfy_tightened_oauth(monkeypatch, tmp_path):
     assert result["error_kind"] == "merge_policy_blocked"
     assert result["policy_reason"] == "founder_oauth_required"
     assert not _put_fired(fake)
-
-
-
-# -- R10 #1: policy tightening + claim is atomic (binding-generation CAS) -----
-
-
-def test_binding_tightened_during_claim_window_refuses(monkeypatch, tmp_path):
-    """Codex R10 #1: tightening the owner-bound policy between the gate's
-    evaluation and the claim advances the binding generation, so the claim
-    refuses (binding_changed) -- a stale-policy merge cannot proceed."""
-    _with_capability(monkeypatch)
-    _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)  # binding bd = auto
-    real_claim = rq.claim_for_merge
-
-    def racing_claim(universe_dir, **kwargs):
-        # Owner tightens the binding to manual right before the claim commits.
-        rq.set_merge_policy_binding(
-            tmp_path, branch_def_id="bd", merge_policy="manual", bound_by="owner",
-        )
-        return real_claim(universe_dir, **kwargs)
-
-    monkeypatch.setattr(rq, "claim_for_merge", racing_claim)
-    fake = _scripted_api(allow_merge=False)
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet())
-    assert result["error_kind"] == "merge_claim_lost"
-    assert result["claim_reason"] == "binding_changed"
-    assert not _put_fired(fake)
-
-
-def test_tightened_oauth_then_fresh_approval_merges(monkeypatch, tmp_path):
-    """Codex R10 #1b liveness: after the owner tightens to OAuth-on, a FRESH
-    owner approval mints a token for the CURRENT regime, so the merge proceeds
-    (no dead-end where the owner can't approve until re-present)."""
-    _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, policy="manual", oauth=False, verdict=rq.VERIFY_PASS)
-    # Owner tightens the binding to founder-OAuth-on.
-    rq.set_merge_policy_binding(
-        tmp_path, branch_def_id="bd", merge_policy="manual",
-        founder_oauth_per_merge=True, bound_by="owner",
-    )
-    # Fresh owner approval -- minted under the CURRENT OAuth-on regime.
-    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    fake = _scripted_api(allow_merge=True)
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet())
-    assert result.get("merged") is True
-    assert _put_fired(fake)

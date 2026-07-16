@@ -151,13 +151,6 @@ def _github_required_checks_passed(
     optional/neutral checks. GitHub exposes the REQUIRED contexts separately via
     branch protection; we verify exactly those succeeded. (The server-authored
     sandbox VERIFY RECEIPT is Phase-2; required-checks are the Phase-1 minimum.)
-
-    Reading branch protection requires the capability token to carry the
-    ``Administration: read`` repo scope (fine-grained) or ``repo`` (classic).
-    Without it the protection GET returns 403 and this fails CLOSED
-    (``protection_uninspectable``) — that is the intended safe default for the
-    autonomous (auto/timer) merge regimes, not a weakness to paper over: no
-    verifiable required-checks evidence means no autonomous merge.
     """
     if not base_ref:
         return False, {"reason": "no_base_ref"}
@@ -451,17 +444,14 @@ def _evaluate_merge_policy_gate(
         ), {}
 
     # Atomically CLAIM the item (→ merging) BEFORE touching GitHub, binding the
-    # claim to the eligibility FACTS (row-version token) AND the owner-bound
-    # policy generation. A same-head re-enqueue that flipped verify changes
-    # updated_at; an owner TIGHTENING the binding between this evaluation and the
-    # claim advances the binding generation — both fail the claim (Codex R5 C1 +
-    # R6 C2 + R10 #1), so a stale-policy merge cannot proceed.
+    # claim to the eligibility FACTS via the row-version generation token — a
+    # same-head re-enqueue that flipped verify pass→fail between this read and
+    # the claim changes updated_at and fails the claim (Codex R5 C1 + R6 C2).
     claim = rq.claim_for_merge(
         universe_dir,
         item_id=item["item_id"],
         expected_head_sha=actual_head_sha,
         expected_updated_at=item.get("updated_at"),
-        expected_binding_generation=bound.get("generation"),
     )
     if not claim.get("claimed"):
         return _error(
