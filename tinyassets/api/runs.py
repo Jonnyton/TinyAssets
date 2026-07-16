@@ -532,24 +532,36 @@ def _run_universe_context(universe_id: str = "") -> Any:
     C2 (Codex S3 REJECT): the run is scoped to a universe; its provider calls
     must resolve that universe's OWN vault auth and no other's.
 
-    - No universe can be identified (single-universe daemon) → ``None`` (the
-      process-global fallback is acceptable — there is no bound tenant to leak).
-    - A universe IS bound but its config cannot load → **FAIL CLOSED** (raise) —
-      never silently fall back to process-global creds for a scoped run (C2 r2).
+    - GENUINELY UNBOUND legacy call (no universe id at all) → ``None`` (the
+      single-universe process-global fallback is acceptable — no bound tenant to
+      leak).
+    - An EXPLICIT / run-record universe binding → resolve FULLY or **FAIL CLOSED**
+      (raise) on ANY resolution / path / config failure, including a missing or
+      unresolvable directory (Codex S3 REJECT r3 C2). NEVER silently fall back to
+      process-global creds for a scoped run.
     """
     from pathlib import Path as _Path
 
     from tinyassets.config import load_universe_config
-    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.base import (
+        SandboxUnavailableError,
+        UniverseContext,
+    )
 
-    try:
-        uid = _request_universe(universe_id or "")
-        udir = _universe_dir(uid)
-    except Exception:  # noqa: BLE001 — can't identify a universe ⇒ no scoping
+    if not (universe_id or "").strip():
+        # No universe was bound — legacy single-universe call. Global is OK.
         return None
+
+    # An EXPLICIT binding was given: any failure fails CLOSED (do NOT swallow into
+    # a process-global fallback — that would cross-resolve another tenant's vault).
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
     if udir is None or not _Path(udir).is_dir():
-        return None
-    # Bound universe → its config MUST resolve or we fail closed (do NOT swallow).
+        raise SandboxUnavailableError(
+            f"Universe {universe_id!r} could not be resolved to a directory "
+            f"(uid={uid!r}, dir={udir!r}). Refusing to run a scoped run on "
+            "process-global credentials (fail closed)."
+        )
     return UniverseContext(
         universe_dir=_Path(udir), config=load_universe_config(udir),
     )

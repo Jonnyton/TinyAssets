@@ -44,7 +44,7 @@ def _conditional_edges(got: dict) -> list:
 
 
 def _scripted_provider(gate_output: str) -> Callable[..., str]:
-    def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
+    def _call(prompt: str, system: str = "", *, role: str = "writer", **_kw) -> str:
         if "decide" in prompt:
             return gate_output
         return "leaf ran"

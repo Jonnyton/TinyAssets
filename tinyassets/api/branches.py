@@ -1680,6 +1680,17 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             timeout_seconds = float(timeout_seconds_raw)
         except (TypeError, ValueError):
             return f"node '{nid}' timeout_seconds must be a number."
+        # Reject non-finite / non-positive at the AUTHORING boundary (Codex S3
+        # REJECT r3 C1a): NaN/Infinity/negative/zero must NOT persist — otherwise
+        # int(nan) later raises during config construction and a swallowed error
+        # would dispatch an UNRESTRICTED config. Nothing is persisted here.
+        import math as _math
+        if not _math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            return (
+                f"node '{nid}' timeout_seconds must be a finite positive number "
+                f"(got {timeout_seconds_raw!r}); NaN, Infinity, negative and zero "
+                "are rejected."
+            )
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
     # compiler reads them (tinyassets/graph_compiler.py:_build_invoke_branch /
     # invoke_branch_version / await_run callables) and NodeDefinition
@@ -1951,10 +1962,19 @@ def _coerce_node_update_bool(raw: Any, field: str) -> tuple[bool | None, str]:
 
 
 def _coerce_timeout_seconds_update(raw: Any, field: str) -> tuple[float, str]:
+    import math as _math
+
     try:
-        return float(raw), ""
+        value = float(raw)
     except (TypeError, ValueError):
         return 0.0, f"{field} must be a number."
+    # C1a: reject non-finite / non-positive at the update boundary too.
+    if not _math.isfinite(value) or value <= 0:
+        return 0.0, (
+            f"{field} must be a finite positive number "
+            "(NaN, Infinity, negative and zero are rejected)."
+        )
+    return value, ""
 
 
 def _coerce_retry_policy_update(raw: Any, field: str) -> tuple[dict[str, Any], str]:

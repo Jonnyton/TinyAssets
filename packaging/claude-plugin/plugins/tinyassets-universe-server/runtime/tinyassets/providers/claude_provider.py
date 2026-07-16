@@ -28,6 +28,7 @@ from tinyassets.providers.base import (
     check_bwrap_failure,
     cleanup_sandbox_job_dir,
     enforce_os_sandbox,
+    new_sandbox_job_dir,
     sandbox_spawn_env_and_dir,
 )
 
@@ -123,6 +124,34 @@ def _sandbox_cli_args(
     return flags, run_cwd
 
 
+def _hardened_scratch_cwd(
+    config: ModelConfig, run_cwd: str | None, scratch_dir: str | None,
+) -> tuple[str | None, str | None]:
+    """Pin a hardened claude spawn's cwd to a fresh per-job SCRATCH dir.
+
+    C4 (Codex S3 REJECT r3): `--tools ""` does NOT disable project hooks/plugins
+    that a `.claude/settings.json` in the CWD can define, and hardened spawns use
+    `--setting-sources project`. If the cwd were the daemon repo, a malicious
+    project settings file could execute a hook. Pinning cwd to an EMPTY per-job
+    scratch (no `.claude/`) means no project settings/hooks are ever in scope —
+    belt-and-braces to `--setting-sources project`. Applies to every hardened
+    profile (closed text surface / os-sandbox / conversation) when a cwd is not
+    already pinned (the conversation sandbox pins its own universe_dir).
+
+    Returns ``(run_cwd, scratch_dir)`` — a new scratch is created (and returned
+    for cleanup) only when one was needed.
+    """
+    hardened = bool(
+        config.os_sandbox_required
+        or config.closed_tool_surface
+        or config.sandbox_workspace
+    )
+    if hardened and run_cwd is None:
+        scratch_dir = new_sandbox_job_dir()
+        run_cwd = scratch_dir
+    return run_cwd, scratch_dir
+
+
 class ClaudeProvider(BaseProvider):
     """Calls Claude via the ``claude -p`` CLI binary."""
 
@@ -167,6 +196,7 @@ class ClaudeProvider(BaseProvider):
         )
         if scratch_dir is not None:
             run_cwd = scratch_dir
+        run_cwd, scratch_dir = _hardened_scratch_cwd(config, run_cwd, scratch_dir)
         try:
             win_kw = _no_window_kwargs()
             if use_shell:
@@ -269,6 +299,7 @@ class ClaudeProvider(BaseProvider):
         )
         if scratch_dir is not None:
             run_cwd = scratch_dir
+        run_cwd, scratch_dir = _hardened_scratch_cwd(config, run_cwd, scratch_dir)
         try:
             win_kw = _no_window_kwargs()
             if use_shell:

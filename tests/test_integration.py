@@ -1915,7 +1915,7 @@ class TestIndexerRegexFallback:
         kg = KnowledgeGraph(kg_path)
 
         # Provider that always returns empty (simulates exhaustion)
-        def empty_provider(prompt, system, role="extract"):
+        def empty_provider(prompt, system, role="extract", **_kw):
             return ""
 
         result = index_text(
@@ -1939,7 +1939,7 @@ class TestIndexerRegexFallback:
         kg_path = str(tmp_path / "knowledge.db")
         kg = KnowledgeGraph(kg_path)
 
-        def bad_json_provider(prompt, system, role="extract"):
+        def bad_json_provider(prompt, system, role="extract", **_kw):
             return "I found some entities but can't format them as JSON."
 
         result = index_text(
@@ -1964,7 +1964,7 @@ class TestIndexerRegexFallback:
         kg_path = str(tmp_path / "knowledge.db")
         kg = KnowledgeGraph(kg_path)
 
-        def json_provider(prompt, system, role="extract"):
+        def json_provider(prompt, system, role="extract", **_kw):
             return json.dumps({
                 "entities": [{
                     "entity_id": "ryn",

@@ -41,7 +41,7 @@ from tinyassets.graph_compiler import (
 def _make_prompt_fn(
     node: NodeDefinition,
     *,
-    provider_call=lambda prompt, system, role="writer": f"RENDERED::{prompt}",
+    provider_call=lambda prompt, system, role="writer", **_kw: f"RENDERED::{prompt}",
     event_sink=None,
 ):
     return _build_prompt_template_node(
@@ -242,7 +242,7 @@ def test_strict_isolation_schema_default_not_in_input_keys_renders():
     )
     fn = _build_prompt_template_node(
         node,
-        provider_call=lambda prompt, system, role="writer": (
+        provider_call=lambda prompt, system, role="writer", **_kw: (
             f"RENDERED::{prompt}"
         ),
         event_sink=None,
@@ -273,7 +273,7 @@ def test_strict_isolation_schema_default_referenced_but_missing_state_is_unavail
     )
     fn = _build_prompt_template_node(
         node,
-        provider_call=lambda prompt, system, role="writer": (
+        provider_call=lambda prompt, system, role="writer", **_kw: (
             f"RENDERED::{prompt}"
         ),
         event_sink=None,
@@ -569,7 +569,7 @@ def test_build_branch_state_schema_default_seeded_to_strict_prompt(
         prompts: list[str] = []
 
         def provider(prompt, system="", *, role="writer",
-                     fallback_response=None):
+                     fallback_response=None, **_kw):
             prompts.append(prompt)
             return "drafted"
 
@@ -620,7 +620,7 @@ def test_compile_rejects_output_key_missing_from_partial_state_schema():
     with pytest.raises(CompilerError) as exc:
         compile_branch(
             branch,
-            provider_call=lambda prompt, system="", *, role="writer": "draft",
+            provider_call=lambda prompt, system="", *, role="writer", **_kw: "draft",
         )
 
     msg = str(exc.value)
@@ -651,7 +651,7 @@ def test_compile_rejects_input_key_missing_from_partial_state_schema():
     with pytest.raises(CompilerError) as exc:
         compile_branch(
             branch,
-            provider_call=lambda prompt, system="", *, role="writer": "draft",
+            provider_call=lambda prompt, system="", *, role="writer", **_kw: "draft",
         )
 
     msg = str(exc.value)

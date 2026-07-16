@@ -71,7 +71,7 @@ def test_failed_event_emitted_on_provider_exception():
     def _sink(node_id, **detail):
         captured.append({"node_id": node_id, **detail})
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted for role=writer")
 
     branch = _simple_branch()
@@ -116,7 +116,7 @@ def test_failed_event_emitted_on_policy_path_exception(monkeypatch):
     branch = _simple_branch()
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "codex"}}
 
-    def _unused(prompt, system, *, role):
+    def _unused(prompt, system, *, role, **_kw):
         raise AssertionError("plain provider_call should not be reached")
 
     compiled = compile_branch(branch, provider_call=_unused, event_sink=_sink)
@@ -144,7 +144,7 @@ def test_failed_event_emission_resilient_to_sink_exception():
         if detail.get("phase") == "failed":
             raise RuntimeError("sink boom")
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted")
 
     branch = _simple_branch()
@@ -165,7 +165,7 @@ def test_no_failed_event_when_no_event_sink():
     be compiled without a sink (e.g. dry-run or unit-test paths)."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted")
 
     branch = _simple_branch()
@@ -184,7 +184,7 @@ def test_no_failed_event_when_no_event_sink():
 def test_execute_branch_records_failed_node_event(tmp_path):
     """Provider exceptions must leave a terminal failed event in run_events."""
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted")
 
     base = tmp_path / "output"

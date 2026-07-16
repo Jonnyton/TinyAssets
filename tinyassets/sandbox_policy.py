@@ -1,27 +1,27 @@
-"""Coding-node sandbox policy — the security posture for repo-touching nodes.
+"""Sandbox policy — capability classification + the fail-closed refusal.
 
-The patch loop is a *user branch*: an arbitrary user remixes it, binds their own
-repo, and runs it in OUR cloud. Its ``draft_patch`` node drives a coding agent
-(``claude -p`` / ``codex exec``) that WRITES a patch against the bound repo. That
-is exactly a code-execution surface a malicious remix could turn into an
-exfiltration / abuse vector against the capacity host — so it MUST run confined.
+PHASE SPLIT (Codex S3 REJECT r3 C5 — host-approved). S3 is ENFORCEMENT-ONLY. The
+live Phase-1 surface here is small and auditable:
 
-This module is the single source of truth for the coding-node hardened posture.
-It EXTENDS the universe-intelligence isolation (see
-``tinyassets.universe_intelligence``) with one key difference: the universe turn
-is a *conversation* (WebFetch-only, every filesystem/shell tool denied — safe
-without an OS sandbox). A coding node must actually READ/WRITE the repo, so it
-KEEPS the coding tools and instead relies on an OS-level sandbox to confine them
-(``os_sandbox_required`` → fail closed when no sandbox exists). What it still
-denies is every HOST-ESCAPE / connector / side-effect tool: no ``mcp__*`` (the
-logged-in account MCP connectors — Google Drive, the TinyAssets MCP, codex →
-code exec), no ``Monitor`` (runs shell), no cron / messaging / remote triggers,
-no subagents that could re-expand the tool surface.
+  * :func:`node_capability` / :func:`node_requires_sandbox_runner` — classify a
+    node as ``coding`` (repo-write) / ``repo_exec`` (run commands) / ``repo_read``
+    (inspect) / ``text``, keyed on the STABLE ``node_kind`` (rename-proof).
+  * :func:`coding_nodes_runnable` — the ONE readiness truth: **False** in this
+    deploy (no per-job sandbox runner). validate + get_status + the node runtime
+    all read it, so readiness never drifts from runtime.
+  * :func:`text_node_model_config` — the CLOSED text surface for the only nodes
+    that actually run (text): no tools at all (claude ``--tools ""``).
 
-Consumed by the node-execution runtime (``tinyassets.graph_compiler``): a node
-that ``requires_sandbox`` (or is a coding-node kind that defaults to it) gets a
-:class:`~tinyassets.providers.base.ModelConfig` built by
-:func:`coding_node_model_config`, and the provider layer enforces it.
+Every repo-touching node FAILS CLOSED deterministically at the FIRST gate in
+``tinyassets.graph_compiler`` — before any ModelConfig is constructed, before any
+provider/scratch/env code runs. So the Phase-2 coding-EXECUTION plumbing below —
+:func:`coding_node_model_config` (the Bash-granting os_sandbox config),
+:data:`CODING_NODE_ALLOWED_TOOLS`, and the provider-side attestation / sanitized
+vault-env / bwrap-bypass paths — is PROVABLY UNREACHABLE in Phase 1: it is
+guarded behind that refusal and is retained only as the contract the FUTURE
+per-job sandbox RUNNER slice (Phase 2) will build against. Do NOT treat it as a
+live path; the runner (prepared per-job checkout + tenant isolation + scoped
+credentials + egress/resource limits) is a separate, host-approved slice.
 """
 from __future__ import annotations
 

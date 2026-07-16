@@ -253,7 +253,7 @@ class TestGraphCompilerSandboxPropagation:
 
         branch = self._make_branch()
 
-        def _raising_provider(prompt, system, *, role="user"):
+        def _raising_provider(prompt, system, *, role="user", **_kw):
             raise SandboxUnavailableError(
                 "bwrap: No permissions to create a new namespace"
             )
@@ -283,7 +283,7 @@ class TestGraphCompilerSandboxPropagation:
         monkeypatch.setattr("sys.platform", "linux")
         branch = self._make_branch()
 
-        def _leaking_provider(prompt, system, *, role="user"):
+        def _leaking_provider(prompt, system, *, role="user", **_kw):
             return "bwrap: No permissions to create a new namespace"
 
         compiled = compile_branch(branch, provider_call=_leaking_provider)
@@ -308,7 +308,7 @@ class TestGraphCompilerSandboxPropagation:
 
         branch = self._make_branch()
 
-        def _normal_provider(prompt, system, *, role="user"):
+        def _normal_provider(prompt, system, *, role="user", **_kw):
             return "hello, world"
 
         compiled = compile_branch(branch, provider_call=_normal_provider)

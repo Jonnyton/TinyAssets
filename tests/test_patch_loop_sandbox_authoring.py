@@ -260,3 +260,56 @@ def test_validate_fails_closed_on_sandbox_check_exception(ext_env, monkeypatch):
     assert res["sandbox_blocked"] is True
     assert res["runnable"] is False
     assert any("fail closed" in w.lower() for w in res["sandbox_warnings"])
+
+
+# --------------------------------------------------------------------------- #
+# C1a — authoring rejects non-finite / non-positive timeout_seconds (nothing
+# persisted), so a bad value can never reach config construction.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-1", "0", "-3.5", "inf", "nan"])
+def test_build_branch_rejects_bad_timeout_seconds(ext_env, bad):
+    us, base = ext_env
+    spec = {
+        "name": "b",
+        "entry_point": "n",
+        "node_defs": [{
+            "node_id": "n",
+            "display_name": "N",
+            "prompt_template": "do it: {x}",
+            "timeout_seconds": bad,
+        }],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "state_schema": [{"name": "x", "type": "str"}],
+    }
+    res = _call(us, "extensions", "build_branch", spec_json=json.dumps(spec))
+    # Rejected at authoring — nothing built/persisted.
+    assert res.get("status") != "built", res
+
+
+def test_update_node_rejects_bad_timeout_seconds(ext_env):
+    us, base = ext_env
+    bid = _build(
+        us,
+        node={"node_id": "n", "display_name": "N", "prompt_template": "do it: {x}"},
+        entry="n",
+    )
+    for bad in ("NaN", "Infinity", "-2", "0"):
+        res = _call(
+            us, "extensions", "patch_branch",
+            branch_def_id=bid,
+            changes_json=json.dumps([
+                {"op": "update_node", "node_id": "n", "timeout_seconds": bad},
+            ]),
+        )
+        assert res.get("status") == "rejected", (bad, res)
+    # A good finite positive value still works.
+    ok = _call(
+        us, "extensions", "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([
+            {"op": "update_node", "node_id": "n", "timeout_seconds": 45},
+        ]),
+    )
+    assert ok.get("status") != "rejected", ok

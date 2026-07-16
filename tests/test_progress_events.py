@@ -134,7 +134,7 @@ def test_compiler_emits_starting_then_ran_per_node():
     branch = _make_recipe_branch()
     compiled = compile_branch(
         branch,
-        provider_call=lambda p, s, *, role: "ok",
+        provider_call=lambda p, s, *, role, **_kw: "ok",
         event_sink=_sink,
     )
     runnable = compiled.graph.compile(checkpointer=InMemorySaver())
@@ -168,7 +168,7 @@ def test_compiler_starting_event_includes_prompt_preview():
     branch = _make_recipe_branch()
     compiled = compile_branch(
         branch,
-        provider_call=lambda p, s, *, role: "ok",
+        provider_call=lambda p, s, *, role, **_kw: "ok",
         event_sink=_sink,
     )
     runnable = compiled.graph.compile(checkpointer=InMemorySaver())
@@ -261,7 +261,7 @@ def test_slow_provider_starting_event_fires_before_completion(us_env):
     us, base = us_env
     bid = _build_two_node_branch(us)
 
-    def _slow(prompt, system, *, role):
+    def _slow(prompt, system, *, role, **_kw):
         time.sleep(0.3)
         return "slow ok"
 

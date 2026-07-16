@@ -1006,14 +1006,40 @@ def _build_prompt_template_node(
             timeout=timeout_s,
             reasoning_effort=_node_reasoning_effort,
         )
-    except Exception:  # pragma: no cover - defensive; provider import is optional
-        _node_cfg = None
+    except Exception as _cfg_exc:  # noqa: BLE001
+        # FAIL CLOSED (Codex S3 REJECT r3 C1b): a ModelConfig that cannot be built
+        # (e.g. a bad timeout that slipped past authoring validation) must NEVER
+        # fall through to a config-less / UNRESTRICTED dispatch. Refuse the node
+        # deterministically — never None-then-unrestricted.
+        try:
+            from tinyassets.providers.base import (
+                SandboxUnavailableError as _CfgSUE,
+            )
+        except Exception:  # noqa: BLE001
+            _CfgSUE = type("_SandboxUnavailableError", (Exception,), {})
+        _cfg_exc_msg = f"{type(_cfg_exc).__name__}: {_cfg_exc}"
+        _cfg_nid = node.node_id
+
+        def _config_build_fail_closed(
+            state: dict[str, Any],
+        ) -> dict[str, Any]:
+            raise _CfgSUE(
+                f"Node '{_cfg_nid}': its hardened ModelConfig could not be built "
+                f"({_cfg_exc_msg}); refusing to run it unrestricted (fail closed)."
+            )
+
+        return _config_build_fail_closed
     # Only pass config to the injected provider bridge when its signature
     # accepts it (protects test stubs / older bridges).
     try:
         import inspect as _inspect
+        _bp = _inspect.signature(provider_call).parameters
+        # A bridge carries config when it names ``config`` OR accepts **kwargs
+        # (mirrors the policy-router guard). The real bridge (call_provider) names
+        # config; a ``*a, **kw`` stub also carries it.
         _bridge_takes_config = bool(provider_call) and (
-            "config" in _inspect.signature(provider_call).parameters
+            ("config" in _bp)
+            or any(p.kind == p.VAR_KEYWORD for p in _bp.values())
         )
     except (ValueError, TypeError):
         _bridge_takes_config = False
@@ -1038,24 +1064,30 @@ def _build_prompt_template_node(
     except Exception:  # noqa: BLE001 — import failure must not break compilation
         _SandboxUnavailableError = type("_SandboxUnavailableError", (Exception,), {})  # type: ignore[assignment,misc]
 
+    # A config that carries ANY security-relevant posture (sandbox OR the closed
+    # `--tools ""` text surface) MUST reach the provider — running the provider
+    # without it drops the policy (claude would keep default Bash). Every text
+    # node has closed_tool_surface, so this is set for every runnable node.
+    _cfg_is_hardened = _node_cfg is not None and (
+        getattr(_node_cfg, "os_sandbox_required", False)
+        or getattr(_node_cfg, "closed_tool_surface", False)
+    )
+
     def _bridge(_p: str, _s: str) -> str:
         if _bridge_takes_config and _node_cfg is not None:
             return provider_call(_p, _s, role=role, config=_node_cfg)
-        if _node_needs_sandbox:
-            # Fail closed (Codex S3 round-3 FINDING 3): a sandbox-required node
-            # must NEVER run through a bridge that cannot carry its hardened
-            # config — a config-less bridge would bypass the sandbox tool/env
-            # policy entirely. (The closed-tool-surface enforcement for a text
-            # node happens at "the selected provider" — the router C1b filter
-            # routes it ONLY to a provider that honors `--tools ""` (claude) and
-            # fails closed if none — so it does not depend on this test-only
-            # config-less bridge path.)
+        if _node_needs_sandbox or _cfg_is_hardened:
+            # Fail closed (Codex S3 REJECT r3 C1c, extends round-3 FINDING 3): a
+            # config that carries a hardened / closed-surface posture must NEVER
+            # run through a bridge that cannot carry it — a config-less bridge
+            # would dispatch the provider UNRESTRICTED (bypassing the sandbox tool
+            # policy for a coding node, or leaving claude with default Bash for a
+            # closed-surface text node). Refuse rather than run unrestricted.
             raise _SandboxUnavailableError(
-                f"Node '{node.node_id}' is sandbox-required but its provider "
-                "bridge cannot carry the hardened sandbox config (the injected "
-                "provider_call takes no 'config' kwarg). Refusing to run a coding "
-                "node through a config-less bridge that would bypass the sandbox "
-                "policy (fail closed)."
+                f"Node '{node.node_id}' requires a hardened config (sandbox / "
+                "closed tool surface) but its provider bridge cannot carry it "
+                "(the injected provider_call takes no 'config' kwarg). Refusing to "
+                "dispatch it unrestricted (fail closed)."
             )
         return provider_call(_p, _s, role=role)
 

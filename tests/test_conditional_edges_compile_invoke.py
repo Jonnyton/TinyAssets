@@ -55,7 +55,7 @@ def _scripted_provider(
     callable that seeds the gate's output_key from state via
     ``call_provider``.
     """
-    def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
+    def _call(prompt: str, system: str = "", *, role: str = "writer", **_kw) -> str:
         if gate_marker in prompt:
             return gate_output
         return "leaf ran"

@@ -303,7 +303,7 @@ def test_build_branch_preserves_explicit_non_strict_input_isolation(comp_env):
 
     prompts: list[str] = []
 
-    def provider(prompt, system="", *, role="writer", fallback_response=None):
+    def provider(prompt, system="", *, role="writer", fallback_response=None, **_kw):
         prompts.append(prompt)
         return "captured"
 

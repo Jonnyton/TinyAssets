@@ -656,10 +656,11 @@ def test_text_node_runs_through_a_config_accepting_bridge():
     assert seen["config"].os_sandbox_required is False
 
 
-def test_ordinary_node_still_runs_through_a_config_less_bridge():
-    # Non-sandbox (text) nodes keep the tolerant legacy behavior — closed-surface
-    # enforcement happens at the router/provider level (C1b), not this test-only
-    # config-less bridge path, so a config-less stub still runs a text node.
+def test_text_node_refuses_a_config_less_bridge():
+    # C1c (Codex S3 REJECT r3): a text node carries the CLOSED tool surface
+    # (`--tools ""`). A config-less bridge cannot propagate that, so dispatching
+    # would leave the provider unrestricted (claude with default Bash). The node
+    # must FAIL CLOSED, never run unrestricted.
     node = NodeDefinition(
         node_id="summarize",
         display_name="Summarize",
@@ -667,12 +668,12 @@ def test_ordinary_node_still_runs_through_a_config_less_bridge():
         output_keys=["summarize_out"],
     )
 
-    def config_less(prompt, system, *, role="writer"):
-        return "ok"
+    def config_less(prompt, system, *, role="writer"):  # no `config` kwarg
+        raise AssertionError("config-less bridge must NOT run a hardened node")
 
     fn = _build_prompt_template_node(node, provider_call=config_less, event_sink=None)
-    out = fn({})
-    assert out["summarize_out"] == "ok"
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
 
 
 # --------------------------------------------------------------------------- #
@@ -1035,8 +1036,11 @@ def test_bind_universe_context_binds_and_resolves_only_the_runs_universe(monkeyp
     bound = runs_mod._bind_universe_context(raw_call, "A")
     assert isinstance(bound, functools.partial)
     assert bound.keywords["universe_context"].universe_dir == udir_a
-    # No universe bound (id resolves to a non-existent dir) → provider_call unchanged.
-    assert runs_mod._bind_universe_context(raw_call, "B") is raw_call
+    # Legacy UNBOUND call (empty id) → provider_call unchanged (global fallback OK).
+    assert runs_mod._bind_universe_context(raw_call, "") is raw_call
+    # EXPLICIT binding "B" whose dir is missing → FAIL CLOSED (C2 r3), never global.
+    with pytest.raises(SandboxUnavailableError):
+        runs_mod._bind_universe_context(raw_call, "B")
 
 
 # --------------------------------------------------------------------------- #
@@ -1127,3 +1131,86 @@ def test_closed_surface_call_with_only_codex_fails_loud(monkeypatch):
     router = ProviderRouter(providers={"codex": _Codex()})
     with pytest.raises(AllProvidersExhaustedError):
         asyncio.run(router.call("writer", "p", "", text_node_model_config(timeout=60)))
+
+
+# --------------------------------------------------------------------------- #
+# (14) C1b/C3/C4 r3 — config-build fail-closed, tool-less providers safe for a
+# closed surface, claude text-node cwd is a scratch (never the daemon repo).
+# --------------------------------------------------------------------------- #
+
+
+def test_config_build_failure_fails_closed_never_unrestricted(monkeypatch):
+    # C1b: if the ModelConfig can't build (e.g. a bad value that slipped past
+    # authoring), the node must FAIL CLOSED — never dispatch a config-less /
+    # unrestricted bridge.
+    import tinyassets.sandbox_policy as sp_mod
+
+    def _boom(*_a, **_k):
+        raise ValueError("cannot build config (e.g. int(nan))")
+
+    monkeypatch.setattr(sp_mod, "text_node_model_config", _boom)
+    node = NodeDefinition(
+        node_id="summarize", display_name="S", prompt_template="do it",
+        output_keys=["summarize_out"],
+    )
+    ran: list = []
+
+    def stub(prompt, system, *, role="writer", config=None):
+        ran.append(1)
+        return "SHOULD NOT RUN"
+
+    fn = _build_prompt_template_node(node, provider_call=stub, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+    assert not ran  # never reached the provider
+
+
+def test_closed_surface_ollama_only_branch_runs_not_exhausted(monkeypatch):
+    # C3: ollama (and gemini/groq/grok) are inherently tool-less HTTP providers —
+    # SAFE for a closed-surface node — so an ollama-only closed-surface call runs
+    # rather than exhausting.
+    from tinyassets.providers.base import BaseProvider, ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.sandbox_policy import text_node_model_config
+
+    class _Ollama(BaseProvider):
+        name = "ollama-local"
+        family = "local"
+        enforces_closed_tool_surface = True
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            return ProviderResponse(text="local-text", provider=self.name, model="m",
+                                    family=self.family, latency_ms=1.0)
+
+    router = ProviderRouter(providers={"ollama-local": _Ollama()})
+    resp = asyncio.run(router.call("writer", "p", "", text_node_model_config(timeout=60)))
+    assert resp.text == "local-text"  # ran on the tool-less provider
+
+
+def test_claude_text_node_cwd_is_scratch_never_daemon_repo(monkeypatch):
+    # C4: a hardened claude spawn (closed text surface) pins cwd to a fresh
+    # per-job SCRATCH dir — never the daemon repo — so a malicious repo
+    # .claude/settings.json hook is never in scope. The scratch has no .claude/,
+    # so `--setting-sources project` loads nothing.
+    import tinyassets.providers.claude_provider as claude_provider
+    from tinyassets.sandbox_policy import text_node_model_config
+
+    captured: dict = {}
+
+    async def _fake_exec(*_args, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return _mk_proc()
+
+    with (
+        patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
+              return_value=(["claude"], False)),
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+    ):
+        asyncio.run(
+            ClaudeProvider().complete("p", "", text_node_model_config(timeout=60))
+        )
+
+    cwd = captured["cwd"]
+    assert cwd and "tinyassets-sandbox-job-" in cwd  # per-job scratch...
+    repo_root = str(Path(claude_provider.__file__).resolve().parents[2])
+    assert cwd != repo_root  # ...NEVER the daemon repo checkout

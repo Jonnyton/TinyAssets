@@ -438,7 +438,7 @@ def _run_and_capture(branch, inputs):
 
     captured: list[str] = []
 
-    def fake_provider(prompt, system="", *, role="writer", fallback_response=None):
+    def fake_provider(prompt, system="", *, role="writer", fallback_response=None, **_kw):
         captured.append(prompt)
         return "[mock]"
 
@@ -1034,7 +1034,7 @@ def test_cancel_run_interrupts_mid_flight(tmp_path):
     # completes but BEFORE node2.
     gate = threading.Event()
 
-    def fake_provider(prompt, system="", *, role="writer", fallback_response=None):
+    def fake_provider(prompt, system="", *, role="writer", fallback_response=None, **_kw):
         if "wait_for_cancel" in prompt:
             gate.wait(timeout=10.0)
         return "[ok]"
