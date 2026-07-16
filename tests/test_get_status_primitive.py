@@ -51,6 +51,31 @@ def test_get_status_tool_is_safe_to_call() -> None:
         assert getattr(ann, "destructiveHint", None) is False
 
 
+def test_get_status_surfaces_reference_design_seed_health() -> None:
+    """Codex F3: the last reference-design seed result is surfaced through
+    get_status (a real reader) so a healthy server with an ABSENT/failed
+    reference is detectable — not only via the unread last_seed_result()."""
+    import tinyassets.universe_server as us
+
+    prior = us._LAST_SEED_RESULT
+    try:
+        us._LAST_SEED_RESULT = {
+            "seeded": [], "present": ["design:patch_loop_reference@v1"],
+            "failed": [],
+        }
+        rd = json.loads(get_status())["reference_designs"]
+        assert rd["last_seed_ran"] is True
+        assert rd["healthy"] is True
+        assert "design:patch_loop_reference@v1" in rd["present"]
+
+        us._LAST_SEED_RESULT = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
+        rd2 = json.loads(get_status())["reference_designs"]
+        assert rd2["healthy"] is False
+        assert rd2["failed"] == ["<seed-crashed>"]
+    finally:
+        us._LAST_SEED_RESULT = prior
+
+
 def test_get_status_returns_required_shape() -> None:
     """Response must carry the 4 load-bearing blocks the chatbot narrates
     when answering privacy-critical questions: active_host,

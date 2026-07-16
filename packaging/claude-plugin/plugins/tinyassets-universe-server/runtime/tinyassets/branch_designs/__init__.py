@@ -163,8 +163,15 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
     topology), and mint a PUBLISHED BRANCH VERSION — the published listing
     filters on versions, not the bare flag. ``publish_branch_version`` dedupes
     by content hash, so re-publishing a healthy reference is a no-op.
+
+    Rolled-back restore (S2 Codex gate): ``publish_branch_version`` dedupes on
+    content hash and returns the EXISTING row WITHOUT reactivating it — so a
+    reference whose only version was rolled back cannot be re-minted active by a
+    plain re-publish. The reserved reference is a durable commons design that
+    must stay discoverable, and its content is the re-verified repo artifact, so
+    the seeder REACTIVATES a dedup-hit rolled-back version (seeder-owned id only).
     """
-    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.branch_versions import _connect, publish_branch_version
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import (
         get_branch_definition,
@@ -176,10 +183,24 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
     )
     branch.published = True
     saved = save_branch_definition(base_path, branch_def=branch.to_dict())
-    publish_branch_version(
+    version = publish_branch_version(
         base_path, saved, publisher="reference-designs",
         notes=f"reference design seed {tag}",
     )
+    if (version.status or "active") != "active":
+        # Dedup hit a rolled-back version — restore the reserved reference to
+        # active so active-only discovery lists it again.
+        with _connect(base_path) as conn:
+            conn.execute(
+                "UPDATE branch_versions SET status='active', "
+                "rolled_back_at=NULL, rolled_back_by=NULL, "
+                "rolled_back_reason=NULL WHERE branch_version_id=?",
+                (version.branch_version_id,),
+            )
+        logger.info(
+            "reactivated rolled-back reference version %s for %s",
+            version.branch_version_id, tag,
+        )
 
 
 def _content_fingerprint(branch_dict: dict) -> str:
@@ -239,8 +260,16 @@ def _reference_row_is_healthy(
     base_path: str | Path, expected_fp: str, branch_def_id: str,
 ) -> bool:
     """Healthy = content matches the authoritative build (fingerprint, so drift
-    is caught), ``published`` set, and >=1 published branch version (the
-    published listing filters on versions)."""
+    is caught), ``published`` set, and >=1 ACTIVE (non-rolled-back) branch
+    version.
+
+    Active-not-just-present (S2 Codex gate, routed 2026-07-15): "any version
+    exists" is NOT health — after a rollback of the only version, the version
+    row stays in the table with ``status='rolled_back'`` but active-only
+    discovery no longer lists it. Counting it as present would leave the commons
+    with a rolled-back-invisible reference forever. Require an ACTIVE version so
+    a rolled-back-only reference is re-published on the next seed instead.
+    """
     from tinyassets.branch_versions import list_branch_versions
     from tinyassets.daemon_server import get_branch_definition
 
@@ -249,7 +278,8 @@ def _reference_row_is_healthy(
         return False
     if not full.get("published"):
         return False
-    return bool(list_branch_versions(base_path, branch_def_id, limit=1))
+    versions = list_branch_versions(base_path, branch_def_id, limit=50)
+    return any((v.status or "active") == "active" for v in versions)
 
 
 def _overwrite_reference_content(
@@ -376,9 +406,12 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
             # Defensive prune: delete any OTHER rows carrying BOTH the reserved
             # author AND this tag (a legacy random-id reserved row, or a
             # concurrent-seed straggler). Gated on the reserved author, so a
-            # user remix/tagged branch is NEVER touched.
+            # user remix/tagged branch is NEVER touched. include_private=True so
+            # a PRIVATE stray reserved row doesn't evade cleanup (Fable MINOR) —
+            # only reserved-author rows are ever visible to this query.
             for r in list_branch_definitions(
                 base_path, author=RESERVED_SEED_AUTHOR, tag=tag,
+                include_private=True,
             ):
                 if r.get("branch_def_id") not in (fixed_id, correct_id):
                     logger.warning(

@@ -379,11 +379,18 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
 
     visibility_in = (kwargs.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
+    # Strip the reserved seed author so create_branch can never smuggle the
+    # seeder's ownership identity (Fable MAJOR): a user could otherwise
+    # create_branch author="reference-designs" + force-tag it and get their
+    # branch DELETED by the next boot's reserved-author prune.
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
+    create_author = _sanitize_reserved_author(kwargs.get("author")).strip()
     branch = BranchDefinition(
         name=name,
         description=kwargs.get("description", ""),
         domain_id=kwargs.get("domain_id") or "workflow",
-        author=kwargs.get("author") or _current_actor(),
+        author=create_author or _current_actor(),
         visibility=visibility,
     )
     try:

@@ -220,6 +220,46 @@ def test_seed_repairs_incomplete_prior_seed(data_dir):
     assert fixed_id in {b["branch_def_id"] for b in post["branches"]}
 
 
+def test_rolled_back_only_reference_is_repaired_not_present(data_dir):
+    # S2 Codex gate (routed 2026-07-15): "any version exists" is NOT health.
+    # After the ONLY version is rolled back, active-only discovery no longer
+    # lists the reference, so the reseed must REPAIR (restore an active version),
+    # never report it present.
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branch_versions import _connect, list_branch_versions
+    from tinyassets.daemon_server import list_branch_definitions
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    versions = list_branch_versions(data_dir, fixed_id, limit=50)
+    assert len(versions) == 1 and versions[0].status == "active"
+
+    # Roll back the only version — exactly what the rollback engine does.
+    with _connect(data_dir) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET status='rolled_back' "
+            "WHERE branch_def_id=?", (fixed_id,),
+        )
+    # No ACTIVE version now — the reference is invisible to active-only discovery.
+    assert not any(
+        v.status == "active"
+        for v in list_branch_versions(data_dir, fixed_id, limit=50)
+    )
+
+    results = seed_reference_designs(data_dir)
+    assert tag in results["seeded"]              # repaired, NOT present
+    assert tag not in results["present"]
+    # An ACTIVE version exists again; still exactly one reference row.
+    assert any(
+        v.status == "active"
+        for v in list_branch_versions(data_dir, fixed_id, limit=50)
+    )
+    rows = list_branch_definitions(data_dir, tag=tag)
+    assert len(rows) == 1
+    assert rows[0]["branch_def_id"] == fixed_id
+
+
 def test_content_drift_is_repaired_not_present(data_dir):
     # Codex S1 review critical: a same-count content drift (a corrupted prompt,
     # topology counts unchanged) must be REPAIRED on re-seed, never reported
@@ -612,6 +652,51 @@ def test_concurrent_seed_no_duplicate_no_crash(data_dir):
 
     assert not errors, errors
     rows = list_branch_definitions(data_dir, tag=tag)
+    assert len(rows) == 1, [r["branch_def_id"] for r in rows]
+
+
+def test_multiprocess_concurrent_seed_converges_to_one_row(tmp_path):
+    # Codex F3: multi-PROCESS (not just multi-thread) concurrent boots — the
+    # real multi-worker deploy shape — must converge to ONE reference row via
+    # the fixed-id INSERT OR REPLACE upsert (cross-process, not just a thread
+    # lock).
+    import os as _os
+    import subprocess
+    import sys
+
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        list_branch_definitions,
+    )
+
+    data = tmp_path / "data"
+    data.mkdir()
+    # Pre-migrate the schema ONCE in the parent so the subprocesses race only on
+    # the SEED reconcile (the F3 property), not on initialize_author_server's
+    # ALTER TABLE migration — that schema-init step is a separate daemon_server
+    # concern not made concurrency-safe cross-process (in-process lock only).
+    initialize_author_server(data)
+    repo_root = Path(__file__).resolve().parents[1]
+    prog = (
+        "import os, sys;"
+        f"sys.path.insert(0, {str(repo_root)!r});"
+        "from tinyassets.branch_designs import seed_reference_designs;"
+        "seed_reference_designs(os.environ['TINYASSETS_DATA_DIR'])"
+    )
+    env = dict(
+        _os.environ,
+        TINYASSETS_DATA_DIR=str(data),
+        TINYASSETS_STORAGE_BACKEND="sqlite_only",
+    )
+    procs = [
+        subprocess.Popen([sys.executable, "-c", prog], env=env)
+        for _ in range(2)
+    ]
+    rcs = [p.wait(timeout=180) for p in procs]
+    assert all(rc == 0 for rc in rcs), rcs
+
+    tag = design_tag("patch_loop_reference", 1)
+    rows = list_branch_definitions(data, tag=tag)
     assert len(rows) == 1, [r["branch_def_id"] for r in rows]
 
 

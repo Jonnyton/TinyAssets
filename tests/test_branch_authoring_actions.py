@@ -57,6 +57,24 @@ def test_create_branch_requires_name(branch_env):
     assert "error" in result
 
 
+def test_create_branch_strips_reserved_seed_author(branch_env):
+    # Fable MAJOR (data-loss): create_branch must NOT let a user smuggle the
+    # reserved seed author. Otherwise a user could create_branch
+    # author="reference-designs" + force-tag it and get their branch DELETED by
+    # the next boot's reserved-author prune.
+    us, base = branch_env
+    created = _call(
+        us, "create_branch", name="Smuggle", author="reference-designs",
+    )
+    assert created["status"] == "created"
+
+    from tinyassets.daemon_server import get_branch_definition
+
+    row = get_branch_definition(base, branch_def_id=created["branch_def_id"])
+    assert row["author"] != "reference-designs"
+    assert row["author"] == "tester"   # fell back to the current actor
+
+
 def test_list_branches_returns_summaries(branch_env):
     """`scope="all"` returns every branch including drafts.
 

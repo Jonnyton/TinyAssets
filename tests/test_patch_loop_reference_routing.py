@@ -103,14 +103,20 @@ def _run(verify_verdicts: list[str], gate_decision: str) -> tuple[list[str], dic
 # ── Safety semantics ────────────────────────────────────────────────────────
 
 
-def test_happy_path_green_reaches_present_then_approve_reaches_merge():
-    # green verdict -> present; approve decision -> merge. The full loop closes.
-    visited, result = _run(verify_verdicts=["green"], gate_decision="approve")
+def test_happy_path_green_routes_present_then_approve_routes_merge():
+    # ROUTING property only: green -> present, approve -> merge (present before
+    # merge). We assert the graph REACHES merge, NOT that a fake model's
+    # merge_output text means "the PR merged" — the present node EMITS a
+    # github_pull_request effect and merge EMITS a github_merge effect; the
+    # runner performs the writes. Full present -> owner review-queue -> decision
+    # -> merge effector EXECUTION is proven in the bundled S1+S3+S4 integration
+    # test (S4 owns that + the github_merge effector); on S1 the repo-touching
+    # nodes are sandbox-required and fail closed until the sandbox runner ships.
+    visited, _result = _run(verify_verdicts=["green"], gate_decision="approve")
 
     assert "present" in visited, visited
     assert "merge" in visited, visited
     assert visited.index("present") < visited.index("merge")
-    assert result.get("merge_output"), result
 
 
 def test_red_verify_routes_to_draft_patch_and_never_present():
@@ -174,6 +180,45 @@ def test_reshape_owner_gate_routes_back_to_draft_and_never_merge():
     assert visited[first_gate + 1] == "draft_patch", visited
     assert "merge" not in visited, visited
     assert not dict(result).get("merge_output"), result
+
+
+# ── Honest-reference structure (effects + capability tags) ───────────────────
+
+
+def test_reference_declares_real_effects_and_sandbox_capabilities():
+    # Codex F1/F2: the reference is HONEST, not a prompt-only simulation. present
+    # and merge carry REAL effect declarations (the runner performs the writes);
+    # the repo-touching nodes are sandbox-required and carry capability tags for
+    # the S3 enforcement slice. Structural proof at the artifact + built layers.
+    #
+    # NOTE: full present -> review-queue -> decision -> merge EFFECTOR EXECUTION
+    # is proven in the bundled S1+S3+S4 integration test (S4 owns it). On S1
+    # requires_sandbox/effects are declarations; enforcement lands with S3/S4.
+    spec = _reference_spec()
+    nodes = {n["node_id"]: n for n in spec["node_defs"]}
+
+    # (a) Capability tags on repo-touching nodes (artifact data for S3).
+    assert nodes["investigate"]["capabilities"] == ["repo-read"]
+    assert nodes["verify"]["capabilities"] == ["repo-exec"]
+    assert nodes["draft_patch"]["capabilities"] == ["repo-write"]
+    assert nodes["draft_patch"]["node_kind"] == "coding"
+    # ...all three are sandbox-required (fail-closed until the sandbox runner).
+    for nid in ("investigate", "verify", "draft_patch"):
+        assert nodes[nid]["requires_sandbox"] is True, nid
+
+    # (b) Real effect declarations on present + merge.
+    assert nodes["present"]["effects"] == ["github_pull_request"]
+    assert nodes["merge"]["effects"] == ["github_merge"]
+
+    # requires_sandbox + effects are REAL NodeDefinition fields — they must
+    # survive the build into the compiled branch (capabilities/node_kind are
+    # artifact-only data the current build drops; S3 consumes them).
+    branch = _reference_branch()
+    built = {n.node_id: n for n in branch.node_defs}
+    for nid in ("investigate", "verify", "draft_patch"):
+        assert built[nid].requires_sandbox is True, nid
+    assert built["present"].effects == ["github_pull_request"]
+    assert built["merge"].effects == ["github_merge"]
 
 
 # ── Persistence-crossing safety (the durable lesson) ─────────────────────────

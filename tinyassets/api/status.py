@@ -1273,10 +1273,29 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
 
     release_state = _load_release_state()
 
+    # reference_designs — process-global seed-health signal (Codex F3). Makes a
+    # healthy server with an ABSENT/failed reference-design seed detectable by a
+    # real reader: ``last_seed_result()`` is set on the startup seam (None before
+    # the first seed). Best-effort; never fail get_status on it.
+    try:
+        from tinyassets.universe_server import last_seed_result
+
+        _seed = last_seed_result()
+        reference_designs = {
+            "last_seed_ran": _seed is not None,
+            "seeded": list((_seed or {}).get("seeded", [])),
+            "present": list((_seed or {}).get("present", [])),
+            "failed": list((_seed or {}).get("failed", [])),
+            "healthy": _seed is not None and not (_seed or {}).get("failed"),
+        }
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        reference_designs = {"error": "compute_failed", "detail": str(exc)}
+
     response = {
         "schema_version": 1,
         "active_host": policy_payload["active_host"],
         "tier_routing_policy": tier_routing_policy,
+        "reference_designs": reference_designs,
         "evidence": {
             "last_completed_request_llm_used": last_completed_llm,
             "activity_log_tail": activity_tail,

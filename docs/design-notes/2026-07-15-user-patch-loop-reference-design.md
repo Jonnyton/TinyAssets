@@ -154,8 +154,18 @@ design version id so drift is detectable.
   filed and fixed.
 
 Each slice ships with tests + opposite-provider review; surface changes get
-the rendered-chatbot ui-test per AGENTS quality gates. S1/S2 may land ahead of
-S3, but no remixed loop executes against a real repo until S3 lands.
+the rendered-chatbot ui-test per AGENTS quality gates.
+
+**Bundled deploy (corrected 2026-07-15 — supersedes "S1/S2 may land ahead of
+S3"):** the patch-loop stack merges to `main` in dependency order (S1 → S3 →
+S4 → S2 → S5) and ships as ONE deploy; **no slice deploys independently.** The
+seeded reference's repo-touching nodes (`investigate` repo-read, `verify`
+repo-exec, `draft_patch` repo-write/coding) are sandbox-required and **FAIL
+CLOSED** until the sandbox runner (S3) is live in the same deploy; `present` /
+`merge` EMIT `github_pull_request` / `github_merge` effect packets whose
+effectors resolve at run time (`github_merge` lands with S4). So the seeded
+reference is never live without its enforcement gate — S1 in isolation is a
+seeded, honest-but-inert artifact, not an executable loop.
 
 ## 7. Security posture
 
