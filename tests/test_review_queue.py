@@ -30,6 +30,18 @@ def _enqueue(tmp_path, *, pr_number=181, head=_HEAD, verdict=rq.VERIFY_PASS):
     )
 
 
+def _claim_and_merge(tmp_path, item, *, head=_HEAD, merge_commit_sha="c" * 40):
+    """Mimic the effector's merge flow: claim the item (→ merging) then mark it
+    merged. mark_merged now requires the merging→merged transition."""
+    claim = rq.claim_for_merge(
+        tmp_path, item_id=item["item_id"], expected_head_sha=head
+    )
+    assert claim["claimed"], claim
+    return rq.mark_merged(
+        tmp_path, item_id=item["item_id"], merge_commit_sha=merge_commit_sha
+    )
+
+
 def test_enqueue_then_list_and_get(tmp_path):
     item = _enqueue(tmp_path)
     assert item["status"] == "pending"
@@ -264,7 +276,7 @@ def test_reshaped_then_approve_is_blocked(tmp_path):
 def test_merged_then_any_decision_is_blocked(tmp_path):
     item = _enqueue(tmp_path)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    rq.mark_merged(tmp_path, item_id=item["item_id"], merge_commit_sha="c" * 40)
+    _claim_and_merge(tmp_path, item)
     for verb, fn in (
         ("approve", lambda: rq.approve_item(
             tmp_path, item_id=item["item_id"], approved_by="owner")),
@@ -315,7 +327,7 @@ def test_same_head_reenqueue_does_not_reopen_rejected(tmp_path):
 def test_same_head_reenqueue_does_not_reopen_merged(tmp_path):
     item = _enqueue(tmp_path, head=_HEAD)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    rq.mark_merged(tmp_path, item_id=item["item_id"], merge_commit_sha="c" * 40)
+    _claim_and_merge(tmp_path, item)
     re = _enqueue(tmp_path, head=_HEAD)
     assert re["status"] == "merged"
     assert re["already_decided"] is True
@@ -353,9 +365,7 @@ def test_same_head_reenqueue_of_non_terminal_still_refreshes(tmp_path):
 def test_mark_merged_transitions_and_is_idempotent(tmp_path):
     item = _enqueue(tmp_path)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    merged = rq.mark_merged(
-        tmp_path, item_id=item["item_id"], merge_commit_sha="c" * 40
-    )
+    merged = _claim_and_merge(tmp_path, item)
     assert merged["status"] == "merged"
     assert merged["merge_commit_sha"] == "c" * 40
     # Any outstanding approval is consumed when the item merges.
@@ -366,6 +376,16 @@ def test_mark_merged_transitions_and_is_idempotent(tmp_path):
     again = rq.mark_merged(tmp_path, item_id=item["item_id"])
     assert again["status"] == "merged"
     assert again["merge_commit_sha"] == "c" * 40
+
+
+def test_mark_merged_requires_merging_state(tmp_path):
+    """mark_merged only transitions FROM merging — an approved item that was
+    never claimed is NOT overwritten to merged (Codex R5 CRITICAL 1)."""
+    item = _enqueue(tmp_path)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    # No claim → mark_merged refuses (returns None), item stays approved.
+    assert rq.mark_merged(tmp_path, item_id=item["item_id"]) is None
+    assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "approved"
 
 
 def test_mark_merged_missing_item_returns_none(tmp_path):

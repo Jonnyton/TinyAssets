@@ -129,6 +129,20 @@ def test_approve_after_reject_surfaces_invalid_transition(owner_env):
     assert rq.get_item(owner_env, item_id=item["item_id"])["status"] == "rejected"
 
 
+def test_decision_on_merging_item_surfaces_merge_in_progress(owner_env):
+    """R5: a fresh merge claim makes the item non-decidable — the handler
+    returns a structured merge_in_progress error, not a silent overwrite."""
+    item = _seed(owner_env)
+    # A merge effector claims the item (→ merging).
+    rq.claim_for_merge(owner_env, item_id=item["item_id"], expected_head_sha=_HEAD)
+    out = _call(
+        "review_queue_reject", universe_id="u1", item_id=item["item_id"]
+    )
+    assert out["failure_class"] == "merge_in_progress"
+    assert out["actionable_by"] == "chatbot"
+    assert rq.get_item(owner_env, item_id=item["item_id"])["status"] == "merging"
+
+
 # ── Non-owner is denied on every verb; nothing mutates ──────────────────────
 
 

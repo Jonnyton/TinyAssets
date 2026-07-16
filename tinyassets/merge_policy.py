@@ -33,6 +33,7 @@ storage + the live PR head.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 MERGE_POLICY_MANUAL = "manual"
@@ -153,6 +154,18 @@ def evaluate_merge_eligibility(
             return _blocked(
                 "timer_policy_missing_clock",
                 policy=resolved_policy,
+            )
+        # Fail closed on a malformed delay (Codex R5 REQUIRED 2). A negative /
+        # NaN / inf delay must never read as "eligible now" — the effector
+        # boundary rejects these with a structured error, and this is the
+        # defense-in-depth guard so the pure evaluator can't fail open either.
+        if not isinstance(timer_delay_s, (int, float)) or not math.isfinite(
+            timer_delay_s
+        ) or timer_delay_s < 0:
+            return _blocked(
+                "timer_delay_invalid",
+                policy=resolved_policy,
+                timer_delay_s=timer_delay_s,
             )
         elapsed = now - created_at
         if elapsed < timer_delay_s:

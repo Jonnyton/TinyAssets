@@ -9,6 +9,7 @@ they are not accepted as merge authorization.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 import urllib.error
@@ -246,6 +247,30 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
+    # Validate the timer delay at the effector boundary (Codex R5 REQUIRED 2).
+    # A negative / NaN / inf / non-numeric delay must fail closed with a
+    # structured error, never read as "eligible now".
+    timer_delay_s = 0.0
+    if policy == mp.MERGE_POLICY_TIMER:
+        raw_delay = payload.get(mp.TIMER_DELAY_STATE_FIELD, 0.0)
+        try:
+            timer_delay_s = float(raw_delay)
+        except (TypeError, ValueError):
+            timer_delay_s = float("nan")
+        if not math.isfinite(timer_delay_s) or timer_delay_s < 0:
+            return _error(
+                "timer_delay_invalid",
+                (
+                    f"timer merge of PR #{pr_number} requires a finite, "
+                    f"non-negative {mp.TIMER_DELAY_STATE_FIELD}; got {raw_delay!r}"
+                ),
+                destination=destination,
+                pr_number=pr_number,
+                policy=policy,
+                timer_delay_raw=repr(raw_delay),
+                matched_output_key=matched_key,
+            ), {}
+
     fresh_approval_present = rq.has_fresh_merge_approval(
         universe_dir,
         destination=destination,
@@ -263,7 +288,7 @@ def _evaluate_merge_policy_gate(
         # enqueue — a re-pushed head resets the clock (Codex R2 REQUIRED 2).
         created_at=item.get("head_queued_at", item.get("created_at")),
         now=time.time(),
-        timer_delay_s=float(payload.get(mp.TIMER_DELAY_STATE_FIELD) or 0.0),
+        timer_delay_s=timer_delay_s,
     )
     if not decision.get("eligible"):
         return _error(
@@ -282,6 +307,31 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
+    # Atomically CLAIM the item (→ merging) BEFORE touching GitHub, so a
+    # concurrent owner reject/reshape can't land during the PUT and be
+    # overwritten by the post-success mark_merged (Codex R5 CRITICAL 1).
+    claim = rq.claim_for_merge(
+        universe_dir,
+        item_id=item["item_id"],
+        expected_head_sha=actual_head_sha,
+    )
+    if not claim.get("claimed"):
+        return _error(
+            "merge_claim_lost",
+            (
+                f"could not claim PR #{pr_number} for merge "
+                f"({claim.get('reason')}); an owner decision or head change "
+                "landed first — refusing to merge"
+            ),
+            destination=destination,
+            pr_number=pr_number,
+            policy=policy,
+            claim_reason=claim.get("reason"),
+            current_status=claim.get("current_status"),
+            matched_output_key=matched_key,
+        ), {}
+    prior_status = claim.get("prior_status", "")
+
     consumed_approval_id = ""
     if founder_oauth_per_merge:
         consumed_approval_id = rq.consume_merge_approval(
@@ -292,7 +342,10 @@ def _evaluate_merge_policy_gate(
         )
         if not consumed_approval_id:
             # Race: eligibility saw a fresh token but it was consumed/revoked
-            # before we could claim it. Fail closed — no unauthorized merge.
+            # before we could claim it. Release the merge claim and fail closed.
+            rq.release_merge_claim(
+                universe_dir, item_id=item["item_id"], restore_status=prior_status
+            )
             return _error(
                 "founder_oauth_approval_unavailable",
                 (
@@ -311,10 +364,35 @@ def _evaluate_merge_policy_gate(
         "policy_reason": decision.get("reason"),
         "founder_oauth_per_merge": founder_oauth_per_merge,
         "review_queue_item_id": item.get("item_id"),
+        "merge_claim_prior_status": prior_status,
     }
     if consumed_approval_id:
         gate_info["consumed_approval_id"] = consumed_approval_id
     return None, gate_info
+
+
+def _release_merge_claim_if_held(
+    universe_dir: Path | None, gate_info: dict[str, Any]
+) -> None:
+    """Release a merge claim taken by the gate when the GitHub PUT fails, so the
+    item returns to its prior reviewable state rather than being stuck in
+    ``merging`` (Codex R5 CRITICAL 1). Best-effort; only acts when a claim was
+    actually taken (``merge_claim_prior_status`` present)."""
+    item_id = gate_info.get("review_queue_item_id")
+    if not item_id or universe_dir is None:
+        return
+    if "merge_claim_prior_status" not in gate_info:
+        return
+    try:
+        from tinyassets.storage import review_queue as rq
+
+        rq.release_merge_claim(
+            universe_dir,
+            item_id=item_id,
+            restore_status=gate_info["merge_claim_prior_status"],
+        )
+    except Exception:  # noqa: BLE001 — release is best-effort cleanup
+        pass
 
 
 def run_github_merge_effector(
@@ -531,6 +609,8 @@ def run_github_merge_effector(
         body=merge_body,
     )
     if err is not None:
+        # PUT failed — release the merge claim so the item is decidable again.
+        _release_merge_claim_if_held(universe_dir, gate_info)
         return _error(
             _merge_error_kind(err),
             f"GitHub merge refused: {err.get('detail')}",
@@ -541,6 +621,7 @@ def run_github_merge_effector(
             matched_output_key=matched_key,
         )
     if not isinstance(merge_obj, dict) or merge_obj.get("merged") is not True:
+        _release_merge_claim_if_held(universe_dir, gate_info)
         return _error(
             "github_merge_blocked",
             f"GitHub merge response did not confirm merged=true: {merge_obj!r}",
@@ -574,12 +655,18 @@ def run_github_merge_effector(
         try:
             from tinyassets.storage import review_queue as rq
 
-            rq.mark_merged(
+            marked = rq.mark_merged(
                 universe_dir,
                 item_id=review_item_id,
                 merge_commit_sha=merge_commit_sha,
             )
-            result["review_queue_status"] = "merged"
+            # mark_merged requires the FROM-merging transition. None means the
+            # claim was cleared out from under us (e.g. a stale-timeout reclaim)
+            # — the merge landed on GitHub but the queue reflects an owner
+            # decision. Surface the conflict rather than overwriting it.
+            result["review_queue_status"] = (
+                "merged" if marked is not None else "mark_merged_conflict"
+            )
         except Exception as exc:  # noqa: BLE001 — never fail a landed merge
             result["review_queue_status"] = "mark_merged_failed"
             result["review_queue_error"] = str(exc)

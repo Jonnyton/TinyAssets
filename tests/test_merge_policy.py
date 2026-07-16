@@ -141,3 +141,38 @@ def test_founder_oauth_required_blocks_without_fresh_approval():
     )
     assert ok["eligible"] is True
     assert ok["founder_oauth_required"] is True
+
+
+# ── Timer delay validation (Codex R5 REQUIRED 2) ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "bad_delay",
+    [-1.0, -3600.0, float("nan"), float("inf"), float("-inf")],
+)
+def test_timer_invalid_delay_fails_closed(bad_delay):
+    """A negative / NaN / inf delay must NOT read as eligible-now — the pure
+    evaluator fails closed with timer_delay_invalid (defense-in-depth behind the
+    effector-boundary validation)."""
+    decision = mp.evaluate_merge_eligibility(
+        policy="timer",
+        verify_verdict="pass",
+        item_status="pending",
+        created_at=0.0,
+        now=1_000_000.0,
+        timer_delay_s=bad_delay,
+    )
+    assert decision["eligible"] is False
+    assert decision["reason"] == "timer_delay_invalid"
+
+
+def test_timer_zero_delay_is_eligible_immediately():
+    decision = mp.evaluate_merge_eligibility(
+        policy="timer",
+        verify_verdict="pass",
+        item_status="pending",
+        created_at=0.0,
+        now=1.0,
+        timer_delay_s=0.0,
+    )
+    assert decision["eligible"] is True

@@ -57,6 +57,7 @@ That is the concrete difference from a standing consent grant.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -65,9 +66,18 @@ from typing import Any, Iterator
 
 _DB_FILENAME = ".review_queue.db"
 
-#: Terminal + in-flight statuses a queue item may hold.
+#: Per-process schema-init cache. Running ``executescript`` on every hot-path
+#: call caused DDL write-lock contention under concurrency ("database is
+#: locked"); the schema is idempotent, so initialize it once per db path and
+#: skip it thereafter (Codex R5 CRITICAL 2 concurrency-stress hardening).
+_INIT_LOCK = threading.Lock()
+_INITIALIZED: set[str] = set()
+
+#: Statuses a queue item may hold. ``merging`` is the in-flight claim state a
+#: merge effector CASes an eligible item into before it touches GitHub, so an
+#: owner decision cannot race the merge PUT (Codex R5 CRITICAL 1).
 VALID_STATUSES: frozenset[str] = frozenset(
-    {"pending", "approved", "reshaped", "rejected", "merged"}
+    {"pending", "approved", "merging", "reshaped", "rejected", "merged"}
 )
 
 #: Statuses from which an owner decision (approve/reshape/reject) is INVALID.
@@ -76,9 +86,21 @@ VALID_STATUSES: frozenset[str] = frozenset(
 #: which re-pends it. This blocks the "reject then resurrect via approve" bug.
 _TERMINAL_STATUSES: frozenset[str] = frozenset({"reshaped", "rejected", "merged"})
 
+#: A ``merging`` claim older than this (seconds) is considered stuck — the
+#: effector that held it must have crashed between claim and merge/release. An
+#: owner decision may then reclaim it; a fresh claim is treated as in-progress
+#: and blocks owner decisions. Keep it short: a merge PUT is a few seconds, so a
+#: few minutes is comfortably past any healthy run.
+_MERGE_CLAIM_TIMEOUT_S = 300.0
+
 
 class InvalidReviewTransition(ValueError):
     """Raised when an owner decision is attempted from a terminal status."""
+
+
+class MergeInProgress(ValueError):
+    """Raised when an owner decision is attempted on an item with a fresh
+    (non-stale) ``merging`` claim — a merge PUT is in flight for it."""
 
 #: Verify verdicts. Only ``"pass"`` is green; everything else blocks merge.
 VERIFY_PASS = "pass"
@@ -158,6 +180,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     merge_commit_sha TEXT NOT NULL DEFAULT '',
     created_at     REAL NOT NULL,
     head_queued_at REAL NOT NULL DEFAULT 0,
+    merge_claimed_at REAL,
     updated_at     REAL NOT NULL,
     decided_by     TEXT NOT NULL DEFAULT '',
     decided_at     REAL
@@ -189,11 +212,21 @@ CREATE INDEX IF NOT EXISTS idx_merge_approvals_fresh
 
 
 def initialize_review_queue_db(universe_dir: str | Path) -> Path:
-    """Ensure the review-queue DB exists and is migrated. Returns the DB path."""
+    """Ensure the review-queue DB exists and is migrated. Returns the DB path.
+
+    Idempotent + cached: the schema DDL runs at most once per db path per
+    process (serialized by ``_INIT_LOCK``), so the hot path — every enqueue /
+    decide — does NOT run ``executescript`` and contend for the write lock under
+    concurrency. The ``path.exists()`` recheck re-initializes if the file was
+    removed out from under us (e.g. a test that deletes the db)."""
     path = review_queue_db_path(universe_dir)
-    with _connect(universe_dir) as conn:
-        conn.executescript(_SCHEMA)
-        conn.commit()
+    key = str(path)
+    if key in _INITIALIZED and path.exists():
+        return path
+    with _INIT_LOCK:
+        with _connect(universe_dir) as conn:
+            conn.executescript(_SCHEMA)
+        _INITIALIZED.add(key)
     return path
 
 
@@ -211,6 +244,7 @@ def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
         "merge_commit_sha": row["merge_commit_sha"],
         "created_at": row["created_at"],
         "head_queued_at": row["head_queued_at"],
+        "merge_claimed_at": row["merge_claimed_at"],
         "updated_at": row["updated_at"],
         "decided_by": row["decided_by"],
         "decided_at": row["decided_at"],
@@ -278,9 +312,13 @@ def enqueue_pr(
                 # A same-head re-present of a TERMINAL row must NOT reopen it —
                 # the owner already decided this exact head, and silently
                 # re-pending would launder a rejection away (Codex R3 CRITICAL
-                # 1). Only a CHANGED head is new work that re-pends. Non-terminal
-                # same-head re-presents refresh to pending as before.
-                if not head_changed and existing["status"] in _TERMINAL_STATUSES:
+                # 1). A same-head ``merging`` row is an in-flight merge and must
+                # likewise be left untouched (Codex R5). Only a CHANGED head is
+                # new work that re-pends. Non-terminal same-head re-presents
+                # refresh to pending as before.
+                if not head_changed and existing["status"] in (
+                    _TERMINAL_STATUSES | {"merging"}
+                ):
                     already_decided = True
                 else:
                     # Reset the timer clock only when the head actually changed;
@@ -391,7 +429,10 @@ def _decide_txn(
     Returns the updated item dict, ``None`` if the item does not exist, or raises
     ``InvalidReviewTransition`` when the item is terminal (rolling back the
     surrounding transaction, so no approval insert / approval invalidation from
-    the same unit survives).
+    the same unit survives). Raises ``MergeInProgress`` when the item carries a
+    FRESH ``merging`` claim — a merge PUT is in flight, so an owner decision must
+    wait; a STALE claim (crashed effector) is reclaimable and the decision
+    proceeds, clearing the claim (Codex R5 CRITICAL 1).
     """
     row = conn.execute(
         "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
@@ -404,6 +445,16 @@ def _decide_txn(
             f"{row['status']!r}; re-present the PR (fresh enqueue / new head) "
             "to re-open it for review"
         )
+    if row["status"] == "merging":
+        claimed_at = row["merge_claimed_at"]
+        if claimed_at is not None and (ts - claimed_at) < _MERGE_CLAIM_TIMEOUT_S:
+            raise MergeInProgress(
+                f"cannot {new_status} review item {item_id!r}: a merge is in "
+                f"progress (claimed {ts - claimed_at:.0f}s ago); retry after it "
+                "completes or the claim times out"
+            )
+        # Stale claim → the effector holding it crashed; the owner may reclaim
+        # the item. The decision below clears merge_claimed_at.
     if invalidate_approvals:
         conn.execute(
             "UPDATE merge_approvals SET consumed_at = ? "
@@ -414,7 +465,7 @@ def _decide_txn(
         f"""
         UPDATE review_queue
            SET status = ?, notes = ?, decided_by = ?,
-               decided_at = ?, updated_at = ?
+               decided_at = ?, updated_at = ?, merge_claimed_at = NULL
          WHERE item_id = ? AND status NOT IN {_TERMINAL_SQL}
         """,
         (new_status, notes, decided_by, ts, ts, item_id),
@@ -570,6 +621,109 @@ def reject_item(
             )
 
 
+def claim_for_merge(
+    universe_dir: str | Path,
+    *,
+    item_id: str,
+    expected_head_sha: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Atomically CLAIM an eligible item for merge, flipping it to ``merging``.
+
+    A merge effector must call this in ONE ``BEGIN IMMEDIATE`` transaction
+    BEFORE it fires the GitHub merge PUT, so a concurrent owner reject/reshape
+    cannot land during the merge and be overwritten by the post-success
+    ``mark_merged`` (Codex R5 CRITICAL 1). The claim is a compare-and-set:
+
+    * the item must still exist, its ``head_sha`` must equal
+      ``expected_head_sha`` (the head the effector verified against GitHub), and
+      its status must be claimable — NOT terminal, and NOT already ``merging``
+      UNLESS that claim is stale (``_MERGE_CLAIM_TIMEOUT_S``);
+    * on success it flips to ``merging`` + stamps ``merge_claimed_at`` and
+      returns ``{"claimed": True, "prior_status": <status>, "item": <row>}``;
+    * on failure it returns ``{"claimed": False, "reason": <why>,
+      "current_status": <status|None>}`` and the effector must NOT merge.
+
+    Only a successfully-claimed item may proceed to the PUT. On PUT success the
+    effector calls :func:`mark_merged` (merging→merged); on PUT failure it calls
+    :func:`release_merge_claim` to restore the prior status.
+    """
+    initialize_review_queue_db(universe_dir)
+    ts = now if now is not None else time.time()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            row = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                return {"claimed": False, "reason": "not_found",
+                        "current_status": None}
+            status = row["status"]
+            if (row["head_sha"] or "") != (expected_head_sha or ""):
+                return {"claimed": False, "reason": "head_changed",
+                        "current_status": status}
+            if status in _TERMINAL_STATUSES:
+                return {"claimed": False, "reason": "already_decided",
+                        "current_status": status}
+            if status == "merging":
+                claimed_at = row["merge_claimed_at"]
+                fresh = (
+                    claimed_at is not None
+                    and (ts - claimed_at) < _MERGE_CLAIM_TIMEOUT_S
+                )
+                if fresh:
+                    return {"claimed": False, "reason": "merge_in_progress",
+                            "current_status": status}
+                # else: stale claim — reclaimable (fall through to CAS below).
+            # CAS: flip an eligible (non-terminal) row to merging. Excludes only
+            # terminal statuses so a stale `merging` row can be reclaimed.
+            cur = conn.execute(
+                f"""
+                UPDATE review_queue
+                   SET status = 'merging', merge_claimed_at = ?, updated_at = ?
+                 WHERE item_id = ? AND status NOT IN {_TERMINAL_SQL}
+                """,
+                (ts, ts, item_id),
+            )
+            if cur.rowcount != 1:
+                return {"claimed": False, "reason": "claim_lost",
+                        "current_status": status}
+            updated = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
+    return {
+        "claimed": True,
+        "prior_status": status,
+        "item": _row_to_item(updated),
+    }
+
+
+def release_merge_claim(
+    universe_dir: str | Path,
+    *,
+    item_id: str,
+    restore_status: str,
+    now: float | None = None,
+) -> bool:
+    """Release a ``merging`` claim back to ``restore_status`` (its prior state)
+    after a failed merge PUT. Conditional on the row still being ``merging`` so
+    it never clobbers an owner decision that reclaimed a stale claim. Returns
+    True when a row was released."""
+    initialize_review_queue_db(universe_dir)
+    ts = now if now is not None else time.time()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                """
+                UPDATE review_queue
+                   SET status = ?, merge_claimed_at = NULL, updated_at = ?
+                 WHERE item_id = ? AND status = 'merging'
+                """,
+                (restore_status, ts, item_id),
+            )
+            return cur.rowcount == 1
+
+
 def mark_merged(
     universe_dir: str | Path,
     *,
@@ -577,15 +731,17 @@ def mark_merged(
     merge_commit_sha: str = "",
     now: float | None = None,
 ) -> dict[str, Any] | None:
-    """Transition a queued item to terminal ``merged`` after the effector
-    confirms the GitHub merge. Records the merge commit SHA and consumes any
-    outstanding approval so the owner surface stops showing the PR as
-    pending/approved (Codex REQUIRED 4).
+    """Transition a CLAIMED (``merging``) item to terminal ``merged`` after the
+    effector confirms the GitHub merge. Records the merge commit SHA and
+    consumes any outstanding approval so the owner surface stops showing the PR
+    as pending/approved (Codex REQUIRED 4).
 
-    Returns the updated item, or None if the item does not exist. Idempotent:
-    marking an already-merged item is a no-op that returns the current row.
-    The read is INSIDE the ``BEGIN IMMEDIATE`` transaction (Codex R4 audit) so
-    the merged-check and write cannot interleave with a competing decision.
+    The transition is REQUIRED to be FROM ``merging`` (conditional UPDATE), so a
+    reject/reshape that somehow cleared the claim (stale-timeout reclaim) can
+    NEVER be overwritten to merged (Codex R5 CRITICAL 1). Returns the updated
+    item; ``None`` if the item is missing OR is not in ``merging`` (a conflict
+    the effector surfaces). Idempotent: an already-``merged`` item returns its
+    current row.
     """
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
@@ -598,6 +754,11 @@ def mark_merged(
                 return None
             if row["status"] == "merged":
                 return _row_to_item(row)  # idempotent no-op
+            if row["status"] != "merging":
+                # Not claimed for merge (e.g. a reject reclaimed a stale claim).
+                # Refuse to overwrite — the merge landed on GitHub but the queue
+                # reflects the owner decision; the effector surfaces the conflict.
+                return None
             conn.execute(
                 "UPDATE merge_approvals SET consumed_at = ? "
                 "WHERE item_id = ? AND consumed_at IS NULL",
@@ -606,8 +767,9 @@ def mark_merged(
             conn.execute(
                 """
                 UPDATE review_queue
-                   SET status = 'merged', merge_commit_sha = ?, updated_at = ?
-                 WHERE item_id = ?
+                   SET status = 'merged', merge_commit_sha = ?,
+                       merge_claimed_at = NULL, updated_at = ?
+                 WHERE item_id = ? AND status = 'merging'
                 """,
                 (merge_commit_sha or "", ts, item_id),
             )
@@ -703,12 +865,15 @@ __all__ = [
     "VERIFY_FAIL",
     "VERIFY_UNKNOWN",
     "InvalidReviewTransition",
+    "MergeInProgress",
     "enqueue_pr",
     "get_item",
     "list_queue",
     "approve_item",
     "reshape_item",
     "reject_item",
+    "claim_for_merge",
+    "release_merge_claim",
     "mark_merged",
     "has_fresh_merge_approval",
     "consume_merge_approval",
