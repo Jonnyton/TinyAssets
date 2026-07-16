@@ -363,51 +363,73 @@ def list_queue(
     return [_row_to_item(row) for row in rows]
 
 
-def _ensure_decidable(item: dict[str, Any], *, verb: str) -> None:
-    """Fail loud (hard rule 8) if an owner decision is attempted on a terminal
-    item. Prevents resurrecting a rejected/reshaped/merged PR via a later
-    approve/reshape/reject (Codex REQUIRED 3)."""
-    status = item.get("status", "")
-    if status in _TERMINAL_STATUSES:
-        raise InvalidReviewTransition(
-            f"cannot {verb} review item {item.get('item_id')!r} in terminal "
-            f"status {status!r}; re-present the PR (fresh enqueue / new head) "
-            "to re-open it for review"
-        )
+# Terminal statuses as a SQL literal tuple, for the conditional UPDATE guard.
+_TERMINAL_SQL = "('reshaped', 'rejected', 'merged')"
 
 
-def _decide(
-    universe_dir: str | Path,
+def _decide_txn(
+    conn: sqlite3.Connection,
     *,
     item_id: str,
     new_status: str,
     decided_by: str,
     notes: str,
-    now: float | None,
+    ts: float,
+    invalidate_approvals: bool,
 ) -> dict[str, Any] | None:
-    """Transition an item's status + stamp the decider. Returns the updated
-    item, or None if the item does not exist."""
-    initialize_review_queue_db(universe_dir)
-    ts = now if now is not None else time.time()
-    with _connect(universe_dir) as conn:
-        with _write(conn):
-            row = conn.execute(
-                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
-            ).fetchone()
-            if row is None:
-                return None
-            conn.execute(
-                """
-                UPDATE review_queue
-                   SET status = ?, notes = ?, decided_by = ?,
-                       decided_at = ?, updated_at = ?
-                 WHERE item_id = ?
-                """,
-                (new_status, notes, decided_by, ts, ts, item_id),
-            )
-            updated = conn.execute(
-                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
-            ).fetchone()
+    """Perform an owner decision ATOMICALLY inside an already-open ``_write``
+    (``BEGIN IMMEDIATE``) transaction.
+
+    Because ``BEGIN IMMEDIATE`` takes the write lock before this read, the read
+    is stable against a competing decision on another connection — closing the
+    TOCTOU where the terminal-status check happened outside the write
+    transaction and a stale decision could resurrect a rejected item (Codex R4
+    CRITICAL). Belt-and-braces: the check is enforced BOTH by the in-transaction
+    read AND by a conditional ``UPDATE ... WHERE status NOT IN (terminal)`` whose
+    ``rowcount`` must be 1 — either alone would suffice; both is cheap insurance.
+
+    Returns the updated item dict, ``None`` if the item does not exist, or raises
+    ``InvalidReviewTransition`` when the item is terminal (rolling back the
+    surrounding transaction, so no approval insert / approval invalidation from
+    the same unit survives).
+    """
+    row = conn.execute(
+        "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["status"] in _TERMINAL_STATUSES:
+        raise InvalidReviewTransition(
+            f"cannot {new_status} review item {item_id!r} in terminal status "
+            f"{row['status']!r}; re-present the PR (fresh enqueue / new head) "
+            "to re-open it for review"
+        )
+    if invalidate_approvals:
+        conn.execute(
+            "UPDATE merge_approvals SET consumed_at = ? "
+            "WHERE item_id = ? AND consumed_at IS NULL",
+            (ts, item_id),
+        )
+    cur = conn.execute(
+        f"""
+        UPDATE review_queue
+           SET status = ?, notes = ?, decided_by = ?,
+               decided_at = ?, updated_at = ?
+         WHERE item_id = ? AND status NOT IN {_TERMINAL_SQL}
+        """,
+        (new_status, notes, decided_by, ts, ts, item_id),
+    )
+    if cur.rowcount != 1:
+        # Lost the race: another writer moved the item terminal between our read
+        # and update (should be impossible under BEGIN IMMEDIATE, but the
+        # conditional UPDATE makes it fail closed rather than silently resurrect).
+        raise InvalidReviewTransition(
+            f"cannot {new_status} review item {item_id!r}: it was decided "
+            "concurrently; re-present the PR (new head) to re-open it"
+        )
+    updated = conn.execute(
+        "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+    ).fetchone()
     return _row_to_item(updated)
 
 
@@ -433,14 +455,26 @@ def approve_item(
     """
     if not approved_by:
         raise ValueError("approve_item requires non-empty approved_by")
-    item = get_item(universe_dir, item_id=item_id)
-    if item is None:
-        return None
-    _ensure_decidable(item, verb="approve")
+    initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
     approval_id = f"ap-{uuid.uuid4().hex[:16]}"
     with _connect(universe_dir) as conn:
         with _write(conn):
+            # Atomic: terminal-check + status update + approval mint are ONE
+            # transaction. If the item is terminal (e.g. a reject that landed
+            # first), _decide_txn raises and the whole unit rolls back — no
+            # approval is minted (Codex R4 CRITICAL).
+            updated = _decide_txn(
+                conn,
+                item_id=item_id,
+                new_status="approved",
+                decided_by=approved_by,
+                notes=notes,
+                ts=ts,
+                invalidate_approvals=False,
+            )
+            if updated is None:
+                return None
             conn.execute(
                 """
                 INSERT INTO merge_approvals (
@@ -449,20 +483,11 @@ def approve_item(
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
-                    approval_id, item_id, item["destination"], item["pr_number"],
-                    item["head_sha"], approved_by, ts,
+                    approval_id, item_id, updated["destination"],
+                    updated["pr_number"], updated["head_sha"], approved_by, ts,
                 ),
             )
-    updated = _decide(
-        universe_dir,
-        item_id=item_id,
-        new_status="approved",
-        decided_by=approved_by,
-        notes=notes,
-        now=ts,
-    )
-    if updated is not None:
-        updated["approval_id"] = approval_id
+    updated["approval_id"] = approval_id
     return updated
 
 
@@ -491,36 +516,28 @@ def reshape_item(
             "reshape_item requires non-empty notes — a reshape must tell the "
             "loop what to change"
         )
-    item = get_item(universe_dir, item_id=item_id)
-    if item is None:
-        return None
-    _ensure_decidable(item, verb="reshape")
+    initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
-    # Invalidate any outstanding approvals — the head we approved is being sent
-    # back for rework, so no stale token may merge it.
+    # Terminal-check + approval invalidation + status update in ONE transaction.
     with _connect(universe_dir) as conn:
         with _write(conn):
-            conn.execute(
-                "UPDATE merge_approvals SET consumed_at = ? "
-                "WHERE item_id = ? AND consumed_at IS NULL",
-                (ts, item_id),
+            updated = _decide_txn(
+                conn,
+                item_id=item_id,
+                new_status="reshaped",
+                decided_by=reshaped_by,
+                notes=notes,
+                ts=ts,
+                invalidate_approvals=True,
             )
-    updated = _decide(
-        universe_dir,
-        item_id=item_id,
-        new_status="reshaped",
-        decided_by=reshaped_by,
-        notes=notes,
-        now=ts,
-    )
     if updated is None:
         return None
     updated["route_back"] = {
         "target_node": "draft_patch",
         "item_id": item_id,
-        "destination": item["destination"],
-        "pr_number": item["pr_number"],
-        "request_ref": item["request_ref"],
+        "destination": updated["destination"],
+        "pr_number": updated["pr_number"],
+        "request_ref": updated["request_ref"],
         "owner_notes": notes,
     }
     return updated
@@ -538,26 +555,19 @@ def reject_item(
     rejected_by = (rejected_by or "").strip()
     if not rejected_by:
         raise ValueError("reject_item requires non-empty rejected_by")
-    item = get_item(universe_dir, item_id=item_id)
-    if item is None:
-        return None
-    _ensure_decidable(item, verb="reject")
+    initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
         with _write(conn):
-            conn.execute(
-                "UPDATE merge_approvals SET consumed_at = ? "
-                "WHERE item_id = ? AND consumed_at IS NULL",
-                (ts, item_id),
+            return _decide_txn(
+                conn,
+                item_id=item_id,
+                new_status="rejected",
+                decided_by=rejected_by,
+                notes=notes,
+                ts=ts,
+                invalidate_approvals=True,
             )
-    return _decide(
-        universe_dir,
-        item_id=item_id,
-        new_status="rejected",
-        decided_by=rejected_by,
-        notes=notes,
-        now=ts,
-    )
 
 
 def mark_merged(
@@ -574,15 +584,20 @@ def mark_merged(
 
     Returns the updated item, or None if the item does not exist. Idempotent:
     marking an already-merged item is a no-op that returns the current row.
+    The read is INSIDE the ``BEGIN IMMEDIATE`` transaction (Codex R4 audit) so
+    the merged-check and write cannot interleave with a competing decision.
     """
-    item = get_item(universe_dir, item_id=item_id)
-    if item is None:
-        return None
-    if item["status"] == "merged":
-        return item
+    initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
         with _write(conn):
+            row = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            if row["status"] == "merged":
+                return _row_to_item(row)  # idempotent no-op
             conn.execute(
                 "UPDATE merge_approvals SET consumed_at = ? "
                 "WHERE item_id = ? AND consumed_at IS NULL",
@@ -668,10 +683,15 @@ def consume_merge_approval(
             if row is None:
                 return None
             approval_id = row["approval_id"]
-            conn.execute(
-                "UPDATE merge_approvals SET consumed_at = ? WHERE approval_id = ?",
+            # Belt-and-braces: the `consumed_at IS NULL` guard makes the claim
+            # idempotent even if two consumers somehow reached the same token.
+            cur = conn.execute(
+                "UPDATE merge_approvals SET consumed_at = ? "
+                "WHERE approval_id = ? AND consumed_at IS NULL",
                 (ts, approval_id),
             )
+            if cur.rowcount != 1:
+                return None
     return approval_id
 
 

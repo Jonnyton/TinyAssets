@@ -245,6 +245,11 @@ def test_reject_then_approve_is_blocked(tmp_path):
         rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
     # Status is unchanged — the rejected item was NOT resurrected.
     assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "rejected"
+    # Codex R4: the blocked approve minted NO fresh approval — the approval
+    # insert is atomic with the terminal check and rolled back.
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD
+    )
 
 
 def test_reshaped_then_approve_is_blocked(tmp_path):
@@ -423,3 +428,68 @@ def test_concurrent_enqueue_yields_single_row(tmp_path):
         if p.exists():
             p.unlink()
     assert not db_path.exists()
+
+
+# ── R4 (round 4): decide is atomic — no TOCTOU resurrection ──────────────────
+
+
+def test_concurrent_approve_vs_reject_never_resurrects(tmp_path):
+    """Codex R4 CRITICAL: a stale approve must not resurrect a reject.
+
+    Two threads race approve vs reject on a fresh pending item, synchronized by
+    a barrier so their decide paths overlap. With the atomic in-transaction
+    check + conditional UPDATE, the invariant holds for BOTH lock orderings:
+
+    * reject-first: item → rejected; the approve reads rejected inside its own
+      BEGIN IMMEDIATE txn and raises InvalidReviewTransition (mints no approval);
+    * approve-first: item → approved (+approval); the reject then validly moves
+      approved → rejected AND invalidates the approval.
+
+    So after the race the item is ALWAYS rejected with NO fresh approval — a
+    stale approve can never leave the item approved-with-a-live-token. On the
+    pre-fix code (check outside the write txn, unconditional UPDATE) the
+    interleaving could end approved+approval; here it never does.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    for i in range(12):
+        pr = 6000 + i
+        item = rq.enqueue_pr(
+            tmp_path, destination=_DEST, pr_number=pr,
+            pr_url=f"https://github.com/{_DEST}/pull/{pr}",
+            head_sha=_HEAD, verify_verdict=rq.VERIFY_PASS,
+        )
+        item_id = item["item_id"]
+        barrier = threading.Barrier(2)
+        raised: list[Exception] = []
+
+        def do_approve() -> None:
+            barrier.wait()
+            try:
+                rq.approve_item(tmp_path, item_id=item_id, approved_by="owner")
+            except rq.InvalidReviewTransition as exc:
+                raised.append(exc)
+
+        def do_reject() -> None:
+            barrier.wait()
+            try:
+                rq.reject_item(tmp_path, item_id=item_id, rejected_by="owner")
+            except rq.InvalidReviewTransition as exc:
+                raised.append(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_a = pool.submit(do_approve)
+            f_r = pool.submit(do_reject)
+            f_a.result()
+            f_r.result()
+
+        final = rq.get_item(tmp_path, item_id=item_id)
+        assert final["status"] == "rejected", f"iter {i}: {final['status']}"
+        assert not rq.has_fresh_merge_approval(
+            tmp_path, destination=_DEST, pr_number=pr, head_sha=_HEAD
+        ), f"iter {i}: a stale approval leaked past a reject"
+        # Only InvalidReviewTransition may surface (never OperationalError), and
+        # at most one thread loses the race.
+        assert all(isinstance(e, rq.InvalidReviewTransition) for e in raised)
+        assert len(raised) <= 1
