@@ -1009,10 +1009,15 @@ def _build_prompt_template_node(
             def _repo_capability_fail_closed(
                 state: dict[str, Any],
             ) -> dict[str, Any]:
-                raise _RepoSUE(
+                exc = _RepoSUE(
                     f"Node '{_nid}' has {_cap} (repo-touching) capability and "
                     f"cannot run: {_runner_reason}"
                 )
+                # Codex r10 #2: a sandbox refusal is a terminal node failure —
+                # emit the same failed event every other failure gets so the run
+                # record names the refusing node + reason.
+                _emit_failed_event(event_sink, _nid, exc)
+                raise exc
 
             # Deterministic fail-closed node fn — never builds/uses any provider.
             return _repo_capability_fail_closed
@@ -1041,10 +1046,13 @@ def _build_prompt_template_node(
         def _config_build_fail_closed(
             state: dict[str, Any],
         ) -> dict[str, Any]:
-            raise _CfgSUE(
+            exc = _CfgSUE(
                 f"Node '{_cfg_nid}': its hardened ModelConfig could not be built "
                 f"({_cfg_exc_msg}); refusing to run it unrestricted (fail closed)."
             )
+            # Codex r10 #2: terminal sandbox refusal → emit failed event.
+            _emit_failed_event(event_sink, _cfg_nid, exc)
+            raise exc
 
         return _config_build_fail_closed
     # Only pass config to the injected provider bridge when its signature
@@ -1289,7 +1297,11 @@ def _build_prompt_template_node(
                         )
                 except NodeTimeoutError:
                     raise
-                except _SandboxUnavailableError:
+                except _SandboxUnavailableError as exc:
+                    # Sandbox refusals are terminal node failures too (Codex r10
+                    # #2): emit the same failed event every other failure gets so
+                    # the run record names the refusing node + reason.
+                    _emit_failed_event(event_sink, node.node_id, exc)
                     raise
                 except Exception as exc:
                     logger.exception("Policy provider call failed in %s", node.node_id)
@@ -1304,7 +1316,9 @@ def _build_prompt_template_node(
                     )
                 except NodeTimeoutError:
                     raise
-                except _SandboxUnavailableError:
+                except _SandboxUnavailableError as exc:
+                    # Sandbox refusals are terminal node failures too (Codex r10 #2).
+                    _emit_failed_event(event_sink, node.node_id, exc)
                     raise
                 except Exception as exc:
                     logger.exception("Provider call failed in %s", node.node_id)
@@ -2687,10 +2701,15 @@ def _build_node(
             def _repo_capability_fail_closed_node(
                 state: dict[str, Any],
             ) -> dict[str, Any]:
-                raise _NodeSUE(
+                exc = _NodeSUE(
                     f"Node '{_cap_nid}' has {_cap_kind} (repo-touching) capability "
                     f"and cannot run: {_runner_reason}"
                 )
+                # Codex r10 #2: a sandbox refusal is a terminal node failure —
+                # emit the same failed event every other failure gets so a failed
+                # run records the refusing node + reason (not a silent raise).
+                _emit_failed_event(event_sink, _cap_nid, exc)
+                raise exc
 
             # Deterministic fail-closed — before ANY adapter / provider dispatch.
             return _repo_capability_fail_closed_node

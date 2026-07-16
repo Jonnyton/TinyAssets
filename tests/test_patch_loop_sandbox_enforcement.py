@@ -1,18 +1,32 @@
-"""Patch-loop S3 — coding-node sandbox enforcement (the build-blocking gate).
+"""Patch-loop S3a — coding-node sandbox ENFORCEMENT (fail-closed, Phase 1).
 
 The patch loop is a *user branch*: an arbitrary user remixes it, binds their own
 repo, and runs it in OUR cloud. Its ``draft_patch`` node drives a coding agent
-(``claude -p`` / ``codex exec``) that writes a patch against that repo — a code
-execution surface a malicious remix could abuse. These tests prove:
+(``claude -p`` / ``codex exec``) that would write a patch against that repo — a
+code-execution surface a malicious remix could abuse.
 
-  (1) a ``requires_sandbox`` node's coding-agent call runs with the hardened,
-      OS-sandboxed posture (repo-confined tool policy: host connectors + mcp__*
-      + Monitor denied, coding tools kept, os_sandbox_required set);
-  (2) the ``draft_patch`` node class requires the sandbox BY DEFAULT — a remix
-      cannot drop the flag to escape confinement;
-  (3) a required-but-unavailable sandbox FAILS CLOSED at every layer (node
-      runtime, both subprocess providers, and the router) — codex NEVER uses
-      ``--dangerously-bypass-approvals-and-sandbox`` for such a node; and
+S3a is ENFORCEMENT-ONLY. There is NO per-job sandbox runner subsystem in this
+deployment (prepared per-job checkout + tenant isolation + scoped credentials +
+egress/resource limits) — that runner is a host-approved *Phase-2* slice, NOT
+built here (see
+``docs/exec-plans/active/2026-07-16-patch-loop-phase2-sandbox-runner.md``). So
+this slice does NOT run coding nodes under a hardened policy; it proves they
+cannot run at all until the runner lands. These tests prove:
+
+  (1) a repo-touching node (coding / repo_exec / repo_read — classified by the
+      STABLE ``node_kind``, with node_id backstops) FAILS CLOSED deterministically
+      at the graph choke point in ``_build_node``, before any ModelConfig /
+      provider / scratch / env code runs; ``coding_nodes_runnable()`` is a
+      hard-coded ``False`` that validate, get_status, the enqueue refusal, and the
+      runtime all read, so readiness never drifts from runtime;
+  (2) the ``draft_patch`` node class is repo-touching BY DEFAULT — a remix that
+      renames the node still carries its ``node_kind`` and cannot escape the
+      refusal;
+  (3) the refusal holds at EVERY layer (node runtime, both subprocess providers,
+      and the router) — codex NEVER uses
+      ``--dangerously-bypass-approvals-and-sandbox`` and claude never runs with an
+      open tool surface for such a node; the only node that RUNS is a plain TEXT
+      node under a CLOSED tool surface (claude ``--tools ""``); and
   (4) the existing universe-intelligence isolation is UNCHANGED (not weakened,
       and it must NOT become os_sandbox_required — WebFetch-only is safe
       unsandboxed, so it must keep running on bwrap-less hosts).

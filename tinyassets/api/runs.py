@@ -586,6 +586,39 @@ def _bind_universe_context(provider_call: Any, universe_id: str) -> Any:
     return _functools.partial(provider_call, universe_context=uctx)
 
 
+def _sandbox_enqueue_refusal(branch: Any) -> str | None:
+    """Refuse a known-unrunnable branch at QUEUE TIME (Codex r10 #1).
+
+    Uses the SAME sandbox readiness check ``validate_branch`` uses
+    (:func:`tinyassets.sandbox_policy.branch_sandbox_status`). A branch with a
+    repo-touching node (coding / repo_exec / repo_read) and no per-job sandbox
+    runner would otherwise be queued and then fail per-node at the graph choke
+    point. Refusing synchronously returns an actionable structured error instead
+    of a doomed ``run_id``. Fails closed — classification errors block the run.
+    Returns a JSON refusal string, or ``None`` when the branch is runnable.
+
+    Applied to EVERY enqueue entry point (run_branch, resume_run,
+    run_branch_version) so no path can queue a branch that validate would refuse.
+    """
+    from tinyassets.sandbox_policy import branch_sandbox_status
+
+    sandbox_blocked, repo_nodes, sandbox_warnings = branch_sandbox_status(
+        getattr(branch, "node_defs", []) or []
+    )
+    if not sandbox_blocked:
+        return None
+    return json.dumps({
+        "error": (
+            "Branch cannot run: it has repo-touching node(s) that require the "
+            "per-job sandbox runner subsystem, which is not available in this "
+            "deployment. Refused at queue time (no run was started)."
+        ),
+        "sandbox_blocked": True,
+        "repo_touching_nodes": repo_nodes,
+        "sandbox_warnings": sandbox_warnings,
+    })
+
+
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
 
@@ -632,6 +665,10 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             "error": "Branch is not valid. Fix these before running:",
             "validation_errors": errors,
         })
+
+    _sandbox_refusal = _sandbox_enqueue_refusal(branch)
+    if _sandbox_refusal is not None:
+        return _sandbox_refusal
 
     inputs_raw = kwargs.get("inputs_json", "").strip()
     inputs: dict[str, Any] = {}
@@ -1315,6 +1352,18 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
         _run_universe_id(_resume_record) if _resume_record is not None else "",
     )
 
+    # Codex r10 #1: refuse a sandbox-blocked branch at RESUME time too — a resumed
+    # run re-executes its repo-touching node(s), which fail closed with no per-job
+    # runner. Refuse synchronously rather than resume into a doomed run.
+    if _resume_record is not None:
+        _resume_bid = str(_resume_record.get("branch_def_id") or "").strip()
+        if _resume_bid:
+            _resume_branch = _branch_lookup(_resume_bid, 0)
+            if _resume_branch is not None:
+                _sandbox_refusal = _sandbox_enqueue_refusal(_resume_branch)
+                if _sandbox_refusal is not None:
+                    return _sandbox_refusal
+
     try:
         outcome = resume_run(
             _base_path(),
@@ -1795,6 +1844,22 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
                 ),
             })
         recursion_limit_override = _rl_val
+
+    # Codex r10 #1: refuse a sandbox-blocked version snapshot at QUEUE TIME too.
+    # Best-effort reconstruct from the immutable snapshot; if it can't be resolved
+    # here (not-found / schema drift), defer to the executor's canonical error
+    # handling below rather than masking it.
+    try:
+        from tinyassets.branch_versions import get_branch_version
+        _bv = get_branch_version(_base_path(), branch_version_id=bvid)
+        if _bv is not None:
+            from tinyassets.branches import BranchDefinition as _BranchDef
+            _version_branch = _BranchDef.from_dict(_bv.snapshot)
+            _sandbox_refusal = _sandbox_enqueue_refusal(_version_branch)
+            if _sandbox_refusal is not None:
+                return _sandbox_refusal
+    except Exception:  # noqa: BLE001 — reconstruct errors surface via executor
+        pass
 
     try:
         outcome = execute_branch_version_async(

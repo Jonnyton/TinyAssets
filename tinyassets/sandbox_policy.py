@@ -25,7 +25,10 @@ credentials + egress/resource limits) is a separate, host-approved slice.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # NOTE (Codex S3 r9 #4 — dead-stack removal): the coding tool policy
 # (CODING_NODE_ALLOWED_TOOLS / CODING_NODE_DISALLOWED_TOOLS) and the coding
@@ -145,6 +148,47 @@ def coding_nodes_runnable() -> "tuple[bool, str]":
     )
 
 
+def branch_sandbox_status(
+    node_defs: Iterable[Any],
+) -> "tuple[bool, list[str], list[str]]":
+    """Classify a branch's nodes for the per-job sandbox-runner gate.
+
+    Returns ``(sandbox_blocked, repo_node_ids, warnings)``. A repo-touching node
+    (coding / repo_exec / repo_read) with no per-job runner
+    (:func:`coding_nodes_runnable` == ``False``) blocks the branch. Classification
+    errors fail CLOSED (``sandbox_blocked=True``).
+
+    This is the SINGLE readiness computation shared by ``validate_branch`` AND the
+    ``run_branch`` / ``resume`` / version-pinned enqueue paths, so a queue-time
+    refusal can never drift from validate-time readiness or the runtime choke
+    point — all three read the same truth.
+    """
+    warnings: list[str] = []
+    try:
+        repo_nodes = sorted(
+            str(_node_attr(nd, "node_id") or "")
+            for nd in node_defs
+            if node_requires_sandbox_runner(nd)
+        )
+        repo_nodes = [nid for nid in repo_nodes if nid]
+        if repo_nodes:
+            runnable, reason = coding_nodes_runnable()
+            if not runnable:
+                warnings.append(
+                    f"This branch has {len(repo_nodes)} repo-touching node(s) "
+                    f"({', '.join(repo_nodes)}) that read/exec/write a repo. "
+                    f"{reason}"
+                )
+                return True, repo_nodes, warnings
+        return False, repo_nodes, warnings
+    except Exception as exc:  # noqa: BLE001 — any check error ⇒ fail closed
+        warnings.append(
+            f"Sandbox capability check failed ({type(exc).__name__}: {exc}); "
+            "treating the branch as NOT runnable (fail closed)."
+        )
+        return True, [], warnings
+
+
 def text_node_model_config(
     *, timeout: float | int, reasoning_effort: str = "",
 ) -> "Any":
@@ -177,5 +221,6 @@ __all__ = [
     "node_coding_capability",
     "node_requires_sandbox",
     "coding_nodes_runnable",
+    "branch_sandbox_status",
     "text_node_model_config",
 ]

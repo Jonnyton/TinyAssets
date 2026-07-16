@@ -903,32 +903,11 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     # (`coding_nodes_runnable`) the node runtime + get_status use, so readiness can
     # never drift from runtime — never "ready because claude is on PATH".
     # Classification errors fail CLOSED (never swallow into runnable=true).
-    sandbox_warnings: list[str] = []
-    sandbox_blocked = False
-    try:
-        from tinyassets.sandbox_policy import (
-            coding_nodes_runnable,
-            node_requires_sandbox_runner,
-        )
-        repo_nodes = sorted(
-            nd.node_id for nd in branch.node_defs
-            if node_requires_sandbox_runner(nd)
-        )
-        if repo_nodes:
-            runnable, reason = coding_nodes_runnable()
-            if not runnable:
-                sandbox_blocked = True
-                sandbox_warnings.append(
-                    f"This branch has {len(repo_nodes)} repo-touching node(s) "
-                    f"({', '.join(repo_nodes)}) that read/exec/write a repo. "
-                    f"{reason}"
-                )
-    except Exception as exc:  # noqa: BLE001 — any check error ⇒ fail closed
-        sandbox_blocked = True
-        sandbox_warnings.append(
-            f"Sandbox capability check failed ({type(exc).__name__}: {exc}); "
-            "treating the branch as NOT runnable (fail closed)."
-        )
+    from tinyassets.sandbox_policy import branch_sandbox_status
+
+    sandbox_blocked, _repo_nodes, sandbox_warnings = branch_sandbox_status(
+        branch.node_defs
+    )
 
     return json.dumps({
         "branch_def_id": bid,

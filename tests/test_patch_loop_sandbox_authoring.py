@@ -263,6 +263,46 @@ def test_validate_fails_closed_on_sandbox_check_exception(ext_env, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Codex r10 #1 — run_branch REFUSES a sandbox-blocked branch at QUEUE TIME
+# (synchronous structured refusal, no run_id) instead of queue-then-fail.
+# --------------------------------------------------------------------------- #
+
+
+def test_run_branch_refuses_coding_branch_at_queue_time(ext_env):
+    # The queue-time refusal reads the SAME readiness check validate uses
+    # (branch_sandbox_status). A coding branch is structurally valid but must be
+    # refused synchronously — no run_id, so nothing is ever enqueued.
+    from tinyassets.api.runs import _action_run_branch
+
+    _us, _base = ext_env
+    bid = _build(_us, node=_coding_node(), entry="draft_patch")
+
+    res = json.loads(_action_run_branch({"branch_def_id": bid}))
+    assert res.get("sandbox_blocked") is True, res
+    assert "run_id" not in res, res  # nothing queued
+    assert "draft_patch" in res.get("repo_touching_nodes", []), res
+    assert any("runner" in w for w in res.get("sandbox_warnings", [])), res
+
+
+def test_run_branch_repo_exec_and_repo_read_also_refused(ext_env):
+    # repo_exec (verify) + repo_read (investigate) are repo-touching too — the
+    # enqueue refusal covers the whole repo-touching set, not just coding.
+    from tinyassets.api.runs import _action_run_branch
+
+    _us, _base = ext_env
+    for nid, tmpl in (("verify", "run {x}"), ("investigate", "inspect {x}")):
+        bid = _build(
+            _us,
+            node={"node_id": nid, "display_name": nid, "prompt_template": tmpl},
+            entry=nid,
+            name=nid,
+        )
+        res = json.loads(_action_run_branch({"branch_def_id": bid}))
+        assert res.get("sandbox_blocked") is True, (nid, res)
+        assert "run_id" not in res, (nid, res)
+
+
+# --------------------------------------------------------------------------- #
 # C1a — authoring rejects non-finite / non-positive timeout_seconds (nothing
 # persisted), so a bad value can never reach config construction.
 # --------------------------------------------------------------------------- #
