@@ -56,6 +56,42 @@ def test_openai_key_maps_to_codex_only(tmp_path):
     assert "ANTHROPIC_API_KEY" not in provider_auth_env_overrides(tmp_path, "claude-code")
 
 
+def test_byo_codex_overlay_sets_codex_api_key_and_isolates_home(tmp_path, monkeypatch):
+    """Codex round-6 Finding 2: non-interactive `codex exec` authenticates via
+    CODEX_API_KEY. A BYO-keyed codex spawn env must set CODEX_API_KEY AND point
+    CODEX_HOME at an isolated key-only dir — never inherit the global login."""
+    monkeypatch.setenv("CODEX_HOME", "/global/.codex")  # the platform subscription login
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key",
+        "service": "openai",
+        "secret_b64": base64.b64encode(b"sk-openai-byo").decode("ascii"),
+    }])
+    overrides = provider_auth_env_overrides(tmp_path, "codex")
+    # codex exec's auth var carries the BYO key.
+    assert overrides["CODEX_API_KEY"] == "sk-openai-byo"
+    assert overrides["OPENAI_API_KEY"] == "sk-openai-byo"
+    # CODEX_HOME is redirected to an isolated per-universe dir, NOT the global login.
+    assert overrides["CODEX_HOME"] != "/global/.codex"
+    assert "codex-byo" in overrides["CODEX_HOME"]
+    # The isolated home holds NO auth.json (so the KEY authenticates, not a sub).
+    from pathlib import Path
+    assert not (Path(overrides["CODEX_HOME"]) / "auth.json").exists()
+
+
+def test_byo_codex_full_env_isolates_global_home(tmp_path, monkeypatch):
+    """The composed subprocess env for a BYO codex spawn does not inherit the
+    global CODEX_HOME login and carries CODEX_API_KEY."""
+    monkeypatch.setenv("CODEX_HOME", "/global/.codex")
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key",
+        "service": "openai",
+        "secret_b64": base64.b64encode(b"sk-openai-byo").decode("ascii"),
+    }])
+    env = subprocess_env_for_provider("codex", universe_dir=tmp_path)
+    assert env.get("CODEX_API_KEY") == "sk-openai-byo"
+    assert env.get("CODEX_HOME") != "/global/.codex"
+
+
 def test_set_engine_action_writes_vault_and_config(tmp_path, monkeypatch):
     from tinyassets.api import universe as uni
 

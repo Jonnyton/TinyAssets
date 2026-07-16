@@ -75,6 +75,27 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
     return target
 
 
+def _byo_codex_home(universe_dir: str | Path | None) -> Path | None:
+    """Return a key-only CODEX_HOME that isolates a BYO-keyed codex spawn.
+
+    An EMPTY per-universe dir (no ``auth.json``) so ``codex exec`` finds no
+    subscription login there and authenticates with ``CODEX_API_KEY`` instead of
+    the platform's global ``/data/.codex`` login. Best-effort mkdir; returns
+    ``None`` only when no universe is resolvable.
+    """
+    if universe_dir is None:
+        return None
+    universe = Path(universe_dir)
+    home = universe / CREDENTIAL_ARTIFACT_DIR / "codex-byo"
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        _chmod_best_effort(home.parent, 0o700)
+        _chmod_best_effort(home, 0o700)
+    except OSError:
+        return None
+    return home
+
+
 def _normalize_record(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("credential entries must be JSON objects")
@@ -426,12 +447,25 @@ def provider_auth_env_overrides(
     provider = provider_name.strip()
     if provider == "codex":
         overrides: dict[str, str] = {}
+        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
+        if api_key:
+            # Sanctioned BYO-key lane. Non-interactive ``codex exec`` authenticates
+            # via CODEX_API_KEY (OpenAI Codex CI/CD auth), NOT OPENAI_API_KEY — set
+            # it (plus OPENAI_API_KEY for CLI builds that read it). ISOLATE from the
+            # platform subscription login: point CODEX_HOME at a key-only
+            # per-universe dir (no auth.json) so the BYO KEY authenticates the
+            # child, never the global /data/.codex subscription (Hard Rule #8).
+            overrides["CODEX_API_KEY"] = api_key
+            overrides["OPENAI_API_KEY"] = api_key
+            byo_home = _byo_codex_home(universe_dir)
+            if byo_home is not None:
+                overrides["CODEX_HOME"] = str(byo_home)
+            return overrides
+        # No BYO key — fall back to a vault-materialized CODEX_HOME (host / legacy
+        # first-party infra; founder subscription custody is a blocked lane).
         codex_home = ensure_codex_home_from_vault(universe_dir)
         if codex_home:
             overrides["CODEX_HOME"] = str(codex_home)
-        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
-        if api_key:
-            overrides["OPENAI_API_KEY"] = api_key
         return overrides
     if provider == "claude-code":
         overrides = {}

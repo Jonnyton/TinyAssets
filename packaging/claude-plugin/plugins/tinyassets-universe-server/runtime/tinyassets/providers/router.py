@@ -48,24 +48,42 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# A provider's SANCTIONED BYO-API-key vault env var (the founder BYO lane). Only
+# these providers can be authenticated from a per-universe vault key; others have
+# no per-universe BYO path. Deliberately BYO-only — a legacy ``llm_subscription``
+# row must NOT re-open the blocked subscription-custody lane through this bypass
+# (2026-07-02 custody research; Codex round-6 F3 / Fable F1).
+_PROVIDER_BYO_ENV_VAR: dict[str, str] = {
+    "codex": "OPENAI_API_KEY",
+    "claude-code": "ANTHROPIC_API_KEY",
+}
+
+
 def _universe_provides_provider_auth(
     provider_name: str, universe_dir: "Path | None",
 ) -> bool:
-    """True iff the call's per-universe vault supplies usable auth for *provider*.
+    """True iff the call's per-universe vault holds a validated BYO API key for
+    *provider* — the SANCTIONED founder lane only.
 
     The router applies this vault env to the CLI subprocess at call time
     (``provider.complete(..., universe_dir=...)`` → ``subprocess_env_for_provider``
     → ``apply_provider_auth_env``), so a globally ``not_logged_in`` provider is
-    still runnable when the universe's own vault authenticates it. Resolves the
+    still runnable when the universe's own BYO key authenticates it. Resolves the
     universe from the explicit dir first, then the process-global
     ``TINYASSETS_UNIVERSE`` (mirrors ``credential_vault.apply_provider_auth_env``)
     so the cloud-worker subprocess is covered even when no context is threaded.
-    A non-empty auth-override dict for the provider = usable per-universe auth.
-    Never raises — an auth-vault probe error must not break routing.
+
+    Probes ONLY BYO ``llm_api_key`` records via ``resolve_llm_api_key`` — this is
+    lane-correct (never accepts a legacy subscription row) AND side-effect-free
+    (no auth.json/config.toml materialization; the ``ensure_*`` helpers must not
+    run on a read/health path — Fable Finding C). Never raises.
     """
+    env_var = _PROVIDER_BYO_ENV_VAR.get(provider_name.strip())
+    if not env_var:
+        return False
     try:
         from tinyassets.credential_vault import (
-            provider_auth_env_overrides,
+            resolve_llm_api_key,
             resolve_universe_from_env,
         )
 
@@ -74,7 +92,7 @@ def _universe_provides_provider_auth(
         )
         if resolved is None:
             return False
-        return bool(provider_auth_env_overrides(resolved, provider_name))
+        return bool(resolve_llm_api_key(resolved, env_var))
     except Exception:  # noqa: BLE001 — vault-auth probe must never break routing
         return False
 
@@ -319,6 +337,13 @@ class ProviderRouter:
             if status != "not_logged_in":
                 alive.append(provider_name)
             elif _universe_provides_provider_auth(provider_name, universe_dir):
+                # ACCEPTED flag-OFF delta (deliberate, lead-approved): this bypass
+                # is NOT gated on TINYASSETS_NON_AMBIENT_WORK, so a universe that
+                # already holds a validated BYO key for a provider whose GLOBAL
+                # login is dead is no longer starved — even on a direct/MCP run
+                # with the gate off. That is a latent-bug fix (vault-keyed capacity
+                # was previously dropped), and BYO keys are the sanctioned lane, so
+                # the residual delta is defensible rather than flag-gated.
                 logger.info(
                     "Provider %s global login is not_logged_in but the universe "
                     "vault authenticates it — keeping (per-universe auth applied "

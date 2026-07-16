@@ -42,11 +42,44 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Engine sources a founder may declare. Anything else in config.yaml is a broken
+# declaration (fail loud — Finding 4). ``subscription`` is a RETIRED lane kept
+# here only so a legacy value reads as idle rather than "unknown source".
+_KNOWN_ENGINE_SOURCES = frozenset({
+    "byo_api_key",
+    "self_hosted_endpoint",
+    "market_rented",
+    "host_daemon",
+    "subscription",
+})
+
+# A runtime instance counts as LIVE capacity only when a real worker registered
+# it (metadata.worker_id) AND its row was refreshed within this window. The
+# `provisioned` status label alone does NOT prove a live worker (Finding 1) —
+# spawn_runtime_instance writes it without launching anything. The window must
+# exceed the supervisor's max idle respawn interval (~300s ceiling) so a live
+# but idle worker never flaps; a genuinely dead worker's row stops counting once
+# it ages past this. Overridable via TINYASSETS_RUNTIME_FRESHNESS_S.
+_DEFAULT_RUNTIME_FRESHNESS_S = 900.0
+
+
+def _runtime_freshness_window_s() -> float:
+    raw = os.environ.get("TINYASSETS_RUNTIME_FRESHNESS_S", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return _DEFAULT_RUNTIME_FRESHNESS_S
 
 #: Env flag that arms the non-ambient work gate. DEFAULT OFF (unset) = today's
 #: behavior. See :func:`non_ambient_work_enabled`.
@@ -164,13 +197,18 @@ def non_ambient_work_enabled() -> bool:
     return os.environ.get(NON_AMBIENT_WORK_ENV, "").strip().lower() in _TRUTHY
 
 
-def _raw_config(universe_dir: Path) -> dict[str, Any]:
-    """Return the raw ``config.yaml`` mapping (or ``{}``), best-effort.
+def _raw_config(universe_dir: Path, universe_id: str) -> dict[str, Any]:
+    """Return the raw ``config.yaml`` mapping.
 
     Read raw rather than via :func:`tinyassets.config.load_universe_config` so we
     can tell a DECLARED ``engine_source`` (explicit key present) apart from the
     dataclass default — the default ``byo_api_key`` must never read as a bind
     act on a fresh universe.
+
+    A genuinely ABSENT file returns ``{}`` (quiet unbound). A PRESENT but
+    unreadable / non-mapping file is a broken declaration → raise
+    :class:`EngineMisconfiguredError` (Finding 4: don't let a corrupt config look
+    like a fresh universe).
     """
     cfg_file = Path(universe_dir) / "config.yaml"
     if not cfg_file.is_file():
@@ -179,10 +217,17 @@ def _raw_config(universe_dir: Path) -> dict[str, Any]:
         import yaml
 
         data = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — a bad config.yaml is not a vault secret
-        logger.warning("engine_binding: config.yaml unreadable at %s", cfg_file)
-        return {}
-    return data if isinstance(data, dict) else {}
+    except Exception as exc:  # noqa: BLE001 — surface as a loud misconfiguration
+        raise EngineMisconfiguredError(
+            universe_id, "", f"config.yaml is unreadable: {exc}",
+        ) from exc
+    if data is None:
+        return {}  # an empty file is a valid "no overrides" config.
+    if not isinstance(data, dict):
+        raise EngineMisconfiguredError(
+            universe_id, "", "config.yaml is not a mapping",
+        )
+    return data
 
 
 # Engine sources that persist only a config CHOICE — the runtime that actually
@@ -271,41 +316,67 @@ def _vault_capacity(universe_dir: Path) -> _VaultScan:
     return _VaultScan(kinds, eligible, vault_providers, has_unusable)
 
 
-def _live_runtime_providers(universe_dir: Path) -> set[str]:
-    """Return the providers served by PROVISIONED runtime instances (or empty).
+def _runtime_is_live(inst: dict[str, Any], *, now: float, window: float) -> bool:
+    """Return True iff a runtime row is EXECUTABLE (a live worker, not a label).
 
-    Only :data:`_EXECUTABLE_RUNTIME_STATUSES` count — `paused` / `restart_requested`
-    / retired runtimes are not executable. Each provisioned instance contributes
-    its declared ``provider_name``; a runtime with no declared provider is a
-    generic daemon and contributes :data:`ANY_PROVIDER`.
+    Requires (a) an executable status (:data:`_EXECUTABLE_RUNTIME_STATUSES`),
+    (b) ``metadata.worker_id`` — a real worker registered this row via the
+    daemon-registry, not a bare ``spawn_runtime_instance`` intent row (Finding 1),
+    and (c) a fresh ``updated_at`` within *window* seconds — a stale registration
+    means the worker is gone.
+    """
+    if str(inst.get("status") or "").strip().lower() not in _EXECUTABLE_RUNTIME_STATUSES:
+        return False
+    meta = inst.get("metadata")
+    worker_id = str((meta or {}).get("worker_id") or "").strip() if isinstance(meta, dict) else ""
+    if not worker_id:
+        return False
+    try:
+        updated_at = float(inst.get("updated_at") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return updated_at > 0.0 and (now - updated_at) <= window
+
+
+def _live_runtime_providers(universe_id: str, universe_dir: Path, declared_source: str) -> set[str]:
+    """Return the providers served by LIVE runtime instances for *universe_id*.
+
+    "Live" = executable status + a registered worker + a fresh heartbeat
+    (:func:`_runtime_is_live`); the ``provisioned`` label alone is not enough
+    (Finding 1). Each live instance contributes its declared ``provider_name``;
+    a runtime with no declared provider is a generic daemon and contributes
+    :data:`ANY_PROVIDER`.
 
     Only the EXPECTED "registry not initialized / no rows yet" case degrades to
     an empty set (idle-until-bound). An UNEXPECTED registry failure (locked /
-    malformed / disk error) raises :class:`EngineMisconfiguredError` so the
-    supervisor heartbeats a loud misconfiguration instead of masking a broken
-    daemon registry as mere idleness (Hard Rule #8).
+    malformed / corrupt / not-a-database) raises
+    :class:`EngineMisconfiguredError` so the supervisor heartbeats a loud
+    misconfiguration instead of masking a broken registry as mere idleness
+    (Findings 1 + A). ``universe_id`` is the NORMALIZED id — passing an empty
+    ``universe_dir.name`` would drop the WHERE clause and count every universe's
+    runtimes as this one's (Finding D).
     """
-    universe_id = universe_dir.name or "default-universe"
     try:
         from tinyassets.daemon_server import list_runtime_instances
 
-        instances = list_runtime_instances(
-            universe_dir.parent, universe_id=universe_dir.name,
-        )
-    except sqlite3.OperationalError as exc:
+        instances = list_runtime_instances(universe_dir.parent, universe_id=universe_id)
+    except sqlite3.Error as exc:
         # "no such table" / "unable to open database" = registry not initialized
-        # yet (no runtime assigned). Anything else (locked / malformed / disk) is
-        # a real registry failure — fail loud, don't mask as idle.
+        # yet (no runtime assigned). Anything else (locked / malformed / corrupt /
+        # not-a-database, incl. sqlite3.DatabaseError) is a real registry failure —
+        # fail loud, don't mask as idle.
         msg = str(exc).lower()
         if "no such table" in msg or "unable to open database" in msg:
             return set()
         raise EngineMisconfiguredError(
-            universe_id, "host_daemon",
+            universe_id, declared_source or "host_daemon",
             f"runtime registry unavailable: {exc}",
         ) from exc
+    now = time.time()
+    window = _runtime_freshness_window_s()
     providers: set[str] = set()
     for inst in instances:
-        if str(inst.get("status") or "").strip().lower() not in _EXECUTABLE_RUNTIME_STATUSES:
+        if not _runtime_is_live(inst, now=now, window=window):
             continue
         provider = str(inst.get("provider_name") or "").strip()
         providers.add(provider or ANY_PROVIDER)
@@ -341,8 +412,14 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
     """
     udir = Path(universe_dir)
     universe_id = udir.name or "default-universe"
-    raw = _raw_config(udir)
+    raw = _raw_config(udir, universe_id)
     declared_source = str(raw.get("engine_source") or "").strip()
+    if declared_source and declared_source not in _KNOWN_ENGINE_SOURCES:
+        raise EngineMisconfiguredError(
+            universe_id, declared_source,
+            "unknown engine_source — expected one of "
+            f"{sorted(_KNOWN_ENGINE_SOURCES)}",
+        )
 
     try:
         scan = _vault_capacity(udir)
@@ -352,20 +429,30 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             declared_source or "byo_api_key",
             f"credential vault is unreadable: {exc}",
         ) from exc
-    capacity: list[str] = list(scan.capacity_kinds)
-    eligible: set[str] = set(scan.eligible_providers)
-    vault_providers: set[str] = set(scan.vault_providers)
 
-    # Config-declared runtime-backed sources are executable ONLY with a live
-    # runtime instance assigned to the universe (the config value alone is a
-    # choice, not capacity). A missing runtime is idle-until-bound, not an error.
-    # Each provisioned runtime contributes the provider it declares to eligibility
-    # (a generic daemon contributes ANY_PROVIDER).
+    # Lane matching (Finding 1): capacity must come from the SELECTED source, not
+    # "any capacity anywhere". A universe that declared host_daemon must NOT be
+    # satisfied by a stale BYO key, and vice versa.
+    capacity: list[str] = []
+    eligible: set[str] = set()
+    vault_providers: set[str] = set()
     if declared_source in _RUNTIME_BACKED_SOURCES:
-        runtime_providers = _live_runtime_providers(udir)
+        # Runtime-backed lanes are executable ONLY with a LIVE runtime instance
+        # (a registered worker + fresh heartbeat — the `provisioned` label alone
+        # is not enough). The vault is irrelevant to this lane.
+        runtime_providers = _live_runtime_providers(universe_id, udir, declared_source)
         if runtime_providers:
             capacity.append(f"runtime:{declared_source}")
             eligible |= runtime_providers
+    elif declared_source == "subscription":
+        # Retired lane — never founder capacity; falls through to idle below.
+        pass
+    else:
+        # byo_api_key lane, or an undeclared universe: the vault BYO key is the
+        # capacity. Runtime instances do NOT satisfy the BYO lane.
+        capacity = list(scan.capacity_kinds)
+        eligible = set(scan.eligible_providers)
+        vault_providers = set(scan.vault_providers)
 
     # Deduplicate while preserving discovery order.
     capacity = list(dict.fromkeys(capacity))
@@ -380,11 +467,11 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             vault_providers=frozenset(vault_providers),
         )
 
-    # A BYO row is present but not usable, and nothing else backs this universe.
-    # Counting it as bound would let the daemon spawn and silently fall through to
-    # global provider auth — fail loud instead (Hard Rule #8) so the broken key is
-    # re-bound.
-    if scan.has_unusable_vault_source:
+    # No executable capacity for the selected lane. A DECLARED byo_api_key (or an
+    # undeclared universe) with a present-but-unusable BYO row is genuinely broken
+    # → fail loud (Hard Rule #8) so the broken key is re-bound. The vault's broken
+    # state is only load-bearing when the BYO lane is the selected one.
+    if declared_source in ("byo_api_key", "") and scan.has_unusable_vault_source:
         raise EngineMisconfiguredError(
             universe_id,
             declared_source or "byo_api_key",
@@ -392,9 +479,9 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             "per-universe-consumable (re-bind via universe action=set_engine)",
         )
 
-    # No executable capacity. A DECLARED byo_api_key with no key is genuinely
-    # broken → fail loud. A declared runtime-backed source with no runtime yet, or
-    # a legacy (now-blocked) subscription source, is idle-until-bound.
+    # A DECLARED byo_api_key with no key at all is genuinely broken → fail loud.
+    # A declared runtime-backed source with no live runtime yet, or a legacy
+    # (now-blocked) subscription source, is idle-until-bound.
     if declared_source == "byo_api_key":
         raise EngineMisconfiguredError(
             universe_id, declared_source,
@@ -408,8 +495,8 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
         )
     elif declared_source:
         reason = (
-            f"engine_source={declared_source!r} chosen but no runtime instance is "
-            "assigned yet"
+            f"engine_source={declared_source!r} chosen but no LIVE runtime "
+            "instance (registered worker + fresh heartbeat) is assigned yet"
         )
     else:
         reason = "no engine capacity bound to this universe"

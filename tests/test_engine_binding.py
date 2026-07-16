@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -190,23 +191,41 @@ def test_config_only_choice_is_idle_until_bound(tmp_path, source, extra):
 # ---- config source WITH a live runtime instance → bound -------------------
 
 
-def _assign_runtime(base, uid, *, status="provisioned"):
+def _assign_runtime(base, uid, *, status="provisioned", worker_id="w-test", stale_s=0.0):
+    """Create a runtime instance for *uid*. A LIVE runtime needs a registered
+    worker (``worker_id``) + a fresh ``updated_at``; ``worker_id=None`` leaves a
+    bare intent row and ``stale_s`` back-dates ``updated_at`` past the freshness
+    window."""
+    import time as _time
+
     from tinyassets.daemon_server import (
         initialize_author_server,
+        list_runtime_instances,
         spawn_runtime_instance,
         update_runtime_instance_status,
     )
+    from tinyassets.storage import _connect
 
     initialize_author_server(base)
-    inst = spawn_runtime_instance(  # spawns in 'provisioned'
+    inst = spawn_runtime_instance(  # spawns in 'provisioned', no worker_id
         base, universe_id=uid, author_id="author-1",
         provider_name="claude-code", model_name="claude", created_by="test",
     )
-    if status != "provisioned":
+    patch = {"worker_id": worker_id} if worker_id else None
+    if status != "provisioned" or patch is not None:
         update_runtime_instance_status(
             base, instance_id=inst["instance_id"], status=status,
+            metadata_patch=patch,
         )
-    return inst
+    if stale_s:
+        # Back-date updated_at directly so the row reads as a stale heartbeat.
+        with _connect(base) as conn:
+            conn.execute(
+                "UPDATE author_runtime_instances SET updated_at = ? "
+                "WHERE instance_id = ?",
+                (_time.time() - stale_s, inst["instance_id"]),
+            )
+    return list_runtime_instances(base, universe_id=uid)[0]
 
 
 @pytest.mark.parametrize(
@@ -236,6 +255,58 @@ def test_non_executable_runtime_status_does_not_count(tmp_path, status):
     _assign_runtime(tmp_path, uid, status=status)
     binding = resolve_engine_binding(udir)
     assert binding.bound is False
+
+
+def test_provisioned_without_worker_id_is_idle(tmp_path):
+    """Finding 1: a bare `provisioned` row (no registered worker) is a status
+    LABEL, not live capacity — it must read as idle-until-bound."""
+    uid = "u-rt-noworker"
+    udir = tmp_path / uid
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="host_daemon")
+    _assign_runtime(tmp_path, uid, status="provisioned", worker_id=None)
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is False
+
+
+def test_stale_runtime_heartbeat_is_idle(tmp_path):
+    """Finding 1: a registered worker whose heartbeat is older than the freshness
+    window is presumed gone — idle-until-bound."""
+    uid = "u-rt-stale"
+    udir = tmp_path / uid
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="host_daemon")
+    _assign_runtime(tmp_path, uid, status="provisioned", stale_s=10_000.0)
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is False
+
+
+def test_declared_host_daemon_with_only_byo_key_is_idle(tmp_path):
+    """Finding 1 lane-matching: a universe that SELECTED host_daemon must NOT be
+    satisfied by a stale BYO key in the vault — eligibility is per-selected-lane."""
+    uid = "u-hostdaemon-strayvault"
+    udir = tmp_path / uid
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": base64.b64encode(b"sk-ant-stray").decode("ascii"),
+    }])
+    write_universe_config_fields(udir, engine_source="host_daemon")
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is False  # no live runtime; BYO key does NOT satisfy the lane
+
+
+def test_empty_universe_name_does_not_inherit_other_runtimes(tmp_path, monkeypatch):
+    """Finding D: an empty universe_dir.name must not drop the WHERE clause and
+    count every universe's provisioned runtimes as this one's."""
+    # Give some OTHER universe a live runtime in the same registry.
+    _assign_runtime(tmp_path, "u-other", status="provisioned")
+    # Resolve a universe whose dir name is empty (Path('.')), rooted at tmp_path.
+    monkeypatch.chdir(tmp_path)
+    write_universe_config_fields(tmp_path, engine_source="host_daemon")
+    binding = resolve_engine_binding(Path("."))
+    assert binding.bound is False, "empty name must not inherit other universes' runtimes"
 
 
 # ---- resolve_engine_binding: MISCONFIGURED (vault source, no credential) ---
@@ -336,20 +407,25 @@ def test_gemini_byo_alongside_valid_openai_binds_via_codex(tmp_path):
     assert binding.eligible_providers == frozenset({"codex"})
 
 
-def test_broken_runtime_registry_fails_loud(tmp_path, monkeypatch):
-    """Finding 3: an UNEXPECTED runtime-registry failure (locked/malformed) must
-    fail loud, not be masked as idle. A 'no such table' (not-initialized) case
-    still degrades to idle."""
+@pytest.mark.parametrize("exc", [
+    sqlite3.OperationalError("database is locked"),
+    sqlite3.DatabaseError("database disk image is malformed"),
+    sqlite3.DatabaseError("file is not a database"),
+])
+def test_broken_runtime_registry_fails_loud(tmp_path, monkeypatch, exc):
+    """An UNEXPECTED registry failure (locked / corrupt / not-a-database) must
+    fail loud, not be masked as idle. Covers sqlite3.Error broadly, incl.
+    DatabaseError for SQLITE_CORRUPT/SQLITE_NOTADB (Fable Finding A)."""
     import tinyassets.daemon_server as ds
 
     udir = tmp_path / "u-broken-registry"
     udir.mkdir()
     write_universe_config_fields(udir, engine_source="host_daemon")
 
-    def _raise_locked(*_a, **_k):
-        raise sqlite3.OperationalError("database is locked")
+    def _raise(*_a, **_k):
+        raise exc
 
-    monkeypatch.setattr(ds, "list_runtime_instances", _raise_locked)
+    monkeypatch.setattr(ds, "list_runtime_instances", _raise)
     with pytest.raises(EngineMisconfiguredError):
         resolve_engine_binding(udir)
 
@@ -366,6 +442,50 @@ def test_uninitialized_runtime_registry_reads_idle(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ds, "list_runtime_instances", _raise_no_table)
     binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
+
+
+# ---- Finding 4: malformed / unknown config declarations fail loud ----------
+
+
+def test_corrupt_config_yaml_fails_loud(tmp_path):
+    udir = tmp_path / "u-corruptcfg"
+    udir.mkdir()
+    (udir / "config.yaml").write_text("engine_source: [unterminated\n", encoding="utf-8")
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_non_mapping_config_fails_loud(tmp_path):
+    udir = tmp_path / "u-listcfg"
+    udir.mkdir()
+    (udir / "config.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_unknown_engine_source_fails_loud(tmp_path):
+    udir = tmp_path / "u-unknownsrc"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="telepathy")
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_absent_config_is_quiet_unbound(tmp_path):
+    """A genuinely missing config file is a fresh unbound universe, not loud."""
+    udir = tmp_path / "u-nocfg"
+    udir.mkdir()
+    binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
+    assert binding.engine_source == ""
+
+
+def test_empty_config_file_is_quiet_unbound(tmp_path):
+    udir = tmp_path / "u-emptycfg"
+    udir.mkdir()
+    (udir / "config.yaml").write_text("", encoding="utf-8")
+    binding = resolve_engine_binding(udir)  # empty file = no overrides, not loud
     assert binding.bound is False
 
 

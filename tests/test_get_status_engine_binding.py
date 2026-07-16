@@ -41,6 +41,10 @@ def test_status_reports_unbound_universe_idle_until_bound(tmp_path, monkeypatch)
     steps = " ".join(payload["actionable_next_steps"]).lower()
     assert "bind an engine" in steps
     assert "set_engine" in steps
+    # Finding 5: the BYO guidance records the vault-hardening prerequisite +
+    # that the non-ambient gate stays OFF until then.
+    assert "vault encryption hardening" in steps
+    assert "gate stays off" in steps
     # Finding 2 regression: with the gate OFF the caveat must NOT falsely claim
     # the universe is idle-until-bound (it IS being worked via ambient legacy
     # execution today). It should say so honestly.
@@ -103,6 +107,27 @@ def test_engine_binding_is_in_status_contract(tmp_path, monkeypatch):
     payload = json.loads(get_status(universe_id="u-contract"))
     assert "engine_binding" in payload
     assert isinstance(payload["engine_binding"], dict)
+
+
+def test_get_status_returns_on_corrupt_registry(tmp_path, monkeypatch):
+    """Fable Finding A: a corrupt runtime registry (sqlite3.DatabaseError) must
+    NOT crash get_status — it returns with the misconfigured caveat."""
+    import sqlite3
+
+    import tinyassets.daemon_server as ds
+
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    udir = _make_universe(tmp_path, monkeypatch, "u-corruptreg")
+    from tinyassets.config import write_universe_config_fields
+    write_universe_config_fields(udir, engine_source="host_daemon")
+
+    def _raise_corrupt(*_a, **_k):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(ds, "list_runtime_instances", _raise_corrupt)
+    payload = json.loads(get_status(universe_id="u-corruptreg"))  # must not raise
+    assert payload["engine_binding"].get("misconfigured") is True
+    assert "misconfigured" in " ".join(payload["caveats"]).lower()
 
 
 # ---- set_engine: subscription is a BLOCKED lane (custody note compliance) --

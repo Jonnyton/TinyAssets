@@ -314,6 +314,67 @@ def test_no_vault_behavior_unchanged_for_default_router(isolated_universe_config
         assert p.call_count == 0
 
 
+def test_legacy_subscription_only_universe_is_still_dropped(
+    isolated_universe_config, tmp_path,
+):
+    """Codex F3 / Fable F1: a universe with ONLY a legacy llm_subscription row
+    (the blocked custody lane) must NOT bypass the health gate — the bypass is
+    BYO-API-key-only. Consistent with resolve_engine_binding=False."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.providers.base import UniverseContext
+
+    udir = tmp_path / "u-legacy-sub"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "oauth_token": "legacy-oauth",
+    }])
+    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
+    router, providers = _router(dead={"codex"})
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call(
+            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+        ))
+    for p in providers.values():
+        assert p.call_count == 0
+
+
+def test_health_bypass_probe_is_side_effect_free(isolated_universe_config, tmp_path):
+    """Fable Finding C: the health probe must NOT materialize credential artifacts
+    (auth.json / config.toml). resolve_llm_api_key is pure — assert no
+    .credentials dir is created by the probe path."""
+    from tinyassets.providers.router import _universe_provides_provider_auth
+
+    udir = _byo_openai_universe(tmp_path)
+    assert _universe_provides_provider_auth("codex", udir) is True
+    # No credential-materialization side effect on a read/health path.
+    assert not (udir / ".credentials").exists()
+
+
+def test_flag_off_byo_universe_keeps_dead_login_provider(
+    isolated_universe_config, tmp_path,
+):
+    """Fable Finding B (accepted delta, LOCKED): the bypass is NOT flag-gated, so
+    a BYO-keyed universe with a globally-dead provider is KEPT even with the
+    non-ambient gate OFF — a deliberate latent-bug fix (vault-keyed capacity was
+    previously starved)."""
+    from tinyassets.providers.base import UniverseContext
+
+    os.environ.pop("TINYASSETS_NON_AMBIENT_WORK", None)  # gate OFF
+    udir = _byo_openai_universe(tmp_path)
+    router, providers = _router(dead={"claude-code", "codex"})
+
+    # Not pinned: claude-code dead + no vault → dropped; codex dead + BYO vault →
+    # kept and used, even though the non-ambient gate is off.
+    resp = _run(router.call(
+        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+    ))
+    assert resp.provider == "codex"
+    assert providers["codex"].call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Policy routing + judge ensemble honour the same gate
 # ---------------------------------------------------------------------------

@@ -1328,7 +1328,10 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                     "universe vault), a self-hosted endpoint, market-rented "
                     "capacity, or run the daemon on YOUR own device (host_daemon) "
                     "to use your subscription. The platform never custodies your "
-                    "subscription tokens."
+                    "subscription tokens. Note: hosted BYO keys require vault "
+                    "encryption hardening (KMS-wrapped per-tenant storage) before "
+                    "the non-ambient gate is enabled in production; the gate "
+                    "stays OFF until then."
                 )
         except EngineMisconfiguredError as exc:
             engine_binding = {
