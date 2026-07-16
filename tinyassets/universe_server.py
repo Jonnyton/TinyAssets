@@ -2217,6 +2217,23 @@ def create_streamable_http_app() -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
+        # Reference branch designs: idempotent re-seed at every boot so a
+        # registry/volume wipe can never delete a design class again (S1 of
+        # docs/design-notes/2026-07-15-user-patch-loop-reference-design.md).
+        # Best-effort: a broken seed logs loudly but never blocks startup.
+        try:
+            from tinyassets.api.helpers import _base_path
+            from tinyassets.branch_designs import seed_reference_designs
+
+            _seed_results = seed_reference_designs(_base_path())
+            if _seed_results["failed"]:
+                logger.error(
+                    "reference design seeding had failures: %s", _seed_results,
+                )
+            else:
+                logger.info("reference design seeding: %s", _seed_results)
+        except Exception:  # noqa: BLE001 - startup must survive seed failure
+            logger.exception("reference design seeding crashed")
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
                 legacy_app.router.lifespan_context(legacy_app),

@@ -328,6 +328,69 @@ def _maybe_enqueue_investigation(
         return None
 
 
+def _handler_branch_exists(base_path: "Path | str", branch_def_id: str) -> bool:
+    """True when the branch definition exists in the registry.
+
+    Fail closed on registry read errors: a handler we cannot confirm exists
+    must not be enqueued against (the 2026-07-13 volume deletion left env/goal
+    pointers at wiped branch ids, and filings queued forever against them —
+    G4 in docs/design-notes/2026-07-15-user-patch-loop-reference-design.md).
+    """
+    if not branch_def_id:
+        return False
+    try:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.daemon_server import get_branch_definition
+
+        # The branch registry lives at the CANONICAL data root — callers of the
+        # investigation pipeline pass per-universe paths (the queue location),
+        # which do not carry the registry DB. Resolve the root explicitly so an
+        # existing handler is never false-negatived (and per the env-var
+        # invariant: path defaults go through the resolver APIs).
+        del base_path  # documented: intentionally not the registry root
+        get_branch_definition(_base_path(), branch_def_id=branch_def_id)
+        return True
+    except KeyError:
+        return False
+    except Exception:  # noqa: BLE001 - fail closed, loudly
+        _logger.exception(
+            "_handler_branch_exists | registry read failed for %s; treating "
+            "handler as missing",
+            branch_def_id,
+        )
+        return False
+
+
+def resolve_investigation_handler_detail(
+    base_path: "Path | str",
+) -> "tuple[str, str]":
+    """Resolve the investigation handler AND report why when there isn't one.
+
+    Returns ``(branch_def_id, reason)``:
+
+    - ``(<id>, "ok")`` — a handler resolved and its branch def EXISTS.
+    - ``("", "handler_not_found:<ids>")`` — one or more ids resolved (goal
+      canonical and/or env fallback) but none exist in the registry (dead
+      refs). Fail loudly on the TRIGGER, never the filing: callers must not
+      enqueue, and should surface an explicit failed-trigger status while the
+      filing itself persists.
+    - ``("", "not_configured")`` — no goal binding and no env fallback set.
+    """
+    dead: list[str] = []
+    for candidate in _iter_handler_candidates(base_path):
+        if _handler_branch_exists(base_path, candidate):
+            return candidate, "ok"
+        dead.append(candidate)
+        _logger.error(
+            "resolve_investigation_handler | resolved handler %s does NOT "
+            "exist in the branch registry (dead ref) — refusing to enqueue",
+            candidate,
+        )
+    if dead:
+        return "", "handler_not_found:" + ",".join(dead)
+    return "", "not_configured"
+
+
 def _resolve_investigation_handler(base_path: "Path | str") -> str:
     """Pick the ``branch_def_id`` that should handle a fresh bug.
 
@@ -347,7 +410,21 @@ def _resolve_investigation_handler(base_path: "Path | str") -> str:
          lets the host roll out PR-127 before any Goal has a
          canonical set.
 
-    Returns "" when neither path produces a handler. Never raises.
+    G4 (2026-07-15): every candidate is validated against the branch registry
+    before being returned — a resolved-but-dead ref yields "" (see
+    ``resolve_investigation_handler_detail`` for the reason surface).
+
+    Returns "" when neither path produces an EXISTING handler. Never raises.
+    """
+    branch_def_id, _reason = resolve_investigation_handler_detail(base_path)
+    return branch_def_id
+
+
+def _iter_handler_candidates(base_path: "Path | str"):
+    """Yield handler branch ids in resolution order (goal canonical, then env).
+
+    Pure resolution — existence validation happens in
+    ``resolve_investigation_handler_detail`` (G4).
     """
     goal_id = os.environ.get(
         "TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "",
@@ -368,7 +445,7 @@ def _resolve_investigation_handler(base_path: "Path | str") -> str:
             )
         except Exception:  # pragma: no cover — defensive
             _logger.exception(
-                "_resolve_investigation_handler | canonical resolution "
+                "_iter_handler_candidates | canonical resolution "
                 "crashed for goal %s; falling back to env",
                 goal_id,
             )
@@ -377,16 +454,16 @@ def _resolve_investigation_handler(base_path: "Path | str") -> str:
             bdid = (resolution.get("branch_def_id") or "").strip()
             if bdid:
                 _logger.info(
-                    "_resolve_investigation_handler | goal=%s "
+                    "_iter_handler_candidates | goal=%s "
                     "canonical=%s source=%s",
                     goal_id,
                     resolution.get("branch_version_id"),
                     resolution.get("source"),
                 )
-                return bdid
+                yield bdid
         else:
             _logger.info(
-                "_resolve_investigation_handler | goal=%s no canonical "
+                "_iter_handler_candidates | goal=%s no canonical "
                 "available (%s); falling back to env",
                 goal_id, resolution.get("error_kind") or "unknown",
             )
@@ -397,8 +474,8 @@ def _resolve_investigation_handler(base_path: "Path | str") -> str:
     ).strip()
     if fallback:
         _logger.info(
-            "_resolve_investigation_handler | using env fallback "
+            "_iter_handler_candidates | using env fallback "
             "branch_def_id=%s (cutover plan Step 5/6 retires this path)",
             fallback,
         )
-    return fallback
+        yield fallback
