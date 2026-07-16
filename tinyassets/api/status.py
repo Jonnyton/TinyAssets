@@ -1271,6 +1271,81 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
             "read_only": True,
         }
 
+    # engine_binding (design note 2026-07-15 gap G7 — onboarding surface).
+    # Honestly report whether this universe has engine/daemon capacity bound to
+    # it. A universe with no bound capacity is idle-until-bound: surface the
+    # bind next-step so a founder is offered "bind an engine so your universe
+    # can run". Additive + best-effort — a status read must never FAIL on this,
+    # so a misconfigured binding is *reported*, never raised here. The
+    # non_ambient_gate field echoes the flag state so the note is honest about
+    # whether ambient work still runs (flag off) or not (flag on).
+    from tinyassets.engine_binding import (
+        EngineMisconfiguredError,
+        non_ambient_work_enabled,
+        resolve_engine_binding,
+    )
+
+    gate_on = non_ambient_work_enabled()
+    engine_binding: dict[str, Any]
+    if not universe_exists:
+        engine_binding = {
+            "bound": False,
+            "engine_source": "",
+            "capacity_kinds": [],
+            "non_ambient_gate": gate_on,
+            "workable": False,
+            "note": "Universe does not exist yet — nothing to bind.",
+        }
+    else:
+        try:
+            binding = resolve_engine_binding(udir)
+            engine_binding = binding.as_dict()
+            engine_binding["non_ambient_gate"] = gate_on
+            # workable = will the daemon work this universe? Bound universes
+            # always; unbound universes only while the gate is off (ambient).
+            engine_binding["workable"] = binding.bound or not gate_on
+            if not binding.bound:
+                engine_binding["note"] = (
+                    "This universe has no engine bound to it and will stay idle "
+                    "until you bind one — no ambient work runs for it."
+                    if gate_on
+                    else "This universe has no engine bound to it. Bind one so "
+                    "it runs on capacity you control (your own engine, a hosted "
+                    "daemon, or offered cloud capacity)."
+                )
+                caveats.append(
+                    "engine_binding.bound is false — no engine/daemon capacity "
+                    "is bound to this universe. It is idle-until-bound."
+                )
+                actionable_next_steps.append(
+                    "Bind an engine so your universe can run: universe "
+                    "action=set_engine (choose a subscription CLI, a BYO API "
+                    "key, a self-hosted endpoint, offered cloud capacity, or a "
+                    "hosted daemon)."
+                )
+        except EngineMisconfiguredError as exc:
+            engine_binding = {
+                "bound": False,
+                "engine_source": exc.engine_source,
+                "capacity_kinds": [],
+                "misconfigured": True,
+                "non_ambient_gate": gate_on,
+                "workable": not gate_on,
+                "detail": exc.detail,
+                "note": (
+                    "This universe declares an engine but its capacity is "
+                    "misconfigured — re-bind it via universe action=set_engine."
+                ),
+            }
+            caveats.append(
+                f"engine_binding is MISCONFIGURED: {exc.detail}. Re-bind via "
+                "universe action=set_engine."
+            )
+            actionable_next_steps.append(
+                "Re-bind this universe's engine — the declared binding is "
+                "broken: universe action=set_engine."
+            )
+
     release_state = _load_release_state()
 
     response = {
@@ -1295,6 +1370,7 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         "supervisor_liveness": supervisor_liveness,
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
+        "engine_binding": engine_binding,
         "release_state": release_state,
         "universe_id": uid,
         "universe_exists": universe_exists,

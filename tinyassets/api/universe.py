@@ -4861,10 +4861,15 @@ def _action_set_engine(
         return json.dumps({
             "error": "inputs_json is required.",
             "expected": {
-                "engine_source": "byo_api_key | self_hosted_endpoint | "
-                                 "market_rented | host_daemon",
+                "engine_source": "byo_api_key | subscription | "
+                                 "self_hosted_endpoint | market_rented | "
+                                 "host_daemon",
                 "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
                                 "preferred_writer": "claude-code|codex (opt)"},
+                "subscription": {"service": "claude|codex",
+                                 "oauth_token": "… (claude)",
+                                 "auth_json_b64": "… (codex)",
+                                 "preferred_writer": "claude-code|codex (opt)"},
                 "self_hosted_endpoint": {"endpoint": "https://…",
                                          "preferred_writer": "…"},
                 "market_rented": {"market_model": "glm-5.2", "market_rate": 0.0,
@@ -4884,6 +4889,8 @@ def _action_set_engine(
 
     if engine_source == "byo_api_key":
         return _set_engine_byo_api_key(uid, udir, data, preferred_writer)
+    if engine_source == "subscription":
+        return _set_engine_subscription(uid, udir, data, preferred_writer)
     if engine_source == "self_hosted_endpoint":
         return _set_engine_self_hosted(uid, udir, data, preferred_writer)
     if engine_source == "market_rented":
@@ -4892,7 +4899,8 @@ def _action_set_engine(
         return _set_engine_host_daemon(uid, udir, data, preferred_writer)
     return json.dumps({
         "error": f"unknown engine_source {engine_source!r}.",
-        "expected_engine_source": ["byo_api_key", "self_hosted_endpoint",
+        "expected_engine_source": ["byo_api_key", "subscription",
+                                   "self_hosted_endpoint",
                                    "market_rented", "host_daemon"],
     })
 
@@ -4949,6 +4957,100 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
         "preferred_writer": preferred_writer,
         "credential_types": vault_summary.get("credential_types", []),
         "note": "Engine credential stored in the per-universe vault (never "
+                "echoed).",
+    })
+
+
+def _set_engine_subscription(uid, udir, data, preferred_writer) -> str:
+    """Subscription CLI (claude / codex) → deposit the auth bundle into the vault.
+
+    The founder binds their own subscription-CLI login so the universe's
+    intelligence runs on their Claude / Codex subscription (not the platform's).
+    Claude expects an ``oauth_token``; Codex expects a base64 ``auth_json_b64``
+    (its ``auth.json``). The bundle is stored as an ``llm_subscription`` record
+    in the per-universe vault — the SAME primitive the daemon reads at call time
+    — and the secret is never echoed back or written to the ledger.
+
+    Requires real auth material so a ``subscription`` binding is never recorded
+    without capacity behind it (Hard Rule #8 — a declared-but-empty binding would
+    read as misconfigured to the engine-binding resolver).
+    """
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.credential_vault import (
+        load_credential_vault,
+        write_credential_vault,
+    )
+
+    service_raw = str(data.get("service", "")).strip().lower()
+    # Normalize provider aliases to the vault's canonical subscription service.
+    _service_alias = {
+        "claude": "claude", "anthropic": "claude", "claude-code": "claude",
+        "codex": "codex", "openai": "codex",
+    }
+    service = _service_alias.get(service_raw, service_raw)
+    if service not in {"claude", "codex"}:
+        return json.dumps({
+            "error": f"unsupported subscription service {service_raw!r}.",
+            "expected_services": ["claude", "codex"],
+        })
+    _writer_by_service = {"claude": "claude-code", "codex": "codex"}
+    if not preferred_writer:
+        preferred_writer = _writer_by_service[service]
+
+    record: dict[str, Any] = {
+        "credential_type": "llm_subscription",
+        "service": service,
+    }
+    if service == "claude":
+        oauth_token = str(data.get("oauth_token", "")).strip()
+        if not oauth_token:
+            return json.dumps({
+                "error": "oauth_token is required for a claude subscription "
+                         "binding.",
+            })
+        record["oauth_token"] = oauth_token
+    else:  # codex
+        auth_json_b64 = str(data.get("auth_json_b64", "")).strip()
+        if not auth_json_b64:
+            return json.dumps({
+                "error": "auth_json_b64 (base64 of the Codex auth.json) is "
+                         "required for a codex subscription binding.",
+            })
+        record["auth_json_b64"] = auth_json_b64
+
+    # Merge, don't clobber: preserve any other credentials (e.g. a bound github
+    # token) and replace only a prior subscription record for the same service.
+    try:
+        existing = load_credential_vault(udir)
+    except ValueError as exc:
+        return json.dumps({"error": f"Existing credential vault unreadable: {exc}"})
+    merged = [
+        r for r in existing
+        if not (
+            r.get("credential_type") == "llm_subscription"
+            and str(r.get("service") or r.get("provider") or "").strip().lower()
+            == service
+        )
+    ]
+    merged.append(record)
+    try:
+        write_credential_vault(udir, merged)
+    except ValueError as exc:
+        return json.dumps({"error": f"Failed to store subscription auth: {exc}"})
+
+    fields = {"engine_source": "subscription", "preferred_writer": preferred_writer}
+    try:
+        write_universe_config_fields(udir, **fields)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+
+    return json.dumps({
+        "status": "engine_set",
+        "universe_id": uid,
+        "engine_source": "subscription",
+        "service": service,
+        "preferred_writer": preferred_writer,
+        "note": "Subscription auth stored in the per-universe vault (never "
                 "echoed).",
     })
 

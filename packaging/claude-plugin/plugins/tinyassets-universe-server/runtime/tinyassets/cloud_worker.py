@@ -75,6 +75,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tinyassets.engine_binding import (
+    EngineMisconfiguredError,
+    non_ambient_work_enabled,
+    resolve_engine_binding,
+)
+
 logger = logging.getLogger(__name__)
 
 # Defaults tuned for a droplet-scale workload.
@@ -502,6 +508,11 @@ class SupervisorState:
         # Times this worker skipped spawning a claim-subprocess because its
         # writer provider was unauthenticated (auth self-quarantine).
         self.auth_quarantine_count = 0
+        # Non-ambient work gate (flag-gated): times a spawn was skipped because
+        # the universe had no bound engine capacity (idle-until-bound), and
+        # times a DECLARED-but-broken binding failed the gate loudly.
+        self.idle_until_bound_count = 0
+        self.engine_misconfigured_count = 0
         self.started_at = _utcnow_iso()
         self.last_spawn_at = ""
         self.last_exit_rc: int | None = None
@@ -524,7 +535,9 @@ class SupervisorState:
             f"clean={self.total_clean_exits} "
             f"crashes={self.total_crashes} "
             f"consec={self.crash_count} "
-            f"auth_quarantined={self.auth_quarantine_count}"
+            f"auth_quarantined={self.auth_quarantine_count} "
+            f"idle_until_bound={self.idle_until_bound_count} "
+            f"engine_misconfigured={self.engine_misconfigured_count}"
         )
 
 
@@ -567,6 +580,8 @@ def write_supervisor_heartbeat(
         "total_spawns": state.total_spawns,
         "total_crashes": state.total_crashes,
         "consec_crashes": state.crash_count,
+        "idle_until_bound_count": state.idle_until_bound_count,
+        "engine_misconfigured_count": state.engine_misconfigured_count,
         "subprocess_pid": subprocess_pid,
         "subprocess_alive": subprocess_alive,
         "planned_sleep_s": planned_sleep_s,
@@ -748,6 +763,49 @@ def run_supervisor(
         if max_iterations is not None and iteration >= max_iterations:
             break
         iteration += 1
+
+        # Non-ambient work gate (design note 2026-07-15 gap G7). FLAG-GATED and
+        # DEFAULT OFF: with TINYASSETS_NON_AMBIENT_WORK unset this whole block is
+        # skipped, so the loop spawns exactly as it does today (a byte-for-byte
+        # no-op — ambient work). When the flag is ON, a universe runs only on
+        # capacity explicitly bound to it: an unbound universe is not worked
+        # (honestly idle-until-bound), and a DECLARED-but-broken binding fails
+        # LOUD (Hard Rule #8) rather than being silently skipped. Flipping the
+        # flag on is NOT the host-gated production switch-off of the
+        # platform-global daemon — that decision is made elsewhere.
+        if non_ambient_work_enabled():
+            try:
+                binding = resolve_engine_binding(universe)
+            except EngineMisconfiguredError as exc:
+                state.engine_misconfigured_count += 1
+                logger.error(
+                    "cloud_worker: universe %s has a MISCONFIGURED engine "
+                    "binding — NOT working it (%s). Fix the binding via "
+                    "universe action=set_engine. (non-ambient gate)",
+                    universe, exc,
+                )
+                write_supervisor_heartbeat(
+                    universe, state, iteration=iteration,
+                    phase="engine_misconfigured",
+                    planned_sleep_s=idle_backoff,
+                )
+                sleep_fn(idle_backoff)
+                continue
+            if not binding.bound:
+                state.idle_until_bound_count += 1
+                logger.info(
+                    "cloud_worker: universe %s has no bound engine capacity — "
+                    "idle until an engine is bound (non-ambient gate). Bind one "
+                    "via universe action=set_engine.",
+                    universe,
+                )
+                write_supervisor_heartbeat(
+                    universe, state, iteration=iteration,
+                    phase="idle_until_bound",
+                    planned_sleep_s=idle_backoff,
+                )
+                sleep_fn(idle_backoff)
+                continue
 
         # Pre-claim auth gate (2026-06-25 loop-wedge root cause): a worker
         # whose writer provider is unauthenticated must NOT spawn the claim

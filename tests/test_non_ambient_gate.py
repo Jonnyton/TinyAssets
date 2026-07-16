@@ -1,0 +1,193 @@
+"""S5 — the non-ambient work gate in the cloud-worker supervisor.
+
+The gate is FLAG-GATED and DEFAULT OFF. The load-bearing proof here is that with
+the flag off the supervisor spawns exactly as it does today — even for an
+unbound universe (a byte-for-byte no-op). With the flag on, an unbound universe
+is not worked (idle-until-bound), a bound universe is worked, and a
+DECLARED-but-broken binding fails the gate loudly instead of being silently
+skipped.
+
+Uses the same ``spawn_fn`` / ``sleep_fn`` injection seams as
+``test_cloud_worker.py`` so the loop runs without subprocess I/O.
+"""
+from __future__ import annotations
+
+import base64
+
+import pytest
+
+import tinyassets.cloud_worker as cw
+from tinyassets.config import write_universe_config_fields
+from tinyassets.credential_vault import write_credential_vault
+from tinyassets.engine_binding import NON_AMBIENT_WORK_ENV
+
+
+class _FakeProc:
+    """Popen stand-in that exits clean immediately (mirrors test_cloud_worker)."""
+
+    def __init__(self, returncode: int = 0):
+        self._rc = returncode
+        self.returncode: int | None = None
+
+    def poll(self):
+        self.returncode = self._rc
+        return self._rc
+
+    def terminate(self):
+        self.returncode = -15
+
+    def kill(self):
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            self.returncode = self._rc
+        return self.returncode
+
+
+def _recorders():
+    spawn_calls: list = []
+    sleep_calls: list[float] = []
+
+    def spawn(universe):
+        spawn_calls.append(universe)
+        return _FakeProc(returncode=0)
+
+    def sleep(delay):
+        sleep_calls.append(delay)
+
+    return spawn_calls, sleep_calls, spawn, sleep
+
+
+@pytest.fixture(autouse=True)
+def _no_pinned_writer(monkeypatch):
+    # Keep the pre-existing auth-quarantine gate inert so these tests exercise
+    # only the non-ambient gate (no resolvable writer → auth gate returns None).
+    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
+
+
+def _unbound_universe(tmp_path):
+    udir = tmp_path / "u-unbound"
+    udir.mkdir()
+    return udir
+
+
+def _bound_universe(tmp_path):
+    udir = tmp_path / "u-bound"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": base64.b64encode(b"sk-ant-test").decode("ascii"),
+    }])
+    write_universe_config_fields(udir, engine_source="byo_api_key")
+    return udir
+
+
+# ---- FLAG OFF (default) — byte-for-byte no-op -----------------------------
+
+
+def test_flag_off_still_works_unbound_universe(tmp_path, monkeypatch):
+    """DEFAULT OFF: an unbound universe that is worked today is STILL worked —
+    the gate is completely inert. This is the no-op proof."""
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    udir = _unbound_universe(tmp_path)
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert len(spawn_calls) == 2, "flag off must spawn every iteration (no-op)"
+    assert state.total_clean_exits == 2
+    assert state.idle_until_bound_count == 0
+    assert state.engine_misconfigured_count == 0
+
+
+def test_flag_off_ignores_misconfigured_binding(tmp_path, monkeypatch):
+    """Flag off = today's behavior: a broken binding is NOT gated (today there
+    is no binding check at all), so the universe is worked exactly as before."""
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    udir = tmp_path / "u-broken"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="self_hosted_endpoint")
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=1, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert len(spawn_calls) == 1
+    assert state.engine_misconfigured_count == 0
+
+
+# ---- FLAG ON — the gate is active -----------------------------------------
+
+
+def test_flag_on_skips_unbound_universe(tmp_path, monkeypatch):
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    udir = _unbound_universe(tmp_path)
+    spawn_calls, sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=2.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert spawn_calls == [], "unbound universe must NOT be spawned when gate on"
+    assert state.idle_until_bound_count == 2
+    assert state.total_clean_exits == 0
+    assert sleep_calls == [2.0, 2.0]
+
+
+def test_flag_on_works_bound_universe(tmp_path, monkeypatch):
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    udir = _bound_universe(tmp_path)
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert len(spawn_calls) == 2, "a bound universe is worked normally"
+    assert state.idle_until_bound_count == 0
+    assert state.total_clean_exits == 2
+
+
+def test_flag_on_fails_loud_on_misconfigured_binding(tmp_path, monkeypatch):
+    """A DECLARED-but-broken binding is gated LOUDLY (Hard Rule #8): the
+    universe is not spawned, and the misconfigured counter records it — it is
+    NOT silently treated as unbound-and-skipped."""
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    udir = tmp_path / "u-broken"
+    udir.mkdir()
+    # engine_source declared self_hosted_endpoint but no endpoint set.
+    write_universe_config_fields(udir, engine_source="self_hosted_endpoint")
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert spawn_calls == []
+    assert state.engine_misconfigured_count == 2
+    assert state.idle_until_bound_count == 0
+
+
+def test_flag_on_heartbeat_reports_idle_until_bound(tmp_path, monkeypatch):
+    """The honest liveness surface distinguishes idle-until-bound from wedged.
+
+    Capture every phase written (the final post-loop 'stopped' beat overwrites
+    the on-disk file, so record phases as they happen).
+    """
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    udir = _unbound_universe(tmp_path)
+    _spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    phases: list[str] = []
+    real_beat = cw.write_supervisor_heartbeat
+
+    def _record_beat(universe, state, *, phase, **kw):
+        phases.append(phase)
+        return real_beat(universe, state, phase=phase, **kw)
+
+    monkeypatch.setattr(cw, "write_supervisor_heartbeat", _record_beat)
+
+    cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=1, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert "idle_until_bound" in phases
