@@ -379,13 +379,21 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
 
     visibility_in = (kwargs.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
-    # Strip the reserved seed author so create_branch can never smuggle the
-    # seeder's ownership identity (Fable MAJOR): a user could otherwise
-    # create_branch author="reference-designs" + force-tag it and get their
-    # branch DELETED by the next boot's reserved-author prune.
+    # ``author`` must be a STRING — a non-string reaching ``.strip()`` crashes
+    # with AttributeError (Codex r12 #4). Reject cleanly at this public boundary
+    # (nothing persists), then strip the reserved seed author (Fable MAJOR): a
+    # user could otherwise create_branch author="reference-designs" + force-tag
+    # it and get their branch DELETED by the next boot's reserved-author prune.
     from tinyassets.branch_designs import _sanitize_reserved_author
 
-    create_author = _sanitize_reserved_author(kwargs.get("author")).strip()
+    author_in = kwargs.get("author")
+    if author_in is not None and not isinstance(author_in, str):
+        return json.dumps({
+            "error": (
+                f"author must be a string (got {type(author_in).__name__})."
+            ),
+        })
+    create_author = _sanitize_reserved_author(author_in).strip()
     branch = BranchDefinition(
         name=name,
         description=kwargs.get("description", ""),
@@ -2124,12 +2132,20 @@ def _staged_branch_from_spec(
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
-    # Strip the reserved seed author so a user build can never smuggle the
-    # seeder's ownership identity onto a branch (Finding 1c) — that would make a
-    # user row look seeder-owned and expose it to the reference reconcile/prune.
+    # ``author`` must be a STRING — a non-string (int/bool/list/dict) reaching
+    # ``.strip()`` crashes staging with AttributeError (Codex r12 #4). Reject it
+    # at this public boundary so build_branch returns a structured error and
+    # nothing persists; then strip the reserved seed author so a user build can
+    # never smuggle the seeder's ownership identity (Finding 1c).
     from tinyassets.branch_designs import _sanitize_reserved_author
 
-    spec_author = _sanitize_reserved_author(spec.get("author")).strip()
+    author_raw = spec.get("author")
+    if author_raw is not None and not isinstance(author_raw, str):
+        errors.append(
+            f"branch 'author' must be a string (got {type(author_raw).__name__})"
+        )
+        author_raw = None
+    spec_author = _sanitize_reserved_author(author_raw).strip()
     branch = BranchDefinition(
         name=(spec.get("name") or "").strip(),
         description=spec.get("description") or "",

@@ -310,6 +310,81 @@ def test_changed_artifact_after_rollback_seeds_fresh_active(data_dir, tmp_path, 
     assert active[0].branch_version_id != old_version_id
 
 
+def test_multi_version_rollback_not_reported_present(data_dir):
+    # Codex r12 #1 (CRITICAL): health must require an ACTIVE version whose content
+    # matches the AUTHORITATIVE hash. "Any active version" was bypassable — roll
+    # back the authoritative version while a DIFFERENT active version exists and
+    # the row keeps serving rolled-back content, yet health reported present.
+    import uuid
+    from datetime import datetime, timezone
+
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    auth_version = list_branch_versions(data_dir, fixed_id, limit=50)[0]
+
+    # Roll back the AUTHORITATIVE version, and inject a DIFFERENT active version
+    # (a stale content at a non-authoritative hash).
+    with _connect(data_dir) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET status='rolled_back', rolled_back_by='sec' "
+            "WHERE branch_version_id=?", (auth_version.branch_version_id,),
+        )
+        conn.execute(
+            "INSERT INTO branch_versions (branch_version_id, branch_def_id, "
+            "content_hash, snapshot_json, notes, publisher, published_at, "
+            "parent_version_id, status, watch_window_seconds) "
+            "VALUES (?,?,?,?,?,?,?,?, 'active', ?)",
+            (
+                f"{fixed_id}@stale-{uuid.uuid4().hex[:8]}", fixed_id,
+                "stale_hash_" + uuid.uuid4().hex, "{}", "stale", "x",
+                datetime.now(timezone.utc).isoformat(), None, 86400,
+            ),
+        )
+    # A DIFFERENT active version exists — but NOT at the authoritative hash.
+    assert any(v.status == "active" for v in list_branch_versions(data_dir, fixed_id, limit=50))
+
+    results = seed_reference_designs(data_dir)
+    # NOT present (the old bug); quarantined because the authoritative content
+    # is the rolled-back one with no active version at its hash.
+    assert tag not in results["present"], results
+    assert "<quarantined-rolled-back-content:patch_loop_reference>" in results["failed"]
+
+
+def test_interrupted_publication_mismatched_active_is_repaired(data_dir):
+    # Codex r12 #1: an ACTIVE version whose content != the authoritative artifact
+    # (interrupted / mismatched publication) must FAIL health and be repaired.
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    auth_id = list_branch_versions(data_dir, fixed_id, limit=50)[0].branch_version_id
+
+    # Corrupt the active version's content_hash so it no longer matches the
+    # authoritative artifact (a mismatched/interrupted publication).
+    with _connect(data_dir) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET content_hash='mismatched_hash' "
+            "WHERE branch_version_id=?", (auth_id,),
+        )
+
+    results = seed_reference_designs(data_dir)
+    # Detected as unhealthy and REPAIRED (a fresh active version at the
+    # authoritative hash), not reported present.
+    assert tag in results["seeded"], results
+    assert tag not in results["present"]
+    healthy = [
+        v for v in list_branch_versions(data_dir, fixed_id, limit=50)
+        if v.status == "active" and v.content_hash != "mismatched_hash"
+    ]
+    assert healthy, "a fresh active version at the authoritative hash must exist"
+
+
 def test_content_drift_is_repaired_not_present(data_dir):
     # Codex S1 review critical: a same-count content drift (a corrupted prompt,
     # topology counts unchanged) must be REPAIRED on re-seed, never reported
@@ -521,11 +596,14 @@ def test_stdio_startup_seeds_reference_designs(data_dir, monkeypatch):
     assert rows[0]["published"] is True
 
 
-def test_seed_reference_designs_best_effort_survives_failure(monkeypatch, caplog):
-    # The shared startup seam is best-effort: a seed crash logs loudly but
-    # NEVER raises. Finding 5: a TOTAL crash must NOT return a silent-green
-    # {'failed': []} — it records a loud '<seed-crashed>' marker and stashes the
-    # result on the checkable last_seed_result() health signal.
+def test_required_seed_crash_refuses_startup_readiness(monkeypatch, caplog):
+    # Codex r12 #3 (PLAN Providers principle: required seeded fixtures probe
+    # fail-loud, refuse to start). A crash that leaves the REQUIRED design
+    # unseeded must FAIL STARTUP READINESS — raise ReferenceDesignSeedError — not
+    # log-and-continue. It still stashes + logs the crash before raising so the
+    # failure is observable (Finding 5).
+    import pytest
+
     from tinyassets import universe_server
 
     def _boom(*a, **k):
@@ -535,11 +613,13 @@ def test_seed_reference_designs_best_effort_survives_failure(monkeypatch, caplog
         "tinyassets.branch_designs.seed_reference_designs", _boom,
     )
     with caplog.at_level("ERROR"):
-        results = universe_server._seed_reference_designs_best_effort()
-    assert results == {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
+        with pytest.raises(universe_server.ReferenceDesignSeedError):
+            universe_server._seed_reference_designs_best_effort()
     assert any("seeding crashed" in r.message for r in caplog.records)
-    # The crash is checkable after the fact — not a silent green boot.
-    assert universe_server.last_seed_result() == results
+    # The crash is stashed for observability even though startup is refused.
+    assert universe_server.last_seed_result() == {
+        "seeded": [], "present": [], "failed": ["<seed-crashed>"],
+    }
 
 
 def test_seed_failure_is_loud_but_contained(data_dir, monkeypatch, caplog):
@@ -795,6 +875,57 @@ def test_empty_package_fails_loud_on_required_artifact(data_dir, tmp_path, monke
     assert results["seeded"] == []
     assert results["present"] == []
     assert "<missing-required-artifact:patch_loop_reference>" in results["failed"], results
+
+
+def test_required_missing_refuses_startup_readiness(data_dir, tmp_path, monkeypatch):
+    # Codex r12 #3 (PLAN Providers principle): a REQUIRED design missing from the
+    # package must FAIL STARTUP READINESS — the startup seam RAISES so main()
+    # refuses to start, not log-and-continue.
+    import pytest
+
+    import tinyassets.branch_designs as bd
+    from tinyassets import universe_server
+
+    empty = tmp_path / "empty_designs_startup"
+    empty.mkdir()
+    monkeypatch.setattr(bd, "DESIGNS_DIR", empty)
+    with pytest.raises(universe_server.ReferenceDesignSeedError):
+        universe_server._seed_reference_designs_best_effort()
+
+
+def test_optional_design_failure_keeps_server_ready(data_dir, tmp_path, monkeypatch):
+    # Codex r12 #3: an OPTIONAL design failing to seed stays best-effort — the
+    # server stays READY (no raise) as long as every REQUIRED design seeded.
+    import tinyassets.branch_designs as bd
+    from tinyassets import universe_server
+
+    required = next(
+        a for a in bd.load_design_artifacts()
+        if a["design_id"] == "patch_loop_reference"
+    )
+    designs = tmp_path / "designs_mixed"
+    designs.mkdir()
+    (designs / "patch_loop_reference.json").write_text(
+        json.dumps(required), encoding="utf-8",
+    )
+    # An OPTIONAL artifact whose spec fails to build (entry_point -> missing node).
+    optional = {
+        "design_format": bd.DESIGN_FORMAT, "design_id": "optional_broken",
+        "design_version": 1,
+        "spec": {
+            "name": "broken", "entry_point": "ghost",
+            "node_defs": [], "edges": [], "state_schema": [],
+        },
+    }
+    (designs / "optional_broken.json").write_text(
+        json.dumps(optional), encoding="utf-8",
+    )
+    monkeypatch.setattr(bd, "DESIGNS_DIR", designs)
+
+    results = universe_server._seed_reference_designs_best_effort()  # must NOT raise
+    healthy = set(results["seeded"]) | set(results["present"])
+    assert any(t.startswith("design:patch_loop_reference@v") for t in healthy), results
+    assert "design:optional_broken@v1" in results["failed"], results
 
 
 def test_artifact_semantic_fields_survive_build(data_dir):

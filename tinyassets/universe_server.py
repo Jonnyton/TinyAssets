@@ -2257,6 +2257,12 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+class ReferenceDesignSeedError(RuntimeError):
+    """Raised at startup when a REQUIRED reference design fails to seed — refuses
+    startup readiness per PLAN (Providers principle: required seeded fixtures
+    probe fail-loud, do not serve as healthy with a required fixture absent)."""
+
+
 # Last reference-design seed outcome — a cheap, checkable seed-health signal
 # (Finding 5). None until the first seed runs on startup.
 _LAST_SEED_RESULT: dict[str, list[str]] | None = None
@@ -2273,16 +2279,24 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
     docs/design-notes/2026-07-15-user-patch-loop-reference-design.md; a
     registry/volume wipe can never delete a design class again).
 
-    Best-effort by contract: a broken seed logs loudly but NEVER raises — a
-    seed failure must not take down server startup (the canary + logs surface
-    it). Returns the seed results dict (``{"seeded", "present", "failed"}``).
+    Best-effort for OPTIONAL designs: a broken optional seed logs loudly but
+    never raises. Returns the seed results dict (``{"seeded","present","failed"}``).
 
     Detectability (Finding 5): a TOTAL crash must NOT return a silent-green
     ``{'failed': []}``. It records a ``<seed-crashed>`` marker in ``failed`` at
     ERROR level and the result is stashed in ``_LAST_SEED_RESULT`` so an
     operator / health surface can read the last seed outcome.
+
+    REQUIRED designs FAIL STARTUP READINESS (Codex r12 #3, PLAN Providers
+    principle "required seeded fixtures probe fail-loud — refuse to start"). If a
+    REQUIRED reference design (``REQUIRED_DESIGN_IDS``) did not seed healthy, this
+    RAISES ``ReferenceDesignSeedError`` so ``main()`` refuses to start rather than
+    serving as healthy with a required reference absent/broken. The result is
+    still logged + stashed before raising so the failure is observable.
     """
     global _LAST_SEED_RESULT
+    from tinyassets.branch_designs import missing_required_designs
+
     try:
         from tinyassets.api.helpers import _base_path
         from tinyassets.branch_designs import seed_reference_designs
@@ -2292,10 +2306,22 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
             logger.error("reference design seeding had failures: %s", results)
         else:
             logger.info("reference design seeding: %s", results)
-    except Exception:  # noqa: BLE001 - startup must survive seed failure
+    except Exception:  # noqa: BLE001 - capture, stash, then fail readiness below
         logger.exception("reference design seeding crashed")
         results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
     _LAST_SEED_RESULT = results
+
+    missing = missing_required_designs(results)
+    if missing:
+        # PLAN fail-closed: refuse startup readiness when a REQUIRED reference
+        # design failed to seed. Optional designs stay best-effort (above).
+        logger.error(
+            "REQUIRED reference design(s) failed to seed: %s — refusing startup "
+            "readiness (PLAN: required fixtures probe fail-loud)", missing,
+        )
+        raise ReferenceDesignSeedError(
+            f"required reference design(s) failed to seed: {missing}"
+        )
     return results
 
 

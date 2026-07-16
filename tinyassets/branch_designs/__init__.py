@@ -100,8 +100,15 @@ def _reference_branch_id(design_id: str, design_version: int) -> str:
 def _sanitize_reserved_author(author: str | None) -> str:
     """Strip the reserved seed author from a user-supplied value so it cannot be
     smuggled onto a user branch via build/fork/import (Finding 1c). Returns ""
-    when the value is the reserved author, else the value unchanged."""
-    return "" if (author or "").strip() == RESERVED_SEED_AUTHOR else (author or "")
+    when the value is the reserved author, else the value unchanged.
+
+    Defensive against non-strings (Codex r12 #4): only a genuine string is
+    stripped/compared. A non-string author is rejected at the public boundary
+    (build_branch / create_branch); here we never ``.strip()`` a non-string, so
+    even an internal caller can't trigger an AttributeError."""
+    if not isinstance(author, str):
+        return ""
+    return "" if author.strip() == RESERVED_SEED_AUTHOR else author
 
 
 @contextmanager
@@ -320,18 +327,24 @@ def _build_reference_branch(base_path: str | Path, artifact: dict, tag: str) -> 
 
 
 def _reference_row_is_healthy(
-    base_path: str | Path, expected_fp: str, branch_def_id: str,
+    base_path: str | Path,
+    expected_fp: str,
+    branch_def_id: str,
+    authoritative_hash: str,
 ) -> bool:
-    """Healthy = content matches the authoritative build (fingerprint, so drift
-    is caught), ``published`` set, and >=1 ACTIVE (non-rolled-back) branch
-    version.
+    """Healthy = the row's content matches the authoritative build (fingerprint),
+    ``published`` set, AND there is an ACTIVE branch version whose ``content_hash``
+    equals the AUTHORITATIVE content hash.
 
-    Active-not-just-present (S2 Codex gate, routed 2026-07-15): "any version
-    exists" is NOT health — after a rollback of the only version, the version
-    row stays in the table with ``status='rolled_back'`` but active-only
-    discovery no longer lists it. Counting it as present would leave the commons
-    with a rolled-back-invisible reference forever. Require an ACTIVE version so
-    a rolled-back-only reference is re-published on the next seed instead.
+    Active-MATCHING-hash, not any-active (Codex r12 #1): "any active version"
+    is bypassable — publish A, publish B, roll back B while A stays active leaves
+    the row serving rolled-back content B (a fork copies it) yet health reported
+    ``present`` because SOME active version (A) existed. Requiring the LIVE
+    (active) version to carry the authoritative hash means a rolled-back or
+    drifted live version fails health, so the reconcile repairs it (re-publishes
+    the authoritative content, subject to the rollback quarantine) or reports
+    failed. Also catches an interrupted publication (active version whose content
+    != the authoritative artifact).
     """
     from tinyassets.branch_versions import list_branch_versions
     from tinyassets.daemon_server import get_branch_definition
@@ -341,8 +354,11 @@ def _reference_row_is_healthy(
         return False
     if not full.get("published"):
         return False
-    versions = list_branch_versions(base_path, branch_def_id, limit=50)
-    return any((v.status or "active") == "active" for v in versions)
+    versions = list_branch_versions(base_path, branch_def_id, limit=200)
+    return any(
+        (v.status or "active") == "active" and v.content_hash == authoritative_hash
+        for v in versions
+    )
 
 
 def _overwrite_reference_content(
@@ -447,6 +463,11 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
             expected_fp = _content_fingerprint(
                 get_branch_definition(base_path, branch_def_id=correct_id)
             )
+            # The version content_hash the fixed_id row WOULD carry with the
+            # authoritative content — the single source of truth for both the
+            # health check (an ACTIVE version must match it) and the rollback
+            # quarantine. Computed once (Codex r12 #1).
+            auth_hash = _authoritative_version_hash(base_path, correct_id, fixed_id)
 
             existing = _get_branch_or_none(base_path, fixed_id)
             if existing is not None and (
@@ -461,13 +482,10 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 )
                 results["failed"].append(tag)
             elif existing is not None and _reference_row_is_healthy(
-                base_path, expected_fp, fixed_id
+                base_path, expected_fp, fixed_id, auth_hash
             ):
                 results["present"].append(tag)
-            elif _content_hash_quarantined(
-                base_path, fixed_id,
-                _authoritative_version_hash(base_path, correct_id, fixed_id),
-            ):
+            elif _content_hash_quarantined(base_path, fixed_id, auth_hash):
                 # Rollback QUARANTINE (Codex r11 #1): the authoritative content's
                 # hash matches a ROLLED-BACK version (and no active version has
                 # it). Re-activating it would resurrect deliberately-rolled-back
@@ -487,7 +505,9 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 # publish. Upsert on the fixed id => concurrency-safe.
                 _overwrite_reference_content(base_path, fixed_id, correct_id)
                 _publish_reference(base_path, fixed_id, tag)
-                if _reference_row_is_healthy(base_path, expected_fp, fixed_id):
+                if _reference_row_is_healthy(
+                    base_path, expected_fp, fixed_id, auth_hash
+                ):
                     logger.info("reference design seeded: %s -> %s", tag, fixed_id)
                     results["seeded"].append(tag)
                 else:
@@ -526,3 +546,24 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                         tag, correct_id,
                     )
     return results
+
+
+def missing_required_designs(results: dict[str, list[str]]) -> list[str]:
+    """Return the REQUIRED design_ids that did NOT seed healthy in ``results``.
+
+    PLAN (Providers module principle, PLAN.md): required on-disk seeded fixtures
+    must be probed at startup and fail loud if absent — "refuse to start", not
+    log-and-continue. A required design is healthy only if its tag landed in
+    ``seeded`` or ``present``; a total artifact-load failure fails every required
+    id. OPTIONAL designs are excluded here (they stay best-effort). Callers use
+    this to fail startup READINESS (Codex r12 #3).
+    """
+    if "<load-design-artifacts-failed>" in results.get("failed", []):
+        return sorted(REQUIRED_DESIGN_IDS)
+    healthy_tags = set(results.get("seeded", [])) | set(results.get("present", []))
+    unhealthy: list[str] = []
+    for design_id in sorted(REQUIRED_DESIGN_IDS):
+        prefix = f"design:{design_id}@v"
+        if not any(t.startswith(prefix) for t in healthy_tags):
+            unhealthy.append(design_id)
+    return unhealthy

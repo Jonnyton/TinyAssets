@@ -50,7 +50,10 @@ _PR_PACKET = {
         "title": "Fix export button", "body": "summary",
         "base_branch": "main", "head_branch": "auto/fix-export", "draft": False,
         "changes_json": {"src/export.py": "print('fixed')\n"},
-        "review_queue": {"enabled": True, "gate": "owner"},
+        "review_queue": {
+            "enabled": True, "gate": "owner", "request_ref": "req-42",
+            "verification": {"verdict": "pass", "evidence": {"reason": "all green"}},
+        },
     },
 }
 _MERGE_PACKET = {
@@ -273,6 +276,10 @@ def test_reference_declares_real_effects_and_sandbox_node_kinds():
     present_prompt = nodes["present"]["prompt_template"]
     assert "changes_json" in present_prompt
     assert "review_queue" in present_prompt
+    # Codex r12 #2: review_queue carries the originating request reference +
+    # verification metadata S4's enqueue/acceptance path reads.
+    assert "request_ref" in present_prompt
+    assert "verification" in present_prompt
 
     # requires_sandbox + effects are REAL NodeDefinition fields — they survive
     # the build (node_kind/capabilities are artifact-only data the build drops).
