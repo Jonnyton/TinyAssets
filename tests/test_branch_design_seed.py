@@ -137,6 +137,35 @@ def test_seeded_reference_is_discoverable_in_published_listing(data_dir):
     assert bdid in ids, listed
 
 
+def test_seeded_reference_is_discoverable_as_sandbox_requiring(data_dir):
+    # Codex S1 round-4 CRITICAL (Finding 2): the reference patch loop's
+    # draft_patch node is a coding agent that MUST run sandboxed. The artifact
+    # carries requires_sandbox=true and build_branch must thread it, so the
+    # seeded reference surfaces under the requires_sandbox=any filter — and is
+    # excluded by requires_sandbox=none (design-only branches).
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.daemon_server import list_branch_definitions
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    bdid = list_branch_definitions(data_dir, tag=tag)[0]["branch_def_id"]
+
+    any_listed = json.loads(
+        _ext_branch_list({"scope": "published", "requires_sandbox": "any"})
+    )
+    any_ids = {b["branch_def_id"] for b in any_listed["branches"]}
+    assert bdid in any_ids, any_listed
+    # The listing summary also reports the sandbox flag for this branch.
+    summary = next(b for b in any_listed["branches"] if b["branch_def_id"] == bdid)
+    assert summary["has_sandbox_nodes"] is True
+
+    none_listed = json.loads(
+        _ext_branch_list({"scope": "published", "requires_sandbox": "none"})
+    )
+    none_ids = {b["branch_def_id"] for b in none_listed["branches"]}
+    assert bdid not in none_ids, none_listed
+
+
 def test_seed_repairs_incomplete_prior_seed(data_dir):
     # Codex S1 review: a prior seed that crashed after branch build but before
     # publish leaves a tagged row that never appears in the published listing.
@@ -271,6 +300,46 @@ def test_seed_reference_designs_is_idempotent(data_dir):
     assert len(rows) == 1                    # exactly one, never duplicated
 
 
+def test_stdio_startup_seeds_reference_designs(data_dir, monkeypatch):
+    # Codex S1 round-4 CRITICAL (Finding 1): stdio/MCPB startup goes straight
+    # to mcp.run() and never runs the Streamable-HTTP lifespan, so the seed
+    # must live on a transport-agnostic startup seam (top of main()). Stub
+    # mcp.run so the boot returns, then assert the reference IS seeded — a
+    # stdio boot must NOT leave the commons with zero reference designs.
+    from tinyassets import universe_server
+    from tinyassets.daemon_server import list_branch_definitions
+
+    ran: list[tuple] = []
+    monkeypatch.setattr(
+        universe_server.mcp, "run", lambda *a, **k: ran.append((a, k)),
+    )
+
+    universe_server.main(transport="stdio")
+
+    assert ran, "stdio transport must reach mcp.run()"
+    tag = design_tag("patch_loop_reference", 1)
+    rows = list_branch_definitions(data_dir, tag=tag)
+    assert len(rows) == 1, "stdio startup must seed the reference design"
+    assert rows[0]["published"] is True
+
+
+def test_seed_reference_designs_best_effort_survives_failure(monkeypatch, caplog):
+    # The shared startup seam is best-effort: a seed crash logs loudly but
+    # NEVER raises, so a broken seed can't take down server startup.
+    from tinyassets import universe_server
+
+    def _boom(*a, **k):
+        raise RuntimeError("seed exploded")
+
+    monkeypatch.setattr(
+        "tinyassets.branch_designs.seed_reference_designs", _boom,
+    )
+    with caplog.at_level("ERROR"):
+        results = universe_server._seed_reference_designs_best_effort()
+    assert results == {"seeded": [], "present": [], "failed": []}
+    assert any("seeding crashed" in r.message for r in caplog.records)
+
+
 def test_seed_failure_is_loud_but_contained(data_dir, monkeypatch, caplog):
     # A broken seed must be recorded + logged loudly, never raise (startup
     # survives; the canary/logs surface it).
@@ -355,13 +424,6 @@ def test_dead_goal_canonical_does_not_fall_through_to_env(data_dir, monkeypatch)
         monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g-inv")
         monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", live)
         bdid, reason = resolve_investigation_handler_detail(data_dir)
-    assert bdid == ""                             # fails, does NOT use live env
-    assert reason.startswith("handler_not_found:")
-    assert live not in reason
-    return
-    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", live)
-
-    bdid, reason = resolve_investigation_handler_detail(data_dir)
     assert bdid == ""                             # fails, does NOT use live env
     assert reason.startswith("handler_not_found:")
     assert live not in reason

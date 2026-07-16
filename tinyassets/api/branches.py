@@ -1616,6 +1616,17 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             f"node '{nid}' strict_input_isolation must be a JSON boolean "
             "(true or false)."
         )
+    # A node that shells out to a sandboxed CLI (e.g. the patch loop's coding
+    # ``draft_patch`` node) declares ``requires_sandbox``. NodeDefinition
+    # already carries the field and the compiler / list filter read it, but
+    # this authoring plumbing was silently dropping it — so a seeded reference
+    # with a sandbox node showed up under ``requires_sandbox=none``. Thread it.
+    requires_sandbox = raw.get("requires_sandbox", False)
+    if not isinstance(requires_sandbox, bool):
+        return (
+            f"node '{nid}' requires_sandbox must be a JSON boolean "
+            "(true or false)."
+        )
 
     phase = (raw.get("phase") or "").strip() or "custom"
     in_keys, err = _coerce_node_keys(raw.get("input_keys"), "input_keys")
@@ -1715,6 +1726,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             output_keys=out_keys,
             tools_allowed=tools_allowed,
             strict_input_isolation=strict_input_isolation,
+            requires_sandbox=requires_sandbox,
             source_code=source_code,
             prompt_template=prompt_template,
             model_hint=model_hint,

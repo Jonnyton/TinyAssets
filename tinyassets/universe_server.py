@@ -2217,23 +2217,9 @@ def create_streamable_http_app() -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
-        # Reference branch designs: idempotent re-seed at every boot so a
-        # registry/volume wipe can never delete a design class again (S1 of
-        # docs/design-notes/2026-07-15-user-patch-loop-reference-design.md).
-        # Best-effort: a broken seed logs loudly but never blocks startup.
-        try:
-            from tinyassets.api.helpers import _base_path
-            from tinyassets.branch_designs import seed_reference_designs
-
-            _seed_results = seed_reference_designs(_base_path())
-            if _seed_results["failed"]:
-                logger.error(
-                    "reference design seeding had failures: %s", _seed_results,
-                )
-            else:
-                logger.info("reference design seeding: %s", _seed_results)
-        except Exception:  # noqa: BLE001 - startup must survive seed failure
-            logger.exception("reference design seeding crashed")
+        # Reference branch designs are seeded on the transport-agnostic
+        # startup seam in ``main()`` (see ``_seed_reference_designs_best_effort``),
+        # so stdio/MCPB boots — which never build this ASGI app — get them too.
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
                 legacy_app.router.lifespan_context(legacy_app),
@@ -2271,6 +2257,36 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
+    """Idempotently re-seed the durable reference branch designs at startup —
+    transport-agnostic so BOTH stdio/MCPB and Streamable-HTTP boots get the
+    commons reference designs.
+
+    stdio/MCPB startup goes straight to ``mcp.run()`` and never builds the
+    Streamable-HTTP ASGI app, so seeding cannot live in that app's lifespan —
+    it belongs on the shared ``main()`` seam invoked for every transport (S1 of
+    docs/design-notes/2026-07-15-user-patch-loop-reference-design.md; a
+    registry/volume wipe can never delete a design class again).
+
+    Best-effort by contract: a broken seed logs loudly but NEVER raises — a
+    seed failure must not take down server startup (the canary + logs surface
+    it). Returns the seed results dict (``{"seeded", "present", "failed"}``).
+    """
+    try:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.branch_designs import seed_reference_designs
+
+        results = seed_reference_designs(_base_path())
+        if results["failed"]:
+            logger.error("reference design seeding had failures: %s", results)
+        else:
+            logger.info("reference design seeding: %s", results)
+        return results
+    except Exception:  # noqa: BLE001 - startup must survive seed failure
+        logger.exception("reference design seeding crashed")
+        return {"seeded": [], "present": [], "failed": []}
+
+
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -2288,6 +2304,10 @@ def main(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,
     )
+
+    # Transport-agnostic startup seam: seed reference designs before dispatch
+    # so stdio/MCPB (which never builds the HTTP app) is seeded too.
+    _seed_reference_designs_best_effort()
 
     if transport == "streamable-http":
         app = create_streamable_http_app()

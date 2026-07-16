@@ -22,6 +22,8 @@
       {
         "node_id": "draft_patch",
         "display_name": "Draft the patch (coding agent)",
+        "requires_sandbox": true,
+        "node_kind": "coding",
         "prompt_template": "Implement the fix for target_repo={target_repo} on a new branch, following the investigation. Write the minimal correct change plus regression tests. If reshape_notes is non-empty, it contains the owner's send-back notes from review — apply them. Produce: branch name, commit(s), and a PR-ready description linking the originating request. Investigation: {investigate_output}. Owner reshape notes: {reshape_notes}"
       },
       {
