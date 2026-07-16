@@ -579,12 +579,14 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     for r in rows:
         published_version_id = None
         if scope == "published":
-            from tinyassets.branch_versions import list_branch_versions
-
-            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
-            if not versions:
+            # Newest ACTIVE version only — a rolled-back version must not stay
+            # discoverable (Codex S2 latest-model, finding 3).
+            active = _newest_active_branch_version(
+                _base_path(), r.get("branch_def_id", ""),
+            )
+            if active is None:
                 continue
-            published_version_id = versions[0].branch_version_id
+            published_version_id = active.branch_version_id
         elif scope == "mine":
             if (r.get("author") or "") != actor:
                 continue
@@ -2310,6 +2312,12 @@ def _staged_branch_from_spec(
                 branch.entry_point = parent_copy.entry_point
             if "state_schema" not in spec:
                 branch.state_schema = list(parent_copy.state_schema)
+            # Branch-level routing/concurrency inherit through a fork too, or a
+            # remix silently loses them (Codex S2 F2).
+            if "default_llm_policy" not in spec:
+                branch.default_llm_policy = parent_copy.default_llm_policy
+            if "concurrency_budget" not in spec:
+                branch.concurrency_budget = parent_copy.concurrency_budget
 
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
@@ -2336,6 +2344,41 @@ def _staged_branch_from_spec(
         entry = (graph_blob.get("entry_point") or "").strip()
     if entry:
         branch.entry_point = entry
+
+    # Branch-level knobs: explicit spec values override any inherited default,
+    # with typed validation and no silent coercion (Codex S2 F2).
+    if "default_llm_policy" in spec:
+        raw_policy = spec.get("default_llm_policy")
+        if raw_policy is None:
+            branch.default_llm_policy = None
+        elif isinstance(raw_policy, dict):
+            from tinyassets.branches import _validate_llm_policy_shape
+
+            policy_errors = _validate_llm_policy_shape(
+                raw_policy, context="default_llm_policy",
+            )
+            if policy_errors:
+                errors.extend(policy_errors)
+            else:
+                branch.default_llm_policy = raw_policy
+        else:
+            errors.append(
+                "default_llm_policy must be a JSON object or null, got "
+                f"{type(raw_policy).__name__}"
+            )
+    if "concurrency_budget" in spec:
+        raw_budget = spec.get("concurrency_budget")
+        if (
+            isinstance(raw_budget, bool)
+            or not isinstance(raw_budget, int)
+            or raw_budget < 1
+        ):
+            errors.append(
+                "concurrency_budget must be a positive integer, got "
+                f"{type(raw_budget).__name__} ({raw_budget!r})"
+            )
+        else:
+            branch.concurrency_budget = raw_budget
 
     return branch, errors
 
@@ -2589,6 +2632,10 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
         # _state_schema_defaults finds the seed value at runtime.
         target_field["default_value"] = default
         target_field["default"] = default
+        # Mark this default as a personal BINDING value (Codex S2 F1a): export
+        # redacts bound values so a user's repo/credential/intake binding never
+        # travels in a portable artifact or a listing others can read.
+        target_field["bound"] = True
         return ""
     if name == "update_node":
         nid = (op.get("node_id") or "").strip()
@@ -3475,18 +3522,40 @@ def _node_def_to_design_spec(nd: Any) -> dict[str, Any]:
     return spec
 
 
+# A state field is a personal BINDING once the owner sets its default via the
+# set_state_field_default op (which marks it ``bound``). Personal binding VALUES
+# (repo identity, vault/credential refs, intake sources) must never travel in a
+# portable artifact or a listing another user can read — export carries the
+# field SCHEMA, never the bound value (Codex S2 latest-model, finding 1a).
+_STATE_FIELD_VALUE_KEYS = ("default_value", "default")
+
+
 def _state_field_to_design_spec(field: dict[str, Any]) -> dict[str, Any]:
-    """Pass a state_schema entry through wholesale.
+    """Serialize a state_schema entry, redacting personal binding VALUES.
 
-    Preserves ``default_value`` (the BIND surface) plus reducer/description and
-    any other key, so a bound branch round-trips: export -> import reproduces
-    the same target_repo / credential_ref / merge_policy bindings.
+    - Design defaults (declared at build time, no ``bound`` marker) travel.
+    - Bound values (set via BIND / set_state_field_default) are REDACTED: the
+      artifact keeps the field slot (name/type/description/reducer) but never
+      the value. The ``bound`` marker itself is owner-only and never travels.
     """
-    return dict(field)
+    spec = dict(field)
+    spec.pop("bound", None)
+    if field.get("bound"):
+        for value_key in _STATE_FIELD_VALUE_KEYS:
+            spec.pop(value_key, None)
+    return spec
 
 
-def _branch_to_design_spec(branch: Any) -> dict[str, Any]:
+def _branch_to_design_spec(
+    branch: Any, *, metadata_branch: Any = None,
+) -> dict[str, Any]:
     """Reconstruct a build_branch-compatible spec from a BranchDefinition.
+
+    ``branch`` supplies the TOPOLOGY (nodes/edges/state/skills) — for export
+    this is the immutable active-version snapshot (finding 3). Branch-level
+    METADATA (name/description/domain/goal/tags + the F2 routing/concurrency
+    knobs) is not part of the content-hashed snapshot, so it comes from
+    ``metadata_branch`` (the live row) when provided, else from ``branch``.
 
     Topology lives in an embedded graph blob on the raw registry row, so the
     caller MUST pass a rebuilt ``BranchDefinition`` (from_dict), never the raw
@@ -3494,10 +3563,11 @@ def _branch_to_design_spec(branch: Any) -> dict[str, Any]:
     """
     from tinyassets.branch_designs import REFERENCE_TAG
 
+    meta = metadata_branch if metadata_branch is not None else branch
     spec: dict[str, Any] = {
-        "name": branch.name,
-        "description": branch.description,
-        "domain_id": branch.domain_id,
+        "name": meta.name,
+        "description": meta.description,
+        "domain_id": meta.domain_id,
         "entry_point": branch.entry_point,
         "node_defs": [_node_def_to_design_spec(nd) for nd in branch.node_defs],
         "edges": [
@@ -3511,12 +3581,19 @@ def _branch_to_design_spec(branch: Any) -> dict[str, Any]:
             _state_field_to_design_spec(f) for f in branch.state_schema
         ],
     }
-    if branch.goal_id:
-        spec["goal_id"] = branch.goal_id
+    if meta.goal_id:
+        spec["goal_id"] = meta.goal_id
+    # Branch-level routing/cost/concurrency knobs must round-trip too, or a
+    # remix silently loses provider routing + concurrency (Codex S2 F2).
+    if getattr(meta, "default_llm_policy", None) is not None:
+        spec["default_llm_policy"] = meta.default_llm_policy
+    concurrency = getattr(meta, "concurrency_budget", None)
+    if concurrency is not None:
+        spec["concurrency_budget"] = concurrency
     # Drop the seed-only tags — an exported/imported copy is not the seeded
     # reference and must not masquerade as it (idempotency tag + reference tag).
     tags = [
-        t for t in (branch.tags or [])
+        t for t in (meta.tags or [])
         if t != REFERENCE_TAG and not str(t).startswith("design:")
     ]
     if tags:
@@ -3524,6 +3601,22 @@ def _branch_to_design_spec(branch: Any) -> dict[str, Any]:
     if getattr(branch, "skills", None):
         spec["skills"] = branch.skills
     return spec
+
+
+def _newest_active_branch_version(base_path: Any, branch_def_id: str) -> Any:
+    """Newest ACTIVE published version of a branch, or ``None``.
+
+    A rolled-back / superseded version must never be listed, remixed, or
+    exported (Codex S2 latest-model, finding 3): select the newest version
+    whose ``status == "active"``, deriving from that immutable snapshot rather
+    than the mutable branch row.
+    """
+    from tinyassets.branch_versions import list_branch_versions
+
+    for version in list_branch_versions(base_path, branch_def_id, limit=200):
+        if (getattr(version, "status", "active") or "active") == "active":
+            return version
+    return None
 
 
 def _load_owned_or_public_branch(bid_or_name: str) -> tuple[Any, str]:
@@ -3558,6 +3651,8 @@ def _ext_branch_export_design(kwargs: dict[str, Any]) -> str:
     ``_load_owned_or_public_branch``.
     """
     from tinyassets.branch_designs import wrap_spec_as_design_artifact
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branches import BranchDefinition
 
     branch, err = _load_owned_or_public_branch(
         kwargs.get("branch_def_id", "") or kwargs.get("name", ""),
@@ -3565,7 +3660,27 @@ def _ext_branch_export_design(kwargs: dict[str, Any]) -> str:
     if err:
         return err
 
-    spec = _branch_to_design_spec(branch)
+    # Topology comes from the newest ACTIVE version's immutable snapshot, never
+    # the mutable row (finding 3): a rolled-back topology is not exportable.
+    # Branch-level metadata (name/description/routing) is not in the snapshot,
+    # so it comes from the row. A published-but-all-rolled-back branch refuses;
+    # an unpublished draft (no versions) exports its live row for the owner.
+    active = _newest_active_branch_version(_base_path(), branch.branch_def_id)
+    if active is not None:
+        topology_branch = BranchDefinition.from_dict(active.snapshot)
+    elif list_branch_versions(_base_path(), branch.branch_def_id, limit=1):
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"Branch '{branch.branch_def_id}' has no active published "
+                "version (its latest versions were rolled back); nothing safe "
+                "to export. Publish a fresh version first."
+            ),
+        })
+    else:
+        topology_branch = branch  # unpublished draft — the row is the only state
+
+    spec = _branch_to_design_spec(topology_branch, metadata_branch=branch)
     design_id = (kwargs.get("design_id") or branch.branch_def_id or "").strip()
     try:
         design_version = int(kwargs.get("design_version") or 1)
@@ -3683,13 +3798,31 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
     """
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        delete_branch_definition,
+        get_branch_definition,
+        save_branch_definition,
+    )
 
     branch, err = _load_owned_or_public_branch(kwargs.get("branch_def_id", ""))
     if err:
         return err
 
-    versions = list_branch_versions(_base_path(), branch.branch_def_id, limit=1)
-    if not versions:
+    # Remix the newest ACTIVE version only — a rolled-back / superseded version
+    # must not be remixable (finding 3).
+    active = _newest_active_branch_version(_base_path(), branch.branch_def_id)
+    if active is None:
+        if list_branch_versions(_base_path(), branch.branch_def_id, limit=1):
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    f"Branch '{branch.branch_def_id}' has no active published "
+                    "version (its latest versions were rolled back); a "
+                    "regressed design is not remixable. Publish a fresh "
+                    "version first."
+                ),
+            })
         return json.dumps({
             "status": "rejected",
             "error": (
@@ -3698,7 +3831,7 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
                 "publish a version, or import an exported artifact instead."
             ),
         })
-    parent_version_id = versions[0].branch_version_id
+    parent_version_id = active.branch_version_id
 
     child_name = (kwargs.get("name") or "").strip() or f"{branch.name} (remix)"
     spec = {
@@ -3716,21 +3849,58 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
         return out_str
 
     child_id = out["branch_def_id"]
+
+    # Atomic provenance (finding 4): the child exists only if its lineage edge
+    # is recorded. On any provenance failure (returned-error OR raised
+    # exception) delete the orphan child and fail loudly — never a fake success.
     from tinyassets.api.market import _action_record_remix
 
-    provenance = json.loads(_action_record_remix({
-        "parent_branch_def_id": branch.branch_def_id,
-        "child_branch_def_id": child_id,
-        "contribution_kind": "remix",
-        "actor_id": _current_actor(),
-    }))
+    try:
+        provenance = json.loads(_action_record_remix({
+            "parent_branch_def_id": branch.branch_def_id,
+            "child_branch_def_id": child_id,
+            "contribution_kind": "remix",
+            "actor_id": _current_actor(),
+        }))
+    except Exception as exc:  # noqa: BLE001 - compensate then fail loud
+        delete_branch_definition(_base_path(), branch_def_id=child_id)
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "remix aborted: recording provenance raised "
+                f"{type(exc).__name__}: {exc}. The orphan copy was removed."
+            ),
+        })
+    if not isinstance(provenance, dict) or provenance.get("error"):
+        delete_branch_definition(_base_path(), branch_def_id=child_id)
+        reason = (
+            provenance.get("error")
+            if isinstance(provenance, dict) else "malformed provenance response"
+        )
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"remix aborted: recording provenance failed ({reason}). "
+                "The orphan copy was removed."
+            ),
+        })
+
+    # A remix is the caller's PRIVATE working copy by default (finding 1b): its
+    # bound values must never become discoverable/readable by another user. The
+    # owner explicitly publishes/opens it to share the DESIGN (export redacts
+    # bound values regardless).
+    child_def = BranchDefinition.from_dict(
+        get_branch_definition(_base_path(), branch_def_id=child_id),
+    )
+    child_def.visibility = "private"
+    save_branch_definition(_base_path(), branch_def=child_def.to_dict())
 
     # Honest next-steps guidance: do NOT promise "bind and run" when the design
     # carries a coding/sandbox-required node. Such a node runs ONLY on an
     # attested-sandbox host — after the S1->S3->S2 merge the runtime gate fails
     # it closed without attestation. Derived from node data so it is correct on
     # this branch and after rebase (Codex S2 adapt round 3, finding 1(i)).
-    needs_sandbox = _design_needs_attested_sandbox(branch.node_defs)
+    needs_sandbox = _design_needs_attested_sandbox(child_def.node_defs)
     if needs_sandbox:
         guidance = (
             f"Remixed '{branch.name}' into your own branch '{child_name}' "
@@ -3754,6 +3924,7 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
         "parent_branch_def_id": branch.branch_def_id,
         "fork_from": parent_version_id,
         "node_count": out.get("node_count"),
+        "visibility": "private",
         "requires_attested_sandbox": needs_sandbox,
         "provenance": provenance,
         "text": guidance,

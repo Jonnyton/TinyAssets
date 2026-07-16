@@ -2100,7 +2100,8 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     ) or "public"
     fork_from = row["fork_from"] if "fork_from" in row_keys else None
     skills = _json_loads(row["skills_json"], []) if "skills_json" in row_keys else []
-    return {
+    graph = _json_loads(row["graph_json"], {})
+    result = {
         "branch_def_id": row["branch_def_id"],
         "name": row["name"],
         "description": row["description"],
@@ -2111,7 +2112,7 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "skills": skills,
         "parent_def_id": row["parent_def_id"],
         "entry_point": row["entry_point"],
-        "graph": _json_loads(row["graph_json"], {}),
+        "graph": graph,
         "node_defs": _json_loads(row["node_defs_json"], []),
         "state_schema": _json_loads(row["state_schema_json"], []),
         "published": bool(row["published"]),
@@ -2122,6 +2123,14 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "visibility": visibility,
         "fork_from": fork_from,
     }
+    # Surface the branch-level knobs stored in graph_json as top-level keys so
+    # BranchDefinition.from_dict picks them up (Codex S2 F2).
+    if isinstance(graph, dict):
+        if graph.get("default_llm_policy") is not None:
+            result["default_llm_policy"] = graph["default_llm_policy"]
+        if graph.get("concurrency_budget") is not None:
+            result["concurrency_budget"] = graph["concurrency_budget"]
+    return result
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2154,6 +2163,15 @@ def save_branch_definition(
         "conditional_edges": branch_def.get("conditional_edges", []),
         "entry_point": branch_def.get("entry_point", ""),
     }
+    # Branch-level routing/concurrency knobs ride the existing graph_json blob
+    # so they persist without a schema migration (Codex S2 F2). Previously
+    # dropped on save -> always None on reload (the root of the export/import
+    # drop the reviewer probed). _canonical_snapshot excludes these keys, so
+    # version content hashes are unaffected.
+    if branch_def.get("default_llm_policy") is not None:
+        graph["default_llm_policy"] = branch_def["default_llm_policy"]
+    if branch_def.get("concurrency_budget") is not None:
+        graph["concurrency_budget"] = branch_def["concurrency_budget"]
 
     # Legacy compat: if "nodes" key exists and graph_nodes doesn't,
     # store nodes in graph_json (migration path from old format)

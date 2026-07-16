@@ -108,12 +108,18 @@ def test_remix_forks_published_design_with_provenance(data_dir):
     # The forked child inherited the repo-blind unbound params.
     branch = _load(data_dir, child)
     field_names = {f["name"] for f in branch.state_schema}
-    assert {"target_repo", "credential_ref", "merge_policy"} <= field_names
-    # ...and it is OWNED by the remixer.
+    # target_repo + merge_policy are the reference's stable binding slots; we
+    # avoid asserting credential_ref (S1 is removing it from the reference per
+    # its own security gate) so this stays robust across the S1->S3->S2 rebase.
+    assert {"target_repo", "merge_policy"} <= field_names
+    # ...and it is OWNED by the remixer, PRIVATE by default (bindings stay the
+    # owner's — finding 1b), with the lineage pointer recorded.
     assert branch.author == "alice"
+    assert branch.visibility == "private"
+    assert out["visibility"] == "private"
     assert branch.fork_from  # lineage pointer recorded on the definition too
 
-    # It reads back through the canonical single-branch handle as well.
+    # It reads back through the canonical single-branch handle as well (owner).
     seen = json.loads(read_graph(target="branch", branch_id=child))
     assert seen["branch_def_id"] == child
 
@@ -142,11 +148,11 @@ def test_bind_sets_defaults_and_is_author_gated(data_dir, monkeypatch):
     parent = _reference_bid(data_dir)
     child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
 
+    # Bind the reference's stable slots (target_repo/merge_policy) — see note in
+    # test_remix_forks_* re avoiding credential_ref for rebase robustness.
     bind_ops = json.dumps([
         {"op": "set_state_field_default", "name": "target_repo",
          "default_value": "github.com/alice/game"},
-        {"op": "set_state_field_default", "name": "credential_ref",
-         "default_value": "vault://alice/gh-pat"},
         {"op": "set_state_field_default", "name": "merge_policy",
          "default_value": "manual"},
     ])
@@ -171,7 +177,6 @@ def test_bind_sets_defaults_and_is_author_gated(data_dir, monkeypatch):
         f["name"]: f.get("default_value") for f in bound.state_schema
     }
     assert defaults["target_repo"] == "github.com/alice/game"
-    assert defaults["credential_ref"] == "vault://alice/gh-pat"
     assert defaults["merge_policy"] == "manual"
 
 
@@ -199,7 +204,9 @@ def test_bind_unknown_field_is_rejected(data_dir):
 # ── EXPORT + IMPORT round-trip ─────────────────────────────────────────────
 
 
-def test_export_import_round_trips_equivalent_branch(data_dir):
+def test_export_import_round_trips_topology_without_bound_values(data_dir):
+    # The design (TOPOLOGY + field SCHEMA) round-trips, but personal BINDING
+    # values are REDACTED on export and therefore do NOT travel (finding 1a).
     seed_reference_designs(data_dir)
     parent = _reference_bid(data_dir)
     child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
@@ -216,6 +223,12 @@ def test_export_import_round_trips_equivalent_branch(data_dir):
     artifact = exported["artifact"]
     assert artifact["design_format"] == "tinyassets.branch_design/v1"
     assert artifact["spec"]["node_defs"]
+    # The artifact carries the field SLOTS but never the bound VALUES.
+    art_fields = {f["name"]: f for f in artifact["spec"]["state_schema"]}
+    assert {"target_repo", "merge_policy"} <= set(art_fields)
+    assert "default_value" not in art_fields["target_repo"]
+    assert "default_value" not in art_fields["merge_policy"]
+    assert "bound" not in art_fields["target_repo"]  # owner marker never travels
 
     # IMPORT the artifact back -> a NEW owned branch.
     imported = json.loads(write_graph(
@@ -225,7 +238,7 @@ def test_export_import_round_trips_equivalent_branch(data_dir):
     new_bid = imported["branch_def_id"]
     assert new_bid != child
 
-    # Round-trip equivalence: same topology, entry point, and BOUND defaults.
+    # Topology round-trips; the bound VALUES did NOT.
     src = _load(data_dir, child)
     dst = _load(data_dir, new_bid)
 
@@ -241,11 +254,10 @@ def test_export_import_round_trips_equivalent_branch(data_dir):
         )
 
     assert _topology(src) == _topology(dst)
-    dst_defaults = {
-        f["name"]: f.get("default_value") for f in dst.state_schema
-    }
-    assert dst_defaults["target_repo"] == "github.com/alice/game"
-    assert dst_defaults["merge_policy"] == "timer"
+    dst_fields = {f["name"]: f for f in dst.state_schema}
+    assert {"target_repo", "merge_policy"} <= set(dst_fields)   # slots survive
+    assert not dst_fields["target_repo"].get("default_value")   # value did not
+    assert not dst_fields["merge_policy"].get("default_value")
     # Import is a fresh branch, not a fork — no inherited lineage pointer.
     assert not dst.fork_from
 
@@ -630,6 +642,241 @@ def test_remixed_reference_coding_node_fails_closed_integration(data_dir, monkey
         "remixed reference coding node must fail closed without "
         f"TINYASSETS_OS_SANDBOX_ATTESTED; got {result}"
     )
+
+
+# ── Binding privacy: values never travel / leak (Codex latest-model F1) ─────
+
+
+def test_bound_design_is_private_and_hidden_from_other_users(data_dir, monkeypatch):
+    _actor(monkeypatch, "alice")
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
+    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+        {"op": "set_state_field_default", "name": "target_repo",
+         "default_value": "github.com/alice/super-secret-repo"},
+    ]))
+
+    _actor(monkeypatch, "bob")
+    # Bob cannot DISCOVER Alice's private remix...
+    listed = {
+        b["branch_def_id"] for b in json.loads(read_graph(target="designs"))["branches"]
+    }
+    assert child not in listed
+    # ...nor EXPORT it (author-gated "not found") — her binding never reaches him.
+    exp = json.loads(read_graph(target="design", branch_id=child))
+    assert "not found" in exp["error"].lower()
+
+
+# ── Branch-level fields round-trip (Codex latest-model F2) ──────────────────
+
+
+def test_branch_level_fields_round_trip(data_dir):
+    from tinyassets.api.branches import _ext_branch_build
+
+    policy = {"preferred": {"provider": "codex", "model": "gpt-5"}}
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "routed loop",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "default_llm_policy": policy,
+        "concurrency_budget": 3,
+    })}))["branch_def_id"]
+    src = _load(data_dir, bid)
+    assert src.default_llm_policy == policy
+    assert src.concurrency_budget == 3
+
+    exported = json.loads(read_graph(target="design", branch_id=bid))
+    assert exported["artifact"]["spec"]["default_llm_policy"] == policy
+    assert exported["artifact"]["spec"]["concurrency_budget"] == 3
+    imported = json.loads(
+        write_graph(target="design", artifact_json=exported["artifact_json"]),
+    )
+    assert imported["status"] == "imported", imported
+    dst = _load(data_dir, imported["branch_def_id"])
+    assert dst.default_llm_policy == policy
+    assert dst.concurrency_budget == 3
+
+
+def test_import_rejects_hostile_branch_level_types(data_dir):
+    from tinyassets.daemon_server import list_branch_definitions
+
+    base = {
+        "name": "hostile budget",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "concurrency_budget": "lots",  # not a positive integer
+    }
+    out = json.loads(write_graph(target="design", artifact_json=json.dumps(base)))
+    assert out["status"] == "rejected"
+    assert "concurrency_budget" in json.dumps(out)
+    assert "hostile budget" not in {
+        b.get("name") for b in list_branch_definitions(data_dir)
+    }
+
+
+# ── Rolled-back versions are not listed/remixed/exported (F3) ───────────────
+
+
+def test_no_active_version_hides_and_refuses(data_dir):
+    from tinyassets.api.branches import _ext_branch_build
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.rollback import execute_rollback_set
+
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "rollback design",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    v1 = publish_branch_version(
+        data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+        publisher="alice",
+    ).branch_version_id
+
+    # Discoverable + remixable while active.
+    assert bid in {
+        b["branch_def_id"] for b in json.loads(read_graph(target="designs"))["branches"]
+    }
+
+    res = execute_rollback_set(data_dir, [v1], reason="regression", set_by="host")
+    assert res["status"] == "ok", res
+
+    # Its only version was rolled back -> hidden, not remixable, not exportable.
+    assert bid not in {
+        b["branch_def_id"] for b in json.loads(read_graph(target="designs"))["branches"]
+    }
+    remix = json.loads(write_graph(target="remix", branch_id=bid))
+    assert remix["status"] == "rejected"
+    assert "no active published version" in remix["error"]
+    export = json.loads(read_graph(target="design", branch_id=bid))
+    assert export["status"] == "rejected"
+    assert "no active published version" in export["error"]
+
+
+def test_rollback_surfaces_newest_active_not_regressed(data_dir):
+    from tinyassets.api.branches import _ext_branch_build
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+    from tinyassets.rollback import execute_rollback_set
+
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "two version design",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    v1 = publish_branch_version(
+        data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+        publisher="alice",
+    ).branch_version_id
+    # Change topology so v2 has a distinct content hash, then publish v2.
+    b = BranchDefinition.from_dict(get_branch_definition(data_dir, branch_def_id=bid))
+    b.state_schema.append({"name": "extra", "type": "str"})
+    save_branch_definition(data_dir, branch_def=b.to_dict())
+    v2 = publish_branch_version(
+        data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+        publisher="alice",
+    ).branch_version_id
+    assert v2 != v1
+
+    # Roll back the NEWEST (v2) — v1 is now the newest active.
+    execute_rollback_set(data_dir, [v2], reason="bad", set_by="host")
+
+    # Remix + listing surface v1 (the active one), NOT the regressed v2.
+    remix = json.loads(write_graph(target="remix", branch_id=bid))
+    assert remix["status"] == "remixed", remix
+    assert remix["fork_from"] == v1
+    entry = next(
+        e for e in json.loads(read_graph(target="designs"))["branches"]
+        if e["branch_def_id"] == bid
+    )
+    assert entry["branch_version_id"] == v1
+
+
+# ── Provenance is atomic: no orphan child, no fake success (F4) ─────────────
+
+
+def test_remix_provenance_returned_error_deletes_child(data_dir, monkeypatch):
+    import tinyassets.api.market as market
+    from tinyassets.daemon_server import list_branch_definitions
+
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    before = {b["branch_def_id"] for b in list_branch_definitions(data_dir)}
+    monkeypatch.setattr(
+        market, "_action_record_remix",
+        lambda kw: json.dumps({"error": "cycle detected"}),
+    )
+    out = json.loads(write_graph(target="remix", branch_id=parent))
+    assert out["status"] == "rejected"
+    assert "provenance" in out["error"].lower()
+    # The orphan child was removed — no new branch persisted.
+    assert {b["branch_def_id"] for b in list_branch_definitions(data_dir)} == before
+
+
+def test_remix_provenance_exception_deletes_child(data_dir, monkeypatch):
+    import tinyassets.api.market as market
+    from tinyassets.daemon_server import list_branch_definitions
+
+    def _boom(kw):
+        raise RuntimeError("attribution db down")
+
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    before = {b["branch_def_id"] for b in list_branch_definitions(data_dir)}
+    monkeypatch.setattr(market, "_action_record_remix", _boom)
+    out = json.loads(write_graph(target="remix", branch_id=parent))
+    assert out["status"] == "rejected"
+    assert "provenance" in out["error"].lower()
+    assert {b["branch_def_id"] for b in list_branch_definitions(data_dir)} == before
+
+
+# ── Envelope identity types (Codex latest-model F5) ─────────────────────────
+
+
+def test_import_rejects_hostile_envelope_identity(data_dir):
+    from tinyassets.daemon_server import list_branch_definitions
+
+    base_spec = {
+        "name": "identity probe",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    }
+    bad_id = {
+        "design_format": "tinyassets.branch_design/v1",
+        "design_id": [],               # not a non-empty string
+        "design_version": 1,
+        "spec": base_spec,
+    }
+    o1 = json.loads(write_graph(target="design", artifact_json=json.dumps(bad_id)))
+    assert o1["status"] == "rejected"
+    assert "design_id" in o1["error"]
+
+    bad_ver = {
+        "design_format": "tinyassets.branch_design/v1",
+        "design_id": "ok",
+        "design_version": {"not": "an integer"},  # not a positive int
+        "spec": base_spec,
+    }
+    o2 = json.loads(write_graph(target="design", artifact_json=json.dumps(bad_ver)))
+    assert o2["status"] == "rejected"
+    assert "design_version" in o2["error"]
+
+    # Nothing persisted for either hostile envelope.
+    assert "identity probe" not in {
+        b.get("name") for b in list_branch_definitions(data_dir)
+    }
 
 
 # ── Unknown target hygiene ─────────────────────────────────────────────────

@@ -53,6 +53,30 @@ def is_design_envelope(data: Any) -> bool:
     return isinstance(data, dict) and "design_format" in data
 
 
+def _validate_design_identity(design_id: Any, design_version: Any) -> None:
+    """Type-gate the envelope identity fields (Codex S2 latest-model, F5).
+
+    ``design_id`` must be a non-empty string and ``design_version`` a positive
+    integer — no silent coercion, on validate OR export. Shared by
+    :func:`validate_design_envelope` and :func:`wrap_spec_as_design_artifact`.
+    """
+    if not isinstance(design_id, str) or not design_id.strip():
+        raise ValueError(
+            f"design_id must be a non-empty string, got "
+            f"{type(design_id).__name__} ({design_id!r})"
+        )
+    # bool is a subclass of int — exclude it explicitly.
+    if (
+        isinstance(design_version, bool)
+        or not isinstance(design_version, int)
+        or design_version < 1
+    ):
+        raise ValueError(
+            f"design_version must be a positive integer, got "
+            f"{type(design_version).__name__} ({design_version!r})"
+        )
+
+
 def validate_design_envelope(data: Any) -> None:
     """Raise ``ValueError`` unless ``data`` is a well-formed design envelope.
 
@@ -70,6 +94,7 @@ def validate_design_envelope(data: Any) -> None:
             f"unsupported design_format {data['design_format']!r} "
             f"(expected {DESIGN_FORMAT!r})"
         )
+    _validate_design_identity(data["design_id"], data["design_version"])
     if not isinstance(data["spec"], dict):
         raise ValueError("design artifact 'spec' must be a JSON object")
 
@@ -97,12 +122,14 @@ def wrap_spec_as_design_artifact(
 
     The inverse of :func:`unwrap_design_artifact`. Used by the connector export
     path so any owned branch round-trips through the SAME artifact format the
-    repo seed uses — export → import produces an equivalent branch.
+    repo seed uses — export → import produces an equivalent branch. Validates
+    the identity fields (no silent coercion on export — Codex S2 F5).
     """
+    _validate_design_identity(design_id, design_version)
     return {
         "design_format": DESIGN_FORMAT,
         "design_id": design_id,
-        "design_version": int(design_version),
+        "design_version": design_version,
         "title": title or (spec.get("name") or ""),
         "provenance": provenance,
         "spec": spec,
