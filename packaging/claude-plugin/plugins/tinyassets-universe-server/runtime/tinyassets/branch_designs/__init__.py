@@ -39,6 +39,72 @@ def design_tag(design_id: str, design_version: int) -> str:
     return f"design:{design_id}@v{int(design_version)}"
 
 
+def is_design_envelope(data: Any) -> bool:
+    """True when ``data`` looks like a ``tinyassets.branch_design/vN`` envelope.
+
+    A cheap discriminator so an import path can accept EITHER a wrapped design
+    artifact OR a bare ``build_branch`` spec without guessing — an envelope is
+    a dict tagged with our ``design_format``, a raw spec is not.
+    """
+    return isinstance(data, dict) and data.get("design_format") == DESIGN_FORMAT
+
+
+def validate_design_envelope(data: Any) -> None:
+    """Raise ``ValueError`` unless ``data`` is a well-formed design envelope.
+
+    Single source of truth for the envelope contract — the packaged-artifact
+    loader (:func:`load_design_artifacts`) and the connector import path both
+    validate through here so the two can never drift.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("design artifact must be a JSON object")
+    missing = [k for k in _REQUIRED_ENVELOPE_KEYS if k not in data]
+    if missing:
+        raise ValueError(f"missing envelope keys: {missing}")
+    if data["design_format"] != DESIGN_FORMAT:
+        raise ValueError(
+            f"unsupported design_format {data['design_format']!r} "
+            f"(expected {DESIGN_FORMAT!r})"
+        )
+    if not isinstance(data["spec"], dict):
+        raise ValueError("design artifact 'spec' must be a JSON object")
+
+
+def unwrap_design_artifact(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of the ``build_branch`` spec carried by an envelope.
+
+    Validates the envelope first (fail loud — hard rule 8). The returned spec
+    is a shallow copy so callers can strip identity/lineage fields on import
+    without mutating the source artifact.
+    """
+    validate_design_envelope(data)
+    return dict(data["spec"])
+
+
+def wrap_spec_as_design_artifact(
+    spec: dict[str, Any],
+    *,
+    design_id: str,
+    design_version: int = 1,
+    title: str = "",
+    provenance: str = "",
+) -> dict[str, Any]:
+    """Wrap a ``build_branch`` spec in the portable design envelope.
+
+    The inverse of :func:`unwrap_design_artifact`. Used by the connector export
+    path so any owned branch round-trips through the SAME artifact format the
+    repo seed uses — export → import produces an equivalent branch.
+    """
+    return {
+        "design_format": DESIGN_FORMAT,
+        "design_id": design_id,
+        "design_version": int(design_version),
+        "title": title or (spec.get("name") or ""),
+        "provenance": provenance,
+        "spec": spec,
+    }
+
+
 def load_design_artifacts() -> list[dict[str, Any]]:
     """Parse every ``*.json`` artifact in this package. Fail loudly on a bad one.
 
@@ -48,16 +114,12 @@ def load_design_artifacts() -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
     for path in sorted(DESIGNS_DIR.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
-        missing = [k for k in _REQUIRED_ENVELOPE_KEYS if k not in data]
-        if missing:
+        try:
+            validate_design_envelope(data)
+        except ValueError as exc:
             raise ValueError(
-                f"branch design artifact {path.name} missing envelope keys: {missing}"
-            )
-        if data["design_format"] != DESIGN_FORMAT:
-            raise ValueError(
-                f"branch design artifact {path.name} has unsupported design_format "
-                f"{data['design_format']!r} (expected {DESIGN_FORMAT!r})"
-            )
+                f"branch design artifact {path.name} {exc}"
+            ) from exc
         artifacts.append(data)
     return artifacts
 

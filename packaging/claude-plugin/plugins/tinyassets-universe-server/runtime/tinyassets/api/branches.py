@@ -2415,6 +2415,38 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
         if len(branch.state_schema) == before:
             return f"remove_state_field: '{fname}' not found"
         return ""
+    if name == "set_state_field_default":
+        # BIND op (patch-loop S2): set the default value of an EXISTING state
+        # field. This is how a user binds a repo-blind reference's unbound
+        # params (target_repo / credential_ref / merge_policy) as a user act —
+        # the value is seeded into initial run state via _state_schema_defaults.
+        # It never creates a field (use add_state_field for that) and never
+        # bakes a value into the design itself; it sets the owner's binding on
+        # their own remixed copy.
+        fname = (op.get("name") or op.get("field_name") or "").strip()
+        if not fname:
+            return "set_state_field_default requires name"
+        target_field = next(
+            (f for f in branch.state_schema if f.get("name") == fname), None,
+        )
+        if target_field is None:
+            return (
+                f"set_state_field_default: state field '{fname}' not found. "
+                "Add it with add_state_field first, or fix the name."
+            )
+        if not any(k in op for k in ("default_value", "default", "value")):
+            return (
+                "set_state_field_default requires 'default_value' "
+                f"for field '{fname}'."
+            )
+        default = op.get(
+            "default_value", op.get("default", op.get("value", "")),
+        )
+        # Dual-write both keys, mirroring _apply_state_field_spec so PR #932's
+        # _state_schema_defaults finds the seed value at runtime.
+        target_field["default_value"] = default
+        target_field["default"] = default
+        return ""
     if name == "update_node":
         nid = (op.get("node_id") or "").strip()
         if not nid:
@@ -3263,6 +3295,314 @@ def _resolve_udir() -> Path:
     return _base_path()
 
 
+# ── Portable design artifacts: export / import / remix (patch-loop S2) ─────
+# The connector remix path so a signed-in user's chatbot can take a published
+# branch DESIGN and make it their own: discover (list_branches scope=published)
+# -> import an artifact OR remix a published design by id -> bind params ->
+# export back to the same portable envelope. These reuse the composite
+# build_branch path and the record_remix provenance edge — no parallel
+# machinery (PLAN commons-first + minimal-primitives). Design basis:
+# docs/design-notes/2026-07-15-user-patch-loop-reference-design.md (G2/S2).
+
+
+def _node_def_to_design_spec(nd: Any) -> dict[str, Any]:
+    """Serialize a NodeDefinition into a build_branch node spec.
+
+    Carries only authoring surface — deliberately DROPS source_code approval
+    provenance. An exported artifact is portable + approval-blind; re-import
+    re-runs the fail-closed approve gate rather than smuggling a stale approval
+    across universes/actors.
+    """
+    spec: dict[str, Any] = {
+        "node_id": nd.node_id,
+        "display_name": nd.display_name,
+    }
+    for attr in (
+        "description", "phase", "source_code", "prompt_template",
+        "model_hint", "reasoning_effort",
+    ):
+        val = getattr(nd, attr, "") or ""
+        if val:
+            spec[attr] = val
+    for attr in ("input_keys", "output_keys", "tools_allowed", "effects"):
+        val = list(getattr(nd, attr, []) or [])
+        if val:
+            spec[attr] = val
+    if getattr(nd, "strict_input_isolation", True) is False:
+        spec["strict_input_isolation"] = False
+    timeout = getattr(nd, "timeout_seconds", 300.0)
+    if timeout and timeout != 300.0:
+        spec["timeout_seconds"] = timeout
+    if getattr(nd, "llm_policy", None):
+        spec["llm_policy"] = nd.llm_policy
+    if getattr(nd, "retry_policy", None):
+        spec["retry_policy"] = nd.retry_policy
+    for spec_attr in (
+        "invoke_branch_spec", "invoke_branch_version_spec", "await_run_spec",
+    ):
+        val = getattr(nd, spec_attr, None)
+        if val:
+            spec[spec_attr] = val
+    return spec
+
+
+def _state_field_to_design_spec(field: dict[str, Any]) -> dict[str, Any]:
+    """Serialize one state_schema entry into a build_branch state field spec.
+
+    Preserves ``default_value`` so a BOUND branch round-trips: export -> import
+    reproduces the same bindings (target_repo / credential_ref / merge_policy).
+    """
+    spec: dict[str, Any] = {
+        "name": field.get("name", ""),
+        "type": field.get("type", "str") or "str",
+    }
+    if field.get("description"):
+        spec["description"] = field["description"]
+    if field.get("reducer"):
+        spec["reducer"] = field["reducer"]
+    default = field.get("default_value", field.get("default", ""))
+    if default not in ("", None):
+        spec["default_value"] = default
+    return spec
+
+
+def _branch_to_design_spec(branch: Any) -> dict[str, Any]:
+    """Reconstruct a build_branch-compatible spec from a BranchDefinition.
+
+    Topology lives in an embedded graph blob on the raw registry row, so the
+    caller MUST pass a rebuilt ``BranchDefinition`` (from_dict), never the raw
+    row, or edges/conditional_edges come back empty (S1 review lesson).
+    """
+    from tinyassets.branch_designs import REFERENCE_TAG
+
+    spec: dict[str, Any] = {
+        "name": branch.name,
+        "description": branch.description,
+        "domain_id": branch.domain_id,
+        "entry_point": branch.entry_point,
+        "node_defs": [_node_def_to_design_spec(nd) for nd in branch.node_defs],
+        "edges": [
+            {"from": e.from_node, "to": e.to_node} for e in branch.edges
+        ],
+        "conditional_edges": [
+            {"from": ce.from_node, "conditions": dict(ce.conditions)}
+            for ce in branch.conditional_edges
+        ],
+        "state_schema": [
+            _state_field_to_design_spec(f) for f in branch.state_schema
+        ],
+    }
+    if branch.goal_id:
+        spec["goal_id"] = branch.goal_id
+    # Drop the seed-only tags — an exported/imported copy is not the seeded
+    # reference and must not masquerade as it (idempotency tag + reference tag).
+    tags = [
+        t for t in (branch.tags or [])
+        if t != REFERENCE_TAG and not str(t).startswith("design:")
+    ]
+    if tags:
+        spec["tags"] = tags
+    if getattr(branch, "skills", None):
+        spec["skills"] = branch.skills
+    return spec
+
+
+def _load_owned_or_public_branch(bid_or_name: str) -> tuple[Any, str]:
+    """Resolve + load a branch, applying the private-author visibility gate.
+
+    Returns ``(BranchDefinition_or_None, error_json)``. Mirrors
+    ``_ext_branch_get``: a private branch owned by someone else answers the
+    "not found" envelope so existence isn't leaked.
+    """
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+
+    bid = _resolve_branch_id((bid_or_name or "").strip(), _base_path())
+    if not bid:
+        return None, json.dumps({"error": "branch_def_id is required."})
+    try:
+        row = get_branch_definition(_base_path(), branch_def_id=bid)
+    except KeyError:
+        return None, json.dumps({"error": f"Branch '{bid}' not found."})
+    visibility = row.get("visibility", "public") or "public"
+    if visibility == "private" and row.get("author", "") != _current_actor():
+        return None, json.dumps({"error": f"Branch '{bid}' not found."})
+    return BranchDefinition.from_dict(row), ""
+
+
+def _ext_branch_export_design(kwargs: dict[str, Any]) -> str:
+    """Export an owned/public branch as a portable design artifact envelope.
+
+    Read-only. Anyone may export what they can read (public branches are the
+    remix commons); private branches are author-gated via
+    ``_load_owned_or_public_branch``.
+    """
+    from tinyassets.branch_designs import wrap_spec_as_design_artifact
+
+    branch, err = _load_owned_or_public_branch(
+        kwargs.get("branch_def_id", "") or kwargs.get("name", ""),
+    )
+    if err:
+        return err
+
+    spec = _branch_to_design_spec(branch)
+    design_id = (kwargs.get("design_id") or branch.branch_def_id or "").strip()
+    try:
+        design_version = int(kwargs.get("design_version") or 1)
+    except (TypeError, ValueError):
+        design_version = 1
+    artifact = wrap_spec_as_design_artifact(
+        spec,
+        design_id=design_id,
+        design_version=design_version,
+        title=branch.name,
+        provenance=(
+            f"Exported from TinyAssets branch {branch.branch_def_id} "
+            f"by {branch.author}"
+        ),
+    )
+    return json.dumps({
+        "status": "exported",
+        "branch_def_id": branch.branch_def_id,
+        "design_id": design_id,
+        "artifact": artifact,
+        "artifact_json": json.dumps(artifact),
+    }, default=str)
+
+
+def _ext_branch_import_design(kwargs: dict[str, Any]) -> str:
+    """Import a design artifact (envelope OR raw spec) as a NEW owned branch.
+
+    Reuses the composite ``build_branch`` path. Identity/lineage fields are
+    stripped (an import is a fresh owned branch, not a fork — remix_design is
+    the lineage-preserving path), and the caller becomes the author.
+    """
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_designs import is_design_envelope, unwrap_design_artifact
+
+    raw = (kwargs.get("artifact_json") or kwargs.get("spec_json") or "").strip()
+    if not raw:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "artifact_json is required for import_design (a design "
+                "envelope or a raw build_branch spec)."
+            ),
+        })
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"artifact_json is not valid JSON: {exc}",
+        })
+
+    if is_design_envelope(data):
+        try:
+            spec = unwrap_design_artifact(data)
+        except ValueError as exc:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"invalid design envelope: {exc}",
+            })
+    elif isinstance(data, dict):
+        spec = dict(data)
+    else:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "artifact_json must decode to a design envelope or a "
+                "build_branch spec object."
+            ),
+        })
+
+    # An import is a fresh owned branch: strip identity + lineage so build
+    # does not try to resolve a foreign branch_version_id, and force the
+    # caller as author.
+    for identity_key in ("branch_def_id", "fork_from"):
+        spec.pop(identity_key, None)
+    spec["author"] = _current_actor()
+
+    out_str = _ext_branch_build({"spec_json": json.dumps(spec)})
+    try:
+        out = json.loads(out_str)
+    except (json.JSONDecodeError, TypeError):
+        return out_str
+    if out.get("status") == "built":
+        out["status"] = "imported"
+        out["imported_as"] = out.get("branch_def_id", "")
+    return json.dumps(out, default=str)
+
+
+def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
+    """Fork-copy a PUBLISHED design into the caller's own branch + record it.
+
+    Discovery/remix promise covers PUBLISHED public designs only: the source
+    must have a published version (private branches answer "not found" via the
+    visibility gate; unpublished ones are refused). The child inherits the
+    parent's topology via ``build_branch fork_from`` and a ``record_remix``
+    provenance edge is written so lineage is queryable.
+    """
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_versions import list_branch_versions
+
+    branch, err = _load_owned_or_public_branch(kwargs.get("branch_def_id", ""))
+    if err:
+        return err
+
+    versions = list_branch_versions(_base_path(), branch.branch_def_id, limit=1)
+    if not versions:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"Branch '{branch.branch_def_id}' is not a published design; "
+                "only published designs are remixable. Ask the author to "
+                "publish a version, or import an exported artifact instead."
+            ),
+        })
+    parent_version_id = versions[0].branch_version_id
+
+    child_name = (kwargs.get("name") or "").strip() or f"{branch.name} (remix)"
+    spec = {
+        "name": child_name,
+        "description": branch.description,
+        "fork_from": parent_version_id,
+        "author": _current_actor(),
+    }
+    out_str = _ext_branch_build({"spec_json": json.dumps(spec)})
+    try:
+        out = json.loads(out_str)
+    except (json.JSONDecodeError, TypeError):
+        return out_str
+    if out.get("status") != "built" or not out.get("branch_def_id"):
+        return out_str
+
+    child_id = out["branch_def_id"]
+    from tinyassets.api.market import _action_record_remix
+
+    provenance = json.loads(_action_record_remix({
+        "parent_branch_def_id": branch.branch_def_id,
+        "child_branch_def_id": child_id,
+        "contribution_kind": "remix",
+        "actor_id": _current_actor(),
+    }))
+    return json.dumps({
+        "status": "remixed",
+        "branch_def_id": child_id,
+        "name": child_name,
+        "parent_branch_def_id": branch.branch_def_id,
+        "fork_from": parent_version_id,
+        "node_count": out.get("node_count"),
+        "provenance": provenance,
+        "text": (
+            f"Remixed '{branch.name}' into your own branch '{child_name}' "
+            f"({child_id}). Bind it (write_graph target=branch, "
+            "set_state_field_default ops) then run it."
+        ),
+    }, default=str)
+
+
 def _action_fork_tree(kwargs: dict[str, Any]) -> str:
     from tinyassets.branch_versions import get_branch_version, list_branch_versions
     from tinyassets.daemon_server import get_branch_definition, list_branch_definitions
@@ -3346,6 +3686,9 @@ _BRANCH_ACTIONS: dict[str, Any] = {
     "update_node": _ext_branch_update_node,
     "search_nodes": _ext_branch_search_nodes,
     "fork_tree": _action_fork_tree,
+    "export_design": _ext_branch_export_design,
+    "import_design": _ext_branch_import_design,
+    "remix_design": _ext_branch_remix_design,
 }
 
 _BRANCH_WRITE_ACTIONS: frozenset[str] = frozenset({
@@ -3353,6 +3696,8 @@ _BRANCH_WRITE_ACTIONS: frozenset[str] = frozenset({
     "set_entry_point", "add_state_field", "delete_branch",
     "build_branch", "patch_branch", "patch_nodes", "update_node",
     "approve_source_code",
+    # Remix path (patch-loop S2): both mint a new owned branch.
+    "import_design", "remix_design",
 })
 
 
