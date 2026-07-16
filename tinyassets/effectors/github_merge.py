@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from tinyassets.effectors.github_pr import (
@@ -130,6 +132,160 @@ def _payload_expected_head_sha(payload: dict[str, Any]) -> str:
         return ""
     value = raw.strip()
     return value if _SHA_RE.fullmatch(value) else ""
+
+
+def _payload_bool(payload: dict[str, Any], key: str) -> bool:
+    raw = payload.get(key)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
+def _evaluate_merge_policy_gate(
+    *,
+    payload: dict[str, Any],
+    universe_dir: Path | None,
+    destination: str,
+    pr_number: int,
+    actual_head_sha: str,
+    matched_key: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Patch-loop S4 gate layered on top of branch-protection authorization.
+
+    When a remixed patch loop's ``owner_gate`` node binds a ``merge_policy`` onto
+    the merge packet, this gate enforces — from the durable review queue — that:
+
+    * a red verify verdict blocks the merge under EVERY policy (hard rule 8);
+    * ``manual`` merges only an owner-approved item, ``auto`` needs green verify,
+      ``timer`` needs green verify + elapsed delay + not owner-held;
+    * founder-OAuth-per-merge (Jonathan's flag) consumes a FRESH, single-use
+      approval bound to this exact PR head — a standing effector consent can
+      never satisfy it.
+
+    Returns ``(error_or_None, gate_info)``. When ``merge_policy`` is absent the
+    packet is a raw branch-protection merge (existing behavior) and the gate is
+    a no-op. ``gate_info`` is merged into the success payload for auditability.
+    """
+    if "merge_policy" not in payload:
+        return None, {}
+
+    from tinyassets import merge_policy as mp
+    from tinyassets.storage import review_queue as rq
+
+    try:
+        policy = mp.normalize_policy(payload.get("merge_policy"))
+    except ValueError as exc:
+        return _error(
+            "invalid_merge_policy",
+            str(exc),
+            destination=destination,
+            pr_number=pr_number,
+            matched_output_key=matched_key,
+        ), {}
+
+    founder_oauth_required = _payload_bool(payload, "founder_oauth_required")
+
+    if universe_dir is None:
+        return _error(
+            "merge_policy_no_universe",
+            (
+                "merge_policy gating requires a bound universe directory to read "
+                "the owner review queue; none was resolvable from base_path"
+            ),
+            destination=destination,
+            pr_number=pr_number,
+            policy=policy,
+            matched_output_key=matched_key,
+        ), {}
+
+    item = None
+    for candidate in rq.list_queue(universe_dir, destination=destination):
+        if candidate.get("pr_number") == pr_number:
+            item = candidate
+            break
+    if item is None:
+        return _error(
+            "pr_not_in_review_queue",
+            (
+                f"policy '{policy}' merge requires PR #{pr_number} on the owner "
+                "review queue, but it is not present; the loop's present node "
+                "must enqueue the PR before a policy merge"
+            ),
+            destination=destination,
+            pr_number=pr_number,
+            policy=policy,
+            matched_output_key=matched_key,
+        ), {}
+
+    fresh_approval_present = rq.has_fresh_merge_approval(
+        universe_dir,
+        destination=destination,
+        pr_number=pr_number,
+        head_sha=actual_head_sha,
+    )
+
+    decision = mp.evaluate_merge_eligibility(
+        policy=policy,
+        verify_verdict=item.get("verify_verdict"),
+        item_status=item.get("status", ""),
+        founder_oauth_required=founder_oauth_required,
+        fresh_approval_present=fresh_approval_present,
+        created_at=item.get("created_at"),
+        now=time.time(),
+        timer_delay_s=float(payload.get("merge_timer_delay_s") or 0.0),
+    )
+    if not decision.get("eligible"):
+        return _error(
+            "merge_policy_blocked",
+            (
+                f"merge policy '{policy}' blocked PR #{pr_number}: "
+                f"{decision.get('reason')}"
+            ),
+            destination=destination,
+            pr_number=pr_number,
+            policy=policy,
+            policy_reason=decision.get("reason"),
+            verify_verdict=item.get("verify_verdict"),
+            item_status=item.get("status"),
+            founder_oauth_required=founder_oauth_required,
+            matched_output_key=matched_key,
+        ), {}
+
+    consumed_approval_id = ""
+    if founder_oauth_required:
+        consumed_approval_id = rq.consume_merge_approval(
+            universe_dir,
+            destination=destination,
+            pr_number=pr_number,
+            head_sha=actual_head_sha,
+        )
+        if not consumed_approval_id:
+            # Race: eligibility saw a fresh token but it was consumed/revoked
+            # before we could claim it. Fail closed — no unauthorized merge.
+            return _error(
+                "founder_oauth_approval_unavailable",
+                (
+                    f"founder-OAuth merge of PR #{pr_number} requires a fresh "
+                    "single-use approval bound to this head; none was available "
+                    "to consume"
+                ),
+                destination=destination,
+                pr_number=pr_number,
+                policy=policy,
+                matched_output_key=matched_key,
+            ), {}
+
+    gate_info = {
+        "merge_policy": policy,
+        "policy_reason": decision.get("reason"),
+        "founder_oauth_required": founder_oauth_required,
+        "review_queue_item_id": item.get("item_id"),
+    }
+    if consumed_approval_id:
+        gate_info["consumed_approval_id"] = consumed_approval_id
+    return None, gate_info
 
 
 def run_github_merge_effector(
@@ -312,6 +468,21 @@ def run_github_merge_effector(
             matched_output_key=matched_key,
         )
 
+    # Patch-loop S4 (G6): when the packet carries a remix merge policy, gate the
+    # merge on the durable owner review queue + founder-OAuth-per-merge on top of
+    # the branch-protection authorization above. No policy field ⇒ raw
+    # branch-protection merge (unchanged behavior).
+    gate_error, gate_info = _evaluate_merge_policy_gate(
+        payload=payload,
+        universe_dir=universe_dir,
+        destination=destination,
+        pr_number=pr_number,
+        actual_head_sha=actual_head_sha,
+        matched_key=matched_key,
+    )
+    if gate_error is not None:
+        return gate_error
+
     merge_body: dict[str, Any] = {
         "sha": expected_head_sha,
         "merge_method": merge_method,
@@ -351,7 +522,7 @@ def run_github_merge_effector(
         )
 
     merge_commit_sha = merge_obj.get("sha") if isinstance(merge_obj.get("sha"), str) else ""
-    return {
+    result = {
         "phase": "phase_2",
         "destination": destination,
         "matched_output_key": matched_key,
@@ -363,3 +534,5 @@ def run_github_merge_effector(
         "merge_commit_sha": merge_commit_sha,
         "message": merge_obj.get("message") if isinstance(merge_obj.get("message"), str) else "",
     }
+    result.update(gate_info)
+    return result

@@ -1,0 +1,223 @@
+"""Patch-loop S4: github_merge effector gated by merge policy + founder-OAuth.
+
+The effector keeps its landed branch-protection + expected-head-SHA behavior;
+these tests prove the NEW gating layered on top:
+
+- a red verify verdict blocks the merge under every policy (no PUT fires);
+- ``manual`` holds until the owner approves the queued item;
+- ``auto`` releases on green verify;
+- founder-OAuth-per-merge requires a FRESH single-use approval bound to the PR
+  head — a standing effector consent does NOT satisfy it, and a consumed token
+  cannot merge a second time.
+
+GitHub is never touched: ``_github_api`` is monkeypatched, so no real merge
+occurs (task constraint).
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from tinyassets.effectors import github_merge
+from tinyassets.storage import review_queue as rq
+from tinyassets.storage.effector_consents import grant_consent
+
+_DEST = "Jonnyton/TinyAssets"
+_HEAD = "a" * 40
+_PR = 181
+
+
+def _with_capability(monkeypatch):
+    monkeypatch.setenv(
+        "TINYASSETS_GITHUB_PR_CAPABILITIES",
+        json.dumps({_DEST: "capability-token"}),
+    )
+
+
+def _packet(**payload_overrides):
+    payload = {
+        "pr_number": _PR,
+        "expected_head_sha": _HEAD,
+        "authorization": {
+            "mode": github_merge.AUTHORIZATION_MODE_GITHUB_BRANCH_PROTECTION,
+        },
+        **payload_overrides,
+    }
+    data = {
+        "sink": github_merge.EXTERNAL_WRITE_SINK_GITHUB_MERGE,
+        "destination": _DEST,
+        "payload": payload,
+    }
+    return {"merge_packet": data}
+
+
+def _open_pr(head_sha=_HEAD):
+    return {"state": "open", "draft": False, "head": {"sha": head_sha}}
+
+
+def _scripted_api(*, allow_merge=True):
+    def fake(*, method, path, capability_token, body=None):
+        fake.calls.append((method, path))
+        if method == "GET":
+            return _open_pr(), None
+        if method == "PUT":
+            assert allow_merge, f"unexpected merge PUT: {path}"
+            return {"merged": True, "sha": "c" * 40, "message": "merged"}, None
+        raise AssertionError(f"no scripted response for {method} {path}")
+
+    fake.calls = []
+    return fake
+
+
+def _run(tmp_path, packet):
+    return github_merge.run_github_merge_effector(
+        node_id="merge",
+        output_keys=["merge_packet"],
+        run_state=packet,
+        base_path=str(tmp_path),
+    )
+
+
+def _enqueue(tmp_path, *, verdict=rq.VERIFY_PASS, head=_HEAD):
+    return rq.enqueue_pr(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        pr_url=f"https://github.com/{_DEST}/pull/{_PR}",
+        head_sha=head,
+        request_ref="req-abc",
+        verify_verdict=verdict,
+    )
+
+
+def _put_fired(fake):
+    return any(m == "PUT" for m, _ in fake.calls)
+
+
+# ── No policy field ⇒ existing branch-protection behavior is unchanged ──────
+
+
+def test_no_policy_field_merges_via_branch_protection(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    fake = _scripted_api(allow_merge=True)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())  # no merge_policy key at all
+    assert result.get("merged") is True
+    assert _put_fired(fake)
+
+
+# ── Manual policy holds until owner approval ────────────────────────────────
+
+
+def test_manual_policy_blocks_until_approved(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)  # pending, not approved
+    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+
+    blocked = _run(tmp_path, _packet(merge_policy="manual"))
+    assert blocked["error_kind"] == "merge_policy_blocked"
+    assert blocked["policy_reason"] == "manual_policy_awaiting_owner_approval"
+    assert not _put_fired(fake)
+
+    # Owner approves → merge is released.
+    item = rq.list_queue(tmp_path)[0]
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    fake2 = _scripted_api(allow_merge=True)
+    monkeypatch.setattr(github_merge, "_github_api", fake2)
+    merged = _run(tmp_path, _packet(merge_policy="manual"))
+    assert merged.get("merged") is True
+    assert merged["merge_policy"] == "manual"
+    assert _put_fired(fake2)
+
+
+# ── No policy merges a red PR ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("policy", ["auto", "timer", "manual"])
+def test_red_verify_blocks_every_policy(monkeypatch, tmp_path, policy):
+    _with_capability(monkeypatch)
+    item = _enqueue(tmp_path, verdict=rq.VERIFY_FAIL)
+    # Even an owner approval cannot release a red PR.
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+
+    result = _run(tmp_path, _packet(merge_policy=policy, merge_timer_delay_s=0))
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "verify_not_green"
+    assert not _put_fired(fake)
+
+
+def test_auto_policy_merges_on_green(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=True)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet(merge_policy="auto"))
+    assert result.get("merged") is True
+    assert _put_fired(fake)
+
+
+def test_policy_merge_requires_pr_in_queue(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    # No enqueue — the loop's present node never queued this PR.
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet(merge_policy="auto"))
+    assert result["error_kind"] == "pr_not_in_review_queue"
+    assert not _put_fired(fake)
+
+
+# ── Founder-OAuth-per-merge: fresh, single-use, standing-consent-immune ─────
+
+
+def test_founder_oauth_requires_fresh_approval_not_standing_consent(
+    monkeypatch, tmp_path
+):
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    # A standing effector consent for the merge sink — the WRONG kind of auth.
+    grant_consent(
+        tmp_path, sink="github_merge", destination=_DEST, granted_by="owner"
+    )
+    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+
+    blocked = _run(
+        tmp_path, _packet(merge_policy="auto", founder_oauth_required=True)
+    )
+    assert blocked["error_kind"] == "merge_policy_blocked"
+    assert blocked["policy_reason"] == "founder_oauth_required"
+    assert not _put_fired(fake)
+
+
+def test_founder_oauth_fresh_approval_merges_once_then_is_spent(
+    monkeypatch, tmp_path
+):
+    _with_capability(monkeypatch)
+    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    # Fresh founder-authenticated approval action (mints a single-use token).
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="founder")
+
+    fake = _scripted_api(allow_merge=True)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    merged = _run(
+        tmp_path, _packet(merge_policy="manual", founder_oauth_required=True)
+    )
+    assert merged.get("merged") is True
+    assert merged["founder_oauth_required"] is True
+    assert merged.get("consumed_approval_id")
+    assert _put_fired(fake)
+
+    # A SECOND merge attempt with no fresh re-approval must fail closed.
+    fake2 = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake2)
+    second = _run(
+        tmp_path, _packet(merge_policy="manual", founder_oauth_required=True)
+    )
+    assert second["error_kind"] == "merge_policy_blocked"
+    assert second["policy_reason"] == "founder_oauth_required"
+    assert not _put_fired(fake2)

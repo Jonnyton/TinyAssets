@@ -75,6 +75,7 @@ from tinyassets.api.market import (
     _GATE_EVENT_ACTIONS,
     _OUTCOME_ACTIONS,
 )
+from tinyassets.api.review_queue_actions import _REVIEW_QUEUE_ACTIONS
 from tinyassets.api.runs import (
     _RUN_ACTIONS,
     _dispatch_run_action,
@@ -695,6 +696,21 @@ def _extensions_impl(
         }
         return consent_handler(consent_kwargs)
 
+    # ── Patch-loop owner review queue (S4 / G3) ────────────────────────────
+    review_queue_handler = _REVIEW_QUEUE_ACTIONS.get(action)
+    if review_queue_handler is not None:
+        # Field reuse (stable MCP surface): ``subject_id`` carries the queue
+        # item id, ``project_id`` the destination repo, ``status`` the list
+        # filter, ``notes`` the owner's approve/reshape/reject notes.
+        review_kwargs: dict[str, Any] = {
+            "universe_id": universe_id or "",
+            "item_id": subject_id or "",
+            "destination": project_id or "",
+            "status": status or "",
+            "notes": notes or "",
+        }
+        return review_queue_handler(review_kwargs)
+
     # ── Attribution chain ──────────────────────────────────────────────────
     attribution_handler = _ATTRIBUTION_ACTIONS.get(action)
     if attribution_handler is not None:
@@ -758,6 +774,8 @@ def _extensions_impl(
             "quality_leaderboard", "recommended_parent_for_fork",
             "grant_effector_consent", "revoke_effector_consent",
             "list_effector_consents",
+            "review_queue_list", "review_queue_approve",
+            "review_queue_reshape", "review_queue_reject",
         ],
     })
 

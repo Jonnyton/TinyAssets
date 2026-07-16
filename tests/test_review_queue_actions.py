@@ -1,0 +1,149 @@
+"""Patch-loop S4: owner review-queue MCP verbs are owner-gated.
+
+Proves list/approve/reshape/reject reach the durable queue only for an actor
+holding write (owner) access on the universe; a non-owner is denied and nothing
+mutates. Reshape routes back to draft_patch via the handler surface too.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from tinyassets.api import helpers as helpers_mod
+from tinyassets.api import permissions as permissions_mod
+from tinyassets.api.review_queue_actions import _REVIEW_QUEUE_ACTIONS
+from tinyassets.storage import review_queue as rq
+
+_DEST = "Jonnyton/TinyAssets"
+_HEAD = "a" * 40
+
+
+@pytest.fixture
+def owner_env(monkeypatch, tmp_path):
+    """Point universe resolution at tmp_path and grant owner (write) access."""
+    monkeypatch.setattr(helpers_mod, "_request_universe", lambda uid="": uid or "u1")
+    monkeypatch.setattr(helpers_mod, "_universe_dir", lambda uid: tmp_path)
+    monkeypatch.setattr(permissions_mod, "current_actor_id", lambda: "owner-actor")
+    monkeypatch.setattr(
+        permissions_mod, "universe_access_allows", lambda uid, write=False: True
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def non_owner_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(helpers_mod, "_request_universe", lambda uid="": uid or "u1")
+    monkeypatch.setattr(helpers_mod, "_universe_dir", lambda uid: tmp_path)
+    monkeypatch.setattr(permissions_mod, "current_actor_id", lambda: "stranger")
+    monkeypatch.setattr(
+        permissions_mod, "universe_access_allows", lambda uid, write=False: False
+    )
+    return tmp_path
+
+
+def _seed(tmp_path):
+    return rq.enqueue_pr(
+        tmp_path,
+        destination=_DEST,
+        pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181",
+        head_sha=_HEAD,
+        request_ref="req-abc",
+        verify_verdict=rq.VERIFY_PASS,
+    )
+
+
+def _call(action, **kwargs):
+    return json.loads(_REVIEW_QUEUE_ACTIONS[action](kwargs))
+
+
+# ── Owner path ──────────────────────────────────────────────────────────────
+
+
+def test_owner_can_list_queue(owner_env):
+    _seed(owner_env)
+    out = _call("review_queue_list", universe_id="u1")
+    assert out["status"] == "ok"
+    assert out["count"] == 1
+    assert out["items"][0]["pr_number"] == 181
+
+
+def test_owner_can_approve(owner_env):
+    item = _seed(owner_env)
+    out = _call("review_queue_approve", universe_id="u1", item_id=item["item_id"])
+    assert out["status"] == "approved"
+    assert out["item"]["status"] == "approved"
+    assert out["item"]["decided_by"] == "owner-actor"
+
+
+def test_owner_reshape_routes_back(owner_env):
+    item = _seed(owner_env)
+    out = _call(
+        "review_queue_reshape",
+        universe_id="u1",
+        item_id=item["item_id"],
+        notes="cover the empty case",
+    )
+    assert out["status"] == "reshaped"
+    assert out["item"]["route_back"]["target_node"] == "draft_patch"
+    assert out["item"]["route_back"]["owner_notes"] == "cover the empty case"
+
+
+def test_owner_can_reject(owner_env):
+    item = _seed(owner_env)
+    out = _call("review_queue_reject", universe_id="u1", item_id=item["item_id"])
+    assert out["status"] == "rejected"
+    assert out["item"]["status"] == "rejected"
+
+
+def test_reshape_without_notes_is_rejected(owner_env):
+    item = _seed(owner_env)
+    out = _call(
+        "review_queue_reshape", universe_id="u1", item_id=item["item_id"], notes=""
+    )
+    assert out["failure_class"] == "missing_notes"
+    # Item stays pending — nothing mutated.
+    assert rq.get_item(owner_env, item_id=item["item_id"])["status"] == "pending"
+
+
+def test_approve_missing_item_id(owner_env):
+    out = _call("review_queue_approve", universe_id="u1", item_id="")
+    assert out["failure_class"] == "missing_item_id"
+
+
+def test_approve_unknown_item(owner_env):
+    out = _call("review_queue_approve", universe_id="u1", item_id="rq-nope")
+    assert out["failure_class"] == "item_not_found"
+
+
+# ── Non-owner is denied on every verb; nothing mutates ──────────────────────
+
+
+def test_non_owner_denied_on_all_verbs(non_owner_env):
+    item = _seed(non_owner_env)
+
+    listing = _call("review_queue_list", universe_id="u1")
+    assert listing["error"] == "universe_access_denied"
+
+    approve = _call(
+        "review_queue_approve", universe_id="u1", item_id=item["item_id"]
+    )
+    assert approve["error"] == "universe_access_denied"
+
+    reshape = _call(
+        "review_queue_reshape",
+        universe_id="u1",
+        item_id=item["item_id"],
+        notes="try",
+    )
+    assert reshape["error"] == "universe_access_denied"
+
+    reject = _call(
+        "review_queue_reject", universe_id="u1", item_id=item["item_id"]
+    )
+    assert reject["error"] == "universe_access_denied"
+
+    # The item is untouched by any denied verb.
+    assert rq.get_item(non_owner_env, item_id=item["item_id"])["status"] == "pending"
