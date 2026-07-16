@@ -63,14 +63,35 @@ def _head_changed(exc: ReviewHeadChanged) -> str:
 
 
 def _owner_gate(action: str, universe_id: str) -> tuple[str, dict[str, Any] | None]:
-    """Resolve the target universe + enforce owner (write) access.
+    """Resolve the target universe + enforce UNIVERSE-OWNER authority.
 
-    Reuses the auto-ship owner-gate helper so the review queue shares exactly
-    one ownership model with the rest of the effector-authority surface.
+    The patch-loop review surface is the FOUNDER's decision surface — the
+    owner's decision is law (Codex R7 C1). A general ``write`` collaborator is
+    NOT enough for list/approve/reshape/reject/hold/release; only the universe
+    owner/founder passes. (A general reviewer role is a Phase-2 addition.)
     """
     from tinyassets.api.auto_ship_actions import _require_universe_write
 
-    return _require_universe_write(universe_id, action=action)
+    # First resolve the universe + reject anonymous / no-access (write baseline).
+    target_universe, err = _require_universe_write(universe_id, action=action)
+    if err is not None:
+        return target_universe, err
+    # Then require actual owner authority (not merely write/admin collaborator).
+    from tinyassets.api.permissions import current_actor_is_universe_owner
+
+    if not current_actor_is_universe_owner(target_universe):
+        return target_universe, {
+            "error": (
+                "the patch-loop review queue is owner-only; a write "
+                "collaborator cannot decide on the founder's PRs"
+            ),
+            "failure_class": "owner_required",
+            "actionable_by": "user",
+            "surface": "extensions",
+            "action": action,
+            "universe_id": target_universe,
+        }
+    return target_universe, None
 
 
 def _universe_dir_for(target_universe: str):

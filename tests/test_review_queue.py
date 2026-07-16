@@ -789,3 +789,67 @@ def test_list_queue_pagination(tmp_path):
     assert {i["pr_number"] for i in page1}.isdisjoint({i["pr_number"] for i in page2})
     # limit=0 disables the cap (internal callers).
     assert len(rq.list_queue(tmp_path, limit=0)) == 7
+
+
+# ── R7 FABLE: same-head re-enqueue must not defeat an owner HOLD ─────────────
+
+
+def test_held_item_same_head_reenqueue_stays_held(tmp_path):
+    item = _enqueue(tmp_path, head=_HEAD)
+    rq.hold_item(tmp_path, item_id=item["item_id"], held_by="owner")
+    # A model-driven present node re-presents the SAME head — must NOT reset it.
+    re = _enqueue(tmp_path, head=_HEAD)
+    assert re["status"] == "held"
+    assert re["already_decided"] is True
+    # A CHANGED head is legitimately new work and supersedes the hold.
+    moved = _enqueue(tmp_path, head=_HEAD2)
+    assert moved["status"] == "pending"
+
+
+# ── R7 C2: token binds to the owner-bound branch identity ────────────────────
+
+
+def test_token_bound_to_branch_identity(tmp_path):
+    item = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, merge_policy="manual",
+        founder_oauth_per_merge=True, branch_def_id="bd_A",
+    )
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    gen_a = rq._policy_signature("manual", True, "bd_A", 0.0)
+    gen_b = rq._policy_signature("manual", True, "bd_B", 0.0)
+    assert rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=gen_a,
+    )
+    # A token minted for branch bd_A cannot satisfy a bd_B binding.
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=gen_b,
+    )
+
+
+# ── R7 C4: reshape persists route_back durably (Phase-2 resume seam) ─────────
+
+
+def test_reshape_persists_route_back_to_outbox(tmp_path):
+    item = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, universe_id="u1",
+        branch_def_id="bd", run_id="run-7",
+    )
+    assert rq.list_pending_reshape_routes(tmp_path) == []
+    rq.reshape_item(
+        tmp_path, item_id=item["item_id"], reshaped_by="owner", notes="redo it"
+    )
+    routes = rq.list_pending_reshape_routes(tmp_path)
+    assert len(routes) == 1
+    r = routes[0]
+    assert r["target_node"] == "draft_patch"
+    assert r["owner_notes"] == "redo it"
+    assert r["universe_id"] == "u1"
+    assert r["branch_def_id"] == "bd"
+    assert r["run_id"] == "run-7"
+    assert r["item_id"] == item["item_id"]

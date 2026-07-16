@@ -24,6 +24,12 @@ def us_env(tmp_path, monkeypatch):
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # Consent grant/revoke is OWNER-ONLY + derives the grantor from the
+    # authenticated actor (Codex R7 C3). Mock the owner identity for the happy
+    # path; the caller-supplied `author` is ignored.
+    from tinyassets.api import permissions as _perms
+    monkeypatch.setattr(_perms, "current_actor_is_universe_owner", lambda uid: True)
+    monkeypatch.setattr(_perms, "current_actor_id", lambda: "tester")
     from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
@@ -46,12 +52,13 @@ def test_grant_then_list_roundtrip(us_env):
         "grant_effector_consent",
         intent="github_pull_request",
         project_id="Jonnyton/TinyAssets",
-        author="host",
+        author="host",  # caller-supplied grantor is IGNORED (Codex R7 C3)
     )
     assert granted["status"] == "granted"
     assert granted["consent"]["sink"] == "github_pull_request"
     assert granted["consent"]["destination"] == "Jonnyton/TinyAssets"
-    assert granted["consent"]["granted_by"] == "host"
+    # grantor is the AUTHENTICATED actor, not the caller-supplied "host".
+    assert granted["consent"]["granted_by"] == "tester"
     assert granted["consent"]["revoked_at"] is None
 
     listed = _call(
@@ -76,6 +83,30 @@ def test_grant_defaults_granted_by_to_current_actor(us_env):
     )
     assert granted["status"] == "granted"
     assert granted["consent"]["granted_by"] == "tester"
+
+
+def test_grant_non_owner_refused(us_env, monkeypatch):
+    """Codex R7 C3: a non-owner cannot grant effector consent — the raw-merge
+    (and every) consent authorizes external writes and is owner-only."""
+    us, _ = us_env
+    from tinyassets.api import permissions as _perms
+    monkeypatch.setattr(_perms, "current_actor_is_universe_owner", lambda uid: False)
+    result = _call(
+        us, "grant_effector_consent",
+        intent="github_raw_merge", project_id="Jonnyton/TinyAssets", author="attacker",
+    )
+    assert result["failure_class"] == "owner_required"
+
+
+def test_revoke_non_owner_refused(us_env, monkeypatch):
+    us, _ = us_env
+    from tinyassets.api import permissions as _perms
+    monkeypatch.setattr(_perms, "current_actor_is_universe_owner", lambda uid: False)
+    result = _call(
+        us, "revoke_effector_consent",
+        intent="github_pull_request", project_id="Jonnyton/TinyAssets",
+    )
+    assert result["failure_class"] == "owner_required"
 
 
 def test_grant_requires_sink(us_env):

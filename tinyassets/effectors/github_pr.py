@@ -1136,9 +1136,16 @@ def run_github_pr_effector(
     run_state: dict[str, Any],
     base_path: str | Path | None = None,
     run_id: str = "",
+    authoritative_branch_def_id: str = "",
+    authoritative_universe_id: str = "",
     dry_run: bool = True,  # retained for signature compat — ignored
 ) -> dict[str, Any]:
     """Run the GitHub-PR effector for a single node.
+
+    ``authoritative_branch_def_id`` / ``authoritative_universe_id`` come from the
+    run/effector context (the run that produced the PR) and are the ONLY trusted
+    source for resolving the owner-bound merge policy (Codex R7 C2) — a
+    model-emitted packet cannot select which branch's policy applies.
 
     Phase 2 Slice 1 — gate-orchestrated. Returns one of:
 
@@ -1508,12 +1515,12 @@ def run_github_pr_effector(
     # owner decision (Codex R6 C3). Best-effort: the PR already exists on GitHub,
     # so a queue-write failure is surfaced in evidence, never raised.
     #
-    # TRUST BOUNDARY (Codex R6 C2): the governing merge_policy / OAuth flag /
-    # timer come from the OWNER-BOUND config resolved by ``branch_def_id`` — NOT
-    # from the model-emitted packet. The packet only supplies WHICH run/PR
-    # (request_ref) + the verify hint; the merge effector re-derives the
-    # canonical verdict from GitHub. run_id / branch_def_id come from the
-    # effector's authoritative run context, never the packet.
+    # TRUST BOUNDARY (Codex R6 C2 + R7 C2): the governing merge_policy / OAuth /
+    # timer come from the OWNER-BOUND config resolved by the AUTHORITATIVE
+    # branch_def_id (the run that produced the PR), NOT the packet — a packet
+    # cannot point branch_def_id at another branch's `auto` binding. run_id,
+    # branch_def_id and universe_id all come from the effector's run context;
+    # the ``review_queue`` block only supplies request_ref + the verify hint.
     rq_cfg = payload.get("review_queue")
     if (
         isinstance(rq_cfg, dict)
@@ -1523,7 +1530,13 @@ def run_github_pr_effector(
         try:
             from tinyassets.storage import review_queue as _rq
 
-            branch_def_id = str(rq_cfg.get("branch_def_id") or "")
+            # AUTHORITATIVE identity only — reject any packet-supplied
+            # branch_def_id / universe_id.
+            branch_def_id = (authoritative_branch_def_id or "").strip()
+            universe_id = (
+                (authoritative_universe_id or "").strip()
+                or (universe_dir.name if universe_dir is not None else "")
+            )
             bound = _rq.resolve_merge_policy_binding(
                 universe_dir, branch_def_id=branch_def_id
             )
@@ -1537,11 +1550,11 @@ def run_github_pr_effector(
                 verify_verdict=str(
                     rq_cfg.get("verify_verdict") or _rq.VERIFY_UNKNOWN
                 ),
-                # Owner-bound policy governs (not the packet).
+                # Owner-bound policy governs (resolved from authoritative branch).
                 merge_policy=bound["merge_policy"],
                 founder_oauth_per_merge=bound["founder_oauth_per_merge"],
                 merge_timer_delay_s=bound["merge_timer_delay_s"],
-                universe_id=str(rq_cfg.get("universe_id") or ""),
+                universe_id=universe_id,
                 branch_def_id=branch_def_id,
                 run_id=run_id or "",
             )
@@ -1584,6 +1597,10 @@ def run_effects_for_branch(
     del dry_run  # retained for signature compat
     evidence_map: dict[str, Any] = {}
     node_defs = getattr(branch, "node_defs", None) or []
+    # Authoritative identity from the RUN context (Codex R7 C2): the branch that
+    # produced the PR + its universe, never a model-emitted packet field.
+    authoritative_branch_def_id = str(getattr(branch, "branch_def_id", "") or "")
+    authoritative_universe_id = Path(base_path).name if base_path else ""
     for node in node_defs:
         effects = getattr(node, "effects", None) or []
         if not effects:
@@ -1600,6 +1617,8 @@ def run_effects_for_branch(
                         run_state=run_state,
                         base_path=base_path,
                         run_id=run_id,
+                        authoritative_branch_def_id=authoritative_branch_def_id,
+                        authoritative_universe_id=authoritative_universe_id,
                     )
                 except Exception as exc:  # defensive — never raise
                     logger.exception(

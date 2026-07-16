@@ -118,15 +118,28 @@ _LIST_DEFAULT_LIMIT = 50
 _LIST_MAX_LIMIT = 200
 
 
-def _policy_signature(merge_policy: Any, founder_oauth_per_merge: Any) -> str:
-    """Stable signature of the merge-authority REGIME a token is minted under.
+def _policy_signature(
+    merge_policy: Any,
+    founder_oauth_per_merge: Any,
+    branch_def_id: Any = "",
+    merge_timer_delay_s: Any = 0.0,
+) -> str:
+    """Stable signature of the merge-authority REGIME + BINDING a token is minted
+    under.
 
-    A founder-OAuth token is bound to this signature; if the item's policy or
-    OAuth flag later changes (e.g. OAuth toggled OFF→ON), the signature differs
-    and the old token is no longer valid for the new regime (Codex R6 C1)."""
+    A founder-OAuth token is bound to this signature; if the item's policy, OAuth
+    flag, the owner-bound BRANCH binding it resolved from, or the timer delay
+    later changes, the signature differs and the old token is no longer valid —
+    a token can't ride to a different regime OR a different binding (Codex R6 C1
+    + R7 C2)."""
     policy = str(merge_policy or "manual").strip().lower() or "manual"
     oauth = 1 if founder_oauth_per_merge else 0
-    return f"{policy}|{oauth}"
+    bdid = str(branch_def_id or "").strip()
+    try:
+        delay = float(merge_timer_delay_s or 0.0)
+    except (TypeError, ValueError):
+        delay = 0.0
+    return f"{policy}|{oauth}|{bdid}|{delay}"
 
 
 class InvalidReviewTransition(ValueError):
@@ -273,6 +286,25 @@ CREATE INDEX IF NOT EXISTS idx_merge_approvals_fresh
     ON merge_approvals(destination, pr_number, head_sha)
     WHERE consumed_at IS NULL;
 
+-- Reshape outbox (Codex R7 C4 — Phase-2 resume seam): a reshape PERSISTS the
+-- route_back here as a durable row so the Phase-2 resume consumer can read it
+-- (the resume engine + revised-run production is Phase 2 — NOT built here). Not
+-- just an ephemeral return dict.
+CREATE TABLE IF NOT EXISTS reshape_outbox (
+    outbox_id     TEXT PRIMARY KEY,
+    item_id       TEXT NOT NULL,
+    target_node   TEXT NOT NULL DEFAULT 'draft_patch',
+    universe_id   TEXT NOT NULL DEFAULT '',
+    branch_def_id TEXT NOT NULL DEFAULT '',
+    run_id        TEXT NOT NULL DEFAULT '',
+    owner_notes   TEXT NOT NULL DEFAULT '',
+    created_at    REAL NOT NULL,
+    consumed_at   REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reshape_outbox_pending
+    ON reshape_outbox(created_at) WHERE consumed_at IS NULL;
+
 -- Owner-bound merge-policy config (Codex R6 C2): the governing policy is
 -- resolved from HERE by (branch_def_id) — set by the OWNER (S2 remix binding /
 -- an owner-gated verb), NOT from a model-emitted packet. The present node reads
@@ -417,7 +449,8 @@ def enqueue_pr(
         with _write(conn):  # BEGIN IMMEDIATE — atomic select-then-write
             existing = conn.execute(
                 "SELECT item_id, created_at, head_sha, head_queued_at, status, "
-                "merge_policy, founder_oauth_per_merge "
+                "merge_policy, founder_oauth_per_merge, branch_def_id, "
+                "merge_timer_delay_s "
                 "FROM review_queue WHERE destination = ? AND pr_number = ?",
                 (dest, pr_number),
             ).fetchone()
@@ -425,17 +458,19 @@ def enqueue_pr(
                 item_id = existing["item_id"]
                 head_changed = (existing["head_sha"] or "") != (head_sha or "")
                 regime_changed = _policy_signature(
-                    existing["merge_policy"], existing["founder_oauth_per_merge"]
-                ) != _policy_signature(policy_str, oauth_int)
+                    existing["merge_policy"], existing["founder_oauth_per_merge"],
+                    existing["branch_def_id"], existing["merge_timer_delay_s"],
+                ) != _policy_signature(policy_str, oauth_int, bdid, delay)
                 # A same-head re-present of a TERMINAL row must NOT reopen it —
                 # the owner already decided this exact head, and silently
                 # re-pending would launder a rejection away (Codex R3 CRITICAL
-                # 1). A same-head ``merging`` row is an in-flight merge and must
-                # likewise be left untouched (Codex R5). Only a CHANGED head is
-                # new work that re-pends. Non-terminal same-head re-presents
-                # refresh to pending as before.
+                # 1). A same-head ``merging`` row is an in-flight merge, and a
+                # same-head ``held`` row is an owner PAUSE — both must be left
+                # untouched, or a model-driven present node could silently defeat
+                # the owner's hold / claim (Fable). Only a CHANGED head is new
+                # work that re-pends. Non-terminal same-head re-presents refresh.
                 if not head_changed and existing["status"] in (
-                    _TERMINAL_STATUSES | {"merging"}
+                    _TERMINAL_STATUSES | {"merging", "held"}
                 ):
                     already_decided = True
                 else:
@@ -726,7 +761,8 @@ def approve_item(
                 (ts, item_id),
             )
             generation = _policy_signature(
-                updated["merge_policy"], updated["founder_oauth_per_merge"]
+                updated["merge_policy"], updated["founder_oauth_per_merge"],
+                updated["branch_def_id"], updated["merge_timer_delay_s"],
             )
             conn.execute(
                 """
@@ -776,7 +812,10 @@ def reshape_item(
         )
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
-    # Terminal-check + approval invalidation + status update in ONE transaction.
+    # Terminal-check + approval invalidation + status update + durable outbox
+    # write in ONE transaction (Codex R7 C4: persist the route_back, don't just
+    # return it).
+    outbox_id = f"rb-{uuid.uuid4().hex[:16]}"
     with _connect(universe_dir) as conn:
         with _write(conn):
             updated = _decide_txn(
@@ -789,10 +828,23 @@ def reshape_item(
                 invalidate_approvals=True,
                 expected_head_sha=expected_head_sha,
             )
-    if updated is None:
-        return None
+            if updated is None:
+                return None
+            conn.execute(
+                """
+                INSERT INTO reshape_outbox (
+                    outbox_id, item_id, target_node, universe_id, branch_def_id,
+                    run_id, owner_notes, created_at, consumed_at
+                ) VALUES (?, ?, 'draft_patch', ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    outbox_id, item_id, updated["universe_id"],
+                    updated["branch_def_id"], updated["run_id"], notes, ts,
+                ),
+            )
     updated["route_back"] = {
         "target_node": "draft_patch",
+        "outbox_id": outbox_id,
         "item_id": item_id,
         "destination": updated["destination"],
         "pr_number": updated["pr_number"],
@@ -804,6 +856,35 @@ def reshape_item(
         "run_id": updated["run_id"],
     }
     return updated
+
+
+def list_pending_reshape_routes(
+    universe_dir: str | Path, *, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Read unconsumed reshape route_backs (Codex R7 C4). The Phase-2 resume
+    consumer reads these durable rows to resume runs; the resume engine +
+    revised-run production itself is Phase 2 (NOT built here)."""
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT outbox_id, item_id, target_node, universe_id, branch_def_id, "
+            "run_id, owner_notes, created_at FROM reshape_outbox "
+            "WHERE consumed_at IS NULL ORDER BY created_at ASC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+    return [
+        {
+            "outbox_id": r["outbox_id"],
+            "item_id": r["item_id"],
+            "target_node": r["target_node"],
+            "universe_id": r["universe_id"],
+            "branch_def_id": r["branch_def_id"],
+            "run_id": r["run_id"],
+            "owner_notes": r["owner_notes"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
 
 
 def reject_item(
@@ -1272,6 +1353,7 @@ __all__ = [
     "reject_item",
     "hold_item",
     "release_hold",
+    "list_pending_reshape_routes",
     "claim_for_merge",
     "release_merge_claim",
     "mark_merged",

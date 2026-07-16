@@ -60,10 +60,20 @@ def _open_pr(head_sha=_HEAD, mergeable_state="clean"):
     }
 
 
-def _scripted_api(*, allow_merge=True, live_head=_HEAD, mergeable_state="clean"):
+def _scripted_api(
+    *, allow_merge=True, live_head=_HEAD, mergeable_state="clean",
+    checks_configured=True,
+):
+    n = 1 if checks_configured else 0
+
     def fake(*, method, path, capability_token, body=None):
         fake.calls.append((method, path))
         if method == "GET":
+            if path.endswith("/status"):
+                # Legacy combined commit status (Codex R7 C5 required-checks).
+                return {"state": "success", "total_count": n}, None
+            if path.endswith("/check-runs"):
+                return {"total_count": n, "check_runs": []}, None
             return _open_pr(live_head, mergeable_state), None
         if method == "PUT":
             assert allow_merge, f"unexpected merge PUT: {path}"
@@ -500,3 +510,44 @@ def test_verify_flip_between_eligibility_and_claim_refuses_merge(
     assert result["error_kind"] == "merge_claim_lost"
     assert result["claim_reason"] == "facts_changed"
     assert not _put_fired(fake)
+
+
+# ── R7 C5: autonomous (auto/timer) merges require CONFIGURED required checks ──
+
+
+@pytest.mark.parametrize("policy", ["auto", "timer"])
+def test_autonomous_refused_when_no_required_checks(monkeypatch, tmp_path, policy):
+    """A repo that is mergeable-clean but has NO configured checks gives no test
+    evidence — auto/timer must refuse (Codex R7 C5)."""
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy=policy, timer_delay=0.0, verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=False, checks_configured=False)  # clean, 0 checks
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "verify_not_green"
+    assert result["configured_checks"] == 0
+    assert not _put_fired(fake)
+
+
+def test_manual_allowed_without_required_checks(monkeypatch, tmp_path):
+    """A MANUAL merge is owner-reviewed, so mergeable-clean suffices even with no
+    configured checks (Codex R7 C5)."""
+    _with_capability(monkeypatch)
+    item = _enqueue(tmp_path, policy="manual", verdict=rq.VERIFY_PASS)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    fake = _scripted_api(allow_merge=True, checks_configured=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result.get("merged") is True
+    assert _put_fired(fake)
+
+
+def test_autonomous_allowed_with_passing_required_checks(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=True, checks_configured=True)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result.get("merged") is True
+    assert _put_fired(fake)

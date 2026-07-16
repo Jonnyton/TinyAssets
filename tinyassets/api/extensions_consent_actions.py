@@ -49,22 +49,41 @@ def _current_actor() -> str:
     return _actor()
 
 
+def _consent_owner_gate() -> tuple[str, dict[str, Any] | None]:
+    """Consent grants/revokes authorize the universe to make EXTERNAL WRITES on
+    its behalf — an owner-level decision. Require the authenticated universe
+    OWNER, and return the AUTHENTICATED grantor identity so a caller cannot spoof
+    ``granted_by`` (Codex R7 C3). Returns ``(grantor, error_or_None)``.
+    """
+    from tinyassets.api.helpers import _request_universe
+    from tinyassets.api.permissions import (
+        current_actor_id,
+        current_actor_is_universe_owner,
+    )
+
+    target = _request_universe("")
+    if not current_actor_is_universe_owner(target):
+        return "", {
+            "error": (
+                "effector consent grant/revoke is owner-only; only the "
+                "universe owner/founder may authorize external writes"
+            ),
+            "failure_class": "owner_required",
+            "actionable_by": "user",
+            "universe_id": target,
+        }
+    return current_actor_id(), None
+
+
 def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
-    """Insert / refresh an active consent grant.
+    """Insert / refresh an active consent grant. OWNER-ONLY (Codex R7 C3): the
+    authenticated universe owner authorizes it, and the grantor is derived from
+    the authenticated actor — a caller-supplied ``granted_by`` is IGNORED.
 
-    Required kwargs:
-      - ``sink``: sink name, e.g. ``"github_pull_request"``.
-      - ``destination``: per-sink destination, e.g. ``"Jonnyton/TinyAssets"``.
-
-    Optional:
-      - ``granted_by``: actor recording the grant. Defaults to the
-        current MCP actor when omitted.
-
-    Returns the inserted row as JSON.
+    Required kwargs: ``sink``, ``destination``.
     """
     sink = (kwargs.get("sink") or "").strip()
     destination = (kwargs.get("destination") or "").strip()
-    granted_by = (kwargs.get("granted_by") or "").strip() or _current_actor()
     if not sink:
         return json.dumps({
             "error": "grant_effector_consent requires 'sink'",
@@ -77,12 +96,12 @@ def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_destination",
             "actionable_by": "chatbot",
         })
-    if not granted_by:
+    grantor, gate_err = _consent_owner_gate()
+    if gate_err is not None:
+        return json.dumps(gate_err)
+    if not grantor:
         return json.dumps({
-            "error": (
-                "grant_effector_consent requires 'granted_by' "
-                "(could not derive current actor)"
-            ),
+            "error": "could not derive an authenticated grantor identity",
             "failure_class": "missing_granted_by",
             "actionable_by": "user",
         })
@@ -92,7 +111,7 @@ def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
             _base_universe_dir(),
             sink=sink,
             destination=destination,
-            granted_by=granted_by,
+            granted_by=grantor,
         )
     except Exception as exc:
         logger.exception("grant_effector_consent failed")
@@ -108,7 +127,7 @@ def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
 
 
 def _action_revoke_effector_consent(kwargs: dict[str, Any]) -> str:
-    """Flip ``revoked_at`` on an existing grant.
+    """Flip ``revoked_at`` on an existing grant. OWNER-ONLY (Codex R7 C3).
 
     Required: ``sink`` + ``destination``. Returns ``status="revoked"``
     on hit, ``status="no_active_grant"`` when no row matched (the
@@ -130,6 +149,9 @@ def _action_revoke_effector_consent(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_destination",
             "actionable_by": "chatbot",
         })
+    _, gate_err = _consent_owner_gate()
+    if gate_err is not None:
+        return json.dumps(gate_err)
     try:
         from tinyassets.storage.effector_consents import revoke_consent
         hit = revoke_consent(

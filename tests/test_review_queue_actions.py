@@ -299,3 +299,34 @@ def test_list_pagination_reports_bounds(owner_env):
     assert out["limit"] == 2
     assert out["offset"] == 1
     assert out["count"] == 2
+
+
+# ── R7 C1: the review surface is OWNER-only — write collaborators denied ─────
+
+
+def test_write_collaborator_denied_on_all_review_verbs(writer_not_owner_env):
+    item = _seed(writer_not_owner_env)
+    calls = [
+        ("review_queue_list", {}),
+        ("review_queue_approve", {"expected_head_sha": _HEAD}),
+        ("review_queue_reshape", {"notes": "x"}),
+        ("review_queue_reject", {}),
+        ("review_queue_hold", {}),
+        ("review_queue_release", {}),
+    ]
+    for action, extra in calls:
+        out = _call(action, universe_id="u1", item_id=item["item_id"], **extra)
+        assert out["failure_class"] == "owner_required", action
+    # Nothing mutated — the item is untouched by any denied verb.
+    assert rq.get_item(writer_not_owner_env, item_id=item["item_id"])["status"] == "pending"
+
+
+def test_owner_can_use_all_review_verbs(owner_env):
+    # Owner passes the gate on every verb (spot-check a couple that mutate).
+    item = _seed(owner_env)
+    iid = item["item_id"]
+    assert _call("review_queue_hold", universe_id="u1", item_id=iid)["status"] == "held"
+    assert (
+        _call("review_queue_release", universe_id="u1", item_id=iid)["status"]
+        == "released"
+    )

@@ -139,6 +139,40 @@ _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_STRINGS = frozenset({"0", "false", "no", "off", ""})
 
 
+def _github_configured_checks_exist(
+    *, destination: str, head_sha: str, capability_token: str
+) -> tuple[bool, dict[str, Any]]:
+    """Return ``(checks_exist, summary)`` — whether the repo has AT LEAST ONE
+    configured status check / check-run on this commit (Codex R7 C5).
+
+    ``mergeable_state == "clean"`` already guarantees any existing checks PASSED
+    and there are no conflicts; but a repo with NO configured checks is also
+    "clean", giving auto/timer no test evidence. So autonomous (auto/timer)
+    merges additionally require a concrete configured check set. We consult BOTH
+    the legacy combined commit-status API and the modern check-runs API; either
+    non-empty counts as "checks configured". (A server-authored sandbox VERIFY
+    RECEIPT — the real verify evidence — lands with the Phase-2 sandbox runner;
+    until then GitHub-configured checks are the minimum.)"""
+    total = 0
+    combined_state = ""
+    st, err = _github_api(
+        method="GET",
+        path=f"/repos/{destination}/commits/{head_sha}/status",
+        capability_token=capability_token,
+    )
+    if err is None and isinstance(st, dict):
+        total += int(st.get("total_count") or 0)
+        combined_state = st.get("state") or ""
+    cr, err2 = _github_api(
+        method="GET",
+        path=f"/repos/{destination}/commits/{head_sha}/check-runs",
+        capability_token=capability_token,
+    )
+    if err2 is None and isinstance(cr, dict):
+        total += int(cr.get("total_count") or len(cr.get("check_runs") or []))
+    return total > 0, {"configured_checks": total, "combined_state": combined_state}
+
+
 class _StrictBoolError(ValueError):
     """A bool packet flag held a value that is neither a bool nor a recognized
     true/false string — fail loud rather than fail-open (Fable F2)."""
@@ -180,8 +214,10 @@ def _evaluate_merge_policy_gate(
     destination: str,
     pr_number: int,
     actual_head_sha: str,
-    canonical_verdict: str,
+    manual_verdict: str,
+    autonomous_verdict: str,
     github_mergeable_state: Any,
+    checks_summary: dict[str, Any] | None,
     matched_key: str | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Patch-loop S4 gate: resolves the GOVERNING merge policy from TRUSTED
@@ -317,10 +353,12 @@ def _evaluate_merge_policy_gate(
                 matched_output_key=matched_key,
             ), {}
 
-    # The founder-OAuth token is bound to the item's CURRENT policy regime
-    # (Codex R6 C1) — a token minted under a different regime does not satisfy.
+    # The founder-OAuth token is bound to the item's CURRENT regime + binding
+    # (Codex R6 C1 + R7 C2) — a token minted under a different regime OR a
+    # different owner-bound branch binding does not satisfy.
     policy_generation = rq._policy_signature(
-        item.get("merge_policy"), item.get("founder_oauth_per_merge")
+        item.get("merge_policy"), item.get("founder_oauth_per_merge"),
+        item.get("branch_def_id"), item.get("merge_timer_delay_s"),
     )
     fresh_approval_present = rq.has_fresh_merge_approval(
         universe_dir,
@@ -330,11 +368,16 @@ def _evaluate_merge_policy_gate(
         policy_generation=policy_generation,
     )
 
+    # Autonomous policies (auto/timer) require configured required-checks that
+    # passed; a MANUAL merge is owner-reviewed so mergeable-clean suffices
+    # (Codex R7 C5).
+    verify_verdict = (
+        manual_verdict if policy == mp.MERGE_POLICY_MANUAL else autonomous_verdict
+    )
     decision = mp.evaluate_merge_eligibility(
         policy=policy,
-        # Canonical GitHub verify signal, NOT the model-emitted stored verdict
-        # (Codex R6 C2).
-        verify_verdict=canonical_verdict,
+        # Canonical GitHub verify signal, NOT the model-emitted stored verdict.
+        verify_verdict=verify_verdict,
         item_status=item.get("status", ""),
         founder_oauth_required=founder_oauth_per_merge,
         fresh_approval_present=fresh_approval_present,
@@ -355,8 +398,9 @@ def _evaluate_merge_policy_gate(
             pr_number=pr_number,
             policy=policy,
             policy_reason=decision.get("reason"),
-            verify_verdict=canonical_verdict,
+            verify_verdict=verify_verdict,
             github_mergeable_state=github_mergeable_state,
+            configured_checks=(checks_summary or {}).get("configured_checks"),
             item_status=item.get("status"),
             founder_oauth_per_merge=founder_oauth_per_merge,
             matched_output_key=matched_key,
@@ -633,15 +677,26 @@ def run_github_merge_effector(
             matched_output_key=matched_key,
         )
 
-    # Canonical verify signal (Codex R6 C2): do NOT trust a model-emitted
-    # "green" — derive merge-eligibility verification from GitHub's own
-    # mergeable_state (required-checks + no-conflict). Until a real sandboxed
-    # verify runner exists (future slice), GitHub checks ARE the canonical
-    # autonomous verify signal. ``clean`` = all required checks pass, mergeable,
-    # up to date; anything else is treated as red.
-    canonical_verdict = (
-        "pass" if (pr_obj.get("mergeable_state") == "clean") else "fail"
-    )
+    # Canonical verify signal (Codex R6 C2 + R7 C5): do NOT trust a
+    # model-emitted "green" — derive verification from GitHub's own state.
+    # ``mergeable_state == "clean"`` = mergeable + no conflicts + any checks
+    # passed. For a MANUAL merge the owner is the reviewer, so ``clean`` is the
+    # verify signal. For an AUTONOMOUS (auto/timer) merge there is no human
+    # reviewer, so ``clean`` alone is NOT enough — the repo must ALSO have a
+    # concrete configured required-check set that passed (a checkless repo gives
+    # no test evidence). The real sandbox VERIFY RECEIPT is Phase-2; GitHub
+    # configured checks are the Phase-1 minimum.
+    mergeable_clean = pr_obj.get("mergeable_state") == "clean"
+    manual_verdict = "pass" if mergeable_clean else "fail"
+    checks_exist = False
+    checks_summary: dict[str, Any] = {}
+    if mergeable_clean and capability:
+        checks_exist, checks_summary = _github_configured_checks_exist(
+            destination=destination,
+            head_sha=actual_head_sha,
+            capability_token=capability,
+        )
+    autonomous_verdict = "pass" if (mergeable_clean and checks_exist) else "fail"
 
     # Patch-loop S4 (G6): gate the merge on durable owner-review-queue state +
     # the OWNER-BOUND policy + founder-OAuth-per-merge, on top of the
@@ -653,8 +708,10 @@ def run_github_merge_effector(
         destination=destination,
         pr_number=pr_number,
         actual_head_sha=actual_head_sha,
-        canonical_verdict=canonical_verdict,
+        manual_verdict=manual_verdict,
+        autonomous_verdict=autonomous_verdict,
         github_mergeable_state=pr_obj.get("mergeable_state"),
+        checks_summary=checks_summary,
         matched_key=matched_key,
     )
     if gate_error is not None:

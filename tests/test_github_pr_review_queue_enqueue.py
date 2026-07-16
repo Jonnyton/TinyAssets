@@ -82,6 +82,8 @@ def test_present_node_enqueues_pr_with_resume_identity(monkeypatch, tmp_path):
         run_state=_packet(),
         base_path=str(tmp_path),
         run_id="run-9",
+        authoritative_branch_def_id="patch_loop_reference",
+        authoritative_universe_id="u-abc",
     )
     # The PR "opened" and was queued.
     assert result.get("pr_number") == _PR
@@ -112,6 +114,8 @@ def test_reshape_carries_owner_notes_and_resume_identity(monkeypatch, tmp_path):
         run_state=_packet(),
         base_path=str(tmp_path),
         run_id="run-9",
+        authoritative_branch_def_id="patch_loop_reference",
+        authoritative_universe_id="u-abc",
     )
     item_id = result["review_queue_item_id"]
 
@@ -130,3 +134,47 @@ def test_reshape_carries_owner_notes_and_resume_identity(monkeypatch, tmp_path):
     assert rq.get_item(tmp_path, item_id=item_id)["notes"] == (
         "handle the empty-input case"
     )
+
+
+def test_packet_cannot_select_another_branchs_policy(monkeypatch, tmp_path):
+    """Codex R7 C2: a packet pointing branch_def_id at ANOTHER branch's `auto`
+    binding must be ignored — the AUTHORITATIVE branch (from the run context)
+    governs the policy resolution."""
+    _open_all_gates(monkeypatch)
+    # Owner binds two branches with opposite policies.
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd_auto", merge_policy="auto",
+        founder_oauth_per_merge=False, bound_by="owner",
+    )
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd_manual", merge_policy="manual",
+        founder_oauth_per_merge=True, bound_by="owner",
+    )
+    # The packet LIES: it claims bd_auto. The authoritative branch is bd_manual.
+    run_state = {
+        "pr_packet": {
+            "sink": github_pr.EXTERNAL_WRITE_SINK_GITHUB_PR,
+            "destination": _DEST,
+            "payload": {
+                "title": "x", "body": "b", "head_branch": "auto/fix",
+                "review_queue": {
+                    "request_ref": "req-1",
+                    "verify_verdict": "pass",
+                    "branch_def_id": "bd_auto",  # spoofed
+                    "universe_id": "spoofed-universe",
+                },
+            },
+        }
+    }
+    result = github_pr.run_github_pr_effector(
+        node_id="present", output_keys=["pr_packet"], run_state=run_state,
+        base_path=str(tmp_path), run_id="run-9",
+        authoritative_branch_def_id="bd_manual",  # the real branch
+        authoritative_universe_id="u-real",
+    )
+    item = rq.get_item(tmp_path, item_id=result["review_queue_item_id"])
+    # Authoritative branch's MANUAL policy governs — NOT the packet's auto.
+    assert item["merge_policy"] == "manual"
+    assert item["founder_oauth_per_merge"] is True
+    assert item["branch_def_id"] == "bd_manual"
+    assert item["universe_id"] == "u-real"  # not the spoofed universe
