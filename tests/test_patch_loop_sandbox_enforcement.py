@@ -623,3 +623,125 @@ def test_ordinary_node_still_runs_through_a_config_less_bridge():
     fn = _build_prompt_template_node(node, provider_call=config_less, event_sink=None)
     out = fn({})
     assert out["summarize_out"] == "ok"
+
+
+# --------------------------------------------------------------------------- #
+# (7) Codex round-4 FINDING 1 — vault overlay honors provider-scope + opt-in
+# --------------------------------------------------------------------------- #
+
+
+def _mock_vault(monkeypatch, *, codex_home="", claude_dir="", oauth=""):
+    import tinyassets.credential_vault as cv
+
+    monkeypatch.setattr(cv, "ensure_codex_home_from_vault", lambda ud: codex_home)
+    monkeypatch.setattr(cv, "ensure_claude_config_dir_from_vault", lambda ud: claude_dir)
+    monkeypatch.setattr(cv, "resolve_claude_oauth_token", lambda ud: oauth)
+    monkeypatch.setattr(cv, "resolve_llm_api_key", lambda ud, var: "VAULT-" + var)
+    return cv
+
+
+def test_vault_overlay_gates_api_keys_on_include_flag(monkeypatch):
+    cv = _mock_vault(monkeypatch)
+
+    # include_api_keys=False → subscription auth only, NO vault API key.
+    assert "ANTHROPIC_API_KEY" not in cv.provider_auth_env_overrides(
+        "/u", "claude-code", include_api_keys=False
+    )
+    assert "OPENAI_API_KEY" not in cv.provider_auth_env_overrides(
+        "/u", "codex", include_api_keys=False
+    )
+
+    # include_api_keys=True → ONLY the provider's OWN key, never the other's.
+    c = cv.provider_auth_env_overrides("/u", "claude-code", include_api_keys=True)
+    assert c.get("ANTHROPIC_API_KEY") == "VAULT-ANTHROPIC_API_KEY"
+    assert "OPENAI_API_KEY" not in c
+    x = cv.provider_auth_env_overrides("/u", "codex", include_api_keys=True)
+    assert x.get("OPENAI_API_KEY") == "VAULT-OPENAI_API_KEY"
+    assert "ANTHROPIC_API_KEY" not in x
+
+
+def test_sandbox_env_drops_vault_api_key_without_opt_in(monkeypatch, tmp_path):
+    from tinyassets.providers.base import sanitized_subprocess_env
+
+    monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
+    _mock_vault(monkeypatch, oauth="oauth-tok")
+
+    env = sanitized_subprocess_env("claude-code", universe_dir=tmp_path)
+    # Opt-in unset ⇒ the vault OPENAI/ANTHROPIC keys are NOT re-added...
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+    # ...but the job's own subscription auth still overlays.
+    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "oauth-tok"
+
+
+def test_sandbox_env_includes_only_own_vault_api_key_with_opt_in(monkeypatch, tmp_path):
+    from tinyassets.providers.base import sanitized_subprocess_env
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    _mock_vault(monkeypatch)
+
+    ce = sanitized_subprocess_env("claude-code", universe_dir=tmp_path)
+    assert ce.get("ANTHROPIC_API_KEY") == "VAULT-ANTHROPIC_API_KEY"  # own key
+    assert "OPENAI_API_KEY" not in ce  # never the OTHER provider's key
+
+    xe = sanitized_subprocess_env("codex", universe_dir=tmp_path)
+    assert xe.get("OPENAI_API_KEY") == "VAULT-OPENAI_API_KEY"  # own key
+    assert "ANTHROPIC_API_KEY" not in xe  # never the OTHER provider's key
+
+
+# --------------------------------------------------------------------------- #
+# (8) Codex round-4 FINDING 2 — policy router cannot run a sandbox node un-hardened
+# --------------------------------------------------------------------------- #
+
+
+class _ConfigLessRouter:
+    def call_with_policy_sync(self, role, prompt, system, policy):  # no `config`
+        return ("policy-ran", "codex", {})
+
+
+class _ConfigRouter:
+    def __init__(self):
+        self.seen_config = "unset"
+
+    def call_with_policy_sync(self, role, prompt, system, policy, config=None):
+        self.seen_config = config
+        return ("policy-ran", "codex", {})
+
+
+def test_policy_router_refuses_config_less_for_sandbox_node():
+    from tinyassets.graph_compiler import _call_policy_router_with_retry
+
+    with pytest.raises(SandboxUnavailableError):
+        _call_policy_router_with_retry(
+            _ConfigLessRouter(),
+            role="writer", prompt="p", system="", policy={},
+            config=coding_node_model_config(timeout=60),
+            needs_sandbox=True,
+        )
+
+
+def test_policy_router_runs_hardened_config_accepting_for_sandbox_node():
+    from tinyassets.graph_compiler import _call_policy_router_with_retry
+
+    router = _ConfigRouter()
+    text, provider, _meta = _call_policy_router_with_retry(
+        router,
+        role="writer", prompt="p", system="", policy={},
+        config=coding_node_model_config(timeout=60),
+        needs_sandbox=True,
+    )
+    assert text == "policy-ran"
+    assert router.seen_config is not None
+    assert router.seen_config.os_sandbox_required is True
+
+
+def test_policy_router_config_less_ok_for_ordinary_node():
+    from tinyassets.graph_compiler import _call_policy_router_with_retry
+
+    text, _provider, _meta = _call_policy_router_with_retry(
+        _ConfigLessRouter(),
+        role="writer", prompt="p", system="", policy={},
+        config=None,
+        needs_sandbox=False,
+    )
+    assert text == "policy-ran"

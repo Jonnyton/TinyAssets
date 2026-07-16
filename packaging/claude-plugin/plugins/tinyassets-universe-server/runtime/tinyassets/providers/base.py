@@ -219,11 +219,19 @@ def sanitized_subprocess_env(
         if key in API_KEY_PROVIDER_ENV_VARS and not opted_in:
             continue
         env[key] = src[key]
-    # Overlay ONLY this provider's per-universe vault auth (never a global).
+    # Overlay ONLY this provider's per-universe vault auth (never a global, never
+    # the other provider's key). The vault BYO API key is overlaid only under the
+    # same opt-in as host-env keys (Codex S3 round-4): apply_provider_auth_env
+    # ALWAYS re-adds the vault OPENAI/ANTHROPIC key otherwise, silently defeating
+    # both the opt-in and the subscription-only default for a sandbox spawn.
     try:
         from tinyassets.credential_vault import apply_provider_auth_env
 
-        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
+        apply_provider_auth_env(
+            env, provider_name,
+            universe_dir=universe_dir,
+            include_api_keys=opted_in,
+        )
     except ValueError:
         raise
     except Exception:

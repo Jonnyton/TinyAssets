@@ -223,6 +223,7 @@ def _call_policy_router_with_retry(
     system: str,
     policy: dict[str, Any],
     config: Any = None,
+    needs_sandbox: bool = False,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
     # Only forward config when set AND the router's call_with_policy_sync
@@ -238,6 +239,19 @@ def _call_policy_router_with_retry(
             )
         except (ValueError, TypeError):
             pass_config = False
+    # Fail closed (Codex S3 round-4 FINDING 2): a sandbox-required node must NEVER
+    # run through a policy router that cannot carry its hardened config — that
+    # would drop the sandbox tool/env policy exactly like a config-less bridge.
+    # Mirrors the _bridge refusal.
+    if needs_sandbox and not pass_config:
+        from tinyassets.providers.base import SandboxUnavailableError
+
+        raise SandboxUnavailableError(
+            "Sandbox-required node cannot run through this policy router: its "
+            "call_with_policy_sync does not carry a 'config' kwarg, so the "
+            "hardened sandbox config would be silently dropped. Refusing to run a "
+            "coding node un-hardened (fail closed)."
+        )
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     for attempt_index in range(attempts):
         try:
@@ -1163,6 +1177,7 @@ def _build_prompt_template_node(
                                 system="",
                                 policy=effective_policy,
                                 config=_node_cfg,
+                                needs_sandbox=_node_needs_sandbox,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
