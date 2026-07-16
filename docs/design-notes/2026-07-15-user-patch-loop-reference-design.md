@@ -1,22 +1,30 @@
 # The patch loop is a user branch — reference design (2026-07-15)
 
-**Status:** draft — awaiting host approval (design-approval gate before build).
+**Status:** APPROVED by host 2026-07-15 (this session); Codex design review
+verdict `adapt` — all four required adaptations applied below (sandbox gap made
+build-blocking, PR-181 claim narrowed, merge-policy verbs marked as gaps,
+remix promise scoped to published public designs).
 **Basis:** host steer 2026-07-15 (verbatim intent, this session): the patch loop
 is an ordinary **user-built branch**, not platform infrastructure. Jonathan is
 *just another user* whose managed project happens to be the platform itself. A
 game developer running "player comments → ready-to-merge patches → my repo"
 through TinyAssets is the **same flow**; the only difference is which GitHub
-the PRs target. All branches are shared, remixable designs any user's chatbot
-can see and take; owners review from any surface (phone included) whenever they
-get around to it; merge policy is per-remix (manual approve / auto / timer).
+the PRs target. All **published public branch designs** are shared, remixable
+designs any user's chatbot can see and take (private branches stay host-side
+and author-gated per commons-first — the remix promise does not extend to
+them); owners review from any surface (phone included) whenever they get
+around to it; merge policy is per-remix (manual approve / auto / timer).
 
 ## 1. Why now
 
 - `change_loop_v1` (`fd5c66b1d87d`) — the only patch loop that ever ran — was a
   live-authored branch with no repo-backed form. The 2026-07-13 volume closure
-  deleted it unrecoverably. Filings still enqueue investigations against a dead
-  branch ref (live evidence: PR-181, request queued forever, trigger pointing
-  at nonexistent `0ca6e9c97f65`).
+  deleted it unrecoverably. Verified live 2026-07-15/16: both `fd5c66b1d87d`
+  and `0ca6e9c97f65` return not-found via `read_graph target=branch`, and
+  `_resolve_investigation_handler` (`tinyassets/bug_investigation.py:395`)
+  returns its env-fallback branch id **without validating the branch exists**,
+  so filings can enqueue investigation requests that no runner will ever pick
+  up (PR-181's dispatcher request shows queued with zero runs).
 - The 2026-06-25 cheat-loop retirement already rejected the "env-var-hardwired
   platform loop" shape. Rebuilding it that way would re-import the anti-pattern.
 - PLAN §"Commons-first architecture": *the platform doesn't build features; the
@@ -45,22 +53,33 @@ user request. Anything less is a draft the loop keeps working, not output.
 
 ## 3. Reference design (the commons artifact)
 
-One published, public, remixable branch: **`patch_loop_reference`**.
+One published, public, remixable branch: **`patch_loop_reference`** — and it is
+**repo-blind by construction**: the design carries no repository identity
+anywhere. Binding a repo (+ credential) is a **user act at remix time** — the
+founder binding the platform's repo is the same gesture as a game dev binding
+theirs. A reference with no binding is inert: it can be imported, inspected,
+and remixed, but nothing executes.
 
-Node graph (each node = existing primitive; no new platform machinery):
+The reference ships as a **portable design artifact** (export/import format):
+a self-contained document a user can hand to their chatbot ("import this
+branch") or export from any universe to share. Same format the repo seed uses.
 
-| Node | Does | Substrate it composes |
-|---|---|---|
-| `intake` | Drain patch requests / comments filed against the bound project | wiki patch-requests + requests queue (dispatcher `request_type=bug_investigation` compatible) |
-| `investigate` | Reproduce + analyze against the bound repo | cloud worker; sub-branch invocation (Phase A, landed) |
-| `draft_patch` | Produce the fix on a branch of the bound repo | daemon-driven coding agent (`claude -p` / `codex exec` subprocess — hard rule 3), sandboxed (engine-isolation posture from the 2026-07-03 P0) |
-| `verify` | Run the repo's tests/CI; loop back to `draft_patch` until green | conditional edges (landed); gate-branch verdict shape (`docs/conventions/gate-branch-shape.md`) |
-| `present` | Open the PR + queue it on the owner's review surface | `github_pr` effector (vault-first credential, landed) + auto-ship attempt ledger |
-| `owner_gate` | manual / auto / timer merge policy; reshape sends the PR back to `draft_patch` with the owner's notes | gate claims + effector consent (landed verbs); **new:** founder-OAuth-per-merge option |
-| `merge` | Merge on approval (or policy) | `github_pr` effector |
+Node graph:
 
-**Parameters a remix sets:** target repo, credential binding, merge policy
-(+ OAuth-per-merge flag), intake source(s), verify command(s), cadence.
+| Node | Does | Substrate it composes | Status |
+|---|---|---|---|
+| `intake` | Drain patch requests / comments filed against the bound project | wiki patch-requests + requests queue (dispatcher `request_type=bug_investigation` compatible) | landed |
+| `investigate` | Reproduce + analyze against the bound repo | cloud worker; sub-branch invocation (Phase A) | landed |
+| `draft_patch` | Produce the fix on a branch of the bound repo | daemon-driven coding agent (`claude -p` / `codex exec` subprocess — hard rule 3) | **GAP G5 — build-blocking:** ordinary branch prompt nodes are NOT sandboxed today (`providers/base.py` `sandbox_workspace=False`; codex nodes may run `--dangerously-bypass-approvals-and-sandbox`). The 2026-07-03 engine-isolation posture covers `universe_intelligence` only. The loop must not run against real repos until coding-node sandbox/tool policy is enforced. |
+| `verify` | Run the repo's tests/CI; loop back to `draft_patch` until green | conditional edges; gate-branch verdict shape (`docs/conventions/gate-branch-shape.md`) | landed |
+| `present` | Open the PR + queue it on the owner's review surface | `github_pr` effector (vault-first credential) + auto-ship attempt ledger | effector landed; **review queue = GAP G3** |
+| `owner_gate` | manual / auto / timer merge policy; reshape sends the PR back to `draft_patch` with the owner's notes | **GAP G6:** today `github_merge` accepts only branch-protection authorization + expected head SHA. The owner review queue, timer policy, and founder-OAuth-per-merge do NOT exist yet and must be built — no implied platform merge-policy enum. | gap |
+| `merge` | Merge on approval (or policy) | `github_merge` effector (extended per G6) | partial |
+
+**Parameters a remix sets (all user acts, none baked into the reference):**
+target repo, credential binding (vault), merge policy (+ OAuth-per-merge
+flag), intake source(s), verify command(s), cadence, **and the engine/daemon
+capacity that runs it (G7)**.
 
 ## 4. Durability requirement (the lesson of 2026-07-13)
 
@@ -71,45 +90,80 @@ volume loss can never again delete the design class — only live remix instance
 which re-fork from the reference. Published instance + repo seed carry the same
 design version id so drift is detectable.
 
-## 5. Gaps this design closes (found live, this session)
+## 5. Gaps (found live, this session; host steers 2026-07-15)
 
-1. **Nothing to remix** — the commons has no patch-loop design (G1: the
-   reference artifact + seeding).
-2. **Discovery gap** — the connector's `read_graph` targets couldn't enumerate
-   shareable branch designs; `write_graph target=branch` only patches existing
-   defs. Remix must work end-to-end through the canonical five handles
-   (G2: discovery + fork on the public surface).
-3. **No review surface** — approve / reshape / reject queued PRs, phone-first
-   (G3: the owner console; relay/app + website read of the same queue).
-4. **Dead-ref dispatch** — filings enqueue against nonexistent branch defs
-   silently; the dispatcher must fail loudly (fail-loud rule) when the resolved
-   handler doesn't exist (G4: guard + surfaced error on file response).
+1. **G1 — Nothing to remix:** the commons has no patch-loop design (the
+   reference artifact + durable seeding).
+2. **G2 — Discovery + import/export gap:** the connector's `read_graph`
+   targets couldn't enumerate shareable branch designs; `write_graph
+   target=branch` only patches existing defs; and there is no **portable
+   export/import** — a user must be able to hand their chatbot a design
+   artifact ("import this branch") or export one to share. Remix must work
+   end-to-end through the canonical handles.
+3. **G3 — No owner review surface:** approve / reshape / reject queued PRs,
+   phone-first (relay/app + website read of the same queue).
+4. **G4 — Dead-ref dispatch:** `_resolve_investigation_handler` returns branch
+   ids without validating existence; filings enqueue silently against dead
+   refs. Fail loudly (hard rule 8) at file time when the resolved handler
+   doesn't exist.
+5. **G5 — Coding-node sandbox (build-blocking):** branch prompt/coding nodes
+   are not sandboxed today (see §3 table). Enforce sandbox/tool policy for
+   `draft_patch`-class nodes before any loop touches a real repo.
+6. **G6 — Merge policies + review verbs don't exist yet:** `github_merge` is
+   branch-protection + expected-SHA only; the review queue, timer policy, and
+   founder-OAuth-per-merge are new builds.
+7. **G7 — Engine/daemon onboarding (host steer):** no user — the founder
+   included — has ever been taken through binding their engines
+   (subscription CLIs / local / API) or hosting daemon capacity to their
+   universe. Therefore **no platform-global daemon should be running work
+   anywhere**: universes execute only on user-bound capacity (their own, or
+   capacity another user has explicitly offered). The current platform-global
+   daemon is the wrong shape — the PR-181 idle-churn on `default-universe` is
+   a live symptom of it. Setup flow: at (or after) first contact the founder
+   is offered "bind an engine so your universe can run"; until bound, the
+   universe is honestly idle.
 
 ## 6. Slices
 
-- **S1 — Reference design + durable seed** (the artifact; G1 + G4 guard).
-- **S2 — Remix path on the connector** (discover → fork → bind repo/credential →
-  set policy, all via canonical handles from a chatbot; G2).
-- **S3 — Owner review surface + merge policies** (approve/reshape/reject from
-  phone; manual/auto/timer; founder-OAuth-per-merge; G3).
-- **S4 — Dogfood proof:** Jonathan's chatbot remixes the reference, binds the
-  TinyAssets repo, and **PR-181 flows through it** end-to-end to a founder-
-  approved merge. Friction found during S4 is product signal, filed and fixed.
+- **S1 — Reference design as a portable artifact + durable seed + fail-loud
+  guard** (G1 + the G2 import format + G4): author `patch_loop_reference` in
+  the export/import format, commit it to the repo, seed it idempotently at
+  deploy, validate handler existence at file time. Repo-blind per §3.
+- **S2 — Remix/import path on the connector** (G2): discover → import/fork →
+  bind repo + credential → set policy, all via canonical handles from a
+  chatbot; export any owned branch as the same artifact.
+- **S3 — Coding-node sandbox** (G5): enforce sandbox + tool policy for
+  draft_patch-class nodes. Blocking gate for any live run against a repo.
+- **S4 — Owner review surface + merge policies** (G3 + G6): review queue with
+  approve/reshape/reject from phone; manual/auto/timer; founder-OAuth-per-
+  merge; extend `github_merge` accordingly.
+- **S5 — Engine/daemon onboarding + platform-daemon reshape** (G7): the user
+  setup flow for binding engines/daemon capacity to a universe; retire
+  platform-global daemon work (host-gated production change — decided
+  explicitly, not slipped into another slice).
+- **S6 — Dogfood proof:** Jonathan's chatbot imports/remixes the reference,
+  binds the TinyAssets repo + his engines, and **PR-181 flows through his
+  loop** to a founder-OAuth-approved merge. Friction found is product signal,
+  filed and fixed.
 
-Each slice ships with tests + opposite-provider review; S2/S3 surface changes
-get the rendered-chatbot ui-test per AGENTS quality gates.
+Each slice ships with tests + opposite-provider review; surface changes get
+the rendered-chatbot ui-test per AGENTS quality gates. S1/S2 may land ahead of
+S3, but no remixed loop executes against a real repo until S3 lands.
 
 ## 7. Security posture
 
 - Vault credentials never leave effectors; recommend PR-scope (`contents:write`
   + `pull_requests:write`) tokens; never in node inputs/outputs or logs.
-- `draft_patch` runs under the engine sandbox posture (WebFetch-only, cwd-pinned,
-  tool denylist) — a remixed loop must not become an exfiltration vector for
-  the host it runs on.
+- `draft_patch` sandboxing is G5 and build-blocking — the 2026-07-03
+  engine-isolation posture (WebFetch-only, cwd-pinned, tool denylist) must be
+  EXTENDED to coding nodes; it does not cover them today. A remixed loop must
+  not become an exfiltration vector for the capacity host it runs on.
 - OAuth-per-merge (Jonathan's flag): the merge effector requires a fresh
   founder-authenticated approval action, not a standing consent.
 - Auto/timer merge policies require the verify gate green — no policy merges a
   red PR.
+- Work runs only on user-bound capacity (G7) — no ambient platform compute to
+  abuse.
 
 ## 8. Explicitly rejected shapes
 
