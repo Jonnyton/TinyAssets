@@ -92,11 +92,11 @@ def test_present_to_owner_reshape_resume_e2e(monkeypatch, tmp_path):
             "pr_number": 7, "stdout": "", "invocation_mode": "gh",
         },
     )
-    # Owner binds the governing policy for the reference design (review_required
-    # defaults True → the present node enqueues, config-driven not packet-driven).
-    rq.set_merge_policy_binding(
+    # Owner binds the merge preference for the reference design (review_required
+    # defaults True → the present node projects, config-driven not packet-driven).
+    rq.set_merge_preference_binding(
         tmp_path, branch_def_id="patch_loop_reference",
-        merge_policy="manual", founder_oauth_per_merge=True, bound_by="owner",
+        merge_preference="manual", review_required=True, bound_by="owner",
     )
     # Run the present node's github_pr effect through the real effector path.
     # The trust identities (branch_def_id / universe_id) come from the run
@@ -124,20 +124,28 @@ def test_present_to_owner_reshape_resume_e2e(monkeypatch, tmp_path):
         authoritative_branch_def_id="patch_loop_reference",
         authoritative_universe_id="u-1",
     )
-    item_id = result["review_queue_item_id"]
-    item = rq.get_item(tmp_path, item_id=item_id)
-    assert item["status"] == "pending"
-    assert item["run_id"] == "run-1"
-    assert item["founder_oauth_per_merge"] is True  # owner-bound, not packet
+    assert result["review_queue_pr_number"] == 7
+    proj = rq.get_projection(tmp_path, destination="Owner/Repo", pr_number=7)
+    assert proj["workflow_outcome"] == "open"
+    assert proj["run_id"] == "run-1"
     # Trust identities resolved from the run context, not the (absent) packet.
-    assert item["universe_id"] == "u-1"
-    assert item["branch_def_id"] == "patch_loop_reference"
+    assert proj["universe_id"] == "u-1"
+    assert proj["branch_def_id"] == "patch_loop_reference"
 
-    # Owner reshapes → the loop gets the resume identity to resume the run.
-    reshaped = rq.reshape_item(
-        tmp_path, item_id=item_id, reshaped_by="owner", notes="tighten it"
+    # Owner reshapes → records a REQUEST_CHANGES review + a durable resume row.
+    rq.record_owner_intent(
+        tmp_path, destination="Owner/Repo", pr_number=7,
+        intent=rq.INTENT_RESHAPE, workflow_outcome=rq.WORKFLOW_RESHAPED,
+        decided_by="owner", expected_head_sha="a" * 40,
+        recorded_call={"kind": "submit_review_request_changes"},
+        notes="tighten it",
     )
-    route = reshaped["route_back"]
+    outbox = rq.enqueue_reshape(
+        tmp_path, destination="Owner/Repo", pr_number=7,
+        universe_id=proj["universe_id"], branch_def_id=proj["branch_def_id"],
+        run_id=proj["run_id"], owner_notes="tighten it",
+    )
+    route = outbox["route_back"]
     assert route["target_node"] == "draft_patch"
     assert route["universe_id"] == "u-1"
     assert route["branch_def_id"] == "patch_loop_reference"

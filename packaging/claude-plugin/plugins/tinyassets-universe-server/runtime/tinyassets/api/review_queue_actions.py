@@ -1,25 +1,29 @@
-"""MCP action handlers for the patch-loop owner review queue — S4 (G3).
+"""MCP chat verbs for the patch-loop owner review surface — S4 (GitHub-native).
 
-Wires the per-universe review queue (``tinyassets.storage.review_queue``) into
-the ``extensions`` MCP tool surface so a project owner can, from any chatbot
-surface (phone included), review the ready-to-merge PRs their patch loop
-produced:
+**Redirected 2026-07-16 (host decision).** GitHub owns review + merge state.
+These chat verbs let a project owner, from any chatbot surface (phone included),
+act on the App-authored PRs their patch loop produced — and each verb RECORDS
+the owner's intent plus the EXACT GitHub call it will run. Phase 1 records
+(against the durable PR projection); Phase 2 executes the recorded call against
+the live GitHub App.
 
-- ``review_queue_list(status?, destination?)`` — list queued items.
-- ``review_queue_approve(item_id, notes?)`` — approve a PR; mints a fresh,
-  single-use founder-OAuth approval bound to the item's current head.
-- ``review_queue_reshape(item_id, notes)`` — send the PR back to the loop's
-  ``draft_patch`` node with the owner's notes (``notes`` required).
-- ``review_queue_reject(item_id, notes?)`` — reject the PR (terminal).
+- ``review_queue_list(destination?, status?)`` — list projected PRs with their
+  cached GitHub state (state / review decision / mergeability) and any recorded
+  owner intent.
+- ``review_queue_approve(pr_number, destination, expected_head_sha)`` — record
+  the owner's approval → a GitHub ``POST /pulls/{n}/reviews event=APPROVE
+  commit_id=<head>`` (owner's user token). Head-bound.
+- ``review_queue_reshape(pr_number, destination, expected_head_sha, notes)`` —
+  record a ``REQUEST_CHANGES`` review + a durable ``draft_patch`` resume row.
+- ``review_queue_reject(pr_number, destination, expected_head_sha)`` — record a
+  ``REQUEST_CHANGES`` review + a terminal workflow outcome.
+- ``review_queue_set_preference(branch_def_id, merge_preference, ...)`` —
+  owner-bind the off-GitHub merge preference (manual / auto / not_before).
 
-All four are **owner-gated**: only an authenticated actor holding a
-``write``/``admin`` grant on the universe may touch its queue. The enqueue side
-(the loop's ``present`` node) is NOT an MCP verb — it is an internal storage
-call — because a chatbot never files its own review items; the loop does.
-
-Dispatch shape matches the other ``_*_ACTIONS`` modules under
-``tinyassets/api/``: each handler takes a single ``kwargs`` dict and returns a
-JSON string for the MCP response.
+All are **owner-gated**: only the universe owner/founder may act; a write
+collaborator cannot decide on the founder's PRs. The enqueue side (the loop's
+``present`` node) is an internal storage call (:func:`review_queue.project_pr`),
+not an MCP verb — a chatbot never files its own review items; the loop does.
 """
 
 from __future__ import annotations
@@ -28,30 +32,17 @@ import json
 import logging
 from typing import Any
 
-from tinyassets.storage.review_queue import (
-    InvalidReviewTransition,
-    MergeInProgress,
-    OwnerRequired,
-    ReviewHeadChanged,
-)
+from tinyassets import github_native
+from tinyassets import merge_policy as mp
+from tinyassets.storage.review_queue import ReviewHeadChanged
 
 logger = logging.getLogger(__name__)
 
-
-def _invalid_transition(exc: InvalidReviewTransition) -> str:
-    return json.dumps({
-        "error": str(exc),
-        "failure_class": "invalid_transition",
-        "actionable_by": "chatbot",
-    })
-
-
-def _merge_in_progress(exc: MergeInProgress) -> str:
-    return json.dumps({
-        "error": str(exc),
-        "failure_class": "merge_in_progress",
-        "actionable_by": "chatbot",
-    })
+#: Honest Phase-1 boundary text attached to every recorded-intent response.
+_PHASE2_NOTE = (
+    "Phase 1: this decision is recorded durably with the exact GitHub call it "
+    "will run; the live GitHub App executes the call in Phase 2."
+)
 
 
 def _head_changed(exc: ReviewHeadChanged) -> str:
@@ -65,24 +56,21 @@ def _head_changed(exc: ReviewHeadChanged) -> str:
 def _owner_gate(action: str, universe_id: str) -> tuple[str, dict[str, Any] | None]:
     """Resolve the target universe + enforce UNIVERSE-OWNER authority.
 
-    The patch-loop review surface is the FOUNDER's decision surface — the
-    owner's decision is law (Codex R7 C1). A general ``write`` collaborator is
-    NOT enough for list/approve/reshape/reject/hold/release; only the universe
-    owner/founder passes. (A general reviewer role is a Phase-2 addition.)
+    The review surface is the FOUNDER's decision surface — the owner's decision
+    is law. A general ``write`` collaborator is NOT enough; only the universe
+    owner/founder passes.
     """
     from tinyassets.api.auto_ship_actions import _require_universe_write
 
-    # First resolve the universe + reject anonymous / no-access (write baseline).
     target_universe, err = _require_universe_write(universe_id, action=action)
     if err is not None:
         return target_universe, err
-    # Then require actual owner authority (not merely write/admin collaborator).
     from tinyassets.api.permissions import current_actor_is_universe_owner
 
     if not current_actor_is_universe_owner(target_universe):
         return target_universe, {
             "error": (
-                "the patch-loop review queue is owner-only; a write "
+                "the patch-loop review surface is owner-only; a write "
                 "collaborator cannot decide on the founder's PRs"
             ),
             "failure_class": "owner_required",
@@ -106,13 +94,40 @@ def _current_actor() -> str:
     return current_actor_id()
 
 
-def _require_head(action: str, kwargs: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Every mutating review verb is head-bound (Codex R7 F5): the owner passes
-    the head_sha they reviewed so a decision can't apply after the PR changed.
-    Returns ``(head, error_json_or_None)``."""
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _require_pr_and_head(
+    action: str, kwargs: dict[str, Any]
+) -> tuple[str, int, str, str | None]:
+    """Resolve (destination, pr_number, expected_head_sha) or an error JSON.
+
+    Every mutating verb is head-bound: the owner passes the head_sha they
+    reviewed so a decision can't apply to a re-pushed head (GitHub's
+    latest-push-approval rules enforce the same thing natively)."""
+    destination = (kwargs.get("destination") or "").strip()
+    pr_raw = kwargs.get("pr_number")
     head = (kwargs.get("expected_head_sha") or "").strip()
+    if not destination:
+        return "", 0, "", json.dumps({
+            "error": f"{action} requires 'destination' (owner/repo)",
+            "failure_class": "missing_destination",
+            "actionable_by": "chatbot",
+        })
+    try:
+        pr_number = int(pr_raw)
+    except (TypeError, ValueError):
+        return destination, 0, "", json.dumps({
+            "error": f"{action} requires an integer 'pr_number'",
+            "failure_class": "missing_pr_number",
+            "actionable_by": "chatbot",
+        })
     if not head:
-        return None, json.dumps({
+        return destination, pr_number, "", json.dumps({
             "error": (
                 f"{action} requires 'expected_head_sha' — the head_sha you "
                 "reviewed (from review_queue_list); it head-binds the decision "
@@ -121,14 +136,18 @@ def _require_head(action: str, kwargs: dict[str, Any]) -> tuple[str | None, str 
             "failure_class": "missing_expected_head_sha",
             "actionable_by": "chatbot",
         })
-    return head, None
+    return destination, pr_number, head, None
 
 
-def _coerce_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+def _not_projected(action: str, destination: str, pr_number: int) -> str:
+    return json.dumps({
+        "error": f"no projected PR {destination}#{pr_number} for {action}",
+        "failure_class": "pr_not_projected",
+        "actionable_by": "chatbot",
+    })
+
+
+# ── list ────────────────────────────────────────────────────────────────────
 
 
 def _action_review_queue_list(kwargs: dict[str, Any]) -> str:
@@ -136,18 +155,17 @@ def _action_review_queue_list(kwargs: dict[str, Any]) -> str:
     target_universe, err = _owner_gate("review_queue_list", universe_id)
     if err is not None:
         return json.dumps(err)
-    status = (kwargs.get("status") or "").strip() or None
     destination = (kwargs.get("destination") or "").strip() or None
-    # C6: pagination — default limit 50 (capped at 200 in storage), offset skips.
+    workflow_outcome = (kwargs.get("status") or "").strip() or None
     limit = _coerce_int(kwargs.get("limit"), 50)
     offset = _coerce_int(kwargs.get("offset"), 0)
     try:
-        from tinyassets.storage.review_queue import list_queue
+        from tinyassets.storage.review_queue import list_projections
 
-        items = list_queue(
+        items = list_projections(
             _universe_dir_for(target_universe),
-            status=status,
             destination=destination,
+            workflow_outcome=workflow_outcome,
             limit=limit,
             offset=offset,
         )
@@ -165,68 +183,45 @@ def _action_review_queue_list(kwargs: dict[str, Any]) -> str:
         "limit": limit,
         "offset": offset,
         "items": items,
+        "note": (
+            "GitHub is authoritative for review/merge state; the github_* fields "
+            "are a reconciliation cache reread from GitHub."
+        ),
     })
+
+
+# ── approve ───────────────────────────────────────────────────────────────────
 
 
 def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
     universe_id = (kwargs.get("universe_id") or "").strip()
-    item_id = (kwargs.get("item_id") or "").strip()
-    expected_head_sha = (kwargs.get("expected_head_sha") or "").strip()
-    if not item_id:
-        return json.dumps({
-            "error": "review_queue_approve requires 'item_id'",
-            "failure_class": "missing_item_id",
-            "actionable_by": "chatbot",
-        })
-    # Approve is the credential-minting path → REQUIRE the head the owner saw
-    # (Fable F1), so an approval can't silently apply to a re-pushed head.
-    if not expected_head_sha:
-        return json.dumps({
-            "error": (
-                "review_queue_approve requires 'expected_head_sha' — the "
-                "head_sha you reviewed (from review_queue_list); it head-binds "
-                "the approval so it can't apply to a re-pushed head"
-            ),
-            "failure_class": "missing_expected_head_sha",
-            "actionable_by": "chatbot",
-        })
+    destination, pr_number, head, head_err = _require_pr_and_head(
+        "review_queue_approve", kwargs
+    )
+    if head_err is not None:
+        return head_err
     target_universe, err = _owner_gate("review_queue_approve", universe_id)
     if err is not None:
         return json.dumps(err)
-    notes = kwargs.get("notes") or ""
-    # C4/C1: owner authority for the founder-OAuth mint is enforced INSIDE the
-    # mint transaction (no actions-layer TOCTOU). We pass whether the actor is
-    # the universe owner; approve_item raises OwnerRequired in-txn if the item's
-    # governing OAuth flag is set and the actor is not the owner.
-    from tinyassets.api.permissions import current_actor_is_universe_owner
-
-    actor_is_owner = current_actor_is_universe_owner(target_universe)
+    call = github_native.review_approve(
+        destination=destination, pr_number=pr_number, head_sha=head
+    )
     try:
-        from tinyassets.storage.review_queue import approve_item
-
-        item = approve_item(
-            _universe_dir_for(target_universe),
-            item_id=item_id,
-            approved_by=_current_actor(),
-            notes=notes,
-            expected_head_sha=expected_head_sha,
-            actor_is_owner=actor_is_owner,
+        from tinyassets.storage.review_queue import (
+            INTENT_APPROVE,
+            WORKFLOW_APPROVED,
+            record_owner_intent,
         )
-    except OwnerRequired:
-        return json.dumps({
-            "error": (
-                "this PR requires a founder-OAuth-per-merge approval; only the "
-                "universe owner/founder may mint it"
-            ),
-            "failure_class": "owner_required",
-            "actionable_by": "user",
-        })
+
+        projection = record_owner_intent(
+            _universe_dir_for(target_universe),
+            destination=destination, pr_number=pr_number,
+            intent=INTENT_APPROVE, workflow_outcome=WORKFLOW_APPROVED,
+            decided_by=_current_actor(), expected_head_sha=head,
+            recorded_call=call.to_dict(), notes=kwargs.get("notes") or "",
+        )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
-    except MergeInProgress as exc:
-        return _merge_in_progress(exc)
-    except InvalidReviewTransition as exc:
-        return _invalid_transition(exc)
     except Exception as exc:
         logger.exception("review_queue_approve failed")
         return json.dumps({
@@ -234,56 +229,70 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
-    if item is None:
-        return json.dumps({
-            "error": f"no review-queue item with id {item_id!r}",
-            "failure_class": "item_not_found",
-            "actionable_by": "chatbot",
-        })
-    return json.dumps({"status": "approved", "item": item})
+    if projection is None:
+        return _not_projected("review_queue_approve", destination, pr_number)
+    return json.dumps({
+        "status": "approved",
+        "projection": projection,
+        "github_call": call.to_dict(),
+        "note": _PHASE2_NOTE,
+    })
+
+
+# ── reshape ───────────────────────────────────────────────────────────────────
 
 
 def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
     universe_id = (kwargs.get("universe_id") or "").strip()
-    item_id = (kwargs.get("item_id") or "").strip()
+    destination, pr_number, head, head_err = _require_pr_and_head(
+        "review_queue_reshape", kwargs
+    )
+    if head_err is not None:
+        return head_err
     notes = (kwargs.get("notes") or "").strip()
-    if not item_id:
-        return json.dumps({
-            "error": "review_queue_reshape requires 'item_id'",
-            "failure_class": "missing_item_id",
-            "actionable_by": "chatbot",
-        })
     if not notes:
         return json.dumps({
             "error": (
-                "review_queue_reshape requires 'notes' — a reshape must tell "
-                "the loop what to change"
+                "review_queue_reshape requires 'notes' — a reshape must tell the "
+                "loop what to change"
             ),
             "failure_class": "missing_notes",
             "actionable_by": "chatbot",
         })
-    expected_head_sha, head_err = _require_head("review_queue_reshape", kwargs)
-    if head_err is not None:
-        return head_err
     target_universe, err = _owner_gate("review_queue_reshape", universe_id)
     if err is not None:
         return json.dumps(err)
+    call = github_native.review_request_changes(
+        destination=destination, pr_number=pr_number, head_sha=head, body=notes
+    )
     try:
-        from tinyassets.storage.review_queue import reshape_item
+        from tinyassets.storage.review_queue import (
+            INTENT_RESHAPE,
+            WORKFLOW_RESHAPED,
+            enqueue_reshape,
+            record_owner_intent,
+        )
 
-        item = reshape_item(
-            _universe_dir_for(target_universe),
-            item_id=item_id,
-            reshaped_by=_current_actor(),
-            notes=notes,
-            expected_head_sha=expected_head_sha,
+        universe_dir = _universe_dir_for(target_universe)
+        projection = record_owner_intent(
+            universe_dir,
+            destination=destination, pr_number=pr_number,
+            intent=INTENT_RESHAPE, workflow_outcome=WORKFLOW_RESHAPED,
+            decided_by=_current_actor(), expected_head_sha=head,
+            recorded_call=call.to_dict(), notes=notes,
+        )
+        if projection is None:
+            return _not_projected("review_queue_reshape", destination, pr_number)
+        outbox = enqueue_reshape(
+            universe_dir,
+            destination=destination, pr_number=pr_number,
+            universe_id=projection.get("universe_id") or "",
+            branch_def_id=projection.get("branch_def_id") or "",
+            run_id=projection.get("run_id") or "",
+            owner_notes=notes, recorded_call=call.to_dict(),
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
-    except MergeInProgress as exc:
-        return _merge_in_progress(exc)
-    except InvalidReviewTransition as exc:
-        return _invalid_transition(exc)
     except Exception as exc:
         logger.exception("review_queue_reshape failed")
         return json.dumps({
@@ -291,47 +300,52 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
-    if item is None:
-        return json.dumps({
-            "error": f"no review-queue item with id {item_id!r}",
-            "failure_class": "item_not_found",
-            "actionable_by": "chatbot",
-        })
-    return json.dumps({"status": "reshaped", "item": item})
+    return json.dumps({
+        "status": "reshaped",
+        "projection": projection,
+        "route_back": outbox["route_back"],
+        "github_call": call.to_dict(),
+        "note": (
+            "Reshape recorded a REQUEST_CHANGES review call + a durable "
+            "draft_patch resume row; the loop-side revision consumer that "
+            "re-runs draft_patch lands with Phase 2."
+        ),
+    })
+
+
+# ── reject ────────────────────────────────────────────────────────────────────
 
 
 def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
     universe_id = (kwargs.get("universe_id") or "").strip()
-    item_id = (kwargs.get("item_id") or "").strip()
-    if not item_id:
-        return json.dumps({
-            "error": "review_queue_reject requires 'item_id'",
-            "failure_class": "missing_item_id",
-            "actionable_by": "chatbot",
-        })
-    expected_head_sha, head_err = _require_head("review_queue_reject", kwargs)
+    destination, pr_number, head, head_err = _require_pr_and_head(
+        "review_queue_reject", kwargs
+    )
     if head_err is not None:
         return head_err
     target_universe, err = _owner_gate("review_queue_reject", universe_id)
     if err is not None:
         return json.dumps(err)
-    notes = kwargs.get("notes") or ""
+    notes = (kwargs.get("notes") or "").strip() or "Rejected by owner."
+    call = github_native.review_request_changes(
+        destination=destination, pr_number=pr_number, head_sha=head, body=notes
+    )
     try:
-        from tinyassets.storage.review_queue import reject_item
+        from tinyassets.storage.review_queue import (
+            INTENT_REJECT,
+            WORKFLOW_REJECTED,
+            record_owner_intent,
+        )
 
-        item = reject_item(
+        projection = record_owner_intent(
             _universe_dir_for(target_universe),
-            item_id=item_id,
-            rejected_by=_current_actor(),
-            notes=notes,
-            expected_head_sha=expected_head_sha,
+            destination=destination, pr_number=pr_number,
+            intent=INTENT_REJECT, workflow_outcome=WORKFLOW_REJECTED,
+            decided_by=_current_actor(), expected_head_sha=head,
+            recorded_call=call.to_dict(), notes=notes,
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
-    except MergeInProgress as exc:
-        return _merge_in_progress(exc)
-    except InvalidReviewTransition as exc:
-        return _invalid_transition(exc)
     except Exception as exc:
         logger.exception("review_queue_reject failed")
         return json.dumps({
@@ -339,108 +353,95 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
-    if item is None:
-        return json.dumps({
-            "error": f"no review-queue item with id {item_id!r}",
-            "failure_class": "item_not_found",
-            "actionable_by": "chatbot",
-        })
-    return json.dumps({"status": "rejected", "item": item})
+    if projection is None:
+        return _not_projected("review_queue_reject", destination, pr_number)
+    return json.dumps({
+        "status": "rejected",
+        "projection": projection,
+        "github_call": call.to_dict(),
+        "note": (
+            "Reject recorded a REQUEST_CHANGES review + a terminal workflow "
+            "outcome. GitHub has no irreversible reject (a PR can be reopened); "
+            + _PHASE2_NOTE
+        ),
+    })
 
 
-def _action_review_queue_hold(kwargs: dict[str, Any]) -> str:
-    """C5: owner pause — hold a pending/approved item so auto/timer won't merge
-    it until released. Not a substitute for reshape/reject."""
+# ── set preference ────────────────────────────────────────────────────────────
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip():
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
+    """Owner-bind the off-GitHub merge preference (manual / auto / not_before)."""
     universe_id = (kwargs.get("universe_id") or "").strip()
-    item_id = (kwargs.get("item_id") or "").strip()
-    if not item_id:
+    branch_def_id = (kwargs.get("branch_def_id") or "").strip()
+    if not branch_def_id:
         return json.dumps({
-            "error": "review_queue_hold requires 'item_id'",
-            "failure_class": "missing_item_id",
+            "error": "review_queue_set_preference requires 'branch_def_id'",
+            "failure_class": "missing_branch_def_id",
             "actionable_by": "chatbot",
         })
-    expected_head_sha, head_err = _require_head("review_queue_hold", kwargs)
-    if head_err is not None:
-        return head_err
-    target_universe, err = _owner_gate("review_queue_hold", universe_id)
-    if err is not None:
-        return json.dumps(err)
-    notes = kwargs.get("notes") or ""
-    try:
-        from tinyassets.storage.review_queue import hold_item
-
-        item = hold_item(
-            _universe_dir_for(target_universe),
-            item_id=item_id,
-            held_by=_current_actor(),
-            notes=notes,
-            expected_head_sha=expected_head_sha,
-        )
-    except ReviewHeadChanged as exc:
-        return _head_changed(exc)
-    except MergeInProgress as exc:
-        return _merge_in_progress(exc)
-    except InvalidReviewTransition as exc:
-        return _invalid_transition(exc)
-    except Exception as exc:
-        logger.exception("review_queue_hold failed")
-        return json.dumps({
-            "error": f"review_queue_hold failed: {exc}",
-            "failure_class": "storage_error",
-            "actionable_by": "host",
-        })
-    if item is None:
-        return json.dumps({
-            "error": f"no review-queue item with id {item_id!r}",
-            "failure_class": "item_not_found",
-            "actionable_by": "chatbot",
-        })
-    return json.dumps({"status": "held", "item": item})
-
-
-def _action_review_queue_release(kwargs: dict[str, Any]) -> str:
-    """C5: owner resume — release a held item back to pending."""
-    universe_id = (kwargs.get("universe_id") or "").strip()
-    item_id = (kwargs.get("item_id") or "").strip()
-    if not item_id:
-        return json.dumps({
-            "error": "review_queue_release requires 'item_id'",
-            "failure_class": "missing_item_id",
-            "actionable_by": "chatbot",
-        })
-    expected_head_sha, head_err = _require_head("review_queue_release", kwargs)
-    if head_err is not None:
-        return head_err
-    target_universe, err = _owner_gate("review_queue_release", universe_id)
-    if err is not None:
-        return json.dumps(err)
-    try:
-        from tinyassets.storage.review_queue import release_hold
-
-        item = release_hold(
-            _universe_dir_for(target_universe),
-            item_id=item_id,
-            released_by=_current_actor(),
-            expected_head_sha=expected_head_sha,
-        )
-    except ReviewHeadChanged as exc:
-        return _head_changed(exc)
-    except Exception as exc:
-        logger.exception("review_queue_release failed")
-        return json.dumps({
-            "error": f"review_queue_release failed: {exc}",
-            "failure_class": "storage_error",
-            "actionable_by": "host",
-        })
-    if item is None:
+    preference = mp.normalize_preference(kwargs.get("merge_preference"))
+    if preference not in mp.MERGE_PREFERENCES:
         return json.dumps({
             "error": (
-                f"item {item_id!r} is not currently held (nothing to release)"
+                f"invalid merge_preference {preference!r}; expected one of "
+                f"{sorted(mp.MERGE_PREFERENCES)}"
             ),
-            "failure_class": "not_held",
+            "failure_class": "invalid_merge_preference",
             "actionable_by": "chatbot",
         })
-    return json.dumps({"status": "released", "item": item})
+    review_required = _coerce_bool(kwargs.get("review_required"), True)
+    raw_delay = kwargs.get("not_before_delay_s")
+    try:
+        not_before_delay_s = float(raw_delay) if raw_delay not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return json.dumps({
+            "error": "not_before_delay_s must be a finite non-negative number",
+            "failure_class": "invalid_not_before_delay",
+            "actionable_by": "chatbot",
+        })
+    target_universe, err = _owner_gate("review_queue_set_preference", universe_id)
+    if err is not None:
+        return json.dumps(err)
+    try:
+        from tinyassets.storage.review_queue import set_merge_preference_binding
+
+        binding = set_merge_preference_binding(
+            _universe_dir_for(target_universe),
+            branch_def_id=branch_def_id, merge_preference=preference,
+            not_before_delay_s=not_before_delay_s, review_required=review_required,
+            bound_by=_current_actor(),
+        )
+    except ValueError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "failure_class": "invalid_binding",
+            "actionable_by": "chatbot",
+        })
+    except Exception as exc:
+        logger.exception("review_queue_set_preference failed")
+        return json.dumps({
+            "error": f"review_queue_set_preference failed: {exc}",
+            "failure_class": "storage_error",
+            "actionable_by": "host",
+        })
+    note = "Merge preference bound."
+    if mp.is_autonomous(preference):
+        note = (
+            f"'{preference}' is an autonomous preference: the merge effector "
+            "REFUSES it unless the repo's required-review ruleset is verified "
+            "active at merge time (CODEOWNERS present + App not a bypass actor); "
+            "'manual' stays available for an unprotected repo with a warning."
+        )
+    return json.dumps({"status": "bound", "binding": binding, "note": note})
 
 
 _REVIEW_QUEUE_ACTIONS = {
@@ -448,8 +449,7 @@ _REVIEW_QUEUE_ACTIONS = {
     "review_queue_approve": _action_review_queue_approve,
     "review_queue_reshape": _action_review_queue_reshape,
     "review_queue_reject": _action_review_queue_reject,
-    "review_queue_hold": _action_review_queue_hold,
-    "review_queue_release": _action_review_queue_release,
+    "review_queue_set_preference": _action_review_queue_set_preference,
 }
 
 __all__ = ["_REVIEW_QUEUE_ACTIONS"]

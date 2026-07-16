@@ -1390,23 +1390,25 @@ def extensions(
       subscribe_branch, unsubscribe_branch, list_scheduler_subscriptions.
     - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
     - Owner review queue: review_queue_list, review_queue_approve,
-      review_queue_reshape, review_queue_reject, review_queue_hold,
-      review_queue_release.
+      review_queue_reshape, review_queue_reject, review_queue_set_preference.
 
-    Owner review-queue verbs (patch-loop S4) let a project owner review the
-    ready-to-merge PRs their loop produced. They reuse existing arg slots:
-    `subject_id` = the review-queue item id, `project_id` = the destination
-    repo, `status` = the list filter, `notes` = the owner's decision notes,
+    Owner review verbs (patch-loop S4, GitHub-native) let a project owner act on
+    the App-authored PRs their loop produced. GitHub owns review/merge state;
+    each decision RECORDS the exact GitHub call it will run (Phase 1 records,
+    Phase 2 executes). They reuse existing arg slots: `subject_id` = the GitHub
+    PR number, `project_id` = the destination repo (owner/repo), `status` = the
+    list workflow-outcome filter, `notes` = the owner's decision notes,
     `expected_version` = the head_sha the owner reviewed (from
-    review_queue_list's `head_sha`) — REQUIRED for `review_queue_approve`
-    (it head-binds the approval so it can't apply to a re-pushed head), and
-    honored for reshape/reject. `limit` + `since_step` paginate the list.
-    `review_queue_reshape` requires `notes` and durably queues the owner's
-    revision request against the PR (recording the draft_patch resume identity);
-    the loop-side revision consumer that re-runs draft_patch lands with Phase 2,
-    so today reshape records the request for revision rather than immediately
-    re-running the loop. `review_queue_hold` / `review_queue_release` pause and
-    resume an auto/timer merge without rejecting.
+    review_queue_list's `head_sha`) — REQUIRED for approve/reshape/reject (it
+    head-binds the decision so it can't apply to a re-pushed head). `limit` +
+    `since_step` paginate the list. `review_queue_approve` records a GitHub
+    APPROVE review; `review_queue_reshape` requires `notes` and records a
+    REQUEST_CHANGES review plus a durable draft_patch resume row (the loop-side
+    revision consumer lands with Phase 2); `review_queue_reject` records a
+    REQUEST_CHANGES review + terminal workflow outcome. `review_queue_set_preference`
+    owner-binds the off-GitHub merge preference (manual/auto/not_before) via
+    `branch_def_id` + `value` (the preference) + `field_default` (not_before
+    seconds) + `active_only` (review_required).
 
     Pass `action` plus the matching ids or JSON payload fields; the status
     action `get_action_scope_status` is always available.

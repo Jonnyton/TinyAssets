@@ -700,24 +700,31 @@ def _extensions_impl(
         }
         return consent_handler(consent_kwargs)
 
-    # ── Patch-loop owner review queue (S4 / G3) ────────────────────────────
+    # ── Patch-loop owner review surface (S4 — GitHub-native) ───────────────
     review_queue_handler = _REVIEW_QUEUE_ACTIONS.get(action)
     if review_queue_handler is not None:
-        # Field reuse (stable MCP surface): ``subject_id`` carries the queue
-        # item id, ``project_id`` the destination repo, ``status`` the list
-        # filter, ``notes`` the owner's decision notes, ``expected_version`` the
-        # head_sha the owner reviewed (head-binds approve/reshape/reject —
-        # REQUIRED for approve), ``limit`` the list page size, and ``since_step``
-        # the list page offset.
+        # Field reuse (stable MCP surface): ``subject_id`` carries the GitHub PR
+        # number, ``project_id`` the destination repo (owner/repo), ``status``
+        # the list workflow-outcome filter, ``notes`` the owner's decision notes,
+        # ``expected_version`` the head_sha the owner reviewed (head-binds
+        # approve/reshape/reject), ``limit`` the list page size, ``since_step``
+        # the list page offset. ``review_queue_set_preference`` reuses
+        # ``branch_def_id`` (the remix design id), ``value`` (the merge
+        # preference: manual/auto/not_before), ``field_default`` (the
+        # not_before_delay_s seconds), and ``active_only`` (review_required).
         review_kwargs: dict[str, Any] = {
             "universe_id": universe_id or "",
-            "item_id": subject_id or "",
+            "pr_number": subject_id or "",
             "destination": project_id or "",
             "status": status or "",
             "notes": notes or "",
             "expected_head_sha": expected_version or "",
             "limit": limit,
             "offset": since_step if since_step and since_step > 0 else 0,
+            "branch_def_id": branch_def_id or "",
+            "merge_preference": value or "",
+            "not_before_delay_s": field_default or "",
+            "review_required": active_only,
         }
         return review_queue_handler(review_kwargs)
 
@@ -786,6 +793,7 @@ def _extensions_impl(
             "list_effector_consents",
             "review_queue_list", "review_queue_approve",
             "review_queue_reshape", "review_queue_reject",
+            "review_queue_set_preference",
         ],
     })
 

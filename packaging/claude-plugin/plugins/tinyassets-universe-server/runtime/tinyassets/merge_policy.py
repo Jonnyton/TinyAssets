@@ -1,259 +1,106 @@
-"""Merge-policy evaluator for the REFERENCE patch loop — S4 (G6).
+"""Merge *preference* vocabulary for the reference patch loop — S4 (GitHub-native).
 
-This is **not** a platform-wide merge-policy enum. It is the policy evaluator
-that the reference ``patch_loop_reference`` design ships with; a remix binds a
-merge policy as loop state and this evaluator interprets it. Per the reference
-design note ("no implied platform merge-policy enum"), evaluation is
-**data-driven over the policy string** — a policy this reference evaluator does
-not recognize returns a structured ``unsupported_policy`` decision (extensible
-per-remix), never a hard platform contract that manual/auto/timer are the only
-policies that can ever exist (Codex R6 C5).
+**Redirected 2026-07-16 (host decision):** S4 is GitHub-authoritative. GitHub
+owns review state, rulesets, checks, mergeability, and the atomic merge. This
+module is therefore NO LONGER a local eligibility evaluator (the old
+``evaluate_merge_eligibility`` — with its local ``approved`` status, fresh-OAuth
+token gate, and timer-elapsed decision — is deleted; GitHub decides all of it).
 
-The three policies this reference evaluator understands:
+What survives is a small OFF-GitHub product preference: *how* the owner wants an
+eligible PR to merge once GitHub's own gate (required PR + code-owner review +
+required checks) is satisfied. The preference is a per-remix binding, not a
+platform-global setting.
 
-- ``manual`` (default) — a PR merges only after the owner explicitly approves
-  it on the review queue.
-- ``auto`` — a PR merges as soon as the verify gate is green (no per-PR owner
-  action). Still owner-scoped: only the owner's own loop, on the owner's bound
-  repo, runs this.
-- ``timer`` — a PR merges once the verify gate is green AND a delay has elapsed
-  since it was queued, UNLESS the owner has held it (reshaped / rejected /
-  explicit hold).
+Three preferences:
 
-**Hard invariant (hard rule 8, reference design §7): NO policy merges a red
-PR.** ``auto`` and ``timer`` require the verify gate green, and even ``manual``
-approval cannot release a red PR — a red verify verdict blocks eligibility
-under every policy. This module is the single place that invariant is decided.
+- ``manual`` (default) — the owner explicitly triggers the merge from chat after
+  approving (a merge API call with the expected head SHA).
+- ``auto`` — TinyAssets enables GitHub auto-merge; GitHub merges the PR the
+  moment its own required reviews/checks are satisfied.
+- ``not_before`` — TinyAssets holds a single durable timer; when it fires,
+  TinyAssets enables GitHub auto-merge. (GitHub has no PR-level "merge after T"
+  primitive, so this one timer is the only genuinely off-GitHub piece.)
 
-Founder-OAuth-per-merge is an orthogonal flag layered on top of any policy:
-when set, eligibility additionally requires a *fresh* founder approval token to
-be present (minted by ``review_queue.approve_item``, consumed at merge). See
-``tinyassets.storage.review_queue`` for the fresh-vs-standing distinction.
+**Hard rule 8 (no policy merges a red PR) is enforced by GitHub**, not here: a
+required-status-checks ruleset blocks the merge/auto-merge of a failing PR
+atomically at merge time. TinyAssets additionally refuses to *record* an approve
+intent or enable auto-merge on a locally-known-red verify verdict, as an honest
+early guard — but GitHub is the authority.
 
-This module is pure (no IO): callers supply the resolved facts (verdict,
-status, timer facts, whether a fresh approval is present) and receive an
-eligibility decision. The effector (``effectors/github_merge.py``) resolves the
-GOVERNING policy from durable queue state (not the caller's packet) and wires
-this evaluator to storage + the live PR head.
+See ``docs/design-notes/2026-07-16-s4-github-native-redirect.md``.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
-MERGE_POLICY_MANUAL = "manual"
-MERGE_POLICY_AUTO = "auto"
-MERGE_POLICY_TIMER = "timer"
+MERGE_PREFERENCE_MANUAL = "manual"
+MERGE_PREFERENCE_AUTO = "auto"
+MERGE_PREFERENCE_NOT_BEFORE = "not_before"
 
-MERGE_POLICIES: frozenset[str] = frozenset(
-    {MERGE_POLICY_MANUAL, MERGE_POLICY_AUTO, MERGE_POLICY_TIMER}
+MERGE_PREFERENCES: frozenset[str] = frozenset(
+    {MERGE_PREFERENCE_MANUAL, MERGE_PREFERENCE_AUTO, MERGE_PREFERENCE_NOT_BEFORE}
 )
 
-#: The default policy when a remix has not chosen one.
-DEFAULT_MERGE_POLICY = MERGE_POLICY_MANUAL
+#: The default preference when a remix has not chosen one.
+DEFAULT_MERGE_PREFERENCE = MERGE_PREFERENCE_MANUAL
 
-#: Loop state field name the remix binds its policy under (a state field, not a
-#: platform-global setting).
-MERGE_POLICY_STATE_FIELD = "merge_policy"
-FOUNDER_OAUTH_STATE_FIELD = "founder_oauth_per_merge"
-TIMER_DELAY_STATE_FIELD = "merge_timer_delay_s"
+#: The autonomous preferences — the ones that merge without a per-PR owner
+#: action, and therefore REQUIRE a verified GitHub review gate (setup
+#: verification fails closed for these; ``manual`` stays available with a
+#: warning).
+AUTONOMOUS_PREFERENCES: frozenset[str] = frozenset(
+    {MERGE_PREFERENCE_AUTO, MERGE_PREFERENCE_NOT_BEFORE}
+)
 
-#: The only green verify verdict. Anything else (fail / unknown / empty) blocks.
+#: Loop-state field names a remix binds its preference under (state fields, not
+#: platform-global settings).
+MERGE_PREFERENCE_STATE_FIELD = "merge_preference"
+NOT_BEFORE_DELAY_STATE_FIELD = "not_before_delay_s"
+
+#: The only green verify verdict. Anything else (fail / unknown / empty) is red.
 _VERIFY_GREEN = "pass"
 
-#: Strictness rank for narrowing a caller-supplied policy against the governing
-#: durable policy — a higher rank is MORE restrictive (requires more before a
-#: merge). A caller (packet) may only narrow toward a stricter policy, never
-#: loosen (Codex R6 C1). Policies outside this map are unknown to this reference
-#: evaluator and are not rankable (treated as least-narrowing).
-_POLICY_STRICTNESS: dict[str, int] = {
-    MERGE_POLICY_AUTO: 0,
-    MERGE_POLICY_TIMER: 1,
-    MERGE_POLICY_MANUAL: 2,
-}
 
+def normalize_preference(value: Any) -> str:
+    """Return the preference string lowercased/trimmed; empty/None → ``manual``.
 
-def normalize_policy(value: Any) -> str:
-    """Return the policy string lowercased/trimmed; empty/None → the ``manual``
-    default.
-
-    Does NOT raise on an unrecognized policy — this reference evaluator is
-    data-driven and extensible (Codex R6 C5). An unknown policy is returned
-    as-is; :func:`evaluate_merge_eligibility` fails it closed with
-    ``unsupported_policy``.
+    Does NOT raise on an unrecognized preference — callers that need to reject
+    an unknown preference (the MCP setter) check membership in
+    :data:`MERGE_PREFERENCES` explicitly and return a structured error.
     """
     if value is None:
-        return DEFAULT_MERGE_POLICY
+        return DEFAULT_MERGE_PREFERENCE
     text = str(value).strip().lower()
-    return text or DEFAULT_MERGE_POLICY
+    return text or DEFAULT_MERGE_PREFERENCE
 
 
-def is_at_least_as_strict(candidate: Any, floor: Any) -> bool:
-    """Return True iff ``candidate`` policy is at least as restrictive as the
-    ``floor`` (governing) policy — i.e. the caller narrowed, did not loosen.
-    Unknown policies are unrankable and return False (cannot narrow)."""
-    c = _POLICY_STRICTNESS.get(normalize_policy(candidate))
-    f = _POLICY_STRICTNESS.get(normalize_policy(floor))
-    if c is None or f is None:
-        return False
-    return c >= f
+def is_autonomous(preference: Any) -> bool:
+    """True iff the preference merges without a per-PR owner action (``auto`` /
+    ``not_before``) — the ones that require a verified GitHub review gate."""
+    return normalize_preference(preference) in AUTONOMOUS_PREFERENCES
 
 
 def verify_is_green(verify_verdict: Any) -> bool:
     """Return True iff the verify verdict is the green ``pass`` sentinel.
 
     Deliberately strict: ``fail``, ``unknown``, ``""``, ``None`` are all red.
-    A merge policy never treats an unknown verdict as safe.
+    TinyAssets never records an approve/auto-merge intent it locally knows is
+    red; GitHub's required checks are the authoritative gate on top of this.
     """
     return str(verify_verdict or "").strip().lower() == _VERIFY_GREEN
 
 
-def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
-    return {"eligible": False, "reason": reason, **extra}
-
-
-def evaluate_merge_eligibility(
-    *,
-    policy: Any,
-    verify_verdict: Any,
-    item_status: str = "",
-    founder_oauth_required: bool = False,
-    fresh_approval_present: bool = False,
-    created_at: float | None = None,
-    now: float | None = None,
-    timer_delay_s: float = 0.0,
-    held: bool = False,
-) -> dict[str, Any]:
-    """Decide whether a queued PR may merge under its bound policy.
-
-    Returns ``{"eligible": bool, "reason": str, "policy": str, ...}``.
-
-    Order of gates (each is fail-closed):
-
-    1. **Red-verify guard (universal).** A non-green verify verdict blocks every
-       policy — including ``manual`` approval. No policy merges a red PR.
-    2. **Policy gate.** ``manual`` needs owner ``approved`` status; ``auto`` is
-       released by green verify alone; ``timer`` needs green verify + elapsed
-       delay + not held.
-    3. **Founder-OAuth gate.** When required, a fresh approval token must be
-       present regardless of policy.
-    """
-    resolved_policy = normalize_policy(policy)
-
-    # A policy this reference evaluator does not recognize fails closed with a
-    # structured error — extensible per-remix, not a hard platform enum (C5).
-    if resolved_policy not in MERGE_POLICIES:
-        return _blocked(
-            "unsupported_policy",
-            policy=resolved_policy,
-        )
-
-    if not verify_is_green(verify_verdict):
-        return _blocked(
-            "verify_not_green",
-            policy=resolved_policy,
-            verify_verdict=str(verify_verdict or "").strip().lower() or "unknown",
-        )
-
-    status = (item_status or "").strip().lower()
-
-    # An already-merged item is terminal under EVERY policy — never re-merge it.
-    # (Without this guard, `auto` would re-evaluate a merged item as eligible.)
-    if status == "merged":
-        return _blocked(
-            "already_merged",
-            policy=resolved_policy,
-            item_status=status,
-        )
-
-    # Owner hold (Codex R6 C5): a held item — or an explicit ``held`` flag —
-    # blocks auto/timer eligibility under every policy until the owner releases
-    # it. (For manual, held != approved already blocks; this makes it uniform.)
-    if held or status == "held":
-        return _blocked(
-            "owner_hold",
-            policy=resolved_policy,
-            item_status=status,
-        )
-
-    if resolved_policy == MERGE_POLICY_MANUAL:
-        if status != "approved":
-            return _blocked(
-                "manual_policy_awaiting_owner_approval",
-                policy=resolved_policy,
-                item_status=status or "pending",
-            )
-    elif resolved_policy == MERGE_POLICY_TIMER:
-        if held or status in {"reshaped", "rejected"}:
-            return _blocked(
-                "timer_policy_held_by_owner",
-                policy=resolved_policy,
-                item_status=status,
-            )
-        if created_at is None or now is None:
-            return _blocked(
-                "timer_policy_missing_clock",
-                policy=resolved_policy,
-            )
-        # Fail closed on a malformed delay (Codex R5 REQUIRED 2). A negative /
-        # NaN / inf delay must never read as "eligible now" — the effector
-        # boundary rejects these with a structured error, and this is the
-        # defense-in-depth guard so the pure evaluator can't fail open either.
-        if not isinstance(timer_delay_s, (int, float)) or not math.isfinite(
-            timer_delay_s
-        ) or timer_delay_s < 0:
-            return _blocked(
-                "timer_delay_invalid",
-                policy=resolved_policy,
-                timer_delay_s=timer_delay_s,
-            )
-        elapsed = now - created_at
-        if elapsed < timer_delay_s:
-            return _blocked(
-                "timer_policy_delay_not_elapsed",
-                policy=resolved_policy,
-                elapsed_s=round(elapsed, 3),
-                timer_delay_s=timer_delay_s,
-            )
-    elif resolved_policy == MERGE_POLICY_AUTO:
-        if status in {"reshaped", "rejected"}:
-            return _blocked(
-                "auto_policy_held_by_owner",
-                policy=resolved_policy,
-                item_status=status,
-            )
-    # (normalize_policy guarantees resolved_policy is one of the three.)
-
-    if founder_oauth_required and not fresh_approval_present:
-        return _blocked(
-            "founder_oauth_required",
-            policy=resolved_policy,
-            hint=(
-                "this merge requires a fresh founder-authenticated approval "
-                "bound to the exact PR head; a standing consent does not "
-                "satisfy it"
-            ),
-        )
-
-    return {
-        "eligible": True,
-        "reason": "eligible",
-        "policy": resolved_policy,
-        "founder_oauth_required": founder_oauth_required,
-    }
-
-
 __all__ = [
-    "MERGE_POLICY_MANUAL",
-    "MERGE_POLICY_AUTO",
-    "MERGE_POLICY_TIMER",
-    "MERGE_POLICIES",
-    "DEFAULT_MERGE_POLICY",
-    "MERGE_POLICY_STATE_FIELD",
-    "FOUNDER_OAUTH_STATE_FIELD",
-    "TIMER_DELAY_STATE_FIELD",
-    "normalize_policy",
+    "MERGE_PREFERENCE_MANUAL",
+    "MERGE_PREFERENCE_AUTO",
+    "MERGE_PREFERENCE_NOT_BEFORE",
+    "MERGE_PREFERENCES",
+    "AUTONOMOUS_PREFERENCES",
+    "DEFAULT_MERGE_PREFERENCE",
+    "MERGE_PREFERENCE_STATE_FIELD",
+    "NOT_BEFORE_DELAY_STATE_FIELD",
+    "normalize_preference",
+    "is_autonomous",
     "verify_is_green",
-    "evaluate_merge_eligibility",
 ]
