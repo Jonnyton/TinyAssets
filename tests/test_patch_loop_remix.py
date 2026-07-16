@@ -342,6 +342,60 @@ def test_import_rejects_malformed_artifact(data_dir):
     assert "required" in empty["error"]
 
 
+# ── Versioned envelope format gate (Codex S2 adapt round 4) ─────────────────
+
+
+def test_import_rejects_unsupported_envelope_format(data_dir):
+    # A future/foreign versioned envelope must be REJECTED loudly (naming the
+    # received AND supported format), never slide into the raw-spec path.
+    from tinyassets.branch_designs import DESIGN_FORMAT
+    from tinyassets.daemon_server import list_branch_definitions
+
+    bad = {
+        "design_format": "tinyassets.branch_design/v999",
+        "design_id": "future",
+        "design_version": 999,
+        "spec": {
+            "name": "future envelope",
+            "entry_point": "n",
+            "node_defs": [{"node_id": "n", "display_name": "N",
+                           "prompt_template": "x"}],
+            "edges": [{"from": "START", "to": "n"},
+                      {"from": "n", "to": "END"}],
+        },
+    }
+    out = json.loads(write_graph(target="design", artifact_json=json.dumps(bad)))
+    assert out["status"] == "rejected", out
+    assert "tinyassets.branch_design/v999" in out["error"]  # received named
+    assert DESIGN_FORMAT in out["error"]                    # supported named
+    # Nothing persisted for the rejected future envelope.
+    assert "future envelope" not in {
+        b.get("name") for b in list_branch_definitions(data_dir)
+    }
+
+
+def test_import_accepts_supported_envelope_format(data_dir):
+    from tinyassets.branch_designs import wrap_spec_as_design_artifact
+
+    artifact = wrap_spec_as_design_artifact(
+        {
+            "name": "supported envelope",
+            "entry_point": "n",
+            "node_defs": [{"node_id": "n", "display_name": "N",
+                           "prompt_template": "x"}],
+            "edges": [{"from": "START", "to": "n"},
+                      {"from": "n", "to": "END"}],
+        },
+        design_id="supported",
+        design_version=1,
+    )
+    out = json.loads(
+        write_graph(target="design", artifact_json=json.dumps(artifact)),
+    )
+    assert out["status"] == "imported", out
+    assert _load(data_dir, out["branch_def_id"]).name == "supported envelope"
+
+
 # ── Author-gated export of a private branch ────────────────────────────────
 
 

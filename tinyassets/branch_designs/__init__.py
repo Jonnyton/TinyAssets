@@ -40,13 +40,17 @@ def design_tag(design_id: str, design_version: int) -> str:
 
 
 def is_design_envelope(data: Any) -> bool:
-    """True when ``data`` looks like a ``tinyassets.branch_design/vN`` envelope.
+    """True when a decoded dict CLAIMS to be a design envelope.
 
-    A cheap discriminator so an import path can accept EITHER a wrapped design
-    artifact OR a bare ``build_branch`` spec without guessing — an envelope is
-    a dict tagged with our ``design_format``, a raw spec is not.
+    The discriminator is the PRESENCE of the ``design_format`` key, NOT a
+    version match: any dict carrying ``design_format`` is treated as an
+    envelope and must be validated (see :func:`validate_design_envelope`) —
+    a future/foreign version like ``tinyassets.branch_design/v999`` is
+    REJECTED loudly, never silently accepted as a raw ``build_branch`` spec.
+    A dict WITHOUT ``design_format`` is a raw spec. This single shared
+    discriminator keeps the seeder and the connector import path in agreement.
     """
-    return isinstance(data, dict) and data.get("design_format") == DESIGN_FORMAT
+    return isinstance(data, dict) and "design_format" in data
 
 
 def validate_design_envelope(data: Any) -> None:
