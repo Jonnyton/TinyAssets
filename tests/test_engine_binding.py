@@ -8,8 +8,6 @@ feature flag that arms the non-ambient work gate.
 from __future__ import annotations
 
 import base64
-import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -188,102 +186,69 @@ def test_config_only_choice_is_idle_until_bound(tmp_path, source, extra):
     assert binding.engine_source == source
 
 
-# ---- config source WITH a live runtime instance → bound -------------------
+# ---- runtime-backed sources are a DECLARED CHOICE, never executable in S5 ---
+# The runtime-heartbeat capacity path was REMOVED (both latest-model gates,
+# 2026-07-15): metadata.worker_id is forgeable via daemon_summon, updated_at is
+# not a running-worker heartbeat, and there is no executor lease/routing. So a
+# runtime-instance row can NEVER make a universe bound — the only executable
+# founder lane in S5 is a validated BYO API key.
 
 
-def _assign_runtime(base, uid, *, status="provisioned", worker_id="w-test", stale_s=0.0):
-    """Create a runtime instance for *uid*. A LIVE runtime needs a registered
-    worker (``worker_id``) + a fresh ``updated_at``; ``worker_id=None`` leaves a
-    bare intent row and ``stale_s`` back-dates ``updated_at`` past the freshness
-    window."""
-    import time as _time
-
+def _summon_runtime(base, uid, *, worker_id="w-forged", provider_name="claude-code"):
+    """Create a runtime instance for *uid* (as `daemon_summon` would), optionally
+    with a FORGED metadata.worker_id — proving a summoned row cannot buy liveness."""
     from tinyassets.daemon_server import (
         initialize_author_server,
         list_runtime_instances,
         spawn_runtime_instance,
         update_runtime_instance_status,
     )
-    from tinyassets.storage import _connect
 
     initialize_author_server(base)
-    inst = spawn_runtime_instance(  # spawns in 'provisioned', no worker_id
+    inst = spawn_runtime_instance(
         base, universe_id=uid, author_id="author-1",
-        provider_name="claude-code", model_name="claude", created_by="test",
+        provider_name=provider_name, model_name="claude", created_by="test",
     )
-    patch = {"worker_id": worker_id} if worker_id else None
-    if status != "provisioned" or patch is not None:
+    if worker_id:
         update_runtime_instance_status(
-            base, instance_id=inst["instance_id"], status=status,
-            metadata_patch=patch,
+            base, instance_id=inst["instance_id"], status="provisioned",
+            metadata_patch={"worker_id": worker_id},
         )
-    if stale_s:
-        # Back-date updated_at directly so the row reads as a stale heartbeat.
-        with _connect(base) as conn:
-            conn.execute(
-                "UPDATE author_runtime_instances SET updated_at = ? "
-                "WHERE instance_id = ?",
-                (_time.time() - stale_s, inst["instance_id"]),
-            )
     return list_runtime_instances(base, universe_id=uid)[0]
 
 
 @pytest.mark.parametrize(
     "source", ["host_daemon", "market_rented", "self_hosted_endpoint"],
 )
-def test_config_source_with_provisioned_runtime_is_bound(tmp_path, source):
+def test_runtime_backed_source_is_never_bound(tmp_path, source):
+    """Even WITH a provisioned runtime row carrying a worker_id, a runtime-backed
+    declared source reads as idle — there is no real executor routing in S5."""
     uid = f"u-rt-{source}"
     udir = tmp_path / uid
     udir.mkdir()
     write_universe_config_fields(udir, engine_source=source)
-    _assign_runtime(tmp_path, uid, status="provisioned")  # provider_name=claude-code
-    binding = resolve_engine_binding(udir)
-    assert binding.bound is True
-    assert f"runtime:{source}" in binding.capacity_kinds
-    # The runtime declares its provider — eligibility reflects it.
-    assert binding.is_eligible_for("claude-code") is True
-
-
-@pytest.mark.parametrize("status", ["retired", "paused", "restart_requested"])
-def test_non_executable_runtime_status_does_not_count(tmp_path, status):
-    """Only `provisioned` proves executable capacity. A paused / restart /
-    retired runtime must read as idle-until-bound so the gate does not spawn."""
-    uid = f"u-rt-{status}"
-    udir = tmp_path / uid
-    udir.mkdir()
-    write_universe_config_fields(udir, engine_source="host_daemon")
-    _assign_runtime(tmp_path, uid, status=status)
+    _summon_runtime(tmp_path, uid, worker_id="w-live")
     binding = resolve_engine_binding(udir)
     assert binding.bound is False
+    assert binding.capacity_kinds == ()
+    assert "not available yet" in binding.reason
 
 
-def test_provisioned_without_worker_id_is_idle(tmp_path):
-    """Finding 1: a bare `provisioned` row (no registered worker) is a status
-    LABEL, not live capacity — it must read as idle-until-bound."""
-    uid = "u-rt-noworker"
+def test_forged_worker_id_runtime_does_not_bind(tmp_path):
+    """A user can set metadata.worker_id via daemon_summon — forging "liveness".
+    It must NOT produce bound=True (the discriminator is gone entirely)."""
+    uid = "u-forged"
     udir = tmp_path / uid
     udir.mkdir()
     write_universe_config_fields(udir, engine_source="host_daemon")
-    _assign_runtime(tmp_path, uid, status="provisioned", worker_id=None)
-    binding = resolve_engine_binding(udir)
-    assert binding.bound is False
-
-
-def test_stale_runtime_heartbeat_is_idle(tmp_path):
-    """Finding 1: a registered worker whose heartbeat is older than the freshness
-    window is presumed gone — idle-until-bound."""
-    uid = "u-rt-stale"
-    udir = tmp_path / uid
-    udir.mkdir()
-    write_universe_config_fields(udir, engine_source="host_daemon")
-    _assign_runtime(tmp_path, uid, status="provisioned", stale_s=10_000.0)
+    _summon_runtime(tmp_path, uid, worker_id="totally-forged-worker")
     binding = resolve_engine_binding(udir)
     assert binding.bound is False
 
 
 def test_declared_host_daemon_with_only_byo_key_is_idle(tmp_path):
-    """Finding 1 lane-matching: a universe that SELECTED host_daemon must NOT be
-    satisfied by a stale BYO key in the vault — eligibility is per-selected-lane."""
+    """Lane-matching: a universe that SELECTED host_daemon must NOT be satisfied by
+    a stray BYO key in the vault — the declared lane is not the BYO lane."""
     uid = "u-hostdaemon-strayvault"
     udir = tmp_path / uid
     udir.mkdir()
@@ -294,26 +259,10 @@ def test_declared_host_daemon_with_only_byo_key_is_idle(tmp_path):
     }])
     write_universe_config_fields(udir, engine_source="host_daemon")
     binding = resolve_engine_binding(udir)
-    assert binding.bound is False  # no live runtime; BYO key does NOT satisfy the lane
+    assert binding.bound is False  # BYO key does NOT satisfy a host_daemon universe
 
 
-def test_empty_universe_name_does_not_inherit_other_runtimes(tmp_path, monkeypatch):
-    """Finding D: an empty universe_dir.name must not drop the WHERE clause and
-    count every universe's provisioned runtimes as this one's."""
-    # Give some OTHER universe a live runtime in the same registry.
-    _assign_runtime(tmp_path, "u-other", status="provisioned")
-    # Resolve a universe whose dir name is empty (Path('.')), rooted at tmp_path.
-    monkeypatch.chdir(tmp_path)
-    write_universe_config_fields(tmp_path, engine_source="host_daemon")
-    binding = resolve_engine_binding(Path("."))
-    assert binding.bound is False, "empty name must not inherit other universes' runtimes"
-
-
-# ---- resolve_engine_binding: MISCONFIGURED (vault source, no credential) ---
-# Only the vault-backed sources fail loud when declared without a credential —
-# those bind acts deposit atomically, so a declared-without-credential state is
-# genuinely broken (Hard Rule #8). Runtime-backed config choices do NOT fail
-# loud (they are legitimately not-yet-provisioned; see idle-until-bound above).
+# ---- resolve_engine_binding: MISCONFIGURED (BYO lane, no/broken credential) --
 
 
 def test_declared_byo_without_key_fails_loud(tmp_path):
@@ -405,44 +354,6 @@ def test_gemini_byo_alongside_valid_openai_binds_via_codex(tmp_path):
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
     assert binding.eligible_providers == frozenset({"codex"})
-
-
-@pytest.mark.parametrize("exc", [
-    sqlite3.OperationalError("database is locked"),
-    sqlite3.DatabaseError("database disk image is malformed"),
-    sqlite3.DatabaseError("file is not a database"),
-])
-def test_broken_runtime_registry_fails_loud(tmp_path, monkeypatch, exc):
-    """An UNEXPECTED registry failure (locked / corrupt / not-a-database) must
-    fail loud, not be masked as idle. Covers sqlite3.Error broadly, incl.
-    DatabaseError for SQLITE_CORRUPT/SQLITE_NOTADB (Fable Finding A)."""
-    import tinyassets.daemon_server as ds
-
-    udir = tmp_path / "u-broken-registry"
-    udir.mkdir()
-    write_universe_config_fields(udir, engine_source="host_daemon")
-
-    def _raise(*_a, **_k):
-        raise exc
-
-    monkeypatch.setattr(ds, "list_runtime_instances", _raise)
-    with pytest.raises(EngineMisconfiguredError):
-        resolve_engine_binding(udir)
-
-
-def test_uninitialized_runtime_registry_reads_idle(tmp_path, monkeypatch):
-    import tinyassets.daemon_server as ds
-
-    udir = tmp_path / "u-noreg"
-    udir.mkdir()
-    write_universe_config_fields(udir, engine_source="host_daemon")
-
-    def _raise_no_table(*_a, **_k):
-        raise sqlite3.OperationalError("no such table: author_runtime_instances")
-
-    monkeypatch.setattr(ds, "list_runtime_instances", _raise_no_table)
-    binding = resolve_engine_binding(udir)  # must not raise
-    assert binding.bound is False
 
 
 # ---- Finding 4: malformed / unknown config declarations fail loud ----------

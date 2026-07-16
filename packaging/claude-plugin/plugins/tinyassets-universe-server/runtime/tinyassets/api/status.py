@@ -1323,15 +1323,16 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                     "off)."
                 )
                 actionable_next_steps.append(
-                    "Bind an engine so your universe can run: universe "
-                    "action=set_engine — choose a BYO API key (stored in your "
-                    "universe vault), a self-hosted endpoint, market-rented "
-                    "capacity, or run the daemon on YOUR own device (host_daemon) "
-                    "to use your subscription. The platform never custodies your "
-                    "subscription tokens. Note: hosted BYO keys require vault "
-                    "encryption hardening (KMS-wrapped per-tenant storage) before "
-                    "the non-ambient gate is enabled in production; the gate "
-                    "stays OFF until then."
+                    "Bind a BYO API key to run now: universe "
+                    "action=set_engine (stored in your universe vault). Hosted / "
+                    "market-rented / self-hosted execution routing is NOT "
+                    "available yet — those engine_source choices are recorded but "
+                    "do not execute until executor routing lands (run the daemon "
+                    "on your own device once device-executor support ships). The "
+                    "platform never custodies your subscription tokens. Note: "
+                    "hosted BYO keys require vault encryption hardening "
+                    "(KMS-wrapped per-tenant storage) before the non-ambient gate "
+                    "is enabled in production; the gate stays OFF until then."
                 )
         except EngineMisconfiguredError as exc:
             engine_binding = {

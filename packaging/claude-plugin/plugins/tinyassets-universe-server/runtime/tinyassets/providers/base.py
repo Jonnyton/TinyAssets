@@ -152,15 +152,29 @@ def subprocess_env_for_provider(
     """
     env = subprocess_env_without_api_keys() or os.environ.copy()
     try:
-        from tinyassets.credential_vault import apply_provider_auth_env
+        from tinyassets.credential_vault import (
+            apply_provider_auth_env,
+            provider_is_byo_bound,
+        )
 
-        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
-    except ValueError:
-        raise
-    except Exception:
-        # Provider calls should not crash merely because no universe/vault
-        # helper is available in a local import context. Malformed vaults still
-        # raise ValueError above and fail loudly.
+        # A BYO-bound spawn must FAIL CLOSED: if isolation/materialization of the
+        # per-universe key fails, we must NOT silently fall through to the
+        # platform-global subscription auth in the base env (Codex F3).
+        byo_bound = provider_is_byo_bound(
+            provider_name, env=env, universe_dir=universe_dir,
+        )
+        try:
+            apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
+        except ValueError:
+            raise
+        except Exception:
+            if byo_bound:
+                raise  # never run a BYO spawn on ambient platform auth
+            # Non-BYO / no-vault path stays best-effort: provider calls should not
+            # crash merely because no universe/vault helper is available here.
+    except ImportError:
+        # credential_vault genuinely unavailable in this import context — no
+        # per-universe overlay is possible; the base env stands.
         pass
     return env
 

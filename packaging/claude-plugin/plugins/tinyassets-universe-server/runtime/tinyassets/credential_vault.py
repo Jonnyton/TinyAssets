@@ -458,8 +458,14 @@ def provider_auth_env_overrides(
             overrides["CODEX_API_KEY"] = api_key
             overrides["OPENAI_API_KEY"] = api_key
             byo_home = _byo_codex_home(universe_dir)
-            if byo_home is not None:
-                overrides["CODEX_HOME"] = str(byo_home)
+            if byo_home is None:
+                # FAIL CLOSED: we could not isolate CODEX_HOME, so the child would
+                # inherit the global subscription login. Refuse rather than run a
+                # BYO spawn on platform-global auth (Hard Rule #8).
+                raise RuntimeError(
+                    "cannot isolate CODEX_HOME for a BYO-keyed codex spawn"
+                )
+            overrides["CODEX_HOME"] = str(byo_home)
             return overrides
         # No BYO key — fall back to a vault-materialized CODEX_HOME (host / legacy
         # first-party infra; founder subscription custody is a blocked lane).
@@ -469,15 +475,21 @@ def provider_auth_env_overrides(
         return overrides
     if provider == "claude-code":
         overrides = {}
+        # BYO-key lane FIRST (before touching any legacy subscription record):
+        # authenticate with the KEY, isolated from any subscription login. Return
+        # BYO-only; the caller scrubs CLAUDE_CONFIG_DIR / CLAUDE_CODE_OAUTH_TOKEN
+        # from the child env so it can never fall through to platform auth.
+        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+        if api_key:
+            overrides["ANTHROPIC_API_KEY"] = api_key
+            return overrides
+        # No BYO key — legacy / host subscription bundle (first-party infra).
         claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)
         if claude_config_dir:
             overrides["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
         oauth_token = resolve_claude_oauth_token(universe_dir)
         if oauth_token:
             overrides["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
-        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
-        if api_key:
-            overrides["ANTHROPIC_API_KEY"] = api_key
         return overrides
     return {}
 
@@ -489,13 +501,64 @@ def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     return Path(value) if value else None
 
 
+#: Per-provider BYO env var + the global subscription auth vars to SCRUB from a
+#: child env when the BYO lane is chosen (so a BYO spawn can never inherit the
+#: platform-global subscription login and fall through to it — Hard Rule #8).
+_PROVIDER_BYO_ENV_VAR: dict[str, str] = {
+    "codex": "OPENAI_API_KEY",
+    "claude-code": "ANTHROPIC_API_KEY",
+}
+_PROVIDER_GLOBAL_AUTH_SCRUB: dict[str, tuple[str, ...]] = {
+    # codex's CODEX_HOME is redirected to the isolated dir in overrides, so it is
+    # already scrubbed; nothing extra to remove.
+    "codex": (),
+    "claude-code": ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"),
+}
+
+
+def provider_is_byo_bound(
+    provider_name: str,
+    *,
+    env: dict[str, str] | None = None,
+    universe_dir: str | Path | None = None,
+) -> bool:
+    """Return True iff the resolved universe holds a BYO API key for *provider*.
+
+    A BYO-bound spawn must FAIL CLOSED on any isolation/materialization error
+    rather than silently fall through to platform-global auth. A broken BYO
+    secret (``resolve_llm_api_key`` raising) still counts as BYO-bound so the
+    caller fails closed."""
+    env_var = _PROVIDER_BYO_ENV_VAR.get(provider_name.strip())
+    if not env_var:
+        return False
+    resolved = (
+        Path(universe_dir)
+        if universe_dir is not None
+        else resolve_universe_from_env(env)
+    )
+    if resolved is None:
+        return False
+    try:
+        return bool(resolve_llm_api_key(resolved, env_var))
+    except ValueError:
+        return True  # a BYO record exists but its secret is broken → fail closed
+
+
 def apply_provider_auth_env(
     env: dict[str, str],
     provider_name: str,
     *,
     universe_dir: str | Path | None = None,
 ) -> dict[str, str]:
-    """Overlay per-universe subscription auth settings onto *env*."""
+    """Overlay per-universe auth settings onto *env*.
+
+    When the BYO-key lane is chosen for a CLI-subprocess provider, SCRUB the
+    inherited global subscription auth vars first so the child authenticates with
+    the BYO key ONLY and can never fall through to the platform subscription
+    (Codex F3). Propagates errors (ValueError malformed vault, RuntimeError
+    isolation failure) so a BYO spawn fails closed instead of running on ambient
+    platform auth.
+    """
     resolved_universe = (
         Path(universe_dir)
         if universe_dir is not None
@@ -503,8 +566,13 @@ def apply_provider_auth_env(
     )
     if resolved_universe is None:
         return env
-    try:
-        env.update(provider_auth_env_overrides(resolved_universe, provider_name))
-    except ValueError:
-        raise
+    overrides = provider_auth_env_overrides(resolved_universe, provider_name)
+    provider = provider_name.strip()
+    byo_var = _PROVIDER_BYO_ENV_VAR.get(provider)
+    if byo_var and byo_var in overrides:
+        # BYO lane chosen — remove any inherited global subscription auth so the
+        # key, not the platform login, authenticates the child.
+        for var in _PROVIDER_GLOBAL_AUTH_SCRUB.get(provider, ()):
+            env.pop(var, None)
+    env.update(overrides)
     return env

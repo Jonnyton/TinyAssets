@@ -92,6 +92,50 @@ def test_byo_codex_full_env_isolates_global_home(tmp_path, monkeypatch):
     assert env.get("CODEX_HOME") != "/global/.codex"
 
 
+def test_byo_claude_scrubs_global_subscription_and_fails_no_open(tmp_path, monkeypatch):
+    """Codex F3: a BYO Anthropic key + a legacy Claude subscription record must
+    NOT fall through to platform auth — the child env carries ANTHROPIC_API_KEY
+    and has NO inherited global CLAUDE_CONFIG_DIR / oauth token."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/global/.claude")  # platform login
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "global-oauth")
+    write_credential_vault(tmp_path, [
+        {
+            "credential_type": "llm_api_key",
+            "service": "anthropic",
+            "secret_b64": base64.b64encode(b"sk-ant-byo").decode("ascii"),
+        },
+        # A legacy (blocked-lane) subscription record that must NOT be consulted.
+        {
+            "credential_type": "llm_subscription",
+            "service": "claude",
+            "oauth_token": "legacy-oauth",
+        },
+    ])
+    env = subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
+    assert env.get("ANTHROPIC_API_KEY") == "sk-ant-byo"
+    # Global subscription auth scrubbed — the key authenticates, not the platform.
+    assert "CLAUDE_CONFIG_DIR" not in env
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_byo_codex_isolation_failure_fails_closed(tmp_path, monkeypatch):
+    """Codex F3: if CODEX_HOME isolation cannot be materialized for a BYO codex
+    spawn, the env build FAILS LOUD — never falls through to platform auth."""
+    import tinyassets.credential_vault as cv
+
+    monkeypatch.setenv("CODEX_HOME", "/global/.codex")
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key",
+        "service": "openai",
+        "secret_b64": base64.b64encode(b"sk-openai-byo").decode("ascii"),
+    }])
+    # Simulate an isolation failure (mkdir/ACL error → None).
+    monkeypatch.setattr(cv, "_byo_codex_home", lambda _udir: None)
+    import pytest
+    with pytest.raises(Exception):  # noqa: B017 — fail-closed, any loud error is fine
+        subprocess_env_for_provider("codex", universe_dir=tmp_path)
+
+
 def test_set_engine_action_writes_vault_and_config(tmp_path, monkeypatch):
     from tinyassets.api import universe as uni
 

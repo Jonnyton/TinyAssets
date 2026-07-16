@@ -71,6 +71,40 @@ infra), serving whatever universe(s) he creates, never a per-founder default. Th
 **zero-engine path is the chatbot's own LLM in-session** (interactive-only via
 subagents), not a platform engine.
 
+### 0.1 Durable first-party sources (freshness: fetched 2026-07-02)
+
+The §0 conclusion rests on the providers' own terms + auth docs. Durable links
+(re-verify before acting; providers revise terms):
+
+- **Anthropic — Consumer Terms of Service** (automated-access + credential-sharing
+  bars; "API Key is the appropriate path for server-side access"):
+  <https://www.anthropic.com/legal/consumer-terms>
+- **Anthropic — Usage Policy / compliance hub** (acceptable-use + enforcement
+  context, incl. the 2026-04-04 automated-access enforcement):
+  <https://www.anthropic.com/legal/aup> and <https://trust.anthropic.com/>
+- **Anthropic — OAuth-tokens-are-for-Claude-Code/Claude.ai-only** statement lives in
+  the Consumer Terms above; API keys are issued/managed at
+  <https://console.anthropic.com/> (server-side path).
+- **OpenAI — Codex non-interactive / CI auth** ("the right way to authenticate
+  automation is with an API key"; `CODEX_API_KEY` for headless `codex exec`):
+  <https://developers.openai.com/codex/local-config> and the Codex CLI auth guide
+  <https://developers.openai.com/codex/cloud/environments>.
+- **OpenAI — Business/Enterprise Codex access tokens** (org-level non-interactive
+  path — DISTINCT from a *personal* ChatGPT Plus/Pro subscription; relevant to
+  enterprise founders + market hosts who may legitimately bring an **org access
+  token** as their engine, NOT a personal sub):
+  <https://help.openai.com/en/articles/11369540-codex-in-chatgpt> (Codex access +
+  plans) and the OpenAI platform docs at <https://platform.openai.com/docs/>.
+- **OpenAI — Terms of Use / Business terms** (individual-use, no credential
+  sharing, no powering third-party services on a personal plan):
+  <https://openai.com/policies/terms-of-use/> and
+  <https://openai.com/policies/business-terms/>.
+
+**Preserve the distinction:** the platform must not custody a founder's *personal
+consumer* subscription (blocked). An **org-level OpenAI Codex access token** (or
+an Anthropic **API key**) is a different, sanctioned server-side credential class —
+those flow through the BYO-API-key vault lane, not a subscription-custody lane.
+
 ---
 
 ## 1. Part A — the existing substrate (what's already built)

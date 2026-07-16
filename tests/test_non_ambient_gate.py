@@ -156,9 +156,10 @@ def test_flag_on_skips_unbound_universe(tmp_path, monkeypatch):
     assert sleep_calls == [2.0, 2.0]
 
 
-def test_flag_on_skips_paused_runtime_as_idle(tmp_path, monkeypatch):
-    """A host_daemon whose only runtime instance is `paused` is NOT executable —
-    the gate must treat it as idle-until-bound (not spawned)."""
+def test_flag_on_skips_host_daemon_declared_choice_as_idle(tmp_path, monkeypatch):
+    """A host_daemon declaration is a CHOICE, not executable capacity in S5 — even
+    with a provisioned runtime row carrying a (forgeable) worker_id, the gate must
+    treat the universe as idle-until-executor-routing-exists (not spawned)."""
     from tinyassets.daemon_server import (
         initialize_author_server,
         spawn_runtime_instance,
@@ -166,7 +167,7 @@ def test_flag_on_skips_paused_runtime_as_idle(tmp_path, monkeypatch):
     )
 
     monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
-    uid = "u-paused"
+    uid = "u-hostdaemon"
     udir = tmp_path / uid
     udir.mkdir()
     write_universe_config_fields(udir, engine_source="host_daemon")
@@ -175,49 +176,17 @@ def test_flag_on_skips_paused_runtime_as_idle(tmp_path, monkeypatch):
         tmp_path, universe_id=uid, author_id="a", provider_name="claude-code",
         model_name="claude", created_by="test",
     )
-    update_runtime_instance_status(
-        tmp_path, instance_id=inst["instance_id"], status="paused",
-    )
-    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
-
-    state = cw.run_supervisor(
-        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
-    )
-    assert spawn_calls == [], "paused runtime must NOT spawn under the gate"
-    assert state.idle_until_bound_count == 2
-
-
-def test_flag_on_works_host_daemon_with_live_runtime(tmp_path, monkeypatch):
-    """A host_daemon universe with a LIVE runtime (registered worker + fresh
-    heartbeat + provisioned) is worked under the gate."""
-    from tinyassets.daemon_server import (
-        initialize_author_server,
-        spawn_runtime_instance,
-        update_runtime_instance_status,
-    )
-
-    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
-    uid = "u-hostdaemon-live"
-    udir = tmp_path / uid
-    udir.mkdir()
-    write_universe_config_fields(udir, engine_source="host_daemon")
-    initialize_author_server(tmp_path)
-    inst = spawn_runtime_instance(
-        tmp_path, universe_id=uid, author_id="a", provider_name="claude-code",
-        model_name="claude", created_by="test",
-    )
-    # Register a live worker (worker_id) — refreshes updated_at to now.
-    update_runtime_instance_status(
+    update_runtime_instance_status(  # forge a "live" registration — must not matter
         tmp_path, instance_id=inst["instance_id"], status="provisioned",
-        metadata_patch={"worker_id": "w-live"},
+        metadata_patch={"worker_id": "w-forged"},
     )
     spawn_calls, _sleep_calls, spawn, sleep = _recorders()
 
     state = cw.run_supervisor(
         udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
     )
-    assert len(spawn_calls) == 2, "a live host_daemon runtime is worked"
-    assert state.idle_until_bound_count == 0
+    assert spawn_calls == [], "runtime rows never make a universe workable in S5"
+    assert state.idle_until_bound_count == 2
 
 
 def _codex_vault_universe(tmp_path, name="u-codexvault"):

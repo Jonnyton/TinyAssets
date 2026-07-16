@@ -37,10 +37,12 @@ def test_status_reports_unbound_universe_idle_until_bound(tmp_path, monkeypatch)
     # Flag OFF (default): ambient work still runs today, so workable stays True.
     assert eb["workable"] is True
     assert eb["non_ambient_gate"] is False
-    # The founder is offered the bind next step.
+    # The founder is offered the BYO bind next step, and told hosted/market/
+    # self-hosted execution routing is not available yet (declared choice only).
     steps = " ".join(payload["actionable_next_steps"]).lower()
-    assert "bind an engine" in steps
+    assert "bind a byo api key" in steps
     assert "set_engine" in steps
+    assert "not available yet" in steps
     # Finding 5: the BYO guidance records the vault-hardening prerequisite +
     # that the non-ambient gate stays OFF until then.
     assert "vault encryption hardening" in steps
@@ -109,25 +111,18 @@ def test_engine_binding_is_in_status_contract(tmp_path, monkeypatch):
     assert isinstance(payload["engine_binding"], dict)
 
 
-def test_get_status_returns_on_corrupt_registry(tmp_path, monkeypatch):
-    """Fable Finding A: a corrupt runtime registry (sqlite3.DatabaseError) must
-    NOT crash get_status — it returns with the misconfigured caveat."""
-    import sqlite3
-
-    import tinyassets.daemon_server as ds
-
+def test_get_status_reports_host_daemon_choice_as_idle(tmp_path, monkeypatch):
+    """A host_daemon declaration reads as idle (declared choice, not executable in
+    S5) — get_status surfaces it as unbound, not misconfigured, not crashing."""
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
-    udir = _make_universe(tmp_path, monkeypatch, "u-corruptreg")
+    udir = _make_universe(tmp_path, monkeypatch, "u-hostdaemon-status")
     from tinyassets.config import write_universe_config_fields
     write_universe_config_fields(udir, engine_source="host_daemon")
 
-    def _raise_corrupt(*_a, **_k):
-        raise sqlite3.DatabaseError("database disk image is malformed")
-
-    monkeypatch.setattr(ds, "list_runtime_instances", _raise_corrupt)
-    payload = json.loads(get_status(universe_id="u-corruptreg"))  # must not raise
-    assert payload["engine_binding"].get("misconfigured") is True
-    assert "misconfigured" in " ".join(payload["caveats"]).lower()
+    payload = json.loads(get_status(universe_id="u-hostdaemon-status"))
+    eb = payload["engine_binding"]
+    assert eb["bound"] is False
+    assert eb.get("misconfigured") is not True
 
 
 # ---- set_engine: subscription is a BLOCKED lane (custody note compliance) --
