@@ -313,3 +313,25 @@ def test_update_node_rejects_bad_timeout_seconds(ext_env):
         ]),
     )
     assert ok.get("status") != "rejected", ok
+
+
+def test_patch_nodes_rejects_bad_timeout_seconds(ext_env):
+    # C1a (Fable non-blocking r9 #5): the third authoring surface (patch_nodes
+    # bulk-set) must also reject non-finite / non-positive timeout_seconds.
+    us, _base = ext_env
+    bid = _build(
+        us,
+        node={"node_id": "n", "display_name": "N", "prompt_template": "do it: {x}"},
+        entry="n",
+    )
+    for bad in ("NaN", "Infinity", "-1", "0", "-3.5"):
+        res = _call(
+            us, "extensions", "patch_nodes",
+            branch_def_id=bid, field="timeout_seconds", value=bad,
+        )
+        assert res.get("status") == "rejected", (bad, res)
+    ok = _call(
+        us, "extensions", "patch_nodes",
+        branch_def_id=bid, field="timeout_seconds", value="45",
+    )
+    assert ok.get("status") != "rejected", ok

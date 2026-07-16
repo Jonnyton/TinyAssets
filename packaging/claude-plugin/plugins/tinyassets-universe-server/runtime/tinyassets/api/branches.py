@@ -3160,9 +3160,21 @@ def _coerce_patch_nodes_value(
         return None, f"Cannot coerce {raw!r} to bool."
     if kind is float:
         try:
-            return float(raw), None
+            value = float(raw)
         except (TypeError, ValueError):
             return None, f"Cannot coerce {raw!r} to float."
+        # C1a (Fable non-blocking): the third authoring surface must also reject
+        # non-finite / non-positive timeout_seconds at the boundary — NaN /
+        # Infinity / negative / zero must not persist.
+        if field == "timeout_seconds":
+            import math as _math
+
+            if not _math.isfinite(value) or value <= 0:
+                return None, (
+                    f"{field} must be a finite positive number "
+                    "(NaN, Infinity, negative and zero are rejected)."
+                )
+        return value, None
     return str(raw), None
 
 

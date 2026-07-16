@@ -124,6 +124,38 @@ def _sandbox_cli_args(
     return flags, run_cwd
 
 
+def _config_is_hardened(config: ModelConfig) -> bool:
+    return bool(
+        config.os_sandbox_required
+        or config.closed_tool_surface
+        or config.sandbox_workspace
+    )
+
+
+def _refuse_hardened_shell(config: ModelConfig, use_shell: bool) -> None:
+    """Fail closed for a hardened claude call routed through a Windows shell wrapper.
+
+    C2 (Codex S3 r9 #2): a ``.cmd``/``.bat`` claude wrapper is spawned via
+    ``shlex.join(cmd)`` through ``cmd.exe``, where POSIX single-quotes are LITERAL
+    — the security-critical empty ``--tools ""`` becomes literal ``''`` (which does
+    NOT disable tools) and the inline empty-MCP JSON is misquoted. So the hardened
+    flags silently DON'T harden on shell-wrapped installs. Refuse rather than run
+    a hardened claude call un-hardened; the router then routes to another capable
+    provider or fails loud.
+    """
+    if use_shell and _config_is_hardened(config):
+        from tinyassets.providers.base import SandboxUnavailableError
+
+        raise SandboxUnavailableError(
+            "Hardened claude call (closed tool surface / sandbox) cannot run "
+            "through the Windows .cmd/.bat shell wrapper: shlex.join under cmd.exe "
+            "mangles the security-critical flags (empty --tools \"\" becomes "
+            "literal '', inline MCP JSON is misquoted), silently un-hardening the "
+            "spawn. Refusing (fail closed). Use a native claude executable (not a "
+            ".cmd/.bat wrapper) on hosts that run hardened nodes."
+        )
+
+
 def _hardened_scratch_cwd(
     config: ModelConfig, run_cwd: str | None, scratch_dir: str | None,
 ) -> tuple[str | None, str | None]:
@@ -181,6 +213,7 @@ class ClaudeProvider(BaseProvider):
         # agent unconfined against the host (hard rule #8).
         enforce_os_sandbox(config)
         base_cmd, use_shell = _resolve_claude_cmd()
+        _refuse_hardened_shell(config, use_shell)
         cmd = [*base_cmd, "-p"]
         if system:
             cmd.extend(["--system-prompt", system])
@@ -287,6 +320,7 @@ class ClaudeProvider(BaseProvider):
         # when an OS sandbox is required but unavailable.
         enforce_os_sandbox(config)
         base_cmd, use_shell = _resolve_claude_cmd()
+        _refuse_hardened_shell(config, use_shell)
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         if system:
             cmd.extend(["--system-prompt", system])

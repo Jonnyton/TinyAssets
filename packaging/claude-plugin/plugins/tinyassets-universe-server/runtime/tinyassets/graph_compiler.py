@@ -247,18 +247,36 @@ def _call_policy_router_with_retry(
     except (ValueError, TypeError):
         pass_config = False
         pass_uctx = False
-    # Fail closed (Codex S3 round-4 FINDING 2): a sandbox-required node must NEVER
-    # run through a policy router that cannot carry its hardened config — that
-    # would drop the sandbox tool/env policy exactly like a config-less bridge.
-    # Mirrors the _bridge refusal.
-    if needs_sandbox and not pass_config:
+    # Fail closed (Codex S3 r9 #1, extends round-4 FINDING 2): a node whose config
+    # carries ANY hardened posture — os_sandbox_required OR the closed
+    # `--tools ""` text surface — must NEVER run through a compat/legacy policy
+    # router that cannot carry that config; dropping it dispatches UNRESTRICTED
+    # (claude keeps default Bash). Mirrors the _bridge refusal, and now covers
+    # ordinary prompt nodes (every text node is closed_tool_surface).
+    _cfg_hardened = config is not None and (
+        getattr(config, "os_sandbox_required", False)
+        or getattr(config, "closed_tool_surface", False)
+    )
+    if (needs_sandbox or _cfg_hardened) and not pass_config:
         from tinyassets.providers.base import SandboxUnavailableError
 
         raise SandboxUnavailableError(
-            "Sandbox-required node cannot run through this policy router: its "
-            "call_with_policy_sync does not carry a 'config' kwarg, so the "
-            "hardened sandbox config would be silently dropped. Refusing to run a "
-            "coding node un-hardened (fail closed)."
+            "Node cannot run through this policy router: its call_with_policy_sync "
+            "does not carry a 'config' kwarg, so the hardened / closed-tool-surface "
+            "config would be silently dropped and the provider would run "
+            "UNRESTRICTED. Refusing (fail closed)."
+        )
+    # Fail closed (Codex S3 r9 #1): a supplied scoped UniverseContext that this
+    # router cannot forward would silently fall back to process-global provider /
+    # vault state — a cross-tenant leak. Refuse rather than drop tenant scope.
+    if universe_context is not None and not pass_uctx:
+        from tinyassets.providers.base import SandboxUnavailableError
+
+        raise SandboxUnavailableError(
+            "Node has an explicit UniverseContext but this policy router's "
+            "call_with_policy_sync cannot forward it, so the run would fall back "
+            "to process-global provider/vault credentials (cross-tenant leak). "
+            "Refusing (fail closed)."
         )
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     _uctx_kw = {"universe_context": universe_context} if pass_uctx else {}
@@ -2637,6 +2655,45 @@ def _build_node(
     semaphore acquired before the provider call and released after.
     """
     from tinyassets.domain_registry import resolve_domain_callable
+
+    # SECURITY (Codex S3 r9 #3): the capability fail-closed gate lives at THIS
+    # single choke point — BEFORE the adapter fan-out — so source_code / opaque /
+    # invoke nodes cannot route AROUND it (they never reach the prompt-template
+    # adapter that formerly held the only gate). A repo-touching node
+    # (coding/repo_exec/repo_read) with no per-job runner fails closed
+    # deterministically for EVERY adapter, matching what validate + get_status
+    # report — validation and runtime tell the same story.
+    from tinyassets.sandbox_policy import (
+        coding_nodes_runnable as _cnr,
+    )
+    from tinyassets.sandbox_policy import (
+        node_capability as _ncap,
+    )
+    from tinyassets.sandbox_policy import (
+        node_requires_sandbox_runner as _nrsr,
+    )
+    if _nrsr(node):
+        _runner_ok, _runner_reason = _cnr()
+        if not _runner_ok:
+            try:
+                from tinyassets.providers.base import (
+                    SandboxUnavailableError as _NodeSUE,
+                )
+            except Exception:  # noqa: BLE001
+                _NodeSUE = type("_SandboxUnavailableError", (Exception,), {})
+            _cap_kind = _ncap(node)
+            _cap_nid = node.node_id
+
+            def _repo_capability_fail_closed_node(
+                state: dict[str, Any],
+            ) -> dict[str, Any]:
+                raise _NodeSUE(
+                    f"Node '{_cap_nid}' has {_cap_kind} (repo-touching) capability "
+                    f"and cannot run: {_runner_reason}"
+                )
+
+            # Deterministic fail-closed — before ANY adapter / provider dispatch.
+            return _repo_capability_fail_closed_node
 
     has_template = bool((node.prompt_template or "").strip())
     has_source = bool((node.source_code or "").strip())

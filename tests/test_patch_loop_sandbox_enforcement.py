@@ -1214,3 +1214,88 @@ def test_claude_text_node_cwd_is_scratch_never_daemon_repo(monkeypatch):
     assert cwd and "tinyassets-sandbox-job-" in cwd  # per-job scratch...
     repo_root = str(Path(claude_provider.__file__).resolve().parents[2])
     assert cwd != repo_root  # ...NEVER the daemon repo checkout
+
+
+# --------------------------------------------------------------------------- #
+# (15) r9 — compat router / shell wrapper / choke-point gate fail closed
+# --------------------------------------------------------------------------- #
+
+
+def test_policy_router_refuses_config_less_for_closed_surface_text_node():
+    # r9 #1: an ordinary (text/closed_tool_surface) node must NOT run through a
+    # legacy policy router that can't carry its config — it would dispatch
+    # UNRESTRICTED. Refuse, no dispatch.
+    from tinyassets.graph_compiler import _call_policy_router_with_retry
+    from tinyassets.sandbox_policy import text_node_model_config
+
+    class _ConfigLessRouter:
+        def call_with_policy_sync(self, role, prompt, system, policy):  # no config
+            raise AssertionError("router must NOT be dispatched")
+
+    with pytest.raises(SandboxUnavailableError):
+        _call_policy_router_with_retry(
+            _ConfigLessRouter(), role="writer", prompt="p", system="", policy={},
+            config=text_node_model_config(timeout=60), needs_sandbox=False,
+        )
+
+
+def test_policy_router_refuses_when_universe_context_cannot_forward():
+    # r9 #1: a supplied scoped UniverseContext the router can't forward would fall
+    # back to process-global creds — refuse rather than drop tenant scope.
+    from tinyassets.graph_compiler import _call_policy_router_with_retry
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.sandbox_policy import text_node_model_config
+
+    class _NoUctxRouter:
+        def call_with_policy_sync(self, role, prompt, system, policy, config=None):
+            raise AssertionError("router must NOT be dispatched")
+
+    with pytest.raises(SandboxUnavailableError):
+        _call_policy_router_with_retry(
+            _NoUctxRouter(), role="writer", prompt="p", system="", policy={},
+            config=text_node_model_config(timeout=60),
+            universe_context=UniverseContext(universe_dir=Path("/u/A")),
+        )
+
+
+def test_claude_hardened_call_refuses_windows_shell_wrapper(monkeypatch):
+    # r9 #2: a hardened claude call routed through a Windows .cmd/.bat wrapper
+    # (use_shell=True) would have its `--tools ""` mangled to literal '' by
+    # shlex.join under cmd.exe — refuse rather than run un-hardened, no spawn.
+    from tinyassets.sandbox_policy import text_node_model_config
+
+    spawned: list = []
+
+    async def _fake(*_a, **_k):
+        spawned.append(1)
+        raise AssertionError("must not spawn a hardened call through the shell")
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake)
+    with patch(
+        "tinyassets.providers.claude_provider._resolve_claude_cmd",
+        return_value=(["claude.cmd"], True),  # .cmd wrapper → use_shell=True
+    ):
+        with pytest.raises(SandboxUnavailableError):
+            asyncio.run(
+                ClaudeProvider().complete("p", "", text_node_model_config(timeout=60))
+            )
+    assert not spawned
+
+
+def test_source_code_repo_node_fails_closed_at_choke_point():
+    # r9 #3: a source_code node classified repo-touching must fail closed at the
+    # single choke point (_build_node) — it must NOT route around the gate through
+    # the source_code adapter (validation + runtime now agree).
+    from tinyassets.graph_compiler import _build_node
+
+    node = NodeDefinition(
+        node_id="inspect_repo",
+        display_name="Inspect",
+        source_code="def run(state):\n    return {'x': 'EXECUTED'}",
+        output_keys=["x"],
+        node_kind="repo_read",
+    )
+    fn = _build_node(node, provider_call=None, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
