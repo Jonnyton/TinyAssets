@@ -8,10 +8,21 @@ from types import SimpleNamespace
 from tinyassets import effectors
 from tinyassets.credential_vault import write_credential_vault
 from tinyassets.effectors import github_merge
+from tinyassets.storage.effector_consents import grant_consent
 
 _DEST = "Jonnyton/TinyAssets"
 _HEAD = "a" * 40
 _OTHER_HEAD = "b" * 40
+
+
+def _grant_raw_merge(tmp_path):
+    """These are raw branch-protection (non-patch-loop) merges; under the S4
+    gate a raw merge is server-authorized by a durable owner consent grant for
+    the raw-merge sink (Codex R6 C3), never a packet flag."""
+    grant_consent(
+        tmp_path, sink=github_merge.RAW_MERGE_CONSENT_SINK,
+        destination=_DEST, granted_by="owner",
+    )
 
 
 def _packet(**payload):
@@ -24,10 +35,6 @@ def _packet(**payload):
             "authorization": {
                 "mode": github_merge.AUTHORIZATION_MODE_GITHUB_BRANCH_PROTECTION,
             },
-            # These are the raw branch-protection (non-patch-loop) tests; under
-            # the S4 policy gate they must explicitly opt into the legacy raw
-            # merge path (Codex R6 C1 — omission is never a bypass).
-            "legacy_raw_merge": True,
             **payload,
         },
     }
@@ -93,8 +100,9 @@ def test_head_sha_mismatch_refuses_stale_authorization(monkeypatch):
     assert [call[0] for call in fake.calls] == ["GET"]
 
 
-def test_github_branch_protection_block_is_fail_closed(monkeypatch):
+def test_github_branch_protection_block_is_fail_closed(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
+    _grant_raw_merge(tmp_path)
     fake = _scripted_api([
         (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(), None)),
         (
@@ -103,14 +111,15 @@ def test_github_branch_protection_block_is_fail_closed(monkeypatch):
         ),
     ])
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run()
+    result = _run(base_path=tmp_path)
     assert result["error_kind"] == "github_merge_blocked"
     assert result["http_status"] == 405
     assert fake.calls[1][3]["sha"] == _HEAD
 
 
-def test_successful_merge_is_bound_to_expected_head_sha(monkeypatch):
+def test_successful_merge_is_bound_to_expected_head_sha(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
+    _grant_raw_merge(tmp_path)
     fake = _scripted_api([
         (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(), None)),
         (
@@ -119,7 +128,7 @@ def test_successful_merge_is_bound_to_expected_head_sha(monkeypatch):
         ),
     ])
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run()
+    result = _run(base_path=tmp_path)
     assert result["merged"] is True
     assert result["head_sha"] == _HEAD
     assert result["merge_commit_sha"] == "mergecommit"
@@ -141,6 +150,7 @@ def test_vault_capability_overrides_env_when_base_path_is_bound(tmp_path, monkey
         "TINYASSETS_GITHUB_PR_CAPABILITIES",
         json.dumps({_DEST: "env-token"}),
     )
+    _grant_raw_merge(tmp_path)
     write_credential_vault(
         tmp_path,
         [

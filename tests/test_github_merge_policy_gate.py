@@ -50,15 +50,21 @@ def _packet(**payload_overrides):
     return {"merge_packet": data}
 
 
-def _open_pr(head_sha=_HEAD):
-    return {"state": "open", "draft": False, "head": {"sha": head_sha}}
+def _open_pr(head_sha=_HEAD, mergeable_state="clean"):
+    # ``mergeable_state="clean"`` is GitHub's canonical "all required checks pass
+    # + no conflicts" — the effector derives the verify verdict from THIS, not
+    # the packet (Codex R6 C2).
+    return {
+        "state": "open", "draft": False, "head": {"sha": head_sha},
+        "mergeable": True, "mergeable_state": mergeable_state,
+    }
 
 
-def _scripted_api(*, allow_merge=True, live_head=_HEAD):
+def _scripted_api(*, allow_merge=True, live_head=_HEAD, mergeable_state="clean"):
     def fake(*, method, path, capability_token, body=None):
         fake.calls.append((method, path))
         if method == "GET":
-            return _open_pr(live_head), None
+            return _open_pr(live_head, mergeable_state), None
         if method == "PUT":
             assert allow_merge, f"unexpected merge PUT: {path}"
             return {"merged": True, "sha": "c" * 40, "message": "merged"}, None
@@ -106,38 +112,34 @@ def _put_fired(fake):
     return any(m == "PUT" for m, _ in fake.calls)
 
 
-# ── Legacy raw merge is a separate, explicitly-opted path (C1) ───────────────
+# ── Raw merge is a SERVER-AUTHORIZED path — packet flag can't bypass (C3) ────
 
 
-def test_no_queue_item_no_flag_refuses_merge(monkeypatch, tmp_path):
-    """Omitting policy can NEVER bypass gating: with no queue item and no
-    explicit legacy flag the merge is refused (Codex R6 C1)."""
+def test_no_queue_item_no_consent_refuses_merge(monkeypatch, tmp_path):
+    """With no queue item and no server-side owner consent grant, the merge is
+    refused — a packet flag can never authorize a queue bypass (Codex R6 C3)."""
     _with_capability(monkeypatch)
     fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet())  # no queue item, no legacy flag
+    # Even asking for a raw merge via a packet flag does nothing.
+    result = _run(tmp_path, _packet(legacy_raw_merge=True))
     assert result["error_kind"] == "merge_gate_required"
     assert not _put_fired(fake)
 
 
-def test_legacy_raw_merge_flag_permits_branch_protection_merge(monkeypatch, tmp_path):
+def test_raw_merge_requires_server_side_consent_grant(monkeypatch, tmp_path):
+    """A durable owner effector-consent grant for the raw-merge sink authorizes
+    a raw (non-patch-loop) merge (Codex R6 C3)."""
     _with_capability(monkeypatch)
+    grant_consent(
+        tmp_path, sink=github_merge.RAW_MERGE_CONSENT_SINK,
+        destination=_DEST, granted_by="owner",
+    )
     fake = _scripted_api(allow_merge=True)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet(legacy_raw_merge=True))  # explicit opt-in
+    result = _run(tmp_path, _packet())
     assert result.get("merged") is True
     assert _put_fired(fake)
-
-
-def test_legacy_raw_merge_forbidden_on_queued_pr(monkeypatch, tmp_path):
-    """A queued patch-loop PR cannot be force-merged raw (C1)."""
-    _with_capability(monkeypatch)
-    _enqueue(tmp_path, policy="manual")
-    fake = _scripted_api(allow_merge=False)
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet(legacy_raw_merge=True))
-    assert result["error_kind"] == "legacy_raw_merge_forbidden"
-    assert not _put_fired(fake)
 
 
 def test_packet_may_narrow_not_loosen_policy(monkeypatch, tmp_path):
@@ -196,16 +198,32 @@ def test_manual_policy_blocks_until_approved(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("policy", ["auto", "timer", "manual"])
-def test_red_verify_blocks_every_policy(monkeypatch, tmp_path, policy):
+def test_red_github_checks_block_every_policy(monkeypatch, tmp_path, policy):
+    """No policy merges a PR GitHub reports as not-clean (Codex R6 C2)."""
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, policy=policy, verdict=rq.VERIFY_FAIL)
+    item = _enqueue(tmp_path, policy=policy, verdict=rq.VERIFY_PASS)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    fake = _scripted_api(allow_merge=False)
+    # GitHub says required checks are failing / conflicted.
+    fake = _scripted_api(allow_merge=False, mergeable_state="blocked")
     monkeypatch.setattr(github_merge, "_github_api", fake)
 
     result = _run(tmp_path, _packet())
     assert result["error_kind"] == "merge_policy_blocked"
     assert result["policy_reason"] == "verify_not_green"
+    assert not _put_fired(fake)
+
+
+def test_canonical_verdict_ignores_item_verdict(monkeypatch, tmp_path):
+    """A packet/loop that stored verdict=pass cannot force a merge when GitHub's
+    own mergeable_state is not clean — GitHub checks are canonical (C2)."""
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)  # stored "pass"
+    fake = _scripted_api(allow_merge=False, mergeable_state="unstable")
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "verify_not_green"
+    assert result["github_mergeable_state"] == "unstable"
     assert not _put_fired(fake)
 
 

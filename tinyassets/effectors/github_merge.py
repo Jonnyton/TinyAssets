@@ -167,6 +167,12 @@ def _payload_bool_strict(payload: dict[str, Any], key: str) -> bool:
     )
 
 
+#: Effector-consent sink that a server-side owner grant uses to authorize a raw
+#: (non-patch-loop) merge. A packet flag can NEVER authorize a queue bypass
+#: (Codex R6 C3) — only a durable owner consent grant for this sink can.
+RAW_MERGE_CONSENT_SINK = "github_raw_merge"
+
+
 def _evaluate_merge_policy_gate(
     *,
     payload: dict[str, Any],
@@ -174,25 +180,31 @@ def _evaluate_merge_policy_gate(
     destination: str,
     pr_number: int,
     actual_head_sha: str,
+    canonical_verdict: str,
+    github_mergeable_state: Any,
     matched_key: str | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Patch-loop S4 gate: resolves the GOVERNING merge policy from TRUSTED
     DURABLE review-queue state (not the caller's packet) and enforces it.
 
-    Policy authority (Codex R6 C1): if the PR maps to an owner-review-queue
-    item, that item's stored ``merge_policy`` / ``founder_oauth_per_merge`` /
-    ``merge_timer_delay_s`` GOVERN. A packet may only NARROW (a stricter policy,
-    enabling OAuth) — never disable a gate. Omitting ``merge_policy`` from the
-    packet can therefore never bypass gating. A raw (non-patch-loop) merge is a
-    separately-scoped path that must be explicitly opted into with
-    ``legacy_raw_merge=true``; otherwise, with no queue item, the merge is
-    refused. The gate then enforces: no policy merges a red PR; ``manual`` needs
-    owner approval, ``auto`` green verify, ``timer`` green + elapsed delay + not
-    held; founder-OAuth-per-merge consumes a FRESH single-use approval.
+    Trust boundary (Codex R6):
+    - **Policy authority (C1/C2):** the queue item's stored
+      ``merge_policy`` / ``founder_oauth_per_merge`` / ``merge_timer_delay_s``
+      GOVERN. Those were written by the present node from the OWNER-BOUND config
+      (not a model packet). A packet may only NARROW (stricter policy, enabling
+      OAuth) — never disable a gate; omitting policy can never bypass gating.
+    - **Verify (C2):** the verify verdict is ``canonical_verdict`` derived from
+      GitHub's own ``mergeable_state`` (required checks + no conflicts), NOT a
+      model-emitted string.
+    - **Raw merge (C3):** a merge for a PR with no queue item is a
+      server-authorized path — it requires a durable owner effector-consent
+      grant (``RAW_MERGE_CONSENT_SINK``), never a packet flag.
+    - **Token regime (C1):** founder-OAuth approvals are checked/consumed under
+      the item's CURRENT policy signature (a toggled regime invalidates them).
 
-    Returns ``(error_or_None, gate_info)``. An explicit legacy raw merge (no
-    queue item) is a no-op ``(None, {})`` — branch-protection authorization
-    alone. ``gate_info`` is merged into the success payload for auditability.
+    Returns ``(error_or_None, gate_info)``. A consent-authorized raw merge (no
+    queue item) is a no-op ``(None, {"raw_merge": True})`` — branch-protection
+    authorization alone. ``gate_info`` is merged into the success payload.
     """
     from tinyassets import merge_policy as mp
     from tinyassets.storage import review_queue as rq
@@ -200,46 +212,38 @@ def _evaluate_merge_policy_gate(
     # Resolve the queue item — the TRUSTED durable governing state.
     item = None
     if universe_dir is not None:
-        for candidate in rq.list_queue(universe_dir, destination=destination):
+        for candidate in rq.list_queue(
+            universe_dir, destination=destination, limit=0
+        ):
             if candidate.get("pr_number") == pr_number:
                 item = candidate
                 break
 
-    try:
-        legacy_raw = _payload_bool_strict(payload, "legacy_raw_merge")
-    except _StrictBoolError as exc:
-        return _error(
-            "invalid_bool_flag", str(exc),
-            destination=destination, pr_number=pr_number,
-            matched_output_key=matched_key,
-        ), {}
-
     if item is None:
-        if legacy_raw:
-            # Explicit legacy raw merge: branch-protection authorization only.
-            return None, {}
-        # No durable patch-loop item AND no explicit legacy opt-in → refuse.
-        # Omission of merge_policy can never silently skip the S4 gates.
+        # No durable patch-loop item. A raw merge requires a SERVER-SIDE owner
+        # grant — a durable effector consent for the raw-merge sink. A packet
+        # flag alone can NEVER authorize a queue bypass (Codex R6 C3).
+        raw_authorized = False
+        if universe_dir is not None:
+            try:
+                from tinyassets.storage.effector_consents import is_consent_active
+
+                raw_authorized = is_consent_active(
+                    universe_dir,
+                    sink=RAW_MERGE_CONSENT_SINK,
+                    destination=destination,
+                )
+            except Exception:  # noqa: BLE001 — treat consent-read failure as denied
+                raw_authorized = False
+        if raw_authorized:
+            return None, {"raw_merge": True}
         return _error(
             "merge_gate_required",
             (
                 f"PR #{pr_number} has no owner-review-queue item; a patch-loop "
-                "merge must be enqueued first, or set legacy_raw_merge=true for "
-                "an explicit non-patch-loop merge"
-            ),
-            destination=destination,
-            pr_number=pr_number,
-            matched_output_key=matched_key,
-        ), {}
-
-    # A queued patch-loop PR cannot be force-merged raw — the packet may narrow,
-    # never disable the owner-review gates (Codex R6 C1).
-    if legacy_raw:
-        return _error(
-            "legacy_raw_merge_forbidden",
-            (
-                f"PR #{pr_number} is a queued patch-loop merge; legacy_raw_merge "
-                "cannot disable its owner-review gates"
+                "merge must be enqueued first, or an owner must grant an "
+                f"effector consent for sink={RAW_MERGE_CONSENT_SINK!r} "
+                f"destination={destination!r} to authorize a raw merge"
             ),
             destination=destination,
             pr_number=pr_number,
@@ -313,16 +317,24 @@ def _evaluate_merge_policy_gate(
                 matched_output_key=matched_key,
             ), {}
 
+    # The founder-OAuth token is bound to the item's CURRENT policy regime
+    # (Codex R6 C1) — a token minted under a different regime does not satisfy.
+    policy_generation = rq._policy_signature(
+        item.get("merge_policy"), item.get("founder_oauth_per_merge")
+    )
     fresh_approval_present = rq.has_fresh_merge_approval(
         universe_dir,
         destination=destination,
         pr_number=pr_number,
         head_sha=actual_head_sha,
+        policy_generation=policy_generation,
     )
 
     decision = mp.evaluate_merge_eligibility(
         policy=policy,
-        verify_verdict=item.get("verify_verdict"),
+        # Canonical GitHub verify signal, NOT the model-emitted stored verdict
+        # (Codex R6 C2).
+        verify_verdict=canonical_verdict,
         item_status=item.get("status", ""),
         founder_oauth_required=founder_oauth_per_merge,
         fresh_approval_present=fresh_approval_present,
@@ -343,7 +355,8 @@ def _evaluate_merge_policy_gate(
             pr_number=pr_number,
             policy=policy,
             policy_reason=decision.get("reason"),
-            verify_verdict=item.get("verify_verdict"),
+            verify_verdict=canonical_verdict,
+            github_mergeable_state=github_mergeable_state,
             item_status=item.get("status"),
             founder_oauth_per_merge=founder_oauth_per_merge,
             matched_output_key=matched_key,
@@ -383,6 +396,7 @@ def _evaluate_merge_policy_gate(
             destination=destination,
             pr_number=pr_number,
             head_sha=actual_head_sha,
+            policy_generation=policy_generation,
         )
         if not consumed_approval_id:
             # Race: eligibility saw a fresh token but it was consumed/revoked
@@ -619,16 +633,28 @@ def run_github_merge_effector(
             matched_output_key=matched_key,
         )
 
-    # Patch-loop S4 (G6): when the packet carries a remix merge policy, gate the
-    # merge on the durable owner review queue + founder-OAuth-per-merge on top of
-    # the branch-protection authorization above. No policy field ⇒ raw
-    # branch-protection merge (unchanged behavior).
+    # Canonical verify signal (Codex R6 C2): do NOT trust a model-emitted
+    # "green" — derive merge-eligibility verification from GitHub's own
+    # mergeable_state (required-checks + no-conflict). Until a real sandboxed
+    # verify runner exists (future slice), GitHub checks ARE the canonical
+    # autonomous verify signal. ``clean`` = all required checks pass, mergeable,
+    # up to date; anything else is treated as red.
+    canonical_verdict = (
+        "pass" if (pr_obj.get("mergeable_state") == "clean") else "fail"
+    )
+
+    # Patch-loop S4 (G6): gate the merge on durable owner-review-queue state +
+    # the OWNER-BOUND policy + founder-OAuth-per-merge, on top of the
+    # branch-protection authorization above. A raw (non-patch-loop) merge is a
+    # server-authorized path (effector consent), never a packet flag.
     gate_error, gate_info = _evaluate_merge_policy_gate(
         payload=payload,
         universe_dir=universe_dir,
         destination=destination,
         pr_number=pr_number,
         actual_head_sha=actual_head_sha,
+        canonical_verdict=canonical_verdict,
+        github_mergeable_state=pr_obj.get("mergeable_state"),
         matched_key=matched_key,
     )
     if gate_error is not None:

@@ -51,13 +51,15 @@ def _packet():
                 "title": "Fix the thing",
                 "body": "loop patch",
                 "head_branch": "auto/fix",
-                # The present node's opt-in review-queue block (governing policy
-                # + resume identity).
+                # The present node's opt-in review-queue block: run identity +
+                # verify hint. The governing merge policy is NOT here — it is
+                # resolved from the owner-bound binding (Codex R6 C2). This block
+                # even LIES about policy (auto/no-oauth) to prove it's ignored.
                 "review_queue": {
                     "request_ref": "req-42",
                     "verify_verdict": "pass",
-                    "merge_policy": "manual",
-                    "founder_oauth_per_merge": True,
+                    "merge_policy": "auto",
+                    "founder_oauth_per_merge": False,
                     "universe_id": "u-abc",
                     "branch_def_id": "patch_loop_reference",
                 },
@@ -68,6 +70,12 @@ def _packet():
 
 def test_present_node_enqueues_pr_with_resume_identity(monkeypatch, tmp_path):
     _open_all_gates(monkeypatch)
+    # The OWNER binds the governing policy for this branch design (Codex R6 C2):
+    # manual + founder-OAuth. The packet's contradictory policy must be ignored.
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="patch_loop_reference",
+        merge_policy="manual", founder_oauth_per_merge=True, bound_by="owner",
+    )
     result = github_pr.run_github_pr_effector(
         node_id="present",
         output_keys=["pr_packet"],
@@ -79,15 +87,17 @@ def test_present_node_enqueues_pr_with_resume_identity(monkeypatch, tmp_path):
     assert result.get("pr_number") == _PR
     assert result.get("review_queue_item_id")
     assert result.get("review_queue_status") == "pending"
+    assert result.get("review_queue_policy_bound") is True
 
-    # The queue item carries the governing policy + resume identity.
+    # The queue item carries the OWNER-BOUND policy + resume identity — NOT the
+    # packet's claimed auto/no-oauth.
     item = rq.get_item(tmp_path, item_id=result["review_queue_item_id"])
     assert item["destination"] == _DEST
     assert item["pr_number"] == _PR
     assert item["head_sha"] == _HEAD
     assert item["verify_verdict"] == "pass"
-    assert item["merge_policy"] == "manual"
-    assert item["founder_oauth_per_merge"] is True
+    assert item["merge_policy"] == "manual"  # from the binding, not packet auto
+    assert item["founder_oauth_per_merge"] is True  # binding, not packet False
     assert item["universe_id"] == "u-abc"
     assert item["branch_def_id"] == "patch_loop_reference"
     assert item["run_id"] == "run-9"

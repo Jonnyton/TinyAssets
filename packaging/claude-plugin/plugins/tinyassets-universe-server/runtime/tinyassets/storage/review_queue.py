@@ -89,9 +89,10 @@ _INITIALIZED: set[str] = set()
 
 #: Statuses a queue item may hold. ``merging`` is the in-flight claim state a
 #: merge effector CASes an eligible item into before it touches GitHub, so an
-#: owner decision cannot race the merge PUT (Codex R5 CRITICAL 1).
+#: owner decision cannot race the merge PUT (Codex R5 CRITICAL 1). ``held`` is
+#: the owner's non-terminal "pause this auto/timer merge" state (Codex R6 C5).
 VALID_STATUSES: frozenset[str] = frozenset(
-    {"pending", "approved", "merging", "reshaped", "rejected", "merged"}
+    {"pending", "approved", "held", "merging", "reshaped", "rejected", "merged"}
 )
 
 #: Statuses from which an owner decision (approve/reshape/reject) is INVALID.
@@ -107,9 +108,35 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset({"reshaped", "rejected", "merged"
 #: few minutes is comfortably past any healthy run.
 _MERGE_CLAIM_TIMEOUT_S = 300.0
 
+#: A fresh founder-OAuth approval token expires after this many seconds — an
+#: approval that sat unused is no longer a "fresh, per-merge" authorization
+#: (Codex R6 C1 token-regime: policy-generation + expiry checks on approvals).
+_APPROVAL_TTL_S = 86400.0
+
+#: List-queue pagination bounds (Codex R6 C6 — chatbot-readiness).
+_LIST_DEFAULT_LIMIT = 50
+_LIST_MAX_LIMIT = 200
+
+
+def _policy_signature(merge_policy: Any, founder_oauth_per_merge: Any) -> str:
+    """Stable signature of the merge-authority REGIME a token is minted under.
+
+    A founder-OAuth token is bound to this signature; if the item's policy or
+    OAuth flag later changes (e.g. OAuth toggled OFF→ON), the signature differs
+    and the old token is no longer valid for the new regime (Codex R6 C1)."""
+    policy = str(merge_policy or "manual").strip().lower() or "manual"
+    oauth = 1 if founder_oauth_per_merge else 0
+    return f"{policy}|{oauth}"
+
 
 class InvalidReviewTransition(ValueError):
     """Raised when an owner decision is attempted from a terminal status."""
+
+
+class OwnerRequired(ValueError):
+    """Raised when a founder-OAuth-per-merge approval mint is attempted by an
+    actor who is not the universe owner — checked INSIDE the mint transaction
+    (Codex R6 C1, closing the actions-layer TOCTOU)."""
 
 
 class MergeInProgress(ValueError):
@@ -234,12 +261,30 @@ CREATE TABLE IF NOT EXISTS merge_approvals (
     head_sha     TEXT NOT NULL,
     approved_by  TEXT NOT NULL,
     approved_at  REAL NOT NULL,
+    -- Token regime binding (Codex R6 C1): the policy signature the token was
+    -- minted under + an expiry. A token only satisfies a merge whose current
+    -- regime signature matches AND which is not expired.
+    policy_generation TEXT NOT NULL DEFAULT '',
+    expires_at   REAL,
     consumed_at  REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_merge_approvals_fresh
     ON merge_approvals(destination, pr_number, head_sha)
     WHERE consumed_at IS NULL;
+
+-- Owner-bound merge-policy config (Codex R6 C2): the governing policy is
+-- resolved from HERE by (branch_def_id) — set by the OWNER (S2 remix binding /
+-- an owner-gated verb), NOT from a model-emitted packet. The present node reads
+-- this to stamp each queued PR. S4 owns the store; S2 converges on it.
+CREATE TABLE IF NOT EXISTS merge_policy_bindings (
+    branch_def_id TEXT PRIMARY KEY,
+    merge_policy   TEXT NOT NULL DEFAULT 'manual',
+    founder_oauth_per_merge INTEGER NOT NULL DEFAULT 0,
+    merge_timer_delay_s REAL NOT NULL DEFAULT 0,
+    bound_by      TEXT NOT NULL DEFAULT '',
+    bound_at      REAL NOT NULL DEFAULT 0
+);
 """
 
 
@@ -371,13 +416,17 @@ def enqueue_pr(
     with _connect(universe_dir) as conn:
         with _write(conn):  # BEGIN IMMEDIATE — atomic select-then-write
             existing = conn.execute(
-                "SELECT item_id, created_at, head_sha, head_queued_at, status "
+                "SELECT item_id, created_at, head_sha, head_queued_at, status, "
+                "merge_policy, founder_oauth_per_merge "
                 "FROM review_queue WHERE destination = ? AND pr_number = ?",
                 (dest, pr_number),
             ).fetchone()
             if existing is not None:
                 item_id = existing["item_id"]
                 head_changed = (existing["head_sha"] or "") != (head_sha or "")
+                regime_changed = _policy_signature(
+                    existing["merge_policy"], existing["founder_oauth_per_merge"]
+                ) != _policy_signature(policy_str, oauth_int)
                 # A same-head re-present of a TERMINAL row must NOT reopen it —
                 # the owner already decided this exact head, and silently
                 # re-pending would launder a rejection away (Codex R3 CRITICAL
@@ -390,6 +439,15 @@ def enqueue_pr(
                 ):
                     already_decided = True
                 else:
+                    # Invalidate outstanding founder-OAuth tokens when the head
+                    # OR the policy regime changes (Codex R6 C1): a token minted
+                    # while OAuth was OFF must not satisfy a later OAuth-ON gate.
+                    if head_changed or regime_changed:
+                        conn.execute(
+                            "UPDATE merge_approvals SET consumed_at = ? "
+                            "WHERE item_id = ? AND consumed_at IS NULL",
+                            (ts, item_id),
+                        )
                     # Reset the timer clock only when the head actually changed;
                     # a same-head refresh keeps the original head_queued_at.
                     head_queued_at = ts if head_changed else existing["head_queued_at"]
@@ -457,9 +515,13 @@ def list_queue(
     *,
     status: str | None = None,
     destination: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Return queue items, newest first. Optional ``status`` / ``destination``
-    filters. With no filters, returns the whole queue (all statuses)."""
+    filters. Paginated (Codex R6 C6): ``limit`` defaults to 50 and is capped at
+    200; ``offset`` skips rows. Pass ``limit=0`` to disable the cap (internal
+    callers that need the whole queue, e.g. the merge effector's PR lookup)."""
     initialize_review_queue_db(universe_dir)
     clauses: list[str] = []
     params: list[Any] = []
@@ -470,9 +532,18 @@ def list_queue(
         clauses.append("destination = ?")
         params.append(destination)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    if limit == 0:
+        page = ""
+    else:
+        if limit is None:
+            eff_limit = _LIST_DEFAULT_LIMIT
+        else:
+            eff_limit = max(1, min(int(limit), _LIST_MAX_LIMIT))
+        page = " LIMIT ? OFFSET ?"
+        params.extend([eff_limit, max(0, int(offset))])
     with _connect(universe_dir) as conn:
         rows = conn.execute(
-            f"SELECT * FROM review_queue {where} ORDER BY created_at DESC",
+            f"SELECT * FROM review_queue {where} ORDER BY created_at DESC{page}",
             params,
         ).fetchall()
     return [_row_to_item(row) for row in rows]
@@ -584,16 +655,26 @@ def approve_item(
     approved_by: str,
     notes: str = "",
     expected_head_sha: str | None = None,
+    actor_is_owner: bool = True,
     now: float | None = None,
 ) -> dict[str, Any] | None:
     """Owner approves a queued PR. Sets status ``approved`` and mints a **fresh,
     single-use founder-OAuth approval** bound to the item's current
-    ``head_sha`` + ``pr_number``.
+    ``head_sha`` + ``pr_number`` + policy REGIME, with an expiry.
+
+    ``actor_is_owner`` is checked INSIDE the mint transaction (Codex R6 C1): if
+    the item's ``founder_oauth_per_merge`` is set and the actor is not the
+    universe owner, ``OwnerRequired`` is raised and nothing is minted — closing
+    the actions-layer TOCTOU where the row's flag could change between the
+    handler's check and the mint.
 
     ``expected_head_sha`` head-binds the approval (Fable F1): the credential is
     minted only if the item's current head still matches the head the owner
     reviewed; a re-push in between raises ``ReviewHeadChanged`` and mints
     nothing.
+
+    No token stockpiling (Codex R6 C1): any prior fresh token for the item is
+    invalidated before the new one is minted, so at most one token is consumable.
 
     The minted approval is what a founder-OAuth-per-merge policy consumes at
     merge time (see :func:`consume_merge_approval`). For a manual policy WITHOUT
@@ -610,10 +691,22 @@ def approve_item(
     approval_id = f"ap-{uuid.uuid4().hex[:16]}"
     with _connect(universe_dir) as conn:
         with _write(conn):
-            # Atomic: terminal-check + status update + approval mint are ONE
-            # transaction. If the item is terminal (e.g. a reject that landed
-            # first) or the head moved, _decide_txn raises and the whole unit
-            # rolls back — no approval is minted (Codex R4 / Fable F1).
+            # In-txn owner authority check on the OAuth-gated item, BEFORE any
+            # mutation (Codex R6 C1). Read the row's governing flag inside the
+            # write lock so it can't change under us.
+            row = conn.execute(
+                "SELECT founder_oauth_per_merge, merge_policy "
+                "FROM review_queue WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is not None and row["founder_oauth_per_merge"] and not actor_is_owner:
+                raise OwnerRequired(
+                    f"approving item {item_id!r} mints a founder-OAuth-per-merge "
+                    "credential; only the universe owner/founder may do that"
+                )
+            # Atomic: terminal-check + head-bind + status update + approval mint
+            # are ONE transaction. On a terminal/head-changed row _decide_txn
+            # raises and the whole unit rolls back — no approval is minted.
             updated = _decide_txn(
                 conn,
                 item_id=item_id,
@@ -626,16 +719,27 @@ def approve_item(
             )
             if updated is None:
                 return None
+            # No stockpiling — invalidate any prior fresh token for the item.
+            conn.execute(
+                "UPDATE merge_approvals SET consumed_at = ? "
+                "WHERE item_id = ? AND consumed_at IS NULL",
+                (ts, item_id),
+            )
+            generation = _policy_signature(
+                updated["merge_policy"], updated["founder_oauth_per_merge"]
+            )
             conn.execute(
                 """
                 INSERT INTO merge_approvals (
                     approval_id, item_id, destination, pr_number, head_sha,
-                    approved_by, approved_at, consumed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                    approved_by, approved_at, policy_generation, expires_at,
+                    consumed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     approval_id, item_id, updated["destination"],
                     updated["pr_number"], updated["head_sha"], approved_by, ts,
+                    generation, ts + _APPROVAL_TTL_S,
                 ),
             )
     updated["approval_id"] = approval_id
@@ -843,6 +947,12 @@ def release_merge_claim(
     after a failed merge PUT. Conditional on the row still being ``merging`` so
     it never clobbers an owner decision that reclaimed a stale claim. Returns
     True when a row was released."""
+    # Fable nit: never write an out-of-vocabulary status back into the row.
+    if restore_status not in VALID_STATUSES or restore_status == "merging":
+        raise ValueError(
+            f"release_merge_claim restore_status must be a non-merging valid "
+            f"status, got {restore_status!r}"
+        )
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
@@ -919,25 +1029,31 @@ def has_fresh_merge_approval(
     destination: str,
     pr_number: int,
     head_sha: str,
+    policy_generation: str | None = None,
+    now: float | None = None,
 ) -> bool:
-    """Return True iff an unconsumed founder-OAuth approval exists bound to the
-    exact ``(destination, pr_number, head_sha)``. Read-only — does NOT consume.
+    """Return True iff a fresh, unexpired, regime-matching founder-OAuth approval
+    exists bound to the exact ``(destination, pr_number, head_sha)``. Read-only.
 
-    A standing effector consent is intentionally invisible here: this queries
-    only the ``merge_approvals`` fresh-token table, never ``effector_consents``.
+    ``policy_generation`` (the item's CURRENT regime signature) must match the
+    token's minted-under signature, and the token must not be expired (Codex R6
+    C1 token regime). A standing effector consent is intentionally invisible —
+    this queries only ``merge_approvals``, never ``effector_consents``.
     """
     if not destination or not head_sha or not isinstance(pr_number, int):
         return False
     initialize_review_queue_db(universe_dir)
+    ts = now if now is not None else time.time()
+    clauses = ["destination = ?", "pr_number = ?", "head_sha = ?",
+               "consumed_at IS NULL", "(expires_at IS NULL OR expires_at > ?)"]
+    params: list[Any] = [destination, pr_number, head_sha, ts]
+    if policy_generation is not None:
+        clauses.append("policy_generation = ?")
+        params.append(policy_generation)
     with _connect(universe_dir) as conn:
         row = conn.execute(
-            """
-            SELECT 1 FROM merge_approvals
-             WHERE destination = ? AND pr_number = ? AND head_sha = ?
-               AND consumed_at IS NULL
-             LIMIT 1
-            """,
-            (destination, pr_number, head_sha),
+            f"SELECT 1 FROM merge_approvals WHERE {' AND '.join(clauses)} LIMIT 1",
+            params,
         ).fetchone()
     return row is not None
 
@@ -948,33 +1064,34 @@ def consume_merge_approval(
     destination: str,
     pr_number: int,
     head_sha: str,
+    policy_generation: str | None = None,
     now: float | None = None,
 ) -> str | None:
     """Consume (single-use) a fresh founder-OAuth approval for an exact
     ``(destination, pr_number, head_sha)`` and return its ``approval_id``.
 
-    Returns None when no fresh approval exists — the founder has not performed a
-    fresh authenticated approval for *this* PR head. A standing effector consent
-    can NEVER satisfy this (different table), and a token already consumed by a
-    prior merge attempt can never satisfy a second (``consumed_at`` is set on
-    first use). This is the concrete "fresh per merge, not a standing consent"
-    security property from the reference design §7.
+    Returns None when no fresh, unexpired, regime-matching approval exists — the
+    founder has not performed a fresh authenticated approval for *this* PR head
+    under the *current* policy regime. A standing effector consent can NEVER
+    satisfy this (different table); an expired, consumed, or wrong-regime token
+    can never satisfy it either (Codex R6 C1).
     """
     if not destination or not head_sha or not isinstance(pr_number, int):
         return None
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
+    clauses = ["destination = ?", "pr_number = ?", "head_sha = ?",
+               "consumed_at IS NULL", "(expires_at IS NULL OR expires_at > ?)"]
+    params: list[Any] = [destination, pr_number, head_sha, ts]
+    if policy_generation is not None:
+        clauses.append("policy_generation = ?")
+        params.append(policy_generation)
     with _connect(universe_dir) as conn:
         with _write(conn):  # atomic claim — no double-consume under concurrency
             row = conn.execute(
-                """
-                SELECT approval_id FROM merge_approvals
-                 WHERE destination = ? AND pr_number = ? AND head_sha = ?
-                   AND consumed_at IS NULL
-              ORDER BY approved_at ASC
-                 LIMIT 1
-                """,
-                (destination, pr_number, head_sha),
+                f"SELECT approval_id FROM merge_approvals "
+                f"WHERE {' AND '.join(clauses)} ORDER BY approved_at ASC LIMIT 1",
+                params,
             ).fetchone()
             if row is None:
                 return None
@@ -991,6 +1108,151 @@ def consume_merge_approval(
     return approval_id
 
 
+def hold_item(
+    universe_dir: str | Path,
+    *,
+    item_id: str,
+    held_by: str,
+    notes: str = "",
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Owner PAUSE (non-terminal): move a pending/approved/held item to ``held``,
+    which blocks auto/timer merge eligibility until released (Codex R6 C5). Not
+    a substitute for reshape/reject. Returns the updated item, None if missing,
+    raises on a terminal / in-flight-merging item."""
+    held_by = (held_by or "").strip()
+    if not held_by:
+        raise ValueError("hold_item requires non-empty held_by")
+    initialize_review_queue_db(universe_dir)
+    ts = now if now is not None else time.time()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            return _decide_txn(
+                conn, item_id=item_id, new_status="held", decided_by=held_by,
+                notes=notes, ts=ts, invalidate_approvals=False,
+            )
+
+
+def release_hold(
+    universe_dir: str | Path,
+    *,
+    item_id: str,
+    released_by: str,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Owner RESUME: move a ``held`` item back to ``pending`` so auto/timer merge
+    eligibility can proceed again (Codex R6 C5). Returns the updated item, or
+    None if the item is missing or not currently held."""
+    released_by = (released_by or "").strip()
+    if not released_by:
+        raise ValueError("release_hold requires non-empty released_by")
+    initialize_review_queue_db(universe_dir)
+    ts = now if now is not None else time.time()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "UPDATE review_queue SET status = 'pending', decided_by = ?, "
+                "decided_at = ?, updated_at = ? "
+                "WHERE item_id = ? AND status = 'held'",
+                (released_by, ts, ts, item_id),
+            )
+            if cur.rowcount != 1:
+                return None
+            row = conn.execute(
+                "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
+            ).fetchone()
+    return _row_to_item(row) if row is not None else None
+
+
+def set_merge_policy_binding(
+    universe_dir: str | Path,
+    *,
+    branch_def_id: str,
+    merge_policy: str = "manual",
+    founder_oauth_per_merge: bool = False,
+    merge_timer_delay_s: float = 0.0,
+    bound_by: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Owner-bind the governing merge policy for a branch (remix) design (Codex
+    R6 C2). The present node resolves policy from HERE, never from the packet.
+    Validates the timer delay (finite, non-negative). Raises on empty
+    branch_def_id / bound_by."""
+    bdid = (branch_def_id or "").strip()
+    if not bdid:
+        raise ValueError("set_merge_policy_binding requires non-empty branch_def_id")
+    bound_by = (bound_by or "").strip()
+    if not bound_by:
+        raise ValueError("set_merge_policy_binding requires non-empty bound_by")
+    policy_str = (merge_policy or "manual").strip().lower() or "manual"
+    oauth_int = 1 if founder_oauth_per_merge else 0
+    try:
+        delay = float(merge_timer_delay_s if merge_timer_delay_s is not None else 0.0)
+    except (TypeError, ValueError):
+        raise ValueError("merge_timer_delay_s must be a finite non-negative number") from None
+    if not math.isfinite(delay) or delay < 0:
+        raise ValueError("merge_timer_delay_s must be finite and non-negative")
+    initialize_review_queue_db(universe_dir)
+    ts = now if now is not None else time.time()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            conn.execute(
+                """
+                INSERT INTO merge_policy_bindings (
+                    branch_def_id, merge_policy, founder_oauth_per_merge,
+                    merge_timer_delay_s, bound_by, bound_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(branch_def_id) DO UPDATE SET
+                    merge_policy = excluded.merge_policy,
+                    founder_oauth_per_merge = excluded.founder_oauth_per_merge,
+                    merge_timer_delay_s = excluded.merge_timer_delay_s,
+                    bound_by = excluded.bound_by,
+                    bound_at = excluded.bound_at
+                """,
+                (bdid, policy_str, oauth_int, delay, bound_by, ts),
+            )
+    return {
+        "branch_def_id": bdid,
+        "merge_policy": policy_str,
+        "founder_oauth_per_merge": bool(oauth_int),
+        "merge_timer_delay_s": delay,
+        "bound_by": bound_by,
+        "bound_at": ts,
+    }
+
+
+def resolve_merge_policy_binding(
+    universe_dir: str | Path, *, branch_def_id: str
+) -> dict[str, Any]:
+    """Resolve the OWNER-BOUND governing merge policy for a branch design (Codex
+    R6 C2). Returns the safe default (manual, no OAuth, no delay) when unbound —
+    NEVER trusts a packet-supplied policy."""
+    default = {
+        "merge_policy": "manual",
+        "founder_oauth_per_merge": False,
+        "merge_timer_delay_s": 0.0,
+        "bound": False,
+    }
+    bdid = (branch_def_id or "").strip()
+    if not bdid:
+        return default
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        row = conn.execute(
+            "SELECT merge_policy, founder_oauth_per_merge, merge_timer_delay_s "
+            "FROM merge_policy_bindings WHERE branch_def_id = ?",
+            (bdid,),
+        ).fetchone()
+    if row is None:
+        return default
+    return {
+        "merge_policy": row["merge_policy"],
+        "founder_oauth_per_merge": bool(row["founder_oauth_per_merge"]),
+        "merge_timer_delay_s": row["merge_timer_delay_s"],
+        "bound": True,
+    }
+
+
 __all__ = [
     "review_queue_db_path",
     "initialize_review_queue_db",
@@ -999,6 +1261,7 @@ __all__ = [
     "VERIFY_FAIL",
     "VERIFY_UNKNOWN",
     "InvalidReviewTransition",
+    "OwnerRequired",
     "MergeInProgress",
     "ReviewHeadChanged",
     "enqueue_pr",
@@ -1007,9 +1270,13 @@ __all__ = [
     "approve_item",
     "reshape_item",
     "reject_item",
+    "hold_item",
+    "release_hold",
     "claim_for_merge",
     "release_merge_claim",
     "mark_merged",
     "has_fresh_merge_approval",
     "consume_merge_approval",
+    "set_merge_policy_binding",
+    "resolve_merge_policy_binding",
 ]

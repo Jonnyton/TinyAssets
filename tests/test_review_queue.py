@@ -625,3 +625,167 @@ def test_enqueue_rejects_malformed_timer_delay(tmp_path, bad):
             pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
             merge_timer_delay_s=bad,
         )
+
+
+# ── R6 C1: founder-OAuth token regime (owner-in-txn, no stockpile, expiry) ───
+
+
+def test_founder_oauth_mint_requires_owner_in_txn(tmp_path):
+    item = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, merge_policy="auto",
+        founder_oauth_per_merge=True,
+    )
+    with pytest.raises(rq.OwnerRequired):
+        rq.approve_item(
+            tmp_path, item_id=item["item_id"], approved_by="writer",
+            actor_is_owner=False,
+        )
+    # No token minted, item not approved.
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD
+    )
+    assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "pending"
+
+
+def test_regime_change_invalidates_prior_token(tmp_path):
+    """Codex R6 C1 repro (d): a token minted while OAuth was OFF must not
+    satisfy a later OAuth-ON gate."""
+    item = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, merge_policy="auto",
+        founder_oauth_per_merge=False,
+    )
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="writer")
+    off_gen = rq._policy_signature("auto", False)
+    on_gen = rq._policy_signature("auto", True)
+    assert rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=off_gen,
+    )
+    # Owner re-enqueues the SAME head with OAuth ON → regime change.
+    rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, merge_policy="auto",
+        founder_oauth_per_merge=True,
+    )
+    # The old token is invalidated AND its generation no longer matches.
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=on_gen,
+    )
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=off_gen,
+    )
+
+
+def test_approve_does_not_stockpile_tokens(tmp_path):
+    item = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, merge_policy="manual",
+        founder_oauth_per_merge=True,
+    )
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    gen = rq._policy_signature("manual", True)
+    # At most ONE token is consumable despite three approvals.
+    first = rq.consume_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=gen,
+    )
+    assert first
+    second = rq.consume_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=gen,
+    )
+    assert second is None
+
+
+def test_approval_expires(tmp_path):
+    item = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, merge_policy="manual",
+        founder_oauth_per_merge=True,
+    )
+    rq.approve_item(
+        tmp_path, item_id=item["item_id"], approved_by="owner", now=1000.0
+    )
+    gen = rq._policy_signature("manual", True)
+    # Well past the TTL → no longer fresh.
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=gen, now=1000.0 + rq._APPROVAL_TTL_S + 1,
+    )
+    assert rq.consume_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
+        policy_generation=gen, now=1000.0 + rq._APPROVAL_TTL_S + 1,
+    ) is None
+
+
+# ── R6 C5: hold / release (owner pause without rejecting) ───────────────────
+
+
+def test_hold_blocks_and_release_resumes(tmp_path):
+    item = _enqueue(tmp_path)
+    held = rq.hold_item(tmp_path, item_id=item["item_id"], held_by="owner")
+    assert held["status"] == "held"
+    # A held item is not decidable-terminal, but hold blocks merge eligibility.
+    from tinyassets import merge_policy as mp
+    decision = mp.evaluate_merge_eligibility(
+        policy="auto", verify_verdict="pass", item_status="held"
+    )
+    assert decision["eligible"] is False
+    assert decision["reason"] == "owner_hold"
+    # Release returns it to pending.
+    released = rq.release_hold(tmp_path, item_id=item["item_id"], released_by="owner")
+    assert released["status"] == "pending"
+
+
+def test_release_non_held_returns_none(tmp_path):
+    item = _enqueue(tmp_path)
+    assert rq.release_hold(tmp_path, item_id=item["item_id"], released_by="owner") is None
+
+
+# ── R6 C2: owner-bound policy binding governs ────────────────────────────────
+
+
+def test_resolve_merge_policy_binding_default_and_bound(tmp_path):
+    default = rq.resolve_merge_policy_binding(tmp_path, branch_def_id="none")
+    assert default["merge_policy"] == "manual"
+    assert default["founder_oauth_per_merge"] is False
+    assert default["bound"] is False
+
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd1", merge_policy="timer",
+        founder_oauth_per_merge=True, merge_timer_delay_s=3600.0, bound_by="owner",
+    )
+    bound = rq.resolve_merge_policy_binding(tmp_path, branch_def_id="bd1")
+    assert bound["merge_policy"] == "timer"
+    assert bound["founder_oauth_per_merge"] is True
+    assert bound["merge_timer_delay_s"] == 3600.0
+    assert bound["bound"] is True
+
+
+# ── R6 C6: list pagination ───────────────────────────────────────────────────
+
+
+def test_list_queue_pagination(tmp_path):
+    for i in range(1, 8):
+        rq.enqueue_pr(
+            tmp_path, destination=_DEST, pr_number=i,
+            pr_url=f"https://github.com/{_DEST}/pull/{i}", head_sha=_HEAD,
+        )
+    page1 = rq.list_queue(tmp_path, limit=3, offset=0)
+    page2 = rq.list_queue(tmp_path, limit=3, offset=3)
+    assert len(page1) == 3
+    assert len(page2) == 3
+    assert {i["pr_number"] for i in page1}.isdisjoint({i["pr_number"] for i in page2})
+    # limit=0 disables the cap (internal callers).
+    assert len(rq.list_queue(tmp_path, limit=0)) == 7

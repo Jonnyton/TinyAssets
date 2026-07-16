@@ -584,6 +584,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     # the handler's owner-gate confines it to the universe owner regardless.
     extension_writes.update({
         "review_queue_approve", "review_queue_reshape", "review_queue_reject",
+        "review_queue_hold", "review_queue_release",
     })
     _extend_scope_rows(
         rows,

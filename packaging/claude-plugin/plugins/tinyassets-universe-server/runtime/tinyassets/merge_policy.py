@@ -167,6 +167,16 @@ def evaluate_merge_eligibility(
             item_status=status,
         )
 
+    # Owner hold (Codex R6 C5): a held item — or an explicit ``held`` flag —
+    # blocks auto/timer eligibility under every policy until the owner releases
+    # it. (For manual, held != approved already blocks; this makes it uniform.)
+    if held or status == "held":
+        return _blocked(
+            "owner_hold",
+            policy=resolved_policy,
+            item_status=status,
+        )
+
     if resolved_policy == MERGE_POLICY_MANUAL:
         if status != "approved":
             return _blocked(

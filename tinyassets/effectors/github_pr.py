@@ -1502,13 +1502,18 @@ def run_github_pr_effector(
             evidence["receipt_finalize_failed"] = True
 
     # -- Owner review queue (patch-loop present node) --
-    # Codex R6 C3: a patch-loop `present` node opts in by attaching a
-    # ``review_queue`` block to the packet payload (verify verdict + governing
-    # merge policy + resume identity). On a successful PR open we enqueue the PR
-    # onto the owner review queue, carrying the resume identity (universe_id /
-    # branch_def_id / run_id) the loop needs to act on an owner decision.
-    # Best-effort: the PR already exists on GitHub, so a queue-write failure is
-    # surfaced in evidence, never raised.
+    # A patch-loop `present` node opts in by attaching a ``review_queue`` block
+    # to the packet payload. On a successful PR open we enqueue the PR onto the
+    # owner review queue with the resume identity the loop needs to act on an
+    # owner decision (Codex R6 C3). Best-effort: the PR already exists on GitHub,
+    # so a queue-write failure is surfaced in evidence, never raised.
+    #
+    # TRUST BOUNDARY (Codex R6 C2): the governing merge_policy / OAuth flag /
+    # timer come from the OWNER-BOUND config resolved by ``branch_def_id`` — NOT
+    # from the model-emitted packet. The packet only supplies WHICH run/PR
+    # (request_ref) + the verify hint; the merge effector re-derives the
+    # canonical verdict from GitHub. run_id / branch_def_id come from the
+    # effector's authoritative run context, never the packet.
     rq_cfg = payload.get("review_queue")
     if (
         isinstance(rq_cfg, dict)
@@ -1518,6 +1523,10 @@ def run_github_pr_effector(
         try:
             from tinyassets.storage import review_queue as _rq
 
+            branch_def_id = str(rq_cfg.get("branch_def_id") or "")
+            bound = _rq.resolve_merge_policy_binding(
+                universe_dir, branch_def_id=branch_def_id
+            )
             item = _rq.enqueue_pr(
                 universe_dir,
                 destination=destination,
@@ -1528,15 +1537,17 @@ def run_github_pr_effector(
                 verify_verdict=str(
                     rq_cfg.get("verify_verdict") or _rq.VERIFY_UNKNOWN
                 ),
-                merge_policy=str(rq_cfg.get("merge_policy") or "manual"),
-                founder_oauth_per_merge=bool(rq_cfg.get("founder_oauth_per_merge")),
-                merge_timer_delay_s=float(rq_cfg.get("merge_timer_delay_s") or 0.0),
+                # Owner-bound policy governs (not the packet).
+                merge_policy=bound["merge_policy"],
+                founder_oauth_per_merge=bound["founder_oauth_per_merge"],
+                merge_timer_delay_s=bound["merge_timer_delay_s"],
                 universe_id=str(rq_cfg.get("universe_id") or ""),
-                branch_def_id=str(rq_cfg.get("branch_def_id") or ""),
+                branch_def_id=branch_def_id,
                 run_id=run_id or "",
             )
             evidence["review_queue_item_id"] = item.get("item_id")
             evidence["review_queue_status"] = item.get("status")
+            evidence["review_queue_policy_bound"] = bound["bound"]
         except Exception as exc:  # noqa: BLE001 — never fail a landed PR open
             evidence["review_queue_enqueue_error"] = str(exc)
 

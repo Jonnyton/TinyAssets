@@ -257,3 +257,45 @@ def test_non_owner_denied_on_all_verbs(non_owner_env):
 
     # The item is untouched by any denied verb.
     assert rq.get_item(non_owner_env, item_id=item["item_id"])["status"] == "pending"
+
+
+# ── R6 C5: hold / release verbs (owner-gated) ────────────────────────────────
+
+
+def test_owner_can_hold_and_release(owner_env):
+    item = _seed(owner_env)
+    held = _call("review_queue_hold", universe_id="u1", item_id=item["item_id"])
+    assert held["status"] == "held"
+    assert held["item"]["status"] == "held"
+    released = _call(
+        "review_queue_release", universe_id="u1", item_id=item["item_id"]
+    )
+    assert released["status"] == "released"
+    assert released["item"]["status"] == "pending"
+
+
+def test_release_non_held_reports_not_held(owner_env):
+    item = _seed(owner_env)
+    out = _call("review_queue_release", universe_id="u1", item_id=item["item_id"])
+    assert out["failure_class"] == "not_held"
+
+
+def test_hold_non_owner_denied(non_owner_env):
+    item = _seed(non_owner_env)
+    out = _call("review_queue_hold", universe_id="u1", item_id=item["item_id"])
+    assert out["error"] == "universe_access_denied"
+
+
+# ── R6 C6: list pagination surfaces limit/offset ─────────────────────────────
+
+
+def test_list_pagination_reports_bounds(owner_env):
+    for i in range(1, 6):
+        rq.enqueue_pr(
+            owner_env, destination=_DEST, pr_number=i,
+            pr_url=f"https://github.com/{_DEST}/pull/{i}", head_sha=_HEAD,
+        )
+    out = _call("review_queue_list", universe_id="u1", limit=2, offset=1)
+    assert out["limit"] == 2
+    assert out["offset"] == 1
+    assert out["count"] == 2

@@ -1390,14 +1390,20 @@ def extensions(
       subscribe_branch, unsubscribe_branch, list_scheduler_subscriptions.
     - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
     - Owner review queue: review_queue_list, review_queue_approve,
-      review_queue_reshape, review_queue_reject.
+      review_queue_reshape, review_queue_reject, review_queue_hold,
+      review_queue_release.
 
     Owner review-queue verbs (patch-loop S4) let a project owner review the
     ready-to-merge PRs their loop produced. They reuse existing arg slots:
     `subject_id` = the review-queue item id, `project_id` = the destination
-    repo, `status` = the list filter, `notes` = the owner's
-    approve/reshape/reject notes. `review_queue_reshape` requires `notes` and
-    routes the PR back to the loop's draft_patch node.
+    repo, `status` = the list filter, `notes` = the owner's decision notes,
+    `expected_version` = the head_sha the owner reviewed (from
+    review_queue_list's `head_sha`) — REQUIRED for `review_queue_approve`
+    (it head-binds the approval so it can't apply to a re-pushed head), and
+    honored for reshape/reject. `limit` + `since_step` paginate the list.
+    `review_queue_reshape` requires `notes` and routes the PR back to the
+    loop's draft_patch node; `review_queue_hold` / `review_queue_release` pause
+    and resume an auto/timer merge without rejecting.
 
     Pass `action` plus the matching ids or JSON payload fields; the status
     action `get_action_scope_status` is always available.
