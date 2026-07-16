@@ -2351,8 +2351,12 @@ def list_visible_published_branch_ids(
     initialize_branch_versions_db(base_path)
     runs_db = str(runs_db_path(base_path))
 
-    vis_clause = "(bd.visibility = 'public' OR bd.author = ?)" if viewer else "bd.visibility = 'public'"
-    params: list[Any] = [viewer] if viewer else []
+    if viewer:
+        vis_clause = "(bd.visibility = 'public' OR bd.author = ?)"
+        params: list[Any] = [viewer]
+    else:
+        vis_clause = "bd.visibility = 'public'"
+        params = []
     page = ""
     if limit and limit > 0:
         page = "LIMIT ? OFFSET ?"
