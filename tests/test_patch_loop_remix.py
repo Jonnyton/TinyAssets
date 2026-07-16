@@ -247,6 +247,70 @@ def test_export_import_round_trips_equivalent_branch(data_dir):
     assert not dst.fork_from
 
 
+def test_round_trip_preserves_requires_sandbox_and_enabled(data_dir):
+    # Codex S2 adapt (finding 1): export -> import must be behavior-preserving.
+    # requires_sandbox is S3's security flag; a lossy round-trip that flips it
+    # True -> False silently strips sandboxing. Preservation is GENERIC (full
+    # node_def passthrough), so enabled=False survives too.
+    from tinyassets.api.branches import _ext_branch_build
+
+    built = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "sandboxed loop",
+        "entry_point": "coder",
+        "node_defs": [{
+            "node_id": "coder", "display_name": "Coder",
+            "prompt_template": "write code",
+            "requires_sandbox": True,
+            "enabled": False,
+        }],
+        "edges": [{"from": "START", "to": "coder"},
+                  {"from": "coder", "to": "END"}],
+    })}))
+    assert built["status"] == "built", built
+    src_node = next(
+        n for n in _load(data_dir, built["branch_def_id"]).node_defs
+        if n.node_id == "coder"
+    )
+    # build_branch itself now persists the fields (generic passthrough).
+    assert src_node.requires_sandbox is True
+    assert src_node.enabled is False
+
+    exported = json.loads(
+        read_graph(target="design", branch_id=built["branch_def_id"]),
+    )
+    imported = json.loads(
+        write_graph(target="design", artifact_json=exported["artifact_json"]),
+    )
+    assert imported["status"] == "imported", imported
+
+    dst_node = next(
+        n for n in _load(data_dir, imported["branch_def_id"]).node_defs
+        if n.node_id == "coder"
+    )
+    assert dst_node.requires_sandbox is True, "requires_sandbox must survive round-trip"
+    assert dst_node.enabled is False, "enabled must survive round-trip"
+
+
+def test_extensions_public_entrypoint_accepts_artifact_json(data_dir):
+    # Codex S2 adapt (finding 2): the public `extensions` MCP wrapper must
+    # expose artifact_json so extensions(action="import_design", artifact_json=…)
+    # works (and the MCP schema can advertise it) rather than raising TypeError.
+    from tinyassets.universe_server import extensions
+
+    spec = {
+        "name": "via extensions wrapper",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    }
+    out = json.loads(
+        extensions(action="import_design", artifact_json=json.dumps(spec)),
+    )
+    assert out["status"] == "imported", out
+    assert _load(data_dir, out["branch_def_id"]).name == "via extensions wrapper"
+
+
 def test_import_accepts_raw_spec(data_dir):
     # A user can hand their chatbot a bare build_branch spec (no envelope).
     spec = {

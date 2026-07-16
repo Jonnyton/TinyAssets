@@ -1589,6 +1589,46 @@ def _lookup_node_body(
     )
 
 
+# Node fields _apply_node_spec sets explicitly via the NodeDefinition(...)
+# constructor call below. Approval fields are set there too, guarded by
+# _approval_provenance_valid. Every OTHER NodeDefinition field is applied
+# generically by _apply_passthrough_node_fields so export -> import round-trips
+# losslessly and future node fields survive without editing an allowlist
+# (Codex S2 adapt, finding 1).
+_NODE_SPEC_CONSTRUCTOR_FIELDS = frozenset({
+    "node_id", "display_name", "description", "phase",
+    "input_keys", "output_keys", "tools_allowed", "strict_input_isolation",
+    "source_code", "prompt_template", "model_hint", "reasoning_effort",
+    "llm_policy", "timeout_seconds", "author",
+    "invoke_branch_spec", "invoke_branch_version_spec", "await_run_spec",
+    "effects",
+})
+_NODE_SPEC_APPROVAL_FIELDS = frozenset({
+    "approved", "approved_by", "approved_at",
+    "approved_source_hash", "approval_reason",
+})
+
+
+def _apply_passthrough_node_fields(node: Any, raw: dict[str, Any]) -> None:
+    """Carry every behavior-affecting NodeDefinition field the explicit
+    constructor call did not set — ``requires_sandbox``, ``enabled``,
+    ``retry_policy``, ``dependencies``, ``checkpoints``,
+    ``evaluation_criteria``, and any FUTURE field such as S3's ``node_kind``.
+
+    Generic by construction: it iterates the dataclass fields, so a new node
+    field round-trips through export/import with no allowlist edit. Approval
+    provenance is excluded — the constructor path already gated it and a raw
+    passthrough must never overwrite that decision.
+    """
+    from tinyassets.branches import NodeDefinition
+
+    handled = _NODE_SPEC_CONSTRUCTOR_FIELDS | _NODE_SPEC_APPROVAL_FIELDS
+    for fname in NodeDefinition.__dataclass_fields__:
+        if fname in handled or fname not in raw:
+            continue
+        setattr(node, fname, raw[fname])
+
+
 def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branches import GraphNodeRef, NodeDefinition
@@ -1734,6 +1774,10 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         )
     except ValueError as exc:
         return str(exc)
+
+    # Preserve every behavior-affecting field the constructor didn't set
+    # (requires_sandbox, enabled, node_kind, …) so import/build is lossless.
+    _apply_passthrough_node_fields(node, raw)
 
     if any(n.node_id == nid for n in branch.node_defs):
         return f"node '{nid}' already exists on the branch"
@@ -3305,65 +3349,41 @@ def _resolve_udir() -> Path:
 # docs/design-notes/2026-07-15-user-patch-loop-reference-design.md (G2/S2).
 
 
-def _node_def_to_design_spec(nd: Any) -> dict[str, Any]:
-    """Serialize a NodeDefinition into a build_branch node spec.
+# Approval provenance is host/actor-scoped trust; it must NOT travel inside a
+# portable artifact (a shared artifact carrying approved=True would smuggle
+# execution authority across hosts). Everything ELSE on the node passes through.
+# Re-import re-runs the approve gate (fail-closed, hard rule 8) and the runtime
+# gate is the backstop.
+_NODE_EXPORT_REDACTED_FIELDS = (
+    "approved", "approved_by", "approved_at",
+    "approved_source_hash", "approval_reason",
+)
 
-    Carries only authoring surface — deliberately DROPS source_code approval
-    provenance. An exported artifact is portable + approval-blind; re-import
-    re-runs the fail-closed approve gate rather than smuggling a stale approval
-    across universes/actors.
+
+def _node_def_to_design_spec(nd: Any) -> dict[str, Any]:
+    """Serialize a NodeDefinition into a build_branch node spec that PRESERVES
+    every behavior-affecting field.
+
+    Dumps the WHOLE dataclass via ``to_dict`` (not a hand-maintained allowlist)
+    so security/behavior flags like ``requires_sandbox`` and ``enabled`` — and
+    any FUTURE node field (e.g. S3's ``node_kind``) — round-trip through
+    export -> import unchanged. The only redaction is approval provenance
+    (see ``_NODE_EXPORT_REDACTED_FIELDS``). Codex S2 adapt (finding 1).
     """
-    spec: dict[str, Any] = {
-        "node_id": nd.node_id,
-        "display_name": nd.display_name,
-    }
-    for attr in (
-        "description", "phase", "source_code", "prompt_template",
-        "model_hint", "reasoning_effort",
-    ):
-        val = getattr(nd, attr, "") or ""
-        if val:
-            spec[attr] = val
-    for attr in ("input_keys", "output_keys", "tools_allowed", "effects"):
-        val = list(getattr(nd, attr, []) or [])
-        if val:
-            spec[attr] = val
-    if getattr(nd, "strict_input_isolation", True) is False:
-        spec["strict_input_isolation"] = False
-    timeout = getattr(nd, "timeout_seconds", 300.0)
-    if timeout and timeout != 300.0:
-        spec["timeout_seconds"] = timeout
-    if getattr(nd, "llm_policy", None):
-        spec["llm_policy"] = nd.llm_policy
-    if getattr(nd, "retry_policy", None):
-        spec["retry_policy"] = nd.retry_policy
-    for spec_attr in (
-        "invoke_branch_spec", "invoke_branch_version_spec", "await_run_spec",
-    ):
-        val = getattr(nd, spec_attr, None)
-        if val:
-            spec[spec_attr] = val
+    spec = dict(nd.to_dict())
+    for redacted in _NODE_EXPORT_REDACTED_FIELDS:
+        spec.pop(redacted, None)
     return spec
 
 
 def _state_field_to_design_spec(field: dict[str, Any]) -> dict[str, Any]:
-    """Serialize one state_schema entry into a build_branch state field spec.
+    """Pass a state_schema entry through wholesale.
 
-    Preserves ``default_value`` so a BOUND branch round-trips: export -> import
-    reproduces the same bindings (target_repo / credential_ref / merge_policy).
+    Preserves ``default_value`` (the BIND surface) plus reducer/description and
+    any other key, so a bound branch round-trips: export -> import reproduces
+    the same target_repo / credential_ref / merge_policy bindings.
     """
-    spec: dict[str, Any] = {
-        "name": field.get("name", ""),
-        "type": field.get("type", "str") or "str",
-    }
-    if field.get("description"):
-        spec["description"] = field["description"]
-    if field.get("reducer"):
-        spec["reducer"] = field["reducer"]
-    default = field.get("default_value", field.get("default", ""))
-    if default not in ("", None):
-        spec["default_value"] = default
-    return spec
+    return dict(field)
 
 
 def _branch_to_design_spec(branch: Any) -> dict[str, Any]:
