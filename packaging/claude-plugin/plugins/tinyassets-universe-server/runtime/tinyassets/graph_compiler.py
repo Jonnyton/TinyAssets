@@ -977,11 +977,6 @@ def _build_prompt_template_node(
     except (ValueError, TypeError):
         _bridge_takes_config = False
 
-    def _bridge(_p: str, _s: str) -> str:
-        if _bridge_takes_config and _node_cfg is not None:
-            return provider_call(_p, _s, role=role, config=_node_cfg)
-        return provider_call(_p, _s, role=role)
-
     # Lazy import so graph_compiler doesn't hard-depend on providers at import
     # time. Aliased so the except-clauses below can reference it by name without
     # re-importing inside every invocation.
@@ -989,6 +984,23 @@ def _build_prompt_template_node(
         from tinyassets.providers.base import SandboxUnavailableError as _SandboxUnavailableError
     except Exception:  # noqa: BLE001 — import failure must not break compilation
         _SandboxUnavailableError = type("_SandboxUnavailableError", (Exception,), {})  # type: ignore[assignment,misc]
+
+    def _bridge(_p: str, _s: str) -> str:
+        if _bridge_takes_config and _node_cfg is not None:
+            return provider_call(_p, _s, role=role, config=_node_cfg)
+        if _node_needs_sandbox:
+            # Fail closed (Codex S3 round-3 FINDING 3): a sandbox-required node
+            # must NEVER run through a bridge that cannot carry its hardened
+            # config — a config-less bridge would bypass the sandbox tool/env
+            # policy entirely (Codex reproduced draft_patch doing exactly this).
+            raise _SandboxUnavailableError(
+                f"Node '{node.node_id}' is sandbox-required but its provider "
+                "bridge cannot carry the hardened sandbox config (the injected "
+                "provider_call takes no 'config' kwarg). Refusing to run a coding "
+                "node through a config-less bridge that would bypass the sandbox "
+                "policy (fail closed)."
+            )
+        return provider_call(_p, _s, role=role)
 
     def _fn(state: dict[str, Any]) -> dict[str, Any]:
         # Normalize Jinja-style ``{{var}}`` into Python's ``{var}``.

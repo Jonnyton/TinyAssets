@@ -26,8 +26,9 @@ from tinyassets.providers.base import (
     ProviderResponse,
     SandboxUnavailableError,
     check_bwrap_failure,
+    cleanup_sandbox_job_dir,
     get_sandbox_status,
-    subprocess_env_for_provider,
+    sandbox_spawn_env_and_dir,
 )
 
 
@@ -175,83 +176,93 @@ class CodexProvider(BaseProvider):
             "--skip-git-repo-check",
             "--ephemeral",
         ]
-        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
+        # Defense-in-depth for a SANDBOX-REQUIRED coding node (Codex S3 round-3):
+        # sanitized minimal env (only codex's own auth — no cross-tenant secrets
+        # to `env`-dump) + a fresh per-job scratch workdir (NOT the daemon's repo
+        # checkout, NOT /data). Normal calls keep the full env + repo workdir.
+        proc_env, scratch_dir = sandbox_spawn_env_and_dir(
+            self.name, config, universe_dir=universe_dir,
+        )
+        workdir = scratch_dir if scratch_dir is not None else _codex_workdir()
 
         win_kw = _no_window_kwargs()
-        cmd_with_cwd = [*cmd, "-C", _codex_workdir()]
-        if use_shell:
-            proc = await asyncio.create_subprocess_shell(
-                shlex.join(cmd_with_cwd),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                **win_kw,
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd_with_cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                **win_kw,
-            )
-
-        start = time.monotonic()
-
+        cmd_with_cwd = [*cmd, "-C", workdir]
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=full_input.encode("utf-8")),
-                timeout=config.timeout,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise ProviderTimeoutError(
-                f"codex exec exceeded {config.timeout}s timeout"
-            )
-
-        elapsed_ms = (time.monotonic() - start) * 1000
-
-        # Quick exit-code-1 => provider unavailable (same heuristic as claude)
-        if proc.returncode == 1 and elapsed_ms < 5000:
-            raise ProviderUnavailableError(
-                "codex exec returned exit code 1 quickly -- likely unavailable"
-            )
-
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        check_bwrap_failure(stderr_text)
-
-        if proc.returncode != 0:
-            raise ProviderError(
-                f"codex exec exit {proc.returncode}: {stderr_text}"
-            )
-
-        text = stdout.decode("utf-8", errors="replace").strip()
-
-        if not text:
-            # codex v0.122+ exits 0 on auth failure (401) but emits nothing to
-            # stdout. Detect the silent-auth-failure pattern and surface it as a
-            # hard error rather than returning an empty response that cascades
-            # silently through downstream nodes.
-            _auth_patterns = ("401", "Unauthorized", "Reconnecting", "auth")
-            stderr_lower = stderr_text.lower()
-            if any(p.lower() in stderr_lower for p in _auth_patterns):
-                excerpt = stderr_text[:300].strip()
-                raise ProviderError(
-                    f"codex returned empty stdout with auth-error signal in stderr "
-                    f"(exit={proc.returncode}): {excerpt}"
+            if use_shell:
+                proc = await asyncio.create_subprocess_shell(
+                    shlex.join(cmd_with_cwd),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=proc_env,
+                    **win_kw,
                 )
-            raise ProviderError(
-                f"codex returned empty response (exit={proc.returncode}); "
-                f"stderr: {stderr_text[:200].strip() or '(empty)'}"
-            )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd_with_cwd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=proc_env,
+                    **win_kw,
+                )
 
-        return ProviderResponse(
-            text=text,
-            provider=self.name,
-            model=model,
-            family=self.family,
-            latency_ms=elapsed_ms,
-        )
+            start = time.monotonic()
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=full_input.encode("utf-8")),
+                    timeout=config.timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise ProviderTimeoutError(
+                    f"codex exec exceeded {config.timeout}s timeout"
+                )
+
+            elapsed_ms = (time.monotonic() - start) * 1000
+
+            # Quick exit-code-1 => provider unavailable (same heuristic as claude)
+            if proc.returncode == 1 and elapsed_ms < 5000:
+                raise ProviderUnavailableError(
+                    "codex exec returned exit code 1 quickly -- likely unavailable"
+                )
+
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            check_bwrap_failure(stderr_text)
+
+            if proc.returncode != 0:
+                raise ProviderError(
+                    f"codex exec exit {proc.returncode}: {stderr_text}"
+                )
+
+            text = stdout.decode("utf-8", errors="replace").strip()
+
+            if not text:
+                # codex v0.122+ exits 0 on auth failure (401) but emits nothing to
+                # stdout. Detect the silent-auth-failure pattern and surface it as
+                # a hard error rather than returning an empty response that
+                # cascades silently through downstream nodes.
+                _auth_patterns = ("401", "Unauthorized", "Reconnecting", "auth")
+                stderr_lower = stderr_text.lower()
+                if any(p.lower() in stderr_lower for p in _auth_patterns):
+                    excerpt = stderr_text[:300].strip()
+                    raise ProviderError(
+                        f"codex returned empty stdout with auth-error signal in "
+                        f"stderr (exit={proc.returncode}): {excerpt}"
+                    )
+                raise ProviderError(
+                    f"codex returned empty response (exit={proc.returncode}); "
+                    f"stderr: {stderr_text[:200].strip() or '(empty)'}"
+                )
+
+            return ProviderResponse(
+                text=text,
+                provider=self.name,
+                model=model,
+                family=self.family,
+                latency_ms=elapsed_ms,
+            )
+        finally:
+            cleanup_sandbox_job_dir(scratch_dir)

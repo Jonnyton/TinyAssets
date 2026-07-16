@@ -164,6 +164,117 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     return env
 
 
+# Env vars ALWAYS safe to pass to a sandbox-required coding subprocess. An
+# ALLOWLIST (not a denylist) so the sanitized env is strip-everything-not-listed
+# by construction — a new secret var added later is excluded by default.
+_SANITIZED_ENV_ALLOWLIST: tuple[str, ...] = (
+    # POSIX essentials
+    "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "USER", "LOGNAME", "SHELL", "TERM",
+    # Windows essentials (the subprocess cannot even launch without these)
+    "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER",
+)
+
+# The ONLY auth env vars a given provider's coding job legitimately needs. A
+# codex job gets codex auth, a claude job gets claude auth — never the other's,
+# and never any unrelated secret. API-key vars are honored only under the
+# subscription opt-in (see api_key_providers_enabled).
+_PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
+    "codex": ("CODEX_HOME", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "claude-code": (
+        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+    ),
+}
+
+
+def sanitized_subprocess_env(
+    provider_name: str, *, universe_dir: Path | None = None,
+) -> dict[str, str]:
+    """Minimal-allowlist env for a SANDBOX-REQUIRED coding-node subprocess.
+
+    Defense in depth (Codex S3 round-3): even under host OS-isolation attestation
+    the child runs with real Bash/Read tools, and a naive full-env copy would let
+    a hostile coding node ``env``-dump the daemon's ENTIRE environment — every
+    other provider's subscription auth, ``TINYASSETS_*``/``WORKOS_*``/``GITHUB_*``
+    secrets, and cross-tenant config. Attestation asserts host-level isolation
+    (mounts/network are the container's job); this makes an "attested but hostile
+    node" unable to read OTHER tenants' / OTHER providers' secrets from ENV.
+
+    Built from a tiny allowlist + ONLY the target provider's own auth (host env
+    keys + per-universe vault overrides). Everything else is dropped by
+    construction. Pair with a per-job scratch cwd (see
+    :func:`sandbox_spawn_env_and_dir`).
+    """
+    src = os.environ
+    env: dict[str, str] = {k: src[k] for k in _SANITIZED_ENV_ALLOWLIST if k in src}
+    opted_in = api_key_providers_enabled()
+    for key in _PROVIDER_AUTH_ENV_KEYS.get(provider_name.strip(), ()):
+        if key not in src:
+            continue
+        # API-key auth only when the host deliberately enabled it.
+        if key in API_KEY_PROVIDER_ENV_VARS and not opted_in:
+            continue
+        env[key] = src[key]
+    # Overlay ONLY this provider's per-universe vault auth (never a global).
+    try:
+        from tinyassets.credential_vault import apply_provider_auth_env
+
+        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
+    except ValueError:
+        raise
+    except Exception:
+        pass
+    return env
+
+
+def new_sandbox_job_dir() -> str:
+    """Create a fresh, empty per-job scratch dir for a sandbox-required spawn.
+
+    The coding node's cwd is pinned here — NOT the daemon's source checkout
+    (which exposes our platform source) and NOT ``/data`` (cross-tenant data).
+    Caller removes it via :func:`cleanup_sandbox_job_dir` when the job ends.
+    """
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="tinyassets-sandbox-job-")
+
+
+def cleanup_sandbox_job_dir(scratch_dir: str | None) -> None:
+    """Best-effort removal of a per-job scratch dir (no-op for ``None``)."""
+    if not scratch_dir:
+        return
+    import shutil
+
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def sandbox_spawn_env_and_dir(
+    provider_name: str,
+    config: "ModelConfig",
+    *,
+    universe_dir: Path | None = None,
+) -> tuple[dict[str, str], str | None]:
+    """Return ``(proc_env, scratch_dir)`` for a provider subprocess spawn.
+
+    Sandbox-required (coding) node → a SANITIZED minimal env + a fresh per-job
+    scratch dir (caller pins cwd there and removes it after). Otherwise the
+    normal provider env and ``None`` (no behavior change for host-trusted calls).
+    """
+    if getattr(config, "os_sandbox_required", False):
+        return (
+            sanitized_subprocess_env(provider_name, universe_dir=universe_dir),
+            new_sandbox_job_dir(),
+        )
+    return (
+        subprocess_env_for_provider(provider_name, universe_dir=universe_dir),
+        None,
+    )
+
+
 def subprocess_env_for_provider(
     provider_name: str, *, universe_dir: Path | None = None,
 ) -> dict[str, str]:
@@ -620,14 +731,22 @@ def os_sandbox_attested() -> bool:
     """True only when the ENTIRE server process is attested to run under real OS
     isolation.
 
-    Set by the container entrypoint (``TINYASSETS_OS_SANDBOX_ATTESTED=1``) AFTER
-    it has confined the whole process (container / gVisor / namespaces). This is
-    the ONLY thing that confines an in-process, NON-self-sandboxing coding agent
-    like ``claude -p`` — which is spawned with Bash/Read/Write and has no sandbox
-    flag of its own. A launchable ``bwrap`` (``get_sandbox_status``) proves only
-    that bwrap CAN start a sandbox; it does NOT prove the running ``claude -p``
-    subprocess is confined (Codex S3 review). So confinement of that class is
-    gated on this attestation, never on bwrap-launchability.
+    Meant to be set (``TINYASSETS_OS_SANDBOX_ATTESTED=1``) ONLY by a container
+    entrypoint that has genuinely confined the whole process (container-per-job /
+    gVisor / microVM / namespaces). This is the ONLY thing that confines an
+    in-process, NON-self-sandboxing coding agent like ``claude -p`` — which is
+    spawned with Bash/Read/Write and has no sandbox flag of its own. A launchable
+    ``bwrap`` (``get_sandbox_status``) proves only that bwrap CAN start a sandbox;
+    it does NOT prove the running ``claude -p`` subprocess is confined (Codex S3
+    review). So confinement of that class is gated on this attestation, never on
+    bwrap-launchability.
+
+    Reality today (patch-loop S3): the production entrypoint / compose
+    (``deploy/docker-entrypoint.sh``, ``deploy/compose.yml``) DELIBERATELY do NOT
+    set this — the current droplet provides no per-job OS isolation, so every
+    sandbox-required coding node fails closed at run time BY DESIGN until such a
+    host exists. Do not set it as a convenience; that re-opens the exact
+    exfiltration vector the gate closes.
     """
     return _truthy_env(os.environ.get(OS_SANDBOX_ATTESTATION_ENV))
 

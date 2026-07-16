@@ -431,3 +431,195 @@ def test_coding_node_policy_does_not_overlap_allow_and_deny():
     # Sanity: a tool is never both pre-approved and denied.
     overlap = set(CODING_NODE_ALLOWED_TOOLS) & set(CODING_NODE_DISALLOWED_TOOLS)
     assert not overlap, f"tool listed as both allowed and denied: {overlap}"
+
+
+# --------------------------------------------------------------------------- #
+# (5) Codex round-3 FINDING 1 — sanitized env + per-job scratch cwd
+# --------------------------------------------------------------------------- #
+
+_SECRET_ENV = {
+    "CODEX_HOME": "/data/.codex",
+    "CLAUDE_CODE_OAUTH_TOKEN": "claude-tok",
+    "CLAUDE_CONFIG_DIR": "/data/.claude",
+    "ANTHROPIC_API_KEY": "sk-ant-secret",
+    "OPENAI_API_KEY": "sk-openai-secret",
+    "TINYASSETS_SECRET_X": "tenant-secret",
+    "WORKOS_API_KEY": "workos-secret",
+    "GITHUB_TOKEN": "gh-secret",
+}
+
+
+def _seed_secret_env(monkeypatch, *, opt_in: bool = False):
+    for k, v in _SECRET_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    if opt_in:
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    else:
+        monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
+
+
+def test_sanitized_env_keeps_only_the_jobs_own_provider_auth(monkeypatch):
+    from tinyassets.providers.base import sanitized_subprocess_env
+
+    _seed_secret_env(monkeypatch)
+    _CROSS = (
+        "OPENAI_API_KEY", "TINYASSETS_SECRET_X", "WORKOS_API_KEY", "GITHUB_TOKEN",
+    )
+
+    ce = sanitized_subprocess_env("claude-code")
+    assert ce.get("CLAUDE_CODE_OAUTH_TOKEN") == "claude-tok"  # own subscription auth
+    assert ce.get("CLAUDE_CONFIG_DIR") == "/data/.claude"
+    assert "PATH" in ce  # minimal allowlist essential
+    assert "CODEX_HOME" not in ce  # OTHER provider's auth stripped
+    assert "ANTHROPIC_API_KEY" not in ce  # API key stripped (no opt-in)
+    for leaked in _CROSS:
+        assert leaked not in ce, f"{leaked} leaked into claude coding env"
+
+    xe = sanitized_subprocess_env("codex")
+    assert xe.get("CODEX_HOME") == "/data/.codex"  # own subscription auth
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in xe  # OTHER provider's auth stripped
+    assert "CLAUDE_CONFIG_DIR" not in xe
+    for leaked in _CROSS:
+        assert leaked not in xe, f"{leaked} leaked into codex coding env"
+
+
+def test_sanitized_env_includes_own_api_key_only_when_opted_in(monkeypatch):
+    from tinyassets.providers.base import sanitized_subprocess_env
+
+    _seed_secret_env(monkeypatch, opt_in=True)
+    ce = sanitized_subprocess_env("claude-code")
+    assert ce.get("ANTHROPIC_API_KEY") == "sk-ant-secret"  # own key, opt-in on
+    assert "OPENAI_API_KEY" not in ce  # still not the OTHER provider's key
+
+
+def _mk_proc():
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+    mock_proc.returncode = 0
+    mock_proc.kill = AsyncMock()
+    mock_proc.wait = AsyncMock()
+    return mock_proc
+
+
+def test_claude_coding_node_spawns_with_sanitized_env_and_scratch_cwd(monkeypatch):
+    _seed_secret_env(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")  # allow it to run
+    captured: dict = {}
+
+    async def _fake_exec(*_args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        captured["cwd"] = kwargs.get("cwd")
+        return _mk_proc()
+
+    with (
+        patch(
+            "tinyassets.providers.claude_provider._resolve_claude_cmd",
+            return_value=(["claude"], False),
+        ),
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+    ):
+        asyncio.run(
+            ClaudeProvider().complete("p", "", coding_node_model_config(timeout=60))
+        )
+
+    env = captured["env"]
+    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "claude-tok"  # own auth present
+    assert "CODEX_HOME" not in env  # other provider stripped
+    assert "TINYASSETS_SECRET_X" not in env  # tenant secret stripped
+    assert "WORKOS_API_KEY" not in env
+    cwd = captured["cwd"]
+    assert cwd and "tinyassets-sandbox-job-" in cwd  # per-job scratch dir
+    assert "/data" not in cwd  # not /data, not the repo checkout
+
+
+def test_codex_coding_node_spawns_with_sanitized_env_and_scratch_workdir(monkeypatch):
+    _seed_secret_env(monkeypatch)
+    captured: dict = {}
+
+    async def _fake_exec(*args, **kwargs):
+        captured["args"] = list(args)
+        captured["env"] = kwargs.get("env")
+        return _mk_proc()
+
+    with (
+        patch(
+            "tinyassets.providers.codex_provider._resolve_codex_cmd",
+            return_value=(["codex"], False),
+        ),
+        patch(
+            "tinyassets.providers.codex_provider.get_sandbox_status",
+            return_value=dict(_BWRAP_ON),
+        ),
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+    ):
+        asyncio.run(
+            CodexProvider().complete("p", "", coding_node_model_config(timeout=60))
+        )
+
+    env = captured["env"]
+    assert env.get("CODEX_HOME") == "/data/.codex"  # own auth present
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env  # other provider stripped
+    assert "TINYASSETS_SECRET_X" not in env  # tenant secret stripped
+    args = captured["args"]
+    workdir = args[args.index("-C") + 1]  # codex pins cwd via -C
+    assert "tinyassets-sandbox-job-" in workdir  # per-job scratch, not repo root
+
+
+# --------------------------------------------------------------------------- #
+# (6) Codex round-3 FINDING 3 — sandbox nodes refuse a config-less bridge
+# --------------------------------------------------------------------------- #
+
+
+def test_sandbox_node_refuses_a_config_less_bridge():
+    # A legacy/tolerant bridge that cannot carry the hardened config would run the
+    # coding node WITHOUT the sandbox tool/env policy — must fail closed.
+    node = NodeDefinition(
+        node_id="draft_patch",
+        display_name="Draft",
+        prompt_template="do it",
+        output_keys=["draft_patch_output"],
+    )
+
+    def config_less(prompt, system, *, role="writer"):  # no `config` kwarg
+        raise AssertionError("a config-less bridge must NOT run a coding node")
+
+    fn = _build_prompt_template_node(node, provider_call=config_less, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_sandbox_node_runs_through_a_config_accepting_bridge():
+    node = NodeDefinition(
+        node_id="draft_patch",
+        display_name="Draft",
+        prompt_template="do it",
+        output_keys=["draft_patch_output"],
+    )
+    seen: dict = {}
+
+    def config_ok(prompt, system, *, role="writer", config=None):
+        seen["config"] = config
+        return "ok"
+
+    fn = _build_prompt_template_node(node, provider_call=config_ok, event_sink=None)
+    out = fn({})
+    assert out["draft_patch_output"] == "ok"
+    assert seen["config"] is not None and seen["config"].os_sandbox_required is True
+
+
+def test_ordinary_node_still_runs_through_a_config_less_bridge():
+    # Non-sandbox nodes keep the tolerant legacy behavior.
+    node = NodeDefinition(
+        node_id="summarize",
+        display_name="Summarize",
+        prompt_template="do it",
+        output_keys=["summarize_out"],
+    )
+
+    def config_less(prompt, system, *, role="writer"):
+        return "ok"
+
+    fn = _build_prompt_template_node(node, provider_call=config_less, event_sink=None)
+    out = fn({})
+    assert out["summarize_out"] == "ok"

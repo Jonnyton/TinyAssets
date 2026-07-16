@@ -339,7 +339,11 @@ class TestExtBranchListSandboxFilter:
         from tinyassets.api.branches import _ext_branch_list
 
         with patch("tinyassets.daemon_server.list_branch_definitions", return_value=rows):
-            kwargs: dict = {}
+            # scope="all" — the fixture branches have no PUBLISHED version, and
+            # the default scope=published would skip them (each needs a
+            # branch_version), so the requires_sandbox filter would see zero rows
+            # and never actually be exercised. "all" lists the fixtures directly.
+            kwargs: dict = {"scope": "all"}
             if rs_filter:
                 kwargs["requires_sandbox"] = rs_filter
             return json.loads(_ext_branch_list(kwargs))
