@@ -68,7 +68,7 @@ Node graph:
 
 | Node | Does | Substrate it composes | Status |
 |---|---|---|---|
-| `intake` | Drain patch requests / comments filed against the bound project | wiki patch-requests + requests queue (dispatcher `request_type=bug_investigation` compatible) | landed |
+| `intake` | Drain patch requests / comments filed against the bound project | wiki patch-requests + requests queue (dispatcher `request_type=bug_investigation` compatible) | **partial:** landed only for TinyAssets' existing global patch-request queue — `file_bug`/`submit_request` carry no project/repo/intake-source binding today, so project-scoped intake (a game's own request stream) is part of GAP G2 |
 | `investigate` | Reproduce + analyze against the bound repo | cloud worker; sub-branch invocation (Phase A) | landed |
 | `draft_patch` | Produce the fix on a branch of the bound repo | daemon-driven coding agent (`claude -p` / `codex exec` subprocess — hard rule 3) | **GAP G5 — build-blocking:** ordinary branch prompt nodes are NOT sandboxed today (`providers/base.py` `sandbox_workspace=False`; codex nodes may run `--dangerously-bypass-approvals-and-sandbox`). The 2026-07-03 engine-isolation posture covers `universe_intelligence` only. The loop must not run against real repos until coding-node sandbox/tool policy is enforced. |
 | `verify` | Run the repo's tests/CI; loop back to `draft_patch` until green | conditional edges; gate-branch verdict shape (`docs/conventions/gate-branch-shape.md`) | landed |
@@ -104,8 +104,11 @@ design version id so drift is detectable.
    phone-first (relay/app + website read of the same queue).
 4. **G4 — Dead-ref dispatch:** `_resolve_investigation_handler` returns branch
    ids without validating existence; filings enqueue silently against dead
-   refs. Fail loudly (hard rule 8) at file time when the resolved handler
-   doesn't exist.
+   refs. Fail loudly (hard rule 8) **on the trigger, never the filing**: at
+   file time, validate the resolved handler exists; when it doesn't, enqueue
+   nothing and record + surface an explicit failed-trigger status in the
+   filing response — but the user's filing always persists (a requester's
+   report is never lost because the project owner's loop is misconfigured).
 5. **G5 — Coding-node sandbox (build-blocking):** branch prompt/coding nodes
    are not sandboxed today (see §3 table). Enforce sandbox/tool policy for
    `draft_patch`-class nodes before any loop touches a real repo.
@@ -115,13 +118,17 @@ design version id so drift is detectable.
 7. **G7 — Engine/daemon onboarding (host steer):** no user — the founder
    included — has ever been taken through binding their engines
    (subscription CLIs / local / API) or hosting daemon capacity to their
-   universe. Therefore **no platform-global daemon should be running work
-   anywhere**: universes execute only on user-bound capacity (their own, or
-   capacity another user has explicitly offered). The current platform-global
-   daemon is the wrong shape — the PR-181 idle-churn on `default-universe` is
-   a live symptom of it. Setup flow: at (or after) first contact the founder
-   is offered "bind an engine so your universe can run"; until bound, the
-   universe is honestly idle.
+   universe. Therefore **no ambient, unbound daemon work runs anywhere**:
+   universes execute only on capacity explicitly bound to them — the owner's
+   own engines, capacity another user has offered, or cloud/platform capacity
+   **explicitly offered and per-universe-bound** (this preserves the Forever
+   Rule: browser-only users are not second-classed, and a bound loop runs
+   24/7 in the cloud with no host online — what changes is that binding is
+   always a user act, never ambient default). The current platform-global
+   daemon working unbound universes is the wrong shape — the PR-181
+   idle-churn on `default-universe` is a live symptom. Setup flow: at (or
+   after) first contact the founder is offered "bind an engine so your
+   universe can run"; until bound, the universe is honestly idle.
 
 ## 6. Slices
 
