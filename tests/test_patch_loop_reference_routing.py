@@ -50,10 +50,9 @@ _PR_PACKET = {
         "title": "Fix export button", "body": "summary",
         "base_branch": "main", "head_branch": "auto/fix-export", "draft": False,
         "changes_json": {"src/export.py": "print('fixed')\n"},
-        "review_queue": {
-            "enabled": True, "gate": "owner", "request_ref": "req-42",
-            "verification": {"verdict": "pass", "evidence": {"reason": "all green"}},
-        },
+        # S4 authoritative schema: two flat keys only — request_ref + verify_verdict
+        # (canonical pass|fail|unknown). Evidence lives in the PR body, not here.
+        "review_queue": {"request_ref": "req-42", "verify_verdict": "pass"},
     },
 }
 _MERGE_PACKET = {
@@ -276,10 +275,12 @@ def test_reference_declares_real_effects_and_sandbox_node_kinds():
     present_prompt = nodes["present"]["prompt_template"]
     assert "changes_json" in present_prompt
     assert "review_queue" in present_prompt
-    # Codex r12 #2: review_queue carries the originating request reference +
-    # verification metadata S4's enqueue/acceptance path reads.
+    # S4 authoritative schema (relayed): review_queue carries the two FLAT keys
+    # S4 reads — request_ref + verify_verdict (canonical pass|fail|unknown). The
+    # nested verification object is NOT read (would degrade to unknown); evidence
+    # belongs in the PR body / present_output, not queue metadata.
     assert "request_ref" in present_prompt
-    assert "verification" in present_prompt
+    assert "verify_verdict" in present_prompt
 
     # requires_sandbox + effects are REAL NodeDefinition fields — they survive
     # the build (node_kind/capabilities are artifact-only data the build drops).
