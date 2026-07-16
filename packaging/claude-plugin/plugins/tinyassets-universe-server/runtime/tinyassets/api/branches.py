@@ -1608,25 +1608,121 @@ _NODE_SPEC_APPROVAL_FIELDS = frozenset({
     "approved_source_hash", "approval_reason",
 })
 
+# Resolved NodeDefinition field types, cached. Passthrough is generic AND
+# type-checked (Codex S2 adapt round 2, finding 1): a hostile import that sends
+# a string for a bool field ("false"), or a mis-shaped list/dict, is REJECTED
+# loudly (hard rule 8) instead of persisting a truthy garbage value. Validation
+# is driven off the dataclass's own type hints, so it stays generic — no
+# hand-maintained per-field type list.
+_NODE_FIELD_HINTS: dict[str, Any] | None = None
 
-def _apply_passthrough_node_fields(node: Any, raw: dict[str, Any]) -> None:
+
+def _node_field_hints() -> dict[str, Any]:
+    global _NODE_FIELD_HINTS
+    if _NODE_FIELD_HINTS is None:
+        import typing
+
+        from tinyassets.branches import NodeDefinition
+
+        _NODE_FIELD_HINTS = typing.get_type_hints(NodeDefinition)
+    return _NODE_FIELD_HINTS
+
+
+def _value_matches_node_type(value: Any, hint: Any) -> bool:
+    """True when a JSON-decoded ``value`` satisfies the declared field type.
+
+    Bool is checked strictly (a JSON string "false" is NOT a bool); numbers
+    reject bools; containers must match list/dict and, for typed lists, their
+    element type. Union/Optional accept any member. Unknown/``Any`` accept.
+    """
+    import types as _types
+    import typing
+
+    origin = typing.get_origin(hint)
+    if origin is None:
+        if hint is bool:
+            return isinstance(value, bool)
+        if hint is int:
+            return isinstance(value, int) and not isinstance(value, bool)
+        if hint is float:
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if hint is str:
+            return isinstance(value, str)
+        if hint is type(None):
+            return value is None
+        if hint is Any:
+            return True
+        return isinstance(value, hint) if isinstance(hint, type) else True
+    if origin in (typing.Union, getattr(_types, "UnionType", ())):
+        return any(_value_matches_node_type(value, a) for a in typing.get_args(hint))
+    if origin is list:
+        if not isinstance(value, list):
+            return False
+        args = typing.get_args(hint)
+        return all(_value_matches_node_type(v, args[0]) for v in value) if args else True
+    if origin is dict:
+        return isinstance(value, dict)
+    if origin in (tuple, set, frozenset):
+        return isinstance(value, list)
+    return True
+
+
+def _node_type_label(hint: Any) -> str:
+    import types as _types
+    import typing
+
+    origin = typing.get_origin(hint)
+    if origin is list:
+        return "a JSON array"
+    if origin is dict:
+        return "a JSON object"
+    if origin in (typing.Union, getattr(_types, "UnionType", ())):
+        parts = [
+            _node_type_label(a) for a in typing.get_args(hint)
+            if a is not type(None)
+        ]
+        return " or ".join(parts) if parts else "null"
+    return getattr(hint, "__name__", str(hint))
+
+
+def _apply_passthrough_node_fields(node: Any, raw: dict[str, Any]) -> str:
     """Carry every behavior-affecting NodeDefinition field the explicit
     constructor call did not set — ``requires_sandbox``, ``enabled``,
     ``retry_policy``, ``dependencies``, ``checkpoints``,
     ``evaluation_criteria``, and any FUTURE field such as S3's ``node_kind``.
 
     Generic by construction: it iterates the dataclass fields, so a new node
-    field round-trips through export/import with no allowlist edit. Approval
-    provenance is excluded — the constructor path already gated it and a raw
-    passthrough must never overwrite that decision.
+    field round-trips through export/import with no allowlist edit. Each value
+    is type-checked against the field's declared type BEFORE persistence, and a
+    mismatch returns a loud error (nothing is applied). Approval provenance is
+    excluded — the constructor path already gated it and a raw passthrough must
+    never overwrite that decision.
+
+    Returns "" on success, or a human-readable error string on a type mismatch.
     """
     from tinyassets.branches import NodeDefinition
 
+    hints = _node_field_hints()
     handled = _NODE_SPEC_CONSTRUCTOR_FIELDS | _NODE_SPEC_APPROVAL_FIELDS
+    # Two-pass: validate everything first, then apply — so a rejected node is
+    # never left half-populated.
+    updates: dict[str, Any] = {}
     for fname in NodeDefinition.__dataclass_fields__:
         if fname in handled or fname not in raw:
             continue
-        setattr(node, fname, raw[fname])
+        value = raw[fname]
+        hint = hints.get(fname)
+        if hint is not None and not _value_matches_node_type(value, hint):
+            return (
+                f"node field '{fname}' has the wrong type: expected "
+                f"{_node_type_label(hint)}, got {type(value).__name__} "
+                f"({value!r}). Imports/specs must be correctly typed — no "
+                "string booleans, no mis-shaped lists/objects."
+            )
+        updates[fname] = value
+    for key, val in updates.items():
+        setattr(node, key, val)
+    return ""
 
 
 def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
@@ -1777,7 +1873,10 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
 
     # Preserve every behavior-affecting field the constructor didn't set
     # (requires_sandbox, enabled, node_kind, …) so import/build is lossless.
-    _apply_passthrough_node_fields(node, raw)
+    # Type-validated: a mis-typed passthrough field rejects the whole node.
+    passthrough_err = _apply_passthrough_node_fields(node, raw)
+    if passthrough_err:
+        return passthrough_err
 
     if any(n.node_id == nid for n in branch.node_defs):
         return f"node '{nid}' already exists on the branch"

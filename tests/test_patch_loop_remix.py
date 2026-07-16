@@ -370,6 +370,74 @@ def test_private_branch_export_is_author_gated(data_dir, monkeypatch):
     assert "not found" in theirs["error"].lower()
 
 
+# ── Hostile-typed imports are rejected loudly (Codex S2 adapt round 2, F1) ──
+
+
+@pytest.mark.parametrize("bad_field,bad_value", [
+    ("requires_sandbox", "false"),   # string, not a JSON bool (the repro)
+    ("enabled", "no"),               # string, not a JSON bool
+    ("retry_policy", "oops"),        # string, not a JSON object
+    ("dependencies", "oops"),        # string, not a JSON array
+    ("checkpoints", "oops"),         # string, not a JSON array
+])
+def test_hostile_typed_import_rejected_and_persists_nothing(
+    data_dir, bad_field, bad_value,
+):
+    from tinyassets.daemon_server import list_branch_definitions
+
+    spec = {
+        "name": f"hostile {bad_field}",
+        "entry_point": "n",
+        "node_defs": [{
+            "node_id": "n", "display_name": "N", "prompt_template": "x",
+            bad_field: bad_value,
+        }],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    }
+    out = json.loads(write_graph(target="design", artifact_json=json.dumps(spec)))
+    # Loud rejection that names the mis-typed field (hard rule 8).
+    assert out["status"] == "rejected", out
+    assert bad_field in json.dumps(out)
+    # And NOTHING persisted — no partial branch row for the rejected import.
+    assert f"hostile {bad_field}" not in {
+        b.get("name") for b in list_branch_definitions(data_dir)
+    }
+
+
+def test_string_bool_does_not_masquerade_as_sandboxed(data_dir):
+    # Direct guard for the exact regression: requires_sandbox="false" (a truthy
+    # non-empty string) must NOT slip in and list as has_sandbox_nodes=true.
+    from tinyassets.daemon_server import list_branch_definitions
+
+    spec = {
+        "name": "sneaky string bool",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x", "requires_sandbox": "false"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    }
+    out = json.loads(write_graph(target="design", artifact_json=json.dumps(spec)))
+    assert out["status"] == "rejected"
+    assert "sneaky string bool" not in {
+        b.get("name") for b in list_branch_definitions(data_dir)
+    }
+
+
+# ── Composite scope must not downgrade (Codex S2 adapt round 2, F2) ─────────
+
+
+def test_remix_design_requires_costly_scope():
+    from tinyassets.auth.provider import action_scope_for
+
+    # remix_design internally calls record_remix (costly) -> must be costly.
+    assert action_scope_for("extensions", "remix_design").effect == "costly"
+    assert action_scope_for("extensions", "record_remix").effect == "costly"
+    # Audited siblings: import_design composes build_branch (write) -> write;
+    # export_design is read-only.
+    assert action_scope_for("extensions", "import_design").effect == "write"
+    assert action_scope_for("extensions", "export_design").effect == "read"
+
+
 # ── Unknown target hygiene ─────────────────────────────────────────────────
 
 
