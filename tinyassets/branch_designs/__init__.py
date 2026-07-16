@@ -242,7 +242,8 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
             ]
 
             if not existing:
-                # Fresh install: the branch we just built IS the reference.
+                # Fresh install: the branch we just built IS the reference —
+                # promote it (it is the keeper; do NOT delete correct_id).
                 _publish_reference(base_path, correct_id, tag)
                 results["seeded"].append(tag)
                 logger.info(
@@ -250,30 +251,54 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 )
                 continue
 
-            if len(existing) > 1:
-                logger.warning(
-                    "reference design %s has %d rows; reconciling the first "
-                    "(remixes carry their own ids, so extras are cruft to review)",
-                    tag, len(existing),
-                )
-            target = existing[0]["branch_def_id"]
+            # Existing row(s): correct_id is a throwaway authoritative build
+            # used only as the drift/health reference. GUARANTEE its cleanup in
+            # a finally (Codex S1 round-6 Finding 2) — health-pass, repair
+            # success, AND repair failure. Otherwise a publish that raises AFTER
+            # _overwrite_reference_content leaves correct_id tagged, so the next
+            # healthy seed waves the design through as ``present`` while TWO
+            # design:...@v1 rows exist.
+            try:
+                target = existing[0]["branch_def_id"]
+                # Deterministically prune surplus tagged rows (e.g. a prior
+                # crash's leaked temp) so the reconcile converges to exactly one
+                # tagged reference — remixes carry their own ids, so any extra
+                # row still bearing the design tag is prior-seed cruft.
+                if len(existing) > 1:
+                    logger.warning(
+                        "reference design %s has %d extra tagged rows; pruning "
+                        "all but %s", tag, len(existing), target,
+                    )
+                    for extra in existing[1:]:
+                        delete_branch_definition(
+                            base_path, branch_def_id=extra["branch_def_id"],
+                        )
 
-            if _reference_row_is_healthy(base_path, expected_fp, target):
-                delete_branch_definition(base_path, branch_def_id=correct_id)  # discard temp
-                results["present"].append(tag)
-                continue
+                if _reference_row_is_healthy(base_path, expected_fp, target):
+                    results["present"].append(tag)
+                    continue
 
-            # Drifted or partially-published — repair in place from the
-            # authoritative build, then discard the temp build.
-            _overwrite_reference_content(base_path, target, correct_id)
-            _publish_reference(base_path, target, tag)
-            delete_branch_definition(base_path, branch_def_id=correct_id)
-            if _reference_row_is_healthy(base_path, expected_fp, target):
-                logger.info("repaired reference seed %s (content/publish)", tag)
-                results["seeded"].append(tag)
-            else:
-                logger.error("reference design %s could not be repaired", tag)
-                results["failed"].append(tag)
+                # Drifted or partially-published — repair in place from the
+                # authoritative build.
+                _overwrite_reference_content(base_path, target, correct_id)
+                _publish_reference(base_path, target, tag)
+                if _reference_row_is_healthy(base_path, expected_fp, target):
+                    logger.info("repaired reference seed %s (content/publish)", tag)
+                    results["seeded"].append(tag)
+                else:
+                    logger.error("reference design %s could not be repaired", tag)
+                    results["failed"].append(tag)
+            finally:
+                # Always discard the temp authoritative build. Best-effort: a
+                # cleanup failure must not mask the reconcile outcome or the
+                # loud outer failure log.
+                try:
+                    delete_branch_definition(base_path, branch_def_id=correct_id)
+                except Exception:  # noqa: BLE001 - cleanup is best-effort
+                    logger.exception(
+                        "reference design %s: temp build %s cleanup failed",
+                        tag, correct_id,
+                    )
         except Exception:  # noqa: BLE001 - seeding must never break startup
             logger.exception("reference design seed CRASHED for %s", tag)
             results["failed"].append(tag)

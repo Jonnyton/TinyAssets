@@ -236,6 +236,57 @@ def test_content_drift_is_repaired_not_present(data_dir):
     assert bdid in {b["branch_def_id"] for b in listed["branches"]}
 
 
+def test_publish_failure_after_overwrite_leaves_no_duplicate(data_dir, monkeypatch):
+    # Codex S1 round-6 Finding 2: if _publish_reference raises AFTER
+    # _overwrite_reference_content during repair, the temp authoritative build
+    # must STILL be cleaned up. Otherwise correct_id stays tagged and the next
+    # healthy seed reports `present` while TWO design:...@v1 rows exist.
+    import tinyassets.branch_designs as bd
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        list_branch_definitions,
+        save_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    bdid = list_branch_definitions(data_dir, tag=tag)[0]["branch_def_id"]
+
+    # Drift the row so the next seed takes the REPAIR path (overwrite+publish).
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=bdid)
+    )
+    branch.node_defs[0].prompt_template = "CORRUPTED SAME-SIZED REFERENCE"
+    save_branch_definition(data_dir, branch_def=branch.to_dict())
+
+    # Make publish blow up AFTER the in-place overwrite step.
+    def _boom(*a, **k):
+        raise RuntimeError("publish exploded mid-repair")
+
+    monkeypatch.setattr(bd, "_publish_reference", _boom)
+    results = seed_reference_designs(data_dir)
+
+    assert tag in results["failed"]                  # loud, contained
+    # The temp build was cleaned up in the finally — exactly one tagged row.
+    rows = list_branch_definitions(data_dir, tag=tag)
+    assert len(rows) == 1, [r["branch_def_id"] for r in rows]
+    assert rows[0]["branch_def_id"] == bdid
+
+    # Un-patch: the next seed reconciles cleanly — the content was already
+    # repaired in place before publish raised, so the row is healthy — and it
+    # must NEVER report present-with-duplicates. Exactly one tagged row.
+    monkeypatch.undo()
+    healed = seed_reference_designs(data_dir)
+    assert tag not in healed["failed"], healed
+    rows2 = list_branch_definitions(data_dir, tag=tag)
+    assert len(rows2) == 1
+    assert rows2[0]["branch_def_id"] == bdid
+    # The single surviving row is healthy: it carries a published version.
+    assert list_branch_versions(data_dir, bdid, limit=1)
+
+
 def test_wiki_file_bug_goal_canonical_only_queues(data_dir, monkeypatch):
     # Codex S1 review critical: goal-canonical must resolve against the CANONICAL
     # root, so a root goal canonical queues an investigation on the real

@@ -29,7 +29,8 @@
       {
         "node_id": "verify",
         "display_name": "Verify (tests / checks)",
-        "prompt_template": "Run the project's verification for the drafted patch using verify_command={verify_command} against the patch branch. Report verdict=green when all checks pass, verdict=red with the failure detail otherwise. Patch: {draft_patch_output}"
+        "output_keys": ["verdict", "verify_output"],
+        "prompt_template": "Run the project's verification for the drafted patch using verify_command={verify_command} against the patch branch. Decide the routing verdict: set verdict to EXACTLY the single lowercase word green when ALL checks pass, or EXACTLY the single lowercase word red when ANY check fails, errors, or is inconclusive. The graph routes a red verdict straight back to draft_patch for another attempt and forwards ONLY a green verdict to open the pull request, so never emit green unless verification actually passed. Put the full pass/fail detail (command output, which checks failed) in verify_output. Patch: {draft_patch_output}"
       },
       {
         "node_id": "present",
@@ -39,7 +40,8 @@
       {
         "node_id": "owner_gate",
         "display_name": "Owner review gate (merge policy)",
-        "prompt_template": "Apply the owner's merge_policy={merge_policy} to the queued PR. manual: wait for the owner's decision (approve / reshape / reject); when the policy requires owner-OAuth-per-merge, a fresh authenticated approval is mandatory — never a standing consent. auto: proceed only if verify is green. timer: proceed after the configured delay unless held. On reshape, capture the owner's notes into reshape_notes and route back to draft_patch. Decision context: {present_output}"
+        "output_keys": ["decision", "reshape_notes", "owner_gate_output"],
+        "prompt_template": "Apply the owner's merge_policy={merge_policy} to the queued PR. manual: wait for the owner's decision; when the policy requires owner-OAuth-per-merge, a fresh authenticated approval is mandatory — never a standing consent. auto: proceed only if verify is green. timer: proceed after the configured delay unless held. Set decision to EXACTLY one lowercase word: approve (merge the PR), reshape (send back for changes), or reject (abandon). The graph routes approve to merge, reshape back to draft_patch, and reject to END, so emit approve ONLY on a genuine owner approval. On reshape, put the owner's send-back notes in reshape_notes (empty string otherwise) — draft_patch reads them on the next pass. Put the human-readable decision summary in owner_gate_output. Decision context: {present_output}"
       },
       {
         "node_id": "merge",
@@ -58,11 +60,11 @@
     "conditional_edges": [
       {
         "from": "verify",
-        "conditions": {"green": "present", "red": "draft_patch"}
+        "conditions": {"red": "draft_patch", "green": "present"}
       },
       {
         "from": "owner_gate",
-        "conditions": {"approve": "merge", "reshape": "draft_patch", "reject": "END"}
+        "conditions": {"reject": "END", "reshape": "draft_patch", "approve": "merge"}
       }
     ],
     "state_schema": [
@@ -76,8 +78,10 @@
       {"name": "intake_output", "type": "str"},
       {"name": "investigate_output", "type": "str"},
       {"name": "draft_patch_output", "type": "str"},
+      {"name": "verdict", "type": "str"},
       {"name": "verify_output", "type": "str"},
       {"name": "present_output", "type": "str"},
+      {"name": "decision", "type": "str"},
       {"name": "owner_gate_output", "type": "str"},
       {"name": "merge_output", "type": "str"}
     ]

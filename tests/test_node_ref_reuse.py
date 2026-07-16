@@ -258,6 +258,74 @@ class TestExplicitNodeRefCopiesCanonicalBody:
         assert nd["prompt_template"] == "audit: {x}"
         assert nd["description"] == "canonical audit node"
 
+    def test_node_ref_copies_requires_sandbox_from_branch_source(self, ext_env):
+        # Codex S1 round-6 Finding 3: _lookup_node_body dropped requires_sandbox,
+        # so node_ref-copying a sandbox-requiring coding node silently persisted
+        # False on the copy — an unsandboxed run of code meant to be confined.
+        us, base = ext_env
+        source_spec = {
+            "name": "sandbox-source",
+            "entry_point": "coder",
+            "node_defs": [{
+                "node_id": "coder",
+                "display_name": "Coder",
+                "prompt_template": "code: {x}",
+                "requires_sandbox": True,
+            }],
+            "edges": [
+                {"from": "START", "to": "coder"},
+                {"from": "coder", "to": "END"},
+            ],
+            "state_schema": [{"name": "x", "type": "str"}],
+        }
+        source = _call(us, "extensions", "build_branch",
+                       spec_json=json.dumps(source_spec))
+        assert source["status"] == "built", source
+        source_bid = source["branch_def_id"]
+
+        target_spec = {
+            "name": "sandbox-target",
+            "entry_point": "coder",
+            "node_defs": [{
+                "node_id": "coder",
+                "display_name": "",
+                "node_ref": {"source": source_bid, "node_id": "coder"},
+            }],
+            "edges": [
+                {"from": "START", "to": "coder"},
+                {"from": "coder", "to": "END"},
+            ],
+            "state_schema": [{"name": "x", "type": "str"}],
+        }
+        target = _call(us, "extensions", "build_branch",
+                       spec_json=json.dumps(target_spec))
+        assert target["status"] == "built", target
+
+        from tinyassets.daemon_server import get_branch_definition
+        branch = get_branch_definition(base, branch_def_id=target["branch_def_id"])
+        nd = next(n for n in branch["node_defs"] if n["node_id"] == "coder")
+        assert nd["requires_sandbox"] is True, nd
+
+    def test_lookup_node_body_standalone_carries_requires_sandbox(
+        self, ext_env, monkeypatch,
+    ):
+        # The standalone-source half of the same fix: a registered node with
+        # requires_sandbox=True must copy the flag into the looked-up body.
+        from tinyassets.api import branches as br
+
+        monkeypatch.setattr(
+            "tinyassets.api.extensions._load_nodes",
+            lambda: [{
+                "node_id": "sandboxed_tool",
+                "display_name": "Sandboxed Tool",
+                "requires_sandbox": True,
+                "source_code": "def run(state): return state\n",
+            }],
+        )
+        body, err = br._lookup_node_body("standalone", "sandboxed_tool")
+        assert err == "", err
+        assert body["requires_sandbox"] is True, body
+
     def test_build_branch_node_ref_preserves_standalone_approval(
         self, ext_env, monkeypatch,
     ):

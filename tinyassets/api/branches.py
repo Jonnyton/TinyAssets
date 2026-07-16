@@ -1539,6 +1539,7 @@ def _lookup_node_body(
             "strict_input_isolation": bool(
                 hit.get("strict_input_isolation", True),
             ),
+            "requires_sandbox": bool(hit.get("requires_sandbox", False)),
             "source_code": hit.get("source_code", ""),
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
@@ -1574,6 +1575,7 @@ def _lookup_node_body(
                 "strict_input_isolation": bool(
                     nd.get("strict_input_isolation", True),
                 ),
+                "requires_sandbox": bool(nd.get("requires_sandbox", False)),
                 "source_code": nd.get("source_code", ""),
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
