@@ -62,6 +62,115 @@ def load_design_artifacts() -> list[dict[str, Any]]:
     return artifacts
 
 
+def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> None:
+    """Publish a seeded reference for discovery/remix. Idempotent.
+
+    Two steps, mirroring the user patch_branch flow exactly (Codex S1 review):
+    round-trip through BranchDefinition (a raw row re-save drops the graph
+    topology), and mint a PUBLISHED BRANCH VERSION — the published listing
+    filters on versions, not the bare flag. ``publish_branch_version`` dedupes
+    by content hash, so re-publishing a healthy reference is a no-op.
+    """
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        save_branch_definition,
+    )
+
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(base_path, branch_def_id=branch_def_id)
+    )
+    branch.published = True
+    saved = save_branch_definition(base_path, branch_def=branch.to_dict())
+    publish_branch_version(
+        base_path, saved, publisher="reference-designs",
+        notes=f"reference design seed {tag}",
+    )
+
+
+def _topology_matches(base_path: str | Path, artifact: dict, branch_def_id: str) -> bool:
+    """True when the persisted branch's graph matches the artifact spec.
+
+    Topology is stored as an embedded graph blob, so the raw registry row's
+    top-level ``edges``/``conditional_edges`` are empty — the real counts come
+    from ``BranchDefinition.from_dict`` (which rebuilds them). Always load the
+    FULL row (``get_branch_definition``), never a lightweight list summary.
+    """
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+
+    spec = artifact["spec"]
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(base_path, branch_def_id=branch_def_id)
+    )
+    return (
+        len(branch.node_defs) == len(spec.get("node_defs") or [])
+        and len(branch.edges) == len(spec.get("edges") or [])
+        and len(branch.conditional_edges) == len(spec.get("conditional_edges") or [])
+    )
+
+
+def _reference_is_healthy(base_path: str | Path, artifact: dict, row: dict) -> bool:
+    """A seeded reference is healthy only when it is fully remixable-in-commons:
+    topology intact (matches the artifact), ``published`` set, and at least one
+    published branch version exists (the published listing filters on versions).
+    """
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import get_branch_definition
+
+    branch_def_id = row.get("branch_def_id", "")
+    if not branch_def_id:
+        return False
+    if not _topology_matches(base_path, artifact, branch_def_id):
+        return False
+    # published flag comes from the FULL row (list summaries may omit it).
+    full = get_branch_definition(base_path, branch_def_id=branch_def_id)
+    if not full.get("published"):
+        return False
+    return bool(list_branch_versions(base_path, branch_def_id, limit=1))
+
+
+def _ensure_seeded_reference_healthy(
+    base_path: str | Path, artifact: dict, existing: list[dict],
+) -> str:
+    """Repair a partial/incomplete prior seed in place. Returns the result key.
+
+    - ``present`` — already healthy, nothing to do.
+    - ``seeded`` — was incomplete (crashed mid-seed) and repaired in place.
+    - ``failed`` — corrupt beyond in-place repair (e.g. topology was dropped by
+      a pre-fix seed); logged loudly for operator attention, no duplicate row.
+    """
+    tag = design_tag(artifact["design_id"], artifact["design_version"])
+    if len(existing) > 1:
+        logger.warning(
+            "reference design %s has %d rows (expected 1); repairing the first",
+            tag, len(existing),
+        )
+    row = existing[0]
+    if _reference_is_healthy(base_path, artifact, row):
+        return "present"
+
+    # Topology intact but publish incomplete → re-publish in place (idempotent).
+    from tinyassets.daemon_server import get_branch_definition
+
+    if _topology_matches(base_path, artifact, row["branch_def_id"]):
+        _publish_reference(base_path, row["branch_def_id"], tag)
+        if _reference_is_healthy(
+            base_path, artifact,
+            get_branch_definition(base_path, branch_def_id=row["branch_def_id"]),
+        ):
+            logger.info("repaired incomplete reference seed: %s", tag)
+            return "seeded"
+
+    logger.error(
+        "reference design %s exists but is corrupt (topology dropped) and "
+        "cannot be repaired in place; leaving for operator",
+        tag,
+    )
+    return "failed"
+
+
 def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
     """Idempotently ensure every packaged reference design exists in the commons.
 
@@ -70,10 +179,8 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
     take down server startup (the canary + logs surface it).
     """
     from tinyassets.daemon_server import (
-        get_branch_definition,
         initialize_author_server,
         list_branch_definitions,
-        save_branch_definition,
     )
 
     results: dict[str, list[str]] = {"seeded": [], "present": [], "failed": []}
@@ -89,7 +196,15 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
         try:
             existing = list_branch_definitions(base_path, tag=tag)
             if existing:
-                results["present"].append(tag)
+                # Idempotency must not skip REPAIR: a prior seed that crashed
+                # after the branch build but before publish/version leaves a
+                # tagged row that never appears in the published listing. Verify
+                # health and repair in place before treating it as present
+                # (Codex S1 review).
+                outcome = _ensure_seeded_reference_healthy(
+                    base_path, artifact, existing,
+                )
+                results[outcome].append(tag)
                 continue
 
             spec = dict(artifact["spec"])
@@ -110,29 +225,7 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 results["failed"].append(tag)
                 continue
 
-            # Publish the reference so it is discoverable/remixable commons
-            # content. Two steps, mirroring the user patch_branch flow exactly
-            # (Codex S1 review): round-trip through BranchDefinition (a raw
-            # row re-save drops the graph topology), and mint a PUBLISHED
-            # BRANCH VERSION — the published listing filters on versions, not
-            # the bare flag.
-            from tinyassets.branch_versions import publish_branch_version
-            from tinyassets.branches import BranchDefinition
-
-            row = get_branch_definition(
-                base_path, branch_def_id=out["branch_def_id"],
-            )
-            branch = BranchDefinition.from_dict(row)
-            branch.published = True
-            saved = save_branch_definition(
-                base_path, branch_def=branch.to_dict(),
-            )
-            publish_branch_version(
-                base_path,
-                saved,
-                publisher="reference-designs",
-                notes=f"reference design seed {tag}",
-            )
+            _publish_reference(base_path, out["branch_def_id"], tag)
             results["seeded"].append(tag)
             logger.info(
                 "reference design seeded: %s -> branch_def_id=%s",

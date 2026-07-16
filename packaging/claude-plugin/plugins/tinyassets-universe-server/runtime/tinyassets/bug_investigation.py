@@ -376,19 +376,24 @@ def resolve_investigation_handler_detail(
       filing itself persists.
     - ``("", "not_configured")`` — no goal binding and no env fallback set.
     """
-    dead: list[str] = []
-    for candidate in _iter_handler_candidates(base_path):
-        if _handler_branch_exists(base_path, candidate):
-            return candidate, "ok"
-        dead.append(candidate)
-        _logger.error(
-            "resolve_investigation_handler | resolved handler %s does NOT "
-            "exist in the branch registry (dead ref) — refusing to enqueue",
-            candidate,
-        )
-    if dead:
-        return "", "handler_not_found:" + ",".join(dead)
-    return "", "not_configured"
+    # The FIRST yielded candidate is the AUTHORITATIVE handler for this filing
+    # (goal-canonical when a goal is configured with a canonical, else the env
+    # fallback). A dead authoritative handler must FAIL the trigger — it must
+    # NOT fall through to a different handler, or a misconfigured goal canonical
+    # would silently run the wrong investigation branch (Codex S1 review; G4).
+    # The env fallback is only reached when the goal path yields no candidate at
+    # all (not when its canonical resolves to a dead ref).
+    primary = next(_iter_handler_candidates(base_path), None)
+    if primary is None:
+        return "", "not_configured"
+    if _handler_branch_exists(base_path, primary):
+        return primary, "ok"
+    _logger.error(
+        "resolve_investigation_handler | authoritative handler %s does NOT "
+        "exist in the branch registry (dead ref) — refusing to enqueue",
+        primary,
+    )
+    return "", "handler_not_found:" + primary
 
 
 def _resolve_investigation_handler(base_path: "Path | str") -> str:

@@ -137,6 +137,47 @@ def test_seeded_reference_is_discoverable_in_published_listing(data_dir):
     assert bdid in ids, listed
 
 
+def test_seed_repairs_incomplete_prior_seed(data_dir):
+    # Codex S1 review: a prior seed that crashed after branch build but before
+    # publish leaves a tagged row that never appears in the published listing.
+    # The next seed must REPAIR it in place, not skip it as "present".
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_list
+    from tinyassets.branch_designs import REFERENCE_TAG
+    from tinyassets.daemon_server import initialize_author_server, list_branch_definitions
+
+    initialize_author_server(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    artifact = next(
+        a for a in load_design_artifacts()
+        if a["design_id"] == "patch_loop_reference"
+    )
+    # Simulate a crash-after-build: build + tag, but DO NOT publish a version.
+    spec = dict(artifact["spec"])
+    spec["tags"] = sorted(set(list(spec.get("tags") or []) + [REFERENCE_TAG, tag]))
+    out = json.loads(_ext_branch_build({"spec_json": json.dumps(spec)}))
+    assert out["status"] == "built"
+    # Not in the published listing yet (no version) — the broken state.
+    pre = json.loads(_ext_branch_list({"scope": "published"}))
+    assert out["branch_def_id"] not in {b["branch_def_id"] for b in pre["branches"]}
+
+    # Re-seed repairs it in place (same id, now published + versioned).
+    results = seed_reference_designs(data_dir)
+    assert tag in results["seeded"]              # repaired, not skipped as present
+    rows = list_branch_definitions(data_dir, tag=tag)
+    assert len(rows) == 1                        # no duplicate row minted
+    assert rows[0]["branch_def_id"] == out["branch_def_id"]
+    post = json.loads(_ext_branch_list({"scope": "published"}))
+    assert out["branch_def_id"] in {b["branch_def_id"] for b in post["branches"]}
+
+
+def test_reseed_after_healthy_is_present_not_reseeded(data_dir):
+    seed_reference_designs(data_dir)
+    again = seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    assert tag in again["present"]               # healthy -> present, no rework
+    assert again["seeded"] == []
+
+
 def test_seed_reference_designs_is_idempotent(data_dir):
     from tinyassets.daemon_server import list_branch_definitions
 
@@ -202,6 +243,48 @@ def test_resolver_accepts_existing_handler(data_dir, monkeypatch):
     resolved, reason = resolve_investigation_handler_detail(data_dir)
     assert resolved == bdid
     assert reason == "ok"
+
+
+def test_dead_goal_canonical_does_not_fall_through_to_env(data_dir, monkeypatch):
+    # Codex S1 review critical: if the goal-canonical (authoritative) handler
+    # resolves to a DEAD branch, the trigger must FAIL — it must NOT silently
+    # fall through to a live env fallback (which would run the wrong branch).
+    from unittest.mock import patch
+
+    from tinyassets.bug_investigation import resolve_investigation_handler_detail
+    from tinyassets.daemon_server import list_branch_definitions, save_goal
+
+    seed_reference_designs(data_dir)
+    live = list_branch_definitions(
+        data_dir, tag=design_tag("patch_loop_reference", 1),
+    )[0]["branch_def_id"]
+
+    # A goal whose canonical resolves to a DEAD branch def, plus a LIVE env
+    # fallback. Stub the canonical resolver to return the dead ref (the goal's
+    # canonical binding pointing at a since-deleted branch) so the test targets
+    # the resolver's fall-through behavior, not goal/version plumbing.
+    save_goal(data_dir, goal=dict(
+        goal_id="g-inv", name="inv", description="",
+        author="host", tags=[], visibility="public",
+    ))
+    with patch(
+        "tinyassets.api.canonical_dispatch.resolve_canonical_for_run",
+        return_value={"ok": True, "branch_def_id": "deadbranch000",
+                      "branch_version_id": "deadversion", "source": "canonical"},
+    ):
+        monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g-inv")
+        monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", live)
+        bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""                             # fails, does NOT use live env
+    assert reason.startswith("handler_not_found:")
+    assert live not in reason
+    return
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", live)
+
+    bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""                             # fails, does NOT use live env
+    assert reason.startswith("handler_not_found:")
+    assert live not in reason
 
 
 def test_resolver_not_configured(data_dir, monkeypatch):
