@@ -31,6 +31,7 @@ from typing import Any
 from tinyassets.storage.review_queue import (
     InvalidReviewTransition,
     MergeInProgress,
+    ReviewHeadChanged,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,14 @@ def _merge_in_progress(exc: MergeInProgress) -> str:
     return json.dumps({
         "error": str(exc),
         "failure_class": "merge_in_progress",
+        "actionable_by": "chatbot",
+    })
+
+
+def _head_changed(exc: ReviewHeadChanged) -> str:
+    return json.dumps({
+        "error": str(exc),
+        "failure_class": "head_changed",
         "actionable_by": "chatbot",
     })
 
@@ -108,10 +117,23 @@ def _action_review_queue_list(kwargs: dict[str, Any]) -> str:
 def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
     universe_id = (kwargs.get("universe_id") or "").strip()
     item_id = (kwargs.get("item_id") or "").strip()
+    expected_head_sha = (kwargs.get("expected_head_sha") or "").strip()
     if not item_id:
         return json.dumps({
             "error": "review_queue_approve requires 'item_id'",
             "failure_class": "missing_item_id",
+            "actionable_by": "chatbot",
+        })
+    # Approve is the credential-minting path → REQUIRE the head the owner saw
+    # (Fable F1), so an approval can't silently apply to a re-pushed head.
+    if not expected_head_sha:
+        return json.dumps({
+            "error": (
+                "review_queue_approve requires 'expected_head_sha' — the "
+                "head_sha you reviewed (from review_queue_list); it head-binds "
+                "the approval so it can't apply to a re-pushed head"
+            ),
+            "failure_class": "missing_expected_head_sha",
             "actionable_by": "chatbot",
         })
     target_universe, err = _owner_gate("review_queue_approve", universe_id)
@@ -119,14 +141,34 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         return json.dumps(err)
     notes = kwargs.get("notes") or ""
     try:
-        from tinyassets.storage.review_queue import approve_item
+        from tinyassets.storage.review_queue import approve_item, get_item
+
+        # C4: minting a founder-OAuth-per-merge approval requires the universe
+        # OWNER/founder, not ordinary write scope. Check the durable item's
+        # governing flag first.
+        existing = get_item(_universe_dir_for(target_universe), item_id=item_id)
+        if existing is not None and existing.get("founder_oauth_per_merge"):
+            from tinyassets.api.permissions import current_actor_is_universe_owner
+
+            if not current_actor_is_universe_owner(target_universe):
+                return json.dumps({
+                    "error": (
+                        "this PR requires a founder-OAuth-per-merge approval; "
+                        "only the universe owner/founder may mint it"
+                    ),
+                    "failure_class": "owner_required",
+                    "actionable_by": "user",
+                })
 
         item = approve_item(
             _universe_dir_for(target_universe),
             item_id=item_id,
             approved_by=_current_actor(),
             notes=notes,
+            expected_head_sha=expected_head_sha,
         )
+    except ReviewHeadChanged as exc:
+        return _head_changed(exc)
     except MergeInProgress as exc:
         return _merge_in_progress(exc)
     except InvalidReviewTransition as exc:
@@ -166,6 +208,7 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_notes",
             "actionable_by": "chatbot",
         })
+    expected_head_sha = (kwargs.get("expected_head_sha") or "").strip() or None
     target_universe, err = _owner_gate("review_queue_reshape", universe_id)
     if err is not None:
         return json.dumps(err)
@@ -177,7 +220,10 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             item_id=item_id,
             reshaped_by=_current_actor(),
             notes=notes,
+            expected_head_sha=expected_head_sha,
         )
+    except ReviewHeadChanged as exc:
+        return _head_changed(exc)
     except MergeInProgress as exc:
         return _merge_in_progress(exc)
     except InvalidReviewTransition as exc:
@@ -207,6 +253,7 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_item_id",
             "actionable_by": "chatbot",
         })
+    expected_head_sha = (kwargs.get("expected_head_sha") or "").strip() or None
     target_universe, err = _owner_gate("review_queue_reject", universe_id)
     if err is not None:
         return json.dumps(err)
@@ -219,7 +266,10 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             item_id=item_id,
             rejected_by=_current_actor(),
             notes=notes,
+            expected_head_sha=expected_head_sha,
         )
+    except ReviewHeadChanged as exc:
+        return _head_changed(exc)
     except MergeInProgress as exc:
         return _merge_in_progress(exc)
     except InvalidReviewTransition as exc:

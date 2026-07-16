@@ -1,10 +1,15 @@
-"""Per-remix merge policy for the patch loop — S4 (G6).
+"""Merge-policy evaluator for the REFERENCE patch loop — S4 (G6).
 
-A remixed patch loop binds a **merge policy** as loop state (never a
-platform-global setting): it governs *when* a queued, owner-reviewable PR
-actually merges.
+This is **not** a platform-wide merge-policy enum. It is the policy evaluator
+that the reference ``patch_loop_reference`` design ships with; a remix binds a
+merge policy as loop state and this evaluator interprets it. Per the reference
+design note ("no implied platform merge-policy enum"), evaluation is
+**data-driven over the policy string** — a policy this reference evaluator does
+not recognize returns a structured ``unsupported_policy`` decision (extensible
+per-remix), never a hard platform contract that manual/auto/timer are the only
+policies that can ever exist (Codex R6 C5).
 
-Three policies:
+The three policies this reference evaluator understands:
 
 - ``manual`` (default) — a PR merges only after the owner explicitly approves
   it on the review queue.
@@ -27,8 +32,9 @@ be present (minted by ``review_queue.approve_item``, consumed at merge). See
 
 This module is pure (no IO): callers supply the resolved facts (verdict,
 status, timer facts, whether a fresh approval is present) and receive an
-eligibility decision. The effector (``effectors/github_merge.py``) wires it to
-storage + the live PR head.
+eligibility decision. The effector (``effectors/github_merge.py``) resolves the
+GOVERNING policy from durable queue state (not the caller's packet) and wires
+this evaluator to storage + the live PR head.
 """
 
 from __future__ import annotations
@@ -56,25 +62,42 @@ TIMER_DELAY_STATE_FIELD = "merge_timer_delay_s"
 #: The only green verify verdict. Anything else (fail / unknown / empty) blocks.
 _VERIFY_GREEN = "pass"
 
+#: Strictness rank for narrowing a caller-supplied policy against the governing
+#: durable policy — a higher rank is MORE restrictive (requires more before a
+#: merge). A caller (packet) may only narrow toward a stricter policy, never
+#: loosen (Codex R6 C1). Policies outside this map are unknown to this reference
+#: evaluator and are not rankable (treated as least-narrowing).
+_POLICY_STRICTNESS: dict[str, int] = {
+    MERGE_POLICY_AUTO: 0,
+    MERGE_POLICY_TIMER: 1,
+    MERGE_POLICY_MANUAL: 2,
+}
+
 
 def normalize_policy(value: Any) -> str:
-    """Return a validated policy string.
+    """Return the policy string lowercased/trimmed; empty/None → the ``manual``
+    default.
 
-    Empty / None resolves to the ``manual`` default. An unknown non-empty value
-    is a contract violation — a remix that binds ``merge_policy="yolo"`` must
-    fail loud (hard rule 8), not silently degrade to a permissive mode.
+    Does NOT raise on an unrecognized policy — this reference evaluator is
+    data-driven and extensible (Codex R6 C5). An unknown policy is returned
+    as-is; :func:`evaluate_merge_eligibility` fails it closed with
+    ``unsupported_policy``.
     """
     if value is None:
         return DEFAULT_MERGE_POLICY
     text = str(value).strip().lower()
-    if not text:
-        return DEFAULT_MERGE_POLICY
-    if text not in MERGE_POLICIES:
-        raise ValueError(
-            f"unknown merge policy {value!r}; must be one of "
-            f"{sorted(MERGE_POLICIES)}"
-        )
-    return text
+    return text or DEFAULT_MERGE_POLICY
+
+
+def is_at_least_as_strict(candidate: Any, floor: Any) -> bool:
+    """Return True iff ``candidate`` policy is at least as restrictive as the
+    ``floor`` (governing) policy — i.e. the caller narrowed, did not loosen.
+    Unknown policies are unrankable and return False (cannot narrow)."""
+    c = _POLICY_STRICTNESS.get(normalize_policy(candidate))
+    f = _POLICY_STRICTNESS.get(normalize_policy(floor))
+    if c is None or f is None:
+        return False
+    return c >= f
 
 
 def verify_is_green(verify_verdict: Any) -> bool:
@@ -117,6 +140,14 @@ def evaluate_merge_eligibility(
        present regardless of policy.
     """
     resolved_policy = normalize_policy(policy)
+
+    # A policy this reference evaluator does not recognize fails closed with a
+    # structured error — extensible per-remix, not a hard platform enum (C5).
+    if resolved_policy not in MERGE_POLICIES:
+        return _blocked(
+            "unsupported_policy",
+            policy=resolved_policy,
+        )
 
     if not verify_is_green(verify_verdict):
         return _blocked(

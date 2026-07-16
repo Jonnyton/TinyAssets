@@ -1500,6 +1500,46 @@ def run_github_pr_effector(
             # already exists; flag the inconsistency so the operator
             # can spot it without us masking the successful write.
             evidence["receipt_finalize_failed"] = True
+
+    # -- Owner review queue (patch-loop present node) --
+    # Codex R6 C3: a patch-loop `present` node opts in by attaching a
+    # ``review_queue`` block to the packet payload (verify verdict + governing
+    # merge policy + resume identity). On a successful PR open we enqueue the PR
+    # onto the owner review queue, carrying the resume identity (universe_id /
+    # branch_def_id / run_id) the loop needs to act on an owner decision.
+    # Best-effort: the PR already exists on GitHub, so a queue-write failure is
+    # surfaced in evidence, never raised.
+    rq_cfg = payload.get("review_queue")
+    if (
+        isinstance(rq_cfg, dict)
+        and universe_dir is not None
+        and isinstance(invocation.get("pr_number"), int)
+    ):
+        try:
+            from tinyassets.storage import review_queue as _rq
+
+            item = _rq.enqueue_pr(
+                universe_dir,
+                destination=destination,
+                pr_number=invocation["pr_number"],
+                pr_url=invocation["pr_url"],
+                head_sha=str(materialize.get("commit_sha") or ""),
+                request_ref=str(rq_cfg.get("request_ref") or ""),
+                verify_verdict=str(
+                    rq_cfg.get("verify_verdict") or _rq.VERIFY_UNKNOWN
+                ),
+                merge_policy=str(rq_cfg.get("merge_policy") or "manual"),
+                founder_oauth_per_merge=bool(rq_cfg.get("founder_oauth_per_merge")),
+                merge_timer_delay_s=float(rq_cfg.get("merge_timer_delay_s") or 0.0),
+                universe_id=str(rq_cfg.get("universe_id") or ""),
+                branch_def_id=str(rq_cfg.get("branch_def_id") or ""),
+                run_id=run_id or "",
+            )
+            evidence["review_queue_item_id"] = item.get("item_id")
+            evidence["review_queue_status"] = item.get("status")
+        except Exception as exc:  # noqa: BLE001 — never fail a landed PR open
+            evidence["review_queue_enqueue_error"] = str(exc)
+
     return evidence
 
 

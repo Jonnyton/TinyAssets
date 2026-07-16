@@ -29,10 +29,23 @@ Schema (per-universe, file ``${universe_dir}/.review_queue.db``):
         head_sha       TEXT NOT NULL DEFAULT '',
         request_ref    TEXT NOT NULL DEFAULT '',  -- originating user-request id
         verify_verdict TEXT NOT NULL DEFAULT 'unknown',  -- pass|fail|unknown
-        status         TEXT NOT NULL,   -- pending|approved|reshaped|rejected|merged
+        -- status: pending|approved|merging|reshaped|rejected|merged
+        -- (`merging` is the in-flight merge-claim state)
+        status         TEXT NOT NULL,
         notes          TEXT NOT NULL DEFAULT '',
+        merge_commit_sha TEXT NOT NULL DEFAULT '',   -- set on merged
+        -- Governing merge policy (TRUSTED durable state; effector resolves here)
+        merge_policy   TEXT NOT NULL DEFAULT 'manual',
+        founder_oauth_per_merge INTEGER NOT NULL DEFAULT 0,
+        merge_timer_delay_s REAL NOT NULL DEFAULT 0,
+        -- Resume identity (lets the loop act on an owner decision)
+        universe_id    TEXT NOT NULL DEFAULT '',
+        branch_def_id  TEXT NOT NULL DEFAULT '',
+        run_id         TEXT NOT NULL DEFAULT '',
         created_at     REAL NOT NULL,
-        updated_at     REAL NOT NULL,
+        head_queued_at REAL NOT NULL DEFAULT 0,   -- per-head timer clock
+        merge_claimed_at REAL,                    -- set while status='merging'
+        updated_at     REAL NOT NULL,             -- row-version generation token
         decided_by     TEXT NOT NULL DEFAULT '',
         decided_at     REAL
     );
@@ -56,6 +69,7 @@ That is the concrete difference from a standing consent grant.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import threading
 import time
@@ -101,6 +115,13 @@ class InvalidReviewTransition(ValueError):
 class MergeInProgress(ValueError):
     """Raised when an owner decision is attempted on an item with a fresh
     (non-stale) ``merging`` claim — a merge PUT is in flight for it."""
+
+
+class ReviewHeadChanged(ValueError):
+    """Raised when an owner decision names an ``expected_head_sha`` that no
+    longer matches the item's current head — the PR was re-pushed since the
+    owner saw it, so the decision must not silently apply to unseen content
+    (Fable F1)."""
 
 #: Verify verdicts. Only ``"pass"`` is green; everything else blocks merge.
 VERIFY_PASS = "pass"
@@ -178,6 +199,17 @@ CREATE TABLE IF NOT EXISTS review_queue (
     status         TEXT NOT NULL,
     notes          TEXT NOT NULL DEFAULT '',
     merge_commit_sha TEXT NOT NULL DEFAULT '',
+    -- Merge-policy config: the TRUSTED DURABLE governing policy (the present
+    -- node writes it from loop state). The merge effector resolves policy from
+    -- HERE, not the packet — a packet may only narrow it (Codex R6 C1).
+    merge_policy   TEXT NOT NULL DEFAULT 'manual',
+    founder_oauth_per_merge INTEGER NOT NULL DEFAULT 0,
+    merge_timer_delay_s REAL NOT NULL DEFAULT 0,
+    -- Resume identity: what the loop needs to act on an owner decision without
+    -- new run machinery (Codex R6 C3).
+    universe_id    TEXT NOT NULL DEFAULT '',
+    branch_def_id  TEXT NOT NULL DEFAULT '',
+    run_id         TEXT NOT NULL DEFAULT '',
     created_at     REAL NOT NULL,
     head_queued_at REAL NOT NULL DEFAULT 0,
     merge_claimed_at REAL,
@@ -242,6 +274,12 @@ def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
         "status": row["status"],
         "notes": row["notes"],
         "merge_commit_sha": row["merge_commit_sha"],
+        "merge_policy": row["merge_policy"],
+        "founder_oauth_per_merge": bool(row["founder_oauth_per_merge"]),
+        "merge_timer_delay_s": row["merge_timer_delay_s"],
+        "universe_id": row["universe_id"],
+        "branch_def_id": row["branch_def_id"],
+        "run_id": row["run_id"],
         "created_at": row["created_at"],
         "head_queued_at": row["head_queued_at"],
         "merge_claimed_at": row["merge_claimed_at"],
@@ -260,6 +298,12 @@ def enqueue_pr(
     head_sha: str = "",
     request_ref: str = "",
     verify_verdict: str = VERIFY_UNKNOWN,
+    merge_policy: str = "manual",
+    founder_oauth_per_merge: bool = False,
+    merge_timer_delay_s: float = 0.0,
+    universe_id: str = "",
+    branch_def_id: str = "",
+    run_id: str = "",
     now: float | None = None,
 ) -> dict[str, Any]:
     """Record a loop-produced PR as ``pending`` on the owner's review queue.
@@ -269,6 +313,12 @@ def enqueue_pr(
     (e.g. after a re-push) refreshes ``head_sha`` / ``verify_verdict`` and
     resets the item to ``pending`` so the owner re-reviews the new head, but
     keeps the original ``item_id`` + ``created_at``.
+
+    The **governing merge policy** (``merge_policy`` / ``founder_oauth_per_merge``
+    / ``merge_timer_delay_s``) and the **resume identity** (``universe_id`` /
+    ``branch_def_id`` / ``run_id``) are stored on the item: the merge effector
+    resolves policy from HERE (trusted durable state), and the loop reads the
+    resume identity to act on an owner decision (Codex R6 C1/C3).
 
     **Terminal-decision safety (Codex R3 CRITICAL 1):** re-presenting the SAME
     head of an item the owner already decided (``reshaped`` / ``rejected`` /
@@ -281,10 +331,12 @@ def enqueue_pr(
     from: it is reset to ``now`` whenever ``head_sha`` changes (initial enqueue
     or a re-push to a new head), so a freshly-pushed head is not instantly
     timer-eligible off the first-ever enqueue timestamp (Codex R2 REQUIRED 2).
-    Re-presenting the SAME head keeps the existing ``head_queued_at``.
+    Re-presenting the SAME head keeps the existing ``head_queued_at`` and clears
+    any stale ``merge_claimed_at`` when the head changes (Fable F3).
 
-    Raises ``ValueError`` on missing required fields (contract violation, not a
-    recoverable state — fail loud per hard rule 8).
+    Raises ``ValueError`` on missing required fields or a malformed
+    ``merge_timer_delay_s`` (must be finite, non-negative) — a contract
+    violation, fail loud per hard rule 8.
     """
     dest = (destination or "").strip()
     if not dest:
@@ -295,6 +347,23 @@ def enqueue_pr(
     if not url:
         raise ValueError("enqueue_pr requires non-empty pr_url")
     verdict = (verify_verdict or VERIFY_UNKNOWN).strip() or VERIFY_UNKNOWN
+    policy_str = (merge_policy or "manual").strip().lower() or "manual"
+    oauth_int = 1 if founder_oauth_per_merge else 0
+    try:
+        delay = float(merge_timer_delay_s if merge_timer_delay_s is not None else 0.0)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"enqueue_pr merge_timer_delay_s must be a finite non-negative "
+            f"number, got {merge_timer_delay_s!r}"
+        ) from None
+    if not math.isfinite(delay) or delay < 0:
+        raise ValueError(
+            f"enqueue_pr merge_timer_delay_s must be finite and non-negative, "
+            f"got {merge_timer_delay_s!r}"
+        )
+    uid = (universe_id or "").strip()
+    bdid = (branch_def_id or "").strip()
+    rid = (run_id or "").strip()
 
     initialize_review_queue_db(universe_dir)
     ts = now if now is not None else time.time()
@@ -329,11 +398,15 @@ def enqueue_pr(
                         UPDATE review_queue
                            SET pr_url = ?, head_sha = ?, request_ref = ?,
                                verify_verdict = ?, status = 'pending',
-                               notes = '', head_queued_at = ?, updated_at = ?,
-                               decided_by = '', decided_at = NULL
+                               notes = '', merge_policy = ?,
+                               founder_oauth_per_merge = ?, merge_timer_delay_s = ?,
+                               universe_id = ?, branch_def_id = ?, run_id = ?,
+                               head_queued_at = ?, merge_claimed_at = NULL,
+                               updated_at = ?, decided_by = '', decided_at = NULL
                          WHERE item_id = ?
                         """,
-                        (url, head_sha, request_ref, verdict,
+                        (url, head_sha, request_ref, verdict, policy_str,
+                         oauth_int, delay, uid, bdid, rid,
                          head_queued_at, ts, item_id),
                     )
             else:
@@ -343,13 +416,17 @@ def enqueue_pr(
                     INSERT INTO review_queue (
                         item_id, destination, pr_number, pr_url, head_sha,
                         request_ref, verify_verdict, status, notes,
+                        merge_policy, founder_oauth_per_merge, merge_timer_delay_s,
+                        universe_id, branch_def_id, run_id,
                         created_at, head_queued_at, updated_at,
                         decided_by, decided_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?, '', NULL)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '',
+                              ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL)
                     """,
                     (
                         item_id, dest, pr_number, url, head_sha,
-                        request_ref, verdict, ts, ts, ts,
+                        request_ref, verdict, policy_str, oauth_int, delay,
+                        uid, bdid, rid, ts, ts, ts,
                     ),
                 )
             row = conn.execute(
@@ -414,6 +491,7 @@ def _decide_txn(
     notes: str,
     ts: float,
     invalidate_approvals: bool,
+    expected_head_sha: str | None = None,
 ) -> dict[str, Any] | None:
     """Perform an owner decision ATOMICALLY inside an already-open ``_write``
     (``BEGIN IMMEDIATE``) transaction.
@@ -439,6 +517,15 @@ def _decide_txn(
     ).fetchone()
     if row is None:
         return None
+    # Head-bind the decision (Fable F1): if the caller says which head it saw
+    # and the PR has since been re-pushed, the decision must not silently apply
+    # to unseen content — fail closed BEFORE any mutation.
+    if expected_head_sha is not None and (row["head_sha"] or "") != expected_head_sha:
+        raise ReviewHeadChanged(
+            f"cannot {new_status} review item {item_id!r}: it now points at head "
+            f"{row['head_sha']!r}, not the {expected_head_sha!r} you reviewed; "
+            "re-read the PR and decide on the current head"
+        )
     if row["status"] in _TERMINAL_STATUSES:
         raise InvalidReviewTransition(
             f"cannot {new_status} review item {item_id!r} in terminal status "
@@ -461,19 +548,25 @@ def _decide_txn(
             "WHERE item_id = ? AND consumed_at IS NULL",
             (ts, item_id),
         )
+    head_clause = ""
+    params: list[Any] = [new_status, notes, decided_by, ts, ts, item_id]
+    if expected_head_sha is not None:
+        head_clause = " AND head_sha = ?"
+        params.append(expected_head_sha)
     cur = conn.execute(
         f"""
         UPDATE review_queue
            SET status = ?, notes = ?, decided_by = ?,
                decided_at = ?, updated_at = ?, merge_claimed_at = NULL
-         WHERE item_id = ? AND status NOT IN {_TERMINAL_SQL}
+         WHERE item_id = ? AND status NOT IN {_TERMINAL_SQL}{head_clause}
         """,
-        (new_status, notes, decided_by, ts, ts, item_id),
+        params,
     )
     if cur.rowcount != 1:
-        # Lost the race: another writer moved the item terminal between our read
-        # and update (should be impossible under BEGIN IMMEDIATE, but the
-        # conditional UPDATE makes it fail closed rather than silently resurrect).
+        # Lost the race: another writer moved the item terminal (or re-pushed the
+        # head) between our read and update — impossible under BEGIN IMMEDIATE,
+        # but the conditional UPDATE makes it fail closed rather than silently
+        # resurrect / decide the wrong head.
         raise InvalidReviewTransition(
             f"cannot {new_status} review item {item_id!r}: it was decided "
             "concurrently; re-present the PR (new head) to re-open it"
@@ -490,11 +583,17 @@ def approve_item(
     item_id: str,
     approved_by: str,
     notes: str = "",
+    expected_head_sha: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any] | None:
     """Owner approves a queued PR. Sets status ``approved`` and mints a **fresh,
     single-use founder-OAuth approval** bound to the item's current
     ``head_sha`` + ``pr_number``.
+
+    ``expected_head_sha`` head-binds the approval (Fable F1): the credential is
+    minted only if the item's current head still matches the head the owner
+    reviewed; a re-push in between raises ``ReviewHeadChanged`` and mints
+    nothing.
 
     The minted approval is what a founder-OAuth-per-merge policy consumes at
     merge time (see :func:`consume_merge_approval`). For a manual policy WITHOUT
@@ -513,8 +612,8 @@ def approve_item(
         with _write(conn):
             # Atomic: terminal-check + status update + approval mint are ONE
             # transaction. If the item is terminal (e.g. a reject that landed
-            # first), _decide_txn raises and the whole unit rolls back — no
-            # approval is minted (Codex R4 CRITICAL).
+            # first) or the head moved, _decide_txn raises and the whole unit
+            # rolls back — no approval is minted (Codex R4 / Fable F1).
             updated = _decide_txn(
                 conn,
                 item_id=item_id,
@@ -523,6 +622,7 @@ def approve_item(
                 notes=notes,
                 ts=ts,
                 invalidate_approvals=False,
+                expected_head_sha=expected_head_sha,
             )
             if updated is None:
                 return None
@@ -548,6 +648,7 @@ def reshape_item(
     item_id: str,
     reshaped_by: str,
     notes: str,
+    expected_head_sha: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any] | None:
     """Owner sends a PR back to the loop with notes. Sets status ``reshaped``
@@ -557,7 +658,9 @@ def reshape_item(
     ``notes`` is required — a reshape with no guidance is meaningless; the
     owner must say what to change. Any outstanding fresh approvals for the item
     are invalidated (consumed) so a stale approval can't merge the pre-reshape
-    head.
+    head. ``expected_head_sha`` is honored if given (Fable F1 — optional for
+    reshape). The owner notes + resume identity persist on the durable row so
+    the loop can act on the reshape (Codex R6 C3).
     """
     reshaped_by = (reshaped_by or "").strip()
     if not reshaped_by:
@@ -580,6 +683,7 @@ def reshape_item(
                 notes=notes,
                 ts=ts,
                 invalidate_approvals=True,
+                expected_head_sha=expected_head_sha,
             )
     if updated is None:
         return None
@@ -590,6 +694,10 @@ def reshape_item(
         "pr_number": updated["pr_number"],
         "request_ref": updated["request_ref"],
         "owner_notes": notes,
+        # Resume identity the loop needs to act on the reshape (Codex R6 C3).
+        "universe_id": updated["universe_id"],
+        "branch_def_id": updated["branch_def_id"],
+        "run_id": updated["run_id"],
     }
     return updated
 
@@ -600,9 +708,11 @@ def reject_item(
     item_id: str,
     rejected_by: str,
     notes: str = "",
+    expected_head_sha: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any] | None:
-    """Owner rejects a queued PR (terminal). Invalidates outstanding approvals."""
+    """Owner rejects a queued PR (terminal). Invalidates outstanding approvals.
+    ``expected_head_sha`` is honored if given (Fable F1 — optional for reject)."""
     rejected_by = (rejected_by or "").strip()
     if not rejected_by:
         raise ValueError("reject_item requires non-empty rejected_by")
@@ -617,6 +727,7 @@ def reject_item(
                 decided_by=rejected_by,
                 notes=notes,
                 ts=ts,
+                expected_head_sha=expected_head_sha,
                 invalidate_approvals=True,
             )
 
@@ -626,6 +737,7 @@ def claim_for_merge(
     *,
     item_id: str,
     expected_head_sha: str,
+    expected_updated_at: float | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Atomically CLAIM an eligible item for merge, flipping it to ``merging``.
@@ -639,6 +751,11 @@ def claim_for_merge(
       ``expected_head_sha`` (the head the effector verified against GitHub), and
       its status must be claimable — NOT terminal, and NOT already ``merging``
       UNLESS that claim is stale (``_MERGE_CLAIM_TIMEOUT_S``);
+    * ``expected_updated_at`` is a row-version generation token (Codex R6 C2):
+      the effector passes the ``updated_at`` it read when it evaluated
+      eligibility, and the claim REFUSES if the row changed since (e.g. a
+      same-head re-enqueue flipped ``verify_verdict`` pass→fail). This binds the
+      claim to the exact FACTS eligibility saw, not just status + head;
     * on success it flips to ``merging`` + stamps ``merge_claimed_at`` and
       returns ``{"claimed": True, "prior_status": <status>, "item": <row>}``;
     * on failure it returns ``{"claimed": False, "reason": <why>,
@@ -662,6 +779,15 @@ def claim_for_merge(
             if (row["head_sha"] or "") != (expected_head_sha or ""):
                 return {"claimed": False, "reason": "head_changed",
                         "current_status": status}
+            if (
+                expected_updated_at is not None
+                and row["updated_at"] != expected_updated_at
+            ):
+                # The row changed between eligibility evaluation and the claim —
+                # the eligibility facts (verify_verdict, timer clock, …) may no
+                # longer hold. Refuse (Codex R6 C2).
+                return {"claimed": False, "reason": "facts_changed",
+                        "current_status": status}
             if status in _TERMINAL_STATUSES:
                 return {"claimed": False, "reason": "already_decided",
                         "current_status": status}
@@ -676,14 +802,19 @@ def claim_for_merge(
                             "current_status": status}
                 # else: stale claim — reclaimable (fall through to CAS below).
             # CAS: flip an eligible (non-terminal) row to merging. Excludes only
-            # terminal statuses so a stale `merging` row can be reclaimed.
+            # terminal statuses so a stale `merging` row can be reclaimed; the
+            # updated_at guard is belt-and-braces behind the in-txn read.
+            head_clause = "" if expected_updated_at is None else " AND updated_at = ?"
+            cas_params: list[Any] = [ts, ts, item_id]
+            if expected_updated_at is not None:
+                cas_params.append(expected_updated_at)
             cur = conn.execute(
                 f"""
                 UPDATE review_queue
                    SET status = 'merging', merge_claimed_at = ?, updated_at = ?
-                 WHERE item_id = ? AND status NOT IN {_TERMINAL_SQL}
+                 WHERE item_id = ? AND status NOT IN {_TERMINAL_SQL}{head_clause}
                 """,
-                (ts, ts, item_id),
+                cas_params,
             )
             if cur.rowcount != 1:
                 return {"claimed": False, "reason": "claim_lost",
@@ -691,9 +822,12 @@ def claim_for_merge(
             updated = conn.execute(
                 "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
             ).fetchone()
+    # Normalize the restore target for a reclaimed STALE `merging` claim: restore
+    # to a decidable `pending`, not back to `merging` (Fable F3).
+    prior_status = status if status != "merging" else "pending"
     return {
         "claimed": True,
-        "prior_status": status,
+        "prior_status": prior_status,
         "item": _row_to_item(updated),
     }
 
@@ -866,6 +1000,7 @@ __all__ = [
     "VERIFY_UNKNOWN",
     "InvalidReviewTransition",
     "MergeInProgress",
+    "ReviewHeadChanged",
     "enqueue_pr",
     "get_item",
     "list_queue",

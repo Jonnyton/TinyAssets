@@ -701,13 +701,16 @@ def _extensions_impl(
     if review_queue_handler is not None:
         # Field reuse (stable MCP surface): ``subject_id`` carries the queue
         # item id, ``project_id`` the destination repo, ``status`` the list
-        # filter, ``notes`` the owner's approve/reshape/reject notes.
+        # filter, ``notes`` the owner's approve/reshape/reject notes, and
+        # ``expected_version`` the head_sha the owner reviewed (head-binds
+        # approve/reshape/reject — required for approve).
         review_kwargs: dict[str, Any] = {
             "universe_id": universe_id or "",
             "item_id": subject_id or "",
             "destination": project_id or "",
             "status": status or "",
             "notes": notes or "",
+            "expected_head_sha": expected_version or "",
         }
         return review_queue_handler(review_kwargs)
 

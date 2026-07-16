@@ -135,13 +135,36 @@ def _payload_expected_head_sha(payload: dict[str, Any]) -> str:
     return value if _SHA_RE.fullmatch(value) else ""
 
 
-def _payload_bool(payload: dict[str, Any], key: str) -> bool:
+_TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
+_FALSE_STRINGS = frozenset({"0", "false", "no", "off", ""})
+
+
+class _StrictBoolError(ValueError):
+    """A bool packet flag held a value that is neither a bool nor a recognized
+    true/false string — fail loud rather than fail-open (Fable F2)."""
+
+
+def _payload_bool_strict(payload: dict[str, Any], key: str) -> bool:
+    """Parse a bool flag strictly: a bool, an int, or a KNOWN true/false string.
+    Anything else raises ``_StrictBoolError`` (never silently False — the old
+    fail-open parse turned an OAuth flag OFF for values like "required")."""
     raw = payload.get(key)
+    if raw is None:
+        return False
     if isinstance(raw, bool):
         return raw
+    if isinstance(raw, int):
+        return raw != 0
     if isinstance(raw, str):
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(raw)
+        t = raw.strip().lower()
+        if t in _TRUE_STRINGS:
+            return True
+        if t in _FALSE_STRINGS:
+            return False
+    raise _StrictBoolError(
+        f"packet flag {key!r} must be a bool or one of "
+        f"{sorted(_TRUE_STRINGS | _FALSE_STRINGS)}; got {raw!r}"
+    )
 
 
 def _evaluate_merge_policy_gate(
@@ -153,83 +176,102 @@ def _evaluate_merge_policy_gate(
     actual_head_sha: str,
     matched_key: str | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """Patch-loop S4 gate layered on top of branch-protection authorization.
+    """Patch-loop S4 gate: resolves the GOVERNING merge policy from TRUSTED
+    DURABLE review-queue state (not the caller's packet) and enforces it.
 
-    When a remixed patch loop's ``owner_gate`` node binds a ``merge_policy`` onto
-    the merge packet, this gate enforces — from the durable review queue — that:
+    Policy authority (Codex R6 C1): if the PR maps to an owner-review-queue
+    item, that item's stored ``merge_policy`` / ``founder_oauth_per_merge`` /
+    ``merge_timer_delay_s`` GOVERN. A packet may only NARROW (a stricter policy,
+    enabling OAuth) — never disable a gate. Omitting ``merge_policy`` from the
+    packet can therefore never bypass gating. A raw (non-patch-loop) merge is a
+    separately-scoped path that must be explicitly opted into with
+    ``legacy_raw_merge=true``; otherwise, with no queue item, the merge is
+    refused. The gate then enforces: no policy merges a red PR; ``manual`` needs
+    owner approval, ``auto`` green verify, ``timer`` green + elapsed delay + not
+    held; founder-OAuth-per-merge consumes a FRESH single-use approval.
 
-    * a red verify verdict blocks the merge under EVERY policy (hard rule 8);
-    * ``manual`` merges only an owner-approved item, ``auto`` needs green verify,
-      ``timer`` needs green verify + elapsed delay + not owner-held;
-    * founder-OAuth-per-merge (Jonathan's flag) consumes a FRESH, single-use
-      approval bound to this exact PR head — a standing effector consent can
-      never satisfy it.
-
-    Returns ``(error_or_None, gate_info)``. When ``merge_policy`` is absent the
-    packet is a raw branch-protection merge (existing behavior) and the gate is
-    a no-op. ``gate_info`` is merged into the success payload for auditability.
+    Returns ``(error_or_None, gate_info)``. An explicit legacy raw merge (no
+    queue item) is a no-op ``(None, {})`` — branch-protection authorization
+    alone. ``gate_info`` is merged into the success payload for auditability.
     """
     from tinyassets import merge_policy as mp
     from tinyassets.storage import review_queue as rq
 
-    if mp.MERGE_POLICY_STATE_FIELD not in payload:
-        return None, {}
+    # Resolve the queue item — the TRUSTED durable governing state.
+    item = None
+    if universe_dir is not None:
+        for candidate in rq.list_queue(universe_dir, destination=destination):
+            if candidate.get("pr_number") == pr_number:
+                item = candidate
+                break
 
     try:
-        policy = mp.normalize_policy(payload.get(mp.MERGE_POLICY_STATE_FIELD))
-    except ValueError as exc:
+        legacy_raw = _payload_bool_strict(payload, "legacy_raw_merge")
+    except _StrictBoolError as exc:
         return _error(
-            "invalid_merge_policy",
-            str(exc),
-            destination=destination,
-            pr_number=pr_number,
+            "invalid_bool_flag", str(exc),
+            destination=destination, pr_number=pr_number,
             matched_output_key=matched_key,
         ), {}
 
-    # Read the CANONICAL founder-OAuth state field defined in merge_policy — the
-    # loop's owner_gate node binds it under this exact key. A divergent literal
-    # here silently bypasses the founder's per-merge OAuth guarantee (Codex R2
-    # CRITICAL 1).
-    founder_oauth_per_merge = _payload_bool(payload, mp.FOUNDER_OAUTH_STATE_FIELD)
-
-    if universe_dir is None:
-        return _error(
-            "merge_policy_no_universe",
-            (
-                "merge_policy gating requires a bound universe directory to read "
-                "the owner review queue; none was resolvable from base_path"
-            ),
-            destination=destination,
-            pr_number=pr_number,
-            policy=policy,
-            matched_output_key=matched_key,
-        ), {}
-
-    item = None
-    for candidate in rq.list_queue(universe_dir, destination=destination):
-        if candidate.get("pr_number") == pr_number:
-            item = candidate
-            break
     if item is None:
+        if legacy_raw:
+            # Explicit legacy raw merge: branch-protection authorization only.
+            return None, {}
+        # No durable patch-loop item AND no explicit legacy opt-in → refuse.
+        # Omission of merge_policy can never silently skip the S4 gates.
         return _error(
-            "pr_not_in_review_queue",
+            "merge_gate_required",
             (
-                f"policy '{policy}' merge requires PR #{pr_number} on the owner "
-                "review queue, but it is not present; the loop's present node "
-                "must enqueue the PR before a policy merge"
+                f"PR #{pr_number} has no owner-review-queue item; a patch-loop "
+                "merge must be enqueued first, or set legacy_raw_merge=true for "
+                "an explicit non-patch-loop merge"
             ),
             destination=destination,
             pr_number=pr_number,
-            policy=policy,
             matched_output_key=matched_key,
         ), {}
 
-    # Bind the merge to the REVIEWED head (Codex CRITICAL 1). The queue item's
-    # verify_verdict / approval status describe the exact commit the owner
-    # reviewed (item["head_sha"]). If the live PR head has moved since — even
-    # though it matches the packet's expected_head_sha — those verdicts no
-    # longer apply, so the merge must fail closed rather than merge an
-    # unreviewed head. A re-push re-enqueues (re-pends) the item at the new head.
+    # A queued patch-loop PR cannot be force-merged raw — the packet may narrow,
+    # never disable the owner-review gates (Codex R6 C1).
+    if legacy_raw:
+        return _error(
+            "legacy_raw_merge_forbidden",
+            (
+                f"PR #{pr_number} is a queued patch-loop merge; legacy_raw_merge "
+                "cannot disable its owner-review gates"
+            ),
+            destination=destination,
+            pr_number=pr_number,
+            matched_output_key=matched_key,
+        ), {}
+
+    # Governing policy from the item; a packet policy may only NARROW (stricter).
+    governing_policy = mp.normalize_policy(
+        item.get("merge_policy") or mp.DEFAULT_MERGE_POLICY
+    )
+    policy = governing_policy
+    packet_policy_raw = payload.get(mp.MERGE_POLICY_STATE_FIELD)
+    if packet_policy_raw is not None and str(packet_policy_raw).strip():
+        packet_policy = mp.normalize_policy(packet_policy_raw)
+        if mp.is_at_least_as_strict(packet_policy, governing_policy):
+            policy = packet_policy  # narrowing toward stricter is allowed
+
+    # Founder-OAuth: governing from the item; the packet may only ENABLE it.
+    governing_oauth = bool(item.get("founder_oauth_per_merge"))
+    try:
+        packet_oauth = _payload_bool_strict(payload, mp.FOUNDER_OAUTH_STATE_FIELD)
+    except _StrictBoolError as exc:
+        return _error(
+            "invalid_bool_flag", str(exc),
+            destination=destination, pr_number=pr_number, policy=policy,
+            matched_output_key=matched_key,
+        ), {}
+    founder_oauth_per_merge = governing_oauth or packet_oauth  # OR = narrowing
+
+    # Bind the merge to the REVIEWED head (Codex R5 C1): the item's verify /
+    # approval facts describe the exact reviewed commit; refuse if the live head
+    # moved since, even when it matches the packet's expected_head_sha.
     reviewed_head = (item.get("head_sha") or "").strip()
     if reviewed_head != actual_head_sha:
         return _error(
@@ -247,12 +289,12 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
-    # Validate the timer delay at the effector boundary (Codex R5 REQUIRED 2).
-    # A negative / NaN / inf / non-numeric delay must fail closed with a
-    # structured error, never read as "eligible now".
+    # Timer delay from the DURABLE item (not the packet); validate defensively
+    # (Codex R5 REQUIRED 2 — enqueue already rejects malformed, this is
+    # belt-and-braces if a value was tampered directly).
     timer_delay_s = 0.0
     if policy == mp.MERGE_POLICY_TIMER:
-        raw_delay = payload.get(mp.TIMER_DELAY_STATE_FIELD, 0.0)
+        raw_delay = item.get("merge_timer_delay_s", 0.0)
         try:
             timer_delay_s = float(raw_delay)
         except (TypeError, ValueError):
@@ -307,13 +349,15 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
-    # Atomically CLAIM the item (→ merging) BEFORE touching GitHub, so a
-    # concurrent owner reject/reshape can't land during the PUT and be
-    # overwritten by the post-success mark_merged (Codex R5 CRITICAL 1).
+    # Atomically CLAIM the item (→ merging) BEFORE touching GitHub, binding the
+    # claim to the eligibility FACTS via the row-version generation token — a
+    # same-head re-enqueue that flipped verify pass→fail between this read and
+    # the claim changes updated_at and fails the claim (Codex R5 C1 + R6 C2).
     claim = rq.claim_for_merge(
         universe_dir,
         item_id=item["item_id"],
         expected_head_sha=actual_head_sha,
+        expected_updated_at=item.get("updated_at"),
     )
     if not claim.get("claimed"):
         return _error(

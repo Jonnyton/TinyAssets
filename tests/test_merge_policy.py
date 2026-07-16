@@ -10,13 +10,31 @@ import pytest
 from tinyassets import merge_policy as mp
 
 
-def test_normalize_policy_defaults_and_validates():
+def test_normalize_policy_is_data_driven_not_raising():
+    # C5: normalize does NOT raise on unknown — this is the reference evaluator,
+    # data-driven and extensible, not a closed platform enum.
     assert mp.normalize_policy(None) == "manual"
     assert mp.normalize_policy("") == "manual"
     assert mp.normalize_policy("AUTO") == "auto"
     assert mp.normalize_policy("timer") == "timer"
-    with pytest.raises(ValueError):
-        mp.normalize_policy("yolo")
+    assert mp.normalize_policy("yolo") == "yolo"  # returned as-is, not raised
+
+
+def test_unknown_policy_is_unsupported():
+    decision = mp.evaluate_merge_eligibility(
+        policy="yolo", verify_verdict="pass", item_status="approved"
+    )
+    assert decision["eligible"] is False
+    assert decision["reason"] == "unsupported_policy"
+
+
+def test_policy_strictness_narrowing():
+    # manual is stricter than timer is stricter than auto.
+    assert mp.is_at_least_as_strict("manual", "auto") is True
+    assert mp.is_at_least_as_strict("manual", "manual") is True
+    assert mp.is_at_least_as_strict("auto", "manual") is False
+    assert mp.is_at_least_as_strict("timer", "auto") is True
+    assert mp.is_at_least_as_strict("yolo", "auto") is False  # unknown unrankable
 
 
 def test_verify_is_green_is_strict():

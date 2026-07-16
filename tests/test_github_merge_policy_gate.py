@@ -1,14 +1,10 @@
 """Patch-loop S4: github_merge effector gated by merge policy + founder-OAuth.
 
-The effector keeps its landed branch-protection + expected-head-SHA behavior;
-these tests prove the NEW gating layered on top:
-
-- a red verify verdict blocks the merge under every policy (no PUT fires);
-- ``manual`` holds until the owner approves the queued item;
-- ``auto`` releases on green verify;
-- founder-OAuth-per-merge requires a FRESH single-use approval bound to the PR
-  head — a standing effector consent does NOT satisfy it, and a consumed token
-  cannot merge a second time.
+Policy authority is TRUSTED DURABLE state (Codex R6 C1): the governing
+``merge_policy`` / ``founder_oauth_per_merge`` / ``merge_timer_delay_s`` live on
+the review-queue ITEM (set by the present node), not the caller's packet. A
+packet may only NARROW; omitting policy can never bypass gating. A raw merge is
+a separately-scoped path requiring an explicit ``legacy_raw_merge=true`` flag.
 
 GitHub is never touched: ``_github_api`` is monkeypatched, so no real merge
 occurs (task constraint).
@@ -81,7 +77,16 @@ def _run(tmp_path, packet):
     )
 
 
-def _enqueue(tmp_path, *, verdict=rq.VERIFY_PASS, head=_HEAD):
+def _enqueue(
+    tmp_path,
+    *,
+    verdict=rq.VERIFY_PASS,
+    head=_HEAD,
+    policy="manual",
+    oauth=False,
+    timer_delay=0.0,
+    now=None,
+):
     return rq.enqueue_pr(
         tmp_path,
         destination=_DEST,
@@ -90,6 +95,10 @@ def _enqueue(tmp_path, *, verdict=rq.VERIFY_PASS, head=_HEAD):
         head_sha=head,
         request_ref="req-abc",
         verify_verdict=verdict,
+        merge_policy=policy,
+        founder_oauth_per_merge=oauth,
+        merge_timer_delay_s=timer_delay,
+        now=now,
     )
 
 
@@ -97,16 +106,66 @@ def _put_fired(fake):
     return any(m == "PUT" for m, _ in fake.calls)
 
 
-# ── No policy field ⇒ existing branch-protection behavior is unchanged ──────
+# ── Legacy raw merge is a separate, explicitly-opted path (C1) ───────────────
 
 
-def test_no_policy_field_merges_via_branch_protection(monkeypatch, tmp_path):
+def test_no_queue_item_no_flag_refuses_merge(monkeypatch, tmp_path):
+    """Omitting policy can NEVER bypass gating: with no queue item and no
+    explicit legacy flag the merge is refused (Codex R6 C1)."""
+    _with_capability(monkeypatch)
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())  # no queue item, no legacy flag
+    assert result["error_kind"] == "merge_gate_required"
+    assert not _put_fired(fake)
+
+
+def test_legacy_raw_merge_flag_permits_branch_protection_merge(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
     fake = _scripted_api(allow_merge=True)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet())  # no merge_policy key at all
+    result = _run(tmp_path, _packet(legacy_raw_merge=True))  # explicit opt-in
     assert result.get("merged") is True
     assert _put_fired(fake)
+
+
+def test_legacy_raw_merge_forbidden_on_queued_pr(monkeypatch, tmp_path):
+    """A queued patch-loop PR cannot be force-merged raw (C1)."""
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy="manual")
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet(legacy_raw_merge=True))
+    assert result["error_kind"] == "legacy_raw_merge_forbidden"
+    assert not _put_fired(fake)
+
+
+def test_packet_may_narrow_not_loosen_policy(monkeypatch, tmp_path):
+    """The stored policy governs; a packet may narrow (stricter) but not loosen
+    (Codex R6 C1)."""
+    _with_capability(monkeypatch)
+    # Item stores AUTO; a packet asking for MANUAL narrows → holds for approval.
+    _enqueue(tmp_path, policy="auto")
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    narrowed = _run(tmp_path, _packet(merge_policy="manual"))
+    assert narrowed["error_kind"] == "merge_policy_blocked"
+    assert narrowed["policy_reason"] == "manual_policy_awaiting_owner_approval"
+    assert narrowed["policy"] == "manual"
+    assert not _put_fired(fake)
+
+
+def test_packet_cannot_loosen_manual_to_auto(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    # Item stores MANUAL; a packet asking for AUTO cannot loosen → stays manual.
+    _enqueue(tmp_path, policy="manual")
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet(merge_policy="auto"))
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "manual_policy_awaiting_owner_approval"
+    assert result["policy"] == "manual"
+    assert not _put_fired(fake)
 
 
 # ── Manual policy holds until owner approval ────────────────────────────────
@@ -114,21 +173,20 @@ def test_no_policy_field_merges_via_branch_protection(monkeypatch, tmp_path):
 
 def test_manual_policy_blocks_until_approved(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
-    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)  # pending, not approved
-    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    _enqueue(tmp_path, policy="manual", verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
 
-    blocked = _run(tmp_path, _packet(merge_policy="manual"))
+    blocked = _run(tmp_path, _packet())
     assert blocked["error_kind"] == "merge_policy_blocked"
     assert blocked["policy_reason"] == "manual_policy_awaiting_owner_approval"
     assert not _put_fired(fake)
 
-    # Owner approves → merge is released.
     item = rq.list_queue(tmp_path)[0]
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
     fake2 = _scripted_api(allow_merge=True)
     monkeypatch.setattr(github_merge, "_github_api", fake2)
-    merged = _run(tmp_path, _packet(merge_policy="manual"))
+    merged = _run(tmp_path, _packet())
     assert merged.get("merged") is True
     assert merged["merge_policy"] == "manual"
     assert _put_fired(fake2)
@@ -140,13 +198,12 @@ def test_manual_policy_blocks_until_approved(monkeypatch, tmp_path):
 @pytest.mark.parametrize("policy", ["auto", "timer", "manual"])
 def test_red_verify_blocks_every_policy(monkeypatch, tmp_path, policy):
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, verdict=rq.VERIFY_FAIL)
-    # Even an owner approval cannot release a red PR.
+    item = _enqueue(tmp_path, policy=policy, verdict=rq.VERIFY_FAIL)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
 
-    result = _run(tmp_path, _packet(merge_policy=policy, merge_timer_delay_s=0))
+    result = _run(tmp_path, _packet())
     assert result["error_kind"] == "merge_policy_blocked"
     assert result["policy_reason"] == "verify_not_green"
     assert not _put_fired(fake)
@@ -154,14 +211,12 @@ def test_red_verify_blocks_every_policy(monkeypatch, tmp_path, policy):
 
 def test_auto_policy_merges_on_green(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    item = _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)
     fake = _scripted_api(allow_merge=True)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet(merge_policy="auto"))
+    result = _run(tmp_path, _packet())
     assert result.get("merged") is True
     assert _put_fired(fake)
-    # Codex REQUIRED 4: a confirmed merge transitions the queue item to 'merged'
-    # so owner surfaces stop showing it pending/approved.
     assert result["review_queue_status"] == "merged"
     stored = rq.get_item(tmp_path, item_id=item["item_id"])
     assert stored["status"] == "merged"
@@ -169,33 +224,29 @@ def test_auto_policy_merges_on_green(monkeypatch, tmp_path):
 
 
 def test_head_moved_since_review_refuses_merge(monkeypatch, tmp_path):
-    """Codex CRITICAL 1: the queued verify/approval describe the reviewed head.
-    If the live PR head moved since review, the merge must fail closed even
-    though it matches the packet's expected_head_sha."""
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS, head=_HEAD)
+    item = _enqueue(tmp_path, policy="manual", verdict=rq.VERIFY_PASS, head=_HEAD)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    # PR head has advanced to _HEAD2 since it was reviewed/approved at _HEAD.
     fake = _scripted_api(allow_merge=False, live_head=_HEAD2)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    # The packet points at the new live head (passes the branch-protection
-    # expected-head check), but the reviewed head is stale.
-    result = _run(
-        tmp_path, _packet(merge_policy="manual", expected_head_sha=_HEAD2)
-    )
+    result = _run(tmp_path, _packet(expected_head_sha=_HEAD2))
     assert result["error_kind"] == "review_head_stale"
     assert result["reviewed_head_sha"] == _HEAD
     assert result["actual_head_sha"] == _HEAD2
     assert not _put_fired(fake)
 
 
-def test_policy_merge_requires_pr_in_queue(monkeypatch, tmp_path):
+# ── C5: unknown policy fails closed with a structured error ─────────────────
+
+
+def test_unknown_stored_policy_is_unsupported(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
-    # No enqueue — the loop's present node never queued this PR.
+    _enqueue(tmp_path, policy="yolo", verdict=rq.VERIFY_PASS)
     fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet(merge_policy="auto"))
-    assert result["error_kind"] == "pr_not_in_review_queue"
+    result = _run(tmp_path, _packet())
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "unsupported_policy"
     assert not _put_fired(fake)
 
 
@@ -206,37 +257,27 @@ def test_founder_oauth_requires_fresh_approval_not_standing_consent(
     monkeypatch, tmp_path
 ):
     _with_capability(monkeypatch)
-    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
-    # A standing effector consent for the merge sink — the WRONG kind of auth.
+    _enqueue(tmp_path, policy="auto", oauth=True, verdict=rq.VERIFY_PASS)
+    # A standing effector consent — the WRONG kind of auth.
     grant_consent(
         tmp_path, sink="github_merge", destination=_DEST, granted_by="owner"
     )
-    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-
-    blocked = _run(
-        tmp_path, _packet(merge_policy="auto", founder_oauth_per_merge=True)
-    )
+    blocked = _run(tmp_path, _packet())
     assert blocked["error_kind"] == "merge_policy_blocked"
     assert blocked["policy_reason"] == "founder_oauth_required"
     assert not _put_fired(fake)
 
 
-def test_canonical_oauth_key_blocks_auto_merge_without_fresh_approval(
-    monkeypatch, tmp_path
-):
-    """Codex R2 CRITICAL 1: the effector must read the CANONICAL state field
-    (`founder_oauth_per_merge`). Before the fix it read a divergent literal, so
-    a packet carrying the canonical key with NO fresh approval still merged.
-    Auto policy + green verify would otherwise release immediately."""
+def test_founder_oauth_governed_by_item_not_packet(monkeypatch, tmp_path):
+    """Codex R6 C1: even if the packet omits the OAuth flag, the item's stored
+    founder_oauth_per_merge governs — a merge with no fresh approval is blocked."""
     _with_capability(monkeypatch)
-    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
-    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    _enqueue(tmp_path, policy="auto", oauth=True, verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(
-        tmp_path,
-        _packet(merge_policy="auto", founder_oauth_per_merge=True),
-    )
+    result = _run(tmp_path, _packet())  # packet carries NO oauth flag
     assert result["error_kind"] == "merge_policy_blocked"
     assert result["policy_reason"] == "founder_oauth_required"
     assert not _put_fired(fake)
@@ -246,8 +287,7 @@ def test_founder_oauth_fresh_approval_merges_once_and_consumes_exactly_once(
     monkeypatch, tmp_path
 ):
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
-    # Fresh founder-authenticated approval action (mints a single-use token).
+    item = _enqueue(tmp_path, policy="manual", oauth=True, verdict=rq.VERIFY_PASS)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="founder")
     assert rq.has_fresh_merge_approval(
         tmp_path, destination=_DEST, pr_number=_PR, head_sha=_HEAD
@@ -255,59 +295,91 @@ def test_founder_oauth_fresh_approval_merges_once_and_consumes_exactly_once(
 
     fake = _scripted_api(allow_merge=True)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    merged = _run(
-        tmp_path, _packet(merge_policy="manual", founder_oauth_per_merge=True)
-    )
+    merged = _run(tmp_path, _packet())
     assert merged.get("merged") is True
     assert merged["founder_oauth_per_merge"] is True
     assert merged.get("consumed_approval_id")
-    assert merged["review_queue_status"] == "merged"  # R4: item marked merged
+    assert merged["review_queue_status"] == "merged"
     assert _put_fired(fake)
-    # The fresh approval was consumed exactly once — none remain.
     assert not rq.has_fresh_merge_approval(
         tmp_path, destination=_DEST, pr_number=_PR, head_sha=_HEAD
     )
 
-    # The queue item is now terminal-merged; a SECOND merge attempt fails closed.
     fake2 = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake2)
-    second = _run(
-        tmp_path, _packet(merge_policy="manual", founder_oauth_per_merge=True)
-    )
+    second = _run(tmp_path, _packet())
     assert second["error_kind"] == "merge_policy_blocked"
     assert second["policy_reason"] == "already_merged"
     assert not _put_fired(fake2)
 
 
-def test_timer_resets_on_repushed_head(monkeypatch, tmp_path):
-    """Codex R2 REQUIRED 2: a re-pushed head restarts the timer clock. Without
-    the per-head `head_queued_at` reset, the timer would count from the
-    first-ever enqueue and a freshly-pushed head would be instantly eligible."""
+# ── F2: OAuth flag is parsed strictly (no fail-open) ────────────────────────
+
+
+def test_invalid_oauth_bool_flag_fails_loud(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
-    # Original enqueue long ago at _HEAD.
-    rq.enqueue_pr(
-        tmp_path, destination=_DEST, pr_number=_PR,
-        pr_url=f"https://github.com/{_DEST}/pull/{_PR}",
-        head_sha=_HEAD, verify_verdict=rq.VERIFY_PASS, now=1000.0,
-    )
-    # Re-push: NEW head enqueued ~now → resets the timer clock to ~now.
-    rq.enqueue_pr(
-        tmp_path, destination=_DEST, pr_number=_PR,
-        pr_url=f"https://github.com/{_DEST}/pull/{_PR}",
-        head_sha=_HEAD2, verify_verdict=rq.VERIFY_PASS,
-    )
-    fake = _scripted_api(allow_merge=False, live_head=_HEAD2)
+    _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(
-        tmp_path,
-        _packet(
-            merge_policy="timer", expected_head_sha=_HEAD2,
-            merge_timer_delay_s=3600,
-        ),
-    )
-    # The fresh head was queued < 3600s ago, so it is NOT yet timer-eligible.
+    result = _run(tmp_path, _packet(founder_oauth_per_merge="maybe"))
+    assert result["error_kind"] == "invalid_bool_flag"
+    assert not _put_fired(fake)
+
+
+# ── Timer policy (delay from the durable item) ──────────────────────────────
+
+
+def test_timer_zero_delay_merges_immediately(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy="timer", timer_delay=0.0, verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=True)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result.get("merged") is True
+    assert _put_fired(fake)
+
+
+def test_timer_delay_not_elapsed_blocks(monkeypatch, tmp_path):
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy="timer", timer_delay=3600.0, verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
     assert result["error_kind"] == "merge_policy_blocked"
     assert result["policy_reason"] == "timer_policy_delay_not_elapsed"
+    assert not _put_fired(fake)
+
+
+def test_timer_resets_on_repushed_head(monkeypatch, tmp_path):
+    """A re-pushed head restarts the timer clock (Codex R2)."""
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy="timer", timer_delay=3600.0, head=_HEAD, now=1000.0)
+    # Re-push: NEW head queued ~now → resets the timer clock.
+    _enqueue(tmp_path, policy="timer", timer_delay=3600.0, head=_HEAD2)
+    fake = _scripted_api(allow_merge=False, live_head=_HEAD2)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet(expected_head_sha=_HEAD2))
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "timer_policy_delay_not_elapsed"
+    assert not _put_fired(fake)
+
+
+def test_timer_delay_invalid_on_item_fails_closed(monkeypatch, tmp_path):
+    """Effector-boundary defensive validation (Codex R5): if a negative delay
+    is present on the durable item (direct tamper), the merge fails closed."""
+    _with_capability(monkeypatch)
+    item = _enqueue(tmp_path, policy="timer", timer_delay=0.0, verdict=rq.VERIFY_PASS)
+    # Tamper the stored delay negative, bypassing enqueue's validation.
+    with rq._connect(tmp_path) as conn:
+        with rq._write(conn):
+            conn.execute(
+                "UPDATE review_queue SET merge_timer_delay_s = -3600 WHERE item_id = ?",
+                (item["item_id"],),
+            )
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result["error_kind"] == "timer_delay_invalid"
     assert not _put_fired(fake)
 
 
@@ -315,11 +387,8 @@ def test_timer_resets_on_repushed_head(monkeypatch, tmp_path):
 
 
 def test_reject_during_put_cannot_overwrite_merge(monkeypatch, tmp_path):
-    """Codex R5 CRITICAL 1: the effector claims the item (→ merging) BEFORE the
-    GitHub PUT, so an owner reject that lands DURING the merge is blocked
-    (MergeInProgress) and can never be recorded over as merged."""
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    item = _enqueue(tmp_path, policy="manual", verdict=rq.VERIFY_PASS)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
     reject_blocked: list[Exception] = []
 
@@ -327,8 +396,6 @@ def test_reject_during_put_cannot_overwrite_merge(monkeypatch, tmp_path):
         if method == "GET":
             return _open_pr(), None
         if method == "PUT":
-            # A concurrent owner reject tries to land mid-merge. The item is
-            # 'merging' (claimed), so the reject MUST be blocked.
             try:
                 rq.reject_item(
                     tmp_path, item_id=item["item_id"], rejected_by="owner",
@@ -340,40 +407,33 @@ def test_reject_during_put_cannot_overwrite_merge(monkeypatch, tmp_path):
         raise AssertionError(f"no scripted response for {method} {path}")
 
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet(merge_policy="manual"))
-
+    result = _run(tmp_path, _packet())
     assert result.get("merged") is True
     assert result["review_queue_status"] == "merged"
-    assert len(reject_blocked) == 1  # the mid-merge reject was blocked
-    # Final queue state is merged, NOT rejected — the reject could not overwrite.
+    assert len(reject_blocked) == 1
     final = rq.get_item(tmp_path, item_id=item["item_id"])
     assert final["status"] == "merged"
     assert "changed my mind" not in (final["notes"] or "")
 
 
 def test_merge_claim_lost_when_item_already_merging(monkeypatch, tmp_path):
-    """If another effector already holds the merge claim, this one refuses to
-    merge (merge_claim_lost) and fires no PUT."""
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
-    # Another effector holds a fresh claim on the same head.
+    item = _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)
     claim = rq.claim_for_merge(
         tmp_path, item_id=item["item_id"], expected_head_sha=_HEAD
     )
     assert claim["claimed"]
-    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet(merge_policy="auto"))
+    result = _run(tmp_path, _packet())
     assert result["error_kind"] == "merge_claim_lost"
     assert result["claim_reason"] == "merge_in_progress"
     assert not _put_fired(fake)
 
 
 def test_put_failure_releases_merge_claim(monkeypatch, tmp_path):
-    """A failed GitHub PUT releases the merge claim so the item is decidable
-    again (not stuck in 'merging')."""
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    item = _enqueue(tmp_path, policy="manual", verdict=rq.VERIFY_PASS)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
 
     def fake(*, method, path, capability_token, body=None):
@@ -384,50 +444,41 @@ def test_put_failure_releases_merge_claim(monkeypatch, tmp_path):
         raise AssertionError(f"no scripted response for {method} {path}")
 
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(tmp_path, _packet(merge_policy="manual"))
+    result = _run(tmp_path, _packet())
     assert result.get("merged") is not True
     assert "error_kind" in result
-    # Claim released → the item is back to its prior (approved) state, decidable.
     restored = rq.get_item(tmp_path, item_id=item["item_id"])
     assert restored["status"] == "approved"
     assert restored["merge_claimed_at"] is None
-    # The owner can now reject it (no longer stuck merging).
     rejected = rq.reject_item(
         tmp_path, item_id=item["item_id"], rejected_by="owner"
     )
     assert rejected["status"] == "rejected"
 
 
-# ── R5 REQUIRED 2: timer delay is validated at the effector boundary ─────────
+# ── C2: the claim binds the eligibility FACTS (generation token) ────────────
 
 
-@pytest.mark.parametrize(
-    "bad_delay",
-    [-3600, -1.0, float("nan"), float("inf"), float("-inf"), "soon", None],
-)
-def test_timer_invalid_delay_fails_closed(monkeypatch, tmp_path, bad_delay):
-    """A negative / NaN / inf / non-numeric delay must fail closed with a
-    structured timer_delay_invalid error — never instant eligibility."""
+def test_verify_flip_between_eligibility_and_claim_refuses_merge(
+    monkeypatch, tmp_path
+):
+    """Codex R6 C2: a same-head re-enqueue that flips verify pass→fail between
+    the eligibility read and the claim changes updated_at, so the claim (bound
+    to the eligibility generation token) refuses — no merge over a now-red PR."""
     _with_capability(monkeypatch)
-    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
-    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)
+    real_claim = rq.claim_for_merge
+
+    def racing_claim(universe_dir, **kwargs):
+        # Simulate a re-push flipping verify pass→fail AFTER eligibility read
+        # but before the claim commits — bumps updated_at.
+        _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_FAIL)
+        return real_claim(universe_dir, **kwargs)
+
+    monkeypatch.setattr(rq, "claim_for_merge", racing_claim)
+    fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(
-        tmp_path,
-        _packet(merge_policy="timer", merge_timer_delay_s=bad_delay),
-    )
-    assert result["error_kind"] == "timer_delay_invalid"
+    result = _run(tmp_path, _packet())
+    assert result["error_kind"] == "merge_claim_lost"
+    assert result["claim_reason"] == "facts_changed"
     assert not _put_fired(fake)
-
-
-def test_timer_zero_delay_merges_immediately(monkeypatch, tmp_path):
-    """A zero delay is valid — the item is timer-eligible at once."""
-    _with_capability(monkeypatch)
-    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
-    fake = _scripted_api(allow_merge=True)
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run(
-        tmp_path, _packet(merge_policy="timer", merge_timer_delay_s=0)
-    )
-    assert result.get("merged") is True
-    assert _put_fired(fake)

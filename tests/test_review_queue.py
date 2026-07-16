@@ -513,3 +513,115 @@ def test_concurrent_approve_vs_reject_never_resurrects(tmp_path):
         # at most one thread loses the race.
         assert all(isinstance(e, rq.InvalidReviewTransition) for e in raised)
         assert len(raised) <= 1
+
+
+# ── R6 C2: claim binds the eligibility generation token (updated_at) ─────────
+
+
+def test_claim_refuses_on_stale_generation_token(tmp_path):
+    """A same-head re-enqueue that flips verify pass→fail bumps updated_at; a
+    claim carrying the OLD updated_at is refused (facts_changed) so the merge
+    can't proceed on a now-red PR (Codex R6 C2)."""
+    item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    stale_token = item["updated_at"]
+    # Re-present the SAME head with a now-failing verify → bumps updated_at.
+    rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_FAIL,
+    )
+    claim = rq.claim_for_merge(
+        tmp_path, item_id=item["item_id"], expected_head_sha=_HEAD,
+        expected_updated_at=stale_token,
+    )
+    assert claim["claimed"] is False
+    assert claim["reason"] == "facts_changed"
+    # A claim with the CURRENT token succeeds.
+    fresh = rq.get_item(tmp_path, item_id=item["item_id"])
+    ok = rq.claim_for_merge(
+        tmp_path, item_id=item["item_id"], expected_head_sha=_HEAD,
+        expected_updated_at=fresh["updated_at"],
+    )
+    assert ok["claimed"] is True
+
+
+# ── R6 F1: owner decisions are head-bound ────────────────────────────────────
+
+
+def test_approve_stale_head_raises_and_mints_nothing(tmp_path):
+    item = _enqueue(tmp_path, head=_HEAD)
+    with pytest.raises(rq.ReviewHeadChanged):
+        rq.approve_item(
+            tmp_path, item_id=item["item_id"], approved_by="owner",
+            expected_head_sha=_HEAD2,  # not the reviewed head
+        )
+    assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "pending"
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD
+    )
+
+
+def test_approve_matching_head_succeeds(tmp_path):
+    item = _enqueue(tmp_path, head=_HEAD)
+    approved = rq.approve_item(
+        tmp_path, item_id=item["item_id"], approved_by="owner",
+        expected_head_sha=_HEAD,
+    )
+    assert approved["status"] == "approved"
+
+
+def test_reject_stale_head_raises(tmp_path):
+    item = _enqueue(tmp_path, head=_HEAD)
+    with pytest.raises(rq.ReviewHeadChanged):
+        rq.reject_item(
+            tmp_path, item_id=item["item_id"], rejected_by="owner",
+            expected_head_sha=_HEAD2,
+        )
+    assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "pending"
+
+
+# ── R6 C3: governing policy + resume identity persist on the item ───────────
+
+
+def test_enqueue_stores_policy_config_and_resume_identity(tmp_path):
+    item = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, merge_policy="timer",
+        founder_oauth_per_merge=True, merge_timer_delay_s=1800.0,
+        universe_id="u-abc", branch_def_id="patch_loop", run_id="run-9",
+    )
+    assert item["merge_policy"] == "timer"
+    assert item["founder_oauth_per_merge"] is True
+    assert item["merge_timer_delay_s"] == 1800.0
+    assert item["universe_id"] == "u-abc"
+    assert item["branch_def_id"] == "patch_loop"
+    assert item["run_id"] == "run-9"
+
+
+def test_reshape_route_back_carries_resume_identity(tmp_path):
+    rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+        verify_verdict=rq.VERIFY_PASS, universe_id="u-abc",
+        branch_def_id="patch_loop", run_id="run-9",
+    )
+    item = rq.list_queue(tmp_path)[0]
+    reshaped = rq.reshape_item(
+        tmp_path, item_id=item["item_id"], reshaped_by="owner", notes="redo"
+    )
+    route = reshaped["route_back"]
+    assert route["universe_id"] == "u-abc"
+    assert route["branch_def_id"] == "patch_loop"
+    assert route["run_id"] == "run-9"
+    assert route["owner_notes"] == "redo"
+
+
+@pytest.mark.parametrize("bad", [-1.0, -3600.0, float("nan"), float("inf")])
+def test_enqueue_rejects_malformed_timer_delay(tmp_path, bad):
+    with pytest.raises(ValueError):
+        rq.enqueue_pr(
+            tmp_path, destination=_DEST, pr_number=181,
+            pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
+            merge_timer_delay_s=bad,
+        )

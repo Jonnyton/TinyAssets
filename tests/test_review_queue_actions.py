@@ -22,12 +22,30 @@ _HEAD = "a" * 40
 
 @pytest.fixture
 def owner_env(monkeypatch, tmp_path):
-    """Point universe resolution at tmp_path and grant owner (write) access."""
+    """Point universe resolution at tmp_path and grant owner (write + owner)."""
     monkeypatch.setattr(helpers_mod, "_request_universe", lambda uid="": uid or "u1")
     monkeypatch.setattr(helpers_mod, "_universe_dir", lambda uid: tmp_path)
     monkeypatch.setattr(permissions_mod, "current_actor_id", lambda: "owner-actor")
     monkeypatch.setattr(
         permissions_mod, "universe_access_allows", lambda uid, write=False: True
+    )
+    monkeypatch.setattr(
+        permissions_mod, "current_actor_is_universe_owner", lambda uid: True
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def writer_not_owner_env(monkeypatch, tmp_path):
+    """Write access but NOT universe owner (for the founder-OAuth gate, C4)."""
+    monkeypatch.setattr(helpers_mod, "_request_universe", lambda uid="": uid or "u1")
+    monkeypatch.setattr(helpers_mod, "_universe_dir", lambda uid: tmp_path)
+    monkeypatch.setattr(permissions_mod, "current_actor_id", lambda: "writer-actor")
+    monkeypatch.setattr(
+        permissions_mod, "universe_access_allows", lambda uid, write=False: True
+    )
+    monkeypatch.setattr(
+        permissions_mod, "current_actor_is_universe_owner", lambda uid: False
     )
     return tmp_path
 
@@ -40,10 +58,13 @@ def non_owner_env(monkeypatch, tmp_path):
     monkeypatch.setattr(
         permissions_mod, "universe_access_allows", lambda uid, write=False: False
     )
+    monkeypatch.setattr(
+        permissions_mod, "current_actor_is_universe_owner", lambda uid: False
+    )
     return tmp_path
 
 
-def _seed(tmp_path):
+def _seed(tmp_path, *, oauth=False):
     return rq.enqueue_pr(
         tmp_path,
         destination=_DEST,
@@ -52,6 +73,7 @@ def _seed(tmp_path):
         head_sha=_HEAD,
         request_ref="req-abc",
         verify_verdict=rq.VERIFY_PASS,
+        founder_oauth_per_merge=oauth,
     )
 
 
@@ -72,10 +94,66 @@ def test_owner_can_list_queue(owner_env):
 
 def test_owner_can_approve(owner_env):
     item = _seed(owner_env)
-    out = _call("review_queue_approve", universe_id="u1", item_id=item["item_id"])
+    out = _call(
+        "review_queue_approve", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
     assert out["status"] == "approved"
     assert out["item"]["status"] == "approved"
     assert out["item"]["decided_by"] == "owner-actor"
+
+
+def test_approve_requires_expected_head_sha(owner_env):
+    """F1: approve is the credential-minting path — it head-binds the approval,
+    so the owner must pass the head_sha they reviewed."""
+    item = _seed(owner_env)
+    out = _call("review_queue_approve", universe_id="u1", item_id=item["item_id"])
+    assert out["failure_class"] == "missing_expected_head_sha"
+    assert rq.get_item(owner_env, item_id=item["item_id"])["status"] == "pending"
+
+
+def test_approve_stale_head_returns_head_changed(owner_env):
+    """F1: an approve naming a head the PR has moved past is refused — no token
+    minted for content the owner never saw."""
+    item = _seed(owner_env)
+    out = _call(
+        "review_queue_approve", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha="f" * 40,  # not the reviewed head
+    )
+    assert out["failure_class"] == "head_changed"
+    got = rq.get_item(owner_env, item_id=item["item_id"])
+    assert got["status"] == "pending"
+    assert not rq.has_fresh_merge_approval(
+        owner_env, destination=_DEST, pr_number=181, head_sha=_HEAD
+    )
+
+
+def test_founder_oauth_approve_requires_owner(writer_not_owner_env):
+    """C4: minting a founder-OAuth-per-merge approval requires the universe
+    owner, not ordinary write scope — a non-owner writer is refused."""
+    item = _seed(writer_not_owner_env, oauth=True)
+    out = _call(
+        "review_queue_approve", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
+    assert out["failure_class"] == "owner_required"
+    got = rq.get_item(writer_not_owner_env, item_id=item["item_id"])
+    assert got["status"] == "pending"
+    assert not rq.has_fresh_merge_approval(
+        writer_not_owner_env, destination=_DEST, pr_number=181, head_sha=_HEAD
+    )
+
+
+def test_founder_oauth_approve_allowed_for_owner(owner_env):
+    item = _seed(owner_env, oauth=True)
+    out = _call(
+        "review_queue_approve", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
+    assert out["status"] == "approved"
+    assert rq.has_fresh_merge_approval(
+        owner_env, destination=_DEST, pr_number=181, head_sha=_HEAD
+    )
 
 
 def test_owner_reshape_routes_back(owner_env):
@@ -114,7 +192,10 @@ def test_approve_missing_item_id(owner_env):
 
 
 def test_approve_unknown_item(owner_env):
-    out = _call("review_queue_approve", universe_id="u1", item_id="rq-nope")
+    out = _call(
+        "review_queue_approve", universe_id="u1", item_id="rq-nope",
+        expected_head_sha=_HEAD,
+    )
     assert out["failure_class"] == "item_not_found"
 
 
@@ -123,7 +204,10 @@ def test_approve_after_reject_surfaces_invalid_transition(owner_env):
     returns an actionable invalid_transition error, not a host storage error."""
     item = _seed(owner_env)
     _call("review_queue_reject", universe_id="u1", item_id=item["item_id"])
-    out = _call("review_queue_approve", universe_id="u1", item_id=item["item_id"])
+    out = _call(
+        "review_queue_approve", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
     assert out["failure_class"] == "invalid_transition"
     assert out["actionable_by"] == "chatbot"
     assert rq.get_item(owner_env, item_id=item["item_id"])["status"] == "rejected"
@@ -153,7 +237,8 @@ def test_non_owner_denied_on_all_verbs(non_owner_env):
     assert listing["error"] == "universe_access_denied"
 
     approve = _call(
-        "review_queue_approve", universe_id="u1", item_id=item["item_id"]
+        "review_queue_approve", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
     )
     assert approve["error"] == "universe_access_denied"
 

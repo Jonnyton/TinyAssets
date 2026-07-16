@@ -24,6 +24,10 @@ def _packet(**payload):
             "authorization": {
                 "mode": github_merge.AUTHORIZATION_MODE_GITHUB_BRANCH_PROTECTION,
             },
+            # These are the raw branch-protection (non-patch-loop) tests; under
+            # the S4 policy gate they must explicitly opt into the legacy raw
+            # merge path (Codex R6 C1 — omission is never a bypass).
+            "legacy_raw_merge": True,
             **payload,
         },
     }

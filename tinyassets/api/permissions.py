@@ -149,3 +149,45 @@ def branch_run_actor(universe_id: str) -> str:
     if uid:
         return f"universe:{uid}"
     return current_actor_id()
+
+
+def current_actor_is_universe_owner(universe_id: str) -> bool:
+    """Return True iff the authenticated actor OWNS the universe — the founder
+    whose home is this universe, or an explicit ``admin`` (owner-level) ACL
+    grant. Ordinary ``write`` scope is NOT enough.
+
+    Used to gate owner-only actions (e.g. minting a founder-OAuth-per-merge
+    approval — Codex R6 C4) above the ordinary write gate.
+    """
+    uid = (universe_id or "").strip()
+    if not uid or not is_authenticated_request():
+        return False
+    actor_id = current_actor_id()
+    base = _base_path()
+    try:
+        from tinyassets.daemon_server import get_founder_home
+
+        if get_founder_home(base, actor_id) == uid:
+            return True
+    except Exception:
+        logger.warning(
+            "current_actor_is_universe_owner: founder_home lookup failed for "
+            "universe %r",
+            uid,
+            exc_info=True,
+        )
+    try:
+        from tinyassets.daemon_server import universe_access_permission
+
+        return (
+            universe_access_permission(base, universe_id=uid, actor_id=actor_id)
+            == "admin"
+        )
+    except Exception:
+        logger.warning(
+            "current_actor_is_universe_owner: admin-grant lookup failed for "
+            "universe %r",
+            uid,
+            exc_info=True,
+        )
+        return False
