@@ -10,6 +10,7 @@ See AGENTS.md Input Files table.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -190,7 +191,10 @@ def _build_config(data: dict[str, Any]) -> UniverseConfig:
 
 
 def write_universe_config_fields(
-    universe_path: str | Path, **fields: Any
+    universe_path: str | Path,
+    *,
+    clear: Iterable[str] = (),
+    **fields: Any,
 ) -> None:
     """Merge *fields* into ``{universe_path}/config.yaml`` (atomic).
 
@@ -199,6 +203,12 @@ def write_universe_config_fields(
     keys not named in *fields* are preserved. This is the write path for
     per-universe engine assignment (``preferred_writer`` /
     ``allow_api_key_providers`` set by ``universe action=set_engine``).
+
+    ``clear`` names keys to REMOVE before applying *fields*, in the SAME atomic
+    write — used by engine-lane transitions so a lane switch REPLACES the engine
+    namespace instead of merging (round-12 #5): e.g. ``market_rented`` →
+    ``self_hosted_endpoint`` must not retain a stale ``market_rate`` / ``spending_cap``.
+    A key present in both *clear* and *fields* is set to the new value (fields win).
 
     Fails loudly (raises) if PyYAML is unavailable or the write fails — a
     silently-dropped engine assignment would leave the universe on the wrong
@@ -221,6 +231,8 @@ def write_universe_config_fields(
                 "Existing config.yaml at %s unreadable (%s); rewriting fresh",
                 config_file, e,
             )
+    for key in clear:
+        data.pop(key, None)
     data.update(fields)
 
     config_file.parent.mkdir(parents=True, exist_ok=True)

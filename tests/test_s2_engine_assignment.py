@@ -96,8 +96,11 @@ def test_attestation_toctou_uses_one_snapshot(tmp_path, monkeypatch):
     }])
     env = subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
     assert env.get("ANTHROPIC_API_KEY") == "sk-ant-byo"
-    assert "CLAUDE_CONFIG_DIR" not in env  # ambient scrubbed, snapshot held True
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    # Round-12 #2: the ambient CLAUDE_CONFIG_DIR is scrubbed and REPLACED with an
+    # isolated empty dir (bare mode) so ~/.claude host OAuth can't win.
+    assert env.get("CLAUDE_CONFIG_DIR") != "/global/.claude"
+    assert "claude-byo-isolated" in env.get("CLAUDE_CONFIG_DIR", "")
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env  # ambient oauth scrubbed
 
 
 def test_byo_bound_broken_secret_fails_closed_no_ambient(tmp_path, monkeypatch):
@@ -113,10 +116,12 @@ def test_byo_bound_broken_secret_fails_closed_no_ambient(tmp_path, monkeypatch):
         subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
 
 
-def test_byo_claude_scrubs_global_subscription(tmp_path, monkeypatch):
-    """A BYO Anthropic key + a legacy Claude subscription record must NOT fall
-    through to platform auth — the child env carries ANTHROPIC_API_KEY and has NO
-    inherited global CLAUDE_CONFIG_DIR / oauth token."""
+def test_legacy_subscription_record_fails_loud_even_with_byo_key(tmp_path, monkeypatch):
+    """Round-12 #1: a legacy Claude subscription record is a RETIRED lane —
+    it must FAIL LOUD (quarantine), never be silently ignored, even alongside a
+    valid BYO key. The platform never custodies subscription tokens."""
+    from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
     _enable_byo(monkeypatch)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/global/.claude")  # platform login
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "global-oauth")
@@ -126,17 +131,15 @@ def test_byo_claude_scrubs_global_subscription(tmp_path, monkeypatch):
             "service": "anthropic",
             "secret_b64": base64.b64encode(b"sk-ant-byo").decode("ascii"),
         },
-        # A legacy (blocked-lane) subscription record that must NOT be consulted.
+        # A legacy (blocked-lane) subscription record — its mere presence fails loud.
         {
             "credential_type": "llm_subscription",
             "service": "claude",
             "oauth_token": "legacy-oauth",
         },
     ])
-    env = subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
-    assert env.get("ANTHROPIC_API_KEY") == "sk-ant-byo"
-    assert "CLAUDE_CONFIG_DIR" not in env
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    with pytest.raises(RetiredSubscriptionLaneError):
+        subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
 
 
 _VALID_ANTHROPIC_KEY = "sk-ant-api03-" + "A" * 40
@@ -280,6 +283,40 @@ def test_set_engine_host_daemon_declares_no_summon(tmp_path, monkeypatch):
     })
     assert out["status"] == "engine_declared" and out["executable"] is False
     assert "daemon_summon" not in json.dumps(out)
+
+
+def test_r12_5_lane_switch_replaces_engine_namespace(tmp_path, monkeypatch):
+    """Round-12 #5: switching engine lanes REPLACES the engine namespace — stale
+    fields from the previous lane (market_rate / spending_cap / market_model /
+    preferred_writer) must not survive in the new lane's config.yaml."""
+    import yaml
+
+    uid = "u-lane-switch"
+    # 1) market_rented writes market_model + market_rate + spending_cap + writer.
+    out1 = _set_engine(monkeypatch, tmp_path, uid, {
+        "engine_source": "market_rented", "market_model": "glm-5.2",
+        "market_rate": 0.5, "spending_cap": 10.0, "preferred_writer": "codex",
+    })
+    assert out1["status"] == "engine_declared"
+    raw1 = yaml.safe_load((tmp_path / uid / "config.yaml").read_text())
+    assert raw1["market_model"] == "glm-5.2" and raw1["preferred_writer"] == "codex"
+
+    # 2) switch to self_hosted_endpoint — the market_* + preferred_writer fields
+    # MUST be cleared from the on-disk config (replaced, not merged).
+    out2 = _set_engine(monkeypatch, tmp_path, uid, {
+        "engine_source": "self_hosted_endpoint",
+        "endpoint": "https://ollama.example.com",
+    })
+    assert out2["status"] == "engine_declared"
+    raw2 = yaml.safe_load((tmp_path / uid / "config.yaml").read_text())
+    assert raw2["engine_source"] == "self_hosted_endpoint"
+    assert raw2["engine_endpoint"] == "https://ollama.example.com"
+    for stale in ("market_model", "market_rate", "spending_cap", "preferred_writer"):
+        assert stale not in raw2, f"stale {stale!r} leaked across the lane switch"
+    # And the loaded config reflects the cleared defaults.
+    cfg2 = load_universe_config(tmp_path / uid)
+    assert cfg2.market_model == "" and cfg2.spending_cap == 0.0
+    assert cfg2.preferred_writer == ""
 
 
 @pytest.mark.parametrize("field,value", [

@@ -154,15 +154,18 @@ def subprocess_env_for_provider(
     try:
         from tinyassets.credential_vault import (
             _PROVIDER_BYO_ENV_VAR,
-            _PROVIDER_GLOBAL_AUTH_SCRUB,
+            RetiredSubscriptionLaneError,
             _byo_injection_enabled,
             apply_provider_auth_env,
             provider_is_byo_bound,
+            scrub_byo_child_auth,
         )
 
-        # Round-11 #2 (attestation TOCTOU): take ONE authoritative attestation
-        # snapshot and thread it into BOTH the byo-bound decision and the overlay
-        # so they can never disagree across a mid-call attestation flip.
+        # Round-11 #2 / round-12 #3 (attestation TOCTOU): read the ONE authoritative
+        # snapshot. Under the router this resolves to the pinned value
+        # (engine_binding.pin_byo_execution_snapshot), so route-time and spawn-time
+        # agree; bare callers recompute live. Thread it into BOTH the byo-bound
+        # decision and the overlay so they can never disagree.
         byo_enabled = _byo_injection_enabled()
         byo_bound = provider_is_byo_bound(
             provider_name, env=env, universe_dir=universe_dir,
@@ -170,16 +173,18 @@ def subprocess_env_for_provider(
         )
         provider = provider_name.strip()
         if byo_bound:
-            # Scrub inherited global subscription auth BEFORE materialization, so
-            # even if the overlay fails the child can NEVER run on ambient auth.
-            for var in _PROVIDER_GLOBAL_AUTH_SCRUB.get(provider, ()):
-                env.pop(var, None)
+            # Round-12 #2: positive-allowlist the auth surface BEFORE
+            # materialization, so even if the overlay fails the child can NEVER run
+            # on an ambient higher-precedence credential (Bedrock/Vertex/AWS/OAuth).
+            scrub_byo_child_auth(env)
         try:
             apply_provider_auth_env(
                 env, provider_name, universe_dir=universe_dir,
                 byo_enabled=byo_enabled,
             )
-        except ValueError:
+        except (ValueError, RetiredSubscriptionLaneError):
+            # Malformed vault OR a legacy subscription record (retired lane,
+            # round-12 #1) — fail loud, never silently skip.
             raise
         except Exception:
             if byo_bound:

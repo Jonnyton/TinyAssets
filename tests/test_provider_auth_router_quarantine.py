@@ -572,3 +572,136 @@ def test_judge_ensemble_skips_dead_auth_codex(isolated_universe_config):
     assert "codex" not in used
     assert "ollama-local" in used  # 'unknown' -> kept
     assert providers["codex"].call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Round-12 review regressions (Codex r12)
+# ---------------------------------------------------------------------------
+
+
+def _byo_broken_claude_universe(tmp_path):
+    """A DECLARED byo_api_key universe whose Anthropic key is malformed (nonempty
+    but not a well-formed sk-ant- key)."""
+    import base64
+
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.credential_vault import write_credential_vault
+
+    udir = tmp_path / "u-byo-broken"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": base64.b64encode(b"not-a-real-anthropic-key").decode("ascii"),
+    }])
+    write_universe_config_fields(udir, engine_source="byo_api_key")
+    return udir
+
+
+def test_r12_2_every_higher_precedence_auth_selector_scrubbed_from_byo_child(
+    tmp_path, monkeypatch,
+):
+    """Round-12 #2: a BYO claude-code child is a POSITIVE auth allowlist — EVERY
+    documented higher-precedence selector (Bedrock/Vertex flags, AWS/GCP creds,
+    OAuth/auth tokens, config dir) is stripped; only the BYO key remains, and
+    CLAUDE_CONFIG_DIR is an isolated empty dir (bare mode)."""
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    higher_precedence = {
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "AWS_ACCESS_KEY_ID": "AKIA",
+        "AWS_SECRET_ACCESS_KEY": "s",
+        "AWS_SESSION_TOKEN": "t",
+        "AWS_PROFILE": "p",
+        "AWS_BEARER_TOKEN_BEDROCK": "b",
+        "ANTHROPIC_AUTH_TOKEN": "tok",
+        "ANTHROPIC_BASE_URL": "http://x",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/g.json",
+        "GOOGLE_CLOUD_PROJECT": "proj",
+        "CLOUD_ML_REGION": "us",
+        "VERTEX_REGION": "us",
+    }
+    for k, v in higher_precedence.items():
+        monkeypatch.setenv(k, v)
+    udir = _byo_claude_universe(tmp_path)
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+
+    env = subprocess_env_for_provider("claude-code", universe_dir=udir)
+
+    survivors = [k for k in higher_precedence if k in env]
+    assert not survivors, f"higher-precedence auth selectors survived: {survivors}"
+    assert env["ANTHROPIC_API_KEY"].startswith("sk-ant-")  # only the BYO key
+    assert "claude-byo-isolated" in env.get("CLAUDE_CONFIG_DIR", "")
+
+
+def test_r12_3_router_pins_one_byo_snapshot_across_spawn(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """Round-12 #3: the router pins ONE byo_execution_enabled() snapshot for the
+    whole call. A mid-call attestation flip (True→False) cannot let route
+    selection constrain to the BYO writer while the spawn sees byo OFF (which
+    would restore platform auth). The provider observes the pinned value at spawn."""
+    import tinyassets.engine_binding as eb
+    from tinyassets.providers.base import UniverseContext
+
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    # Attestation is True only on the FIRST read; every later read flips False.
+    calls = {"n": 0}
+
+    def _flip():
+        calls["n"] += 1
+        return calls["n"] <= 1
+
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", _flip)
+    udir = _byo_claude_universe(tmp_path)
+
+    observed: dict[str, bool] = {}
+
+    class _ObservingClaude(BaseProvider):
+        name = "claude-code"
+        family = "anthropic"
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            observed["byo_at_spawn"] = eb.byo_execution_enabled()
+            return ProviderResponse(
+                text="ok", provider="claude-code", model="m",
+                family="anthropic", latency_ms=0.0,
+            )
+
+    providers = {
+        "claude-code": _ObservingClaude(),
+        "codex": _FakeProvider("codex"),
+        "ollama-local": _FakeProvider("ollama-local"),
+    }
+    router = ProviderRouter(providers=providers, quota=QuotaTracker())
+    resp = _run(router.call(
+        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+    ))
+    assert resp.provider == "claude-code"
+    # The spawn saw the PINNED route-time snapshot (True), not the flipped-False
+    # live value — no TOCTOU restore of platform auth.
+    assert observed["byo_at_spawn"] is True
+
+
+def test_r12_4_declared_byo_lane_with_broken_key_fails_closed(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """Round-12 #4: a DECLARED byo_api_key lane whose key is malformed is
+    MISCONFIGURED, not unbound — the writer route FAILS CLOSED (never leaves the
+    full platform fallback chain / borrows platform capacity)."""
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    udir = _byo_broken_claude_universe(tmp_path)
+    router, providers = _router(dead=set())  # every platform provider healthy
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call(
+            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+        ))
+    # No platform provider was borrowed.
+    for name, provider in providers.items():
+        assert provider.call_count == 0, f"{name} should not have been called"

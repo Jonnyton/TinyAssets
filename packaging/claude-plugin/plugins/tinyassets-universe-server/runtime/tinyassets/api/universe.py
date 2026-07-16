@@ -4943,6 +4943,21 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
 
 _KNOWN_ENGINE_PROVIDERS: frozenset[str] = frozenset({"claude-code", "codex"})
 
+# Round-12 #5: the full engine-lane namespace in config.yaml. A lane switch
+# REPLACES this namespace (clears the fields the new lane does not set) so a
+# stale market_rate / engine_endpoint / preferred_writer from a previous lane
+# never leaks into the new one. Each _set_engine_* clears NAMESPACE − its fields.
+_ENGINE_CONFIG_NAMESPACE: frozenset[str] = frozenset({
+    "engine_source", "engine_endpoint", "preferred_writer",
+    "market_model", "market_rate", "spending_cap",
+})
+
+
+def _engine_lane_clear(fields: dict[str, Any]) -> frozenset[str]:
+    """Return the engine-namespace keys to clear when writing *fields* (the
+    fields the new lane does NOT set), so a lane switch replaces, not merges."""
+    return _ENGINE_CONFIG_NAMESPACE - set(fields)
+
 
 # A field name that looks secret-bearing — a NON-SECRET declaration must never
 # carry one (a client that sends a raw secret would leak it into the relay, #3).
@@ -5035,7 +5050,7 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
     try:
-        write_universe_config_fields(udir, **fields)
+        write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
@@ -5085,7 +5100,7 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
     try:
-        write_universe_config_fields(udir, **fields)
+        write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
@@ -5117,7 +5132,7 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     fields = {"engine_source": "host_daemon",
               "preferred_writer": preferred_writer or provider}
     try:
-        write_universe_config_fields(udir, **fields)
+        write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import os
 from collections.abc import Callable
@@ -240,6 +241,25 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 _SYNC_CALL_MAX_WORKERS: int = 8
 
 
+def _pin_byo_snapshot(method):
+    """Round-12 #3: pin ONE immutable ``byo_execution_enabled()`` snapshot for the
+    whole routing operation. Route selection (``_enforce_writer_binding``) and the
+    awaited subprocess spawn (``provider.complete`` → ``subprocess_env_for_provider``)
+    both run inside this ``with``, so a mid-call attestation flip can never let
+    routing constrain to the BYO writer while the spawn restores platform auth. The
+    contextvar is set for the entire awaited coroutine (same task context) and any
+    fan-out sub-tasks copy it at creation."""
+
+    @functools.wraps(method)
+    async def _wrapper(self, *args, **kwargs):
+        from tinyassets.engine_binding import pin_byo_execution_snapshot
+
+        with pin_byo_execution_snapshot():
+            return await method(self, *args, **kwargs)
+
+    return _wrapper
+
+
 class ProviderRouter:
     """Routes LLM calls across providers with fallback and quota tracking.
 
@@ -424,6 +444,7 @@ class ProviderRouter:
                 alive.append(provider_name)
         return alive
 
+    @_pin_byo_snapshot
     async def call(
         self,
         role: str,
@@ -751,6 +772,7 @@ class ProviderRouter:
             "attempts": attempts,
         }
 
+    @_pin_byo_snapshot
     async def call_with_policy(
         self,
         role: str,
@@ -1030,6 +1052,7 @@ class ProviderRouter:
     # Judge ensemble (model family diversity)
     # ------------------------------------------------------------------
 
+    @_pin_byo_snapshot
     async def call_judge_ensemble(
         self,
         prompt: str,

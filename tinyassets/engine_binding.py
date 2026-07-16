@@ -1,7 +1,8 @@
 """Per-universe engine-capacity binding resolver + the non-ambient-work flag.
 
 The honest "can this universe run?" predicate. A universe executes work only on
-capacity **explicitly bound to it** (design note 2026-07-15 gap G7). The
+capacity **explicitly bound to it** (2026-07-02 credential-custody research §0/§4;
+non-ambient work gate). The
 sanctioned founder lanes (per the 2026-07-02 credential-custody research §0/§4 —
 the platform may NOT custody a founder's personal subscription tokens) are: a
 BYO API key (vault), a self-hosted endpoint, market-rented capacity, or a hosted
@@ -39,8 +40,10 @@ unbound and skipped (Hard Rule #8).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -204,6 +207,45 @@ def _vault_encryption_capability_attested() -> bool:
     return False  # Phase 2: implement real per-record envelope encryption here.
 
 
+#: Round-12 #3 (attestation TOCTOU). Route selection
+#: (:func:`resolve_engine_binding` / the router's writer-binding enforcement) and
+#: the subprocess spawn (:func:`tinyassets.providers.base.subprocess_env_for_provider`)
+#: BOTH consult :func:`byo_execution_enabled`. Without a shared snapshot, a mid-call
+#: attestation flip (True→False) lets routing constrain to the BYO writer while the
+#: spawn restores platform auth. The router wraps its chain-selection + the awaited
+#: ``provider.complete`` in :func:`pin_byo_execution_snapshot`, so every read inside
+#: that one routing operation resolves to the SAME immutable value. ``None`` = not
+#: pinned (standalone callers recompute live).
+_BYO_EXECUTION_SNAPSHOT: ContextVar[bool | None] = ContextVar(
+    "byo_execution_snapshot", default=None,
+)
+
+
+def _byo_execution_enabled_uncached() -> bool:
+    """Live read of the executable-BYO prerequisite (flag AND attestation)."""
+    if os.environ.get(BYO_VAULT_ENCRYPTED_ENV, "").strip().lower() not in _TRUTHY:
+        return False
+    return _vault_encryption_capability_attested()
+
+
+@contextlib.contextmanager
+def pin_byo_execution_snapshot():
+    """Pin ONE immutable ``byo_execution_enabled()`` reading for a routing call.
+
+    The router enters this around its chain-selection + the awaited
+    ``provider.complete`` so route-time and spawn-time reads can never disagree
+    across a mid-call attestation flip (round-12 #3). A nested pin reuses the
+    outermost value — the first decision governs the whole operation.
+    """
+    current = _BYO_EXECUTION_SNAPSHOT.get()
+    value = _byo_execution_enabled_uncached() if current is None else current
+    token = _BYO_EXECUTION_SNAPSHOT.set(value)
+    try:
+        yield value
+    finally:
+        _BYO_EXECUTION_SNAPSHOT.reset(token)
+
+
 def byo_execution_enabled() -> bool:
     """Return whether the executable BYO-key path is enabled. DEFAULT OFF.
 
@@ -214,10 +256,15 @@ def byo_execution_enabled() -> bool:
     plaintext-key deposit+execution** (C4). OFF (this deploy) → the executable BYO
     path is DARK end-to-end: no deposit, no bound BYO, no direct BYO routing, no
     BYO env injection.
+
+    When a routing operation has pinned a snapshot
+    (:func:`pin_byo_execution_snapshot`), returns that immutable value so route
+    selection and subprocess spawn always agree (round-12 #3).
     """
-    if os.environ.get(BYO_VAULT_ENCRYPTED_ENV, "").strip().lower() not in _TRUTHY:
-        return False
-    return _vault_encryption_capability_attested()
+    pinned = _BYO_EXECUTION_SNAPSHOT.get()
+    if pinned is not None:
+        return pinned
+    return _byo_execution_enabled_uncached()
 
 
 def _byo_key_auth_health(provider_name: str, universe_dir: Path) -> str:
@@ -451,13 +498,33 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
                     eligible_providers=frozenset(healthy),
                     vault_providers=frozenset(healthy),
                 )
-            # A syntactically-present BYO key that is not executable: codex-only
-            # (idle by F1) or a claude key that failed the format check (a real
-            # network auth-health probe is Phase 2).
+            # Round-12 #4: distinguish "lane DECLARED but BROKEN credential" from
+            # "no lane declared" / "declared-not-executable idle". When the founder
+            # EXPLICITLY declared engine_source=byo_api_key AND an executable
+            # provider's key (claude-code) is PRESENT but failed auth-health
+            # (malformed / not a well-formed sk-ant- key), the declared lane is
+            # MISCONFIGURED — fail loud so the router FAILS CLOSED
+            # (AllProvidersExhausted) instead of silently borrowing the full
+            # platform fallback chain. An UNDECLARED universe with a stray broken
+            # key stays idle (ambient) — it never declared a BYO lane to honor.
+            if declared_source == "byo_api_key" and (
+                scan.eligible_providers & _EXECUTABLE_BYO_PROVIDERS
+            ):
+                raise EngineMisconfiguredError(
+                    universe_id, declared_source,
+                    "a BYO API key for an executable provider is present but "
+                    "failed auth-health (not a well-formed key) — re-bind via "
+                    "write_graph target=engine; refusing to fall through to "
+                    "platform auth",
+                )
+            # A codex-only key, or an undeclared universe with a stray key:
+            # declared-not-executable / idle by design (Codex BYO needs unmet
+            # sandboxing, F1) — not a fail-closed misconfiguration.
             reason = (
                 "a BYO API key is present but not executable: Codex BYO needs "
-                "unmet sandboxing, and an Anthropic key must be a well-formed "
-                "sk-ant- key (format check; live auth-health is Phase 2) — re-bind"
+                "unmet sandboxing (declared-not-executable), or an Anthropic key "
+                "must be a well-formed sk-ant- key — bind one or run the daemon "
+                "on your own device"
             )
         return EngineBinding(
             bound=False, engine_source=declared_source,

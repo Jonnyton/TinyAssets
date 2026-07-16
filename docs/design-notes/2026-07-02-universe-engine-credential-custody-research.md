@@ -310,7 +310,7 @@ what a droplet compromise exposes.
 | Engine source | Where creds live | 24/7 no-device | Multi-tenant isolation | Blast radius (droplet pwned) | ToS / legal | Impl cost |
 |---|---|---|---|---|---|---|
 | **A. Founder subscription (Claude/ChatGPT CLI)** | would need per-universe `CODEX_HOME`/`CLAUDE_CONFIG_DIR` + OAuth tokens | **Yes technically** | per-universe auth home (exists) | one auth home per founder, cleartext OAuth | **BLOCKED** — §0 (account-sharing + OAuth-in-3rd-party + power-3rd-party-service, both providers) | n/a — don't build |
-| **B. Founder API key (Anthropic/OpenAI/etc.)** | per-universe vault, **KMS-wrapped** | **Yes** | per-tenant DEK + encryption context | one founder's key **iff** per-tenant key; all keys iff shared/base64 (today) | **CLEAN** — API key is the *sanctioned* server path | Med — add write surface + envelope encryption; router already resolves per-universe |
+| **B. Founder API key (Anthropic/OpenAI/etc.)** | per-universe vault, **KMS-wrapped** | **Yes** | per-tenant DEK + encryption context | one founder's key **iff** per-tenant key; all keys iff shared/base64 (today) | **CONDITIONAL** — API key is the *sanctioned* server path, but NOT categorically clean: OpenAI documents API-key sharing as unsupported/against terms and recommends **project-scoped** keys; Anthropic warns that uploading a key grants **account access**. Requires **dedicated project/service keys + explicit founder consent + spend limits + legal review** (see §4.2b) | Med — add write surface + envelope encryption; router already resolves per-universe |
 | **C. Self-hosted OSS endpoint (Ollama/vLLM/`ANTHROPIC_BASE_URL`)** | vault holds **endpoint URL + bearer token**, not model creds | **Depends on founder's host** being up | endpoint+token per universe | one endpoint token (low-value; founder's infra) | **CLEAN** — no provider account shared; provider-agnostic base-url already in PLAN | Low — endpoint+token is a thin vault record; router needs base-url binding per universe |
 | **D. BYO-cloud / Workload Identity Federation** | **no stored secret** — OIDC federation to founder's cloud LLM | **Yes** | per-founder OIDC trust | **nothing** — no long-lived secret at rest | **CLEANEST** — no key custody at all | High — federation plumbing; forward-looking, not MVP |
 | **E. Host's-own subscription (NOT a founder default)** | droplet `/data/.codex` + `/data/.claude` (exists) | **Yes** | host's own account, serving ONLY the host's own universe(s) — never a per-founder default | host's own account only | **OK** — first-party, host's own account/infra (§0) | Zero — already live |
@@ -345,6 +345,24 @@ provided default engine for founders (host correction 2026-07-02).**
    universe's `credential_ref`. This is the lawful way to "host their engine 24/7
    without their device." **Requires relaxing `TINYASSETS_ALLOW_API_KEY_PROVIDERS`
    per-universe** — flagged in §6.
+
+2b. **Option B is CONDITIONAL, not categorically clean (round-12 #6 source correction).**
+   Founder API-key custody is the *sanctioned* server path, but "clean" overstated it —
+   the providers' own terms attach conditions:
+   - **OpenAI** documents API-key *sharing* as **unsupported / against its terms** and
+     recommends **project-scoped keys** with their own budgets
+     (help.openai.com/en/articles/5112595 — API-key safety;
+     help.openai.com/en/articles/9793128 — Pro terms summary). The clean personal-
+     *subscription* prohibition (§0) is unchanged, and the Business/Enterprise **Codex
+     access-token** exception (§0.1) remains a separate, current lawful org path.
+   - **Anthropic** warns that uploading an API key **grants the platform account
+     access** (console-managed keys; anthropic.com legal + code.claude.com legal-and-
+     compliance).
+   Therefore Option B must require, before productionizing: **(a)** dedicated
+   **project/service** keys (never a personal all-scopes key), **(b)** explicit
+   founder **consent** at deposit, **(c)** per-key **spend limits**, and **(d) legal
+   review**. These are gating conditions, not nice-to-haves — the "CONDITIONAL"
+   verdict in the §3 matrix reflects them.
 
 3. **BYO-endpoint lane — Option C, for OSS / privacy / cost.** Founder points the
    universe at their own `OLLAMA_HOST` / `ANTHROPIC_BASE_URL` + a bearer token. The

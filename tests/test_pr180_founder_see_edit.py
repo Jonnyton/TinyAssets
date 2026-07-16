@@ -23,7 +23,14 @@ import pytest
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 
-ADVERTISED = {
+# The actually-advertised handle set on this branch. The five canonical graph/page
+# handles + get_status are the PR-178 invariant; `converse` is a pre-existing handle
+# added by the founder-identity relay work (b91a6b07, on origin/main) — NOT by this
+# S5 change (round-12 #7: align the expected set with reality; the separate
+# assert-handles canary allowlist for converse is tracked outside this branch).
+# The invariant THIS file guards: adding read_graph/write_graph *targets* (run,
+# branch, engine, …) adds NO new handle.
+_CANONICAL_HANDLES = {
     "read_graph",
     "write_graph",
     "run_graph",
@@ -31,6 +38,7 @@ ADVERTISED = {
     "write_page",
     "get_status",
 }
+ADVERTISED = _CANONICAL_HANDLES | {"converse"}
 
 _BASIC_SPEC = {
     "name": "Founder branch",

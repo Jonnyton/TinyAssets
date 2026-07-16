@@ -54,27 +54,6 @@ def _chmod_best_effort(path: Path, mode: int) -> None:
         pass
 
 
-def _as_path(value: Any, universe_dir: Path) -> Path | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    candidate = Path(value.strip()).expanduser()
-    if not candidate.is_absolute():
-        candidate = universe_dir / candidate
-    return candidate
-
-
-def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
-    service_part = "".join(
-        ch if ch.isalnum() or ch in {"-", "_"} else "-"
-        for ch in service.strip().lower()
-    ) or "credential"
-    target = universe_dir / CREDENTIAL_ARTIFACT_DIR / service_part
-    target.mkdir(parents=True, exist_ok=True)
-    _chmod_best_effort(target.parent, 0o700)
-    _chmod_best_effort(target, 0o700)
-    return target
-
-
 def _normalize_record(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("credential entries must be JSON objects")
@@ -224,145 +203,56 @@ def resolve_github_token(
     return ""
 
 
-def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str, Any]]:
+class RetiredSubscriptionLaneError(RuntimeError):
+    """A per-universe vault holds a legacy ``llm_subscription`` record.
+
+    Founder subscription custody is a RETIRED, BLOCKED lane (2026-07-02 custody
+    research §0/§4): the platform must NOT custody + drive a founder's personal
+    subscription token (Anthropic/OpenAI ToS). The host's OWN subscription auth is
+    exclusively PROCESS-GLOBAL first-party (Option E) — it never flows through the
+    per-universe vault. A legacy per-universe ``llm_subscription`` record is
+    therefore never injected into a spawn; it is rejected here (fail loud, Hard
+    Rule #8) so the record is migrated/removed rather than silently skipped
+    (round-12 #1). Carries the offending service so the operator can locate it.
+    """
+
+    def __init__(self, service: str, universe_dir: str) -> None:
+        self.service = service
+        self.universe_dir = universe_dir
+        super().__init__(
+            f"per-universe llm_subscription record (service={service!r}) at "
+            f"{universe_dir} is a RETIRED credential lane — the platform never "
+            "custodies subscription tokens (host auth is process-global). Remove "
+            "or migrate the record; bind a sanctioned engine via "
+            "write_graph target=engine (BYO key / self-hosted / market / "
+            "host-your-own-device)."
+        )
+
+
+def _llm_subscription_records(universe_dir: str | Path | None) -> list[dict[str, Any]]:
+    """Return ANY legacy ``llm_subscription`` records in the universe vault.
+
+    The subscription-custody lane is retired (:class:`RetiredSubscriptionLaneError`):
+    these records are never a spawn auth source. This helper exists ONLY to DETECT
+    a legacy record so the spawn path can fail loud instead of silently consuming
+    it. Propagates ``ValueError`` (malformed vault) to the caller.
+    """
     if universe_dir is None:
         return []
-    service_key = service.strip().lower()
     return [
         record
         for record in load_credential_vault(universe_dir)
         if record.get("credential_type") == "llm_subscription"
-        and _service(record) == service_key
     ]
 
 
-def _codex_home_from_record(record: dict[str, Any], universe_dir: Path) -> Path | None:
-    for key in ("codex_home", "home", "auth_home", "path"):
-        resolved = _as_path(record.get(key), universe_dir)
-        if resolved is not None:
-            return resolved
-    auth_path = _as_path(record.get("auth_json_path"), universe_dir)
-    if auth_path is not None:
-        return auth_path.parent
-    return None
-
-
-def resolve_codex_home(universe_dir: str | Path | None) -> Path | None:
-    """Return the configured CODEX_HOME path for this universe, if any."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "codex"):
-        home = _codex_home_from_record(record, universe)
-        if home is not None:
-            return home
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "codex"
-    if (materialized / "auth.json").is_file():
-        return materialized
-    return None
-
-
-def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None:
-    """Materialize any vault-backed Codex auth bundle and return CODEX_HOME."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "codex"):
-        home = _codex_home_from_record(record, universe) or _secret_artifact_dir(universe, "codex")
-        home.mkdir(parents=True, exist_ok=True)
-        _chmod_best_effort(home, 0o700)
-        auth_b64 = record.get("auth_json_b64")
-        auth_file = home / "auth.json"
-        if isinstance(auth_b64, str) and auth_b64.strip() and not auth_file.exists():
-            tmp = auth_file.with_name("auth.json.tmp")
-            tmp.write_bytes(base64.b64decode(auth_b64.strip()))
-            _chmod_best_effort(tmp, 0o600)
-            tmp.replace(auth_file)
-            _chmod_best_effort(auth_file, 0o600)
-        config_file = home / "config.toml"
-        if auth_file.exists() and not config_file.exists():
-            config_file.write_text(
-                'cli_auth_credentials_store = "file"\n',
-                encoding="utf-8",
-            )
-            _chmod_best_effort(config_file, 0o600)
-        return home
-    return resolve_codex_home(universe)
-
-
-def codex_subscription_auth_available(universe_dir: str | Path | None) -> bool:
-    """Return True when the vault can provide or points at Codex auth."""
-    home = ensure_codex_home_from_vault(universe_dir)
-    return bool(home and (home / "auth.json").is_file())
-
-
-def _claude_config_dir_from_record(record: dict[str, Any], universe_dir: Path) -> Path | None:
-    for key in ("claude_config_dir", "config_dir", "path"):
-        resolved = _as_path(record.get(key), universe_dir)
-        if resolved is not None:
-            return resolved
-    for key in ("claude_home", "home", "auth_home"):
-        home = _as_path(record.get(key), universe_dir)
-        if home is not None:
-            return home / ".claude"
-    return None
-
-
-def resolve_claude_config_dir(universe_dir: str | Path | None) -> Path | None:
-    """Return the CLAUDE_CONFIG_DIR path for this universe, if any."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "claude"):
-        config_dir = _claude_config_dir_from_record(record, universe)
-        if config_dir is not None:
-            return config_dir
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "claude"
-    if materialized.is_dir():
-        return materialized
-    return None
-
-
-def ensure_claude_config_dir_from_vault(universe_dir: str | Path | None) -> Path | None:
-    """Create the configured Claude config directory and return it."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "claude"):
-        config_dir = _claude_config_dir_from_record(record, universe)
-        if config_dir is None:
-            config_dir = _secret_artifact_dir(universe, "claude")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        _chmod_best_effort(config_dir, 0o700)
-        return config_dir
-    return resolve_claude_config_dir(universe)
-
-
-def resolve_claude_home(universe_dir: str | Path | None) -> Path | None:
-    """Deprecated compatibility: return CLAUDE_CONFIG_DIR's parent."""
-    config_dir = resolve_claude_config_dir(universe_dir)
-    return config_dir.parent if config_dir is not None else None
-
-
-def ensure_claude_home_from_vault(universe_dir: str | Path | None) -> Path | None:
-    """Deprecated compatibility: create CLAUDE_CONFIG_DIR and return parent."""
-    config_dir = ensure_claude_config_dir_from_vault(universe_dir)
-    return config_dir.parent if config_dir is not None else None
-
-
-def resolve_claude_oauth_token(universe_dir: str | Path | None) -> str:
-    """Return a Claude subscription OAuth token from the vault, if present."""
-    for record in _llm_records(universe_dir, "claude"):
-        return _secret_value(record, "oauth_token", "claude_code_oauth_token")
-    return ""
-
-
-def claude_subscription_auth_available(universe_dir: str | Path | None) -> bool:
-    """Return True when the vault provides a Claude subscription auth route."""
-    if resolve_claude_oauth_token(universe_dir):
-        return True
-    config_dir = ensure_claude_config_dir_from_vault(universe_dir)
-    return bool(config_dir and config_dir.is_dir())
+def _reject_retired_subscription_records(universe_dir: str | Path | None) -> None:
+    """Raise :class:`RetiredSubscriptionLaneError` if a legacy subscription record
+    is present in the universe vault (round-12 #1: quarantine, not silent skip)."""
+    for record in _llm_subscription_records(universe_dir):
+        raise RetiredSubscriptionLaneError(
+            _service(record) or "unknown", str(universe_dir),
+        )
 
 
 def supported_llm_api_key_services() -> frozenset[str]:
@@ -438,6 +328,25 @@ def _byo_injection_enabled() -> bool:
         return False
 
 
+def _byo_isolated_config_dir(universe_dir: str | Path | None) -> Path | None:
+    """Return an EMPTY, per-universe CLAUDE_CONFIG_DIR for a BYO claude-code spawn.
+
+    Round-12 #2: scrubbing ``CLAUDE_CONFIG_DIR`` alone would let claude-code fall
+    back to the host's ``~/.claude`` (which may hold the host's OWN subscription
+    OAuth) — the BYO child could then authenticate as the platform instead of with
+    the founder's key. Pointing ``CLAUDE_CONFIG_DIR`` at an isolated EMPTY dir
+    (bare mode) forecloses that: no cached OAuth is present, so ``ANTHROPIC_API_KEY``
+    (the BYO key) is the only credential the child can use.
+    """
+    if universe_dir is None:
+        return None
+    iso = Path(universe_dir) / CREDENTIAL_ARTIFACT_DIR / "claude-byo-isolated"
+    iso.mkdir(parents=True, exist_ok=True)
+    _chmod_best_effort(iso.parent, 0o700)
+    _chmod_best_effort(iso, 0o700)
+    return iso
+
+
 def provider_auth_env_overrides(
     universe_dir: str | Path | None,
     provider_name: str,
@@ -447,49 +356,37 @@ def provider_auth_env_overrides(
     """Return subprocess env overrides for a CLI-subprocess provider.
 
     ``byo_enabled`` is the caller's ONE authoritative attestation snapshot
-    (round-11 #2 TOCTOU fix): when threaded, this function does NOT recompute
-    ``_byo_injection_enabled()`` — so the byo-bound decision and the overlay can
-    never disagree across a mid-call attestation flip. ``None`` recomputes (for
-    standalone callers).
+    (round-11 #2 / round-12 #3 TOCTOU fix): when threaded, this function does NOT
+    recompute ``_byo_injection_enabled()`` — so the byo-bound decision and the
+    overlay can never disagree across a mid-call attestation flip. ``None``
+    recomputes (for standalone callers).
 
-    A founder BYO key is injected ONLY when (a) executable BYO is enabled
-    (:func:`_byo_injection_enabled`, DARK by default) and (b) the provider is a
-    BYO-EXECUTABLE provider — **claude-code only** today (Codex BYO needs unmet
-    sandboxing, so a codex key is NEVER injected; C2). Otherwise the overlay is
-    the platform/legacy first-party subscription path. The key is overlaid AFTER
-    ``subprocess_env_without_api_keys`` strips process-global keys, so a
-    per-universe key never leaks across universes.
+    ONLY the sanctioned BYO ``llm_api_key`` lane produces overrides, and only when
+    (a) executable BYO is enabled (:func:`_byo_injection_enabled`, DARK by default)
+    and (b) the provider is BYO-EXECUTABLE — **claude-code only** today (Codex BYO
+    needs unmet sandboxing, so a codex key is NEVER injected; C2). A per-universe
+    ``llm_subscription`` record is a RETIRED lane and is REJECTED
+    (:class:`RetiredSubscriptionLaneError`, round-12 #1) — it is never a spawn auth
+    source; host subscription auth stays exclusively process-global. When the BYO
+    key is chosen the overlay also pins an ISOLATED empty ``CLAUDE_CONFIG_DIR`` so
+    the child can't fall back to the host's ``~/.claude`` OAuth (round-12 #2).
     """
     if byo_enabled is None:
         byo_enabled = _byo_injection_enabled()
     provider = provider_name.strip()
-    if provider == "claude-code":
-        overrides: dict[str, str] = {}
-        # BYO-key lane FIRST — but ONLY when executable BYO is enabled. Return
-        # BYO-only; the caller scrubs CLAUDE_CONFIG_DIR / CLAUDE_CODE_OAUTH_TOKEN
-        # so it can never fall through to platform auth.
-        if byo_enabled:
-            api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
-            if api_key:
-                overrides["ANTHROPIC_API_KEY"] = api_key
-                return overrides
-        # No executable BYO key — legacy / host subscription bundle.
-        claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)
-        if claude_config_dir:
-            overrides["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
-        oauth_token = resolve_claude_oauth_token(universe_dir)
-        if oauth_token:
-            overrides["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
-        return overrides
-    if provider == "codex":
-        # Codex BYO is NOT executable (C2) — a codex/OpenAI BYO key is NEVER
-        # injected (that would run judge/extract codex calls on the founder's
-        # key). Only the platform/legacy first-party CODEX_HOME subscription.
-        overrides = {}
-        codex_home = ensure_codex_home_from_vault(universe_dir)
-        if codex_home:
-            overrides["CODEX_HOME"] = str(codex_home)
-        return overrides
+    # Round-12 #1: a legacy per-universe subscription record is NEVER consumed —
+    # fail loud (quarantine) rather than silently inject or skip it.
+    _reject_retired_subscription_records(universe_dir)
+    if provider == "claude-code" and byo_enabled:
+        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+        if api_key:
+            overrides: dict[str, str] = {"ANTHROPIC_API_KEY": api_key}
+            iso = _byo_isolated_config_dir(universe_dir)
+            if iso is not None:
+                overrides["CLAUDE_CONFIG_DIR"] = str(iso)
+            return overrides
+    # No sanctioned per-universe lane: the host's process-global first-party auth
+    # (inherited env) stands. Codex + all non-BYO paths inject nothing here.
     return {}
 
 
@@ -500,16 +397,70 @@ def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     return Path(value) if value else None
 
 
-#: BYO-EXECUTABLE providers → their BYO env var + the global subscription auth
-#: vars to SCRUB from a child env when the BYO lane is chosen (so a BYO spawn can
-#: never inherit the platform-global subscription login — Hard Rule #8). Only
-#: claude-code is BYO-executable (Codex BYO needs unmet sandboxing, C2).
+#: BYO-EXECUTABLE providers → their BYO env var. Only claude-code is
+#: BYO-executable (Codex BYO needs unmet sandboxing, C2).
 _PROVIDER_BYO_ENV_VAR: dict[str, str] = {
     "claude-code": "ANTHROPIC_API_KEY",
 }
-_PROVIDER_GLOBAL_AUTH_SCRUB: dict[str, tuple[str, ...]] = {
-    "claude-code": ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"),
-}
+
+#: Round-12 #2 — POSITIVE auth allowlist for a BYO claude-code child. Claude Code
+#: consults SEVERAL credential selectors at a HIGHER precedence than (or as an
+#: alternative to) ``ANTHROPIC_API_KEY`` — a Bedrock/Vertex flag, cloud creds, an
+#: OAuth token, an auth-token, a config dir with a cached login. A deny-list can't
+#: anticipate them all, so when the BYO lane is chosen we strip EVERY auth selector
+#: and let ONLY ``ANTHROPIC_API_KEY`` (the founder's BYO key) authenticate the
+#: child. Named selectors + namespace prefixes (below) are both swept so an
+#: undocumented future selector in those families can't leak.
+#: Basis: code.claude.com/docs/en/authentication (auth precedence: Bedrock/Vertex,
+#: ANTHROPIC_AUTH_TOKEN, cloud creds all outrank the API key).
+_BYO_AUTH_SELECTOR_NAMES: frozenset[str] = frozenset({
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GCLOUD_PROJECT",
+    "CLOUD_ML_REGION",
+    "VERTEX_REGION",
+})
+#: Whole namespace families to sweep (every var whose name starts with one of
+#: these is an auth selector for Bedrock/Vertex/AWS/GCP and must not survive).
+_BYO_AUTH_SELECTOR_PREFIXES: tuple[str, ...] = (
+    "AWS_", "CLAUDE_CODE_USE_", "GOOGLE_", "GCLOUD_", "VERTEX_",
+)
+
+
+def scrub_byo_child_auth(env: dict[str, str]) -> None:
+    """Positive-allowlist the AUTH surface of a BYO claude-code child in place.
+
+    Removes EVERY credential selector except ``ANTHROPIC_API_KEY`` (which the
+    caller sets to the founder's BYO key): the named higher-precedence selectors,
+    the cloud-auth namespace families, and every ``ANTHROPIC_*`` other than
+    ``ANTHROPIC_API_KEY``. After this, ``ANTHROPIC_API_KEY`` is the only auth the
+    child can use (round-12 #2)."""
+    for name in list(env):
+        if name == "ANTHROPIC_API_KEY":
+            continue
+        if (
+            name in _BYO_AUTH_SELECTOR_NAMES
+            or name.startswith(_BYO_AUTH_SELECTOR_PREFIXES)
+            or name.startswith("ANTHROPIC_")
+        ):
+            env.pop(name, None)
 
 
 def provider_is_byo_bound(
@@ -561,11 +512,14 @@ def apply_provider_auth_env(
     :func:`provider_auth_env_overrides` so the byo-bound decision and the overlay
     can never disagree across a mid-call attestation flip.
 
-    When the BYO-key lane is chosen for a CLI-subprocess provider, SCRUB the
-    inherited global subscription auth vars first so the child authenticates with
-    the BYO key ONLY and can never fall through to the platform subscription
-    (Codex F3). Propagates errors (ValueError malformed vault) so a BYO spawn
-    fails closed instead of running on ambient platform auth.
+    When the BYO-key lane is chosen for a CLI-subprocess provider, positive-
+    allowlist the child's AUTH surface (:func:`scrub_byo_child_auth`, round-12 #2)
+    so ONLY the BYO key authenticates it — every higher-precedence selector
+    (Bedrock/Vertex flags, AWS/GCP creds, OAuth/auth tokens, config dir) is
+    stripped before the key + isolated config are overlaid. Propagates errors
+    (``ValueError`` malformed vault, :class:`RetiredSubscriptionLaneError` legacy
+    record) so a BYO spawn fails closed instead of running on ambient platform
+    auth.
     """
     resolved_universe = (
         Path(universe_dir)
@@ -580,9 +534,8 @@ def apply_provider_auth_env(
     provider = provider_name.strip()
     byo_var = _PROVIDER_BYO_ENV_VAR.get(provider)
     if byo_var and byo_var in overrides:
-        # BYO lane chosen — remove any inherited global subscription auth so the
-        # key, not the platform login, authenticates the child.
-        for var in _PROVIDER_GLOBAL_AUTH_SCRUB.get(provider, ()):
-            env.pop(var, None)
+        # BYO lane chosen — positive-allowlist the auth surface so no ambient
+        # higher-precedence selector can outrank / substitute for the BYO key.
+        scrub_byo_child_auth(env)
     env.update(overrides)
     return env
