@@ -16,6 +16,20 @@ then tags + publishes the result. Idempotency is tag-based: one branch per
 
 Artifacts are repo-blind by contract: a design must never carry a repository
 identity — binding a repo/credential is a user act at remix time.
+
+PHASE-2 EXECUTION BOUNDARY (patch_loop_reference; Codex r11 #2, host "build
+execution first"). The reference declares the FULL intended loop with correct
+effect + gate CONTRACTS (present emits a github_pull_request packet carrying the
+changes reference + S4 review_queue metadata; merge emits a github_merge packet;
+verify/owner_gate are canonical gates). It is a correct declared TEMPLATE — its
+end-to-end EXECUTION does NOT run yet and is deferred to the Phase-2
+durable-resume subsystem, which owns: (1) SUSPEND after present (the PR effector
+runs post-graph, but the inline owner_gate currently decides BEFORE that write),
+(2) RESUME on the owner's decision from the S4 review-queue, and (3) reshaping
+the inline ``owner_gate -> merge`` edge into that pause/resume flow. Do NOT
+restructure the graph or build the resume engine here — that is Phase 2. On S1
+the repo-touching nodes (investigate/verify/draft_patch) are sandbox-required
+and FAIL CLOSED until the S3 sandbox runner ships in the same bundled deploy.
 """
 
 from __future__ import annotations
@@ -172,15 +186,15 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
     filters on versions, not the bare flag. ``publish_branch_version`` dedupes
     by content hash, so re-publishing a healthy reference is a no-op.
 
-    Rolled-back repair — AUDIT-PRESERVING (Codex r10 #3): ``publish_branch_version``
-    dedupes on content hash and returns the EXISTING row WITHOUT reactivating it.
-    A rolled-back version is a deliberate security/regression decision — it must
-    STAY inactive and KEEP its ``rolled_back_at/by/reason`` audit intact; NEVER
-    reactivate it. When the dedup hits a rolled-back version, publish a FRESH
-    active version (distinct id, same authoritative content) so active-only
-    discovery lists the reference again, leaving the rolled-back version's audit
-    untouched. (Superseded the earlier reactivate-and-clear approach, which
-    erased a rollback's audit at restart.)
+    Rollback QUARANTINE contract (Codex r11 #1): the caller (the seed reconcile)
+    must NEVER call this for content whose hash matches a ROLLED-BACK version
+    (see ``_content_hash_quarantined``) — republishing rolled-back content active
+    functionally bypasses the rollback. So here we just publish: a genuinely new
+    content hash mints a fresh ACTIVE version; an existing ACTIVE same-hash
+    version dedups to a no-op. We do NOT mint-fresh-active or reactivate on a
+    rolled-back dedup hit (that was the r10 bug that resurrected rolled-back
+    content); if publish unexpectedly returns a non-active row, log loudly and
+    leave it — the health check reports it unhealthy.
     """
     from tinyassets.branch_versions import publish_branch_version
     from tinyassets.branches import BranchDefinition
@@ -199,53 +213,57 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
         notes=f"reference design seed {tag}",
     )
     if (version.status or "active") != "active":
-        # Dedup hit a rolled-back version — DO NOT touch it. Mint a fresh
-        # active version so the reference is discoverable again, audit intact.
-        _publish_fresh_active_reference_version(base_path, saved, tag)
-
-
-def _publish_fresh_active_reference_version(
-    base_path: str | Path, branch_dict: dict, tag: str,
-) -> None:
-    """Insert a NEW active branch_version (distinct id) with the current
-    authoritative content, bypassing ``publish_branch_version``'s content-hash
-    dedup. Used only to repair a reference whose sole version was rolled back —
-    the rolled-back row (and its audit) is left untouched; only ``branch_version_id``
-    is the primary key, so a same-content row with a fresh id is legal.
-    """
-    import uuid
-    from datetime import datetime, timezone
-
-    from tinyassets.branch_versions import (
-        _canonical_snapshot,
-        _connect,
-        compute_content_hash,
-    )
-
-    snapshot = _canonical_snapshot(branch_dict)
-    content_hash = compute_content_hash(snapshot)
-    branch_def_id = branch_dict.get("branch_def_id", "")
-    version_id = f"{branch_def_id}@{content_hash[:8]}-reseed-{uuid.uuid4().hex[:8]}"
-    with _connect(base_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO branch_versions
-                (branch_version_id, branch_def_id, content_hash, snapshot_json,
-                 notes, publisher, published_at, parent_version_id,
-                 status, watch_window_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
-            """,
-            (
-                version_id, branch_def_id, content_hash,
-                json.dumps(snapshot, default=str),
-                f"reference reseed after rollback {tag}", "reference-designs",
-                datetime.now(timezone.utc).isoformat(), None, 86400,
-            ),
+        # Should be unreachable — the reconcile quarantines rolled-back content
+        # before calling us. If it happens, DO NOT resurrect: log and let the
+        # health check fail the reference.
+        logger.error(
+            "reference %s publish dedup'd to a non-active version %s "
+            "(status=%s); NOT reactivating (quarantine bypass guard)",
+            tag, version.branch_version_id, version.status,
         )
-    logger.info(
-        "published fresh active reference version %s after rollback for %s "
-        "(rolled-back version left intact)", version_id, tag,
+
+
+def _authoritative_version_hash(
+    base_path: str | Path, source_id: str, fixed_id: str,
+) -> str:
+    """The version ``content_hash`` the reserved ``fixed_id`` row WOULD carry if
+    published with the authoritative content from ``source_id``. The version hash
+    includes ``branch_def_id`` (``_canonical_snapshot`` keeps it), so substitute
+    ``fixed_id`` before hashing to match the eventual stored version."""
+    from tinyassets.branch_versions import _canonical_snapshot, compute_content_hash
+    from tinyassets.daemon_server import get_branch_definition
+
+    d = dict(get_branch_definition(base_path, branch_def_id=source_id))
+    d["branch_def_id"] = fixed_id
+    return compute_content_hash(_canonical_snapshot(d))
+
+
+def _content_hash_quarantined(
+    base_path: str | Path, branch_def_id: str, content_hash: str,
+) -> bool:
+    """True when ``content_hash`` matches a ROLLED-BACK version for this design
+    AND no ACTIVE version already carries it (Codex r11 #1).
+
+    A rolled-back content hash is quarantined: re-activating that exact content —
+    whether by reactivating the row or minting a fresh active version with the
+    same hash — functionally UNDOES a deliberate security/regression rollback.
+    Only genuinely different content (a new hash = a real fix / version bump) or
+    an explicit authorized un-rollback may go live again. The active-exists check
+    is the Fable belt-and-braces for the un-ORDER-BY'd dedup SELECT: if a
+    legitimate active same-hash version already exists, the reference is fine.
+    """
+    from tinyassets.branch_versions import list_branch_versions
+
+    versions = list_branch_versions(base_path, branch_def_id, limit=200)
+    has_rolled_back = any(
+        v.content_hash == content_hash and v.status == "rolled_back"
+        for v in versions
     )
+    has_active = any(
+        v.content_hash == content_hash and (v.status or "active") == "active"
+        for v in versions
+    )
+    return has_rolled_back and not has_active
 
 
 def _content_fingerprint(branch_dict: dict) -> str:
@@ -446,6 +464,23 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 base_path, expected_fp, fixed_id
             ):
                 results["present"].append(tag)
+            elif _content_hash_quarantined(
+                base_path, fixed_id,
+                _authoritative_version_hash(base_path, correct_id, fixed_id),
+            ):
+                # Rollback QUARANTINE (Codex r11 #1): the authoritative content's
+                # hash matches a ROLLED-BACK version (and no active version has
+                # it). Re-activating it would resurrect deliberately-rolled-back
+                # content — refuse. The reference stays unhealthy until the
+                # artifact content actually changes (a new hash = a real fix) or
+                # an authorized un-rollback happens.
+                logger.error(
+                    "reference design %s content is QUARANTINED (matches a "
+                    "rolled-back version); refusing to re-activate", tag,
+                )
+                results["failed"].append(
+                    f"<quarantined-rolled-back-content:{artifact['design_id']}>"
+                )
             else:
                 # Missing, drifted, or partially-published — (re)build the
                 # canonical reserved-id row from the authoritative content and

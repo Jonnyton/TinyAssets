@@ -618,10 +618,21 @@ class ConditionalEdge:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ConditionalEdge:
+        # Deserialization must NOT crash on a malformed persisted fallback
+        # (`fallback: 123` -> AttributeError on .strip(); Codex r11 #3). Only
+        # strip a genuine string; keep a non-string as-is so ``validate()``
+        # surfaces a clean error rather than raising here.
+        _fb = data.get("fallback")
+        if isinstance(_fb, str):
+            fallback: Any = _fb.strip()
+        elif _fb is None:
+            fallback = ""
+        else:
+            fallback = _fb
         return cls(
             from_node=data.get("from", data.get("from_node", "")),
             conditions=data.get("conditions", {}),
-            fallback=(data.get("fallback") or "").strip(),
+            fallback=fallback,
         )
 
 
@@ -1134,7 +1145,14 @@ class BranchDefinition:
             # (it's a path_map KEY, not a target) — a dangling fallback would
             # KeyError at route time. Fable-5: validate on the persisted shape
             # too, since from_dict bypasses the build-time authoring check.
-            if ce.fallback and ce.fallback not in ce.conditions:
+            if ce.fallback and not isinstance(ce.fallback, str):
+                # A persisted non-string fallback (from_dict keeps it as-is so it
+                # doesn't crash) is a clean validation error here (Codex r11 #3).
+                errors.append(
+                    f"Conditional edge fallback from '{ce.from_node}' must be a "
+                    f"string outcome label, got {type(ce.fallback).__name__}."
+                )
+            elif ce.fallback and ce.fallback not in ce.conditions:
                 errors.append(
                     f"Conditional edge fallback '{ce.fallback}' from "
                     f"'{ce.from_node}' is not one of its outcome labels "

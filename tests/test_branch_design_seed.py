@@ -220,12 +220,14 @@ def test_seed_repairs_incomplete_prior_seed(data_dir):
     assert fixed_id in {b["branch_def_id"] for b in post["branches"]}
 
 
-def test_rolled_back_only_reference_repaired_with_fresh_version_audit_preserved(data_dir):
-    # S2 Codex gate + Codex r10 #3: "any version exists" is NOT health, AND the
-    # repair must PRESERVE the rollback audit. After the ONLY version is rolled
-    # back (a deliberate security/regression decision), the reseed must publish a
-    # FRESH ACTIVE version — NEVER reactivate the rolled-back one or clear its
-    # rolled_back_at/by/reason.
+def test_rolled_back_content_is_quarantined_not_reactivated(data_dir):
+    # Codex r11 #1 (CRITICAL): a rolled-back version is a deliberate
+    # security/regression decision. Re-publishing the SAME content as a fresh
+    # active version (r10's approach) functionally RESURRECTS the rolled-back
+    # reference at restart. So same-hash rolled-back content is QUARANTINED: the
+    # seed reports it unhealthy (a <quarantined-rolled-back-content:...> marker),
+    # NEVER reactivates it, and leaves the rolled-back audit intact — until the
+    # artifact content actually changes (a new hash).
     from tinyassets.branch_designs import _reference_branch_id
     from tinyassets.branch_versions import _connect, list_branch_versions
     from tinyassets.daemon_server import list_branch_definitions
@@ -245,30 +247,67 @@ def test_rolled_back_only_reference_repaired_with_fresh_version_audit_preserved(
             "rolled_back_reason='regression detected' WHERE branch_version_id=?",
             (rolled_id,),
         )
-    assert not any(
-        v.status == "active"
-        for v in list_branch_versions(data_dir, fixed_id, limit=50)
-    )
 
     results = seed_reference_designs(data_dir)
-    assert tag in results["seeded"]              # repaired, NOT present
+    # QUARANTINED — reported unhealthy, NOT seeded/present.
+    assert "<quarantined-rolled-back-content:patch_loop_reference>" in results["failed"]
+    assert tag not in results["seeded"]
     assert tag not in results["present"]
 
-    after = {v.branch_version_id: v for v in list_branch_versions(data_dir, fixed_id, limit=50)}
-    # The rolled-back version is UNTOUCHED — still rolled_back, audit intact.
-    rolled = after[rolled_id]
+    after = list_branch_versions(data_dir, fixed_id, limit=50)
+    # The rolled-back version is UNTOUCHED and NOT reactivated; NO active version.
+    rolled = next(v for v in after if v.branch_version_id == rolled_id)
     assert rolled.status == "rolled_back"
     assert rolled.rolled_back_by == "security"
     assert rolled.rolled_back_reason == "regression detected"
     assert rolled.rolled_back_at == "2026-07-15T00:00:00Z"
-    # A DISTINCT fresh active version now exists (the reference is discoverable).
-    active = [v for v in after.values() if v.status == "active"]
-    assert len(active) == 1
-    assert active[0].branch_version_id != rolled_id
+    assert not any(v.status == "active" for v in after)   # NOT resurrected
     # Still exactly one reference branch row.
     rows = list_branch_definitions(data_dir, tag=tag)
     assert len(rows) == 1
-    assert rows[0]["branch_def_id"] == fixed_id
+
+
+def test_changed_artifact_after_rollback_seeds_fresh_active(data_dir, tmp_path, monkeypatch):
+    # Codex r11 #1: only a genuinely DIFFERENT artifact (a new content hash = a
+    # real fix / version bump) re-activates after a rollback. The rolled-back
+    # (old-hash) version stays rolled_back; a NEW active version is minted.
+    import tinyassets.branch_designs as bd
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    old_version_id = list_branch_versions(data_dir, fixed_id, limit=50)[0].branch_version_id
+
+    with _connect(data_dir) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET status='rolled_back', rolled_back_by='sec' "
+            "WHERE branch_version_id=?", (old_version_id,),
+        )
+
+    # Point the package at a CHANGED artifact (new content hash = a real fix).
+    orig = next(
+        a for a in bd.load_design_artifacts()
+        if a["design_id"] == "patch_loop_reference"
+    )
+    changed = json.loads(json.dumps(orig))
+    changed["spec"]["node_defs"][0]["prompt_template"] += " (v1.0.1 fix)"
+    designs = tmp_path / "designs2"
+    designs.mkdir()
+    (designs / "patch_loop_reference.json").write_text(
+        json.dumps(changed), encoding="utf-8",
+    )
+    monkeypatch.setattr(bd, "DESIGNS_DIR", designs)
+
+    results = seed_reference_designs(data_dir)
+    assert tag in results["seeded"]              # new hash -> fresh active
+    after = list_branch_versions(data_dir, fixed_id, limit=50)
+    # The old (rolled-back) version stays rolled_back; a NEW active exists.
+    assert any(v.branch_version_id == old_version_id and v.status == "rolled_back" for v in after)
+    active = [v for v in after if v.status == "active"]
+    assert len(active) == 1
+    assert active[0].branch_version_id != old_version_id
 
 
 def test_content_drift_is_repaired_not_present(data_dir):

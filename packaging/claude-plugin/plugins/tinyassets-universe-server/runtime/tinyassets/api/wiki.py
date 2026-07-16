@@ -2304,9 +2304,35 @@ def _wiki_file_bug(
                         )
                     except Exception:  # noqa: BLE001
                         pass
+            elif resolved_branch_def_id:
+                # Codex r11 #4: a VALID handler resolved but the enqueue was
+                # REFUSED (the dispatcher rejected the request_type, or another
+                # recoverable ValueError/RuntimeError inside the enqueue helper).
+                # This is a DISTINCT failure class from no_canonical_branch — the
+                # handler exists; the enqueue failed. Do not mislabel it skipped.
+                investigation = {
+                    "status": "enqueue_failed",
+                    "error": "enqueue_failed",
+                    "branch_def_id": resolved_branch_def_id,
+                }
+                if _receipt is not None:
+                    try:
+                        _receipt = _tr.mark_failed(
+                            _receipt,
+                            error_class="enqueue_failed",
+                            error_message=(
+                                "handler resolved but dispatcher enqueue was "
+                                "refused"
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             else:
                 # Skipped because no canonical branch configured (env var
                 # empty or filing without bug_id). Record for audit.
+                investigation = {
+                    "status": "skipped", "reason": "no_canonical_branch",
+                }
                 if _receipt is not None:
                     try:
                         _receipt = _tr.mark_skipped(

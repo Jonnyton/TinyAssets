@@ -167,6 +167,23 @@ effectors resolve at run time (`github_merge` lands with S4). So the seeded
 reference is never live without its enforcement gate — S1 in isolation is a
 seeded, honest-but-inert artifact, not an executable loop.
 
+**Phase-2 execution boundary (Codex r11 #2; host "build execution first").** The
+S1 reference declares the full intended loop with correct effect + gate
+*contracts*, but the loop cannot execute end-to-end yet, and S1 does not build
+the executor. The gap: owner review must happen AFTER the PR effector writes the
+PR, but the graph's inline `owner_gate → merge` edge decides BEFORE the
+post-graph PR effector runs. Closing it needs a **Phase-2 durable two-stage
+pause/resume subsystem** — S1 graph interrupt/suspend after `present`, S4 resume
+on the owner's review-queue decision, and the run engine carrying state across
+the suspend — which then reshapes the inline `owner_gate → merge` into that
+resume flow. Phase-1 scope (done here): the reference is a correct declared
+TEMPLATE — `present` emits a `github_pull_request` packet carrying the changes
+reference (`changes_json` from `draft_patch`, produced by the Phase-2 sandbox
+coding node) + S4 `payload.review_queue` metadata; `merge` emits a `github_merge`
+packet; the effect/effector names + `review_queue` keys align with S4's
+`_BUNDLE_READY` expectations (S4 reads `spec.node_defs`). Do NOT restructure the
+graph or build the resume engine before Phase 2.
+
 ## 7. Security posture
 
 - Vault credentials never leave effectors; recommend PR-scope (`contents:write`

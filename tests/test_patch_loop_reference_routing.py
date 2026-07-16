@@ -49,6 +49,8 @@ _PR_PACKET = {
     "payload": {
         "title": "Fix export button", "body": "summary",
         "base_branch": "main", "head_branch": "auto/fix-export", "draft": False,
+        "changes_json": {"src/export.py": "print('fixed')\n"},
+        "review_queue": {"enabled": True, "gate": "owner"},
     },
 }
 _MERGE_PACKET = {
@@ -265,6 +267,13 @@ def test_reference_declares_real_effects_and_sandbox_node_kinds():
     assert nodes["merge"]["effects"] == ["github_merge"]
     assert nodes["merge"]["output_keys"][0] == "github_merge_packet"
 
+    # Codex r11 #2: present's packet contract instructs the changes reference
+    # (changes_json from the drafted patch — Phase-2 sandbox coding node produces
+    # the diff) AND S4's review_queue metadata (so the PR enters owner review).
+    present_prompt = nodes["present"]["prompt_template"]
+    assert "changes_json" in present_prompt
+    assert "review_queue" in present_prompt
+
     # requires_sandbox + effects are REAL NodeDefinition fields — they survive
     # the build (node_kind/capabilities are artifact-only data the build drops).
     branch = _reference_branch()
@@ -302,6 +311,76 @@ def test_merge_output_keys_satisfy_github_merge_effector_contract():
         run_state=run_state, base_path=None,
     )
     assert result.get("error_kind") != "no_matching_packet", result
+
+
+# ── fallback type-safety (Codex r11 #3) ──────────────────────────────────────
+
+
+def _fallback_spec(fallback):
+    return {
+        "name": "fb", "entry_point": "g",
+        "node_defs": [
+            {"node_id": "g", "display_name": "G", "output_keys": ["verdict"],
+             "prompt_template": "decide {y}"},
+            {"node_id": "leaf", "display_name": "L", "prompt_template": "leaf"},
+        ],
+        "edges": [{"from": "START", "to": "g"}, {"from": "leaf", "to": "END"}],
+        "conditional_edges": [
+            {"from": "g", "conditions": {"pass": "leaf"}, "fallback": fallback},
+        ],
+        "state_schema": [
+            {"name": "y", "type": "str"}, {"name": "verdict", "type": "str"},
+        ],
+    }
+
+
+@pytest.mark.parametrize("bad", [123, ["x"], {"a": 1}, True])
+def test_authoring_rejects_nonstring_fallback_without_crashing(bad):
+    # Authoring boundary: `fallback: 123` must be a CLEAN validation error, NOT
+    # an AttributeError crash on .strip() (Codex r11 #3).
+    branch, errors = _staged_branch_from_spec(_fallback_spec(bad))  # must NOT raise
+    assert any("fallback" in e.lower() for e in errors), errors
+
+
+def test_authoring_accepts_none_fallback():
+    _branch, errors = _staged_branch_from_spec(_fallback_spec(None))
+    assert not any("fallback" in e.lower() for e in errors), errors
+
+
+@pytest.mark.parametrize("bad", [123, ["x"], {"a": 1}])
+def test_persisted_nonstring_fallback_does_not_crash_and_validates(bad):
+    # Deserialization boundary: from_dict must NOT crash on a persisted
+    # non-string fallback; validate() surfaces a clean error (Codex r11 #3).
+    from tinyassets.branches import (
+        BranchDefinition,
+        ConditionalEdge,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+
+    ce = ConditionalEdge.from_dict(
+        {"from": "g", "conditions": {"pass": "leaf"}, "fallback": bad}
+    )  # must NOT raise
+    assert ce.fallback == bad
+
+    b = BranchDefinition(name="fb", entry_point="g")
+    b.node_defs = [
+        NodeDefinition(node_id="g", display_name="G", prompt_template="x",
+                       output_keys=["verdict"]),
+        NodeDefinition(node_id="leaf", display_name="L", prompt_template="leaf"),
+    ]
+    b.graph_nodes = [
+        GraphNodeRef(id="g", node_def_id="g"),
+        GraphNodeRef(id="leaf", node_def_id="leaf"),
+    ]
+    b.edges = [
+        EdgeDefinition(from_node="START", to_node="g"),
+        EdgeDefinition(from_node="leaf", to_node="END"),
+    ]
+    b.conditional_edges = [ce]
+    errors = b.validate()
+    assert any("fallback" in e.lower() and "string" in e.lower() for e in errors), errors
 
 
 # ── Persistence-crossing safety (the durable lesson) ─────────────────────────

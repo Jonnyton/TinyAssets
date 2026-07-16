@@ -138,20 +138,32 @@ class TestEnqueuesWhenBound:
 class TestGracefulFailure:
     def test_returns_none_on_dispatcher_rejection(self, tmp_path, monkeypatch):
         """When `TINYASSETS_REQUEST_TYPE_PRIORITIES` excludes bug_investigation,
-        enqueue raises RuntimeError. Filing must NOT break — caller gets None."""
+        enqueue raises RuntimeError. Filing must NOT break — caller gets None.
+
+        Codex r11 #4: this must register a LIVE handler, else the G4 existence
+        guard short-circuits (returns "" -> None) BEFORE the dispatcher path and
+        the test is a false green. We assert the handler DOES resolve so this
+        genuinely exercises the dispatcher-rejection path."""
+        from tinyassets.bug_investigation import _resolve_investigation_handler
+
+        _register_handler_branch(tmp_path, monkeypatch)   # LIVE handler
         monkeypatch.setenv(
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
         )
         monkeypatch.setenv(
             "TINYASSETS_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run"
         )
+        # The handler RESOLVES (not a resolver short-circuit) — so None below
+        # comes from the DISPATCHER rejection, not the existence guard.
+        assert _resolve_investigation_handler(tmp_path) == "branch-canonical-abc"
+
         result = _maybe_enqueue_investigation(
             bug_id="BUG-300",
             frontmatter={"title": "x"},
             base_path=tmp_path,
         )
         assert result is None
-        assert read_queue(tmp_path) == []
+        assert read_queue(tmp_path) == []   # dispatcher refused -> nothing queued
 
     def test_returns_none_on_missing_bug_id(self, tmp_path, monkeypatch):
         """Empty bug_id is a malformed input — log and return None, do not crash."""
@@ -198,6 +210,46 @@ class TestGracefulFailure:
         assert request_id is not None
         queue = read_queue(tmp_path)
         assert queue[0].inputs["bug_id"] == "BUG-302"
+
+
+def test_wiki_file_bug_distinguishes_enqueue_failure_from_no_canonical(
+    tmp_path, monkeypatch,
+):
+    """Codex r11 #4: a valid handler whose enqueue is REFUSED must report
+    ``enqueue_failed`` — a DISTINCT class from ``no_canonical_branch`` (which is
+    'no handler configured'). Both leave the filing intact."""
+    import json as _json
+
+    from tinyassets.api import wiki as wiki_api
+
+    wiki_root = tmp_path / "wiki"
+    data_root = tmp_path / "data"
+    wiki_api._ensure_wiki_scaffold(wiki_root)
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    _register_handler_branch(data_root, monkeypatch)   # sets DATA_DIR + registers
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    # Priorities exclude bug_investigation -> the dispatcher refuses the enqueue.
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run")
+
+    out = _json.loads(wiki_api._wiki_file_bug(
+        component="engine", severity="minor", title="valid handler enqueue fail",
+        observed="boom",
+    ))
+    assert out["status"] == "filed"                         # filing persists
+    assert out["investigation"]["status"] == "enqueue_failed"
+    assert out["investigation"]["branch_def_id"] == "branch-canonical-abc"
+
+    # Contrast: NO handler configured -> no_canonical_branch (not enqueue_failed).
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False)
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
+    out2 = _json.loads(wiki_api._wiki_file_bug(
+        component="engine", severity="minor", title="no handler", observed="boom",
+    ))
+    assert out2["status"] == "filed"
+    assert out2["investigation"]["status"] == "skipped"
+    assert out2["investigation"].get("reason") == "no_canonical_branch"
 
 
 # ── Integration: _wiki_file_bug call site ─────────────────────────────────────

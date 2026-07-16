@@ -1799,9 +1799,17 @@ def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
             )
         conditions[outcome_str] = target_str
     # ``fallback`` pins the safe off-label branch as a SCALAR label immune to
-    # the registry's sort_keys serialization (Fable-5). It must be one of the
-    # declared outcome labels, else it's a dangling route — reject loudly.
-    fallback_str = (raw.get("fallback") or "").strip()
+    # the registry's sort_keys serialization (Fable-5). It must be a STRING (a
+    # non-string like `fallback: 123` must be a clean validation error, NOT an
+    # AttributeError crash — Codex r11 #3) and one of the declared outcome
+    # labels, else it's a dangling route — reject loudly.
+    fallback_raw = raw.get("fallback")
+    if fallback_raw is not None and not isinstance(fallback_raw, str):
+        return (
+            "conditional edge 'fallback' must be a string outcome label "
+            f"(got {type(fallback_raw).__name__})"
+        )
+    fallback_str = (fallback_raw or "").strip()
     if fallback_str and fallback_str not in conditions:
         return (
             f"conditional edge fallback '{fallback_str}' must be one of the "
