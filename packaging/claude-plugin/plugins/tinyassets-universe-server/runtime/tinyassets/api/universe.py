@@ -4975,6 +4975,8 @@ def _set_engine_subscription(uid, udir, data, preferred_writer) -> str:
     without capacity behind it (Hard Rule #8 — a declared-but-empty binding would
     read as misconfigured to the engine-binding resolver).
     """
+    import base64
+
     from tinyassets.config import write_universe_config_fields
     from tinyassets.credential_vault import (
         load_credential_vault,
@@ -5015,6 +5017,24 @@ def _set_engine_subscription(uid, udir, data, preferred_writer) -> str:
             return json.dumps({
                 "error": "auth_json_b64 (base64 of the Codex auth.json) is "
                          "required for a codex subscription binding.",
+            })
+        # Validate NOW: strict base64 that decodes to a JSON auth.json. A lenient
+        # or malformed credential would materialize a broken auth.json and the
+        # engine would silently fall through to platform auth (Hard Rule #8) —
+        # reject at bind time so the founder fixes it before it is stored.
+        import binascii
+        try:
+            _decoded = base64.b64decode(auth_json_b64, validate=True)
+        except (binascii.Error, ValueError):
+            return json.dumps({
+                "error": "auth_json_b64 is not valid base64.",
+            })
+        try:
+            json.loads(_decoded.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return json.dumps({
+                "error": "auth_json_b64 does not decode to a valid Codex "
+                         "auth.json (expected base64 of JSON).",
             })
         record["auth_json_b64"] = auth_json_b64
 

@@ -136,14 +136,79 @@ _RUNTIME_BACKED_SOURCES = frozenset(
     {"host_daemon", "market_rented", "self_hosted_endpoint"}
 )
 
+# The ONLY runtime-instance status that proves the worker can execute work now.
+# `paused` and `restart_requested` are control states (daemon_registry
+# RUNTIME_CONTROL_STATUSES) with no active-execution contract, so a universe
+# whose only runtime is paused/restart_requested must read as idle-until-bound —
+# the gate must not spawn for it. `resume` writes `provisioned`, so recovery is
+# automatic once a paused daemon is resumed.
+_EXECUTABLE_RUNTIME_STATUSES = frozenset({"provisioned"})
 
-def _vault_capacity(universe_dir: Path) -> list[str]:
-    """Return capacity kinds present in the per-universe credential vault.
+
+def _codex_auth_b64_valid(auth_json_b64: str) -> bool:
+    """Return True iff *auth_json_b64* strictly decodes to a JSON Codex auth.json.
+
+    Strict base64 (``validate=True`` rejects non-alphabet chars like ``!``) +
+    a JSON parse of the decoded bytes. A lenient decode would silently accept
+    garbage like ``"not-base64!"`` and materialize a broken auth.json, so the
+    subscription would fall through to platform/global provider auth.
+    """
+    import base64
+    import binascii
+    import json as _json
+
+    try:
+        raw = base64.b64decode(auth_json_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    try:
+        _json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return True
+
+
+def _subscription_row_usable(universe_dir: Path, record: dict[str, Any], svc: str) -> bool:
+    """Return True iff a subscription vault row carries usable, materializable auth.
+
+    A row's mere presence is NOT capacity — the credential must be consumable by
+    the CLI-subprocess provider, else provider routing silently falls back to
+    platform/global auth (the exact failure Codex flagged). Claude needs an OAuth
+    token or a resolvable config dir; Codex needs a strictly-valid ``auth_json_b64``
+    or a resolvable CODEX_HOME with an ``auth.json``.
+    """
+    from tinyassets.credential_vault import (
+        resolve_claude_config_dir,
+        resolve_codex_home,
+    )
+
+    if svc in {"claude", "anthropic", "claude-code"}:
+        token = str(
+            record.get("oauth_token") or record.get("claude_code_oauth_token") or ""
+        ).strip()
+        if token:
+            return True
+        return resolve_claude_config_dir(universe_dir) is not None
+    if svc in {"codex", "openai"}:
+        b64 = str(record.get("auth_json_b64") or "").strip()
+        if b64 and _codex_auth_b64_valid(b64):
+            return True
+        home = resolve_codex_home(universe_dir)
+        return bool(home and (home / "auth.json").is_file())
+    # Unknown subscription service — we cannot prove it is materializable.
+    return False
+
+
+def _vault_capacity(universe_dir: Path) -> tuple[list[str], bool]:
+    """Return ``(usable_capacity_kinds, has_unusable_subscription)`` for the vault.
 
     Recognizes the founder's own engines: a BYO ``llm_api_key`` deposit and a
-    subscription-CLI ``llm_subscription`` bundle (claude / codex). These are
-    directly executable — provider routing consumes them at call time. Propagates
-    :class:`ValueError` (malformed vault) so the caller can fail loud.
+    subscription-CLI ``llm_subscription`` bundle (claude / codex). A subscription
+    row counts as capacity ONLY when its auth is usable/materializable
+    (:func:`_subscription_row_usable`) — a declared-but-unusable subscription is
+    reported via the second return value so the caller can fail loud instead of
+    silently falling through to platform auth. Propagates :class:`ValueError`
+    (malformed vault) so the caller can fail loud.
     """
     from tinyassets.credential_vault import load_credential_vault
 
@@ -151,12 +216,16 @@ def _vault_capacity(universe_dir: Path) -> list[str]:
     kinds: list[str] = []
     if any(r.get("credential_type") == "llm_api_key" for r in records):
         kinds.append("byo_api_key")
+    has_unusable_subscription = False
     for record in records:
         if record.get("credential_type") != "llm_subscription":
             continue
         svc = str(record.get("service") or record.get("provider") or "").strip().lower()
-        kinds.append(f"subscription:{svc}" if svc else "subscription")
-    return kinds
+        if _subscription_row_usable(universe_dir, record, svc):
+            kinds.append(f"subscription:{svc}" if svc else "subscription")
+        else:
+            has_unusable_subscription = True
+    return kinds, has_unusable_subscription
 
 
 def _has_live_runtime_instance(universe_dir: Path) -> bool:
@@ -178,7 +247,8 @@ def _has_live_runtime_instance(universe_dir: Path) -> bool:
     except Exception:  # noqa: BLE001 — no DB / no table = no assigned runtime
         return False
     return any(
-        str(inst.get("status") or "").strip().lower() != "retired"
+        str(inst.get("status") or "").strip().lower()
+        in _EXECUTABLE_RUNTIME_STATUSES
         for inst in instances
     )
 
@@ -216,13 +286,14 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
     declared_source = str(raw.get("engine_source") or "").strip()
 
     try:
-        capacity: list[str] = list(_vault_capacity(udir))
+        vault_kinds, has_unusable_subscription = _vault_capacity(udir)
     except ValueError as exc:
         raise EngineMisconfiguredError(
             universe_id,
             declared_source or "byo_api_key",
             f"credential vault is unreadable: {exc}",
         ) from exc
+    capacity: list[str] = list(vault_kinds)
 
     # Config-declared runtime-backed sources are executable ONLY with a live
     # runtime instance assigned to the universe (the config value alone is a
@@ -239,6 +310,18 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             engine_source=declared_source,
             capacity_kinds=tuple(capacity),
             reason="bound to " + ", ".join(capacity),
+        )
+
+    # A subscription row is present but its auth is not usable/materializable,
+    # and nothing else backs this universe. Counting it as bound would let the
+    # daemon spawn and silently fall through to platform/global provider auth —
+    # fail loud instead (Hard Rule #8) so the broken credential is re-bound.
+    if has_unusable_subscription:
+        raise EngineMisconfiguredError(
+            universe_id,
+            declared_source or "subscription",
+            "a subscription credential is in the vault but its auth is not "
+            "usable/materializable (re-bind via universe action=set_engine)",
         )
 
     # No executable capacity. A DECLARED vault-backed source with no credential

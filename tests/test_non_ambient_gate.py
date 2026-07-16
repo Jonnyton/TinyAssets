@@ -156,6 +156,37 @@ def test_flag_on_skips_unbound_universe(tmp_path, monkeypatch):
     assert sleep_calls == [2.0, 2.0]
 
 
+def test_flag_on_skips_paused_runtime_as_idle(tmp_path, monkeypatch):
+    """A host_daemon whose only runtime instance is `paused` is NOT executable —
+    the gate must treat it as idle-until-bound (not spawned)."""
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        spawn_runtime_instance,
+        update_runtime_instance_status,
+    )
+
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    uid = "u-paused"
+    udir = tmp_path / uid
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="host_daemon")
+    initialize_author_server(tmp_path)
+    inst = spawn_runtime_instance(
+        tmp_path, universe_id=uid, author_id="a", provider_name="claude-code",
+        model_name="claude", created_by="test",
+    )
+    update_runtime_instance_status(
+        tmp_path, instance_id=inst["instance_id"], status="paused",
+    )
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert spawn_calls == [], "paused runtime must NOT spawn under the gate"
+    assert state.idle_until_bound_count == 2
+
+
 def test_flag_on_works_bound_universe(tmp_path, monkeypatch):
     monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
     udir = _bound_universe(tmp_path)

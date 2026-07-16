@@ -146,6 +146,34 @@ def test_set_engine_subscription_requires_auth_material(tmp_path, monkeypatch):
     assert "error" in out  # no oauth_token → refused, never a phantom binding
 
 
+def test_set_engine_subscription_rejects_invalid_base64(tmp_path, monkeypatch):
+    """Codex auth_json_b64 that is not valid base64 must be REJECTED at bind
+    time — never returned as engine_set and never stored (Hard Rule #8)."""
+    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-badb64")
+    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
+        "engine_source": "subscription", "service": "codex",
+        "auth_json_b64": "not-base64!",
+    })))
+    assert "error" in out
+    assert out.get("status") != "engine_set"
+    # Nothing was persisted — no phantom subscription binding.
+    from tinyassets.credential_vault import load_credential_vault
+    assert load_credential_vault(udir) == []
+
+
+def test_set_engine_subscription_rejects_non_json_auth(tmp_path, monkeypatch):
+    """Valid base64 that does not decode to JSON is still not a usable auth.json."""
+    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-nonjson")
+    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
+        "engine_source": "subscription", "service": "codex",
+        "auth_json_b64": base64.b64encode(b"not json at all").decode("ascii"),
+    })))
+    assert "error" in out
+    assert out.get("status") != "engine_set"
+    from tinyassets.credential_vault import load_credential_vault
+    assert load_credential_vault(udir) == []
+
+
 def test_set_engine_subscription_preserves_other_credentials(tmp_path, monkeypatch):
     """Binding a subscription must not clobber a previously bound github token."""
     uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-merge")

@@ -125,40 +125,45 @@ def test_config_only_choice_is_idle_until_bound(tmp_path, source, extra):
 def _assign_runtime(base, uid, *, status="provisioned"):
     from tinyassets.daemon_server import (
         initialize_author_server,
-        retire_runtime_instance,
         spawn_runtime_instance,
+        update_runtime_instance_status,
     )
 
     initialize_author_server(base)
-    inst = spawn_runtime_instance(
+    inst = spawn_runtime_instance(  # spawns in 'provisioned'
         base, universe_id=uid, author_id="author-1",
         provider_name="claude-code", model_name="claude", created_by="test",
     )
-    if status == "retired":
-        retire_runtime_instance(base, instance_id=inst["instance_id"])
+    if status != "provisioned":
+        update_runtime_instance_status(
+            base, instance_id=inst["instance_id"], status=status,
+        )
     return inst
 
 
 @pytest.mark.parametrize(
     "source", ["host_daemon", "market_rented", "self_hosted_endpoint"],
 )
-def test_config_source_with_live_runtime_is_bound(tmp_path, source):
+def test_config_source_with_provisioned_runtime_is_bound(tmp_path, source):
     uid = f"u-rt-{source}"
     udir = tmp_path / uid
     udir.mkdir()
     write_universe_config_fields(udir, engine_source=source)
-    _assign_runtime(tmp_path, uid)
+    _assign_runtime(tmp_path, uid, status="provisioned")
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
     assert f"runtime:{source}" in binding.capacity_kinds
 
 
-def test_retired_runtime_instance_does_not_count(tmp_path):
-    uid = "u-rt-retired"
+@pytest.mark.parametrize("status", ["retired", "paused", "restart_requested"])
+def test_non_executable_runtime_status_does_not_count(tmp_path, status):
+    """Only `provisioned` proves executable capacity. A paused / restart /
+    retired runtime must read as idle-until-bound so the gate does not spawn."""
+    uid = f"u-rt-{status}"
     udir = tmp_path / uid
     udir.mkdir()
     write_universe_config_fields(udir, engine_source="host_daemon")
-    _assign_runtime(tmp_path, uid, status="retired")
+    _assign_runtime(tmp_path, uid, status=status)
     binding = resolve_engine_binding(udir)
     assert binding.bound is False
 
@@ -177,6 +182,58 @@ def test_declared_byo_without_key_fails_loud(tmp_path):
     with pytest.raises(EngineMisconfiguredError) as excinfo:
         resolve_engine_binding(udir)
     assert excinfo.value.engine_source == "byo_api_key"
+
+
+def test_unusable_subscription_row_resolves_loud(tmp_path):
+    """A subscription row whose auth is not materializable must NOT read as
+    bound (it would silently fall through to platform auth). resolve fails loud."""
+    udir = tmp_path / "u-badsubcred"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "auth_json_b64": "not-base64!",  # strict-decode failure = unusable
+    }])
+    write_universe_config_fields(udir, engine_source="subscription")
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_unusable_subscription_never_silently_bound(tmp_path):
+    """Even with no declared engine_source, a broken subscription row must never
+    read as bound=True (the platform-auth-fallthrough guard)."""
+    udir = tmp_path / "u-badsub2"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "auth_json_b64": "not-base64!",
+    }])
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_unusable_subscription_alongside_real_byo_stays_bound(tmp_path):
+    """Scoped fail-loud: a broken subscription row does NOT DoS a universe that
+    is genuinely executable via a real BYO key — it is simply not counted."""
+    udir = tmp_path / "u-mixed"
+    udir.mkdir()
+    write_credential_vault(udir, [
+        {
+            "credential_type": "llm_api_key",
+            "service": "anthropic",
+            "secret_b64": base64.b64encode(b"sk-ant-real").decode("ascii"),
+        },
+        {
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": "not-base64!",
+        },
+    ])
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is True
+    assert "byo_api_key" in binding.capacity_kinds
+    assert "subscription:codex" not in binding.capacity_kinds
 
 
 def test_declared_subscription_without_credential_fails_loud(tmp_path):
