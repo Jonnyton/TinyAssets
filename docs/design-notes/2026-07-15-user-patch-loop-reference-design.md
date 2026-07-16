@@ -139,8 +139,15 @@ design version id so drift is detectable.
 - **S2 — Remix/import path on the connector** (G2): discover → import/fork →
   bind repo + credential → set policy, all via canonical handles from a
   chatbot; export any owned branch as the same artifact.
-- **S3 — Coding-node sandbox** (G5): enforce sandbox + tool policy for
-  draft_patch-class nodes. Blocking gate for any live run against a repo.
+- **S3 — Coding-node sandbox ENFORCEMENT** (G5): fail-closed enforcement +
+  tool policy for draft_patch-class nodes — S3 makes `coding_nodes_runnable()`
+  return `False`, so such nodes REFUSE to run. S3 does NOT supply the per-job
+  RUNNER that actually confines + executes them.
+- **BLOCKER — per-job sandbox RUNNER (Phase 2, host-approved):** the runner that
+  lets a `requires_sandbox` node execute confined is an explicit, separate,
+  host-approved Phase-2 slice. Until it lands, `_sandbox_enforcement_available()`
+  stays `False` on S1 AND S1+S3, so no repo-touching node ever runs. This is the
+  hard dependency for a live patch loop, distinct from S3's enforcement.
 - **S4 — Owner review surface + merge policies** (G3 + G6): review queue with
   approve/reshape/reject from phone; manual/auto/timer; founder-OAuth-per-
   merge; extend `github_merge` accordingly.
@@ -162,14 +169,20 @@ S4 → S2 → S5) and ships as ONE deploy; **no slice deploys independently.** T
 seeded reference's repo-touching nodes (`investigate` repo-read, `verify`
 repo-exec, `draft_patch` repo-write/coding) are sandbox-required and honestly
 **FAIL CLOSED**: the compiled node **refuses to execute at invoke time (before
-any provider dispatch)** while sandbox enforcement is unavailable
-(`graph_compiler._sandbox_enforcement_available` — always False on S1, binds to
-S3's runner in the bundle). `present` / `merge` EMIT `github_pull_request` /
-`github_merge` effect packets whose effectors resolve at run time (`github_merge`
-lands with S4). So the seeded reference is never live without its enforcement
-gate — S1 in isolation SEEDS a discoverable/remixable template that cannot RUN
-unconfined (Codex r13 #1 corrected the earlier claim that it merely "did not
-enforce"; it now provably refuses).
+any provider dispatch)** while a real sandbox RUNNER is unavailable
+(`graph_compiler._sandbox_enforcement_available` — feature-detects
+`tinyassets.sandbox_policy.coding_nodes_runnable`; always False on S1, and still
+False on S1+S3 because **S3 is enforcement-only — the per-job runner is a
+separate host-approved Phase-2 slice**, NOT part of S3). `present` / `merge` EMIT
+`github_pull_request` / `github_merge` effect packets whose effectors resolve at
+run time (`github_merge` lands with S4). So the seeded reference is never live
+without its runner — S1 in isolation SEEDS a discoverable/remixable template that
+cannot RUN unconfined (Codex r13 #1 / r14 #1-#2: it now provably refuses, and the
+gate is NOT bypassable by an env var — availability comes only from the real
+runner capability). **Merged-stack proof:** the S1→S3→S4 integration test is
+S4's bundle e2e (`tests/test_patch_loop_bundle_e2e.py`, which already covers
+enqueue-on-present); it runs on the integration branch after the bundle merges —
+not duplicated in S1.
 
 **Phase-2 execution boundary (Codex r11 #2; host "build execution first").** The
 S1 reference declares the full intended loop with correct effect + gate

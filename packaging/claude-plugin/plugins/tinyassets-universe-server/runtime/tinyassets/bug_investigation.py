@@ -194,6 +194,16 @@ def attach_patch_packet_comment(
 
 REQUEST_TYPE_BUG_INVESTIGATION = "bug_investigation"
 
+
+class HandlerDeletedError(RuntimeError):
+    """The investigation handler branch was DELETED between the upstream
+    existence check and the durable enqueue (Codex r14 #4 G4 deletion race).
+
+    Raised at ``append_task`` time (the durable boundary) so a concurrent delete
+    can never persist a task against a dead reference. A RuntimeError subclass so
+    the existing ``_maybe_enqueue_investigation`` recovery (filing survives,
+    nothing queued) catches it."""
+
 # Env var: set to the branch_def_id of the canonical bug-investigation branch.
 # When set, enqueue_investigation_request routes through the general dispatcher.
 BUG_INVESTIGATION_BRANCH_DEF_ID = os.environ.get(
@@ -264,6 +274,21 @@ def enqueue_investigation_request(
         queued_at=datetime.now(timezone.utc).isoformat(),
         request_type=REQUEST_TYPE_BUG_INVESTIGATION,
     )
+    # G4 deletion race (Codex r14 #4): the handler was existence-checked upstream
+    # (resolve time), but a concurrent delete may have removed it since. REVALIDATE
+    # at the durable enqueue boundary — immediately before append_task — so we
+    # never persist a task pointing at a dead reference. Fail with a structured
+    # HandlerDeletedError (the caller recovers it; filing persists, nothing queued).
+    if not _handler_branch_exists(base_path, canonical_branch_def_id):
+        _logger.warning(
+            "enqueue_investigation_request | %s | handler %s deleted before enqueue "
+            "(race) — refusing to queue a dead reference",
+            bug_ref.get("bug_id", "?"), canonical_branch_def_id,
+        )
+        raise HandlerDeletedError(
+            f"investigation handler {canonical_branch_def_id!r} was deleted before "
+            "enqueue (concurrent delete race); refusing to queue a dead reference"
+        )
     append_task(base, task)
     _logger.info(
         "enqueue_investigation_request | %s | %s", bug_ref.get("bug_id", "?"), request_id

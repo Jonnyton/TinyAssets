@@ -252,6 +252,56 @@ def test_wiki_file_bug_distinguishes_enqueue_failure_from_no_canonical(
     assert out2["investigation"].get("reason") == "no_canonical_branch"
 
 
+def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
+    # Codex r14 #4 (G4 deletion race): a handler deleted between the upstream
+    # existence check and the durable enqueue must NOT queue a dead reference —
+    # the revalidation immediately before append_task refuses with
+    # HandlerDeletedError and the queue stays EMPTY.
+    import pytest
+
+    from tinyassets.bug_investigation import (
+        HandlerDeletedError,
+        enqueue_investigation_request,
+    )
+    from tinyassets.daemon_server import delete_branch_definition
+
+    _register_handler_branch(tmp_path, monkeypatch)   # registers + sets DATA_DIR
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    # The concurrent delete lands after the (upstream) resolution.
+    delete_branch_definition(tmp_path, branch_def_id="branch-canonical-abc")
+
+    with pytest.raises(HandlerDeletedError):
+        enqueue_investigation_request(
+            bug_ref={"bug_id": "BUG-RACE"},
+            canonical_branch_def_id="branch-canonical-abc",
+            base_path=tmp_path,
+        )
+    assert read_queue(tmp_path) == []   # NO dead reference queued
+
+
+def test_maybe_enqueue_recovers_from_handler_deleted_race(tmp_path, monkeypatch):
+    # The G4 revalidation is a RuntimeError subclass, so _maybe_enqueue_investigation
+    # recovers (filing survives, returns None) — nothing queued against a dead ref.
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    from tinyassets.daemon_server import delete_branch_definition
+
+    delete_branch_definition(tmp_path, branch_def_id="branch-canonical-abc")
+    # resolved_branch_def_id threaded in so the resolver isn't re-consulted; the
+    # DURABLE revalidation is what must catch the delete.
+    result = _maybe_enqueue_investigation(
+        bug_id="BUG-RACE2",
+        frontmatter={"title": "x"},
+        base_path=tmp_path,
+        resolved_branch_def_id="branch-canonical-abc",
+    )
+    assert result is None
+    assert read_queue(tmp_path) == []
+
+
 # ── Integration: _wiki_file_bug call site ─────────────────────────────────────
 
 

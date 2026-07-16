@@ -1281,25 +1281,23 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
     # the startup seam (None before the first seed). Best-effort; never fail
     # get_status on it.
     try:
-        from tinyassets.branch_designs import missing_required_designs
+        from tinyassets.branch_designs import reference_designs_live_health
         from tinyassets.universe_server import last_seed_result
 
-        _seed = last_seed_result()
-        _required_missing = (
-            missing_required_designs(_seed) if _seed is not None else []
-        )
+        # LIVE health, recomputed at read time (Codex r14 #3) — NOT the boot
+        # cache. A row deleted after a healthy seed reports unhealthy here.
+        _live = reference_designs_live_health(_base_path())
+        _seed = last_seed_result()  # boot history, kept SEPARATE (may be stale)
         reference_designs = {
-            "last_seed_ran": _seed is not None,
-            "seeded": list((_seed or {}).get("seeded", [])),
-            "present": list((_seed or {}).get("present", [])),
-            "failed": list((_seed or {}).get("failed", [])),
-            "required_missing": _required_missing,
-            # healthy = seed ran, no failures, AND every REQUIRED design seeded.
-            "healthy": (
-                _seed is not None
-                and not (_seed or {}).get("failed")
-                and not _required_missing
-            ),
+            "healthy": _live["healthy"],                     # LIVE
+            "required_missing": _live["required_missing"],   # LIVE
+            "per_design": _live["per_design"],               # LIVE
+            "last_seed": {                                   # boot snapshot
+                "ran": _seed is not None,
+                "seeded": list((_seed or {}).get("seeded", [])),
+                "present": list((_seed or {}).get("present", [])),
+                "failed": list((_seed or {}).get("failed", [])),
+            },
         }
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         reference_designs = {"error": "compute_failed", "detail": str(exc)}

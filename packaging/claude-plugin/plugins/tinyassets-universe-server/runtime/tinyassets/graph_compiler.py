@@ -890,35 +890,34 @@ def _extract_json_object(response: str) -> dict[str, Any]:
 
 class SandboxEnforcementUnavailableError(RuntimeError):
     """Raised at INVOKE time when a ``requires_sandbox`` node would execute but no
-    sandbox-enforcement capability is available to confine it (Codex r13 #1).
+    real sandbox RUNNER can confine it (Codex r13 #1, r14 #1/#2).
 
     S1 does not confine ``requires_sandbox`` nodes — the compiler has no
     enforcement — so honestly failing closed (refuse to run) is safer than
-    silently executing a node that was declared to need a sandbox. S3 provides
-    the real enforcement gate; until integration this always fires for such
-    nodes."""
+    silently executing a node that was declared to need a sandbox. S3 adds
+    fail-closed ENFORCEMENT only (``coding_nodes_runnable() == False``); the
+    per-job RUNNER that actually confines + executes such a node is an explicit
+    host-approved Phase-2 slice. So this fires on S1 AND on S1+S3, and stops only
+    when the Phase-2 runner lands."""
 
 
 def _sandbox_enforcement_available() -> bool:
-    """Feature-detect the node-sandbox ENFORCEMENT capability (Codex r13 #1).
+    """True ONLY when a real sandbox RUNNER can confine + execute a
+    ``requires_sandbox`` node (Codex r14 #1/#2).
 
-    Order: an explicit env override (``TINYASSETS_SANDBOX_ENFORCEMENT`` truthy /
-    falsy) wins — used by tests + operators; otherwise try-import S3's gate
-    (``tinyassets.node_sandbox.enforcement_available``), which is ABSENT on S1
-    (returns False) and binds to the real gate when S3 is integrated in the
-    bundle. Never raises."""
-    import os
-
-    override = os.environ.get("TINYASSETS_SANDBOX_ENFORCEMENT", "").strip().lower()
-    if override in ("1", "true", "yes", "on"):
-        return True
-    if override in ("0", "false", "no", "off"):
-        return False
+    NO environment assertion — a truthy env var does NOT prove confinement, so it
+    must never enable execution (that was the r13 bypass). The capability is
+    feature-detected from S3's policy module
+    (``tinyassets.sandbox_policy.coding_nodes_runnable``): ABSENT on this branch
+    (ImportError -> False), and once S3 is integrated it returns False
+    (enforcement-only) until the host-approved Phase-2 per-job runner lands.
+    Tests get their seam by monkeypatching THIS function (a test fixture), never
+    a production env var. Never raises."""
     try:
-        from tinyassets.node_sandbox import enforcement_available  # type: ignore
+        from tinyassets.sandbox_policy import coding_nodes_runnable  # type: ignore
 
-        return bool(enforcement_available())
-    except Exception:  # noqa: BLE001 — absent (S1) or broken probe => unavailable
+        return bool(coding_nodes_runnable())
+    except Exception:  # noqa: BLE001 — absent (S1) / broken => not runnable
         return False
 
 

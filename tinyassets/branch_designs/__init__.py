@@ -30,9 +30,12 @@ the inline ``owner_gate -> merge`` edge into that pause/resume flow. Do NOT
 restructure the graph or build the resume engine here — that is Phase 2. On S1
 the repo-touching nodes (investigate/verify/draft_patch) are sandbox-required
 and honestly FAIL CLOSED: the compiled node REFUSES to execute at invoke time
-(before any provider dispatch) while sandbox enforcement is unavailable
-(``graph_compiler._sandbox_enforcement_available`` — always False on S1, binds
-to the S3 runner in the bundled deploy). So S1 alone SEEDS the reference as a
+(before any provider dispatch) while a real sandbox RUNNER is unavailable
+(``graph_compiler._sandbox_enforcement_available`` feature-detects
+``tinyassets.sandbox_policy.coding_nodes_runnable`` — False on S1 AND on S1+S3,
+because S3 is ENFORCEMENT-only; the per-job runner that actually confines +
+executes such a node is a separate host-approved Phase-2 slice). NOT bypassable
+by an env var (Codex r14 #1). So S1 alone SEEDS the reference as a
 discoverable/remixable TEMPLATE, but it cannot RUN unconfined (Codex r13 #1).
 """
 
@@ -571,3 +574,64 @@ def missing_required_designs(results: dict[str, list[str]]) -> list[str]:
         if not any(t.startswith(prefix) for t in healthy_tags):
             unhealthy.append(design_id)
     return unhealthy
+
+
+def reference_designs_live_health(base_path: str | Path) -> dict[str, Any]:
+    """Recompute CURRENT reference-design health at READ time — NOT boot-cached
+    (Codex r14 #3). ``last_seed_result()`` is boot history; a row deleted after a
+    healthy seed would still report healthy from that cache. This checks the LIVE
+    registry: for each packaged design, stage the artifact IN MEMORY (no registry
+    writes), derive the authoritative fingerprint + version hash, and verify the
+    reserved fixed-id row exists with the reserved author AND has an ACTIVE
+    version matching the authoritative hash (``_reference_row_is_healthy``).
+
+    Returns ``{"healthy": bool, "required_missing": [ids], "per_design": {id:
+    bool}}``. Best-effort — never raises; a compute failure marks a design
+    unhealthy rather than lying healthy.
+    """
+    from tinyassets.branch_versions import _canonical_snapshot, compute_content_hash
+
+    per_design: dict[str, bool] = {}
+    try:
+        artifacts = load_design_artifacts()
+    except Exception:  # noqa: BLE001 — a broken package is unhealthy, not fatal
+        return {
+            "healthy": False,
+            "required_missing": sorted(REQUIRED_DESIGN_IDS),
+            "per_design": {},
+        }
+
+    for artifact in artifacts:
+        design_id = artifact.get("design_id", "")
+        try:
+            from tinyassets.api.branches import _staged_branch_from_spec
+
+            fixed_id = _reference_branch_id(design_id, artifact["design_version"])
+            staged, errors = _staged_branch_from_spec(dict(artifact["spec"]))
+            if errors:
+                per_design[design_id] = False
+                continue
+            staged.branch_def_id = fixed_id
+            staged_dict = staged.to_dict()
+            expected_fp = _content_fingerprint(staged_dict)
+            auth_hash = compute_content_hash(_canonical_snapshot(staged_dict))
+            row = _get_branch_or_none(base_path, fixed_id)
+            per_design[design_id] = bool(
+                row is not None
+                and (row.get("author") or "") == RESERVED_SEED_AUTHOR
+                and _reference_row_is_healthy(
+                    base_path, expected_fp, fixed_id, auth_hash,
+                )
+            )
+        except Exception:  # noqa: BLE001 — a compute failure is unhealthy
+            logger.exception("live reference-design health check failed for %s", design_id)
+            per_design[design_id] = False
+
+    required_missing = sorted(
+        d for d in REQUIRED_DESIGN_IDS if not per_design.get(d, False)
+    )
+    return {
+        "healthy": not required_missing,
+        "required_missing": required_missing,
+        "per_design": per_design,
+    }

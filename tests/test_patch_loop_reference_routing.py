@@ -29,18 +29,27 @@ import pytest
 
 from tinyassets.api.branches import _staged_branch_from_spec
 from tinyassets.branch_designs import load_design_artifacts
-from tinyassets.graph_compiler import compile_branch
+from tinyassets.graph_compiler import (
+    _sandbox_enforcement_available as _REAL_SANDBOX_AVAILABLE,
+)
+from tinyassets.graph_compiler import (
+    compile_branch,
+)
 
 
 @pytest.fixture(autouse=True)
 def _enable_sandbox_enforcement(monkeypatch):
-    # Codex r13 #1: the reference's repo-touching nodes are requires_sandbox=true
-    # and now REFUSE to execute when sandbox enforcement is unavailable (fail
-    # closed). These ROUTING tests exercise the graph end-to-end, so they simulate
-    # S3's enforcement being present. The honest S1 default (enforcement absent ->
-    # refuse before provider dispatch) is proven by
+    # Codex r13 #1 / r14 #1: the reference's repo-touching nodes are
+    # requires_sandbox=true and REFUSE to execute when a real sandbox runner is
+    # unavailable (honest fail-closed). These ROUTING tests exercise the graph
+    # end-to-end, so they simulate the Phase-2 runner being present by
+    # monkeypatching the availability FUNCTION (a test seam — NOT a production env
+    # var, which was the r13 bypass Codex removed). The honest S1 default
+    # (unavailable -> refuse before provider dispatch) is proven by
     # test_requires_sandbox_node_refuses_before_provider below.
-    monkeypatch.setenv("TINYASSETS_SANDBOX_ENFORCEMENT", "1")
+    monkeypatch.setattr(
+        "tinyassets.graph_compiler._sandbox_enforcement_available", lambda: True,
+    )
 
 # Binding fields a remix would bind; seeded so every node's template renders (the
 # reference nodes declare no input_keys, so the full state is the render view — a
@@ -336,16 +345,20 @@ def test_merge_output_keys_satisfy_github_merge_effector_contract():
 
 
 def test_requires_sandbox_node_refuses_before_provider(monkeypatch):
-    # Codex r13 #1: S1 has no sandbox enforcement, so a requires_sandbox node
+    # Codex r13 #1 / r14 #1: with no real sandbox runner, a requires_sandbox node
     # must REFUSE at invoke time BEFORE any provider dispatch — the provider is
-    # NEVER called. Honestly fail-closed, not silently executable.
+    # NEVER called. Honestly fail-closed, not silently executable, and NOT
+    # bypassable by an env var.
     from tinyassets.branches import NodeDefinition
     from tinyassets.graph_compiler import (
         SandboxEnforcementUnavailableError,
         _build_prompt_template_node,
     )
 
-    monkeypatch.delenv("TINYASSETS_SANDBOX_ENFORCEMENT", raising=False)  # S1 default
+    # S1 default: force the availability FUNCTION to report unavailable.
+    monkeypatch.setattr(
+        "tinyassets.graph_compiler._sandbox_enforcement_available", lambda: False,
+    )
     called: list[str] = []
 
     def _provider(prompt: str, system: str = "", *, role: str = "writer") -> str:
@@ -362,14 +375,26 @@ def test_requires_sandbox_node_refuses_before_provider(monkeypatch):
     assert called == [], "provider must NOT be dispatched for a requires_sandbox node"
 
 
-def test_requires_sandbox_node_runs_when_enforcement_available(monkeypatch):
-    # With enforcement available (simulating S3 integrated), the node runs and
-    # the provider IS dispatched — the fail-closed gate is enforcement-gated, not
-    # an unconditional block.
+def test_env_var_alone_does_not_enable_availability(monkeypatch):
+    # Codex r14 #1: a truthy TINYASSETS_SANDBOX_ENFORCEMENT env var must NOT make
+    # the availability function return True — it does not prove confinement.
+    # Availability comes ONLY from the real runner-capability import, which is
+    # absent on this branch, so even with the env var set it stays False. (Uses
+    # the REAL function captured at import, bypassing the routing autouse seam.)
+    monkeypatch.setenv("TINYASSETS_SANDBOX_ENFORCEMENT", "1")
+    assert _REAL_SANDBOX_AVAILABLE() is False
+
+
+def test_requires_sandbox_node_runs_when_runner_available(monkeypatch):
+    # With the runner capability available (simulating the Phase-2 runner via the
+    # availability function seam), the node runs and the provider IS dispatched —
+    # the gate is capability-gated, not an unconditional block.
     from tinyassets.branches import NodeDefinition
     from tinyassets.graph_compiler import _build_prompt_template_node
 
-    monkeypatch.setenv("TINYASSETS_SANDBOX_ENFORCEMENT", "1")
+    monkeypatch.setattr(
+        "tinyassets.graph_compiler._sandbox_enforcement_available", lambda: True,
+    )
     called: list[str] = []
 
     def _provider(prompt: str, system: str = "", *, role: str = "writer") -> str:
@@ -382,7 +407,7 @@ def test_requires_sandbox_node_runs_when_enforcement_available(monkeypatch):
     )
     fn = _build_prompt_template_node(node, provider_call=_provider, event_sink=None)
     out = fn({"x": "work"})
-    assert called, "provider must be dispatched when enforcement is available"
+    assert called, "provider must be dispatched when the runner is available"
     assert out.get("coder_output") == "ran"
 
 
