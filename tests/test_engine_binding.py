@@ -80,6 +80,26 @@ def test_byo_api_key_in_vault_is_bound(tmp_path):
     assert binding.bound is True
     assert "byo_api_key" in binding.capacity_kinds
     assert binding.engine_source == "byo_api_key"
+    # Provider-level eligibility: an Anthropic key serves claude-code, NOT codex.
+    assert binding.eligible_providers == frozenset({"claude-code"})
+    assert binding.is_eligible_for("claude-code") is True
+    assert binding.is_eligible_for("codex") is False
+    assert binding.serves_via_vault("claude-code") is True
+
+
+def test_byo_openai_key_is_eligible_for_codex_only(tmp_path):
+    udir = tmp_path / "u-byo-openai"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "openai",
+        "secret_b64": base64.b64encode(b"sk-openai").decode("ascii"),
+    }])
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is True
+    assert binding.eligible_providers == frozenset({"codex"})
+    assert binding.is_eligible_for("codex") is True
+    assert binding.is_eligible_for("claude-code") is False
 
 
 def test_subscription_record_in_vault_is_bound(tmp_path):
@@ -94,6 +114,66 @@ def test_subscription_record_in_vault_is_bound(tmp_path):
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
     assert "subscription:claude" in binding.capacity_kinds
+    assert binding.eligible_providers == frozenset({"claude-code"})
+    assert binding.serves_via_vault("claude-code") is True
+
+
+def test_claude_subscription_missing_config_dir_is_not_usable(tmp_path):
+    """Finding 3: a claude subscription that only POINTS at a missing config dir
+    (no oauth_token) is not usable — it must not read as bound."""
+    udir = tmp_path / "u-sub-danglingcfg"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "config_dir": str(tmp_path / "does-not-exist"),  # dangling pointer
+    }])
+    write_universe_config_fields(udir, engine_source="subscription")
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_malformed_byo_unknown_service_fails_loud(tmp_path):
+    """Finding 4: a BYO row whose service maps to no provider is not usable."""
+    udir = tmp_path / "u-byo-badservice"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "nonsense",
+        "secret_b64": base64.b64encode(b"k").decode("ascii"),
+    }])
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_malformed_byo_empty_secret_fails_loud(tmp_path):
+    """Finding 4: a BYO row with no decodable secret is not usable."""
+    udir = tmp_path / "u-byo-nosecret"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",  # known service, but no secret at all
+    }])
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_malformed_byo_alongside_valid_byo_stays_bound(tmp_path):
+    """Finding 4 scoping: a broken BYO row must not DoS a universe with a real
+    key — it is simply not counted, and eligibility reflects only the valid key."""
+    udir = tmp_path / "u-byo-mixed"
+    udir.mkdir()
+    write_credential_vault(udir, [
+        {
+            "credential_type": "llm_api_key",
+            "service": "anthropic",
+            "secret_b64": base64.b64encode(b"sk-ant-real").decode("ascii"),
+        },
+        {"credential_type": "llm_api_key", "service": "nonsense"},
+    ])
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is True
+    assert binding.eligible_providers == frozenset({"claude-code"})
 
 
 # ---- config-only CHOICE is NOT executable capacity → idle-until-bound -----
@@ -149,10 +229,12 @@ def test_config_source_with_provisioned_runtime_is_bound(tmp_path, source):
     udir = tmp_path / uid
     udir.mkdir()
     write_universe_config_fields(udir, engine_source=source)
-    _assign_runtime(tmp_path, uid, status="provisioned")
+    _assign_runtime(tmp_path, uid, status="provisioned")  # provider_name=claude-code
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
     assert f"runtime:{source}" in binding.capacity_kinds
+    # The runtime declares its provider — eligibility reflects it.
+    assert binding.is_eligible_for("claude-code") is True
 
 
 @pytest.mark.parametrize("status", ["retired", "paused", "restart_requested"])

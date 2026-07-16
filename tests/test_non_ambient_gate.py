@@ -187,6 +187,74 @@ def test_flag_on_skips_paused_runtime_as_idle(tmp_path, monkeypatch):
     assert state.idle_until_bound_count == 2
 
 
+def _codex_vault_universe(tmp_path, name="u-codexvault"):
+    """Universe bound to a valid Codex subscription in the per-universe vault."""
+    udir = tmp_path / name
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "auth_json_b64": base64.b64encode(b"{}").decode("ascii"),
+    }])
+    write_universe_config_fields(udir, engine_source="subscription")
+    return udir
+
+
+def test_flag_on_codex_pinned_worker_skips_anthropic_only_universe(tmp_path, monkeypatch):
+    """FINDING 1: the gate is provider-level. An Anthropic-only bound universe
+    must NOT let a Codex-pinned worker spawn (it would run on global Codex auth)."""
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))  # no global auth
+    udir = _bound_universe(tmp_path)  # anthropic BYO key → serves claude-code only
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+        daemon_args=["--provider", "codex"],
+    )
+    assert spawn_calls == [], "codex-pinned worker must not run a claude-only universe"
+    assert state.idle_until_bound_count == 2
+    assert state.engine_misconfigured_count == 0
+
+
+def test_flag_on_codex_pinned_worker_runs_codex_eligible_universe(tmp_path, monkeypatch):
+    """FINDING 1/2: a codex-eligible universe backed by per-universe VAULT auth
+    spawns for a Codex-pinned worker even with NO global CODEX_HOME — the child
+    materializes the vault auth, so the global-auth quarantine is skipped."""
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))  # no global auth
+    udir = _codex_vault_universe(tmp_path)
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+        daemon_args=["--provider", "codex"],
+    )
+    assert len(spawn_calls) == 2, "codex-eligible vault universe must spawn"
+    assert state.auth_quarantine_count == 0, "vault auth must skip global quarantine"
+    assert state.idle_until_bound_count == 0
+
+
+def test_flag_off_codex_pinned_worker_still_quarantines_without_global_auth(
+    tmp_path, monkeypatch,
+):
+    """Flag OFF is a no-op: the vault-aware quarantine skip is gated on the flag,
+    so with the flag off a codex-pinned worker with no global CODEX_HOME
+    quarantines exactly as today (never spawns on missing global auth)."""
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))
+    udir = _codex_vault_universe(tmp_path)
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+        auth_quarantine_backoff=1.0,
+        daemon_args=["--provider", "codex"],
+    )
+    assert spawn_calls == [], "flag off must not change the global-auth quarantine"
+    assert state.auth_quarantine_count == 2
+
+
 def test_flag_on_works_bound_universe(tmp_path, monkeypatch):
     monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
     udir = _bound_universe(tmp_path)

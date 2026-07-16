@@ -764,6 +764,15 @@ def run_supervisor(
             break
         iteration += 1
 
+        # This worker's pinned writer provider (from --provider or
+        # TINYASSETS_PIN_WRITER). Empty = generic worker that routes the whole
+        # fallback chain. Used by BOTH gates below.
+        pinned_provider = (
+            _provider_from_daemon_args(daemon_args)
+            or os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
+        )
+        binding = None
+
         # Non-ambient work gate (design note 2026-07-15 gap G7). FLAG-GATED and
         # DEFAULT OFF: with TINYASSETS_NON_AMBIENT_WORK unset this whole block is
         # skipped, so the loop spawns exactly as it does today (a byte-for-byte
@@ -806,6 +815,24 @@ def run_supervisor(
                 )
                 sleep_fn(idle_backoff)
                 continue
+            # Provider-level gate: the universe's capacity must serve THIS
+            # worker's pinned provider. An Anthropic-only universe must not let a
+            # Codex-pinned worker spawn (which would run on global Codex auth).
+            if pinned_provider and not binding.is_eligible_for(pinned_provider):
+                state.idle_until_bound_count += 1
+                logger.info(
+                    "cloud_worker: universe %s bound capacity (%s) does not "
+                    "serve pinned provider %s — idle-until-bound for this "
+                    "provider (non-ambient gate).",
+                    universe, sorted(binding.eligible_providers), pinned_provider,
+                )
+                write_supervisor_heartbeat(
+                    universe, state, iteration=iteration,
+                    phase="idle_provider_not_eligible",
+                    planned_sleep_s=idle_backoff,
+                )
+                sleep_fn(idle_backoff)
+                continue
 
         # Pre-claim auth gate (2026-06-25 loop-wedge root cause): a worker
         # whose writer provider is unauthenticated must NOT spawn the claim
@@ -813,7 +840,19 @@ def run_supervisor(
         # corrupts the queue (failed > succeeded; genuine peer successes lost
         # to Invalid-transition). Self-quarantine: skip the spawn, beat, back
         # off, re-check — a re-seeded credential resumes claiming next tick.
-        auth = _worker_auth_health(daemon_args)
+        #
+        # Vault-aware skip (non-ambient gate ON only — keeps flag-OFF identical):
+        # when the pinned provider's bound capacity is PER-UNIVERSE VAULT auth,
+        # the child materializes that auth at spawn, so the process-global auth
+        # probe would wrongly quarantine a universe that can run. Skip the global
+        # probe for those — resolve_engine_binding already validated the vault
+        # credential is usable.
+        skip_global_auth = bool(
+            binding is not None
+            and pinned_provider
+            and binding.serves_via_vault(pinned_provider)
+        )
+        auth = None if skip_global_auth else _worker_auth_health(daemon_args)
         if auth is not None and auth.get("status") == "not_logged_in":
             state.auth_quarantine_count += 1
             logger.error(
