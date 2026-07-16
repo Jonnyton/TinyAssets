@@ -7,6 +7,7 @@ repo-blindness, idempotent seeding, and the G4 dead-handler fail-loud guard
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -298,6 +299,42 @@ def test_seed_reference_designs_is_idempotent(data_dir):
     assert second["seeded"] == []
     rows = list_branch_definitions(data_dir, tag=tag)
     assert len(rows) == 1                    # exactly one, never duplicated
+
+
+def test_seed_honors_explicit_base_path_over_env(tmp_path, monkeypatch):
+    # Codex S1 round-5 REQUIRED: the seeder reconciles/lists/deletes against the
+    # EXPLICIT base_path arg, but the composite build (_ext_branch_build)
+    # resolves the GLOBAL TINYASSETS_DATA_DIR. When the two differ the build
+    # split-brained — result failed, explicit registry empty, a stray row in
+    # the env registry, then a KeyError on the built id. The seed must honor
+    # the passed base_path end to end.
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        list_branch_definitions,
+    )
+
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    initialize_author_server(env_dir)          # empty schema so a stray row shows
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(env_dir))
+
+    tag = design_tag("patch_loop_reference", 1)
+    results = seed_reference_designs(explicit)
+
+    # Seeded (NOT failed) into the EXPLICIT registry, published + versioned.
+    assert tag in results["seeded"], results
+    assert results["failed"] == []
+    explicit_rows = list_branch_definitions(explicit, tag=tag)
+    assert len(explicit_rows) == 1
+    assert explicit_rows[0]["published"] is True
+
+    # The env registry got NO stray rows — the build didn't leak there.
+    assert list_branch_definitions(env_dir, tag=tag) == []
+
+    # The seed left the process's data-dir resolution untouched.
+    assert os.environ["TINYASSETS_DATA_DIR"] == str(env_dir)
 
 
 def test_stdio_startup_seeds_reference_designs(data_dir, monkeypatch):

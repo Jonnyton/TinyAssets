@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +35,34 @@ DESIGN_FORMAT = "tinyassets.branch_design/v1"
 REFERENCE_TAG = "reference-design"
 
 _REQUIRED_ENVELOPE_KEYS = ("design_format", "design_id", "design_version", "spec")
+
+
+@contextmanager
+def _pinned_data_dir(base_path: str | Path) -> Iterator[None]:
+    """Pin ``TINYASSETS_DATA_DIR`` to ``base_path`` for the duration of the block.
+
+    The seeder reconciles/lists/deletes against an EXPLICIT ``base_path`` arg,
+    but the composite build path (``_ext_branch_build`` -> ``_base_path()``)
+    resolves the GLOBAL ``TINYASSETS_DATA_DIR``. When the two differ (an
+    explicit ``base_path`` != the process env), the built row lands in the env
+    registry while every other seed op hits ``base_path`` — a split-brain that
+    reports ``failed`` and orphans a stray row (Codex S1 round-5). Pinning the
+    env for the build makes the whole seed honor one registry.
+
+    Exception-safe: the prior value is always restored (or the key unset if it
+    was absent) on exit, including on failure — the seeder must never leave the
+    process's data-dir resolution mutated.
+    """
+    key = "TINYASSETS_DATA_DIR"
+    prior = os.environ.get(key)
+    os.environ[key] = str(base_path)
+    try:
+        yield
+    finally:
+        if prior is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prior
 
 
 def design_tag(design_id: str, design_version: int) -> str:
@@ -108,12 +139,21 @@ def _content_fingerprint(branch_dict: dict) -> str:
 def _build_reference_branch(base_path: str | Path, artifact: dict, tag: str) -> str:
     """Build the authoritative reference branch from the artifact via the ordinary
     composite user path (the reference is an ordinary build). Returns the new
-    branch_def_id, or "" on build failure (logged loudly)."""
+    branch_def_id, or "" on build failure (logged loudly).
+
+    ``_ext_branch_build`` writes through the GLOBAL data-dir resolver
+    (``TINYASSETS_DATA_DIR`` / ``_base_path()``), NOT the ``base_path`` arg the
+    rest of the seed reconciles against. Pin the resolver to ``base_path`` for
+    the build so the whole seed honors one registry — otherwise an explicit
+    ``base_path`` != the process env split-brains (build lands in env, list /
+    fingerprint / publish / delete hit base_path -> ``failed`` + stray row;
+    Codex S1 round-5)."""
     from tinyassets.api.branches import _ext_branch_build
 
     spec = dict(artifact["spec"])
     spec["tags"] = sorted(set(list(spec.get("tags") or []) + [REFERENCE_TAG, tag]))
-    out = json.loads(_ext_branch_build({"spec_json": json.dumps(spec)}))
+    with _pinned_data_dir(base_path):
+        out = json.loads(_ext_branch_build({"spec_json": json.dumps(spec)}))
     if out.get("status") != "built" or not out.get("branch_def_id"):
         logger.error(
             "reference design build FAILED for %s: %s", tag, out.get("error") or out,
