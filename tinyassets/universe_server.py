@@ -1401,9 +1401,12 @@ def extensions(
     review_queue_list's `head_sha`) — REQUIRED for `review_queue_approve`
     (it head-binds the approval so it can't apply to a re-pushed head), and
     honored for reshape/reject. `limit` + `since_step` paginate the list.
-    `review_queue_reshape` requires `notes` and routes the PR back to the
-    loop's draft_patch node; `review_queue_hold` / `review_queue_release` pause
-    and resume an auto/timer merge without rejecting.
+    `review_queue_reshape` requires `notes` and durably queues the owner's
+    revision request against the PR (recording the draft_patch resume identity);
+    the loop-side revision consumer that re-runs draft_patch lands with Phase 2,
+    so today reshape records the request for revision rather than immediately
+    re-running the loop. `review_queue_hold` / `review_queue_release` pause and
+    resume an auto/timer merge without rejecting.
 
     Pass `action` plus the matching ids or JSON payload fields; the status
     action `get_action_scope_status` is always available.

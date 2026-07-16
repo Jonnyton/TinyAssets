@@ -362,3 +362,26 @@ def test_consent_is_per_universe_isolated(tmp_path):
     # Usable in A, invisible in B.
     assert is_consent_active(univ_a, sink="github_raw_merge", destination="Owner/Repo")
     assert not is_consent_active(univ_b, sink="github_raw_merge", destination="Owner/Repo")
+
+
+
+def test_explicit_universe_consent_is_ab_isolated(us_env):
+    """Codex R10 #5: an owner targeting an EXPLICIT universe gates + writes THAT
+    universe's consent, not their home/default. A grant threaded with
+    universe_id=A is usable in A and NOT in B."""
+    us, base = us_env
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.storage.effector_consents import is_consent_active
+
+    granted = _call(
+        us, "grant_effector_consent",
+        intent="github_raw_merge", project_id="Owner/Repo",
+        universe_id="u-A",
+    )
+    assert granted["status"] == "granted"
+
+    # The grant is usable in universe A's dir and invisible in universe B's.
+    dir_a = _universe_dir("u-A")
+    dir_b = _universe_dir("u-B")
+    assert is_consent_active(dir_a, sink="github_raw_merge", destination="Owner/Repo")
+    assert not is_consent_active(dir_b, sink="github_raw_merge", destination="Owner/Repo")

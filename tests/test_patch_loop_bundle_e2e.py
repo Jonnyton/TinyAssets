@@ -38,14 +38,26 @@ _REFERENCE_SEED = (
 
 def _reference_declares_effects() -> bool:
     """S1 marker: the reference design seed exists and its present/merge nodes
-    declare the github_pull_request / github_merge effects."""
+    declare the github_pull_request / github_merge effects.
+
+    S1 serializes nodes under ``spec.node_defs`` (the NodeDefinition list); we
+    also accept legacy ``nodes`` and a nested ``spec_json`` wrapper so the marker
+    lifts regardless of which serialized shape S1 finally lands with. Each node's
+    declared sinks live on ``NodeDefinition.effects`` (a list of sink names)."""
     if not _REFERENCE_SEED.exists():
         return False
     try:
         spec = json.loads(_REFERENCE_SEED.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return False
-    nodes = spec.get("nodes") or spec.get("spec_json", {}).get("nodes") or []
+    inner = spec.get("spec_json") if isinstance(spec.get("spec_json"), dict) else {}
+    nodes = (
+        spec.get("node_defs")
+        or spec.get("nodes")
+        or inner.get("node_defs")
+        or inner.get("nodes")
+        or []
+    )
     sinks = {
         sink
         for node in nodes
@@ -80,12 +92,17 @@ def test_present_to_owner_reshape_resume_e2e(monkeypatch, tmp_path):
             "pr_number": 7, "stdout": "", "invocation_mode": "gh",
         },
     )
-    # Owner binds the governing policy for the reference design.
+    # Owner binds the governing policy for the reference design (review_required
+    # defaults True → the present node enqueues, config-driven not packet-driven).
     rq.set_merge_policy_binding(
         tmp_path, branch_def_id="patch_loop_reference",
         merge_policy="manual", founder_oauth_per_merge=True, bound_by="owner",
     )
     # Run the present node's github_pr effect through the real effector path.
+    # The trust identities (branch_def_id / universe_id) come from the run
+    # CONTEXT via authoritative_* params — NOT the model-emitted packet. The
+    # ``review_queue`` packet block carries only advisory request_ref + verify
+    # hint; it does NOT name the universe or the branch.
     result = github_pr.run_github_pr_effector(
         node_id="present",
         output_keys=["pr_packet"],
@@ -98,20 +115,23 @@ def test_present_to_owner_reshape_resume_e2e(monkeypatch, tmp_path):
                     "review_queue": {
                         "request_ref": "req-1",
                         "verify_verdict": "pass",
-                        "universe_id": "u-1",
-                        "branch_def_id": "patch_loop_reference",
                     },
                 },
             }
         },
         base_path=str(tmp_path),
         run_id="run-1",
+        authoritative_branch_def_id="patch_loop_reference",
+        authoritative_universe_id="u-1",
     )
     item_id = result["review_queue_item_id"]
     item = rq.get_item(tmp_path, item_id=item_id)
     assert item["status"] == "pending"
     assert item["run_id"] == "run-1"
     assert item["founder_oauth_per_merge"] is True  # owner-bound, not packet
+    # Trust identities resolved from the run context, not the (absent) packet.
+    assert item["universe_id"] == "u-1"
+    assert item["branch_def_id"] == "patch_loop_reference"
 
     # Owner reshapes → the loop gets the resume identity to resume the run.
     reshaped = rq.reshape_item(

@@ -693,6 +693,10 @@ def _extensions_impl(
             "destination": project_id or "",
             "granted_by": author or "",
             "active_only": active_only,
+            # Thread the EXPLICIT target universe (Codex R10 #5): an owner
+            # administering another universe must gate + write THAT universe's
+            # consent, not their resolved home/default.
+            "universe_id": universe_id or "",
         }
         return consent_handler(consent_kwargs)
 
