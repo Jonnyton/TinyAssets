@@ -429,8 +429,16 @@ def _iter_handler_candidates(base_path: "Path | str"):
     """Yield handler branch ids in resolution order (goal canonical, then env).
 
     Pure resolution — existence validation happens in
-    ``resolve_investigation_handler_detail`` (G4).
+    ``resolve_investigation_handler_detail`` (G4). Goals + branch versions live
+    at the CANONICAL data root, NOT the per-universe queue path callers pass in
+    (that path is only for enqueueing into the target universe), so canonical
+    resolution reads ``_base_path()`` — otherwise a valid root goal canonical is
+    missed on the real file_bug path (Codex S1 review).
     """
+    from tinyassets.api.helpers import _base_path
+
+    del base_path  # documented: not the registry root; resolution uses _base_path()
+    registry_root = _base_path()
     goal_id = os.environ.get(
         "TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "",
     ).strip()
@@ -440,7 +448,7 @@ def _iter_handler_candidates(base_path: "Path | str"):
                 resolve_canonical_for_run,
             )
             resolution = resolve_canonical_for_run(
-                base_path,
+                registry_root,
                 goal_id=goal_id,
                 # No actor context inside the wiki-write hook — use
                 # the empty-viewer (strictly-public) lookup so private

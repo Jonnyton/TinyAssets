@@ -170,6 +170,86 @@ def test_seed_repairs_incomplete_prior_seed(data_dir):
     assert out["branch_def_id"] in {b["branch_def_id"] for b in post["branches"]}
 
 
+def test_content_drift_is_repaired_not_present(data_dir):
+    # Codex S1 review critical: a same-count content drift (a corrupted prompt,
+    # topology counts unchanged) must be REPAIRED on re-seed, never reported
+    # `present`. A count-only health check would miss it.
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        list_branch_definitions,
+        save_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    bdid = list_branch_definitions(data_dir, tag=tag)[0]["branch_def_id"]
+
+    # Corrupt one prompt in place — same size, same topology counts.
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=bdid)
+    )
+    branch.node_defs[0].prompt_template = "CORRUPTED SAME-SIZED REFERENCE"
+    save_branch_definition(data_dir, branch_def=branch.to_dict())
+
+    results = seed_reference_designs(data_dir)
+    assert tag in results["seeded"]              # repaired
+    assert tag not in results["present"]         # NOT waved through
+    healed = BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=bdid)
+    )
+    assert healed.node_defs[0].prompt_template != "CORRUPTED SAME-SIZED REFERENCE"
+    rows = list_branch_definitions(data_dir, tag=tag)
+    assert len(rows) == 1                        # repaired in place, no duplicate
+    listed = json.loads(_ext_branch_list({"scope": "published"}))
+    assert bdid in {b["branch_def_id"] for b in listed["branches"]}
+
+
+def test_wiki_file_bug_goal_canonical_only_queues(data_dir, monkeypatch):
+    # Codex S1 review critical: goal-canonical must resolve against the CANONICAL
+    # root, so a root goal canonical queues an investigation on the real
+    # _wiki_file_bug path with ONLY GOAL_ID set (no env fallback). Unmocked.
+    from tinyassets.api.wiki import _wiki_file_bug
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+        save_goal,
+        set_canonical_branch,
+    )
+
+    initialize_author_server(data_dir)
+    handler = dict(
+        branch_def_id="handler-live", name="handler-live", description="",
+        author="host", graph_nodes=[], edges=[], state_schema=[],
+        entry_point="", node_defs=[],
+    )
+    save_branch_definition(data_dir, branch_def=handler)     # exists at the root
+    ver = publish_branch_version(
+        data_dir, branch_dict=handler, notes="v1", publisher="host",
+    )
+    save_goal(data_dir, goal=dict(
+        goal_id="g-inv", name="inv", description="",
+        author="host", tags=[], visibility="public",
+    ))
+    set_canonical_branch(
+        data_dir, goal_id="g-inv",
+        branch_version_id=ver.branch_version_id, set_by="host",
+    )
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g-inv")
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False)
+
+    out = json.loads(_wiki_file_bug(
+        component="scheduler", severity="minor",
+        title="goal-canonical queue probe",
+        observed="root goal canonical", expected="queued", kind="bug",
+    ))
+    assert out["status"] == "filed"
+    assert out["investigation"]["status"] == "queued"   # NOT skipped/no_canonical
+    assert out["investigation"]["dispatcher_request_id"]
+
+
 def test_reseed_after_healthy_is_present_not_reseeded(data_dir):
     seed_reference_designs(data_dir)
     again = seed_reference_designs(data_dir)
