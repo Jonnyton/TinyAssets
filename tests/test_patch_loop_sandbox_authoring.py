@@ -183,37 +183,50 @@ def test_patch_nodes_can_set_requires_sandbox(ext_env):
 # --------------------------------------------------------------------------- #
 
 
-def test_validate_blocks_coding_branch_without_attestation(ext_env, monkeypatch):
+def test_validate_blocks_coding_branch_no_runner(ext_env, monkeypatch):
+    # REFRAME (Codex S3 REJECT R4): a coding/repo branch is NOT runnable — there
+    # is no per-job sandbox runner in this deploy — surfaced at VALIDATE with the
+    # honest runner reason (never "ready because a CLI is on PATH").
     us, _base = ext_env
     monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
     bid = _build(us, node=_coding_node(), entry="draft_patch")
 
     res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
-    # Same fail-closed condition the runtime enforces — surfaced at VALIDATE.
     assert res["valid"] is True  # structurally valid...
-    assert res["runnable"] is False  # ...but NOT runnable on an unattested host
+    assert res["runnable"] is False  # ...but NOT runnable (no runner)
     assert res["sandbox_blocked"] is True
-    assert res["sandbox_warnings"], "must warn about the attested-sandbox need"
-    assert any(
-        "OS_SANDBOX_ATTESTED" in w or "OS isolation" in w
-        for w in res["sandbox_warnings"]
-    )
+    assert any("runner" in w for w in res["sandbox_warnings"])
 
 
-def test_validate_allows_coding_branch_under_attestation(ext_env, monkeypatch):
+def test_validate_blocks_coding_branch_even_under_attestation(ext_env, monkeypatch):
+    # Attestation alone is NOT the runner (attestation ≠ prepared checkout /
+    # isolation). A coding branch is blocked EVEN attested until the runner lands.
     us, _base = ext_env
-    bid = _build(us, node=_coding_node(), entry="draft_patch")
-    # Attest the whole process is OS-isolated (what the container entrypoint does).
     monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    bid = _build(us, node=_coding_node(), entry="draft_patch")
 
     res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
-    assert res["runnable"] is True
-    assert res["sandbox_blocked"] is False
-    assert res["sandbox_warnings"] == []
+    assert res["runnable"] is False
+    assert res["sandbox_blocked"] is True
 
 
-def test_validate_design_only_branch_runnable_without_attestation(ext_env):
-    # A non-coding branch is unaffected by the sandbox gate.
+def test_validate_repo_exec_and_repo_read_nodes_also_block(ext_env):
+    # R5: verify (repo-exec) + investigate (repo-read) are repo-touching too.
+    us, _base = ext_env
+    for nid, tmpl in (("verify", "run {x}"), ("investigate", "inspect {x}")):
+        bid = _build(
+            us,
+            node={"node_id": nid, "display_name": nid, "prompt_template": tmpl},
+            entry=nid,
+            name=nid,
+        )
+        res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
+        assert res["sandbox_blocked"] is True, nid
+        assert res["runnable"] is False, nid
+
+
+def test_validate_design_only_branch_runnable(ext_env):
+    # A pure text branch is unaffected by the runner gate.
     us, _base = ext_env
     bid = _build(
         us,
@@ -230,60 +243,17 @@ def test_validate_design_only_branch_runnable_without_attestation(ext_env):
     assert res["sandbox_warnings"] == []
 
 
-# --------------------------------------------------------------------------- #
-# FINDING 5 — validate evaluates the SELECTED provider's real capability, and
-# a sandbox-check exception fails CLOSED.
-# --------------------------------------------------------------------------- #
-
-
-def test_validate_blocks_when_attested_but_no_coding_capable_provider(ext_env, monkeypatch):
-    # FINDING 5a: attestation set but NO coding-capable provider CLI on PATH →
-    # the coding node would fail closed at the provider, so validate must block.
-    us, _base = ext_env
-    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
-    monkeypatch.setattr("shutil.which", lambda _name: None)
-    bid = _build(us, node=_coding_node(), entry="draft_patch")
-
-    res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
-    assert res["sandbox_blocked"] is True
-    assert res["runnable"] is False
-    assert any("no coding-capable provider" in w for w in res["sandbox_warnings"])
-
-
-def test_validate_blocks_when_attested_codex_only_without_bwrap(ext_env, monkeypatch):
-    # FINDING 5a: the SELECTED provider's real capability includes codex's bwrap
-    # requirement — attested + codex-only + no bwrap → codex fail-closes → block.
-    import tinyassets.providers.base as base_mod
-
-    us, _base = ext_env
-    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
-    monkeypatch.setattr(
-        "shutil.which", lambda name: "/usr/bin/codex" if name == "codex" else None,
-    )
-    monkeypatch.setattr(
-        base_mod, "get_sandbox_status",
-        lambda: {"bwrap_available": False, "reason": "no bwrap"},
-    )
-    bid = _build(us, node=_coding_node(), entry="draft_patch")
-
-    res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
-    assert res["sandbox_blocked"] is True
-    assert res["runnable"] is False
-    assert any("bwrap" in w for w in res["sandbox_warnings"])
-
-
 def test_validate_fails_closed_on_sandbox_check_exception(ext_env, monkeypatch):
-    # FINDING 5b: an exception in the sandbox capability check must NOT swallow
-    # into runnable=true — it fails CLOSED with the error surfaced.
-    import tinyassets.providers.base as base_mod
+    # R4/5b: an exception in the readiness check must NOT swallow into
+    # runnable=true — it fails CLOSED with the error surfaced.
+    import tinyassets.sandbox_policy as sp_mod
 
     us, _base = ext_env
-    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
 
     def _boom():
-        raise RuntimeError("probe blew up")
+        raise RuntimeError("readiness blew up")
 
-    monkeypatch.setattr(base_mod, "os_sandbox_attested", _boom)
+    monkeypatch.setattr(sp_mod, "coding_nodes_runnable", _boom)
     bid = _build(us, node=_coding_node(), entry="draft_patch")
 
     res = _call(us, "extensions", "validate_branch", branch_def_id=bid)

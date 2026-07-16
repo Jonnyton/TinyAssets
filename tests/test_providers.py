@@ -647,6 +647,8 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": True, "reason": None}),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
             provider = CodexProvider()
@@ -669,6 +671,8 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": True, "reason": None}),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
             provider = CodexProvider()
@@ -689,6 +693,8 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": True, "reason": None}),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
             provider = CodexProvider()
@@ -712,6 +718,8 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
+            patch("tinyassets.providers.codex_provider.get_sandbox_status",
+                  return_value={"bwrap_available": True, "reason": None}),
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
         ):
             provider = CodexProvider()
@@ -720,7 +728,8 @@ class TestCodexProvider:
 
     @pytest.mark.asyncio
     async def test_skip_git_repo_check_in_command_without_bwrap(self):
-        """codex exec must bypass sandbox only when bwrap is unavailable."""
+        """codex exec uses the bypass on a bwrap-less host ONLY under attestation
+        (Codex S3 C1 gate); without attestation it refuses (tested elsewhere)."""
         from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
@@ -735,6 +744,7 @@ class TestCodexProvider:
             return mock_proc
 
         with (
+            patch.dict("os.environ", {"TINYASSETS_OS_SANDBOX_ATTESTED": "1"}),
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("tinyassets.providers.codex_provider.get_sandbox_status",
@@ -775,7 +785,7 @@ class TestCodexProvider:
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("tinyassets.providers.codex_provider.get_sandbox_status",
-                  return_value={"bwrap_available": False, "reason": "test"}),
+                  return_value={"bwrap_available": True, "reason": None}),
             patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         ):
             provider = CodexProvider()

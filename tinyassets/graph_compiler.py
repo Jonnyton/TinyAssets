@@ -224,21 +224,29 @@ def _call_policy_router_with_retry(
     policy: dict[str, Any],
     config: Any = None,
     needs_sandbox: bool = False,
+    universe_context: Any = None,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
-    # Only forward config when set AND the router's call_with_policy_sync
-    # actually accepts it — protects 4-arg routers/stubs (backward-compat),
-    # mirroring the injected provider_call bridge guard.
-    pass_config = config is not None
-    if pass_config:
-        try:
-            import inspect as _inspect
-            _params = _inspect.signature(router.call_with_policy_sync).parameters
-            pass_config = ("config" in _params) or any(
-                p.kind == p.VAR_KEYWORD for p in _params.values()
-            )
-        except (ValueError, TypeError):
-            pass_config = False
+    # Only forward config / universe_context when the router's
+    # call_with_policy_sync actually accepts them — protects older routers/stubs
+    # (backward-compat), mirroring the injected provider_call bridge guard.
+    try:
+        import inspect as _inspect
+        _params = _inspect.signature(router.call_with_policy_sync).parameters
+        _accepts_kwargs = any(
+            p.kind == p.VAR_KEYWORD for p in _params.values()
+        )
+        pass_config = (config is not None) and (
+            ("config" in _params) or _accepts_kwargs
+        )
+        # C2 (Codex S3 REJECT): forward the run's UniverseContext so per-universe
+        # vault auth resolves on the policy path too (mirrors the bridge partial).
+        pass_uctx = (universe_context is not None) and (
+            ("universe_context" in _params) or _accepts_kwargs
+        )
+    except (ValueError, TypeError):
+        pass_config = False
+        pass_uctx = False
     # Fail closed (Codex S3 round-4 FINDING 2): a sandbox-required node must NEVER
     # run through a policy router that cannot carry its hardened config — that
     # would drop the sandbox tool/env policy exactly like a config-less bridge.
@@ -253,13 +261,16 @@ def _call_policy_router_with_retry(
             "coding node un-hardened (fail closed)."
         )
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
+    _uctx_kw = {"universe_context": universe_context} if pass_uctx else {}
     for attempt_index in range(attempts):
         try:
             if pass_config:
                 return router.call_with_policy_sync(
-                    role, prompt, system, policy, config,
+                    role, prompt, system, policy, config, **_uctx_kw,
                 )
-            return router.call_with_policy_sync(role, prompt, system, policy)
+            return router.call_with_policy_sync(
+                role, prompt, system, policy, **_uctx_kw,
+            )
         except AllProvidersExhaustedError:
             if attempt_index == attempts - 1:
                 raise
@@ -946,42 +957,56 @@ def _build_prompt_template_node(
     # fast+cheap) + the node's own timeout. Built once per node. ModelConfig is
     # imported lazily so graph_compiler keeps no hard provider import.
     _node_reasoning_effort = (getattr(node, "reasoning_effort", "") or "").strip()
-    # SECURITY (patch-loop S3): the SINGLE classifier decides coding capability.
-    # A coding node (declares requires_sandbox / a coding node_kind / the
-    # draft_patch backstop) runs its coding agent against a user-bound repo, so
-    # it gets the hardened OS-sandboxed config (Bash/Write granted + confined).
-    # A NON-coding node gets the text-only config that DENIES every coding tool —
-    # so coding capability is INSEPARABLE from the sandbox requirement (Codex
-    # latest-model FINDING 1): a de-classified node is a plain text node, never an
-    # un-sandboxed coding node. A coding node must NEVER silently degrade to an
-    # unsandboxed/unhardened default — that would re-open the exfiltration vector.
+    # SECURITY (patch-loop S3 — Codex REJECT reframe): classify node capability.
+    # A REPO-TOUCHING node (coding=repo-write / repo_exec=run commands /
+    # repo_read=inspect) requires the per-job sandbox runner subsystem (prepared
+    # checkout + tenant isolation + scoped creds + egress/resource limits), which
+    # does NOT exist in this deployment (a future slice). So repo-touching nodes
+    # FAIL CLOSED on EVERY provider, deterministically, before any provider spawn
+    # (C3/C4/R5). A plain TEXT node gets the closed-tool-surface config and runs.
     from tinyassets.sandbox_policy import (
-        node_coding_capability as _node_coding_capability,
+        coding_nodes_runnable as _coding_nodes_runnable,
     )
-    _node_needs_sandbox = _node_coding_capability(node)
+    from tinyassets.sandbox_policy import (
+        node_capability as _node_capability_fn,
+    )
+    from tinyassets.sandbox_policy import (
+        node_requires_sandbox_runner as _node_requires_sandbox_runner,
+    )
+    _node_capability_kind = _node_capability_fn(node)
+    _node_needs_sandbox = _node_requires_sandbox_runner(node)
+    if _node_needs_sandbox:
+        _runner_ok, _runner_reason = _coding_nodes_runnable()
+        if not _runner_ok:
+            try:
+                from tinyassets.providers.base import (
+                    SandboxUnavailableError as _RepoSUE,
+                )
+            except Exception:  # noqa: BLE001
+                _RepoSUE = type("_SandboxUnavailableError", (Exception,), {})
+
+            _cap = _node_capability_kind
+            _nid = node.node_id
+
+            def _repo_capability_fail_closed(
+                state: dict[str, Any],
+            ) -> dict[str, Any]:
+                raise _RepoSUE(
+                    f"Node '{_nid}' has {_cap} (repo-touching) capability and "
+                    f"cannot run: {_runner_reason}"
+                )
+
+            # Deterministic fail-closed node fn — never builds/uses any provider.
+            return _repo_capability_fail_closed
     try:
-        if _node_needs_sandbox:
-            from tinyassets.sandbox_policy import (
-                coding_node_model_config as _coding_node_model_config,
-            )
-            _node_cfg: Any = _coding_node_model_config(
-                timeout=timeout_s,
-                reasoning_effort=_node_reasoning_effort,
-            )
-        else:
-            from tinyassets.sandbox_policy import (
-                text_node_model_config as _text_node_model_config,
-            )
-            _node_cfg = _text_node_model_config(
-                timeout=timeout_s,
-                reasoning_effort=_node_reasoning_effort,
-            )
+        from tinyassets.sandbox_policy import (
+            text_node_model_config as _text_node_model_config,
+        )
+        _node_cfg: Any = _text_node_model_config(
+            timeout=timeout_s,
+            reasoning_effort=_node_reasoning_effort,
+        )
     except Exception:  # pragma: no cover - defensive; provider import is optional
-        if _node_needs_sandbox:
-            # Fail loud rather than silently run a coding node unsandboxed
-            # (hard rule #8): a hardened config that cannot be built must abort
-            # branch compilation, not degrade to an unconfined call.
-            raise
         _node_cfg = None
     # Only pass config to the injected provider bridge when its signature
     # accepts it (protects test stubs / older bridges).
@@ -992,6 +1017,18 @@ def _build_prompt_template_node(
         )
     except (ValueError, TypeError):
         _bridge_takes_config = False
+
+    # C2 (Codex S3 REJECT): run_branch binds the run's per-universe UniverseContext
+    # into the provider bridge via ``functools.partial(call_provider,
+    # universe_context=uctx)``; the bridge path carries it automatically. Surface
+    # it here so the policy-router path forwards the SAME universe scope (so a
+    # policy text node also resolves its own universe's vault, never another's).
+    try:
+        _universe_context = getattr(provider_call, "keywords", {}).get(
+            "universe_context",
+        )
+    except Exception:  # noqa: BLE001
+        _universe_context = None
 
     # Lazy import so graph_compiler doesn't hard-depend on providers at import
     # time. Aliased so the except-clauses below can reference it by name without
@@ -1180,6 +1217,7 @@ def _build_prompt_template_node(
                                 policy=effective_policy,
                                 config=_node_cfg,
                                 needs_sandbox=_node_needs_sandbox,
+                                universe_context=_universe_context,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,

@@ -21,6 +21,7 @@ from tinyassets.exceptions import (
     ProviderUnavailableError,
 )
 from tinyassets.providers.base import (
+    OS_SANDBOX_ATTESTATION_ENV,
     BaseProvider,
     ModelConfig,
     ProviderResponse,
@@ -28,6 +29,7 @@ from tinyassets.providers.base import (
     check_bwrap_failure,
     cleanup_sandbox_job_dir,
     get_sandbox_status,
+    os_sandbox_attested,
     sandbox_spawn_env_and_dir,
 )
 
@@ -83,36 +85,39 @@ def _codex_workdir() -> str:
 def _codex_sandbox_args(
     config: ModelConfig, sandbox_status: dict,
 ) -> list[str]:
-    """Pick codex's sandbox flags, failing closed for coding-node sandboxes.
+    """Pick codex's sandbox flags, gating the bypass on attestation.
 
-    Two regimes:
+    Codex honors NO tool allow/deny policy (unlike claude), so a node's
+    classification is IRRELEVANT to what codex can touch: the only two modes are
+    ``--full-auto`` (real bwrap sandbox) and
+    ``--dangerously-bypass-approvals-and-sandbox`` (full host shell + repo). The
+    escape (Codex S3 REJECT C1): declassify a node → route to codex via
+    ``llm_policy`` → on a bwrap-LESS host codex used the bypass = shell on the
+    droplet, regardless of the sandbox tool policy claude enforces.
 
-    * Host-trusted / prompt-node calls (``os_sandbox_required`` False): keep
-      today's behavior — ``--full-auto`` when bwrap is usable, else the hosted
-      subscription mode (``--dangerously-bypass-approvals-and-sandbox``).
+    So the gate is independent of ``os_sandbox_required``:
 
-    * Coding-node sandbox (``os_sandbox_required`` True — the patch loop's
-      ``draft_patch`` and any ``requires_sandbox`` node): the process MUST be
-      OS-confined. NEVER emit ``--dangerously-bypass-approvals-and-sandbox``
-      (that grants full host access — the exact exfiltration vector a remixed
-      loop could abuse). Require bwrap → ``--full-auto``; when bwrap is absent
-      raise :class:`SandboxUnavailableError` so the node fails LOUDLY instead of
-      running unconfined (hard rule #8).
+    * bwrap available → ``--full-auto`` (real per-call sandbox) — unchanged, and
+      the expected Linux-droplet path.
+    * bwrap absent BUT the whole process is attested-isolated
+      (``TINYASSETS_OS_SANDBOX_ATTESTED``) → bypass permitted (an external
+      sandbox contains it).
+    * bwrap absent AND unattested → REFUSE for ALL nodes (fail closed) — this is
+      the actual multi-tenant vulnerability.
     """
     bwrap_ok = bool(sandbox_status.get("bwrap_available"))
-    if config.os_sandbox_required:
-        if not bwrap_ok:
-            raise SandboxUnavailableError(
-                "codex coding-node requires an OS sandbox (bwrap) and MUST NOT "
-                "use --dangerously-bypass-approvals-and-sandbox, but bwrap is "
-                f"unavailable: {sandbox_status.get('reason') or 'no bwrap'}. "
-                "Refusing to run the coding agent unconfined (fail closed)."
-            )
+    if bwrap_ok:
         return ["--full-auto"]
-    return (
-        ["--full-auto"]
-        if bwrap_ok
-        else ["--dangerously-bypass-approvals-and-sandbox"]
+    if os_sandbox_attested():
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+    raise SandboxUnavailableError(
+        "codex has no bwrap sandbox and this process is not attested-isolated "
+        f"({sandbox_status.get('reason') or 'no bwrap'}; "
+        f"{OS_SANDBOX_ATTESTATION_ENV} unset). Its only non-bwrap mode "
+        "(--dangerously-bypass-approvals-and-sandbox) grants full host "
+        "shell/repo access regardless of any node tool policy — refusing for ALL "
+        "nodes (fail closed). Provide bwrap (--full-auto per call) or run the "
+        "daemon under attested OS isolation."
     )
 
 

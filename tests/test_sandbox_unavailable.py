@@ -291,9 +291,8 @@ class TestExtBranchValidateSandboxWarnings:
         assert result["sandbox_blocked"] is False
 
     def test_bwrap_available_but_not_attested_still_blocks(self):
-        # THE FINDING 2 fix: a launchable bwrap is NOT sufficient — without the
-        # whole-process attestation the coding node fails closed at runtime, so
-        # validate must block it (previously this reported clean).
+        # A launchable bwrap is NOT sufficient — a coding/repo node needs the
+        # per-job runner (which does not exist), so validate blocks it.
         branch = _make_branch(has_sandbox_node=True)
         result = self._call_validate(
             branch.to_dict(),
@@ -303,18 +302,17 @@ class TestExtBranchValidateSandboxWarnings:
         assert result["runnable"] is False
         assert result["sandbox_warnings"]
 
-    def test_no_warnings_when_attested(self):
-        # Attestation clears the sandbox gate; runnable itself may still be gated
-        # by unrelated structural checks on this minimal fixture branch, so assert
-        # the precise signal: no sandbox warning and not sandbox_blocked.
+    def test_still_blocks_when_attested_no_runner(self):
+        # REFRAME (Codex S3 REJECT): attestation alone is NOT the per-job runner,
+        # so a coding/repo branch is blocked EVEN under attestation.
         branch = _make_branch(has_sandbox_node=True)
         result = self._call_validate(
             branch.to_dict(),
             {"bwrap_available": True, "reason": None},
             attested=True,
         )
-        assert result["sandbox_warnings"] == []
-        assert result["sandbox_blocked"] is False
+        assert result["sandbox_blocked"] is True
+        assert result["sandbox_warnings"]
 
     def test_missing_branch_returns_error(self):
         from tinyassets.api.branches import _ext_branch_validate
@@ -487,11 +485,15 @@ class TestCodexProviderBwrapDetection:
 
         provider = CodexProvider()
 
+        # bwrap available → codex uses --full-auto and actually runs, so this
+        # exercises the bwrap-STDERR detection path (not the C1 no-bwrap gate).
         with patch.object(sys, "platform", "linux"):
-            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-                with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    with pytest.raises(SandboxUnavailableError):
-                        asyncio.run(provider.complete("hello", "", ModelConfig()))
+            with patch("tinyassets.providers.codex_provider.get_sandbox_status",
+                       return_value={"bwrap_available": True, "reason": None}):
+                with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+                    with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
+                        with pytest.raises(SandboxUnavailableError):
+                            asyncio.run(provider.complete("hello", "", ModelConfig()))
 
     def test_normal_stderr_does_not_raise(self):
         from tinyassets.providers.base import ModelConfig
@@ -505,7 +507,9 @@ class TestCodexProviderBwrapDetection:
         provider = CodexProvider()
 
         with patch.object(sys, "platform", "linux"):
-            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-                with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    result = asyncio.run(provider.complete("hello", "", ModelConfig()))
+            with patch("tinyassets.providers.codex_provider.get_sandbox_status",
+                       return_value={"bwrap_available": True, "reason": None}):
+                with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+                    with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
+                        result = asyncio.run(provider.complete("hello", "", ModelConfig()))
         assert result.text == "codex output"

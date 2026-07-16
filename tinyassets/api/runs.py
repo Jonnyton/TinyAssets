@@ -526,6 +526,31 @@ def _run_error_detail(
     return detail
 
 
+def _run_universe_context(kwargs: dict[str, Any]) -> Any:
+    """Build the run's per-universe :class:`UniverseContext`, or ``None``.
+
+    C2 (Codex S3 REJECT): the run is scoped to a universe; its provider calls
+    must resolve that universe's OWN vault auth and no other's. Returns ``None``
+    when no universe can be resolved (single-universe daemon keeps the
+    process-global fallback — unchanged behavior).
+    """
+    try:
+        from pathlib import Path as _Path
+
+        from tinyassets.config import load_universe_config
+        from tinyassets.providers.base import UniverseContext
+
+        uid = _request_universe(kwargs.get("universe_id") or "")
+        udir = _universe_dir(uid)
+        if udir is None or not _Path(udir).is_dir():
+            return None
+        return UniverseContext(
+            universe_dir=_Path(udir), config=load_universe_config(udir),
+        )
+    except Exception:  # noqa: BLE001 — resolution failure ⇒ process-global fallback
+        return None
+
+
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
 
@@ -647,6 +672,22 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         )
     except ImportError:
         provider_call = None
+
+    # C2 (Codex S3 REJECT): thread an explicit per-universe UniverseContext into
+    # the provider bridge so per-universe vault auth actually resolves. Without
+    # this, universe_dir=None reaches provider.complete → the sandbox spawn's
+    # vault-auth check fails closed and the run can execute NO node needing vault
+    # auth; and in a multi-universe daemon one universe could cross-resolve
+    # another's credentials. Binding the run's own UniverseContext means universe
+    # A's run resolves ONLY A's vault. (Also unblocks the S5 BYO-key path.)
+    if provider_call is not None:
+        _uctx = _run_universe_context(kwargs)
+        if _uctx is not None:
+            import functools as _functools
+
+            provider_call = _functools.partial(
+                provider_call, universe_context=_uctx,
+            )
 
     # Parse + validate recursion_limit_override (10-1000).
     _rl_raw = kwargs.get("recursion_limit_override", "")

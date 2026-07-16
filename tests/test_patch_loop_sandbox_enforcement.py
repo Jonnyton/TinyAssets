@@ -70,37 +70,43 @@ def _run_node_capturing_config(node: NodeDefinition) -> ModelConfig | None:
     return captured[-1]
 
 
-def test_requires_sandbox_node_runs_with_hardened_config():
-    node = NodeDefinition(
-        node_id="dev",
-        display_name="Dev (coding)",
-        prompt_template="implement the fix",
-        output_keys=["dev_out"],
-        requires_sandbox=True,
-    )
-    cfg = _run_node_capturing_config(node)
+def _run_node_expect_fail_closed(node: NodeDefinition):
+    """Compile *node* and assert it FAILS CLOSED (raises SandboxUnavailableError)
+    before any provider is ever called."""
+    called: list = []
 
-    assert cfg is not None
-    # OS-sandbox required => provider fails closed + never bypasses.
-    assert cfg.os_sandbox_required is True
-    # host connectors / side-effect tools denied (the exfil surface)
-    assert "mcp__*" in (cfg.disallowed_tools or ())
-    assert "Monitor" in (cfg.disallowed_tools or ())
-    assert "WebFetch" in (cfg.disallowed_tools or ())
-    assert "SendMessage" in (cfg.disallowed_tools or ())
-    # coding tools KEPT so the agent can actually write the patch...
-    assert "Bash" in (cfg.allowed_tools or ())
-    assert "Write" in (cfg.allowed_tools or ())
-    # ...and NOT accidentally denied (posture not self-contradicting)
-    assert "Bash" not in (cfg.disallowed_tools or ())
-    assert "Write" not in (cfg.disallowed_tools or ())
+    def stub(prompt: str, system: str, *, role: str = "writer", config=None) -> str:
+        called.append(1)
+        return "SHOULD NOT RUN"
+
+    fn = _build_prompt_template_node(node, provider_call=stub, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+    assert not called, "a repo-touching node must NEVER reach the provider"
 
 
-def test_plain_node_is_text_only_no_coding_capability():
-    # INSEPARABILITY (latest-model FINDING 1): a non-coding node is NOT
-    # os_sandbox_required, but it must NOT reach coding capability either — its
-    # config DENIES Bash/Write/… so `claude -p`'s default tools cannot grant repo
-    # write to a plain node. Coding tools flow ONLY from the coding classifier.
+def test_repo_touching_node_fails_closed_no_runner():
+    # REFRAME (Codex S3 REJECT): a coding/repo node has NO per-job sandbox runner
+    # in this deploy, so it fails closed on EVERY provider, deterministically,
+    # before any provider spawn — never runs against an empty workspace.
+    for node in (
+        NodeDefinition(node_id="dev", display_name="Dev", prompt_template="x",
+                       output_keys=["dev_out"], requires_sandbox=True),
+        NodeDefinition(node_id="verify", display_name="Verify",
+                       prompt_template="run {verify_command}",
+                       output_keys=["verify_out"]),  # repo_exec backstop
+        NodeDefinition(node_id="investigate", display_name="Investigate",
+                       prompt_template="inspect the repo",
+                       output_keys=["investigate_out"]),  # repo_read backstop
+    ):
+        _run_node_expect_fail_closed(node)
+
+
+def test_plain_node_is_text_only_closed_surface():
+    # INSEPARABILITY (FINDING 1): a non-coding node is a pure TEXT node — closed
+    # tool surface (no built-in tools at all), NOT os_sandbox_required, and it
+    # reaches no coding capability. Coding tools flow ONLY from the coding
+    # classifier, which fails closed. A de-classified node grants nothing.
     node = NodeDefinition(
         node_id="summarize",
         display_name="Summarize",
@@ -111,19 +117,18 @@ def test_plain_node_is_text_only_no_coding_capability():
 
     assert cfg is not None
     assert cfg.os_sandbox_required is False  # nothing to confine
-    assert "Bash" in (cfg.disallowed_tools or ())  # coding capability denied
-    assert "Write" in (cfg.disallowed_tools or ())
-    assert "Bash" not in (cfg.allowed_tools or ())  # never granted
+    assert cfg.closed_tool_surface is True   # --tools "" → no built-in tools
+    assert not (cfg.allowed_tools or ())     # nothing granted
 
 
 # --------------------------------------------------------------------------- #
-# (2) draft_patch node class is sandbox-required by DEFAULT (no flag needed)
+# (2) draft_patch is a coding node — fails closed by default (no flag needed)
 # --------------------------------------------------------------------------- #
 
 
-def test_draft_patch_defaults_to_sandbox_even_without_the_flag():
-    # A remix that omits requires_sandbox on its draft_patch node must STILL run
-    # confined — a user shouldn't have to opt in to safety.
+def test_draft_patch_fails_closed_no_runner_even_without_flag():
+    # A remix that omits requires_sandbox on its draft_patch node still fails
+    # closed — draft_patch is a coding-capability node by the backstop.
     node = NodeDefinition(
         node_id="draft_patch",
         display_name="Draft the patch (coding agent)",
@@ -131,12 +136,7 @@ def test_draft_patch_defaults_to_sandbox_even_without_the_flag():
         output_keys=["draft_patch_output"],
     )
     assert node.requires_sandbox is False  # author did NOT set it
-
-    cfg = _run_node_capturing_config(node)
-    assert cfg is not None
-    assert cfg.os_sandbox_required is True
-    assert "mcp__*" in (cfg.disallowed_tools or ())
-    assert "Bash" in (cfg.allowed_tools or ())
+    _run_node_expect_fail_closed(node)
 
 
 def test_node_requires_sandbox_helper():
@@ -160,9 +160,9 @@ def test_node_requires_sandbox_helper():
 
 
 def test_renamed_coding_node_cannot_escape_via_rename():
-    # Codex S3 FINDING 3: classify by the STABLE node_kind capability, not the
-    # editable node_id. A remix renames draft_patch -> its own id but keeps
-    # node_kind="coding" — it must STILL be sandbox-required.
+    # Classify by the STABLE node_kind capability, not the editable node_id. A
+    # remix renames draft_patch -> its own id but keeps node_kind="coding" — it is
+    # STILL a coding node and STILL fails closed (no runner) through the compiler.
     class N:
         pass
 
@@ -172,7 +172,6 @@ def test_renamed_coding_node_cannot_escape_via_rename():
     r.node_kind = "coding"
     assert node_requires_sandbox(r) is True
 
-    # ...and through the compiler it receives the hardened config.
     node = NodeDefinition(
         node_id="write_the_fix",
         display_name="Write the fix",
@@ -182,11 +181,7 @@ def test_renamed_coding_node_cannot_escape_via_rename():
     )
     assert node.requires_sandbox is False  # flag not set
     assert node.node_id not in ("draft_patch",)  # not the backstop id either
-    cfg = _run_node_capturing_config(node)
-    assert cfg is not None
-    assert cfg.os_sandbox_required is True
-    assert "mcp__*" in (cfg.disallowed_tools or ())
-    assert "Bash" in (cfg.allowed_tools or ())
+    _run_node_expect_fail_closed(node)  # fails closed despite the rename
 
 
 def test_node_requires_sandbox_accepts_raw_node_def_dicts():
@@ -216,27 +211,32 @@ def test_node_kind_round_trips_through_serialization():
 # --------------------------------------------------------------------------- #
 
 
-def test_codex_coding_node_fails_closed_and_never_bypasses():
-    cfg = coding_node_model_config(timeout=60)
+def test_codex_bypass_requires_attestation_for_all_nodes(monkeypatch):
+    # C1 (Codex S3 REJECT): codex honors NO tool policy, so classification is
+    # irrelevant — the bypass grants shell/repo to ANY node. It is gated on
+    # attestation, independent of os_sandbox_required.
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
 
-    # No OS sandbox -> refuse, and NEVER emit the dangerous bypass flag.
-    with pytest.raises(SandboxUnavailableError):
-        _codex_sandbox_args(cfg, _BWRAP_OFF)
+    for cfg in (ModelConfig(), coding_node_model_config(timeout=60)):
+        # bwrap present -> real per-call sandbox, no bypass (unchanged droplet path)
+        assert _codex_sandbox_args(cfg, _BWRAP_ON) == ["--full-auto"]
+        # bwrap absent + UNATTESTED -> REFUSE (never the dangerous bypass)
+        with pytest.raises(SandboxUnavailableError):
+            _codex_sandbox_args(cfg, _BWRAP_OFF)
 
-    # OS sandbox present -> sandboxed auto mode only, still no bypass.
-    args = _codex_sandbox_args(cfg, _BWRAP_ON)
-    assert args == ["--full-auto"]
-    assert "--dangerously-bypass-approvals-and-sandbox" not in args
-
-
-def test_codex_host_trusted_call_keeps_legacy_behavior():
-    # A non-coding (host-trusted) call is unchanged: hosted bypass mode when
-    # bwrap is absent, sandboxed auto mode when present.
-    host = ModelConfig()
-    assert _codex_sandbox_args(host, _BWRAP_OFF) == [
+    # bwrap absent + ATTESTED (whole process externally isolated) -> bypass OK
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    assert _codex_sandbox_args(ModelConfig(), _BWRAP_OFF) == [
         "--dangerously-bypass-approvals-and-sandbox"
     ]
-    assert _codex_sandbox_args(host, _BWRAP_ON) == ["--full-auto"]
+
+
+def test_codex_bwrap_less_unattested_never_emits_bypass(monkeypatch):
+    # The actual multi-tenant escape: declassified/text node routed to codex on a
+    # bwrap-less unattested host must NEVER get --dangerously-bypass (shell).
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    with pytest.raises(SandboxUnavailableError):
+        _codex_sandbox_args(ModelConfig(), _BWRAP_OFF)
 
 
 def test_codex_provider_complete_fails_closed_before_spawning(monkeypatch):
@@ -616,9 +616,9 @@ def test_codex_coding_node_spawns_with_vault_env_and_scratch_workdir(monkeypatch
 # --------------------------------------------------------------------------- #
 
 
-def test_sandbox_node_refuses_a_config_less_bridge():
-    # A legacy/tolerant bridge that cannot carry the hardened config would run the
-    # coding node WITHOUT the sandbox tool/env policy — must fail closed.
+def test_coding_node_fails_closed_before_any_bridge():
+    # A coding node fails closed at the runner gate BEFORE any bridge is called —
+    # a config-less bridge that would bypass policy is never even reached.
     node = NodeDefinition(
         node_id="draft_patch",
         display_name="Draft",
@@ -627,19 +627,20 @@ def test_sandbox_node_refuses_a_config_less_bridge():
     )
 
     def config_less(prompt, system, *, role="writer"):  # no `config` kwarg
-        raise AssertionError("a config-less bridge must NOT run a coding node")
+        raise AssertionError("a coding node must NOT reach ANY bridge")
 
     fn = _build_prompt_template_node(node, provider_call=config_less, event_sink=None)
     with pytest.raises(SandboxUnavailableError):
         fn({})
 
 
-def test_sandbox_node_runs_through_a_config_accepting_bridge():
+def test_text_node_runs_through_a_config_accepting_bridge():
+    # A TEXT node runs and receives the closed-surface config.
     node = NodeDefinition(
-        node_id="draft_patch",
-        display_name="Draft",
+        node_id="summarize",
+        display_name="Summarize",
         prompt_template="do it",
-        output_keys=["draft_patch_output"],
+        output_keys=["summarize_out"],
     )
     seen: dict = {}
 
@@ -649,8 +650,10 @@ def test_sandbox_node_runs_through_a_config_accepting_bridge():
 
     fn = _build_prompt_template_node(node, provider_call=config_ok, event_sink=None)
     out = fn({})
-    assert out["draft_patch_output"] == "ok"
-    assert seen["config"] is not None and seen["config"].os_sandbox_required is True
+    assert out["summarize_out"] == "ok"
+    assert seen["config"] is not None
+    assert seen["config"].closed_tool_surface is True
+    assert seen["config"].os_sandbox_required is False
 
 
 def test_ordinary_node_still_runs_through_a_config_less_bridge():
@@ -799,9 +802,10 @@ def test_policy_router_config_less_ok_for_ordinary_node():
 
 def test_renamed_and_cleared_node_gets_no_coding_capability():
     # A remixer renames the node AND clears node_kind + requires_sandbox to flip
-    # the classifier True→False. The escape must grant NOTHING: the node is a
-    # plain TEXT node (Bash/Write DENIED, no os_sandbox), and it never reaches the
-    # coding config or the coding spawn path.
+    # the classifier True→False. The escape must grant NOTHING: the node becomes a
+    # plain TEXT node with the CLOSED tool surface (no built-in tools at all), no
+    # os_sandbox, and it never reaches any coding config or coding spawn path.
+    # Coding tools flow ONLY from the coding classifier (which fails closed).
     from tinyassets.sandbox_policy import node_coding_capability
 
     node = NodeDefinition(
@@ -816,12 +820,9 @@ def test_renamed_and_cleared_node_gets_no_coding_capability():
 
     cfg = _run_node_capturing_config(node)
     assert cfg is not None
-    # No coding config: not sandbox-required, Bash NOT granted, Bash DENIED.
-    assert cfg.os_sandbox_required is False
-    assert "Bash" not in (cfg.allowed_tools or ())
-    assert "Write" not in (cfg.allowed_tools or ())
-    assert "Bash" in (cfg.disallowed_tools or ())
-    assert "Write" in (cfg.disallowed_tools or ())
+    assert cfg.os_sandbox_required is False   # nothing to confine
+    assert cfg.closed_tool_surface is True    # --tools "" → no tools at all
+    assert not (cfg.allowed_tools or ())      # nothing granted (no Bash/Write)
 
 
 # --------------------------------------------------------------------------- #
@@ -896,3 +897,98 @@ def test_sandbox_call_with_only_text_providers_fails_loud(monkeypatch):
             router.call("writer", "p", "", coding_node_model_config(timeout=60))
         )
     assert text.calls == 0  # never a fake 'patched'
+
+
+# --------------------------------------------------------------------------- #
+# (11) C1 end-to-end — codex never spawns the bypass on a bwrap-less unattested
+# host (the actual escape), for ANY node.
+# --------------------------------------------------------------------------- #
+
+
+def test_codex_complete_refuses_and_never_spawns_bypass_bwrap_less_unattested(monkeypatch):
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    monkeypatch.setattr(
+        "tinyassets.providers.codex_provider.get_sandbox_status",
+        lambda: dict(_BWRAP_OFF),
+    )
+    spawned_argv: list = []
+
+    async def _fake_exec(*args, **_k):
+        spawned_argv.extend(args)
+        raise AssertionError("codex must NOT spawn on a bwrap-less unattested host")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+    # A plain host/text config (declassified node routed to codex) still refuses —
+    # the bypass grants shell regardless of node classification.
+    with pytest.raises(SandboxUnavailableError):
+        asyncio.run(CodexProvider().complete("p", "", ModelConfig()))
+    assert not spawned_argv  # argv never built → never contains --dangerously-bypass
+    assert "--dangerously-bypass-approvals-and-sandbox" not in spawned_argv
+
+
+# --------------------------------------------------------------------------- #
+# (12) C2 — the run's per-universe UniverseContext is threaded; universe A's run
+# never cross-resolves universe B's credentials.
+# --------------------------------------------------------------------------- #
+
+
+def test_bridge_carries_run_universe_context_and_never_crosses():
+    import functools
+
+    from tinyassets.providers.base import UniverseContext
+
+    uctx_a = UniverseContext(universe_dir=Path("/u/A"))
+    uctx_b = UniverseContext(universe_dir=Path("/u/B"))
+    seen: dict = {}
+
+    def stub(prompt, system, *, role="writer", config=None, universe_context=None):
+        seen["uctx"] = universe_context
+        return "ok"
+
+    # run_branch binds the run's OWN universe (A) into the provider bridge.
+    bound = functools.partial(stub, universe_context=uctx_a)
+    node = NodeDefinition(
+        node_id="summarize", display_name="S", prompt_template="do it",
+        output_keys=["summarize_out"],
+    )
+    fn = _build_prompt_template_node(node, provider_call=bound, event_sink=None)
+    fn({})
+    assert seen["uctx"] is uctx_a  # the run's own universe...
+    assert seen["uctx"] is not uctx_b  # ...never another universe's vault scope
+    assert seen["uctx"].universe_dir == Path("/u/A")
+
+
+def test_policy_router_forwards_universe_context():
+    from tinyassets.graph_compiler import _call_policy_router_with_retry
+    from tinyassets.providers.base import UniverseContext
+
+    seen: dict = {}
+
+    class _UctxRouter:
+        def call_with_policy_sync(
+            self, role, prompt, system, policy, config=None, *, universe_context=None,
+        ):
+            seen["uctx"] = universe_context
+            return ("ran", "codex", {})
+
+    uctx_a = UniverseContext(universe_dir=Path("/u/A"))
+    _call_policy_router_with_retry(
+        _UctxRouter(), role="writer", prompt="p", system="", policy={},
+        config=None, universe_context=uctx_a,
+    )
+    assert seen["uctx"] is uctx_a
+
+
+def test_run_universe_context_resolves_the_runs_own_universe(monkeypatch, tmp_path):
+    import tinyassets.api.runs as runs_mod
+
+    udir_a = tmp_path / "A"
+    udir_a.mkdir()
+    monkeypatch.setattr(runs_mod, "_request_universe", lambda _x: "A")
+    monkeypatch.setattr(runs_mod, "_universe_dir", lambda _uid: udir_a)
+    monkeypatch.setattr(
+        "tinyassets.config.load_universe_config", lambda _udir: object(),
+    )
+    uctx = runs_mod._run_universe_context({"universe_id": "A"})
+    assert uctx is not None
+    assert uctx.universe_dir == udir_a

@@ -66,27 +66,35 @@ def _sandbox_cli_args(
     that leave the config fields at their defaults.
     """
     flags: list[str] = []
-    # Strip ambient MCP + user config for BOTH hardened profiles: the founder
-    # conversation (``sandbox_workspace``) and the coding node
-    # (``os_sandbox_required``).
-    hardened = bool(config.sandbox_workspace or config.os_sandbox_required)
+    # Strip ambient MCP + user config for every hardened profile: the founder
+    # conversation (``sandbox_workspace``), the coding node (``os_sandbox_required``
+    # — defense-in-depth for the future runner), and the closed text surface
+    # (``closed_tool_surface``).
+    hardened = bool(
+        config.sandbox_workspace
+        or config.os_sandbox_required
+        or config.closed_tool_surface
+    )
     if hardened:
         # Load ONLY project-tier settings. A universe dir is bare, so this loads
         # NOTHING — critically it excludes the USER's global settings, which carry
         # MCP servers and `bypassPermissions`. Without it, the sandboxed engine
         # still inherits the user's MCP tools (verified 2026-07-03: it saw
         # `mcp__codex__codex`), so a founder's universe could call e.g. Codex →
-        # arbitrary code execution, fully bypassing the Bash deny. This strips all
-        # ambient MCP + config from the hardened turn.
+        # arbitrary code execution. This strips all ambient MCP + config.
         flags += ["--setting-sources", "project"]
-        # STRICT empty MCP config (Codex latest-model FINDING 6). Per Anthropic's
-        # docs `--disallowedTools mcp__*` is NOT a reliable MCP block: allowedTools
-        # is additive pre-approval and MCP glob patterns are unsupported. The
-        # reliable block is `--strict-mcp-config` (ignore ALL user/project/managed
-        # MCP scopes) + `--mcp-config` pointing at an EMPTY servers config, so no
-        # MCP server can load at all. The disallowedTools mcp__* entry below stays
-        # as belt-and-braces.
+        # STRICT empty MCP config (Codex S3 R6). Per Anthropic's CLI docs
+        # `--disallowedTools "mcp__*"` DOES remove all MCP tools, but the reliable
+        # scope block is `--strict-mcp-config` (ignore ALL user/project/managed MCP
+        # scopes) + `--mcp-config` with an EMPTY servers config so no MCP server
+        # can load at all.
         flags += ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+    # Tool surface. Closed text surface (R6): `--tools ""` disables ALL built-in
+    # tools — a text node produces text and needs none, the honest closed surface
+    # rather than a rotting per-name denylist. Coding config (future runner) uses
+    # an explicit minimal allowlist + deny floor.
+    if config.closed_tool_surface:
+        flags += ["--tools", ""]
     allowed = config.allowed_tools
     disallowed = config.disallowed_tools
     # ``--allowedTools``/``--disallowedTools`` are variadic (<tools...>): each

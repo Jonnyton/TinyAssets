@@ -69,24 +69,34 @@ CODING_NODE_DISALLOWED_TOOLS: tuple[str, ...] = (
     "ListMcpResourcesTool",
 )
 
-# STABLE node-capability classifier (Codex S3 adapt). A node's ``node_kind``
-# survives a remix that renames the node — so classifying sandbox-required by
-# CAPABILITY (not the editable node_id) means a renamed patch-writing node
-# CANNOT rename its way out of confinement. These kinds run a coding agent that
-# writes/executes against a bound repo; they are always sandbox-required.
+# ── Capability taxonomy (Codex S3 REJECT R5) ─────────────────────────────────
+# A node's declared capability, keyed on the STABLE ``node_kind`` (survives a
+# remix rename — keying on node_id alone was the rename-escape hole). Three
+# repo-TOUCHING capabilities, ALL of which require the per-job sandbox runner and
+# therefore fail closed in this deployment (the runner is a FUTURE slice):
+#   coding    — writes the repo (draft_patch)
+#   repo_exec — runs arbitrary commands against the repo (verify_command)
+#   repo_read — inspects/reads the repo (investigate)
+# Everything else is a plain TEXT node (no repo access, runs today).
 CODING_NODE_KINDS: frozenset[str] = frozenset({
     "coding", "repo_write", "repo_writing", "patch", "patch_write",
 })
+REPO_EXEC_NODE_KINDS: frozenset[str] = frozenset({
+    "repo_exec", "run_command", "verify", "test", "shell", "exec",
+})
+REPO_READ_NODE_KINDS: frozenset[str] = frozenset({
+    "repo_read", "inspect", "investigate",
+})
 
-# node_id BACKSTOP only (not the primary signal): the reference-design
-# ``draft_patch`` id, so the current patch-loop reference is confined even if its
-# node_def has not yet been stamped with node_kind="coding". A remix that renames
-# draft_patch is covered by the node_kind classifier above (the primary signal),
-# not by this list — keying on node_id alone was the rename-escape hole Codex
-# flagged. Cross-slice: S2 preserves the full node_def across export/import, so a
-# stamped node_kind survives remix; the patch_loop reference draft_patch node
-# should carry node_kind="coding" (add when S1 lands / S3 rebases onto it).
-SANDBOX_DEFAULT_NODE_IDS: frozenset[str] = frozenset({"draft_patch"})
+# node_id BACKSTOPS for the S1 reference design (until it carries node_kind tags —
+# see the PR note to the S1 lead). A remix that renames these is covered by the
+# node_kind classifier above (the primary signal).
+_CODING_BACKSTOP_IDS: frozenset[str] = frozenset({"draft_patch"})
+_REPO_EXEC_BACKSTOP_IDS: frozenset[str] = frozenset({"verify"})
+_REPO_READ_BACKSTOP_IDS: frozenset[str] = frozenset({"investigate"})
+
+# Back-compat name kept for readers that imported it.
+SANDBOX_DEFAULT_NODE_IDS: frozenset[str] = _CODING_BACKSTOP_IDS
 
 
 def _node_attr(node: Any, name: str) -> Any:
@@ -94,54 +104,77 @@ def _node_attr(node: Any, name: str) -> Any:
 
     build_branch / list_branches classify from dicts (the persisted node_def
     shape) while graph_compiler classifies from NodeDefinition objects — both go
-    through :func:`node_requires_sandbox`, so it must read either.
+    through the classifiers here, so they must read either.
     """
     if isinstance(node, dict):
         return node.get(name)
     return getattr(node, name, None)
 
 
-# Tools a NON-coding (plain text-generation) node is denied. INSEPARABILITY
-# (Codex S3 latest-model FINDING 1): repo-write / coding capability (Bash, Write,
-# …) must flow from the SAME signal that mandates the sandbox. A `claude -p` with
-# no tool policy grants Bash/Read/Write BY DEFAULT — so a de-classified node
-# ("renamed + node_kind/requires_sandbox cleared") would keep coding capability
-# WITHOUT the sandbox. Closing that: a non-coding node is given a config that
-# DENIES every coding + host-escape tool, so it is a pure text node. Coding tools
-# are therefore reachable ONLY through :func:`coding_node_model_config`, which is
-# selected ONLY when :func:`node_coding_capability` is True. Capability ⟺ sandbox.
-TEXT_NODE_DISALLOWED_TOOLS: tuple[str, ...] = tuple(
-    sorted(set(CODING_NODE_ALLOWED_TOOLS) | set(CODING_NODE_DISALLOWED_TOOLS))
-)
+def node_capability(node: Any) -> str:
+    """Return the node's capability: ``coding`` | ``repo_exec`` | ``repo_read``
+    | ``text``.
+
+    Precedence: the STABLE ``node_kind`` capability first (survives a rename), then
+    the explicit ``requires_sandbox`` flag (repo-write intent), then the
+    reference-design node_id backstops.
+    """
+    kind = str(_node_attr(node, "node_kind") or "").strip().lower()
+    if kind in CODING_NODE_KINDS:
+        return "coding"
+    if kind in REPO_EXEC_NODE_KINDS:
+        return "repo_exec"
+    if kind in REPO_READ_NODE_KINDS:
+        return "repo_read"
+    if bool(_node_attr(node, "requires_sandbox")):
+        return "coding"
+    node_id = str(_node_attr(node, "node_id") or "").strip()
+    if node_id in _CODING_BACKSTOP_IDS:
+        return "coding"
+    if node_id in _REPO_EXEC_BACKSTOP_IDS:
+        return "repo_exec"
+    if node_id in _REPO_READ_BACKSTOP_IDS:
+        return "repo_read"
+    return "text"
+
+
+def node_requires_sandbox_runner(node: Any) -> bool:
+    """True when *node* is repo-touching (coding / repo_exec / repo_read) and so
+    requires the per-job sandbox runner — i.e. it fails closed in this deploy."""
+    return node_capability(node) != "text"
 
 
 def node_coding_capability(node: Any) -> bool:
-    """The SINGLE classifier — True iff *node* is a coding / repo-writing node.
+    """True only for a repo-WRITE (coding) node (the strongest capability)."""
+    return node_capability(node) == "coding"
 
-    This one signal drives BOTH (a) the coding tool grant
-    (:func:`coding_node_model_config`, Bash/Write) and (b) the OS-sandbox
-    requirement — they are inseparable. A node that is NOT a coding node gets
-    :func:`text_node_model_config` (no coding tools at all), so clearing the
-    classification yields a plain text node, not an un-sandboxed coding node.
 
-    Accepts a NodeDefinition object OR a raw node_def dict. Precedence: (1) the
-    STABLE ``node_kind`` capability — a coding/repo-writing kind survives a
-    rename so a remix cannot escape by renaming; (2) the explicit
-    ``requires_sandbox`` contract; (3) the ``draft_patch`` node_id BACKSTOP for
-    the current reference design (until its node_def carries node_kind="coding").
+# Back-compat alias: "requires sandbox" now means "repo-touching → needs the
+# per-job runner", so list/validate/get_status all classify the full repo set.
+node_requires_sandbox = node_requires_sandbox_runner
+
+
+def coding_nodes_runnable() -> "tuple[bool, str]":
+    """Single source of truth (Codex S3 REJECT R4): can repo-touching nodes
+    ACTUALLY run in this deployment?
+
+    S3 honest state: **ALWAYS False.** There is no per-job sandbox runner
+    subsystem (prepared per-job checkout + tenant/host path invisibility +
+    restricted egress + resource limits + scoped credential brokering) — that
+    runner is a FUTURE slice, NOT S3. A CLI being on PATH or bwrap/attestation
+    being present does NOT make a repo node runnable: without the runner there is
+    no checked-out workspace and no isolation, so coding/repo-exec/repo-read nodes
+    fail closed on EVERY provider. validate + get_status + the node runtime all
+    read this one function, so readiness never drifts from runtime truth. The
+    future runner slice replaces the hard-coded False with real runner detection.
     """
-    node_kind = str(_node_attr(node, "node_kind") or "").strip().lower()
-    if node_kind in CODING_NODE_KINDS:
-        return True
-    if bool(_node_attr(node, "requires_sandbox")):
-        return True
-    node_id = str(_node_attr(node, "node_id") or "").strip()
-    return node_id in SANDBOX_DEFAULT_NODE_IDS
-
-
-# Back-compat alias: the sandbox requirement and the coding capability are the
-# same predicate (that is the inseparability), so the old name maps to the new.
-node_requires_sandbox = node_coding_capability
+    return False, (
+        "repo-touching nodes (coding / repo-exec / repo-read) require the per-job "
+        "sandbox runner subsystem (prepared per-job checkout + tenant isolation + "
+        "scoped credentials + egress/resource limits), which is NOT available in "
+        "this deployment. They fail closed on every provider until the runner "
+        "lands (a future slice). Use a design-only / text-only branch."
+    )
 
 
 def coding_node_model_config(
@@ -149,11 +182,11 @@ def coding_node_model_config(
 ) -> "Any":
     """Build the hardened :class:`ModelConfig` for a coding node.
 
-    Sets ``os_sandbox_required`` (fail closed + no bypass when no OS sandbox) and
-    the coding-node tool policy (coding tools pre-approved, host-escape/connector
-    tools denied). Selected ONLY when :func:`node_coding_capability` is True, so
-    the Bash/Write grant is inseparable from the sandbox requirement. Imported
-    lazily so this policy module has no hard provider import at module load.
+    Defense-in-depth for WHEN the runner lands: sets ``os_sandbox_required`` (fail
+    closed + no bypass without an OS sandbox) + the coding tool policy. In S3 a
+    coding node fails closed at the node runtime BEFORE any provider call (no
+    runner — see :func:`coding_nodes_runnable`), so this config's provider-level
+    enforcement is a secondary belt-and-braces layer.
     """
     from tinyassets.providers.base import ModelConfig
 
@@ -171,29 +204,36 @@ def coding_node_model_config(
 def text_node_model_config(
     *, timeout: float | int, reasoning_effort: str = "",
 ) -> "Any":
-    """Build the text-only :class:`ModelConfig` for a NON-coding node.
+    """Build the text-only :class:`ModelConfig` for a NON-repo node.
 
-    Denies every coding + host-escape tool (no Bash/Read/Write/…), so a plain
-    prompt node is pure text generation and cannot reach repo-write capability.
-    NOT ``os_sandbox_required`` — a text node has nothing to confine.
+    Uses a CLOSED tool surface (``closed_tool_surface`` → claude ``--tools ""``,
+    per Anthropic's docs) so the node has NO built-in tools at all — pure text
+    generation, incapable of repo write/exec/read. Coding tools are reachable
+    ONLY through :func:`coding_node_model_config` (a coding-classified node), so
+    capability is inseparable from classification (Codex S3 FINDING 1). Not
+    ``os_sandbox_required`` — a tool-less text node has nothing to confine.
     """
     from tinyassets.providers.base import ModelConfig
 
     return ModelConfig(
         timeout=max(1, int(timeout)),
         reasoning_effort=(reasoning_effort or "").strip(),
-        disallowed_tools=TEXT_NODE_DISALLOWED_TOOLS,
+        closed_tool_surface=True,
     )
 
 
 __all__ = [
     "CODING_NODE_ALLOWED_TOOLS",
     "CODING_NODE_DISALLOWED_TOOLS",
-    "TEXT_NODE_DISALLOWED_TOOLS",
     "CODING_NODE_KINDS",
+    "REPO_EXEC_NODE_KINDS",
+    "REPO_READ_NODE_KINDS",
     "SANDBOX_DEFAULT_NODE_IDS",
+    "node_capability",
+    "node_requires_sandbox_runner",
     "node_coding_capability",
     "node_requires_sandbox",
+    "coding_nodes_runnable",
     "coding_node_model_config",
     "text_node_model_config",
 ]

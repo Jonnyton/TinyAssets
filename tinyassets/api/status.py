@@ -1218,23 +1218,25 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         sandbox_status = get_sandbox_status()
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         sandbox_status = {"bwrap_available": False, "reason": f"probe_error: {exc}"}
-    # Coding-node sandbox attestation + prod runnability (Codex latest-model
-    # FINDING 5c): bwrap_available alone hid whether coding nodes can actually
-    # run. Surface the whole-process OS-isolation attestation and, when it is
-    # unset, that coding/requires_sandbox nodes are fail-closed (design).
+    # Repo-touching node runnability (Codex S3 REJECT R4/5c): bwrap_available
+    # alone hid whether coding/repo nodes can ACTUALLY run. Report the ONE shared
+    # readiness truth (`coding_nodes_runnable`) the node runtime + validate use —
+    # in this deploy it is ALWAYS False (no per-job sandbox runner subsystem), so
+    # get_status can never claim "ready because a CLI is on PATH". Also surface the
+    # attestation for operators.
     try:
         from tinyassets.providers.base import os_sandbox_attested
-        _attested = bool(os_sandbox_attested())
+        sandbox_status["os_sandbox_attested"] = bool(os_sandbox_attested())
     except Exception:  # noqa: BLE001
-        _attested = False
-    sandbox_status["os_sandbox_attested"] = _attested
-    sandbox_status["coding_nodes_runnable"] = _attested
-    if not _attested:
-        sandbox_status["coding_nodes_note"] = (
-            "coding / requires_sandbox nodes FAIL CLOSED here by design: "
-            "TINYASSETS_OS_SANDBOX_ATTESTED is unset (no per-job OS-isolation "
-            "runner yet). Design-only branches are unaffected."
-        )
+        sandbox_status["os_sandbox_attested"] = False
+    try:
+        from tinyassets.sandbox_policy import coding_nodes_runnable
+        _runnable, _reason = coding_nodes_runnable()
+    except Exception as exc:  # noqa: BLE001 — unknown ⇒ not runnable (honest)
+        _runnable, _reason = False, f"readiness check failed: {exc}"
+    sandbox_status["coding_nodes_runnable"] = bool(_runnable)
+    if not _runnable:
+        sandbox_status["coding_nodes_note"] = _reason
 
     # BUG-027 — probe required static data files so operators can see which
     # files are absent in the cloud image without waiting for ASP to fail.

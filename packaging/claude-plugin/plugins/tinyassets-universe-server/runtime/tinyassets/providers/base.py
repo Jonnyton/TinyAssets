@@ -85,6 +85,14 @@ class ModelConfig:
     any bypass-sandbox escape hatch (codex ``--dangerously-bypass-approvals-and-
     sandbox``). Host-trusted roles leave this False (default) and are unaffected."""
 
+    closed_tool_surface: bool = False
+    """Disable ALL built-in tools for this call (maps to ``claude -p --tools ""``,
+    per Anthropic's CLI docs). Set for text-generation nodes: a plain prompt node
+    produces text and needs NO tools, so the honest closed surface is "no tools at
+    all" (plus a strict empty MCP config) rather than a rotting per-name denylist.
+    This is how a non-coding node is kept incapable of repo write — coding tools
+    are reachable only through the coding classifier."""
+
     allowed_tools: tuple[str, ...] | None = None
     """Allowlist of CLI tool names the subprocess may use (e.g.
     ``("WebFetch", "Read")``). ``None`` = provider default (no restriction). Maps

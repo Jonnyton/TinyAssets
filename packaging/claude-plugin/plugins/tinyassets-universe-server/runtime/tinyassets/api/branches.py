@@ -872,35 +872,6 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
     return json.dumps(state_payload, default=str)
 
 
-def _coding_capable_provider_ready(
-    sandbox_status: dict[str, Any],
-) -> tuple[bool, str]:
-    """Whether a provider that ENFORCES the coding sandbox can actually run.
-
-    Codex latest-model FINDING 5a: with attestation set, ``claude -p`` relies on
-    the whole-process isolation, but ``codex`` additionally requires bwrap and
-    fail-closes without it. So a coding branch is only truly runnable when
-    claude-code is on PATH, OR codex is on PATH AND bwrap is available.
-    """
-    import shutil
-
-    if shutil.which("claude"):
-        return True, ""
-    if shutil.which("codex"):
-        if sandbox_status.get("bwrap_available"):
-            return True, ""
-        return (
-            False,
-            "codex is available but requires bwrap to self-confine and the host "
-            f"bwrap probe is unavailable ({sandbox_status.get('reason') or 'no bwrap'}); "
-            "claude-code CLI is not on PATH",
-        )
-    return (
-        False,
-        "no coding-capable provider CLI is on PATH (claude-code / codex)",
-    )
-
-
 def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
@@ -925,80 +896,39 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
         if _node_source_code_unrunnable(nd)
     ]
 
-    # Sandbox gate at VALIDATE time — MUST match the runtime gate
-    # (providers.base.enforce_os_sandbox) so a user learns here, not via a
-    # fail-closed error at run time (Codex S3 round-2 FINDING 2). A coding /
-    # requires_sandbox node runs a coding agent with real filesystem/shell tools,
-    # which requires the WHOLE server process to run under attested OS isolation
-    # (TINYASSETS_OS_SANDBOX_ATTESTED). Without that attestation the node fails
-    # closed at run time, so the branch is NOT runnable here — surfaced as a
-    # distinct ``sandbox_blocked`` status the authoring UX can act on. Classified
-    # by CAPABILITY (node_kind), not just the raw requires_sandbox flag.
+    # Sandbox gate at VALIDATE time — MUST match the ACTUAL runtime truth (Codex
+    # S3 REJECT R4): a repo-touching node (coding / repo-exec / repo-read)
+    # requires the per-job sandbox runner, which does not exist in this deploy, so
+    # it fails closed at run time. validate reads the SAME single source of truth
+    # (`coding_nodes_runnable`) the node runtime + get_status use, so readiness can
+    # never drift from runtime — never "ready because claude is on PATH".
+    # Classification errors fail CLOSED (never swallow into runnable=true).
     sandbox_warnings: list[str] = []
     sandbox_blocked = False
-    # Classify coding nodes. If classification itself throws, we CANNOT prove the
-    # branch is coding-free → fail CLOSED (Codex latest-model FINDING 5b: the
-    # sandbox check must never swallow an error into runnable=true).
     try:
-        from tinyassets.sandbox_policy import node_coding_capability
-        sandbox_nodes = sorted(
-            nd.node_id for nd in branch.node_defs if node_coding_capability(nd)
+        from tinyassets.sandbox_policy import (
+            coding_nodes_runnable,
+            node_requires_sandbox_runner,
         )
-    except Exception as exc:  # noqa: BLE001
+        repo_nodes = sorted(
+            nd.node_id for nd in branch.node_defs
+            if node_requires_sandbox_runner(nd)
+        )
+        if repo_nodes:
+            runnable, reason = coding_nodes_runnable()
+            if not runnable:
+                sandbox_blocked = True
+                sandbox_warnings.append(
+                    f"This branch has {len(repo_nodes)} repo-touching node(s) "
+                    f"({', '.join(repo_nodes)}) that read/exec/write a repo. "
+                    f"{reason}"
+                )
+    except Exception as exc:  # noqa: BLE001 — any check error ⇒ fail closed
         sandbox_blocked = True
-        sandbox_nodes = []
         sandbox_warnings.append(
-            f"Sandbox classification failed ({type(exc).__name__}: {exc}); "
+            f"Sandbox capability check failed ({type(exc).__name__}: {exc}); "
             "treating the branch as NOT runnable (fail closed)."
         )
-
-    if sandbox_nodes:
-        try:
-            from tinyassets.providers.base import (
-                get_sandbox_status,
-                os_sandbox_attested,
-            )
-            attested = os_sandbox_attested()
-            sb = get_sandbox_status()
-        except Exception as exc:  # noqa: BLE001 — probe error ⇒ fail closed
-            sandbox_blocked = True
-            sandbox_warnings.append(
-                f"Sandbox capability probe failed ({type(exc).__name__}: {exc}); "
-                "treating the branch as NOT runnable (fail closed)."
-            )
-        else:
-            listing = ", ".join(sandbox_nodes)
-            if not attested:
-                sandbox_blocked = True
-                bwrap_note = (
-                    "" if sb.get("bwrap_available")
-                    else f" (host bwrap probe: {sb.get('reason') or 'unavailable'})"
-                )
-                sandbox_warnings.append(
-                    f"This branch has {len(sandbox_nodes)} coding/sandbox-required "
-                    f"node(s) ({listing}) that run a coding agent with real "
-                    f"filesystem/shell tools. They require the server process to "
-                    f"run under verified OS isolation (TINYASSETS_OS_SANDBOX_"
-                    f"ATTESTED), which is NOT attested on this host{bwrap_note}. "
-                    f"These nodes will FAIL CLOSED at run time. Run the daemon "
-                    f"inside the attested OS-isolation container, or use a "
-                    f"design-only branch with no coding/requires_sandbox nodes."
-                )
-            else:
-                # Attested — but evaluate the SELECTED provider's REAL capability
-                # (FINDING 5a): claude -p relies on the attestation, but codex
-                # additionally requires bwrap and fail-closes without it. If no
-                # coding-capable provider can actually run, the node fails closed
-                # at the provider despite attestation.
-                ready, why = _coding_capable_provider_ready(sb)
-                if not ready:
-                    sandbox_blocked = True
-                    sandbox_warnings.append(
-                        f"This branch has {len(sandbox_nodes)} coding node(s) "
-                        f"({listing}) and the host is attested, but no "
-                        f"coding-capable provider can run them: {why}. They will "
-                        f"FAIL CLOSED at run time."
-                    )
 
     return json.dumps({
         "branch_def_id": bid,
