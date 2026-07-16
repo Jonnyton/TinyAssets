@@ -628,7 +628,24 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         if published_version_id is not None:
             summary["branch_version_id"] = published_version_id
         summaries.append(summary)
-    return json.dumps({"branches": summaries, "count": len(summaries)})
+
+    # Enforce a bounded limit + expose truncation/total (Codex S2 F2): the
+    # listing previously ignored ``limit`` and returned every match. Default 30
+    # (matches the read_graph handle default); a caller can raise it, capped at
+    # 500 to keep the response bounded.
+    total = len(summaries)
+    try:
+        limit = int(kwargs.get("limit") or 30)
+    except (TypeError, ValueError):
+        limit = 30
+    limit = max(1, min(limit, 500))
+    page = summaries[:limit]
+    return json.dumps({
+        "branches": page,
+        "count": len(page),
+        "total": total,
+        "truncated": total > len(page),
+    })
 
 
 def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
@@ -3638,15 +3655,12 @@ def _newest_active_branch_version(base_path: Any, branch_def_id: str) -> Any:
 
     A rolled-back / superseded version must never be listed, remixed, or
     exported (Codex S2 latest-model, finding 3): select the newest version
-    whose ``status == "active"``, deriving from that immutable snapshot rather
-    than the mutable branch row.
+    whose ``status == "active"`` via direct SQL — correct even when hundreds of
+    newer versions were rolled back but an older active one exists (F3).
     """
-    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branch_versions import get_newest_active_version
 
-    for version in list_branch_versions(base_path, branch_def_id, limit=200):
-        if (getattr(version, "status", "active") or "active") == "active":
-            return version
-    return None
+    return get_newest_active_version(base_path, branch_def_id)
 
 
 def _load_owned_or_public_branch(bid_or_name: str) -> tuple[Any, str]:

@@ -451,6 +451,29 @@ def get_branch_version(
     return _row_to_version(row)
 
 
+def get_newest_active_version(
+    base_path: str | Path,
+    branch_def_id: str,
+) -> BranchVersion | None:
+    """Newest version whose ``status == 'active'``, or ``None``.
+
+    Direct SQL (``WHERE status='active' ORDER BY published_at DESC LIMIT 1``) so
+    it is correct no matter how many rolled-back/superseded versions are newer —
+    a bounded scan of the newest N would report ``None`` when all N are rolled
+    back but an older active version exists (Codex S2 latest-model F3).
+    """
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM branch_versions WHERE branch_def_id = ? "
+            "AND status = 'active' ORDER BY published_at DESC LIMIT 1",
+            (branch_def_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_version(row)
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,

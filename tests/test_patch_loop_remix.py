@@ -796,6 +796,153 @@ def test_cross_actor_run_of_bound_branch_is_refused(data_dir, monkeypatch):
     assert owner.get("failure_class") != "binding_owner_only", owner
 
 
+def test_cross_actor_invoke_branch_of_bound_branch_does_not_seed_owner_value(data_dir):
+    # THE 6th egress (Codex+Fable): invoke_branch_spec bypasses _action_run_branch
+    # and reaches seed via execute_branch -> _invoke_graph. A parent invokes
+    # Alice's bound child; its bound value maps back to the parent via
+    # output_mapping. The load-bearing guard lives at the SHARED consumer
+    # (_invoke_graph seed): a NON-AUTHOR invocation must NOT seed the owner's
+    # bound value, but the OWNER's own invoke still seeds it.
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+    from tinyassets.runs import execute_branch, initialize_runs_db
+
+    initialize_author_server(data_dir)
+    initialize_runs_db(data_dir)
+
+    # Alice's bound child. The node writes to `result`, leaving the bound
+    # `target_repo` untouched so output_mapping surfaces the SEEDED value.
+    child = BranchDefinition(
+        branch_def_id="alice-child",
+        name="alice bound child",
+        author="alice",
+        graph_nodes=[GraphNodeRef(id="cn", node_def_id="cn")],
+        edges=[EdgeDefinition(from_node="cn", to_node="END")],
+        entry_point="cn",
+        node_defs=[NodeDefinition(
+            node_id="cn", display_name="Child", prompt_template="go",
+            strict_input_isolation=False, output_keys=["result"],
+        )],
+        state_schema=[
+            {"name": "result", "type": "str"},
+            {"name": "target_repo", "type": "str",
+             "default_value": "github.com/alice/SECRET",
+             "default": "github.com/alice/SECRET", "is_binding": True},
+        ],
+    )
+    save_branch_definition(data_dir, branch_def=child.to_dict())
+
+    def _parent(bid: str, author: str) -> BranchDefinition:
+        p = BranchDefinition(
+            branch_def_id=bid, name=bid, author=author,
+            graph_nodes=[GraphNodeRef(id="pn", node_def_id="pn")],
+            edges=[EdgeDefinition(from_node="pn", to_node="END")],
+            entry_point="pn",
+            node_defs=[NodeDefinition(
+                node_id="pn", display_name="Invoke",
+                invoke_branch_spec={
+                    "branch_def_id": "alice-child", "inputs_mapping": {},
+                    "output_mapping": {"parent_seen": "target_repo"},
+                    "wait_mode": "blocking",
+                },
+            )],
+            state_schema=[{"name": "parent_seen", "type": "str"}],
+        )
+        save_branch_definition(data_dir, branch_def=p.to_dict())
+        return p
+
+    _ok = lambda *a, **k: "ok"  # noqa: E731 - trivial fake provider
+
+    # Non-author (Bob) invoke: the bound SECRET is NOT seeded -> never returns.
+    bob_out = execute_branch(
+        data_dir, branch=_parent("bob-parent", "bob"), inputs={},
+        actor="bob", provider_call=_ok,
+    )
+    assert (bob_out.output or {}).get("parent_seen") in (None, "")
+    assert "SECRET" not in json.dumps(bob_out.output or {})
+
+    # Owner (Alice) invoke of her own child: the value IS seeded (guard is
+    # load-bearing but does not false-positive on the owner).
+    alice_out = execute_branch(
+        data_dir, branch=_parent("alice-parent", "alice"), inputs={},
+        actor="alice", provider_call=_ok,
+    )
+    assert (alice_out.output or {}).get("parent_seen") == "github.com/alice/SECRET"
+
+
+def test_designs_listing_enforces_limit(data_dir):
+    # Codex S2 F2: read_graph(target=designs) must honor limit + signal truncation.
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch
+
+    for i in range(3):
+        bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+            "name": f"design {i}",
+            "entry_point": "n",
+            "node_defs": [{"node_id": "n", "display_name": "N",
+                           "prompt_template": "x"}],
+            "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        })}))["branch_def_id"]
+        _ext_branch_patch({
+            "branch_def_id": bid,
+            "changes_json": json.dumps([
+                {"op": "set_description", "description": "publish"},
+            ]),
+        })
+
+    listed = json.loads(read_graph(target="designs", limit=1))
+    assert len(listed["branches"]) == 1
+    assert listed["total"] >= 3
+    assert listed["truncated"] is True
+
+
+def test_active_version_scan_finds_active_beyond_rolled_back(data_dir):
+    # Codex S2 F3: the newest-active lookup must query by status directly, not
+    # scan only the newest N — an old active version behind newer rolled-back
+    # ones must still be found.
+    from tinyassets.api.branches import _ext_branch_build
+    from tinyassets.branch_versions import (
+        get_newest_active_version,
+        publish_branch_version,
+    )
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+    from tinyassets.rollback import execute_rollback_set
+
+    bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "many versions",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    v1 = publish_branch_version(
+        data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+        publisher="alice",
+    ).branch_version_id
+
+    # Publish several NEWER versions and roll them all back.
+    newer_ids = []
+    for i in range(4):
+        b = BranchDefinition.from_dict(get_branch_definition(data_dir, branch_def_id=bid))
+        b.state_schema.append({"name": f"f{i}", "type": "str"})
+        save_branch_definition(data_dir, branch_def=b.to_dict())
+        newer_ids.append(publish_branch_version(
+            data_dir, get_branch_definition(data_dir, branch_def_id=bid),
+            publisher="alice",
+        ).branch_version_id)
+    execute_rollback_set(data_dir, newer_ids, reason="regress", set_by="host")
+
+    # The only ACTIVE version is the oldest (v1) — direct-SQL lookup finds it.
+    active = get_newest_active_version(data_dir, bid)
+    assert active is not None
+    assert active.branch_version_id == v1
+
+
 def test_binding_free_public_branch_runs_for_any_actor(data_dir, monkeypatch):
     # A binding-FREE public branch is a pure TEMPLATE — anyone may run it.
     from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch

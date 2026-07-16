@@ -2362,9 +2362,47 @@ def _invoke_graph(
             # BUG-085 M3: seed state_schema defaults UNDER caller inputs so
             # state_schema-declared fields with defaults are available to
             # strict-isolation prompt placeholders from step 1.
-            initial_state = seed_initial_state(
-                dict(inputs), getattr(branch, "state_schema", None),
-            )
+            #
+            # Binding-privacy — the LOAD-BEARING choke point at the SHARED
+            # consumer (Codex+Fable S2). Both run entries converge here:
+            # execute_branch (direct) and _build_invoke_branch_node -> execute_
+            # branch (sub-branch invoke). A NON-AUTHOR invocation of a branch
+            # with binding fields must NEVER seed the owner's bound values into
+            # run state, or an invoke_branch_spec node could exfiltrate them.
+            # The invoking actor is the one threaded through execute_branch
+            # (enqueue_context.actor); for a sub-branch that is the parent run's
+            # actor. Top-level direct MCP runs are also guarded at the boundary
+            # by _action_run_branch (OAuth subject). Full single-subject
+            # threading converges with S3's run-context work at the rebase.
+            seed_schema = getattr(branch, "state_schema", None)
+            invoking_actor = (
+                (enqueue_context.actor if enqueue_context else "") or ""
+            ).strip()
+            branch_author = (getattr(branch, "author", "") or "").strip()
+            # invocation_depth > 0 == a sub-branch invoke_branch_spec dispatch
+            # (the egress with no other guard). Top-level runs (depth 0) are
+            # gated by _action_run_branch's OAuth-subject check; the threaded
+            # actor there is universe-scoped, so applying this to depth 0 would
+            # wrongly redact the OWNER's own bound values.
+            if (
+                invocation_depth > 0
+                and branch_author
+                and invoking_actor
+                and invoking_actor != branch_author
+            ):
+                from tinyassets.branch_versions import (
+                    branch_has_bound_fields,
+                    redact_bound_state_values,
+                )
+
+                if branch_has_bound_fields(seed_schema):
+                    # Cross-actor execution of a bound branch: strip the owner's
+                    # binding VALUES so they never enter this run's state (the
+                    # slot survives — a non-owner must bind their own).
+                    seed_schema = redact_bound_state_values(
+                        seed_schema, drop_marker=True,
+                    )
+            initial_state = seed_initial_state(dict(inputs), seed_schema)
             result = app.invoke(
                 initial_state,
                 config={
