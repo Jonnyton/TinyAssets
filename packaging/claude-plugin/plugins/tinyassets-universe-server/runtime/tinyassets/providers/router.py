@@ -41,9 +41,43 @@ from tinyassets.providers.quota import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from tinyassets.config import UniverseConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _universe_provides_provider_auth(
+    provider_name: str, universe_dir: "Path | None",
+) -> bool:
+    """True iff the call's per-universe vault supplies usable auth for *provider*.
+
+    The router applies this vault env to the CLI subprocess at call time
+    (``provider.complete(..., universe_dir=...)`` → ``subprocess_env_for_provider``
+    → ``apply_provider_auth_env``), so a globally ``not_logged_in`` provider is
+    still runnable when the universe's own vault authenticates it. Resolves the
+    universe from the explicit dir first, then the process-global
+    ``TINYASSETS_UNIVERSE`` (mirrors ``credential_vault.apply_provider_auth_env``)
+    so the cloud-worker subprocess is covered even when no context is threaded.
+    A non-empty auth-override dict for the provider = usable per-universe auth.
+    Never raises — an auth-vault probe error must not break routing.
+    """
+    try:
+        from tinyassets.credential_vault import (
+            provider_auth_env_overrides,
+            resolve_universe_from_env,
+        )
+
+        resolved = (
+            universe_dir if universe_dir is not None else resolve_universe_from_env()
+        )
+        if resolved is None:
+            return False
+        return bool(provider_auth_env_overrides(resolved, provider_name))
+    except Exception:  # noqa: BLE001 — vault-auth probe must never break routing
+        return False
+
 
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
@@ -245,7 +279,9 @@ class ProviderRouter:
             return chain
         return [p for p in chain if p not in _API_KEY_PROVIDERS]
 
-    def _apply_auth_health_policy(self, chain: list[str]) -> list[str]:
+    def _apply_auth_health_policy(
+        self, chain: list[str], *, universe_dir: Path | None = None,
+    ) -> list[str]:
         """Drop subscription-backed providers whose login is definitively dead.
 
         Mirrors the worker-level self-quarantine (2026-06-25 loop-wedge): a
@@ -260,6 +296,16 @@ class ProviderRouter:
         ``unknown`` (api-key / local providers the probe cannot assess) and
         ``ok`` are always kept, and a probe that raises is treated as "keep",
         so a probe false-negative can never strand a healthy provider.
+
+        Universe-aware (S5 round 5): the probe reports process-GLOBAL
+        subscription health, but a provider whose GLOBAL login is dead is still
+        runnable when the call's universe vault supplies usable per-universe auth
+        (a BYO key / materialized auth home), which the router applies to the CLI
+        subprocess at call time. So a ``not_logged_in`` provider is KEPT when the
+        universe vault authenticates it — otherwise the gate would starve bound
+        BYO-key capacity that the non-ambient gate just let spawn. Only the
+        subscription-health rejection is bypassed; quota/cooldown and hard
+        provider errors keep their semantics elsewhere.
         """
         if self._auth_health is None:
             return chain
@@ -271,6 +317,14 @@ class ProviderRouter:
                 logger.debug("auth-health probe failed for %s; keeping", provider_name)
                 status = None
             if status != "not_logged_in":
+                alive.append(provider_name)
+            elif _universe_provides_provider_auth(provider_name, universe_dir):
+                logger.info(
+                    "Provider %s global login is not_logged_in but the universe "
+                    "vault authenticates it — keeping (per-universe auth applied "
+                    "at call time).",
+                    provider_name,
+                )
                 alive.append(provider_name)
         return alive
 
@@ -372,10 +426,13 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: a pinned writer with dead subscription login
         # must fail loud (hard rule #8), not silently route to a different
         # provider. (chain == [pin_writer] here; an empty filter means dead.)
-        if is_pinned_writer and not self._apply_auth_health_policy(chain):
+        if is_pinned_writer and not self._apply_auth_health_policy(
+            chain, universe_dir=universe_dir,
+        ):
             raise AllProvidersExhaustedError(
                 f"Pinned writer provider {pin_writer!r} has no subscription "
-                "login (auth probe: not_logged_in). Re-seed its credentials, "
+                "login (auth probe: not_logged_in) and no per-universe vault "
+                "auth. Re-seed its credentials, bind a BYO key to the universe, "
                 "or clear TINYASSETS_PIN_WRITER to use the fallback chain."
             )
 
@@ -399,7 +456,10 @@ class ProviderRouter:
             # 2026-06-25 loop-wedge: drop registered providers whose
             # subscription login is definitively dead so fallback routes
             # straight to a healthy provider. No-op without an injected probe.
-            auth_alive = self._apply_auth_health_policy(chain)
+            # Universe-aware: a provider the universe vault authenticates is kept.
+            auth_alive = self._apply_auth_health_policy(
+                chain, universe_dir=universe_dir,
+            )
             dead_auth = [p for p in chain if p not in auth_alive]
             if dead_auth:
                 logger.warning(
@@ -683,7 +743,9 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: drop dead-login subscription providers; if
         # that empties the policy order the method falls through to the role
         # chain below, which re-applies the gate and hard-fails as needed.
-        auth_alive_order = self._apply_auth_health_policy(attempt_order)
+        auth_alive_order = self._apply_auth_health_policy(
+            attempt_order, universe_dir=universe_dir,
+        )
         if attempt_order and not auth_alive_order:
             logger.warning(
                 "All policy providers have dead subscription login (%s) for "
@@ -893,7 +955,9 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: drop judge providers with dead subscription
         # login (codex is the only subscription judge; the rest probe unknown
         # and are kept). Empty ensemble returns [] per the contract below.
-        auth_alive_ensemble = self._apply_auth_health_policy(ensemble)
+        auth_alive_ensemble = self._apply_auth_health_policy(
+            ensemble, universe_dir=universe_dir,
+        )
         if ensemble and not auth_alive_ensemble:
             logger.warning(
                 "All judge providers have dead subscription login (%s); no "

@@ -220,7 +220,12 @@ def test_flag_on_codex_pinned_worker_skips_anthropic_only_universe(tmp_path, mon
 def test_flag_on_codex_pinned_worker_runs_codex_eligible_universe(tmp_path, monkeypatch):
     """FINDING 1/2: a codex-eligible universe backed by per-universe VAULT auth
     spawns for a Codex-pinned worker even with NO global CODEX_HOME — the child
-    materializes the vault auth, so the global-auth quarantine is skipped."""
+    materializes the vault auth, so the global-auth quarantine is skipped.
+
+    NOTE: this proves the supervisor SPAWNS the worker. That the router then
+    actually reaches provider.complete() (rather than starving the pinned writer
+    on global auth-health) is proven at the router level by
+    test_provider_auth_router_quarantine.test_pinned_dead_auth_writer_runs_on_universe_vault_auth."""
     monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))  # no global auth
     udir = _codex_vault_universe(tmp_path)

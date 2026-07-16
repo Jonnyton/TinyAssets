@@ -79,7 +79,15 @@ def isolated_universe_config():
     enabled, ``test_all_subscription_dead_falls_to_local`` would correctly pick
     ``gemini-free`` before ``ollama-local`` and break the assertion.
     """
-    _NEUTRALIZE = ("TINYASSETS_PIN_WRITER", "TINYASSETS_ALLOW_API_KEY_PROVIDERS")
+    _NEUTRALIZE = (
+        "TINYASSETS_PIN_WRITER",
+        "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
+        # Neutralize the process-global universe so the auth-health gate's
+        # per-universe-vault awareness (S5 round 5) can't pick up a host-env
+        # universe and alter the no-vault tests. Tests that want per-universe
+        # auth pass an explicit universe_context.
+        "TINYASSETS_UNIVERSE",
+    )
     saved_config = runtime.universe_config
     saved_env = {k: os.environ.get(k) for k in _NEUTRALIZE}
     runtime.universe_config = UniverseConfig()
@@ -210,6 +218,100 @@ def test_pinned_healthy_writer_runs(isolated_universe_config):
     assert resp.provider == "codex"
     assert providers["codex"].call_count == 1
     assert providers["claude-code"].call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# S5 round 5: a globally-dead subscription is NOT dead when the call's universe
+# vault supplies per-universe auth — the router must reach provider.complete()
+# with the vault env instead of starving bound BYO-key capacity.
+# ---------------------------------------------------------------------------
+
+
+def _byo_openai_universe(tmp_path):
+    import base64
+
+    from tinyassets.credential_vault import write_credential_vault
+
+    udir = tmp_path / "u-byo-codex"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "openai",
+        "secret_b64": base64.b64encode(b"sk-openai-test").decode("ascii"),
+    }])
+    return udir
+
+
+def test_pinned_dead_auth_writer_runs_on_universe_vault_auth(
+    isolated_universe_config, tmp_path,
+):
+    """The Codex repro: pinned codex + global not_logged_in + a per-universe BYO
+    OpenAI key in the vault → provider.complete() IS reached (the vault env is
+    applied at call time), instead of AllProvidersExhaustedError."""
+    from tinyassets.providers.base import UniverseContext
+
+    udir = _byo_openai_universe(tmp_path)
+    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
+    router, providers = _router(dead={"codex"})
+
+    resp = _run(router.call(
+        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+    ))
+    assert resp.provider == "codex"
+    assert providers["codex"].call_count == 1
+
+
+def test_pinned_dead_auth_writer_without_vault_still_hard_fails(
+    isolated_universe_config, tmp_path,
+):
+    """Inverse: no per-universe auth + global not_logged_in → still dropped and
+    the pinned writer hard-fails (the gate is only bypassed for vault-backed
+    providers)."""
+    from tinyassets.providers.base import UniverseContext
+
+    udir = tmp_path / "u-novault"
+    udir.mkdir()
+    os.environ["TINYASSETS_PIN_WRITER"] = "codex"
+    router, providers = _router(dead={"codex"})
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call(
+            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+        ))
+    for p in providers.values():
+        assert p.call_count == 0
+
+
+def test_fallback_keeps_dead_auth_provider_with_universe_vault(
+    isolated_universe_config, tmp_path,
+):
+    """Not pinned: codex is globally dead but the universe vault authenticates it
+    → codex stays in the fallback chain and wins (not skipped). claude-code (dead,
+    no vault) is still dropped."""
+    from tinyassets.providers.base import UniverseContext
+
+    udir = _byo_openai_universe(tmp_path)
+    router, providers = _router(dead={"claude-code", "codex"})
+
+    resp = _run(router.call(
+        "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+    ))
+    assert resp.provider == "codex"
+    assert providers["codex"].call_count == 1
+    assert providers["claude-code"].call_count == 0
+
+
+def test_no_vault_behavior_unchanged_for_default_router(isolated_universe_config):
+    """Flag-OFF / no-vault no-op: with no universe context and no global
+    TINYASSETS_UNIVERSE, the auth-health gate behaves exactly as before —
+    a dead pinned writer hard-fails."""
+    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
+    router, providers = _router(dead={"claude-code"})
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call("writer", "p", "s"))
+    for p in providers.values():
+        assert p.call_count == 0
 
 
 # ---------------------------------------------------------------------------
