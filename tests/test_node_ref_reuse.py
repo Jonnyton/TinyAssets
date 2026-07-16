@@ -326,6 +326,77 @@ class TestExplicitNodeRefCopiesCanonicalBody:
         assert err == "", err
         assert body["requires_sandbox"] is True, body
 
+    def test_node_ref_permits_sandbox_escalation_false_to_true(self, ext_env):
+        # Codex r13 #5: a caller may ESCALATE requires_sandbox (source false ->
+        # requested true). Previously the override was dropped from the allowlist,
+        # silently ignoring the escalation.
+        us, base = ext_env
+        source_spec = {
+            "name": "escalate-source", "entry_point": "n",
+            "node_defs": [{
+                "node_id": "n", "display_name": "N",
+                "prompt_template": "x {y}", "requires_sandbox": False,
+            }],
+            "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            "state_schema": [{"name": "y", "type": "str"}],
+        }
+        src = _call(us, "extensions", "build_branch",
+                    spec_json=json.dumps(source_spec))
+        assert src["status"] == "built", src
+
+        target_spec = {
+            "name": "escalate-target", "entry_point": "n",
+            "node_defs": [{
+                "node_id": "n", "display_name": "",
+                "node_ref": {"source": src["branch_def_id"], "node_id": "n"},
+                "requires_sandbox": True,   # ESCALATION
+            }],
+            "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            "state_schema": [{"name": "y", "type": "str"}],
+        }
+        tgt = _call(us, "extensions", "build_branch",
+                    spec_json=json.dumps(target_spec))
+        assert tgt["status"] == "built", tgt
+        from tinyassets.daemon_server import get_branch_definition
+        nd = next(
+            n for n in get_branch_definition(base, branch_def_id=tgt["branch_def_id"])["node_defs"]
+            if n["node_id"] == "n"
+        )
+        assert nd["requires_sandbox"] is True, nd   # escalation applied
+
+    def test_node_ref_rejects_sandbox_downgrade_true_to_false(self, ext_env):
+        # Codex r13 #5: a caller must NEVER DOWNGRADE requires_sandbox (source
+        # true -> requested false) — that silently un-sandboxes a confined node.
+        us, _ = ext_env
+        source_spec = {
+            "name": "downgrade-source", "entry_point": "n",
+            "node_defs": [{
+                "node_id": "n", "display_name": "N",
+                "prompt_template": "x {y}", "requires_sandbox": True,
+            }],
+            "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            "state_schema": [{"name": "y", "type": "str"}],
+        }
+        src = _call(us, "extensions", "build_branch",
+                    spec_json=json.dumps(source_spec))
+        assert src["status"] == "built", src
+
+        target_spec = {
+            "name": "downgrade-target", "entry_point": "n",
+            "node_defs": [{
+                "node_id": "n", "display_name": "",
+                "node_ref": {"source": src["branch_def_id"], "node_id": "n"},
+                "requires_sandbox": False,   # DOWNGRADE — must be refused
+            }],
+            "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            "state_schema": [{"name": "y", "type": "str"}],
+        }
+        tgt = _call(us, "extensions", "build_branch",
+                    spec_json=json.dumps(target_spec))
+        assert tgt["status"] == "rejected", tgt
+        combined = " ".join(tgt.get("errors") or []).lower()
+        assert "downgrade" in combined and "requires_sandbox" in combined, tgt
+
     def test_build_branch_node_ref_preserves_standalone_approval(
         self, ext_env, monkeypatch,
     ):

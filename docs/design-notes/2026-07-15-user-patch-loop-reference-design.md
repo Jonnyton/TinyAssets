@@ -160,12 +160,16 @@ the rendered-chatbot ui-test per AGENTS quality gates.
 S3"):** the patch-loop stack merges to `main` in dependency order (S1 → S3 →
 S4 → S2 → S5) and ships as ONE deploy; **no slice deploys independently.** The
 seeded reference's repo-touching nodes (`investigate` repo-read, `verify`
-repo-exec, `draft_patch` repo-write/coding) are sandbox-required and **FAIL
-CLOSED** until the sandbox runner (S3) is live in the same deploy; `present` /
-`merge` EMIT `github_pull_request` / `github_merge` effect packets whose
-effectors resolve at run time (`github_merge` lands with S4). So the seeded
-reference is never live without its enforcement gate — S1 in isolation is a
-seeded, honest-but-inert artifact, not an executable loop.
+repo-exec, `draft_patch` repo-write/coding) are sandbox-required and honestly
+**FAIL CLOSED**: the compiled node **refuses to execute at invoke time (before
+any provider dispatch)** while sandbox enforcement is unavailable
+(`graph_compiler._sandbox_enforcement_available` — always False on S1, binds to
+S3's runner in the bundle). `present` / `merge` EMIT `github_pull_request` /
+`github_merge` effect packets whose effectors resolve at run time (`github_merge`
+lands with S4). So the seeded reference is never live without its enforcement
+gate — S1 in isolation SEEDS a discoverable/remixable template that cannot RUN
+unconfined (Codex r13 #1 corrected the earlier claim that it merely "did not
+enforce"; it now provably refuses).
 
 **Phase-2 execution boundary (Codex r11 #2; host "build execution first").** The
 S1 reference declares the full intended loop with correct effect + gate

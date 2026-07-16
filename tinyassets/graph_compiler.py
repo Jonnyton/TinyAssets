@@ -888,6 +888,40 @@ def _extract_json_object(response: str) -> dict[str, Any]:
     return parsed
 
 
+class SandboxEnforcementUnavailableError(RuntimeError):
+    """Raised at INVOKE time when a ``requires_sandbox`` node would execute but no
+    sandbox-enforcement capability is available to confine it (Codex r13 #1).
+
+    S1 does not confine ``requires_sandbox`` nodes — the compiler has no
+    enforcement — so honestly failing closed (refuse to run) is safer than
+    silently executing a node that was declared to need a sandbox. S3 provides
+    the real enforcement gate; until integration this always fires for such
+    nodes."""
+
+
+def _sandbox_enforcement_available() -> bool:
+    """Feature-detect the node-sandbox ENFORCEMENT capability (Codex r13 #1).
+
+    Order: an explicit env override (``TINYASSETS_SANDBOX_ENFORCEMENT`` truthy /
+    falsy) wins — used by tests + operators; otherwise try-import S3's gate
+    (``tinyassets.node_sandbox.enforcement_available``), which is ABSENT on S1
+    (returns False) and binds to the real gate when S3 is integrated in the
+    bundle. Never raises."""
+    import os
+
+    override = os.environ.get("TINYASSETS_SANDBOX_ENFORCEMENT", "").strip().lower()
+    if override in ("1", "true", "yes", "on"):
+        return True
+    if override in ("0", "false", "no", "off"):
+        return False
+    try:
+        from tinyassets.node_sandbox import enforcement_available  # type: ignore
+
+        return bool(enforcement_available())
+    except Exception:  # noqa: BLE001 — absent (S1) or broken probe => unavailable
+        return False
+
+
 def _build_prompt_template_node(
     node: NodeDefinition,
     *,
@@ -966,6 +1000,19 @@ def _build_prompt_template_node(
         _SandboxUnavailableError = type("_SandboxUnavailableError", (Exception,), {})  # type: ignore[assignment,misc]
 
     def _fn(state: dict[str, Any]) -> dict[str, Any]:
+        # Fail-closed sandbox gate (Codex r13 #1): the compiler does NOT confine
+        # a ``requires_sandbox`` node, so it must REFUSE to run — before ANY
+        # provider dispatch — while sandbox enforcement is unavailable
+        # (feature-detected; always absent on S1, binds to S3's real gate at
+        # integration). Honestly fail-closed instead of silently executing
+        # unconfined. Checked FIRST so the provider is never called.
+        if getattr(node, "requires_sandbox", False) and not _sandbox_enforcement_available():
+            raise SandboxEnforcementUnavailableError(
+                f"Node '{node.node_id}' requires_sandbox=true but sandbox "
+                "enforcement is unavailable on this build — refusing to execute "
+                "before any provider dispatch (fail-closed; the S3 sandbox runner "
+                "is not integrated)."
+            )
         # Normalize Jinja-style ``{{var}}`` into Python's ``{var}``.
         # Claude.ai-authored prompt_templates tend to use doubled braces
         # by convention; without this the braces are passed through to

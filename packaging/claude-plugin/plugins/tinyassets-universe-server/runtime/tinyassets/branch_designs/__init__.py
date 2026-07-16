@@ -29,7 +29,11 @@ runs post-graph, but the inline owner_gate currently decides BEFORE that write),
 the inline ``owner_gate -> merge`` edge into that pause/resume flow. Do NOT
 restructure the graph or build the resume engine here — that is Phase 2. On S1
 the repo-touching nodes (investigate/verify/draft_patch) are sandbox-required
-and FAIL CLOSED until the S3 sandbox runner ships in the same bundled deploy.
+and honestly FAIL CLOSED: the compiled node REFUSES to execute at invoke time
+(before any provider dispatch) while sandbox enforcement is unavailable
+(``graph_compiler._sandbox_enforcement_available`` — always False on S1, binds
+to the S3 runner in the bundled deploy). So S1 alone SEEDS the reference as a
+discoverable/remixable TEMPLATE, but it cannot RUN unconfined (Codex r13 #1).
 """
 
 from __future__ import annotations

@@ -1273,20 +1273,33 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
 
     release_state = _load_release_state()
 
-    # reference_designs — process-global seed-health signal (Codex F3). Makes a
-    # healthy server with an ABSENT/failed reference-design seed detectable by a
-    # real reader: ``last_seed_result()`` is set on the startup seam (None before
-    # the first seed). Best-effort; never fail get_status on it.
+    # reference_designs — process-global seed-health signal (Codex F3 + r13 #3).
+    # The reference seed is a FEATURE, not process-critical: the server STAYS UP
+    # even when a required design is unhealthy (r13 reversed r12's startup-refusal
+    # — a feature rollback must not be a control-plane outage). This is the LOUD
+    # health surface a reader / canary checks: ``last_seed_result()`` is set on
+    # the startup seam (None before the first seed). Best-effort; never fail
+    # get_status on it.
     try:
+        from tinyassets.branch_designs import missing_required_designs
         from tinyassets.universe_server import last_seed_result
 
         _seed = last_seed_result()
+        _required_missing = (
+            missing_required_designs(_seed) if _seed is not None else []
+        )
         reference_designs = {
             "last_seed_ran": _seed is not None,
             "seeded": list((_seed or {}).get("seeded", [])),
             "present": list((_seed or {}).get("present", [])),
             "failed": list((_seed or {}).get("failed", [])),
-            "healthy": _seed is not None and not (_seed or {}).get("failed"),
+            "required_missing": _required_missing,
+            # healthy = seed ran, no failures, AND every REQUIRED design seeded.
+            "healthy": (
+                _seed is not None
+                and not (_seed or {}).get("failed")
+                and not _required_missing
+            ),
         }
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         reference_designs = {"error": "compute_failed", "detail": str(exc)}

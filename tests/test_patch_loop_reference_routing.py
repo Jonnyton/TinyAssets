@@ -31,6 +31,17 @@ from tinyassets.api.branches import _staged_branch_from_spec
 from tinyassets.branch_designs import load_design_artifacts
 from tinyassets.graph_compiler import compile_branch
 
+
+@pytest.fixture(autouse=True)
+def _enable_sandbox_enforcement(monkeypatch):
+    # Codex r13 #1: the reference's repo-touching nodes are requires_sandbox=true
+    # and now REFUSE to execute when sandbox enforcement is unavailable (fail
+    # closed). These ROUTING tests exercise the graph end-to-end, so they simulate
+    # S3's enforcement being present. The honest S1 default (enforcement absent ->
+    # refuse before provider dispatch) is proven by
+    # test_requires_sandbox_node_refuses_before_provider below.
+    monkeypatch.setenv("TINYASSETS_SANDBOX_ENFORCEMENT", "1")
+
 # Binding fields a remix would bind; seeded so every node's template renders (the
 # reference nodes declare no input_keys, so the full state is the render view — a
 # referenced-but-unseeded key would raise at compile-run time).
@@ -319,6 +330,60 @@ def test_merge_output_keys_satisfy_github_merge_effector_contract():
         run_state=run_state, base_path=None,
     )
     assert result.get("error_kind") != "no_matching_packet", result
+
+
+# ── fail-closed sandbox enforcement (Codex r13 #1) ───────────────────────────
+
+
+def test_requires_sandbox_node_refuses_before_provider(monkeypatch):
+    # Codex r13 #1: S1 has no sandbox enforcement, so a requires_sandbox node
+    # must REFUSE at invoke time BEFORE any provider dispatch — the provider is
+    # NEVER called. Honestly fail-closed, not silently executable.
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.graph_compiler import (
+        SandboxEnforcementUnavailableError,
+        _build_prompt_template_node,
+    )
+
+    monkeypatch.delenv("TINYASSETS_SANDBOX_ENFORCEMENT", raising=False)  # S1 default
+    called: list[str] = []
+
+    def _provider(prompt: str, system: str = "", *, role: str = "writer") -> str:
+        called.append(prompt)
+        return "should never run"
+
+    node = NodeDefinition(
+        node_id="coder", display_name="Coder", prompt_template="do {x}",
+        requires_sandbox=True,
+    )
+    fn = _build_prompt_template_node(node, provider_call=_provider, event_sink=None)
+    with pytest.raises(SandboxEnforcementUnavailableError):
+        fn({"x": "work"})
+    assert called == [], "provider must NOT be dispatched for a requires_sandbox node"
+
+
+def test_requires_sandbox_node_runs_when_enforcement_available(monkeypatch):
+    # With enforcement available (simulating S3 integrated), the node runs and
+    # the provider IS dispatched — the fail-closed gate is enforcement-gated, not
+    # an unconditional block.
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.graph_compiler import _build_prompt_template_node
+
+    monkeypatch.setenv("TINYASSETS_SANDBOX_ENFORCEMENT", "1")
+    called: list[str] = []
+
+    def _provider(prompt: str, system: str = "", *, role: str = "writer") -> str:
+        called.append(prompt)
+        return "ran"
+
+    node = NodeDefinition(
+        node_id="coder", display_name="Coder", prompt_template="do {x}",
+        requires_sandbox=True,
+    )
+    fn = _build_prompt_template_node(node, provider_call=_provider, event_sink=None)
+    out = fn({"x": "work"})
+    assert called, "provider must be dispatched when enforcement is available"
+    assert out.get("coder_output") == "ran"
 
 
 # ── fallback type-safety (Codex r11 #3) ──────────────────────────────────────

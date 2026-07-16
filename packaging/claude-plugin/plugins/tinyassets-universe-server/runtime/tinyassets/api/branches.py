@@ -443,6 +443,40 @@ def _resolve_branch_id(bid_or_name: str, base_path: str) -> str:
     return bid_or_name
 
 
+def _reserved_seed_mutation_error(bid_or_name: str) -> str:
+    """Return a refusal string when ``bid_or_name`` resolves to the protected
+    reference-design seed (reserved author), else "". Empty means "not the seed,
+    proceed".
+
+    Codex r13 #2: ordinary write-scoped callers reproduced DELETING and
+    OVERWRITING the authoritative seed via ``delete_branch`` /
+    ``patch_branch(force=true)`` / atomic node mutations — none checked
+    ownership. The seed must be undeletable + immutable through EVERY public
+    mutation path; only the internal reference-design seeder (the daemon_server
+    save/delete path, which self-heals at startup) is the administrative
+    recovery route. This single guard is called at each public mutation entry
+    (resolves name-or-id the same way the handlers do)."""
+    from tinyassets.daemon_server import get_branch_definition
+
+    base = _base_path()
+    resolved = _resolve_branch_id((bid_or_name or "").strip(), base)
+    if not resolved:
+        return ""
+    try:
+        row = get_branch_definition(base, branch_def_id=resolved)
+    except KeyError:
+        return ""
+    from tinyassets.branch_designs import RESERVED_SEED_AUTHOR
+
+    if (row.get("author") or "") == RESERVED_SEED_AUTHOR:
+        return (
+            f"Branch '{resolved}' is a protected reference-design seed and "
+            "cannot be deleted or modified through the public API. It is owned "
+            "by the reference-design seeder and self-heals at startup."
+        )
+    return ""
+
+
 def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.api.market import _gates_enabled
@@ -640,6 +674,9 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
     bid = kwargs.get("branch_def_id", "").strip()
     if not bid:
         return json.dumps({"error": "branch_def_id is required."})
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
     removed = delete_branch_definition(_base_path(), branch_def_id=bid)
     if not removed:
         return json.dumps({"error": f"Branch '{bid}' not found."})
@@ -663,6 +700,9 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
 
     # Normalize kwargs into a node spec dict so we can share the
     # build_branch resolver (which checks node_ref / intent and
@@ -731,6 +771,9 @@ def _ext_branch_connect_nodes(kwargs: dict[str, Any]) -> str:
 
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
     bid = kwargs.get("branch_def_id", "").strip()
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
     src = kwargs.get("from_node", "").strip()
     dst = kwargs.get("to_node", "").strip()
     if not (bid and src and dst):
@@ -783,6 +826,9 @@ def _ext_branch_set_entry_point(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -829,6 +875,9 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and field_name are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -1484,6 +1533,26 @@ def _resolve_node_spec(
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
+        # requires_sandbox override with DIRECTION validation (Codex r13 #5). The
+        # source's value is copied by default; a caller may ESCALATE (source
+        # false -> requested true) but must NEVER DOWNGRADE (source true ->
+        # requested false), which would silently un-sandbox a node meant to be
+        # confined. It was dropped from the overlay allowlist above, so an
+        # escalation request was silently ignored — support it, gated.
+        if "requires_sandbox" in raw:
+            requested = raw["requires_sandbox"]
+            if not isinstance(requested, bool):
+                return None, (
+                    "node_ref 'requires_sandbox' override must be a boolean"
+                )
+            source_requires = bool(resolved.get("requires_sandbox", False))
+            if source_requires and not requested:
+                return None, (
+                    "node_ref cannot downgrade requires_sandbox from true to "
+                    "false — that silently removes a required sandbox. Fork the "
+                    "node explicitly if an unsandboxed variant is truly intended."
+                )
+            merged["requires_sandbox"] = requested
         # SECURITY (Codex ADAPT, PR #1349): approval provenance must follow
         # the *executable content*, never the inherited boolean. A caller can
         # node_ref an approved node and then override ``source_code`` — that
@@ -2637,6 +2706,11 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id is required.",
         })
+    # force=true here bypasses commit-time ownership, so the reserved-seed guard
+    # must run BEFORE the ops apply (Codex r13 #2 named this the force bypass).
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
     raw = (kwargs.get("changes_json") or "").strip()
     if not raw:
         return json.dumps({
@@ -2861,6 +2935,9 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
 
     # Accept updates as a JSON blob (changes_json) OR as individual
     # kwargs. Individual kwargs are the phone-friendly shape;
@@ -3171,6 +3248,9 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id is required for patch_nodes.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
     field = (kwargs.get("field") or "").strip()
     if field not in _PATCH_NODES_FIELDS:
         return json.dumps({

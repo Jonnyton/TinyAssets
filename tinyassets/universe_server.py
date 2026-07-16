@@ -2257,12 +2257,6 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
-class ReferenceDesignSeedError(RuntimeError):
-    """Raised at startup when a REQUIRED reference design fails to seed — refuses
-    startup readiness per PLAN (Providers principle: required seeded fixtures
-    probe fail-loud, do not serve as healthy with a required fixture absent)."""
-
-
 # Last reference-design seed outcome — a cheap, checkable seed-health signal
 # (Finding 5). None until the first seed runs on startup.
 _LAST_SEED_RESULT: dict[str, list[str]] | None = None
@@ -2279,20 +2273,19 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
     docs/design-notes/2026-07-15-user-patch-loop-reference-design.md; a
     registry/volume wipe can never delete a design class again).
 
-    Best-effort for OPTIONAL designs: a broken optional seed logs loudly but
-    never raises. Returns the seed results dict (``{"seeded","present","failed"}``).
+    NEVER raises — the reference seed is a FEATURE, not a process-critical
+    fixture (Codex r13 #3, REVERSING r12 #3). Quarantining the reference after a
+    security rollback (or any seed failure) must NOT take down the whole MCP
+    service or restart-loop it: the Forever Rule makes 24/7 uptime top priority
+    and Hard Rule 4 forbids blocking unrelated work on a feature-health failure.
+    Failures are reported LOUDLY — ``get_status.reference_designs.healthy`` +
+    ``required_missing``, ERROR logs, and ``last_seed_result()``. Packaged-seed
+    VALIDITY (refuse to SHIP broken) is a CI/deploy-time gate
+    (``tests/test_branch_design_seed.py::test_packaged_reference_design_is_valid_and_seedable``),
+    not process death at runtime.
 
-    Detectability (Finding 5): a TOTAL crash must NOT return a silent-green
-    ``{'failed': []}``. It records a ``<seed-crashed>`` marker in ``failed`` at
-    ERROR level and the result is stashed in ``_LAST_SEED_RESULT`` so an
-    operator / health surface can read the last seed outcome.
-
-    REQUIRED designs FAIL STARTUP READINESS (Codex r12 #3, PLAN Providers
-    principle "required seeded fixtures probe fail-loud — refuse to start"). If a
-    REQUIRED reference design (``REQUIRED_DESIGN_IDS``) did not seed healthy, this
-    RAISES ``ReferenceDesignSeedError`` so ``main()`` refuses to start rather than
-    serving as healthy with a required reference absent/broken. The result is
-    still logged + stashed before raising so the failure is observable.
+    Detectability (Finding 5): a TOTAL crash still records a loud
+    ``<seed-crashed>`` marker in ``failed`` and stashes the result.
     """
     global _LAST_SEED_RESULT
     from tinyassets.branch_designs import missing_required_designs
@@ -2306,21 +2299,19 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
             logger.error("reference design seeding had failures: %s", results)
         else:
             logger.info("reference design seeding: %s", results)
-    except Exception:  # noqa: BLE001 - capture, stash, then fail readiness below
+    except Exception:  # noqa: BLE001 - server must stay UP on a feature failure
         logger.exception("reference design seeding crashed")
         results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
     _LAST_SEED_RESULT = results
 
     missing = missing_required_designs(results)
     if missing:
-        # PLAN fail-closed: refuse startup readiness when a REQUIRED reference
-        # design failed to seed. Optional designs stay best-effort (above).
+        # Loud feature-health signal — the server STAYS UP and serves; the
+        # unhealthy reference is surfaced via get_status + logs (NOT a raise).
         logger.error(
-            "REQUIRED reference design(s) failed to seed: %s — refusing startup "
-            "readiness (PLAN: required fixtures probe fail-loud)", missing,
-        )
-        raise ReferenceDesignSeedError(
-            f"required reference design(s) failed to seed: {missing}"
+            "REQUIRED reference design(s) unhealthy: %s — server stays UP, "
+            "reporting unhealthy via get_status.reference_designs (CI gate owns "
+            "'refuse to ship broken')", missing,
         )
     return results
 

@@ -596,14 +596,11 @@ def test_stdio_startup_seeds_reference_designs(data_dir, monkeypatch):
     assert rows[0]["published"] is True
 
 
-def test_required_seed_crash_refuses_startup_readiness(monkeypatch, caplog):
-    # Codex r12 #3 (PLAN Providers principle: required seeded fixtures probe
-    # fail-loud, refuse to start). A crash that leaves the REQUIRED design
-    # unseeded must FAIL STARTUP READINESS — raise ReferenceDesignSeedError — not
-    # log-and-continue. It still stashes + logs the crash before raising so the
-    # failure is observable (Finding 5).
-    import pytest
-
+def test_seed_crash_stays_up_and_reports_unhealthy(monkeypatch, caplog):
+    # Codex r13 #3 (REVERSES r12 #3): a seed crash — even leaving the REQUIRED
+    # design unseeded — must NOT take down the MCP service. The startup seam
+    # NEVER raises; it logs loudly + stashes the failure so get_status reports
+    # unhealthy. Feature-health, not process-critical (Forever Rule / Hard Rule 4).
     from tinyassets import universe_server
 
     def _boom(*a, **k):
@@ -613,13 +610,13 @@ def test_required_seed_crash_refuses_startup_readiness(monkeypatch, caplog):
         "tinyassets.branch_designs.seed_reference_designs", _boom,
     )
     with caplog.at_level("ERROR"):
-        with pytest.raises(universe_server.ReferenceDesignSeedError):
-            universe_server._seed_reference_designs_best_effort()
+        results = universe_server._seed_reference_designs_best_effort()  # must NOT raise
+    assert results == {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
     assert any("seeding crashed" in r.message for r in caplog.records)
-    # The crash is stashed for observability even though startup is refused.
-    assert universe_server.last_seed_result() == {
-        "seeded": [], "present": [], "failed": ["<seed-crashed>"],
-    }
+    # Loud + checkable: stashed, and the required design shows as unhealthy.
+    assert universe_server.last_seed_result() == results
+    from tinyassets.branch_designs import missing_required_designs
+    assert "patch_loop_reference" in missing_required_designs(results)
 
 
 def test_seed_failure_is_loud_but_contained(data_dir, monkeypatch, caplog):
@@ -753,6 +750,72 @@ def test_staged_build_strips_reserved_author(data_dir):
     assert branch.author != "reference-designs"
 
 
+# ── Codex r13 #2: reserved seed is undeletable/immutable via public mutation ──
+
+
+def test_reserved_seed_undeletable_via_public_delete(data_dir):
+    # Codex r13 #2: an ordinary caller reproduced deleting the authoritative
+    # seed via delete_branch (no ownership check). Every public mutation path
+    # must refuse; the seed SURVIVES.
+    from tinyassets.api.branches import _ext_branch_delete
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.daemon_server import get_branch_definition
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+
+    out = json.loads(_ext_branch_delete({"branch_def_id": fixed_id}))
+    assert "error" in out
+    assert "protected reference-design seed" in out["error"], out
+    # Seed row untouched.
+    assert get_branch_definition(
+        data_dir, branch_def_id=fixed_id,
+    )["author"] == "reference-designs"
+
+
+def test_reserved_seed_immutable_via_patch_force(data_dir):
+    # Codex r13 #2: patch_branch(force=true) bypassed ownership. The guard runs
+    # before ops apply.
+    from tinyassets.api.branches import _ext_branch_patch
+    from tinyassets.branch_designs import _reference_branch_id
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+
+    out = json.loads(_ext_branch_patch({
+        "branch_def_id": fixed_id,
+        "changes_json": json.dumps([{"op": "set_tags", "tags": ["hijacked"]}]),
+        "force": True,
+    }))
+    assert out.get("status") == "rejected"
+    assert "protected reference-design seed" in out["error"], out
+
+
+def test_reserved_seed_immutable_via_atomic_add_node(data_dir):
+    # Codex r13 #2: atomic node-mutation paths were unguarded too.
+    from tinyassets.api.branches import _ext_branch_add_node
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    before = len(BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=fixed_id)
+    ).node_defs)
+
+    out = json.loads(_ext_branch_add_node({
+        "branch_def_id": fixed_id, "node_id": "evil",
+        "display_name": "Evil", "prompt_template": "x {intake_source}",
+    }))
+    assert "error" in out
+    assert "protected reference-design seed" in out["error"], out
+    after = len(BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=fixed_id)
+    ).node_defs)
+    assert after == before   # no node added
+
+
 # ── Finding 5: concurrent seed + loud crash ────────────────────────────────
 
 
@@ -877,20 +940,44 @@ def test_empty_package_fails_loud_on_required_artifact(data_dir, tmp_path, monke
     assert "<missing-required-artifact:patch_loop_reference>" in results["failed"], results
 
 
-def test_required_missing_refuses_startup_readiness(data_dir, tmp_path, monkeypatch):
-    # Codex r12 #3 (PLAN Providers principle): a REQUIRED design missing from the
-    # package must FAIL STARTUP READINESS — the startup seam RAISES so main()
-    # refuses to start, not log-and-continue.
-    import pytest
-
+def test_required_missing_stays_up_reports_unhealthy(data_dir, tmp_path, monkeypatch):
+    # Codex r13 #3: a REQUIRED design missing from the package must NOT take down
+    # the server — the startup seam stays UP (no raise) and reports unhealthy so
+    # a canary / get_status reader detects it. "Refuse to SHIP broken" is the CI
+    # gate (test_packaged_reference_design_is_valid_and_seedable), not runtime death.
     import tinyassets.branch_designs as bd
     from tinyassets import universe_server
 
     empty = tmp_path / "empty_designs_startup"
     empty.mkdir()
     monkeypatch.setattr(bd, "DESIGNS_DIR", empty)
-    with pytest.raises(universe_server.ReferenceDesignSeedError):
-        universe_server._seed_reference_designs_best_effort()
+    results = universe_server._seed_reference_designs_best_effort()  # must NOT raise
+    assert "<missing-required-artifact:patch_loop_reference>" in results["failed"]
+    assert "patch_loop_reference" in bd.missing_required_designs(results)
+
+
+def test_packaged_reference_design_is_valid_and_seedable(data_dir):
+    # Codex r13 #3: "refuse to SHIP broken" belongs in CI, not runtime. This is
+    # that gate — the PACKAGED reference artifact must parse, carry the required
+    # design, build through the real user path, and seed HEALTHY. A broken commit
+    # to the packaged seed fails CI here rather than degrading a running server.
+    from tinyassets.branch_designs import (
+        REQUIRED_DESIGN_IDS,
+        load_design_artifacts,
+        missing_required_designs,
+    )
+
+    artifacts = load_design_artifacts()          # raises on a malformed artifact
+    ids = {a["design_id"] for a in artifacts}
+    assert REQUIRED_DESIGN_IDS <= ids, (REQUIRED_DESIGN_IDS, ids)
+
+    results = seed_reference_designs(data_dir)    # builds + publishes for real
+    assert missing_required_designs(results) == [], results
+    for design_id in REQUIRED_DESIGN_IDS:
+        assert any(
+            t.startswith(f"design:{design_id}@v")
+            for t in (results["seeded"] + results["present"])
+        ), (design_id, results)
 
 
 def test_optional_design_failure_keeps_server_ready(data_dir, tmp_path, monkeypatch):
