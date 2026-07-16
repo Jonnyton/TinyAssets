@@ -4861,20 +4861,18 @@ def _action_set_engine(
         return json.dumps({
             "error": "inputs_json is required.",
             "expected": {
-                "engine_source": "byo_api_key | subscription | "
-                                 "self_hosted_endpoint | market_rented | "
-                                 "host_daemon",
+                "engine_source": "byo_api_key | self_hosted_endpoint | "
+                                 "market_rented | host_daemon",
                 "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
                                 "preferred_writer": "claude-code|codex (opt)"},
-                "subscription": {"service": "claude|codex",
-                                 "oauth_token": "… (claude)",
-                                 "auth_json_b64": "… (codex)",
-                                 "preferred_writer": "claude-code|codex (opt)"},
                 "self_hosted_endpoint": {"endpoint": "https://…",
                                          "preferred_writer": "…"},
                 "market_rented": {"market_model": "glm-5.2", "market_rate": 0.0,
                                   "spending_cap": 0.0},
-                "host_daemon": {"provider": "claude-code|codex"},
+                "host_daemon": {"provider": "claude-code|codex",
+                                "note": "run the daemon on YOUR device to use "
+                                        "your subscription — the platform never "
+                                        "custodies subscription tokens"},
             },
         })
     try:
@@ -4890,7 +4888,22 @@ def _action_set_engine(
     if engine_source == "byo_api_key":
         return _set_engine_byo_api_key(uid, udir, data, preferred_writer)
     if engine_source == "subscription":
-        return _set_engine_subscription(uid, udir, data, preferred_writer)
+        # BLOCKED lane (docs/design-notes/2026-07-02-universe-engine-credential-
+        # custody-research.md §0/§4): the platform may NOT custody a founder's
+        # personal subscription tokens (Anthropic + OpenAI ToS). Reject with the
+        # sanctioned lanes rather than building the blocked surface.
+        return json.dumps({
+            "error": "Per-universe subscription custody is not a sanctioned "
+                     "engine lane — the platform never stores your subscription "
+                     "tokens (Anthropic/OpenAI ToS).",
+            "use_instead": [
+                "byo_api_key — bring an API key (stored in your universe vault)",
+                "self_hosted_endpoint — point at your own OSS endpoint",
+                "market_rented — rent daemon capacity from the market",
+                "host_daemon — run the daemon on YOUR own device to use your "
+                "subscription CLI (tokens never leave your machine)",
+            ],
+        })
     if engine_source == "self_hosted_endpoint":
         return _set_engine_self_hosted(uid, udir, data, preferred_writer)
     if engine_source == "market_rented":
@@ -4899,8 +4912,7 @@ def _action_set_engine(
         return _set_engine_host_daemon(uid, udir, data, preferred_writer)
     return json.dumps({
         "error": f"unknown engine_source {engine_source!r}.",
-        "expected_engine_source": ["byo_api_key", "subscription",
-                                   "self_hosted_endpoint",
+        "expected_engine_source": ["byo_api_key", "self_hosted_endpoint",
                                    "market_rented", "host_daemon"],
     })
 
@@ -4909,6 +4921,7 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
     """BYO API key → per-universe vault + preferred_writer (fully wired)."""
     from tinyassets.config import write_universe_config_fields
     from tinyassets.credential_vault import (
+        per_universe_byo_services,
         supported_llm_api_key_services,
         write_credential_vault,
     )
@@ -4926,6 +4939,15 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
             "error": f"unsupported service {service!r} — the key would never "
                      "reach a provider.",
             "expected_services": sorted(supported_llm_api_key_services()),
+        })
+    # gemini/groq/xai keys map only to process-global HTTP providers — there is
+    # no per-universe consumption wiring yet, so binding one would fake capacity
+    # the daemon can't consume (Hard Rule #8). Reject until that path is wired.
+    if service not in per_universe_byo_services():
+        return json.dumps({
+            "error": f"service {service!r} is not yet supported for per-universe "
+                     "binding — its key only reaches a process-global provider.",
+            "per_universe_services": sorted(per_universe_byo_services()),
         })
 
     import base64
@@ -4957,120 +4979,6 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
         "preferred_writer": preferred_writer,
         "credential_types": vault_summary.get("credential_types", []),
         "note": "Engine credential stored in the per-universe vault (never "
-                "echoed).",
-    })
-
-
-def _set_engine_subscription(uid, udir, data, preferred_writer) -> str:
-    """Subscription CLI (claude / codex) → deposit the auth bundle into the vault.
-
-    The founder binds their own subscription-CLI login so the universe's
-    intelligence runs on their Claude / Codex subscription (not the platform's).
-    Claude expects an ``oauth_token``; Codex expects a base64 ``auth_json_b64``
-    (its ``auth.json``). The bundle is stored as an ``llm_subscription`` record
-    in the per-universe vault — the SAME primitive the daemon reads at call time
-    — and the secret is never echoed back or written to the ledger.
-
-    Requires real auth material so a ``subscription`` binding is never recorded
-    without capacity behind it (Hard Rule #8 — a declared-but-empty binding would
-    read as misconfigured to the engine-binding resolver).
-    """
-    import base64
-
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.credential_vault import (
-        load_credential_vault,
-        write_credential_vault,
-    )
-
-    service_raw = str(data.get("service", "")).strip().lower()
-    # Normalize provider aliases to the vault's canonical subscription service.
-    _service_alias = {
-        "claude": "claude", "anthropic": "claude", "claude-code": "claude",
-        "codex": "codex", "openai": "codex",
-    }
-    service = _service_alias.get(service_raw, service_raw)
-    if service not in {"claude", "codex"}:
-        return json.dumps({
-            "error": f"unsupported subscription service {service_raw!r}.",
-            "expected_services": ["claude", "codex"],
-        })
-    _writer_by_service = {"claude": "claude-code", "codex": "codex"}
-    if not preferred_writer:
-        preferred_writer = _writer_by_service[service]
-
-    record: dict[str, Any] = {
-        "credential_type": "llm_subscription",
-        "service": service,
-    }
-    if service == "claude":
-        oauth_token = str(data.get("oauth_token", "")).strip()
-        if not oauth_token:
-            return json.dumps({
-                "error": "oauth_token is required for a claude subscription "
-                         "binding.",
-            })
-        record["oauth_token"] = oauth_token
-    else:  # codex
-        auth_json_b64 = str(data.get("auth_json_b64", "")).strip()
-        if not auth_json_b64:
-            return json.dumps({
-                "error": "auth_json_b64 (base64 of the Codex auth.json) is "
-                         "required for a codex subscription binding.",
-            })
-        # Validate NOW: strict base64 that decodes to a JSON auth.json. A lenient
-        # or malformed credential would materialize a broken auth.json and the
-        # engine would silently fall through to platform auth (Hard Rule #8) —
-        # reject at bind time so the founder fixes it before it is stored.
-        import binascii
-        try:
-            _decoded = base64.b64decode(auth_json_b64, validate=True)
-        except (binascii.Error, ValueError):
-            return json.dumps({
-                "error": "auth_json_b64 is not valid base64.",
-            })
-        try:
-            json.loads(_decoded.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return json.dumps({
-                "error": "auth_json_b64 does not decode to a valid Codex "
-                         "auth.json (expected base64 of JSON).",
-            })
-        record["auth_json_b64"] = auth_json_b64
-
-    # Merge, don't clobber: preserve any other credentials (e.g. a bound github
-    # token) and replace only a prior subscription record for the same service.
-    try:
-        existing = load_credential_vault(udir)
-    except ValueError as exc:
-        return json.dumps({"error": f"Existing credential vault unreadable: {exc}"})
-    merged = [
-        r for r in existing
-        if not (
-            r.get("credential_type") == "llm_subscription"
-            and str(r.get("service") or r.get("provider") or "").strip().lower()
-            == service
-        )
-    ]
-    merged.append(record)
-    try:
-        write_credential_vault(udir, merged)
-    except ValueError as exc:
-        return json.dumps({"error": f"Failed to store subscription auth: {exc}"})
-
-    fields = {"engine_source": "subscription", "preferred_writer": preferred_writer}
-    try:
-        write_universe_config_fields(udir, **fields)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-
-    return json.dumps({
-        "status": "engine_set",
-        "universe_id": uid,
-        "engine_source": "subscription",
-        "service": service,
-        "preferred_writer": preferred_writer,
-        "note": "Subscription auth stored in the per-universe vault (never "
                 "echoed).",
     })
 

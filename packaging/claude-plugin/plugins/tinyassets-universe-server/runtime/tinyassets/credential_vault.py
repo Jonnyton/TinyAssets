@@ -364,6 +364,30 @@ def supported_llm_api_key_services() -> frozenset[str]:
     return frozenset(_LLM_API_KEY_ENV_BY_SERVICE)
 
 
+# Only these env vars are overlaid per-universe onto the CLI subprocess by
+# ``provider_auth_env_overrides`` (codex → OPENAI_API_KEY, claude-code →
+# ANTHROPIC_API_KEY). A BYO key for any OTHER service maps only to a
+# process-global HTTP provider (gemini/groq/xai), so it is NOT
+# per-universe-consumable today.
+_PER_UNIVERSE_BYO_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY"})
+
+
+def per_universe_byo_services() -> frozenset[str]:
+    """BYO ``llm_api_key`` services whose key actually flows to a per-universe
+    CLI subprocess today (via :func:`provider_auth_env_overrides`).
+
+    gemini / groq / xai keys map only to process-global HTTP providers, so
+    binding one per-universe would fake capacity the daemon cannot consume
+    (Hard Rule #8). Until per-universe HTTP-provider instantiation is wired,
+    only the CLI-subprocess services (anthropic/claude/claude-code,
+    openai/codex) are per-universe-consumable."""
+    return frozenset(
+        svc
+        for svc, env in _LLM_API_KEY_ENV_BY_SERVICE.items()
+        if env in _PER_UNIVERSE_BYO_ENV_VARS
+    )
+
+
 def resolve_llm_api_key(
     universe_dir: str | Path | None, env_var: str
 ) -> str:

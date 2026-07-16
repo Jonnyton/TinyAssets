@@ -8,6 +8,7 @@ feature flag that arms the non-ambient work gate.
 from __future__ import annotations
 
 import base64
+import sqlite3
 
 import pytest
 
@@ -102,7 +103,10 @@ def test_byo_openai_key_is_eligible_for_codex_only(tmp_path):
     assert binding.is_eligible_for("claude-code") is False
 
 
-def test_subscription_record_in_vault_is_bound(tmp_path):
+def test_subscription_vault_row_is_not_founder_capacity(tmp_path):
+    """Founder subscription custody is a BLOCKED lane (2026-07-02 custody
+    research). A subscription vault row is NOT counted as capacity — a universe
+    holding only one reads as idle-until-bound, and resolve does not crash."""
     udir = tmp_path / "u-sub"
     udir.mkdir()
     write_credential_vault(udir, [{
@@ -111,26 +115,10 @@ def test_subscription_record_in_vault_is_bound(tmp_path):
         "oauth_token": "oauth-abc",
     }])
     write_universe_config_fields(udir, engine_source="subscription")
-    binding = resolve_engine_binding(udir)
-    assert binding.bound is True
-    assert "subscription:claude" in binding.capacity_kinds
-    assert binding.eligible_providers == frozenset({"claude-code"})
-    assert binding.serves_via_vault("claude-code") is True
-
-
-def test_claude_subscription_missing_config_dir_is_not_usable(tmp_path):
-    """Finding 3: a claude subscription that only POINTS at a missing config dir
-    (no oauth_token) is not usable — it must not read as bound."""
-    udir = tmp_path / "u-sub-danglingcfg"
-    udir.mkdir()
-    write_credential_vault(udir, [{
-        "credential_type": "llm_subscription",
-        "service": "claude",
-        "config_dir": str(tmp_path / "does-not-exist"),  # dangling pointer
-    }])
-    write_universe_config_fields(udir, engine_source="subscription")
-    with pytest.raises(EngineMisconfiguredError):
-        resolve_engine_binding(udir)
+    binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
+    assert binding.capacity_kinds == ()
+    assert binding.eligible_providers == frozenset()
 
 
 def test_malformed_byo_unknown_service_fails_loud(tmp_path):
@@ -266,24 +254,9 @@ def test_declared_byo_without_key_fails_loud(tmp_path):
     assert excinfo.value.engine_source == "byo_api_key"
 
 
-def test_unusable_subscription_row_resolves_loud(tmp_path):
-    """A subscription row whose auth is not materializable must NOT read as
-    bound (it would silently fall through to platform auth). resolve fails loud."""
-    udir = tmp_path / "u-badsubcred"
-    udir.mkdir()
-    write_credential_vault(udir, [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": "not-base64!",  # strict-decode failure = unusable
-    }])
-    write_universe_config_fields(udir, engine_source="subscription")
-    with pytest.raises(EngineMisconfiguredError):
-        resolve_engine_binding(udir)
-
-
-def test_unusable_subscription_never_silently_bound(tmp_path):
-    """Even with no declared engine_source, a broken subscription row must never
-    read as bound=True (the platform-auth-fallthrough guard)."""
+def test_subscription_row_never_counts_and_never_crashes(tmp_path):
+    """A subscription vault row (even a malformed one) is not founder capacity —
+    it is ignored, so resolve returns idle-until-bound and never raises on it."""
     udir = tmp_path / "u-badsub2"
     udir.mkdir()
     write_credential_vault(udir, [{
@@ -291,13 +264,13 @@ def test_unusable_subscription_never_silently_bound(tmp_path):
         "service": "codex",
         "auth_json_b64": "not-base64!",
     }])
-    with pytest.raises(EngineMisconfiguredError):
-        resolve_engine_binding(udir)
+    binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
 
 
-def test_unusable_subscription_alongside_real_byo_stays_bound(tmp_path):
-    """Scoped fail-loud: a broken subscription row does NOT DoS a universe that
-    is genuinely executable via a real BYO key — it is simply not counted."""
+def test_subscription_row_alongside_real_byo_binds_via_byo(tmp_path):
+    """A subscription row does not add capacity; a real BYO key still binds and
+    eligibility reflects only the BYO key."""
     udir = tmp_path / "u-mixed"
     udir.mkdir()
     write_credential_vault(udir, [
@@ -309,21 +282,91 @@ def test_unusable_subscription_alongside_real_byo_stays_bound(tmp_path):
         {
             "credential_type": "llm_subscription",
             "service": "codex",
-            "auth_json_b64": "not-base64!",
+            "oauth_token": "oauth-x",
         },
     ])
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
     assert "byo_api_key" in binding.capacity_kinds
-    assert "subscription:codex" not in binding.capacity_kinds
+    assert binding.eligible_providers == frozenset({"claude-code"})
 
 
-def test_declared_subscription_without_credential_fails_loud(tmp_path):
-    udir = tmp_path / "u-badsub"
+def test_declared_subscription_source_is_idle_not_loud(tmp_path):
+    """A legacy engine_source=subscription (retired lane) reads as idle, never
+    a hard misconfiguration."""
+    udir = tmp_path / "u-legacy-subsrc"
     udir.mkdir()
     write_universe_config_fields(udir, engine_source="subscription")
+    binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
+
+
+def test_gemini_byo_row_is_not_founder_capacity(tmp_path):
+    """Finding 2: gemini/groq/xai keys have no per-universe consumption wiring —
+    a gemini-only vault does not read as bound (fails loud as an unusable BYO)."""
+    udir = tmp_path / "u-gemini"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "gemini",
+        "secret_b64": base64.b64encode(b"g-key").decode("ascii"),
+    }])
     with pytest.raises(EngineMisconfiguredError):
         resolve_engine_binding(udir)
+
+
+def test_gemini_byo_alongside_valid_openai_binds_via_codex(tmp_path):
+    """A non-consumable gemini row is ignored; a real openai key still binds."""
+    udir = tmp_path / "u-gemini-mixed"
+    udir.mkdir()
+    write_credential_vault(udir, [
+        {
+            "credential_type": "llm_api_key",
+            "service": "openai",
+            "secret_b64": base64.b64encode(b"sk-openai").decode("ascii"),
+        },
+        {
+            "credential_type": "llm_api_key",
+            "service": "gemini",
+            "secret_b64": base64.b64encode(b"g-key").decode("ascii"),
+        },
+    ])
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is True
+    assert binding.eligible_providers == frozenset({"codex"})
+
+
+def test_broken_runtime_registry_fails_loud(tmp_path, monkeypatch):
+    """Finding 3: an UNEXPECTED runtime-registry failure (locked/malformed) must
+    fail loud, not be masked as idle. A 'no such table' (not-initialized) case
+    still degrades to idle."""
+    import tinyassets.daemon_server as ds
+
+    udir = tmp_path / "u-broken-registry"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="host_daemon")
+
+    def _raise_locked(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ds, "list_runtime_instances", _raise_locked)
+    with pytest.raises(EngineMisconfiguredError):
+        resolve_engine_binding(udir)
+
+
+def test_uninitialized_runtime_registry_reads_idle(tmp_path, monkeypatch):
+    import tinyassets.daemon_server as ds
+
+    udir = tmp_path / "u-noreg"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="host_daemon")
+
+    def _raise_no_table(*_a, **_k):
+        raise sqlite3.OperationalError("no such table: author_runtime_instances")
+
+    monkeypatch.setattr(ds, "list_runtime_instances", _raise_no_table)
+    binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
 
 
 def test_malformed_vault_fails_loud(tmp_path):

@@ -1,11 +1,18 @@
 """Per-universe engine-capacity binding resolver + the non-ambient-work flag.
 
 The honest "can this universe run?" predicate. A universe executes work only on
-capacity **explicitly bound to it** (design note 2026-07-15 gap G7): the owner's
-own engine (BYO API key or subscription CLI), a self-hosted endpoint,
-market-rented / offered cloud capacity, or a hosted daemon the founder chose. No
-ambient, unbound daemon work — a fresh universe with no bind act is honestly
-idle-until-bound.
+capacity **explicitly bound to it** (design note 2026-07-15 gap G7). The
+sanctioned founder lanes (per the 2026-07-02 credential-custody research §0/§4 —
+the platform may NOT custody a founder's personal subscription tokens) are: a
+BYO API key (vault), a self-hosted endpoint, market-rented capacity, or a hosted
+daemon (the founder runs their own subscription CLI on their OWN device — tokens
+never reach the platform). No ambient, unbound daemon work — a fresh universe
+with no bind act is honestly idle-until-bound.
+
+Founder ``llm_subscription`` vault custody is a BLOCKED lane and is NOT counted
+as founder capacity here; the platform's own droplet subscription is
+process-global first-party auth (Option E) that never flows through the founder
+vault.
 
 This module inspects the SAME per-universe primitives the bind acts already
 write — the credential vault (:mod:`tinyassets.credential_vault`) and
@@ -34,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,6 +81,11 @@ class EngineMisconfiguredError(RuntimeError):
 # wildcard for a generic runtime that declares no specific provider.
 ANY_PROVIDER = "*"
 
+# Only the CLI-subprocess services are per-universe-consumable today (their key
+# is overlaid onto the subprocess env by provider_auth_env_overrides). gemini /
+# groq / xai keys map only to process-global HTTP providers, so they are NOT
+# founder capacity here (Finding 2, round 4) — keep this in lockstep with
+# credential_vault.per_universe_byo_services().
 _SERVICE_TO_PROVIDER: dict[str, str] = {
     # Anthropic / Claude family → the claude-code CLI writer.
     "anthropic": "claude-code",
@@ -81,12 +94,6 @@ _SERVICE_TO_PROVIDER: dict[str, str] = {
     # OpenAI / Codex family → the codex CLI writer.
     "openai": "codex",
     "codex": "codex",
-    # API-key HTTP free-tier providers (writer-chain names).
-    "gemini": "gemini-free",
-    "google": "gemini-free",
-    "groq": "groq-free",
-    "xai": "grok-free",
-    "grok": "grok-free",
 }
 
 
@@ -197,83 +204,20 @@ _RUNTIME_BACKED_SOURCES = frozenset(
 _EXECUTABLE_RUNTIME_STATUSES = frozenset({"provisioned"})
 
 
-def _codex_auth_b64_valid(auth_json_b64: str) -> bool:
-    """Return True iff *auth_json_b64* strictly decodes to a JSON Codex auth.json.
-
-    Strict base64 (``validate=True`` rejects non-alphabet chars like ``!``) +
-    a JSON parse of the decoded bytes. A lenient decode would silently accept
-    garbage like ``"not-base64!"`` and materialize a broken auth.json, so the
-    subscription would fall through to platform/global provider auth.
-    """
-    import base64
-    import binascii
-    import json as _json
-
-    try:
-        raw = base64.b64decode(auth_json_b64, validate=True)
-    except (binascii.Error, ValueError):
-        return False
-    try:
-        _json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return False
-    return True
-
-
-def _subscription_row_usable(universe_dir: Path, record: dict[str, Any], svc: str) -> bool:
-    """Return True iff a subscription vault row carries usable, materializable auth.
-
-    A row's mere presence is NOT capacity — the credential must be consumable by
-    the CLI-subprocess provider, else provider routing silently falls back to
-    platform/global auth (the exact failure Codex flagged). Claude needs an OAuth
-    token or a resolvable config dir; Codex needs a strictly-valid ``auth_json_b64``
-    or a resolvable CODEX_HOME with an ``auth.json``.
-    """
-    from tinyassets.credential_vault import (
-        resolve_claude_config_dir,
-        resolve_codex_home,
-    )
-
-    if svc in {"claude", "anthropic", "claude-code"}:
-        token = str(
-            record.get("oauth_token") or record.get("claude_code_oauth_token") or ""
-        ).strip()
-        if token:
-            return True
-        # A configured config-dir path is NOT enough — credential_vault returns
-        # configured paths without checking they exist. Require an EXISTING,
-        # populated dir (holds the auth artifact) so a dangling pointer never
-        # reads as usable and falls through to global auth.
-        cfg = resolve_claude_config_dir(universe_dir)
-        try:
-            return bool(cfg and cfg.is_dir() and any(cfg.iterdir()))
-        except OSError:
-            return False
-    if svc in {"codex", "openai"}:
-        b64 = str(record.get("auth_json_b64") or "").strip()
-        if b64 and _codex_auth_b64_valid(b64):
-            return True
-        home = resolve_codex_home(universe_dir)
-        return bool(home and (home / "auth.json").is_file())
-    # Unknown subscription service — we cannot prove it is materializable.
-    return False
-
-
 def _byo_row_usable(record: dict[str, Any], svc: str) -> bool:
-    """Return True iff a BYO ``llm_api_key`` row maps to a known provider AND
+    """Return True iff a BYO ``llm_api_key`` row is per-universe-consumable AND
     carries a non-empty, decodable secret.
 
     Counting a BYO row by ``credential_type`` alone lets a malformed vault (bad
-    base64, missing key, or an unknown service that never reaches any provider)
-    satisfy the gate and then fall through to other/global auth. Validate like
-    bind time does.
+    base64, missing key, an unknown service, or a gemini/groq/xai service with no
+    per-universe consumption wiring) satisfy the gate and then fall through to
+    other/global auth. Validate like bind time does: the service must be
+    per-universe-consumable (its key is overlaid onto the CLI subprocess) and the
+    secret must decode non-empty.
     """
-    from tinyassets.credential_vault import (
-        _secret_value,
-        supported_llm_api_key_services,
-    )
+    from tinyassets.credential_vault import _secret_value, per_universe_byo_services
 
-    if svc not in supported_llm_api_key_services():
+    if svc not in per_universe_byo_services():
         return False
     try:
         secret = _secret_value(record, "api_key", "key", "token")
@@ -293,13 +237,16 @@ class _VaultScan:
 
 
 def _vault_capacity(universe_dir: Path) -> _VaultScan:
-    """Scan the vault for USABLE BYO + subscription capacity.
+    """Scan the vault for USABLE founder BYO-API-key capacity.
 
-    A row counts only when its credential is actually usable — a BYO key must map
-    to a known provider with a decodable secret (:func:`_byo_row_usable`); a
-    subscription row must carry materializable auth (:func:`_subscription_row_usable`).
-    Unusable-but-declared vault sources set ``has_unusable_vault_source`` so the
-    caller can fail loud instead of silently falling through to platform auth.
+    A BYO row counts only when it is per-universe-consumable with a decodable
+    secret (:func:`_byo_row_usable`); an unusable-but-declared BYO row sets
+    ``has_unusable_vault_source`` so the caller can fail loud instead of silently
+    falling through to global auth.
+
+    ``llm_subscription`` vault rows are DELIBERATELY ignored: founder subscription
+    custody is a BLOCKED lane (2026-07-02 custody research §0/§4). A legacy
+    subscription row therefore reads as NOT founder capacity and never fails loud.
     Propagates :class:`ValueError` (malformed vault) so the caller can fail loud.
     """
     from tinyassets.credential_vault import load_credential_vault
@@ -310,26 +257,17 @@ def _vault_capacity(universe_dir: Path) -> _VaultScan:
     vault_providers: set[str] = set()
     has_unusable = False
     for record in records:
-        ctype = record.get("credential_type")
+        if record.get("credential_type") != "llm_api_key":
+            continue  # llm_subscription (blocked lane), vcs, social → not engine capacity
         svc = str(record.get("service") or record.get("provider") or "").strip().lower()
-        if ctype == "llm_api_key":
-            if _byo_row_usable(record, svc):
-                kinds.append("byo_api_key")
-                provider = _SERVICE_TO_PROVIDER.get(svc)
-                if provider:
-                    eligible.add(provider)
-                    vault_providers.add(provider)
-            else:
-                has_unusable = True
-        elif ctype == "llm_subscription":
-            if _subscription_row_usable(universe_dir, record, svc):
-                kinds.append(f"subscription:{svc}" if svc else "subscription")
-                provider = _SERVICE_TO_PROVIDER.get(svc)
-                if provider:
-                    eligible.add(provider)
-                    vault_providers.add(provider)
-            else:
-                has_unusable = True
+        if _byo_row_usable(record, svc):
+            kinds.append("byo_api_key")
+            provider = _SERVICE_TO_PROVIDER.get(svc)
+            if provider:
+                eligible.add(provider)
+                vault_providers.add(provider)
+        else:
+            has_unusable = True
     return _VaultScan(kinds, eligible, vault_providers, has_unusable)
 
 
@@ -339,17 +277,32 @@ def _live_runtime_providers(universe_dir: Path) -> set[str]:
     Only :data:`_EXECUTABLE_RUNTIME_STATUSES` count — `paused` / `restart_requested`
     / retired runtimes are not executable. Each provisioned instance contributes
     its declared ``provider_name``; a runtime with no declared provider is a
-    generic daemon and contributes :data:`ANY_PROVIDER`. A missing / uninitialized
-    registry degrades to an empty set (idle-until-bound) and never raises.
+    generic daemon and contributes :data:`ANY_PROVIDER`.
+
+    Only the EXPECTED "registry not initialized / no rows yet" case degrades to
+    an empty set (idle-until-bound). An UNEXPECTED registry failure (locked /
+    malformed / disk error) raises :class:`EngineMisconfiguredError` so the
+    supervisor heartbeats a loud misconfiguration instead of masking a broken
+    daemon registry as mere idleness (Hard Rule #8).
     """
+    universe_id = universe_dir.name or "default-universe"
     try:
         from tinyassets.daemon_server import list_runtime_instances
 
         instances = list_runtime_instances(
             universe_dir.parent, universe_id=universe_dir.name,
         )
-    except Exception:  # noqa: BLE001 — no DB / no table = no assigned runtime
-        return set()
+    except sqlite3.OperationalError as exc:
+        # "no such table" / "unable to open database" = registry not initialized
+        # yet (no runtime assigned). Anything else (locked / malformed / disk) is
+        # a real registry failure — fail loud, don't mask as idle.
+        msg = str(exc).lower()
+        if "no such table" in msg or "unable to open database" in msg:
+            return set()
+        raise EngineMisconfiguredError(
+            universe_id, "host_daemon",
+            f"runtime registry unavailable: {exc}",
+        ) from exc
     providers: set[str] = set()
     for inst in instances:
         if str(inst.get("status") or "").strip().lower() not in _EXECUTABLE_RUNTIME_STATUSES:
@@ -368,8 +321,8 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
     Returns an :class:`EngineBinding`. ``bound`` is True ONLY when the worker can
     actually execute the universe:
 
-    * a vault-backed BYO ``llm_api_key`` or ``llm_subscription`` (provider
-      routing consumes these directly), or
+    * a vault-backed, per-universe-consumable BYO ``llm_api_key`` (its key is
+      overlaid onto the CLI subprocess), or
     * a config-declared runtime-backed source (``host_daemon`` /
       ``market_rented`` / ``self_hosted_endpoint``) that has a live, non-retired
       runtime instance assigned to the universe.
@@ -377,14 +330,14 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
     A config CHOICE with no runtime yet, and a fresh universe with no bind act,
     both return ``bound=False`` (idle-until-bound) — quietly. This split matters:
     a bare ``engine_source: host_daemon`` value with no summoned daemon is NOT
-    executable capacity, so the non-ambient gate must not spawn for it.
+    executable capacity, so the non-ambient gate must not spawn for it. A legacy
+    ``engine_source: subscription`` (a now-blocked lane) also reads as idle — it
+    is not founder capacity and must not crash resolve.
 
-    Raises :class:`EngineMisconfiguredError` only when a **vault-backed** source
-    (``byo_api_key`` / ``subscription``) was declared but its credential is
-    absent — those bind acts deposit the credential atomically, so a declared
-    vault source with no credential is genuinely broken (Hard Rule #8: fail loud,
-    never treat a broken binding as merely unbound). A malformed vault is
-    likewise loud.
+    Raises :class:`EngineMisconfiguredError` only when a declared ``byo_api_key``
+    source has no usable key, a BYO row is present-but-unusable, a malformed
+    vault, or an unexpected runtime-registry failure (Hard Rule #8: fail loud,
+    never treat a broken binding as merely unbound).
     """
     udir = Path(universe_dir)
     universe_id = udir.name or "default-universe"
@@ -427,37 +380,39 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             vault_providers=frozenset(vault_providers),
         )
 
-    # A vault source (BYO or subscription) is present but not usable, and nothing
-    # else backs this universe. Counting it as bound would let the daemon spawn
-    # and silently fall through to platform/global provider auth — fail loud
-    # instead (Hard Rule #8) so the broken credential is re-bound.
+    # A BYO row is present but not usable, and nothing else backs this universe.
+    # Counting it as bound would let the daemon spawn and silently fall through to
+    # global provider auth — fail loud instead (Hard Rule #8) so the broken key is
+    # re-bound.
     if scan.has_unusable_vault_source:
         raise EngineMisconfiguredError(
             universe_id,
-            declared_source or "vault",
-            "a BYO/subscription credential is in the vault but is not "
-            "usable/materializable (re-bind via universe action=set_engine)",
+            declared_source or "byo_api_key",
+            "a BYO API key is in the vault but is not usable / not "
+            "per-universe-consumable (re-bind via universe action=set_engine)",
         )
 
-    # No executable capacity. A DECLARED vault-backed source with no credential
-    # is genuinely broken → fail loud. A declared runtime-backed source with no
-    # runtime yet is a legitimate not-yet-provisioned state → idle-until-bound.
-    if declared_source in {"byo_api_key", "subscription"}:
-        detail = {
-            "byo_api_key": (
-                "no BYO API key or subscription credential in the per-universe "
-                "vault"
-            ),
-            "subscription": "no subscription credential in the per-universe vault",
-        }[declared_source]
-        raise EngineMisconfiguredError(universe_id, declared_source, detail)
+    # No executable capacity. A DECLARED byo_api_key with no key is genuinely
+    # broken → fail loud. A declared runtime-backed source with no runtime yet, or
+    # a legacy (now-blocked) subscription source, is idle-until-bound.
+    if declared_source == "byo_api_key":
+        raise EngineMisconfiguredError(
+            universe_id, declared_source,
+            "no usable BYO API key in the per-universe vault",
+        )
 
-    reason = (
-        f"engine_source={declared_source!r} chosen but no runtime instance is "
-        "assigned yet"
-        if declared_source
-        else "no engine capacity bound to this universe"
-    )
+    if declared_source == "subscription":
+        reason = (
+            "engine_source='subscription' is a retired lane (platform never "
+            "custodies subscription tokens) — re-bind via a sanctioned engine"
+        )
+    elif declared_source:
+        reason = (
+            f"engine_source={declared_source!r} chosen but no runtime instance is "
+            "assigned yet"
+        )
+    else:
+        reason = "no engine capacity bound to this universe"
     return EngineBinding(
         bound=False,
         engine_source=declared_source,

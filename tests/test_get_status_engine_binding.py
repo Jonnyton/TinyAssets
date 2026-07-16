@@ -1,19 +1,18 @@
-"""S5 — get_status engine-binding onboarding surface + subscription bind path.
+"""S5 — get_status engine-binding onboarding surface + sanctioned bind lanes.
 
 get_status honestly reports whether a universe has engine/daemon capacity bound
 to it and, when it does not, surfaces the "bind an engine so your universe can
-run" next step (design note 2026-07-15 gap G7). The bind surface itself
-(``universe action=set_engine``) gains a ``subscription`` engine_source so the
-onboarding menu is complete (subscription CLI / BYO API key / local / offered
-cloud / hosted daemon).
+run" next step (design note 2026-07-15 gap G7). The sanctioned founder lanes are
+BYO API key / self-hosted endpoint / market-rented / host_daemon; per-universe
+subscription custody is a BLOCKED lane (2026-07-02 custody research) and
+set_engine rejects it.
 """
 from __future__ import annotations
 
 import base64
 import json
 
-from tinyassets.config import load_universe_config
-from tinyassets.credential_vault import resolve_claude_oauth_token, write_credential_vault
+from tinyassets.credential_vault import write_credential_vault
 from tinyassets.engine_binding import NON_AMBIENT_WORK_ENV
 from tinyassets.universe_server import get_status
 
@@ -106,7 +105,7 @@ def test_engine_binding_is_in_status_contract(tmp_path, monkeypatch):
     assert isinstance(payload["engine_binding"], dict)
 
 
-# ---- set_engine subscription bind path ------------------------------------
+# ---- set_engine: subscription is a BLOCKED lane (custody note compliance) --
 
 
 def _setup_set_engine(tmp_path, monkeypatch, uid):
@@ -119,76 +118,56 @@ def _setup_set_engine(tmp_path, monkeypatch, uid):
     return uni, udir
 
 
-def test_set_engine_subscription_claude_deposits_and_binds(tmp_path, monkeypatch):
-    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-claude")
+def test_set_engine_subscription_is_rejected_with_guidance(tmp_path, monkeypatch):
+    """Per-universe subscription custody is a BLOCKED lane (2026-07-02 custody
+    research). set_engine must REJECT it with the sanctioned lanes and store
+    nothing (no shims — the surface is removed)."""
+    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-blocked")
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
         "engine_source": "subscription",
         "service": "claude",
         "oauth_token": "oauth-SECRET-abc",
     })))
-    assert out["status"] == "engine_set"
-    assert out["engine_source"] == "subscription"
-    assert out["preferred_writer"] == "claude-code"
-    # The token is NEVER echoed back.
-    assert "oauth-SECRET-abc" not in json.dumps(out)
-    # It resolves end-to-end from the vault, and the resolver reads it as bound.
-    assert resolve_claude_oauth_token(udir) == "oauth-SECRET-abc"
-    assert load_universe_config(udir).engine_source == "subscription"
+    assert "error" in out
+    assert out.get("status") != "engine_set"
+    guidance = json.dumps(out).lower()
+    # Advertises the four sanctioned lanes.
+    assert "byo_api_key" in guidance or "api key" in guidance
+    assert "self_hosted_endpoint" in guidance or "endpoint" in guidance
+    assert "market_rented" in guidance or "market" in guidance
+    assert "host_daemon" in guidance or "own device" in guidance
+    # Nothing was persisted — no phantom subscription binding, no token leak.
+    from tinyassets.credential_vault import load_credential_vault
+    assert load_credential_vault(udir) == []
+    assert "oauth-SECRET-abc" not in guidance
+
+
+def test_set_engine_byo_rejects_non_per_universe_service(tmp_path, monkeypatch):
+    """Finding 2: gemini/groq/xai keys are not per-universe-consumable — the bind
+    is rejected with a clear 'not yet supported' error and stores nothing."""
+    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-byo-gemini")
+    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
+        "engine_source": "byo_api_key", "service": "gemini", "api_key": "g-key",
+    })))
+    assert "error" in out
+    assert out.get("status") != "engine_set"
+    assert "per-universe" in json.dumps(out).lower()
+    from tinyassets.credential_vault import load_credential_vault
+    assert load_credential_vault(udir) == []
+
+
+def test_legacy_subscription_row_reads_not_capacity_and_no_crash(tmp_path, monkeypatch):
+    """A legacy llm_subscription vault row (from the removed lane) must read as
+    NOT capacity and MUST NOT crash resolve."""
     from tinyassets.engine_binding import resolve_engine_binding
-    assert resolve_engine_binding(udir).bound is True
 
-
-def test_set_engine_subscription_requires_auth_material(tmp_path, monkeypatch):
-    uni, _udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-empty")
-    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
-        "engine_source": "subscription", "service": "claude",
-    })))
-    assert "error" in out  # no oauth_token → refused, never a phantom binding
-
-
-def test_set_engine_subscription_rejects_invalid_base64(tmp_path, monkeypatch):
-    """Codex auth_json_b64 that is not valid base64 must be REJECTED at bind
-    time — never returned as engine_set and never stored (Hard Rule #8)."""
-    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-badb64")
-    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
-        "engine_source": "subscription", "service": "codex",
-        "auth_json_b64": "not-base64!",
-    })))
-    assert "error" in out
-    assert out.get("status") != "engine_set"
-    # Nothing was persisted — no phantom subscription binding.
-    from tinyassets.credential_vault import load_credential_vault
-    assert load_credential_vault(udir) == []
-
-
-def test_set_engine_subscription_rejects_non_json_auth(tmp_path, monkeypatch):
-    """Valid base64 that does not decode to JSON is still not a usable auth.json."""
-    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-nonjson")
-    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
-        "engine_source": "subscription", "service": "codex",
-        "auth_json_b64": base64.b64encode(b"not json at all").decode("ascii"),
-    })))
-    assert "error" in out
-    assert out.get("status") != "engine_set"
-    from tinyassets.credential_vault import load_credential_vault
-    assert load_credential_vault(udir) == []
-
-
-def test_set_engine_subscription_preserves_other_credentials(tmp_path, monkeypatch):
-    """Binding a subscription must not clobber a previously bound github token."""
-    uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-sub-merge")
+    udir = tmp_path / "u-legacy-sub"
+    udir.mkdir()
     write_credential_vault(udir, [{
-        "credential_type": "vcs",
-        "service": "github",
-        "destination": "owner/repo",
-        "token": "ghp-existing",
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "oauth_token": "oauth-legacy",
     }])
-    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
-        "engine_source": "subscription", "service": "codex",
-        "auth_json_b64": base64.b64encode(b"{}").decode("ascii"),
-    })))
-    assert out["status"] == "engine_set"
-    from tinyassets.credential_vault import load_credential_vault
-    types = {r.get("credential_type") for r in load_credential_vault(udir)}
-    assert "vcs" in types  # github token preserved
-    assert "llm_subscription" in types
+    binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
+    assert binding.capacity_kinds == ()

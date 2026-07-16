@@ -188,15 +188,15 @@ def test_flag_on_skips_paused_runtime_as_idle(tmp_path, monkeypatch):
 
 
 def _codex_vault_universe(tmp_path, name="u-codexvault"):
-    """Universe bound to a valid Codex subscription in the per-universe vault."""
+    """Universe bound to a per-universe BYO OpenAI key (codex-eligible, vault)."""
     udir = tmp_path / name
     udir.mkdir()
     write_credential_vault(udir, [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": base64.b64encode(b"{}").decode("ascii"),
+        "credential_type": "llm_api_key",
+        "service": "openai",
+        "secret_b64": base64.b64encode(b"sk-openai-test").decode("ascii"),
     }])
-    write_universe_config_fields(udir, engine_source="subscription")
+    write_universe_config_fields(udir, engine_source="byo_api_key")
     return udir
 
 

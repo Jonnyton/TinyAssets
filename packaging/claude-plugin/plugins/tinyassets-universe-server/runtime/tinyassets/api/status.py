@@ -1324,9 +1324,11 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                 )
                 actionable_next_steps.append(
                     "Bind an engine so your universe can run: universe "
-                    "action=set_engine (choose a subscription CLI, a BYO API "
-                    "key, a self-hosted endpoint, offered cloud capacity, or a "
-                    "hosted daemon)."
+                    "action=set_engine — choose a BYO API key (stored in your "
+                    "universe vault), a self-hosted endpoint, market-rented "
+                    "capacity, or run the daemon on YOUR own device (host_daemon) "
+                    "to use your subscription. The platform never custodies your "
+                    "subscription tokens."
                 )
         except EngineMisconfiguredError as exc:
             engine_binding = {
