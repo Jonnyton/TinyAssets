@@ -1509,29 +1509,18 @@ def run_github_pr_effector(
             evidence["receipt_finalize_failed"] = True
 
     # -- Owner review queue (patch-loop present node) --
-    # A patch-loop `present` node opts in by attaching a ``review_queue`` block
-    # to the packet payload. On a successful PR open we enqueue the PR onto the
-    # owner review queue with the resume identity the loop needs to act on an
-    # owner decision (Codex R6 C3). Best-effort: the PR already exists on GitHub,
-    # so a queue-write failure is surfaced in evidence, never raised.
-    #
-    # TRUST BOUNDARY (Codex R6 C2 + R7 C2): the governing merge_policy / OAuth /
-    # timer come from the OWNER-BOUND config resolved by the AUTHORITATIVE
-    # branch_def_id (the run that produced the PR), NOT the packet — a packet
-    # cannot point branch_def_id at another branch's `auto` binding. run_id,
-    # branch_def_id and universe_id all come from the effector's run context;
-    # the ``review_queue`` block only supplies request_ref + the verify hint.
-    rq_cfg = payload.get("review_queue")
-    if (
-        isinstance(rq_cfg, dict)
-        and universe_dir is not None
-        and isinstance(invocation.get("pr_number"), int)
-    ):
+    # CONFIG-DRIVEN enqueue (Codex R7 F1): whether a PR enters owner review is
+    # decided by the OWNER-BOUND branch config resolved by the AUTHORITATIVE
+    # branch_def_id — NOT by a model-emitted packet block. A remixed loop's node
+    # cannot skip owner review by omitting the ``review_queue`` payload. If the
+    # branch is owner-bound with review_required, we ENQUEUE regardless. The
+    # ``review_queue`` block (if present) is advisory metadata only (request_ref
+    # + verify hint). run_id / branch_def_id / universe_id come from the run
+    # context; the packet cannot point branch_def_id at another branch's binding.
+    if universe_dir is not None and isinstance(invocation.get("pr_number"), int):
         try:
             from tinyassets.storage import review_queue as _rq
 
-            # AUTHORITATIVE identity only — reject any packet-supplied
-            # branch_def_id / universe_id.
             branch_def_id = (authoritative_branch_def_id or "").strip()
             universe_id = (
                 (authoritative_universe_id or "").strip()
@@ -1540,27 +1529,31 @@ def run_github_pr_effector(
             bound = _rq.resolve_merge_policy_binding(
                 universe_dir, branch_def_id=branch_def_id
             )
-            item = _rq.enqueue_pr(
-                universe_dir,
-                destination=destination,
-                pr_number=invocation["pr_number"],
-                pr_url=invocation["pr_url"],
-                head_sha=str(materialize.get("commit_sha") or ""),
-                request_ref=str(rq_cfg.get("request_ref") or ""),
-                verify_verdict=str(
-                    rq_cfg.get("verify_verdict") or _rq.VERIFY_UNKNOWN
-                ),
-                # Owner-bound policy governs (resolved from authoritative branch).
-                merge_policy=bound["merge_policy"],
-                founder_oauth_per_merge=bound["founder_oauth_per_merge"],
-                merge_timer_delay_s=bound["merge_timer_delay_s"],
-                universe_id=universe_id,
-                branch_def_id=branch_def_id,
-                run_id=run_id or "",
-            )
-            evidence["review_queue_item_id"] = item.get("item_id")
-            evidence["review_queue_status"] = item.get("status")
-            evidence["review_queue_policy_bound"] = bound["bound"]
+            # Enqueue iff the owner config requires review — packet-independent.
+            if bound["bound"] and bound["review_required"]:
+                rq_cfg = payload.get("review_queue")
+                rq_cfg = rq_cfg if isinstance(rq_cfg, dict) else {}
+                item = _rq.enqueue_pr(
+                    universe_dir,
+                    destination=destination,
+                    pr_number=invocation["pr_number"],
+                    pr_url=invocation["pr_url"],
+                    head_sha=str(materialize.get("commit_sha") or ""),
+                    request_ref=str(rq_cfg.get("request_ref") or ""),
+                    verify_verdict=str(
+                        rq_cfg.get("verify_verdict") or _rq.VERIFY_UNKNOWN
+                    ),
+                    # Owner-bound policy governs (authoritative branch).
+                    merge_policy=bound["merge_policy"],
+                    founder_oauth_per_merge=bound["founder_oauth_per_merge"],
+                    merge_timer_delay_s=bound["merge_timer_delay_s"],
+                    universe_id=universe_id,
+                    branch_def_id=branch_def_id,
+                    run_id=run_id or "",
+                )
+                evidence["review_queue_item_id"] = item.get("item_id")
+                evidence["review_queue_status"] = item.get("status")
+                evidence["review_queue_policy_bound"] = bound["bound"]
         except Exception as exc:  # noqa: BLE001 — never fail a landed PR open
             evidence["review_queue_enqueue_error"] = str(exc)
 

@@ -35,12 +35,26 @@ logger = logging.getLogger(__name__)
 
 
 def _base_universe_dir():
-    """Resolve the active universe directory for storage I/O.
+    """Resolve the TARGET UNIVERSE directory for consent storage I/O.
+
+    Consent must be stored in the SAME per-universe directory the effectors read
+    it from (Codex R7 F4 — writing to the root ``_base_path()`` while effectors
+    read the per-universe dir made grants unusable AND violated tenant
+    isolation). Resolve the target universe once and use ITS directory
+    consistently across grant / revoke / list. Falls back to the root only if a
+    universe is not resolvable (dev/no-tenant).
 
     Lazy import so this module is safe to import at extensions.py
     top-of-module without dragging the helpers chain into a cycle.
     """
-    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
+
+    target = _request_universe("")
+    if target:
+        try:
+            return _universe_dir(target)
+        except ValueError:
+            pass
     return _base_path()
 
 

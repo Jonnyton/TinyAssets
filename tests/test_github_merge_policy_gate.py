@@ -51,29 +51,40 @@ def _packet(**payload_overrides):
 
 
 def _open_pr(head_sha=_HEAD, mergeable_state="clean"):
-    # ``mergeable_state="clean"`` is GitHub's canonical "all required checks pass
-    # + no conflicts" — the effector derives the verify verdict from THIS, not
-    # the packet (Codex R6 C2).
+    # ``mergeable_state="clean"`` = mergeable + no conflicts + any checks passed.
+    # Autonomous merges additionally require REAL branch-protection required
+    # checks (Codex R7 F3), verified via the protection + status/check-runs GETs.
     return {
         "state": "open", "draft": False, "head": {"sha": head_sha},
+        "base": {"ref": "main"},
         "mergeable": True, "mergeable_state": mergeable_state,
     }
 
 
 def _scripted_api(
     *, allow_merge=True, live_head=_HEAD, mergeable_state="clean",
-    checks_configured=True,
+    protection="passing",
 ):
-    n = 1 if checks_configured else 0
-
+    """``protection`` modes (Codex R7 F3): 'passing' (required ci + admins
+    enforced + ci green), 'unprotected' (404), 'bypassable' (admins not
+    enforced), 'no_required' (no required contexts), 'failing' (ci not green)."""
     def fake(*, method, path, capability_token, body=None):
         fake.calls.append((method, path))
         if method == "GET":
+            if path.endswith("/protection"):
+                if protection == "unprotected":
+                    return None, {"http_status": 404, "detail": "not protected"}
+                enforce = protection != "bypassable"
+                contexts = [] if protection == "no_required" else ["ci"]
+                return {
+                    "enforce_admins": {"enabled": enforce},
+                    "required_status_checks": {"contexts": contexts},
+                }, None
             if path.endswith("/status"):
-                # Legacy combined commit status (Codex R7 C5 required-checks).
-                return {"state": "success", "total_count": n}, None
+                state = "failure" if protection == "failing" else "success"
+                return {"statuses": [{"context": "ci", "state": state}]}, None
             if path.endswith("/check-runs"):
-                return {"total_count": n, "check_runs": []}, None
+                return {"check_runs": []}, None
             return _open_pr(live_head, mergeable_state), None
         if method == "PUT":
             assert allow_merge, f"unexpected merge PUT: {path}"
@@ -102,7 +113,16 @@ def _enqueue(
     oauth=False,
     timer_delay=0.0,
     now=None,
+    branch_def_id="bd",
 ):
+    # The merge gate RE-RESOLVES the policy from the owner-bound BINDING at merge
+    # time (Codex R7 F2), so the queued item must have a matching binding under
+    # its branch_def_id (not just a stamped policy).
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id=branch_def_id, merge_policy=policy,
+        founder_oauth_per_merge=oauth, merge_timer_delay_s=timer_delay,
+        bound_by="owner",
+    )
     return rq.enqueue_pr(
         tmp_path,
         destination=_DEST,
@@ -114,6 +134,7 @@ def _enqueue(
         merge_policy=policy,
         founder_oauth_per_merge=oauth,
         merge_timer_delay_s=timer_delay,
+        branch_def_id=branch_def_id,
         now=now,
     )
 
@@ -392,17 +413,18 @@ def test_timer_resets_on_repushed_head(monkeypatch, tmp_path):
     assert not _put_fired(fake)
 
 
-def test_timer_delay_invalid_on_item_fails_closed(monkeypatch, tmp_path):
-    """Effector-boundary defensive validation (Codex R5): if a negative delay
-    is present on the durable item (direct tamper), the merge fails closed."""
+def test_timer_delay_invalid_on_binding_fails_closed(monkeypatch, tmp_path):
+    """Effector-boundary defensive validation (Codex R5 + R7 F2): the timer delay
+    is read from the owner-bound BINDING at merge time; a negative value there
+    (direct tamper) fails closed."""
     _with_capability(monkeypatch)
-    item = _enqueue(tmp_path, policy="timer", timer_delay=0.0, verdict=rq.VERIFY_PASS)
-    # Tamper the stored delay negative, bypassing enqueue's validation.
+    _enqueue(tmp_path, policy="timer", timer_delay=0.0, verdict=rq.VERIFY_PASS)
+    # Tamper the BINDING's stored delay negative, bypassing set-binding validation.
     with rq._connect(tmp_path) as conn:
         with rq._write(conn):
             conn.execute(
-                "UPDATE review_queue SET merge_timer_delay_s = -3600 WHERE item_id = ?",
-                (item["item_id"],),
+                "UPDATE merge_policy_bindings SET merge_timer_delay_s = -3600 "
+                "WHERE branch_def_id = 'bd'",
             )
     fake = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake)
@@ -515,28 +537,32 @@ def test_verify_flip_between_eligibility_and_claim_refuses_merge(
 # ── R7 C5: autonomous (auto/timer) merges require CONFIGURED required checks ──
 
 
-@pytest.mark.parametrize("policy", ["auto", "timer"])
-def test_autonomous_refused_when_no_required_checks(monkeypatch, tmp_path, policy):
-    """A repo that is mergeable-clean but has NO configured checks gives no test
-    evidence — auto/timer must refuse (Codex R7 C5)."""
+@pytest.mark.parametrize(
+    "protection", ["unprotected", "no_required", "bypassable", "failing"],
+)
+def test_autonomous_refused_without_real_required_checks(
+    monkeypatch, tmp_path, protection
+):
+    """Auto/timer must refuse unless the base branch has ACTUAL required checks
+    (branch protection) that passed — fail closed on unprotected / no-required /
+    admin-bypassable / failing (Codex R7 F3)."""
     _with_capability(monkeypatch)
-    _enqueue(tmp_path, policy=policy, timer_delay=0.0, verdict=rq.VERIFY_PASS)
-    fake = _scripted_api(allow_merge=False, checks_configured=False)  # clean, 0 checks
+    _enqueue(tmp_path, policy="auto", timer_delay=0.0, verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=False, protection=protection)
     monkeypatch.setattr(github_merge, "_github_api", fake)
     result = _run(tmp_path, _packet())
     assert result["error_kind"] == "merge_policy_blocked"
     assert result["policy_reason"] == "verify_not_green"
-    assert result["configured_checks"] == 0
     assert not _put_fired(fake)
 
 
 def test_manual_allowed_without_required_checks(monkeypatch, tmp_path):
     """A MANUAL merge is owner-reviewed, so mergeable-clean suffices even with no
-    configured checks (Codex R7 C5)."""
+    branch-protection required checks (Codex R7 F3)."""
     _with_capability(monkeypatch)
     item = _enqueue(tmp_path, policy="manual", verdict=rq.VERIFY_PASS)
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    fake = _scripted_api(allow_merge=True, checks_configured=False)
+    fake = _scripted_api(allow_merge=True, protection="unprotected")
     monkeypatch.setattr(github_merge, "_github_api", fake)
     result = _run(tmp_path, _packet())
     assert result.get("merged") is True
@@ -546,8 +572,48 @@ def test_manual_allowed_without_required_checks(monkeypatch, tmp_path):
 def test_autonomous_allowed_with_passing_required_checks(monkeypatch, tmp_path):
     _with_capability(monkeypatch)
     _enqueue(tmp_path, policy="auto", verdict=rq.VERIFY_PASS)
-    fake = _scripted_api(allow_merge=True, checks_configured=True)
+    fake = _scripted_api(allow_merge=True, protection="passing")
     monkeypatch.setattr(github_merge, "_github_api", fake)
     result = _run(tmp_path, _packet())
     assert result.get("merged") is True
     assert _put_fired(fake)
+
+
+# ── R7 F2: the CURRENT owner-bound policy governs already-queued PRs ─────────
+
+
+def test_tightened_binding_governs_queued_pr(monkeypatch, tmp_path):
+    """Codex R7 F2: a PR queued under auto is governed by the owner's TIGHTENED
+    manual binding at merge time — not the policy stamped at enqueue."""
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, policy="auto", oauth=False, verdict=rq.VERIFY_PASS)
+    # Owner tightens the binding: auto → manual.
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="manual", bound_by="owner",
+    )
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "manual_policy_awaiting_owner_approval"
+    assert not _put_fired(fake)
+
+
+def test_old_token_does_not_satisfy_tightened_oauth(monkeypatch, tmp_path):
+    """A token minted under auto/OAuth-off does not satisfy a binding tightened
+    to OAuth-on at merge time (Codex R7 F2 token regime)."""
+    _with_capability(monkeypatch)
+    item = _enqueue(tmp_path, policy="auto", oauth=False, verdict=rq.VERIFY_PASS)
+    # Approve under auto (mints a token for the auto|0 regime).
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    # Owner tightens to manual + OAuth-on.
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="manual",
+        founder_oauth_per_merge=True, bound_by="owner",
+    )
+    fake = _scripted_api(allow_merge=False)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(tmp_path, _packet())
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "founder_oauth_required"
+    assert not _put_fired(fake)

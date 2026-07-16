@@ -106,6 +106,24 @@ def _current_actor() -> str:
     return current_actor_id()
 
 
+def _require_head(action: str, kwargs: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Every mutating review verb is head-bound (Codex R7 F5): the owner passes
+    the head_sha they reviewed so a decision can't apply after the PR changed.
+    Returns ``(head, error_json_or_None)``."""
+    head = (kwargs.get("expected_head_sha") or "").strip()
+    if not head:
+        return None, json.dumps({
+            "error": (
+                f"{action} requires 'expected_head_sha' — the head_sha you "
+                "reviewed (from review_queue_list); it head-binds the decision "
+                "so it can't apply to a re-pushed head"
+            ),
+            "failure_class": "missing_expected_head_sha",
+            "actionable_by": "chatbot",
+        })
+    return head, None
+
+
 def _coerce_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -244,7 +262,9 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_notes",
             "actionable_by": "chatbot",
         })
-    expected_head_sha = (kwargs.get("expected_head_sha") or "").strip() or None
+    expected_head_sha, head_err = _require_head("review_queue_reshape", kwargs)
+    if head_err is not None:
+        return head_err
     target_universe, err = _owner_gate("review_queue_reshape", universe_id)
     if err is not None:
         return json.dumps(err)
@@ -289,7 +309,9 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_item_id",
             "actionable_by": "chatbot",
         })
-    expected_head_sha = (kwargs.get("expected_head_sha") or "").strip() or None
+    expected_head_sha, head_err = _require_head("review_queue_reject", kwargs)
+    if head_err is not None:
+        return head_err
     target_universe, err = _owner_gate("review_queue_reject", universe_id)
     if err is not None:
         return json.dumps(err)
@@ -337,6 +359,9 @@ def _action_review_queue_hold(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_item_id",
             "actionable_by": "chatbot",
         })
+    expected_head_sha, head_err = _require_head("review_queue_hold", kwargs)
+    if head_err is not None:
+        return head_err
     target_universe, err = _owner_gate("review_queue_hold", universe_id)
     if err is not None:
         return json.dumps(err)
@@ -349,7 +374,10 @@ def _action_review_queue_hold(kwargs: dict[str, Any]) -> str:
             item_id=item_id,
             held_by=_current_actor(),
             notes=notes,
+            expected_head_sha=expected_head_sha,
         )
+    except ReviewHeadChanged as exc:
+        return _head_changed(exc)
     except MergeInProgress as exc:
         return _merge_in_progress(exc)
     except InvalidReviewTransition as exc:
@@ -380,6 +408,9 @@ def _action_review_queue_release(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_item_id",
             "actionable_by": "chatbot",
         })
+    expected_head_sha, head_err = _require_head("review_queue_release", kwargs)
+    if head_err is not None:
+        return head_err
     target_universe, err = _owner_gate("review_queue_release", universe_id)
     if err is not None:
         return json.dumps(err)
@@ -390,7 +421,10 @@ def _action_review_queue_release(kwargs: dict[str, Any]) -> str:
             _universe_dir_for(target_universe),
             item_id=item_id,
             released_by=_current_actor(),
+            expected_head_sha=expected_head_sha,
         )
+    except ReviewHeadChanged as exc:
+        return _head_changed(exc)
     except Exception as exc:
         logger.exception("review_queue_release failed")
         return json.dumps({

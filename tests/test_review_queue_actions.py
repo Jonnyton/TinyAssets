@@ -163,6 +163,7 @@ def test_owner_reshape_routes_back(owner_env):
         universe_id="u1",
         item_id=item["item_id"],
         notes="cover the empty case",
+        expected_head_sha=_HEAD,
     )
     assert out["status"] == "reshaped"
     assert out["item"]["route_back"]["target_node"] == "draft_patch"
@@ -171,7 +172,10 @@ def test_owner_reshape_routes_back(owner_env):
 
 def test_owner_can_reject(owner_env):
     item = _seed(owner_env)
-    out = _call("review_queue_reject", universe_id="u1", item_id=item["item_id"])
+    out = _call(
+        "review_queue_reject", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
     assert out["status"] == "rejected"
     assert out["item"]["status"] == "rejected"
 
@@ -203,7 +207,10 @@ def test_approve_after_reject_surfaces_invalid_transition(owner_env):
     """R3: a rejected item cannot be resurrected via approve — the handler
     returns an actionable invalid_transition error, not a host storage error."""
     item = _seed(owner_env)
-    _call("review_queue_reject", universe_id="u1", item_id=item["item_id"])
+    _call(
+        "review_queue_reject", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
     out = _call(
         "review_queue_approve", universe_id="u1", item_id=item["item_id"],
         expected_head_sha=_HEAD,
@@ -220,7 +227,8 @@ def test_decision_on_merging_item_surfaces_merge_in_progress(owner_env):
     # A merge effector claims the item (→ merging).
     rq.claim_for_merge(owner_env, item_id=item["item_id"], expected_head_sha=_HEAD)
     out = _call(
-        "review_queue_reject", universe_id="u1", item_id=item["item_id"]
+        "review_queue_reject", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
     )
     assert out["failure_class"] == "merge_in_progress"
     assert out["actionable_by"] == "chatbot"
@@ -247,11 +255,13 @@ def test_non_owner_denied_on_all_verbs(non_owner_env):
         universe_id="u1",
         item_id=item["item_id"],
         notes="try",
+        expected_head_sha=_HEAD,
     )
     assert reshape["error"] == "universe_access_denied"
 
     reject = _call(
-        "review_queue_reject", universe_id="u1", item_id=item["item_id"]
+        "review_queue_reject", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
     )
     assert reject["error"] == "universe_access_denied"
 
@@ -264,11 +274,15 @@ def test_non_owner_denied_on_all_verbs(non_owner_env):
 
 def test_owner_can_hold_and_release(owner_env):
     item = _seed(owner_env)
-    held = _call("review_queue_hold", universe_id="u1", item_id=item["item_id"])
+    held = _call(
+        "review_queue_hold", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
     assert held["status"] == "held"
     assert held["item"]["status"] == "held"
     released = _call(
-        "review_queue_release", universe_id="u1", item_id=item["item_id"]
+        "review_queue_release", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
     )
     assert released["status"] == "released"
     assert released["item"]["status"] == "pending"
@@ -276,13 +290,19 @@ def test_owner_can_hold_and_release(owner_env):
 
 def test_release_non_held_reports_not_held(owner_env):
     item = _seed(owner_env)
-    out = _call("review_queue_release", universe_id="u1", item_id=item["item_id"])
+    out = _call(
+        "review_queue_release", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
     assert out["failure_class"] == "not_held"
 
 
 def test_hold_non_owner_denied(non_owner_env):
     item = _seed(non_owner_env)
-    out = _call("review_queue_hold", universe_id="u1", item_id=item["item_id"])
+    out = _call(
+        "review_queue_hold", universe_id="u1", item_id=item["item_id"],
+        expected_head_sha=_HEAD,
+    )
     assert out["error"] == "universe_access_denied"
 
 
@@ -309,10 +329,10 @@ def test_write_collaborator_denied_on_all_review_verbs(writer_not_owner_env):
     calls = [
         ("review_queue_list", {}),
         ("review_queue_approve", {"expected_head_sha": _HEAD}),
-        ("review_queue_reshape", {"notes": "x"}),
-        ("review_queue_reject", {}),
-        ("review_queue_hold", {}),
-        ("review_queue_release", {}),
+        ("review_queue_reshape", {"notes": "x", "expected_head_sha": _HEAD}),
+        ("review_queue_reject", {"expected_head_sha": _HEAD}),
+        ("review_queue_hold", {"expected_head_sha": _HEAD}),
+        ("review_queue_release", {"expected_head_sha": _HEAD}),
     ]
     for action, extra in calls:
         out = _call(action, universe_id="u1", item_id=item["item_id"], **extra)
@@ -325,8 +345,13 @@ def test_owner_can_use_all_review_verbs(owner_env):
     # Owner passes the gate on every verb (spot-check a couple that mutate).
     item = _seed(owner_env)
     iid = item["item_id"]
-    assert _call("review_queue_hold", universe_id="u1", item_id=iid)["status"] == "held"
+    assert _call(
+        "review_queue_hold", universe_id="u1", item_id=iid,
+        expected_head_sha=_HEAD,
+    )["status"] == "held"
     assert (
-        _call("review_queue_release", universe_id="u1", item_id=iid)["status"]
-        == "released"
+        _call(
+            "review_queue_release", universe_id="u1", item_id=iid,
+            expected_head_sha=_HEAD,
+        )["status"] == "released"
     )

@@ -139,38 +139,68 @@ _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_STRINGS = frozenset({"0", "false", "no", "off", ""})
 
 
-def _github_configured_checks_exist(
-    *, destination: str, head_sha: str, capability_token: str
+def _github_required_checks_passed(
+    *, destination: str, base_ref: str, head_sha: str, capability_token: str
 ) -> tuple[bool, dict[str, Any]]:
-    """Return ``(checks_exist, summary)`` — whether the repo has AT LEAST ONE
-    configured status check / check-run on this commit (Codex R7 C5).
+    """Return ``(ok, summary)`` — whether the base branch's ACTUAL REQUIRED
+    status checks (from branch protection) all passed on this commit (Codex R7
+    F3). FAILS CLOSED when protection can't be inspected, has no required checks,
+    or is bypassable (admins not enforced).
 
-    ``mergeable_state == "clean"`` already guarantees any existing checks PASSED
-    and there are no conflicts; but a repo with NO configured checks is also
-    "clean", giving auto/timer no test evidence. So autonomous (auto/timer)
-    merges additionally require a concrete configured check set. We consult BOTH
-    the legacy combined commit-status API and the modern check-runs API; either
-    non-empty counts as "checks configured". (A server-authored sandbox VERIFY
-    RECEIPT — the real verify evidence — lands with the Phase-2 sandbox runner;
-    until then GitHub-configured checks are the minimum.)"""
-    total = 0
-    combined_state = ""
-    st, err = _github_api(
+    Merely counting any commit-status/check-run is not enough — those include
+    optional/neutral checks. GitHub exposes the REQUIRED contexts separately via
+    branch protection; we verify exactly those succeeded. (The server-authored
+    sandbox VERIFY RECEIPT is Phase-2; required-checks are the Phase-1 minimum.)
+    """
+    if not base_ref:
+        return False, {"reason": "no_base_ref"}
+    prot, err = _github_api(
+        method="GET",
+        path=f"/repos/{destination}/branches/{base_ref}/protection",
+        capability_token=capability_token,
+    )
+    if err is not None or not isinstance(prot, dict):
+        # 404 (unprotected) or 403 (can't inspect) → no verifiable evidence.
+        return False, {"reason": "protection_uninspectable"}
+    # Protection that admins can bypass gives no guarantee the checks actually
+    # gate a merge — fail closed.
+    if not (prot.get("enforce_admins") or {}).get("enabled"):
+        return False, {"reason": "protection_bypassable"}
+    rsc = prot.get("required_status_checks") or {}
+    required: set[str] = set(rsc.get("contexts") or [])
+    for chk in rsc.get("checks") or []:
+        if isinstance(chk, dict) and chk.get("context"):
+            required.add(chk["context"])
+    if not required:
+        return False, {"reason": "no_required_checks"}
+
+    # Build a context→passed map from BOTH the legacy combined status and the
+    # modern check-runs.
+    passed: dict[str, bool] = {}
+    st, e1 = _github_api(
         method="GET",
         path=f"/repos/{destination}/commits/{head_sha}/status",
         capability_token=capability_token,
     )
-    if err is None and isinstance(st, dict):
-        total += int(st.get("total_count") or 0)
-        combined_state = st.get("state") or ""
-    cr, err2 = _github_api(
+    if e1 is None and isinstance(st, dict):
+        for s in st.get("statuses") or []:
+            if isinstance(s, dict) and s.get("context"):
+                passed[s["context"]] = s.get("state") == "success"
+    cr, e2 = _github_api(
         method="GET",
         path=f"/repos/{destination}/commits/{head_sha}/check-runs",
         capability_token=capability_token,
     )
-    if err2 is None and isinstance(cr, dict):
-        total += int(cr.get("total_count") or len(cr.get("check_runs") or []))
-    return total > 0, {"configured_checks": total, "combined_state": combined_state}
+    if e2 is None and isinstance(cr, dict):
+        for run in cr.get("check_runs") or []:
+            if isinstance(run, dict) and run.get("name"):
+                passed[run["name"]] = run.get("conclusion") == "success"
+
+    missing = sorted(c for c in required if not passed.get(c))
+    return (not missing), {
+        "required_checks": sorted(required),
+        "unsatisfied_required_checks": missing,
+    }
 
 
 class _StrictBoolError(ValueError):
@@ -286,9 +316,16 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
-    # Governing policy from the item; a packet policy may only NARROW (stricter).
+    # RE-RESOLVE the governing policy from the OWNER-BOUND binding at MERGE TIME
+    # (Codex R7 F2) — NOT the policy STAMPED on the item at enqueue. A tightened
+    # binding (e.g. auto/OAuth-off → manual/OAuth-on) governs already-queued PRs;
+    # the item's branch_def_id is the authoritative key (stamped from the run
+    # context). A packet may only NARROW (stricter) on top.
+    bound = rq.resolve_merge_policy_binding(
+        universe_dir, branch_def_id=item.get("branch_def_id") or ""
+    )
     governing_policy = mp.normalize_policy(
-        item.get("merge_policy") or mp.DEFAULT_MERGE_POLICY
+        bound.get("merge_policy") or mp.DEFAULT_MERGE_POLICY
     )
     policy = governing_policy
     packet_policy_raw = payload.get(mp.MERGE_POLICY_STATE_FIELD)
@@ -297,8 +334,8 @@ def _evaluate_merge_policy_gate(
         if mp.is_at_least_as_strict(packet_policy, governing_policy):
             policy = packet_policy  # narrowing toward stricter is allowed
 
-    # Founder-OAuth: governing from the item; the packet may only ENABLE it.
-    governing_oauth = bool(item.get("founder_oauth_per_merge"))
+    # Founder-OAuth: governing from the CURRENT binding; packet may only ENABLE.
+    governing_oauth = bool(bound.get("founder_oauth_per_merge"))
     try:
         packet_oauth = _payload_bool_strict(payload, mp.FOUNDER_OAUTH_STATE_FIELD)
     except _StrictBoolError as exc:
@@ -329,12 +366,11 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
-    # Timer delay from the DURABLE item (not the packet); validate defensively
-    # (Codex R5 REQUIRED 2 — enqueue already rejects malformed, this is
-    # belt-and-braces if a value was tampered directly).
+    # Timer delay from the RE-RESOLVED binding (Codex R7 F2), not the item's
+    # stamped value; validate defensively (Codex R5 REQUIRED 2).
     timer_delay_s = 0.0
     if policy == mp.MERGE_POLICY_TIMER:
-        raw_delay = item.get("merge_timer_delay_s", 0.0)
+        raw_delay = bound.get("merge_timer_delay_s", 0.0)
         try:
             timer_delay_s = float(raw_delay)
         except (TypeError, ValueError):
@@ -353,12 +389,13 @@ def _evaluate_merge_policy_gate(
                 matched_output_key=matched_key,
             ), {}
 
-    # The founder-OAuth token is bound to the item's CURRENT regime + binding
-    # (Codex R6 C1 + R7 C2) — a token minted under a different regime OR a
-    # different owner-bound branch binding does not satisfy.
+    # The founder-OAuth token is bound to the CURRENT (re-resolved) regime +
+    # binding (Codex R6 C1 + R7 C2/F2) — a token minted under the OLD binding
+    # (before the owner tightened it) has a different signature and does NOT
+    # satisfy the tightened gate.
     policy_generation = rq._policy_signature(
-        item.get("merge_policy"), item.get("founder_oauth_per_merge"),
-        item.get("branch_def_id"), item.get("merge_timer_delay_s"),
+        bound.get("merge_policy"), bound.get("founder_oauth_per_merge"),
+        item.get("branch_def_id"), bound.get("merge_timer_delay_s"),
     )
     fresh_approval_present = rq.has_fresh_merge_approval(
         universe_dir,
@@ -400,7 +437,7 @@ def _evaluate_merge_policy_gate(
             policy_reason=decision.get("reason"),
             verify_verdict=verify_verdict,
             github_mergeable_state=github_mergeable_state,
-            configured_checks=(checks_summary or {}).get("configured_checks"),
+            required_checks=(checks_summary or {}),
             item_status=item.get("status"),
             founder_oauth_per_merge=founder_oauth_per_merge,
             matched_output_key=matched_key,
@@ -688,15 +725,19 @@ def run_github_merge_effector(
     # configured checks are the Phase-1 minimum.
     mergeable_clean = pr_obj.get("mergeable_state") == "clean"
     manual_verdict = "pass" if mergeable_clean else "fail"
-    checks_exist = False
+    base_ref = ((pr_obj.get("base") or {}).get("ref") or "").strip()
+    required_checks_ok = False
     checks_summary: dict[str, Any] = {}
     if mergeable_clean and capability:
-        checks_exist, checks_summary = _github_configured_checks_exist(
+        required_checks_ok, checks_summary = _github_required_checks_passed(
             destination=destination,
+            base_ref=base_ref,
             head_sha=actual_head_sha,
             capability_token=capability,
         )
-    autonomous_verdict = "pass" if (mergeable_clean and checks_exist) else "fail"
+    autonomous_verdict = (
+        "pass" if (mergeable_clean and required_checks_ok) else "fail"
+    )
 
     # Patch-loop S4 (G6): gate the merge on durable owner-review-queue state +
     # the OWNER-BOUND policy + founder-OAuth-per-merge, on top of the

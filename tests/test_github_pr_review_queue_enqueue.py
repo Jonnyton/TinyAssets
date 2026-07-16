@@ -108,6 +108,11 @@ def test_present_node_enqueues_pr_with_resume_identity(monkeypatch, tmp_path):
 
 def test_reshape_carries_owner_notes_and_resume_identity(monkeypatch, tmp_path):
     _open_all_gates(monkeypatch)
+    # Config-driven enqueue (F1): the branch must be owner-bound (review required).
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="patch_loop_reference",
+        merge_policy="manual", bound_by="owner",
+    )
     result = github_pr.run_github_pr_effector(
         node_id="present",
         output_keys=["pr_packet"],
@@ -178,3 +183,46 @@ def test_packet_cannot_select_another_branchs_policy(monkeypatch, tmp_path):
     assert item["founder_oauth_per_merge"] is True
     assert item["branch_def_id"] == "bd_manual"
     assert item["universe_id"] == "u-real"  # not the spoofed universe
+
+
+def _packet_no_review_block():
+    return {
+        "pr_packet": {
+            "sink": github_pr.EXTERNAL_WRITE_SINK_GITHUB_PR,
+            "destination": _DEST,
+            "payload": {"title": "x", "body": "b", "head_branch": "auto/fix"},
+        }
+    }
+
+
+def test_config_requires_review_even_when_packet_omits_block(monkeypatch, tmp_path):
+    """Codex R7 F1: enqueue is driven by owner-bound CONFIG, not the packet. A
+    present packet that OMITS the review_queue block still enqueues when the
+    branch config requires review — a model can't skip owner review."""
+    _open_all_gates(monkeypatch)
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="manual", bound_by="owner",
+    )
+    result = github_pr.run_github_pr_effector(
+        node_id="present", output_keys=["pr_packet"],
+        run_state=_packet_no_review_block(),  # NO review_queue block
+        base_path=str(tmp_path), run_id="run-1",
+        authoritative_branch_def_id="bd", authoritative_universe_id="u-1",
+    )
+    assert result.get("review_queue_item_id")  # still enqueued
+    item = rq.get_item(tmp_path, item_id=result["review_queue_item_id"])
+    assert item["status"] == "pending"
+    assert item["merge_policy"] == "manual"
+
+
+def test_unbound_branch_does_not_enqueue(monkeypatch, tmp_path):
+    """No owner binding → no review requirement → no enqueue (not a patch-loop
+    review branch)."""
+    _open_all_gates(monkeypatch)
+    result = github_pr.run_github_pr_effector(
+        node_id="present", output_keys=["pr_packet"],
+        run_state=_packet(),  # even with a review_queue block
+        base_path=str(tmp_path), run_id="run-1",
+        authoritative_branch_def_id="unbound", authoritative_universe_id="u-1",
+    )
+    assert "review_queue_item_id" not in result

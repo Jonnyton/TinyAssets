@@ -257,7 +257,10 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
         _CAPABILITIES_ENV,
         json.dumps({"Jonnyton/TinyAssets": "tok"}),
     )
-    universe_dir = base
+    # Codex R7 F4: the effector reads consent from the SAME per-universe dir the
+    # MCP grant writes to. Resolve the target universe dir the way the MCP does.
+    from tinyassets.api.helpers import _request_universe, _universe_dir
+    universe_dir = _universe_dir(_request_universe(""))
     packet = {
         "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
         "destination": "Jonnyton/TinyAssets",
@@ -343,3 +346,19 @@ def test_grant_and_revoke_visible_to_effector(us_env, monkeypatch):
         run_id="run-revoked",
     )
     assert revoked_result["reason"] == "missing_consent"
+
+
+def test_consent_is_per_universe_isolated(tmp_path):
+    """Codex R7 F4: a grant in universe A is NOT usable in universe B — consent
+    is per-universe (cross-owner tenant isolation), stored + read from the same
+    universe dir."""
+    from tinyassets.storage.effector_consents import grant_consent, is_consent_active
+
+    univ_a = tmp_path / "u-A"
+    univ_b = tmp_path / "u-B"
+    univ_a.mkdir()
+    univ_b.mkdir()
+    grant_consent(univ_a, sink="github_raw_merge", destination="Owner/Repo", granted_by="owner")
+    # Usable in A, invisible in B.
+    assert is_consent_active(univ_a, sink="github_raw_merge", destination="Owner/Repo")
+    assert not is_consent_active(univ_b, sink="github_raw_merge", destination="Owner/Repo")

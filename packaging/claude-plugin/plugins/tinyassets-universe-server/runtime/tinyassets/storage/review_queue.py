@@ -314,6 +314,11 @@ CREATE TABLE IF NOT EXISTS merge_policy_bindings (
     merge_policy   TEXT NOT NULL DEFAULT 'manual',
     founder_oauth_per_merge INTEGER NOT NULL DEFAULT 0,
     merge_timer_delay_s REAL NOT NULL DEFAULT 0,
+    -- review_required (Codex R7 F1): when a branch is owner-bound, the present
+    -- effector ENQUEUES the PR onto owner review regardless of the model packet
+    -- — a remixed loop's node CANNOT opt out of owner review by omitting a
+    -- packet block. Defaults to 1 (required) for any bound branch.
+    review_required INTEGER NOT NULL DEFAULT 1,
     bound_by      TEXT NOT NULL DEFAULT '',
     bound_at      REAL NOT NULL DEFAULT 0
 );
@@ -1195,12 +1200,18 @@ def hold_item(
     item_id: str,
     held_by: str,
     notes: str = "",
+    expected_head_sha: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any] | None:
     """Owner PAUSE (non-terminal): move a pending/approved/held item to ``held``,
     which blocks auto/timer merge eligibility until released (Codex R6 C5). Not
-    a substitute for reshape/reject. Returns the updated item, None if missing,
-    raises on a terminal / in-flight-merging item."""
+    a substitute for reshape/reject — a permanent stop is ``reject``. Returns the
+    updated item, None if missing, raises on a terminal / in-flight-merging item
+    or a stale ``expected_head_sha`` (head-bound, Codex R7 F5).
+
+    Note (Fable): a hold on head H is cleared if a re-push (changed head) then a
+    revert re-presents H — the hold is per-head, not permanent; ``reject`` is the
+    terminal control. Per-head hold history is Phase-2."""
     held_by = (held_by or "").strip()
     if not held_by:
         raise ValueError("hold_item requires non-empty held_by")
@@ -1211,6 +1222,7 @@ def hold_item(
             return _decide_txn(
                 conn, item_id=item_id, new_status="held", decided_by=held_by,
                 notes=notes, ts=ts, invalidate_approvals=False,
+                expected_head_sha=expected_head_sha,
             )
 
 
@@ -1219,11 +1231,14 @@ def release_hold(
     *,
     item_id: str,
     released_by: str,
+    expected_head_sha: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any] | None:
     """Owner RESUME: move a ``held`` item back to ``pending`` so auto/timer merge
-    eligibility can proceed again (Codex R6 C5). Returns the updated item, or
-    None if the item is missing or not currently held."""
+    eligibility can proceed again (Codex R6 C5). Head-bound (Codex R7 F5): when
+    ``expected_head_sha`` is given and the item's head moved since, raise
+    ``ReviewHeadChanged``. Returns the updated item, or None if the item is
+    missing or not currently held."""
     released_by = (released_by or "").strip()
     if not released_by:
         raise ValueError("release_hold requires non-empty released_by")
@@ -1231,18 +1246,30 @@ def release_hold(
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
         with _write(conn):
-            cur = conn.execute(
+            row = conn.execute(
+                "SELECT head_sha, status FROM review_queue WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is None or row["status"] != "held":
+                return None
+            if (
+                expected_head_sha is not None
+                and (row["head_sha"] or "") != expected_head_sha
+            ):
+                raise ReviewHeadChanged(
+                    f"cannot release item {item_id!r}: it now points at head "
+                    f"{row['head_sha']!r}, not the {expected_head_sha!r} you saw"
+                )
+            conn.execute(
                 "UPDATE review_queue SET status = 'pending', decided_by = ?, "
                 "decided_at = ?, updated_at = ? "
                 "WHERE item_id = ? AND status = 'held'",
                 (released_by, ts, ts, item_id),
             )
-            if cur.rowcount != 1:
-                return None
-            row = conn.execute(
+            updated = conn.execute(
                 "SELECT * FROM review_queue WHERE item_id = ?", (item_id,)
             ).fetchone()
-    return _row_to_item(row) if row is not None else None
+    return _row_to_item(updated) if updated is not None else None
 
 
 def set_merge_policy_binding(
@@ -1252,13 +1279,14 @@ def set_merge_policy_binding(
     merge_policy: str = "manual",
     founder_oauth_per_merge: bool = False,
     merge_timer_delay_s: float = 0.0,
+    review_required: bool = True,
     bound_by: str,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Owner-bind the governing merge policy for a branch (remix) design (Codex
-    R6 C2). The present node resolves policy from HERE, never from the packet.
-    Validates the timer delay (finite, non-negative). Raises on empty
-    branch_def_id / bound_by."""
+    R6 C2). The present node resolves policy + the review-required signal from
+    HERE, never from the packet (Codex R7 F1). Validates the timer delay
+    (finite, non-negative). Raises on empty branch_def_id / bound_by."""
     bdid = (branch_def_id or "").strip()
     if not bdid:
         raise ValueError("set_merge_policy_binding requires non-empty branch_def_id")
@@ -1267,6 +1295,7 @@ def set_merge_policy_binding(
         raise ValueError("set_merge_policy_binding requires non-empty bound_by")
     policy_str = (merge_policy or "manual").strip().lower() or "manual"
     oauth_int = 1 if founder_oauth_per_merge else 0
+    review_int = 1 if review_required else 0
     try:
         delay = float(merge_timer_delay_s if merge_timer_delay_s is not None else 0.0)
     except (TypeError, ValueError):
@@ -1281,22 +1310,24 @@ def set_merge_policy_binding(
                 """
                 INSERT INTO merge_policy_bindings (
                     branch_def_id, merge_policy, founder_oauth_per_merge,
-                    merge_timer_delay_s, bound_by, bound_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    merge_timer_delay_s, review_required, bound_by, bound_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(branch_def_id) DO UPDATE SET
                     merge_policy = excluded.merge_policy,
                     founder_oauth_per_merge = excluded.founder_oauth_per_merge,
                     merge_timer_delay_s = excluded.merge_timer_delay_s,
+                    review_required = excluded.review_required,
                     bound_by = excluded.bound_by,
                     bound_at = excluded.bound_at
                 """,
-                (bdid, policy_str, oauth_int, delay, bound_by, ts),
+                (bdid, policy_str, oauth_int, delay, review_int, bound_by, ts),
             )
     return {
         "branch_def_id": bdid,
         "merge_policy": policy_str,
         "founder_oauth_per_merge": bool(oauth_int),
         "merge_timer_delay_s": delay,
+        "review_required": bool(review_int),
         "bound_by": bound_by,
         "bound_at": ts,
     }
@@ -1306,12 +1337,13 @@ def resolve_merge_policy_binding(
     universe_dir: str | Path, *, branch_def_id: str
 ) -> dict[str, Any]:
     """Resolve the OWNER-BOUND governing merge policy for a branch design (Codex
-    R6 C2). Returns the safe default (manual, no OAuth, no delay) when unbound —
-    NEVER trusts a packet-supplied policy."""
+    R6 C2). Returns the safe default (manual, no OAuth, no delay, not bound → no
+    review requirement) when unbound — NEVER trusts a packet-supplied policy."""
     default = {
         "merge_policy": "manual",
         "founder_oauth_per_merge": False,
         "merge_timer_delay_s": 0.0,
+        "review_required": False,
         "bound": False,
     }
     bdid = (branch_def_id or "").strip()
@@ -1320,8 +1352,8 @@ def resolve_merge_policy_binding(
     initialize_review_queue_db(universe_dir)
     with _connect(universe_dir) as conn:
         row = conn.execute(
-            "SELECT merge_policy, founder_oauth_per_merge, merge_timer_delay_s "
-            "FROM merge_policy_bindings WHERE branch_def_id = ?",
+            "SELECT merge_policy, founder_oauth_per_merge, merge_timer_delay_s, "
+            "review_required FROM merge_policy_bindings WHERE branch_def_id = ?",
             (bdid,),
         ).fetchone()
     if row is None:
@@ -1330,6 +1362,7 @@ def resolve_merge_policy_binding(
         "merge_policy": row["merge_policy"],
         "founder_oauth_per_merge": bool(row["founder_oauth_per_merge"]),
         "merge_timer_delay_s": row["merge_timer_delay_s"],
+        "review_required": bool(row["review_required"]),
         "bound": True,
     }
 
