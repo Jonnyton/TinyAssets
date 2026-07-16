@@ -613,30 +613,60 @@ def check_bwrap_failure(stderr_text: str) -> None:
             )
 
 
+OS_SANDBOX_ATTESTATION_ENV = "TINYASSETS_OS_SANDBOX_ATTESTED"
+
+
+def os_sandbox_attested() -> bool:
+    """True only when the ENTIRE server process is attested to run under real OS
+    isolation.
+
+    Set by the container entrypoint (``TINYASSETS_OS_SANDBOX_ATTESTED=1``) AFTER
+    it has confined the whole process (container / gVisor / namespaces). This is
+    the ONLY thing that confines an in-process, NON-self-sandboxing coding agent
+    like ``claude -p`` — which is spawned with Bash/Read/Write and has no sandbox
+    flag of its own. A launchable ``bwrap`` (``get_sandbox_status``) proves only
+    that bwrap CAN start a sandbox; it does NOT prove the running ``claude -p``
+    subprocess is confined (Codex S3 review). So confinement of that class is
+    gated on this attestation, never on bwrap-launchability.
+    """
+    return _truthy_env(os.environ.get(OS_SANDBOX_ATTESTATION_ENV))
+
+
 def enforce_os_sandbox(config: "ModelConfig") -> None:
-    """Fail closed when *config* requires an OS sandbox that isn't available.
+    """Fail closed unless the running process is attested to be OS-isolated.
 
     The build-blocking gate for coding nodes (``os_sandbox_required``): a node
     that runs a coding agent with real filesystem/shell tools against a repo can
-    only be confined by an OS-level sandbox (bwrap/container) — the CLI tool
-    denylist cannot pin Read/Bash to a directory. Rather than run such a node
-    unconfined on the capacity host (arbitrary-repo exfiltration / abuse vector),
-    raise so the node fails LOUDLY (hard rule #8). Called by subprocess providers
-    BEFORE they spawn. No-op for host-trusted roles (``os_sandbox_required`` is
-    False by default).
+    only be confined by an OS-level sandbox around the WHOLE process — the CLI
+    tool denylist cannot pin Read/Bash to a directory, and ``claude -p`` does not
+    self-sandbox. Requiring merely that ``bwrap`` can launch is insufficient: a
+    bare Linux host where bwrap works would pass yet still spawn ``claude -p``
+    UNCONFINED (Codex S3 CRITICAL). So the gate requires
+    :func:`os_sandbox_attested` — a positive attestation from the container
+    entrypoint that the process is actually isolated. No attestation ⇒ raise so
+    the node fails LOUDLY (hard rule #8) rather than run a coding agent
+    unconfined on the capacity host (arbitrary-repo exfiltration / abuse vector).
+    Called by the router preflight and the claude provider BEFORE spawning.
+    No-op for host-trusted roles (``os_sandbox_required`` is False by default).
+
+    (Codex ``codex exec`` self-confines via ``--full-auto`` + bwrap and enforces
+    that in its own provider path; this whole-process attestation is the gate for
+    the non-self-sandboxing ``claude -p`` path and the provider-agnostic router
+    preflight.)
     """
     if not getattr(config, "os_sandbox_required", False):
         return
-    status = get_sandbox_status()
-    if not status.get("bwrap_available"):
+    if not os_sandbox_attested():
         raise SandboxUnavailableError(
-            "This node requires an OS-level sandbox (bwrap) to confine its "
-            "coding-agent filesystem/shell tools, but none is available on this "
-            f"host: {status.get('reason') or 'bwrap unavailable'}. Refusing to "
-            "run the coding node unconfined (fail closed). Enable unprivileged "
-            "user namespaces / bwrap on the host, run the daemon inside a "
-            "container sandbox, or use a design-only branch with no "
-            "requires_sandbox nodes."
+            "This node runs a coding agent with real filesystem/shell tools and "
+            "requires the ENTIRE server process to run under verified OS "
+            "isolation (a container entrypoint that confines the process and "
+            f"sets {OS_SANDBOX_ATTESTATION_ENV}=1). That attestation is absent — "
+            "and a launchable bwrap does NOT prove the running claude -p "
+            "subprocess is confined (it is spawned with Bash/Read/Write and no "
+            "self-sandbox). Refusing to run the coding node unconfined (fail "
+            "closed). Run the daemon inside the attested OS-isolation container, "
+            "or use a design-only branch with no requires_sandbox nodes."
         )
 
 

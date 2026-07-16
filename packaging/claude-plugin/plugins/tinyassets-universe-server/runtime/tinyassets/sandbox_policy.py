@@ -69,28 +69,42 @@ CODING_NODE_DISALLOWED_TOOLS: tuple[str, ...] = (
     "ListMcpResourcesTool",
 )
 
-# Node kinds that are sandbox-required BY DEFAULT, even when the authored
-# NodeDefinition omits ``requires_sandbox``. Defense in depth: a remix must not
-# be able to drop the flag to escape confinement. ``draft_patch`` is the patch
-# loop's coding-agent node — a user shouldn't have to opt in to safety. Keyed on
-# the reference-design node_id; a remix that RENAMES the node is authoring a new
-# node and must set requires_sandbox itself (or its coding agent will fail closed
-# on the provider side just like any unsandboxed repo-touching call once broader
-# node-classification lands — see the PR residual note).
-SANDBOX_DEFAULT_NODE_KINDS: frozenset[str] = frozenset({"draft_patch"})
+# STABLE node-capability classifier (Codex S3 adapt). A node's ``node_kind``
+# survives a remix that renames the node — so classifying sandbox-required by
+# CAPABILITY (not the editable node_id) means a renamed patch-writing node
+# CANNOT rename its way out of confinement. These kinds run a coding agent that
+# writes/executes against a bound repo; they are always sandbox-required.
+CODING_NODE_KINDS: frozenset[str] = frozenset({
+    "coding", "repo_write", "repo_writing", "patch", "patch_write",
+})
+
+# node_id BACKSTOP only (not the primary signal): the reference-design
+# ``draft_patch`` id, so the current patch-loop reference is confined even if its
+# node_def has not yet been stamped with node_kind="coding". A remix that renames
+# draft_patch is covered by the node_kind classifier above (the primary signal),
+# not by this list — keying on node_id alone was the rename-escape hole Codex
+# flagged. Cross-slice: S2 preserves the full node_def across export/import, so a
+# stamped node_kind survives remix; the patch_loop reference draft_patch node
+# should carry node_kind="coding" (add when S1 lands / S3 rebases onto it).
+SANDBOX_DEFAULT_NODE_IDS: frozenset[str] = frozenset({"draft_patch"})
 
 
 def node_requires_sandbox(node: Any) -> bool:
     """True when *node* must run with the hardened coding-node sandbox posture.
 
-    Honors the explicit ``requires_sandbox`` contract AND the sandbox-by-default
-    coding-node kinds (:data:`SANDBOX_DEFAULT_NODE_KINDS`), so the patch loop's
-    ``draft_patch`` is confined even if a remix drops the flag.
+    Precedence (Codex S3 adapt): (1) the STABLE ``node_kind`` capability — a
+    coding/repo-writing kind is always sandbox-required, and it survives a rename
+    so a remix cannot escape by renaming the node; (2) the explicit
+    ``requires_sandbox`` contract; (3) the ``draft_patch`` node_id BACKSTOP for
+    the current reference design (until its node_def carries node_kind="coding").
     """
+    node_kind = str(getattr(node, "node_kind", "") or "").strip().lower()
+    if node_kind in CODING_NODE_KINDS:
+        return True
     if bool(getattr(node, "requires_sandbox", False)):
         return True
     node_id = str(getattr(node, "node_id", "") or "").strip()
-    return node_id in SANDBOX_DEFAULT_NODE_KINDS
+    return node_id in SANDBOX_DEFAULT_NODE_IDS
 
 
 def coding_node_model_config(
@@ -119,7 +133,8 @@ def coding_node_model_config(
 __all__ = [
     "CODING_NODE_ALLOWED_TOOLS",
     "CODING_NODE_DISALLOWED_TOOLS",
-    "SANDBOX_DEFAULT_NODE_KINDS",
+    "CODING_NODE_KINDS",
+    "SANDBOX_DEFAULT_NODE_IDS",
     "node_requires_sandbox",
     "coding_node_model_config",
 ]

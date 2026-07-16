@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -33,7 +34,7 @@ from tinyassets.providers.base import (
     UniverseContext,
     enforce_os_sandbox,
 )
-from tinyassets.providers.claude_provider import ClaudeProvider, _sandbox_cli_args
+from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.codex_provider import CodexProvider, _codex_sandbox_args
 from tinyassets.sandbox_policy import (
     CODING_NODE_ALLOWED_TOOLS,
@@ -142,6 +143,7 @@ def test_node_requires_sandbox_helper():
     n = N()
     n.requires_sandbox = False
     n.node_id = "summarize"
+    n.node_kind = ""
     assert node_requires_sandbox(n) is False
 
     n.requires_sandbox = True
@@ -150,7 +152,51 @@ def test_node_requires_sandbox_helper():
     d = N()
     d.requires_sandbox = False
     d.node_id = "draft_patch"
-    assert node_requires_sandbox(d) is True  # sandbox-by-default kind
+    d.node_kind = ""
+    assert node_requires_sandbox(d) is True  # node_id backstop for the reference design
+
+
+def test_renamed_coding_node_cannot_escape_via_rename():
+    # Codex S3 FINDING 3: classify by the STABLE node_kind capability, not the
+    # editable node_id. A remix renames draft_patch -> its own id but keeps
+    # node_kind="coding" — it must STILL be sandbox-required.
+    class N:
+        pass
+
+    r = N()
+    r.requires_sandbox = False
+    r.node_id = "write_the_fix"  # renamed away from draft_patch
+    r.node_kind = "coding"
+    assert node_requires_sandbox(r) is True
+
+    # ...and through the compiler it receives the hardened config.
+    node = NodeDefinition(
+        node_id="write_the_fix",
+        display_name="Write the fix",
+        prompt_template="implement the fix",
+        output_keys=["write_the_fix_out"],
+        node_kind="coding",
+    )
+    assert node.requires_sandbox is False  # flag not set
+    assert node.node_id not in ("draft_patch",)  # not the backstop id either
+    cfg = _run_node_capturing_config(node)
+    assert cfg is not None
+    assert cfg.os_sandbox_required is True
+    assert "mcp__*" in (cfg.disallowed_tools or ())
+    assert "Bash" in (cfg.allowed_tools or ())
+
+
+def test_node_kind_round_trips_through_serialization():
+    # node_kind must survive export/import so a remix carries its capability.
+    node = NodeDefinition(
+        node_id="draft_patch",
+        display_name="Draft",
+        prompt_template="do it",
+        output_keys=["draft_patch_output"],
+        node_kind="coding",
+    )
+    restored = NodeDefinition.from_dict(node.to_dict())
+    assert restored.node_kind == "coding"
 
 
 # --------------------------------------------------------------------------- #
@@ -201,30 +247,46 @@ def test_codex_provider_complete_fails_closed_before_spawning(monkeypatch):
     assert not spawned
 
 
-def test_enforce_os_sandbox_helper(monkeypatch):
-    # Host-trusted config: no-op regardless of sandbox availability.
-    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_OFF))
+def test_enforce_os_sandbox_requires_whole_process_attestation(monkeypatch):
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    # Host-trusted config: no-op regardless of attestation.
     enforce_os_sandbox(ModelConfig())  # must not raise
 
-    # Coding config on a no-sandbox host: fail closed.
+    # Coding config with NO attestation: fail closed.
     with pytest.raises(SandboxUnavailableError):
         enforce_os_sandbox(coding_node_model_config(timeout=60))
 
-    # Coding config WITH a sandbox: allowed.
-    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_ON))
+    # Coding config WITH attestation: allowed.
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
     enforce_os_sandbox(coding_node_model_config(timeout=60))  # must not raise
 
 
-def test_claude_provider_complete_fails_closed_before_spawning(monkeypatch):
+def test_launchable_bwrap_alone_does_not_satisfy_the_gate(monkeypatch):
+    # Codex S3 CRITICAL: a launchable bwrap proves only that bwrap CAN start a
+    # sandbox — NOT that the running claude -p subprocess is confined. With bwrap
+    # "available" but NO whole-process attestation, a coding node MUST still fail
+    # closed (a bare Linux host with working bwrap must NOT pass the gate).
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_ON))
+    with pytest.raises(SandboxUnavailableError):
+        enforce_os_sandbox(coding_node_model_config(timeout=60))
+
+
+def test_claude_coding_node_fails_closed_without_attestation(monkeypatch):
+    # FINDING 1 + FINDING 2: without the whole-process attestation, the claude
+    # coding node is REFUSED before any `claude -p` spawn — EVEN when bwrap can
+    # launch. This asserts the fail-closed refusal (not merely a probe value),
+    # replacing the old cli-args `run_cwd is None` assertion that locked in the
+    # unconfined behavior.
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_ON))
     spawned: list = []
 
     async def _fake_exec(*_a, **_k):
         spawned.append(1)
         raise AssertionError("claude must NOT spawn a coding node unconfined")
 
-    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_OFF))
     monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
-
     with pytest.raises(SandboxUnavailableError):
         asyncio.run(
             ClaudeProvider().complete("prompt", "", coding_node_model_config(timeout=60))
@@ -232,19 +294,38 @@ def test_claude_provider_complete_fails_closed_before_spawning(monkeypatch):
     assert not spawned
 
 
-def test_claude_coding_node_cli_args_strip_config_and_deny_connectors():
-    # A coding node applies --setting-sources project + the tool policy WITHOUT
-    # requiring a universe_dir (it runs in the repo checkout, confined by the OS
-    # sandbox), so _sandbox_cli_args must not fail-closed on a missing dir here.
-    cfg = coding_node_model_config(timeout=60)
-    flags, run_cwd = _sandbox_cli_args(cfg, None)
+def test_claude_coding_node_spawns_hardened_argv_under_attestation(monkeypatch):
+    # Under the whole-process attestation the coding node DOES run — and the
+    # ACTUAL spawned argv carries the hardened policy: ambient config stripped
+    # (--setting-sources project) and host connectors denied (--disallowedTools
+    # mcp__*), with coding tools pre-approved.
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    captured: list = []
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+    mock_proc.returncode = 0
+    mock_proc.kill = AsyncMock()
+    mock_proc.wait = AsyncMock()
 
-    assert "--setting-sources" in flags
-    assert flags[flags.index("--setting-sources") + 1] == "project"
-    assert "--allowedTools" in flags and "Bash" in flags
-    assert "--disallowedTools" in flags
-    assert "mcp__*" in flags and "Monitor" in flags
-    assert run_cwd is None  # repo checkout, not a pinned universe dir
+    async def _fake_exec(*args, **_kwargs):
+        captured.extend(args)
+        return mock_proc
+
+    with (
+        patch(
+            "tinyassets.providers.claude_provider._resolve_claude_cmd",
+            return_value=(["claude"], False),
+        ),
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+    ):
+        asyncio.run(
+            ClaudeProvider().complete("prompt", "", coding_node_model_config(timeout=60))
+        )
+
+    assert "--setting-sources" in captured
+    assert captured[captured.index("--setting-sources") + 1] == "project"
+    assert "--disallowedTools" in captured and "mcp__*" in captured
+    assert "--allowedTools" in captured and "Bash" in captured
 
 
 def test_router_preflight_fails_closed_and_never_dispatches(monkeypatch):
@@ -264,18 +345,20 @@ def test_router_preflight_fails_closed_and_never_dispatches(monkeypatch):
                 family="anthropic", latency_ms=1.0,
             )
 
-    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_OFF))
+    # No whole-process attestation (bwrap "available" is deliberately irrelevant).
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_ON))
     router = ProviderRouter(providers={"claude-code": FakeProvider()})
     cfg = coding_node_model_config(timeout=60)
 
     with pytest.raises(SandboxUnavailableError):
         asyncio.run(router.call("writer", "prompt", "", cfg))
     # The point: NO provider (not even a local fallback) ran the node — so a
-    # coding node can never silently produce output on a no-sandbox host.
+    # coding node can never silently produce output on an unattested host.
     assert not dispatched
 
 
-def test_router_preflight_allows_when_sandbox_available(monkeypatch):
+def test_router_preflight_allows_under_attestation(monkeypatch):
     from tinyassets.providers.base import BaseProvider, ProviderResponse
     from tinyassets.providers.router import ProviderRouter
 
@@ -292,7 +375,7 @@ def test_router_preflight_allows_when_sandbox_available(monkeypatch):
                 family="anthropic", latency_ms=1.0,
             )
 
-    monkeypatch.setattr(base_mod, "get_sandbox_status", lambda: dict(_BWRAP_ON))
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
     router = ProviderRouter(providers={"claude-code": FakeProvider()})
     cfg = coding_node_model_config(timeout=60)
 
