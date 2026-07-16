@@ -2188,13 +2188,20 @@ def _wiki_file_bug(
         # *expected* to invoke even if the enqueue helper rejects — including a
         # dead ref (handler_not_found), where the receipt keeps the dead id for
         # audit while the enqueue is refused.
-        canonical_branch_def_id, _handler_reason = (
+        # Resolve the handler ONCE here (Codex S1 latest-model Finding 3) and
+        # thread the SAME resolution into both the receipt and the enqueue —
+        # otherwise the enqueue helper re-resolves and a canonical change/removal
+        # between the two calls yields mismatched provenance (receipt says
+        # handler_not_found while the enqueue reports a different outcome).
+        resolved_branch_def_id, _handler_reason = (
             bug_investigation.resolve_investigation_handler_detail(universe_path)
         )
+        canonical_branch_def_id = resolved_branch_def_id
         if not canonical_branch_def_id and _handler_reason.startswith(
             "handler_not_found:"
         ):
-            # Record the first dead id we expected to invoke.
+            # Record the first dead id we expected to invoke (RECEIPT ONLY — the
+            # enqueue still refuses a dead ref via the empty resolution below).
             canonical_branch_def_id = (
                 _handler_reason.split(":", 1)[1].split(",")[0] or None
             )
@@ -2218,6 +2225,7 @@ def _wiki_file_bug(
                 frontmatter=frontmatter,
                 base_path=universe_path,
                 universe_id=target_universe_id,
+                resolved_branch_def_id=resolved_branch_def_id,
             )
         except Exception as _enq_exc:
             # Trigger helper raised. Update receipt then re-raise into the outer

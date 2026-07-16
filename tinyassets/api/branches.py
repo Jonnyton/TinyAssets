@@ -1791,14 +1791,25 @@ def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
                 "conditional edge outcome/target must be non-empty strings"
             )
         conditions[outcome_str] = target_str
+    # ``fallback`` pins the safe off-label branch as a SCALAR label immune to
+    # the registry's sort_keys serialization (Fable-5). It must be one of the
+    # declared outcome labels, else it's a dangling route — reject loudly.
+    fallback_str = (raw.get("fallback") or "").strip()
+    if fallback_str and fallback_str not in conditions:
+        return (
+            f"conditional edge fallback '{fallback_str}' must be one of the "
+            f"declared outcome labels {sorted(conditions)!r}"
+        )
     # Merge onto any existing edge from the same source so callers can
     # add one outcome at a time without wiping siblings.
     for existing in branch.conditional_edges:
         if existing.from_node == src:
             existing.conditions.update(conditions)
+            if fallback_str:
+                existing.fallback = fallback_str
             return ""
     branch.conditional_edges.append(
-        ConditionalEdge(from_node=src, conditions=conditions)
+        ConditionalEdge(from_node=src, conditions=conditions, fallback=fallback_str)
     )
     return ""
 
@@ -2098,12 +2109,18 @@ def _staged_branch_from_spec(
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
+    # Strip the reserved seed author so a user build can never smuggle the
+    # seeder's ownership identity onto a branch (Finding 1c) — that would make a
+    # user row look seeder-owned and expose it to the reference reconcile/prune.
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
+    spec_author = _sanitize_reserved_author(spec.get("author")).strip()
     branch = BranchDefinition(
         name=(spec.get("name") or "").strip(),
         description=spec.get("description") or "",
         domain_id=(spec.get("domain_id") or "").strip() or "workflow",
         goal_id=(spec.get("goal_id") or "").strip(),
-        author=(spec.get("author") or _current_actor()),
+        author=(spec_author or _current_actor()),
         tags=list(spec.get("tags") or []),
         skills=[],
         fork_from=spec.get("fork_from") or None,

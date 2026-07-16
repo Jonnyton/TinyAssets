@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+import pytest
+
 from tinyassets.api.branches import _staged_branch_from_spec
 from tinyassets.branch_designs import load_design_artifacts
 from tinyassets.graph_compiler import compile_branch
@@ -28,19 +30,21 @@ _SEED_STATE: dict[str, str] = {
     "intake_source": "queue://requests",
     "request_payload": "user reports the export button is broken",
     "target_repo": "example/project",
-    "credential_ref": "vault://example/gh",
     "merge_policy": "manual",
     "verify_command": "pytest -q",
     "reshape_notes": "",
 }
 
 
-def _reference_branch():
-    artifact = next(
+def _reference_spec() -> dict:
+    return next(
         a for a in load_design_artifacts()
         if a["design_id"] == "patch_loop_reference"
-    )
-    branch, errors = _staged_branch_from_spec(artifact["spec"])
+    )["spec"]
+
+
+def _reference_branch():
+    branch, errors = _staged_branch_from_spec(_reference_spec())
     assert errors == [], errors
     return branch
 
@@ -70,8 +74,10 @@ def _make_provider(
     return _call
 
 
-def _run(verify_verdicts: list[str], gate_decision: str) -> tuple[list[str], dict[str, Any]]:
-    """Compile + invoke the reference branch; return (visited_node_order, final_state)."""
+def _invoke_compiled(
+    branch, verify_verdicts: list[str], gate_decision: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """Compile + invoke a branch; return (visited_node_order, final_state)."""
     visited: list[str] = []
 
     def _sink(**kw: Any) -> None:
@@ -79,13 +85,19 @@ def _run(verify_verdicts: list[str], gate_decision: str) -> tuple[list[str], dic
             visited.append(kw.get("node_id"))
 
     compiled = compile_branch(
-        _reference_branch(),
+        branch,
         provider_call=_make_provider(verify_verdicts, gate_decision),
         event_sink=_sink,
     )
-    app = compiled.graph.compile()
-    result = app.invoke(dict(_SEED_STATE), config={"recursion_limit": 50})
+    result = compiled.graph.compile().invoke(
+        dict(_SEED_STATE), config={"recursion_limit": 50},
+    )
     return visited, dict(result)
+
+
+def _run(verify_verdicts: list[str], gate_decision: str) -> tuple[list[str], dict[str, Any]]:
+    """Compile + invoke the STAGED reference branch (never crosses persistence)."""
+    return _invoke_compiled(_reference_branch(), verify_verdicts, gate_decision)
 
 
 # ── Safety semantics ────────────────────────────────────────────────────────
@@ -162,3 +174,93 @@ def test_reshape_owner_gate_routes_back_to_draft_and_never_merge():
     assert visited[first_gate + 1] == "draft_patch", visited
     assert "merge" not in visited, visited
     assert not dict(result).get("merge_output"), result
+
+
+# ── Persistence-crossing safety (the durable lesson) ─────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    base = tmp_path / "data"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    return base
+
+
+def _persisted_reference_branch(data_dir):
+    """Build the reference, PERSIST it to the registry, then RELOAD it — so the
+    branch under test has crossed ``_json_dumps(sort_keys=True)``, which
+    ALPHABETIZES every conditions dict on the way to graph_json.
+
+    Durable lesson (Fable-5 CRITICAL, 2026-07-15): a routing-safety test that
+    builds via ``_staged_branch_from_spec`` alone NEVER crosses the persistence
+    boundary, so it cannot see that key-order-based fallback is destroyed by
+    ``sort_keys``. The real run path is registry -> from_dict -> compile_branch;
+    safety tests MUST cross build -> save -> load -> compile -> invoke.
+    """
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(data_dir)
+    branch, errors = _staged_branch_from_spec(_reference_spec())
+    assert errors == [], errors
+    saved = save_branch_definition(data_dir, branch_def=branch.to_dict())
+    return BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=saved["branch_def_id"])
+    )
+
+
+class TestRegistryRoundTripRoutingIsSafe:
+    """build -> save -> load -> compile -> invoke, the REAL run path. The
+    staged-only tests above never cross ``_json_dumps(sort_keys=True)``; this
+    class is the durable guard that the off-label fallback survives persistence
+    (the scalar ``fallback`` label, immune to key sorting)."""
+
+    def test_persisted_conditions_are_alphabetized_but_fallback_survives(self, data_dir):
+        branch = _persisted_reference_branch(data_dir)
+        verify_ce = next(
+            c for c in branch.conditional_edges if c.from_node == "verify"
+        )
+        gate_ce = next(
+            c for c in branch.conditional_edges if c.from_node == "owner_gate"
+        )
+        # sort_keys reordered the safe-first authoring order at the DB layer...
+        assert list(verify_ce.conditions.keys()) == ["green", "red"]
+        assert list(gate_ce.conditions.keys()) == ["approve", "reject", "reshape"]
+        # ...but the scalar fallback survived and still pins the SAFE branch.
+        assert verify_ce.fallback == "red"
+        assert gate_ce.fallback == "reject"
+
+    def test_offlabel_verify_routes_to_draft_across_persistence(self, data_dir):
+        # An off-label verdict ("orange": capitalization/synonym/truncation) must
+        # route to draft_patch, NEVER present — across the persistence boundary.
+        branch = _persisted_reference_branch(data_dir)
+        visited, result = _invoke_compiled(
+            branch, verify_verdicts=["orange", "green"], gate_decision="maybe",
+        )
+        first_verify = visited.index("verify")
+        assert visited[first_verify + 1] == "draft_patch", visited
+        assert "present" not in visited[: first_verify + 1], visited
+
+    def test_offlabel_decision_routes_to_end_across_persistence(self, data_dir):
+        # An off-label decision ("maybe") must route to END, NEVER merge.
+        branch = _persisted_reference_branch(data_dir)
+        visited, result = _invoke_compiled(
+            branch, verify_verdicts=["green"], gate_decision="maybe",
+        )
+        assert "present" in visited, visited
+        assert "owner_gate" in visited, visited
+        assert "merge" not in visited, visited
+        assert not result.get("merge_output"), result
+
+    def test_happy_path_survives_persistence(self, data_dir):
+        branch = _persisted_reference_branch(data_dir)
+        visited, result = _invoke_compiled(
+            branch, verify_verdicts=["green"], gate_decision="approve",
+        )
+        assert "present" in visited and "merge" in visited, visited
+        assert result.get("merge_output"), result

@@ -594,19 +594,34 @@ class ConditionalEdge:
 
     Maps outcomes to target nodes. The routing function is determined
     by the source node's evaluation at runtime.
+
+    ``fallback`` is the SCALAR outcome label the router selects when the
+    source node emits an off-label routing value. It must be a scalar (not a
+    dict) because the registry serializes ``graph_json`` through
+    ``_json_dumps(sort_keys=True)`` — dict-key insertion order does NOT
+    survive persistence, so relying on "the first condition key is the safe
+    branch" is defeated at the save/load boundary (a rejected patch could then
+    MERGE). A scalar label is immune to key sorting and pins the safe fallback
+    explicitly. When empty, the router keeps the legacy first-key behavior for
+    back-compat with pre-existing branches.
     """
 
     from_node: str
     conditions: dict[str, str] = field(default_factory=dict)
+    fallback: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"from": self.from_node, "conditions": self.conditions}
+        out: dict[str, Any] = {"from": self.from_node, "conditions": self.conditions}
+        if self.fallback:
+            out["fallback"] = self.fallback
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ConditionalEdge:
         return cls(
             from_node=data.get("from", data.get("from_node", "")),
             conditions=data.get("conditions", {}),
+            fallback=(data.get("fallback") or "").strip(),
         )
 
 
@@ -1115,6 +1130,16 @@ class BranchDefinition:
                         f"'{ce.from_node}' is not defined."
                     )
                 adjacency.setdefault(ce.from_node, set()).add(target)
+            # A declared off-label fallback must be one of the outcome labels
+            # (it's a path_map KEY, not a target) — a dangling fallback would
+            # KeyError at route time. Fable-5: validate on the persisted shape
+            # too, since from_dict bypasses the build-time authoring check.
+            if ce.fallback and ce.fallback not in ce.conditions:
+                errors.append(
+                    f"Conditional edge fallback '{ce.fallback}' from "
+                    f"'{ce.from_node}' is not one of its outcome labels "
+                    f"{sorted(ce.conditions)!r}."
+                )
 
         # Orphan detection: check all graph nodes are reachable from entry point
         if self.entry_point and seen_graph:
@@ -1323,7 +1348,11 @@ class BranchDefinition:
         forked = BranchDefinition.from_dict(self.to_dict())
         forked.branch_def_id = _new_id()
         forked.name = new_name or f"{self.name} (fork)"
-        forked.author = author
+        # A fork records the FORKING user as author; the reserved seed identity
+        # must never propagate or be smuggled in (Finding 1c).
+        from tinyassets.branch_designs import _sanitize_reserved_author
+
+        forked.author = _sanitize_reserved_author(author) or "anonymous"
         forked.version = 1
         forked.parent_def_id = self.branch_def_id
         forked.published = False

@@ -6,7 +6,7 @@
   "provenance": "TinyAssets reference design — docs/design-notes/2026-07-15-user-patch-loop-reference-design.md",
   "spec": {
     "name": "Patch Loop (reference design)",
-    "description": "Turn user comments and patch requests for YOUR project into ready-to-merge pull requests on YOUR repository. This reference is repo-blind: it carries no repository identity. Remix it, then bind your own target_repo + credential_ref (per-universe vault), choose a merge_policy (manual / auto / timer; manual supports owner-OAuth-per-merge), and point intake_source at your project's request stream. A remix with no binding is inert. Output contract: a ready-to-merge PR (branch + passing verify + description linking the originating request) queued for the owner's review — approve / reshape (send back with notes) / reject, from any surface.",
+    "description": "Turn user comments and patch requests for YOUR project into ready-to-merge pull requests on YOUR repository. This reference is repo-blind: it carries no repository identity. Remix it, then bind your own target_repo (the owner/repo destination) and choose a merge_policy (manual / auto / timer; manual supports owner-OAuth-per-merge), and point intake_source at your project's request stream. Credentials are NOT part of this design and never appear in state or prompts: the GitHub effector resolves the push credential from the per-universe vault BY DESTINATION at write time, never exposing a handle to the model. A remix with no binding is inert. Output contract: a ready-to-merge PR (branch + passing verify + description linking the originating request) queued for the owner's review — approve / reshape (send back with notes) / reject, from any surface.",
     "entry_point": "intake",
     "node_defs": [
       {
@@ -35,7 +35,7 @@
       {
         "node_id": "present",
         "display_name": "Open PR + queue for owner review",
-        "prompt_template": "Open (or update) the pull request on target_repo={target_repo} using the bound credential credential_ref={credential_ref}, and queue it on the owner's review surface with a plain-language summary: what the user asked, what the patch changes, verification evidence. PR must be ready-to-merge. Verified patch: {verify_output}"
+        "prompt_template": "Open (or update) the pull request on target_repo={target_repo} via the github_pull_request effector — the effector resolves the push credential from the universe vault BY DESTINATION (owner/repo); never place a credential in state or this prompt. Queue the PR on the owner's review surface with a plain-language summary: what the user asked, what the patch changes, verification evidence. PR must be ready-to-merge. Verified patch: {verify_output}"
       },
       {
         "node_id": "owner_gate",
@@ -46,7 +46,7 @@
       {
         "node_id": "merge",
         "display_name": "Merge on approval",
-        "prompt_template": "Merge the approved PR on target_repo={target_repo} via the merge effector with the bound credential credential_ref={credential_ref}, honoring branch protection and the expected head SHA. Record the merge receipt linking back to the originating user request. Approval: {owner_gate_output}"
+        "prompt_template": "Merge the approved PR on target_repo={target_repo} via the merge effector — the effector resolves the push credential from the universe vault BY DESTINATION, never a model-visible handle — honoring branch protection and the expected head SHA. Record the merge receipt linking back to the originating user request. Approval: {owner_gate_output}"
       }
     ],
     "edges": [
@@ -60,18 +60,19 @@
     "conditional_edges": [
       {
         "from": "verify",
-        "conditions": {"red": "draft_patch", "green": "present"}
+        "conditions": {"red": "draft_patch", "green": "present"},
+        "fallback": "red"
       },
       {
         "from": "owner_gate",
-        "conditions": {"reject": "END", "reshape": "draft_patch", "approve": "merge"}
+        "conditions": {"reject": "END", "reshape": "draft_patch", "approve": "merge"},
+        "fallback": "reject"
       }
     ],
     "state_schema": [
       {"name": "intake_source", "type": "str"},
       {"name": "request_payload", "type": "str"},
       {"name": "target_repo", "type": "str"},
-      {"name": "credential_ref", "type": "str"},
       {"name": "merge_policy", "type": "str"},
       {"name": "verify_command", "type": "str"},
       {"name": "reshape_notes", "type": "str"},

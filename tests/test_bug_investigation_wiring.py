@@ -300,3 +300,45 @@ def test_wiki_file_bug_returns_failed_trigger_receipt_on_enqueue_error(
         "class": "RuntimeError",
         "message": "dispatcher rejected",
     }
+
+
+def test_wiki_file_bug_resolves_handler_once_shared_provenance(tmp_path, monkeypatch):
+    """Codex S1 latest-model Finding 3: the handler is resolved ONCE at the
+    entry point and threaded into BOTH the receipt and the enqueue. A resolver
+    that flips between calls must not yield mismatched provenance — the receipt
+    and the enqueue must reflect the SAME (first) resolution, and the resolver
+    must be called exactly once."""
+    from unittest.mock import MagicMock
+
+    import tinyassets.bug_investigation as bi
+    from tinyassets.api import wiki as wiki_api
+
+    wiki_root = tmp_path / "wiki"
+    data_root = tmp_path / "data"
+    wiki_api._ensure_wiki_scaffold(wiki_root)
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+
+    # The resolver would return DIFFERENT handlers on successive calls — a
+    # canonical change/removal racing the filing. With the single-resolution
+    # fix only the FIRST is ever observed.
+    resolver = MagicMock(side_effect=[("handler-ONE", "ok"), ("handler-TWO", "ok")])
+    monkeypatch.setattr(bi, "resolve_investigation_handler_detail", resolver)
+
+    captured: dict[str, str] = {}
+
+    def _fake_enqueue(*, bug_ref, canonical_branch_def_id, base_path, universe_id=""):
+        captured["branch_def_id"] = canonical_branch_def_id
+        return "req-shared"
+
+    monkeypatch.setattr(bi, "enqueue_investigation_request", _fake_enqueue)
+
+    import json as _json
+
+    result = _json.loads(wiki_api._wiki_file_bug(
+        component="engine", severity="minor", title="resolution race", observed="boom",
+    ))
+
+    assert resolver.call_count == 1                        # SINGLE resolution
+    assert result["trigger"]["branch_def_id"] == "handler-ONE"   # receipt = call-1
+    assert captured["branch_def_id"] == "handler-ONE"     # enqueue = SAME resolution

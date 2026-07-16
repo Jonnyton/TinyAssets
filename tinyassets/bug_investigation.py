@@ -276,6 +276,7 @@ def _maybe_enqueue_investigation(
     frontmatter: dict,
     base_path: "Path | str",
     universe_id: str = "",
+    resolved_branch_def_id: str | None = None,
 ) -> str | None:
     """Forward-trigger seam for `_wiki_file_bug` post-write.
 
@@ -298,12 +299,22 @@ def _maybe_enqueue_investigation(
     from error. Swallows dispatcher-rejection (RuntimeError) and
     bad-input (ValueError) so a filing never breaks because of
     investigation-pipeline misconfiguration.
+
+    Single-resolution (Codex S1 latest-model Finding 3): the caller resolves the
+    handler ONCE (for the receipt) and threads it in via
+    ``resolved_branch_def_id`` so the receipt and the enqueue reflect the SAME
+    resolution — a canonical change/removal between two separate resolutions
+    would otherwise yield mismatched provenance. When ``None`` (other callers)
+    this resolves internally as before.
     """
     if not bug_id:
         _logger.info("_maybe_enqueue_investigation | skipped | missing bug_id")
         return None
 
-    canonical_branch_def_id = _resolve_investigation_handler(base_path)
+    if resolved_branch_def_id is None:
+        canonical_branch_def_id = _resolve_investigation_handler(base_path)
+    else:
+        canonical_branch_def_id = resolved_branch_def_id
     if not canonical_branch_def_id:
         return None
 

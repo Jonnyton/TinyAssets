@@ -20,6 +20,7 @@ identity — binding a repo/credential is a user act at remix time.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -34,7 +35,51 @@ DESIGNS_DIR = Path(__file__).parent
 DESIGN_FORMAT = "tinyassets.branch_design/v1"
 REFERENCE_TAG = "reference-design"
 
+# The seeder's ownership signal is a RESERVED system author, NOT the design tag.
+# Tags are user-controllable: a fork INHERITS the source's tags and users can
+# submit arbitrary tags (Codex S1 latest-model Finding 1). Reconciling by tag
+# alone let a reseed treat a user's remix as "the reference row" and overwrite /
+# delete it — user data loss. ``author`` does NOT propagate on fork (``fork()``
+# records the FORKING user), and the user-facing build/fork paths strip this
+# reserved value (see ``_sanitize_reserved_author``), so it cannot be smuggled.
+# Reconcile + prune only ever touch rows carrying BOTH the reserved author and
+# the reserved deterministic id below; a user row that merely shares the tag is
+# invisible to the seeder.
+RESERVED_SEED_AUTHOR = "reference-designs"
+
 _REQUIRED_ENVELOPE_KEYS = ("design_format", "design_id", "design_version", "spec")
+# Top-level envelope keys the artifact loader accepts. Anything else is a typo
+# or a forward-compat field the current loader does not understand — reject it
+# loudly (Codex S1 latest-model Finding 4b) rather than silently ignore it.
+# NOTE: ``node_kind`` is a NODE field inside ``spec.node_defs[]`` (carried as
+# data for the S3 enforcement slice), NOT a top-level key, so it is unaffected.
+_ALLOWED_ENVELOPE_KEYS = frozenset(
+    {"design_format", "design_id", "design_version", "title", "provenance", "spec"}
+)
+
+
+def _reference_branch_id(design_id: str, design_version: int) -> str:
+    """Deterministic, RESERVED branch_def_id for a seeded reference design.
+
+    Two jobs: (1) concurrency safety — ``save_branch_definition`` is
+    ``INSERT OR REPLACE`` keyed on ``branch_def_id``, so two concurrent seeds
+    (threads OR multi-worker processes) that both target this fixed id UPSERT
+    to one row instead of minting duplicates (Codex S1 latest-model Finding 5);
+    (2) unspoofable identity — ``branch_def_id`` is server-assigned on every
+    build/fork (users cannot set it), so a user can never occupy this id. Same
+    12-hex shape as ``_new_id`` so it round-trips every id-shaped consumer.
+    """
+    digest = hashlib.sha256(
+        f"tinyassets.reference-design:{design_id}@v{int(design_version)}".encode()
+    ).hexdigest()
+    return digest[:12]
+
+
+def _sanitize_reserved_author(author: str | None) -> str:
+    """Strip the reserved seed author from a user-supplied value so it cannot be
+    smuggled onto a user branch via build/fork/import (Finding 1c). Returns ""
+    when the value is the reserved author, else the value unchanged."""
+    return "" if (author or "").strip() == RESERVED_SEED_AUTHOR else (author or "")
 
 
 @contextmanager
@@ -52,6 +97,13 @@ def _pinned_data_dir(base_path: str | Path) -> Iterator[None]:
     Exception-safe: the prior value is always restored (or the key unset if it
     was absent) on exit, including on failure — the seeder must never leave the
     process's data-dir resolution mutated.
+
+    STARTUP-ONLY: this mutates a process-GLOBAL env var. Seeding runs on the
+    single-threaded startup seam before request handlers exist, so the mutation
+    is not observable. A future RUNTIME re-seed would race concurrent request
+    handlers over ``TINYASSETS_DATA_DIR`` — do not call the seeder off the
+    startup path without first replacing this env pin with a call-scoped
+    resolver override.
     """
     key = "TINYASSETS_DATA_DIR"
     prior = os.environ.get(key)
@@ -83,6 +135,16 @@ def load_design_artifacts() -> list[dict[str, Any]]:
         if missing:
             raise ValueError(
                 f"branch design artifact {path.name} missing envelope keys: {missing}"
+            )
+        # Reject unknown TOP-LEVEL fields — a typo (``design_verison``) or a
+        # forward-compat field this loader can't honor must fail loudly, not be
+        # silently accepted (Finding 4b). node_kind lives in spec.node_defs[],
+        # not here, so it is unaffected.
+        unknown = sorted(set(data) - _ALLOWED_ENVELOPE_KEYS)
+        if unknown:
+            raise ValueError(
+                f"branch design artifact {path.name} has unknown top-level "
+                f"fields: {unknown} (allowed: {sorted(_ALLOWED_ENVELOPE_KEYS)})"
             )
         if data["design_format"] != DESIGN_FORMAT:
             raise ValueError(
@@ -128,6 +190,17 @@ def _content_fingerprint(branch_dict: dict) -> str:
     branch_def_id, so two branches with identical content — but different ids —
     fingerprint the same. Detects same-count content drift (a corrupted prompt),
     which a bare topology-count check misses (Codex S1 review).
+
+    node_kind note: the artifact intentionally carries ``node_kind`` on coding
+    nodes as data for the S3 enforcement slice. On S1 alone, ``build_branch``
+    drops it (``NodeDefinition`` has no such field yet) AND ``_canonical_snapshot``
+    normalizes node_defs through ``NodeDefinition`` — so node_kind is absent from
+    BOTH the seeded content and this fingerprint: no perpetual drift on S1. When
+    S3 (bundled into the same deploy) adds the ``NodeDefinition.node_kind`` field
+    + build threading, the fingerprint WILL include node_kind, so the old
+    S1-seeded row (no node_kind) drifts from the S3 authoritative build and the
+    reseed drift-repair heals it in place. The artifact contract is honored at
+    the bundled deploy.
     """
     from tinyassets.branch_versions import _canonical_snapshot, compute_content_hash
 
@@ -182,9 +255,9 @@ def _reference_row_is_healthy(
 def _overwrite_reference_content(
     base_path: str | Path, target_id: str, source_id: str,
 ) -> None:
-    """Copy the authoritative branch content onto an existing id (same-id repair),
-    so a drifted/partial reference is healed without changing its id or minting a
-    duplicate row."""
+    """Copy the authoritative branch content onto the canonical reserved id (an
+    ``INSERT OR REPLACE`` upsert), stamping the RESERVED author so the row is
+    recognizable as seeder-owned. Concurrent seeds converge on ``target_id``."""
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition, save_branch_definition
 
@@ -192,21 +265,41 @@ def _overwrite_reference_content(
         get_branch_definition(base_path, branch_def_id=source_id)
     )
     branch.branch_def_id = target_id
+    branch.author = RESERVED_SEED_AUTHOR
     branch.published = True
     save_branch_definition(base_path, branch_def=branch.to_dict())
 
 
-def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
-    """Idempotently ensure every packaged reference design exists, matches the
-    repo artifact, and is published/remixable in the commons.
+def _get_branch_or_none(base_path: str | Path, branch_def_id: str) -> dict | None:
+    """Return the branch row, or None when it does not exist."""
+    from tinyassets.daemon_server import get_branch_definition
 
-    Strategy: build the authoritative branch from each artifact, fingerprint it,
-    then reconcile against any existing tagged row — a healthy match is left as
-    ``present`` (temp build discarded); a drifted or partially-published row is
-    REPAIRED in place (content overwritten from the authoritative build, then
-    published); a fresh install is seeded. Returns ``{"seeded", "present",
+    try:
+        return get_branch_definition(base_path, branch_def_id=branch_def_id)
+    except KeyError:
+        return None
+
+
+def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
+    """Idempotently ensure every packaged reference design exists at its
+    canonical RESERVED id, matches the repo artifact, and is published/remixable.
+
+    Identity model (Finding 1): the reference lives at a deterministic
+    ``_reference_branch_id`` (unspoofable — users cannot set branch_def_id) and
+    carries the ``RESERVED_SEED_AUTHOR``. Reconcile TARGETS that fixed id only;
+    it never selects, overwrites, or deletes a row by tag. A user's remix (which
+    inherits the tag) or a hostile user-tagged branch has a different id + a
+    user author, so it is INVISIBLE to the seeder — no user data loss.
+
+    Concurrency (Finding 5): the fixed id + ``INSERT OR REPLACE`` upsert makes
+    two concurrent seeds converge on one row (no duplicates, no crash).
+
+    Strategy per design: build the authoritative branch via the ordinary user
+    composite path (validation + fingerprint), then ensure the canonical
+    reserved-id row matches + is published — healthy => ``present``, missing or
+    drifted => overwrite+publish (``seeded``). Returns ``{"seeded", "present",
     "failed"}`` of design tags. Failures log loudly but never raise — a broken
-    seed must not take down server startup (the canary + logs surface it).
+    seed must not take down startup (the canary + logs surface it).
     """
     from tinyassets.daemon_server import (
         delete_branch_definition,
@@ -224,11 +317,25 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
     except Exception:  # noqa: BLE001 - the per-artifact loop will surface it
         logger.exception("reference design seeding: registry init failed")
 
-    for artifact in load_design_artifacts():
+    # A TOTAL failure to enumerate the artifacts (bad packaging, malformed JSON)
+    # must be reported loudly as ``failed`` — never a silent green {'failed': []}
+    # (Finding 5). ``load_design_artifacts`` raises by contract on a bad artifact.
+    try:
+        artifacts = load_design_artifacts()
+    except Exception:  # noqa: BLE001 - startup must survive, but LOUDLY
+        logger.exception("reference design seeding: artifact load failed")
+        results["failed"].append("<load-design-artifacts-failed>")
+        return results
+
+    for artifact in artifacts:
         tag = design_tag(artifact["design_id"], artifact["design_version"])
+        fixed_id = _reference_branch_id(
+            artifact["design_id"], artifact["design_version"]
+        )
+        correct_id = ""
         try:
-            # Build the authoritative branch first — it is both the fresh-seed
-            # artifact and the drift/health reference for an existing row.
+            # Build the authoritative branch (temp id, full user-path validation)
+            # — the drift/health reference for the canonical reserved-id row.
             correct_id = _build_reference_branch(base_path, artifact, tag)
             if not correct_id:
                 results["failed"].append(tag)
@@ -236,62 +343,57 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
             expected_fp = _content_fingerprint(
                 get_branch_definition(base_path, branch_def_id=correct_id)
             )
-            existing = [
-                r for r in list_branch_definitions(base_path, tag=tag)
-                if r.get("branch_def_id") != correct_id
-            ]
 
-            if not existing:
-                # Fresh install: the branch we just built IS the reference —
-                # promote it (it is the keeper; do NOT delete correct_id).
-                _publish_reference(base_path, correct_id, tag)
-                results["seeded"].append(tag)
-                logger.info(
-                    "reference design seeded: %s -> %s", tag, correct_id,
+            existing = _get_branch_or_none(base_path, fixed_id)
+            if existing is not None and (
+                (existing.get("author") or "") != RESERVED_SEED_AUTHOR
+            ):
+                # Unreachable via the API (ids are server-assigned), but NEVER
+                # clobber a non-reserved row occupying the reserved id — fail
+                # loud instead of overwriting possible user data.
+                logger.error(
+                    "reference id %s occupied by a non-reserved row (author=%r); "
+                    "refusing to overwrite", fixed_id, existing.get("author"),
                 )
-                continue
-
-            # Existing row(s): correct_id is a throwaway authoritative build
-            # used only as the drift/health reference. GUARANTEE its cleanup in
-            # a finally (Codex S1 round-6 Finding 2) — health-pass, repair
-            # success, AND repair failure. Otherwise a publish that raises AFTER
-            # _overwrite_reference_content leaves correct_id tagged, so the next
-            # healthy seed waves the design through as ``present`` while TWO
-            # design:...@v1 rows exist.
-            try:
-                target = existing[0]["branch_def_id"]
-                # Deterministically prune surplus tagged rows (e.g. a prior
-                # crash's leaked temp) so the reconcile converges to exactly one
-                # tagged reference — remixes carry their own ids, so any extra
-                # row still bearing the design tag is prior-seed cruft.
-                if len(existing) > 1:
-                    logger.warning(
-                        "reference design %s has %d extra tagged rows; pruning "
-                        "all but %s", tag, len(existing), target,
-                    )
-                    for extra in existing[1:]:
-                        delete_branch_definition(
-                            base_path, branch_def_id=extra["branch_def_id"],
-                        )
-
-                if _reference_row_is_healthy(base_path, expected_fp, target):
-                    results["present"].append(tag)
-                    continue
-
-                # Drifted or partially-published — repair in place from the
-                # authoritative build.
-                _overwrite_reference_content(base_path, target, correct_id)
-                _publish_reference(base_path, target, tag)
-                if _reference_row_is_healthy(base_path, expected_fp, target):
-                    logger.info("repaired reference seed %s (content/publish)", tag)
+                results["failed"].append(tag)
+            elif existing is not None and _reference_row_is_healthy(
+                base_path, expected_fp, fixed_id
+            ):
+                results["present"].append(tag)
+            else:
+                # Missing, drifted, or partially-published — (re)build the
+                # canonical reserved-id row from the authoritative content and
+                # publish. Upsert on the fixed id => concurrency-safe.
+                _overwrite_reference_content(base_path, fixed_id, correct_id)
+                _publish_reference(base_path, fixed_id, tag)
+                if _reference_row_is_healthy(base_path, expected_fp, fixed_id):
+                    logger.info("reference design seeded: %s -> %s", tag, fixed_id)
                     results["seeded"].append(tag)
                 else:
-                    logger.error("reference design %s could not be repaired", tag)
+                    logger.error("reference design %s could not be seeded", tag)
                     results["failed"].append(tag)
-            finally:
-                # Always discard the temp authoritative build. Best-effort: a
-                # cleanup failure must not mask the reconcile outcome or the
-                # loud outer failure log.
+
+            # Defensive prune: delete any OTHER rows carrying BOTH the reserved
+            # author AND this tag (a legacy random-id reserved row, or a
+            # concurrent-seed straggler). Gated on the reserved author, so a
+            # user remix/tagged branch is NEVER touched.
+            for r in list_branch_definitions(
+                base_path, author=RESERVED_SEED_AUTHOR, tag=tag,
+            ):
+                if r.get("branch_def_id") not in (fixed_id, correct_id):
+                    logger.warning(
+                        "pruning stray reserved reference row %s for %s",
+                        r.get("branch_def_id"), tag,
+                    )
+                    delete_branch_definition(
+                        base_path, branch_def_id=r["branch_def_id"],
+                    )
+        except Exception:  # noqa: BLE001 - seeding must never break startup
+            logger.exception("reference design seed CRASHED for %s", tag)
+            results["failed"].append(tag)
+        finally:
+            # Always discard the temp authoritative build (never the fixed id).
+            if correct_id and correct_id != fixed_id:
                 try:
                     delete_branch_definition(base_path, branch_def_id=correct_id)
                 except Exception:  # noqa: BLE001 - cleanup is best-effort
@@ -299,7 +401,4 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                         "reference design %s: temp build %s cleanup failed",
                         tag, correct_id,
                     )
-        except Exception:  # noqa: BLE001 - seeding must never break startup
-            logger.exception("reference design seed CRASHED for %s", tag)
-            results["failed"].append(tag)
     return results

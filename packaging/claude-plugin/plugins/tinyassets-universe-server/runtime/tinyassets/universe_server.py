@@ -2257,6 +2257,11 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+# Last reference-design seed outcome — a cheap, checkable seed-health signal
+# (Finding 5). None until the first seed runs on startup.
+_LAST_SEED_RESULT: dict[str, list[str]] | None = None
+
+
 def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
     """Idempotently re-seed the durable reference branch designs at startup —
     transport-agnostic so BOTH stdio/MCPB and Streamable-HTTP boots get the
@@ -2271,7 +2276,13 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
     Best-effort by contract: a broken seed logs loudly but NEVER raises — a
     seed failure must not take down server startup (the canary + logs surface
     it). Returns the seed results dict (``{"seeded", "present", "failed"}``).
+
+    Detectability (Finding 5): a TOTAL crash must NOT return a silent-green
+    ``{'failed': []}``. It records a ``<seed-crashed>`` marker in ``failed`` at
+    ERROR level and the result is stashed in ``_LAST_SEED_RESULT`` so an
+    operator / health surface can read the last seed outcome.
     """
+    global _LAST_SEED_RESULT
     try:
         from tinyassets.api.helpers import _base_path
         from tinyassets.branch_designs import seed_reference_designs
@@ -2281,10 +2292,18 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
             logger.error("reference design seeding had failures: %s", results)
         else:
             logger.info("reference design seeding: %s", results)
-        return results
     except Exception:  # noqa: BLE001 - startup must survive seed failure
         logger.exception("reference design seeding crashed")
-        return {"seeded": [], "present": [], "failed": []}
+        results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
+    _LAST_SEED_RESULT = results
+    return results
+
+
+def last_seed_result() -> dict[str, list[str]] | None:
+    """The most recent reference-design seed outcome, or None if seeding has not
+    run yet. Checkable seed-health signal (Finding 5) — a non-empty ``failed``
+    means the last boot's commons seed did not fully succeed."""
+    return _LAST_SEED_RESULT
 
 
 def main(

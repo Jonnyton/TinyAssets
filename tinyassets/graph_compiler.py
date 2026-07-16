@@ -2601,6 +2601,7 @@ def _build_node(
 def _build_conditional_router(
     source_node: NodeDefinition | None,
     conditions: dict[str, str],
+    declared_fallback: str = "",
 ) -> Callable[[dict[str, Any]], str]:
     """Return a LangGraph-compatible router function.
 
@@ -2610,8 +2611,17 @@ def _build_conditional_router(
     a target node directly makes LangGraph raise ``KeyError`` (the
     target isn't a path_map key). Conditions IS the path_map here, so
     the router reads the state's output_key and returns it verbatim
-    when it's a valid label; otherwise falls back to the first declared
-    label so the graph cannot hang on a missing/malformed output.
+    when it's a valid label; otherwise falls back to the declared fallback.
+
+    Off-label fallback selection (Fable-5 CRITICAL, 2026-07-15): the fallback
+    MUST be the edge's explicitly declared ``fallback`` label when present —
+    NOT ``next(iter(conditions))``. The registry serializes ``conditions``
+    through ``_json_dumps(sort_keys=True)``, which ALPHABETIZES the keys, so
+    "the first condition key is the safe branch" does not survive save/load
+    (e.g. verify ``{red, green}`` persists as ``{green, red}`` -> an off-label
+    verdict would route to ``present``; owner_gate would MERGE on any off-label
+    decision). A declared scalar fallback is immune to key sorting. First-key
+    is kept ONLY as the last resort for legacy edges that declare no fallback.
 
     Rationale for returning-label-not-target: matches
     ``graph.add_conditional_edges(..., path_map=conditions)`` semantics.
@@ -2624,8 +2634,13 @@ def _build_conditional_router(
     if source_node and source_node.output_keys:
         output_key = source_node.output_keys[0]
 
-    # Fallback must be a LABEL (path_map key), not a target.
-    fallback = next(iter(conditions.keys()), END)
+    # Fallback must be a LABEL (path_map key), not a target. Prefer the
+    # explicitly declared fallback (persistence-order-independent); fall back
+    # to the first declared label only when no fallback is declared.
+    if declared_fallback and declared_fallback in conditions:
+        fallback = declared_fallback
+    else:
+        fallback = next(iter(conditions.keys()), END)
 
     def _route(state: dict[str, Any]) -> str:
         if not output_key:
@@ -2634,8 +2649,8 @@ def _build_conditional_router(
         if not isinstance(value, str):
             value = str(value)
         # Return the label when it's a valid path_map key; otherwise
-        # fall back to the first declared label so the graph advances
-        # rather than KeyError-ing.
+        # fall back to the declared safe label so the graph advances
+        # rather than KeyError-ing — and never drifts to an unsafe branch.
         if value in conditions:
             return value
         return fallback
@@ -2816,7 +2831,9 @@ def compile_branch(
             label: (END if tgt == "END" else tgt)
             for label, tgt in cedge.conditions.items()
         }
-        router = _build_conditional_router(source_def, conditions)
+        router = _build_conditional_router(
+            source_def, conditions, getattr(cedge, "fallback", ""),
+        )
         graph.add_conditional_edges(cedge.from_node, router, conditions)
 
     return CompiledBranch(
