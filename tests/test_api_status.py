@@ -104,6 +104,22 @@ def test_get_status_returns_versioned_contract_keys(status_env):
     assert parsed["schema_version"] == 1
 
 
+def test_sandbox_status_surfaces_attestation_and_prod_runnability(status_env, monkeypatch):
+    # Codex latest-model FINDING 5c: sandbox_status must expose the whole-process
+    # OS-isolation attestation (not just bwrap_available) + that coding nodes are
+    # fail-closed in prod when it is unset.
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    sb = json.loads(get_status())["sandbox_status"]
+    assert sb["os_sandbox_attested"] is False
+    assert sb["coding_nodes_runnable"] is False
+    assert "coding_nodes_note" in sb  # loud statement of the fail-closed design
+
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    sb2 = json.loads(get_status())["sandbox_status"]
+    assert sb2["os_sandbox_attested"] is True
+    assert sb2["coding_nodes_runnable"] is True
+
+
 def test_get_status_active_host_shape(status_env):
     parsed = json.loads(get_status())
     host = parsed["active_host"]

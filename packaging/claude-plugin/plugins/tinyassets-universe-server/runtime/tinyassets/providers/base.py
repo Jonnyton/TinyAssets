@@ -178,17 +178,21 @@ _SANITIZED_ENV_ALLOWLIST: tuple[str, ...] = (
     "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER",
 )
 
-# The ONLY auth env vars a given provider's coding job legitimately needs. A
-# codex job gets codex auth, a claude job gets claude auth — never the other's,
-# and never any unrelated secret. API-key vars are honored only under the
-# subscription opt-in (see api_key_providers_enabled).
-_PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
-    "codex": ("CODEX_HOME", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
+# Env keys whose PRESENCE means the per-universe vault supplied auth for this
+# provider (used to fail closed when a coding job has no owner-scoped credential).
+_PROVIDER_VAULT_AUTH_KEYS: dict[str, tuple[str, ...]] = {
+    "codex": ("CODEX_HOME", "OPENAI_API_KEY"),
     "claude-code": (
-        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
-        "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY",
     ),
 }
+
+
+def _has_provider_vault_auth(env: dict[str, str], provider_name: str) -> bool:
+    """True if *env* carries per-universe vault auth for *provider_name*."""
+    return any(
+        k in env for k in _PROVIDER_VAULT_AUTH_KEYS.get(provider_name.strip(), ())
+    )
 
 
 def sanitized_subprocess_env(
@@ -196,41 +200,37 @@ def sanitized_subprocess_env(
 ) -> dict[str, str]:
     """Minimal-allowlist env for a SANDBOX-REQUIRED coding-node subprocess.
 
-    Defense in depth (Codex S3 round-3): even under host OS-isolation attestation
-    the child runs with real Bash/Read tools, and a naive full-env copy would let
-    a hostile coding node ``env``-dump the daemon's ENTIRE environment — every
-    other provider's subscription auth, ``TINYASSETS_*``/``WORKOS_*``/``GITHUB_*``
-    secrets, and cross-tenant config. Attestation asserts host-level isolation
-    (mounts/network are the container's job); this makes an "attested but hostile
-    node" unable to read OTHER tenants' / OTHER providers' secrets from ENV.
+    Defense in depth (Codex S3 rounds 3+latest): even under host OS-isolation
+    attestation the child runs with real Bash/Read tools, and a naive full-env
+    copy would let a hostile coding node ``env``-dump the daemon's ENTIRE
+    environment. Two rules:
 
-    Built from a tiny allowlist + ONLY the target provider's own auth (host env
-    keys + per-universe vault overrides). Everything else is dropped by
-    construction. Pair with a per-job scratch cwd (see
-    :func:`sandbox_spawn_env_and_dir`).
+    1. **Allowlist only** — the env is a tiny non-secret allowlist (PATH/HOME/…);
+       every other var (all ``TINYASSETS_*``/``WORKOS_*``/``GITHUB_*`` secrets,
+       every other provider's auth) is dropped by construction.
+    2. **Per-universe vault auth ONLY** (latest-model FINDING 2) — the auth
+       overlaid is EXCLUSIVELY the universe's own vault credential for this
+       provider; the process-global subscription homes/tokens (the platform's
+       CODEX_HOME / CLAUDE_* on the shared volume) are NEVER passed. So the only
+       credential a hostile node could print is the OWNER'S own; platform
+       credentials are never exposed. (The full scoped-credential broker is the
+       deferred production fix — see the attestation prerequisites.)
+
+    A spawn with no vault auth for the provider is refused upstream in
+    :func:`sandbox_spawn_env_and_dir`. Pair with a per-job scratch cwd.
     """
     src = os.environ
     env: dict[str, str] = {k: src[k] for k in _SANITIZED_ENV_ALLOWLIST if k in src}
-    opted_in = api_key_providers_enabled()
-    for key in _PROVIDER_AUTH_ENV_KEYS.get(provider_name.strip(), ()):
-        if key not in src:
-            continue
-        # API-key auth only when the host deliberately enabled it.
-        if key in API_KEY_PROVIDER_ENV_VARS and not opted_in:
-            continue
-        env[key] = src[key]
-    # Overlay ONLY this provider's per-universe vault auth (never a global, never
-    # the other provider's key). The vault BYO API key is overlaid only under the
-    # same opt-in as host-env keys (Codex S3 round-4): apply_provider_auth_env
-    # ALWAYS re-adds the vault OPENAI/ANTHROPIC key otherwise, silently defeating
-    # both the opt-in and the subscription-only default for a sandbox spawn.
+    # Overlay ONLY this provider's per-universe vault auth — never process-global
+    # platform creds, never the other provider's key. The vault BYO API key is
+    # overlaid only under the subscription opt-in (round-4).
     try:
         from tinyassets.credential_vault import apply_provider_auth_env
 
         apply_provider_auth_env(
             env, provider_name,
             universe_dir=universe_dir,
-            include_api_keys=opted_in,
+            include_api_keys=api_key_providers_enabled(),
         )
     except ValueError:
         raise
@@ -268,15 +268,27 @@ def sandbox_spawn_env_and_dir(
 ) -> tuple[dict[str, str], str | None]:
     """Return ``(proc_env, scratch_dir)`` for a provider subprocess spawn.
 
-    Sandbox-required (coding) node → a SANITIZED minimal env + a fresh per-job
-    scratch dir (caller pins cwd there and removes it after). Otherwise the
-    normal provider env and ``None`` (no behavior change for host-trusted calls).
+    Sandbox-required (coding) node → a SANITIZED minimal env (per-universe vault
+    auth ONLY) + a fresh per-job scratch dir (caller pins cwd there and removes it
+    after). Otherwise the normal provider env and ``None`` (no behavior change for
+    host-trusted calls).
+
+    Fail closed (latest-model FINDING 2): if the sanitized env carries no
+    per-universe vault auth for the provider, refuse — a coding job must run on
+    the owner's own scoped credential, never fall back to platform-global auth.
     """
     if getattr(config, "os_sandbox_required", False):
-        return (
-            sanitized_subprocess_env(provider_name, universe_dir=universe_dir),
-            new_sandbox_job_dir(),
-        )
+        env = sanitized_subprocess_env(provider_name, universe_dir=universe_dir)
+        if not _has_provider_vault_auth(env, provider_name):
+            raise SandboxUnavailableError(
+                f"Sandbox-required coding node has no per-universe vault auth for "
+                f"provider '{provider_name}'. Refusing to run it on the platform's "
+                "process-global subscription credentials (fail closed) — a coding "
+                "job must use the owner's own vault-scoped credential. Deposit the "
+                "provider's auth into the universe vault, or use a design-only "
+                "branch."
+            )
+        return env, new_sandbox_job_dir()
     return (
         subprocess_env_for_provider(provider_name, universe_dir=universe_dir),
         None,
@@ -755,6 +767,20 @@ def os_sandbox_attested() -> bool:
     sandbox-required coding node fails closed at run time BY DESIGN until such a
     host exists. Do not set it as a convenience; that re-opens the exact
     exfiltration vector the gate closes.
+
+    ``TINYASSETS_OS_SANDBOX_ATTESTED`` may ONLY be set when a real per-job runner
+    provides ALL of (Codex latest-model FINDING 3, the deferred production
+    enabler — NOT built in this slice):
+      (a) a prepared per-job repo checkout (the job's own working tree),
+      (b) tenant/host path invisibility (no /data, no other tenants, no platform
+          source visible to the job),
+      (c) restricted network egress,
+      (d) resource limits (cpu/mem/pids/time), and
+      (e) scoped credential brokering — the job sees ONLY its own owner-scoped
+          credential, never platform-global auth (see sanitized_subprocess_env /
+          FINDING 2).
+    Until a runner enforces all five, coding nodes stay fail-closed in prod — that
+    is the design, stated loudly.
     """
     return _truthy_env(os.environ.get(OS_SANDBOX_ATTESTATION_ENV))
 
@@ -870,6 +896,15 @@ class BaseProvider(abc.ABC):
 
     family: str = ""
     """Model family for judge diversity enforcement."""
+
+    supports_coding_sandbox: bool = False
+    """Whether this provider DECLARES AND ENFORCES the hardened coding-sandbox
+    contract (os_sandbox attestation / bwrap self-confinement + sanitized env +
+    tool policy). Only the subprocess CLI providers (claude-code, codex) do. A
+    sandbox-required call is HARD-FILTERED to these providers before dispatch
+    (Codex latest-model FINDING 4): a text/HTTP/local provider (e.g. ollama)
+    silently ignores the hardened config and would return a fake 'patched'
+    without ever confining anything — never let it serve a coding job."""
 
     @classmethod
     def is_available(cls) -> bool:

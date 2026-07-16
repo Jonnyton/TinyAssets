@@ -121,6 +121,9 @@ class CodexProvider(BaseProvider):
 
     name = "codex"
     family = "openai"
+    # Enforces the hardened coding-sandbox contract (bwrap --full-auto
+    # self-confinement, never bypass, sanitized vault-only env). See FINDING 4.
+    supports_coding_sandbox = True
 
     @classmethod
     def is_available(cls) -> bool:

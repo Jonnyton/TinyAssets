@@ -79,6 +79,14 @@ def _sandbox_cli_args(
         # arbitrary code execution, fully bypassing the Bash deny. This strips all
         # ambient MCP + config from the hardened turn.
         flags += ["--setting-sources", "project"]
+        # STRICT empty MCP config (Codex latest-model FINDING 6). Per Anthropic's
+        # docs `--disallowedTools mcp__*` is NOT a reliable MCP block: allowedTools
+        # is additive pre-approval and MCP glob patterns are unsupported. The
+        # reliable block is `--strict-mcp-config` (ignore ALL user/project/managed
+        # MCP scopes) + `--mcp-config` pointing at an EMPTY servers config, so no
+        # MCP server can load at all. The disallowedTools mcp__* entry below stays
+        # as belt-and-braces.
+        flags += ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
     allowed = config.allowed_tools
     disallowed = config.disallowed_tools
     # ``--allowedTools``/``--disallowedTools`` are variadic (<tools...>): each
@@ -112,6 +120,9 @@ class ClaudeProvider(BaseProvider):
 
     name = "claude-code"
     family = "anthropic"
+    # Enforces the hardened coding-sandbox contract (attestation gate + sanitized
+    # vault-only env + tool policy + strict MCP config). See FINDING 4.
+    supports_coding_sandbox = True
 
     @classmethod
     def is_available(cls) -> bool:

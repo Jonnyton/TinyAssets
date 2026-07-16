@@ -946,19 +946,20 @@ def _build_prompt_template_node(
     # fast+cheap) + the node's own timeout. Built once per node. ModelConfig is
     # imported lazily so graph_compiler keeps no hard provider import.
     _node_reasoning_effort = (getattr(node, "reasoning_effort", "") or "").strip()
-    # SECURITY (patch-loop S3): decide sandbox requirement up front. A node that
-    # declares requires_sandbox — or a coding-node kind that defaults to it, e.g.
-    # the patch loop's draft_patch — runs its coding agent against a user-bound
-    # repo in our cloud, so it MUST get the hardened, OS-sandboxed ModelConfig
-    # (repo-confined, host connectors + mcp__*/Monitor denied, codex no-bypass,
-    # fail-closed when no OS sandbox exists). It must NEVER silently fall back to
-    # an unsandboxed default — that would re-open the exfiltration vector.
+    # SECURITY (patch-loop S3): the SINGLE classifier decides coding capability.
+    # A coding node (declares requires_sandbox / a coding node_kind / the
+    # draft_patch backstop) runs its coding agent against a user-bound repo, so
+    # it gets the hardened OS-sandboxed config (Bash/Write granted + confined).
+    # A NON-coding node gets the text-only config that DENIES every coding tool —
+    # so coding capability is INSEPARABLE from the sandbox requirement (Codex
+    # latest-model FINDING 1): a de-classified node is a plain text node, never an
+    # un-sandboxed coding node. A coding node must NEVER silently degrade to an
+    # unsandboxed/unhardened default — that would re-open the exfiltration vector.
     from tinyassets.sandbox_policy import (
-        node_requires_sandbox as _node_requires_sandbox,
+        node_coding_capability as _node_coding_capability,
     )
-    _node_needs_sandbox = _node_requires_sandbox(node)
+    _node_needs_sandbox = _node_coding_capability(node)
     try:
-        from tinyassets.providers.base import ModelConfig as _ModelConfig
         if _node_needs_sandbox:
             from tinyassets.sandbox_policy import (
                 coding_node_model_config as _coding_node_model_config,
@@ -968,10 +969,11 @@ def _build_prompt_template_node(
                 reasoning_effort=_node_reasoning_effort,
             )
         else:
-            _node_cfg = _ModelConfig(
-                # Floor at 1s: a sub-second node timeout (e.g. 0.5) must not
-                # become a provider timeout of 0 (int(0.5)==0 → instant timeout).
-                timeout=max(1, int(timeout_s)),
+            from tinyassets.sandbox_policy import (
+                text_node_model_config as _text_node_model_config,
+            )
+            _node_cfg = _text_node_model_config(
+                timeout=timeout_s,
                 reasoning_effort=_node_reasoning_effort,
             )
     except Exception:  # pragma: no cover - defensive; provider import is optional

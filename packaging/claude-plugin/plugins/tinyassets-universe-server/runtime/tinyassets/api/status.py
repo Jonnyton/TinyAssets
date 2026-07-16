@@ -1218,6 +1218,23 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         sandbox_status = get_sandbox_status()
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         sandbox_status = {"bwrap_available": False, "reason": f"probe_error: {exc}"}
+    # Coding-node sandbox attestation + prod runnability (Codex latest-model
+    # FINDING 5c): bwrap_available alone hid whether coding nodes can actually
+    # run. Surface the whole-process OS-isolation attestation and, when it is
+    # unset, that coding/requires_sandbox nodes are fail-closed (design).
+    try:
+        from tinyassets.providers.base import os_sandbox_attested
+        _attested = bool(os_sandbox_attested())
+    except Exception:  # noqa: BLE001
+        _attested = False
+    sandbox_status["os_sandbox_attested"] = _attested
+    sandbox_status["coding_nodes_runnable"] = _attested
+    if not _attested:
+        sandbox_status["coding_nodes_note"] = (
+            "coding / requires_sandbox nodes FAIL CLOSED here by design: "
+            "TINYASSETS_OS_SANDBOX_ATTESTED is unset (no per-job OS-isolation "
+            "runner yet). Design-only branches are unaffected."
+        )
 
     # BUG-027 — probe required static data files so operators can see which
     # files are absent in the cloud image without waiting for ASP to fail.

@@ -88,13 +88,20 @@ fi
 # enforce_os_sandbox() FAILS CLOSED unless this var is truthy — so on this
 # container (which does NOT yet provide per-job OS isolation) every coding node
 # is refused at run time BY DESIGN. That is the intended state until a host that
-# actually confines each job (container-per-job / gVisor / microVM) exists; the
-# S6 daemon-setup walkthrough expects users to hit this wall.
+# actually confines each job exists; the S6 daemon-setup walkthrough expects
+# users to hit this wall. Design-only branches are unaffected.
 #
-# Set TINYASSETS_OS_SANDBOX_ATTESTED=1 ONLY from an entrypoint that has genuinely
-# placed the whole process under real OS isolation. Setting it without that
-# isolation re-opens the exact exfiltration vector the gate closes. Do not add it
-# here as a convenience.
+# TINYASSETS_OS_SANDBOX_ATTESTED may ONLY be set by an entrypoint whose per-job
+# runner provides ALL of (the deferred production enabler — NOT built yet):
+#   (a) a prepared per-job repo checkout (the job's own working tree),
+#   (b) tenant/host path invisibility (no /data, no other tenants, no platform
+#       source visible to the job),
+#   (c) restricted network egress,
+#   (d) resource limits (cpu/mem/pids/time), and
+#   (e) scoped credential brokering — the job sees ONLY its own owner-scoped
+#       credential, never the platform-global CODEX_HOME / CLAUDE_* on /data.
+# Setting it without ALL five re-opens the exact exfiltration vector the gate
+# closes. Do not add it here as a convenience.
 
 # Codex stores auth in CODEX_HOME/auth.json. In production CODEX_HOME
 # defaults to /data/.codex so daemon + worker share one durable auth

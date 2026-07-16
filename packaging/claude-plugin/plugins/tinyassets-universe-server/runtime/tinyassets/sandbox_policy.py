@@ -101,15 +101,34 @@ def _node_attr(node: Any, name: str) -> Any:
     return getattr(node, name, None)
 
 
-def node_requires_sandbox(node: Any) -> bool:
-    """True when *node* must run with the hardened coding-node sandbox posture.
+# Tools a NON-coding (plain text-generation) node is denied. INSEPARABILITY
+# (Codex S3 latest-model FINDING 1): repo-write / coding capability (Bash, Write,
+# …) must flow from the SAME signal that mandates the sandbox. A `claude -p` with
+# no tool policy grants Bash/Read/Write BY DEFAULT — so a de-classified node
+# ("renamed + node_kind/requires_sandbox cleared") would keep coding capability
+# WITHOUT the sandbox. Closing that: a non-coding node is given a config that
+# DENIES every coding + host-escape tool, so it is a pure text node. Coding tools
+# are therefore reachable ONLY through :func:`coding_node_model_config`, which is
+# selected ONLY when :func:`node_coding_capability` is True. Capability ⟺ sandbox.
+TEXT_NODE_DISALLOWED_TOOLS: tuple[str, ...] = tuple(
+    sorted(set(CODING_NODE_ALLOWED_TOOLS) | set(CODING_NODE_DISALLOWED_TOOLS))
+)
 
-    Accepts a NodeDefinition object OR a raw node_def dict. Precedence (Codex S3
-    adapt): (1) the STABLE ``node_kind`` capability — a coding/repo-writing kind
-    is always sandbox-required, and it survives a rename so a remix cannot escape
-    by renaming the node; (2) the explicit ``requires_sandbox`` contract; (3) the
-    ``draft_patch`` node_id BACKSTOP for the current reference design (until its
-    node_def carries node_kind="coding").
+
+def node_coding_capability(node: Any) -> bool:
+    """The SINGLE classifier — True iff *node* is a coding / repo-writing node.
+
+    This one signal drives BOTH (a) the coding tool grant
+    (:func:`coding_node_model_config`, Bash/Write) and (b) the OS-sandbox
+    requirement — they are inseparable. A node that is NOT a coding node gets
+    :func:`text_node_model_config` (no coding tools at all), so clearing the
+    classification yields a plain text node, not an un-sandboxed coding node.
+
+    Accepts a NodeDefinition object OR a raw node_def dict. Precedence: (1) the
+    STABLE ``node_kind`` capability — a coding/repo-writing kind survives a
+    rename so a remix cannot escape by renaming; (2) the explicit
+    ``requires_sandbox`` contract; (3) the ``draft_patch`` node_id BACKSTOP for
+    the current reference design (until its node_def carries node_kind="coding").
     """
     node_kind = str(_node_attr(node, "node_kind") or "").strip().lower()
     if node_kind in CODING_NODE_KINDS:
@@ -120,6 +139,11 @@ def node_requires_sandbox(node: Any) -> bool:
     return node_id in SANDBOX_DEFAULT_NODE_IDS
 
 
+# Back-compat alias: the sandbox requirement and the coding capability are the
+# same predicate (that is the inseparability), so the old name maps to the new.
+node_requires_sandbox = node_coding_capability
+
+
 def coding_node_model_config(
     *, timeout: float | int, reasoning_effort: str = "",
 ) -> "Any":
@@ -127,8 +151,9 @@ def coding_node_model_config(
 
     Sets ``os_sandbox_required`` (fail closed + no bypass when no OS sandbox) and
     the coding-node tool policy (coding tools pre-approved, host-escape/connector
-    tools denied). Imported lazily so this policy module has no hard provider
-    import at module load.
+    tools denied). Selected ONLY when :func:`node_coding_capability` is True, so
+    the Bash/Write grant is inseparable from the sandbox requirement. Imported
+    lazily so this policy module has no hard provider import at module load.
     """
     from tinyassets.providers.base import ModelConfig
 
@@ -143,11 +168,32 @@ def coding_node_model_config(
     )
 
 
+def text_node_model_config(
+    *, timeout: float | int, reasoning_effort: str = "",
+) -> "Any":
+    """Build the text-only :class:`ModelConfig` for a NON-coding node.
+
+    Denies every coding + host-escape tool (no Bash/Read/Write/…), so a plain
+    prompt node is pure text generation and cannot reach repo-write capability.
+    NOT ``os_sandbox_required`` — a text node has nothing to confine.
+    """
+    from tinyassets.providers.base import ModelConfig
+
+    return ModelConfig(
+        timeout=max(1, int(timeout)),
+        reasoning_effort=(reasoning_effort or "").strip(),
+        disallowed_tools=TEXT_NODE_DISALLOWED_TOOLS,
+    )
+
+
 __all__ = [
     "CODING_NODE_ALLOWED_TOOLS",
     "CODING_NODE_DISALLOWED_TOOLS",
+    "TEXT_NODE_DISALLOWED_TOOLS",
     "CODING_NODE_KINDS",
     "SANDBOX_DEFAULT_NODE_IDS",
+    "node_coding_capability",
     "node_requires_sandbox",
     "coding_node_model_config",
+    "text_node_model_config",
 ]

@@ -275,6 +275,22 @@ class ProviderRouter:
                 alive.append(provider_name)
         return alive
 
+    def _filter_coding_capable(self, chain: list[str]) -> list[str]:
+        """Keep only providers that DECLARE AND ENFORCE the coding-sandbox
+        contract (``supports_coding_sandbox``).
+
+        Codex latest-model FINDING 4: a sandbox-required call forwards the
+        hardened config down the whole writer chain, but a text/HTTP/local
+        provider (ollama-local) ignores it and would return a fake 'patched'
+        without confining anything. Registered-but-non-capable providers are
+        excluded BEFORE dispatch; if the filter empties the chain the caller
+        fails loud (never a text-provider fake success — Hard Rule 8).
+        """
+        return [
+            name for name in chain
+            if getattr(self._providers.get(name), "supports_coding_sandbox", False)
+        ]
+
     async def call(
         self,
         role: str,
@@ -424,6 +440,26 @@ class ProviderRouter:
                     for p in dead_auth
                 )
                 chain = auth_alive
+
+        # Coding-sandbox capability filter (FINDING 4): a sandbox-required call
+        # must reach ONLY providers that enforce the hardened contract — never a
+        # text/local provider that would fake a 'patched'. Empty chain ⇒ fail loud.
+        if getattr(cfg, "os_sandbox_required", False):
+            capable = self._filter_coding_capable(chain)
+            dropped = [p for p in chain if p not in capable]
+            if dropped:
+                logger.warning(
+                    "Excluding non-coding-capable providers from sandbox-required "
+                    "role=%s chain: %s", role, dropped,
+                )
+            if not capable:
+                raise AllProvidersExhaustedError(
+                    f"Sandbox-required (coding) call for role={role!r} has no "
+                    "provider that enforces the coding-sandbox contract "
+                    "(claude-code / codex). Refusing to run it on a text/local "
+                    "provider that would fake success (fail closed)."
+                )
+            chain = capable
 
         for provider_name in chain:
             provider = self._providers.get(provider_name)
@@ -699,6 +735,21 @@ class ProviderRouter:
                 attempt_order, role,
             )
         attempt_order = auth_alive_order
+
+        # Coding-sandbox capability filter (FINDING 4) on the policy path: never
+        # try a non-coding-capable policy provider (e.g. ollama) for a
+        # sandbox-required call — it would fake a 'patched'. If that empties the
+        # order, fall through to the role chain, which re-applies the same filter
+        # and fails loud when no capable provider remains.
+        if getattr(cfg, "os_sandbox_required", False):
+            capable_order = self._filter_coding_capable(attempt_order)
+            if attempt_order and not capable_order:
+                logger.warning(
+                    "All policy providers are non-coding-capable for a "
+                    "sandbox-required role=%s; falling through to role chain.",
+                    role,
+                )
+            attempt_order = capable_order
 
         # Try policy-derived providers
         tried = 0

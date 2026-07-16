@@ -228,3 +228,65 @@ def test_validate_design_only_branch_runnable_without_attestation(ext_env):
     assert res["runnable"] is True
     assert res["sandbox_blocked"] is False
     assert res["sandbox_warnings"] == []
+
+
+# --------------------------------------------------------------------------- #
+# FINDING 5 — validate evaluates the SELECTED provider's real capability, and
+# a sandbox-check exception fails CLOSED.
+# --------------------------------------------------------------------------- #
+
+
+def test_validate_blocks_when_attested_but_no_coding_capable_provider(ext_env, monkeypatch):
+    # FINDING 5a: attestation set but NO coding-capable provider CLI on PATH →
+    # the coding node would fail closed at the provider, so validate must block.
+    us, _base = ext_env
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    bid = _build(us, node=_coding_node(), entry="draft_patch")
+
+    res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
+    assert res["sandbox_blocked"] is True
+    assert res["runnable"] is False
+    assert any("no coding-capable provider" in w for w in res["sandbox_warnings"])
+
+
+def test_validate_blocks_when_attested_codex_only_without_bwrap(ext_env, monkeypatch):
+    # FINDING 5a: the SELECTED provider's real capability includes codex's bwrap
+    # requirement — attested + codex-only + no bwrap → codex fail-closes → block.
+    import tinyassets.providers.base as base_mod
+
+    us, _base = ext_env
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/codex" if name == "codex" else None,
+    )
+    monkeypatch.setattr(
+        base_mod, "get_sandbox_status",
+        lambda: {"bwrap_available": False, "reason": "no bwrap"},
+    )
+    bid = _build(us, node=_coding_node(), entry="draft_patch")
+
+    res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
+    assert res["sandbox_blocked"] is True
+    assert res["runnable"] is False
+    assert any("bwrap" in w for w in res["sandbox_warnings"])
+
+
+def test_validate_fails_closed_on_sandbox_check_exception(ext_env, monkeypatch):
+    # FINDING 5b: an exception in the sandbox capability check must NOT swallow
+    # into runnable=true — it fails CLOSED with the error surfaced.
+    import tinyassets.providers.base as base_mod
+
+    us, _base = ext_env
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+
+    def _boom():
+        raise RuntimeError("probe blew up")
+
+    monkeypatch.setattr(base_mod, "os_sandbox_attested", _boom)
+    bid = _build(us, node=_coding_node(), entry="draft_patch")
+
+    res = _call(us, "extensions", "validate_branch", branch_def_id=bid)
+    assert res["sandbox_blocked"] is True
+    assert res["runnable"] is False
+    assert any("fail closed" in w.lower() for w in res["sandbox_warnings"])

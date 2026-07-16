@@ -96,7 +96,11 @@ def test_requires_sandbox_node_runs_with_hardened_config():
     assert "Write" not in (cfg.disallowed_tools or ())
 
 
-def test_plain_node_is_not_sandboxed_backward_compat():
+def test_plain_node_is_text_only_no_coding_capability():
+    # INSEPARABILITY (latest-model FINDING 1): a non-coding node is NOT
+    # os_sandbox_required, but it must NOT reach coding capability either — its
+    # config DENIES Bash/Write/… so `claude -p`'s default tools cannot grant repo
+    # write to a plain node. Coding tools flow ONLY from the coding classifier.
     node = NodeDefinition(
         node_id="summarize",
         display_name="Summarize",
@@ -106,11 +110,10 @@ def test_plain_node_is_not_sandboxed_backward_compat():
     cfg = _run_node_capturing_config(node)
 
     assert cfg is not None
-    # A normal prompt node keeps today's behavior: no OS-sandbox requirement,
-    # no coding denylist (else every branch node would fail closed off-Linux).
-    assert cfg.os_sandbox_required is False
-    assert not (cfg.disallowed_tools or ())
-    assert not (cfg.allowed_tools or ())
+    assert cfg.os_sandbox_required is False  # nothing to confine
+    assert "Bash" in (cfg.disallowed_tools or ())  # coding capability denied
+    assert "Write" in (cfg.disallowed_tools or ())
+    assert "Bash" not in (cfg.allowed_tools or ())  # never granted
 
 
 # --------------------------------------------------------------------------- #
@@ -303,12 +306,13 @@ def test_claude_coding_node_fails_closed_without_attestation(monkeypatch):
     assert not spawned
 
 
-def test_claude_coding_node_spawns_hardened_argv_under_attestation(monkeypatch):
+def test_claude_coding_node_spawns_hardened_argv_under_attestation(monkeypatch, tmp_path):
     # Under the whole-process attestation the coding node DOES run — and the
     # ACTUAL spawned argv carries the hardened policy: ambient config stripped
-    # (--setting-sources project) and host connectors denied (--disallowedTools
-    # mcp__*), with coding tools pre-approved.
+    # (--setting-sources project), STRICT empty MCP config (FINDING 6), host
+    # connectors denied (--disallowedTools mcp__*), coding tools pre-approved.
     monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    _mock_vault(monkeypatch, oauth="VAULT-oauth")  # per-universe vault auth
     captured: list = []
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
@@ -328,11 +332,22 @@ def test_claude_coding_node_spawns_hardened_argv_under_attestation(monkeypatch):
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
     ):
         asyncio.run(
-            ClaudeProvider().complete("prompt", "", coding_node_model_config(timeout=60))
+            ClaudeProvider().complete(
+                "prompt", "", coding_node_model_config(timeout=60),
+                universe_dir=tmp_path,
+            )
         )
 
     assert "--setting-sources" in captured
     assert captured[captured.index("--setting-sources") + 1] == "project"
+    # FINDING 6: strict empty MCP config so no user/project/managed MCP loads.
+    assert "--strict-mcp-config" in captured
+    assert "--mcp-config" in captured
+    mcp_arg = captured[captured.index("--mcp-config") + 1]
+    assert "mcpServers" in mcp_arg
+    import json as _json
+    assert _json.loads(mcp_arg) == {"mcpServers": {}}  # empty → nothing loads
+    # belt-and-braces tool policy still present.
     assert "--disallowedTools" in captured and "mcp__*" in captured
     assert "--allowedTools" in captured and "Bash" in captured
 
@@ -385,7 +400,9 @@ def test_router_preflight_allows_under_attestation(monkeypatch):
             )
 
     monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
-    router = ProviderRouter(providers={"claude-code": FakeProvider()})
+    provider = FakeProvider()
+    provider.supports_coding_sandbox = True  # capable → not filtered (FINDING 4)
+    router = ProviderRouter(providers={"claude-code": provider})
     cfg = coding_node_model_config(timeout=60)
 
     resp = asyncio.run(router.call("writer", "prompt", "", cfg))
@@ -434,63 +451,67 @@ def test_coding_node_policy_does_not_overlap_allow_and_deny():
 
 
 # --------------------------------------------------------------------------- #
-# (5) Codex round-3 FINDING 1 — sanitized env + per-job scratch cwd
+# (5) sanitized env is VAULT-ONLY + per-job scratch cwd
+#     (Codex round-3 FINDING 1 + latest-model FINDING 2)
 # --------------------------------------------------------------------------- #
 
-_SECRET_ENV = {
-    "CODEX_HOME": "/data/.codex",
-    "CLAUDE_CODE_OAUTH_TOKEN": "claude-tok",
+# Process-global platform secrets seeded as DECOYS — a hostile coding node must
+# NEVER see any of these; the only auth it may see is the owner's own vault auth.
+_DECOY_PLATFORM_ENV = {
+    "CODEX_HOME": "/data/.codex",  # platform-global codex auth on the shared vol
+    "CLAUDE_CODE_OAUTH_TOKEN": "PLATFORM-oauth",
     "CLAUDE_CONFIG_DIR": "/data/.claude",
-    "ANTHROPIC_API_KEY": "sk-ant-secret",
-    "OPENAI_API_KEY": "sk-openai-secret",
+    "ANTHROPIC_API_KEY": "sk-ant-platform",
+    "OPENAI_API_KEY": "sk-openai-platform",
     "TINYASSETS_SECRET_X": "tenant-secret",
     "WORKOS_API_KEY": "workos-secret",
     "GITHUB_TOKEN": "gh-secret",
 }
 
 
-def _seed_secret_env(monkeypatch, *, opt_in: bool = False):
-    for k, v in _SECRET_ENV.items():
+def _seed_decoy_platform_env(monkeypatch):
+    for k, v in _DECOY_PLATFORM_ENV.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    if opt_in:
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-    else:
-        monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
+    monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
 
 
-def test_sanitized_env_keeps_only_the_jobs_own_provider_auth(monkeypatch):
+def test_sanitized_env_never_carries_platform_global_auth(monkeypatch, tmp_path):
+    # FINDING 2: the sanitized env must NOT contain ANY process-global platform
+    # auth or secret — only the owner's per-universe vault auth. With NO vault
+    # mocked, the env carries no provider auth at all (spawn refuses upstream).
     from tinyassets.providers.base import sanitized_subprocess_env
 
-    _seed_secret_env(monkeypatch)
-    _CROSS = (
-        "OPENAI_API_KEY", "TINYASSETS_SECRET_X", "WORKOS_API_KEY", "GITHUB_TOKEN",
-    )
+    _seed_decoy_platform_env(monkeypatch)
+    _mock_vault(monkeypatch)  # vault returns nothing for subscription homes
 
-    ce = sanitized_subprocess_env("claude-code")
-    assert ce.get("CLAUDE_CODE_OAUTH_TOKEN") == "claude-tok"  # own subscription auth
-    assert ce.get("CLAUDE_CONFIG_DIR") == "/data/.claude"
-    assert "PATH" in ce  # minimal allowlist essential
-    assert "CODEX_HOME" not in ce  # OTHER provider's auth stripped
-    assert "ANTHROPIC_API_KEY" not in ce  # API key stripped (no opt-in)
-    for leaked in _CROSS:
-        assert leaked not in ce, f"{leaked} leaked into claude coding env"
-
-    xe = sanitized_subprocess_env("codex")
-    assert xe.get("CODEX_HOME") == "/data/.codex"  # own subscription auth
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in xe  # OTHER provider's auth stripped
-    assert "CLAUDE_CONFIG_DIR" not in xe
-    for leaked in _CROSS:
-        assert leaked not in xe, f"{leaked} leaked into codex coding env"
+    for provider in ("claude-code", "codex"):
+        env = sanitized_subprocess_env(provider, universe_dir=tmp_path)
+        assert "PATH" in env  # allowlist essential
+        for leaked in _DECOY_PLATFORM_ENV:
+            assert env.get(leaked) != _DECOY_PLATFORM_ENV[leaked], (
+                f"{leaked} platform value leaked into {provider} coding env"
+            )
+        # And no cross-tenant secret at all.
+        for secret in ("TINYASSETS_SECRET_X", "WORKOS_API_KEY", "GITHUB_TOKEN"):
+            assert secret not in env
 
 
-def test_sanitized_env_includes_own_api_key_only_when_opted_in(monkeypatch):
+def test_sanitized_env_uses_vault_auth_not_platform(monkeypatch, tmp_path):
+    # Vault provides the owner's own codex home — the env carries THAT, never the
+    # platform /data/.codex decoy.
     from tinyassets.providers.base import sanitized_subprocess_env
 
-    _seed_secret_env(monkeypatch, opt_in=True)
-    ce = sanitized_subprocess_env("claude-code")
-    assert ce.get("ANTHROPIC_API_KEY") == "sk-ant-secret"  # own key, opt-in on
-    assert "OPENAI_API_KEY" not in ce  # still not the OTHER provider's key
+    _seed_decoy_platform_env(monkeypatch)
+    _mock_vault(monkeypatch, codex_home="/vault/owner/.codex", oauth="VAULT-oauth")
+
+    xe = sanitized_subprocess_env("codex", universe_dir=tmp_path)
+    assert xe.get("CODEX_HOME") == "/vault/owner/.codex"  # vault, not /data/.codex
+    assert xe.get("CODEX_HOME") != "/data/.codex"
+
+    ce = sanitized_subprocess_env("claude-code", universe_dir=tmp_path)
+    assert ce.get("CLAUDE_CODE_OAUTH_TOKEN") == "VAULT-oauth"  # vault, not PLATFORM
+    assert "CODEX_HOME" not in ce  # never the other provider's auth
 
 
 def _mk_proc():
@@ -502,9 +523,27 @@ def _mk_proc():
     return mock_proc
 
 
-def test_claude_coding_node_spawns_with_sanitized_env_and_scratch_cwd(monkeypatch):
-    _seed_secret_env(monkeypatch)
-    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")  # allow it to run
+def test_coding_spawn_refused_without_vault_auth(monkeypatch, tmp_path):
+    # FINDING 2 fail-closed: no per-universe vault auth ⇒ refuse (even attested,
+    # even with platform auth in the process env).
+    from tinyassets.providers.base import sandbox_spawn_env_and_dir
+
+    _seed_decoy_platform_env(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    _mock_vault(monkeypatch)  # vault provides nothing
+
+    for provider in ("claude-code", "codex"):
+        with pytest.raises(SandboxUnavailableError):
+            sandbox_spawn_env_and_dir(
+                provider, coding_node_model_config(timeout=60),
+                universe_dir=tmp_path,
+            )
+
+
+def test_claude_coding_node_spawns_with_vault_env_and_scratch_cwd(monkeypatch, tmp_path):
+    _seed_decoy_platform_env(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    _mock_vault(monkeypatch, oauth="VAULT-oauth")
     captured: dict = {}
 
     async def _fake_exec(*_args, **kwargs):
@@ -520,11 +559,14 @@ def test_claude_coding_node_spawns_with_sanitized_env_and_scratch_cwd(monkeypatc
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
     ):
         asyncio.run(
-            ClaudeProvider().complete("p", "", coding_node_model_config(timeout=60))
+            ClaudeProvider().complete(
+                "p", "", coding_node_model_config(timeout=60), universe_dir=tmp_path,
+            )
         )
 
     env = captured["env"]
-    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "claude-tok"  # own auth present
+    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "VAULT-oauth"  # vault, not platform
+    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") != "PLATFORM-oauth"
     assert "CODEX_HOME" not in env  # other provider stripped
     assert "TINYASSETS_SECRET_X" not in env  # tenant secret stripped
     assert "WORKOS_API_KEY" not in env
@@ -533,8 +575,9 @@ def test_claude_coding_node_spawns_with_sanitized_env_and_scratch_cwd(monkeypatc
     assert "/data" not in cwd  # not /data, not the repo checkout
 
 
-def test_codex_coding_node_spawns_with_sanitized_env_and_scratch_workdir(monkeypatch):
-    _seed_secret_env(monkeypatch)
+def test_codex_coding_node_spawns_with_vault_env_and_scratch_workdir(monkeypatch, tmp_path):
+    _seed_decoy_platform_env(monkeypatch)
+    _mock_vault(monkeypatch, codex_home="/vault/owner/.codex")
     captured: dict = {}
 
     async def _fake_exec(*args, **kwargs):
@@ -554,11 +597,13 @@ def test_codex_coding_node_spawns_with_sanitized_env_and_scratch_workdir(monkeyp
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
     ):
         asyncio.run(
-            CodexProvider().complete("p", "", coding_node_model_config(timeout=60))
+            CodexProvider().complete(
+                "p", "", coding_node_model_config(timeout=60), universe_dir=tmp_path,
+            )
         )
 
     env = captured["env"]
-    assert env.get("CODEX_HOME") == "/data/.codex"  # own auth present
+    assert env.get("CODEX_HOME") == "/vault/owner/.codex"  # vault, not /data/.codex
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env  # other provider stripped
     assert "TINYASSETS_SECRET_X" not in env  # tenant secret stripped
     args = captured["args"]
@@ -745,3 +790,109 @@ def test_policy_router_config_less_ok_for_ordinary_node():
         needs_sandbox=False,
     )
     assert text == "policy-ran"
+
+
+# --------------------------------------------------------------------------- #
+# (9) latest-model FINDING 1 — coding capability is INSEPARABLE from the sandbox
+# --------------------------------------------------------------------------- #
+
+
+def test_renamed_and_cleared_node_gets_no_coding_capability():
+    # A remixer renames the node AND clears node_kind + requires_sandbox to flip
+    # the classifier True→False. The escape must grant NOTHING: the node is a
+    # plain TEXT node (Bash/Write DENIED, no os_sandbox), and it never reaches the
+    # coding config or the coding spawn path.
+    from tinyassets.sandbox_policy import node_coding_capability
+
+    node = NodeDefinition(
+        node_id="totally_innocent_text_node",  # renamed away from draft_patch
+        display_name="Innocent",
+        prompt_template="do it",
+        output_keys=["totally_innocent_text_node_out"],
+        requires_sandbox=False,  # cleared
+        node_kind="",            # cleared
+    )
+    assert node_coding_capability(node) is False
+
+    cfg = _run_node_capturing_config(node)
+    assert cfg is not None
+    # No coding config: not sandbox-required, Bash NOT granted, Bash DENIED.
+    assert cfg.os_sandbox_required is False
+    assert "Bash" not in (cfg.allowed_tools or ())
+    assert "Write" not in (cfg.allowed_tools or ())
+    assert "Bash" in (cfg.disallowed_tools or ())
+    assert "Write" in (cfg.disallowed_tools or ())
+
+
+# --------------------------------------------------------------------------- #
+# (10) latest-model FINDING 4 — fallback chain admits ONLY coding-capable providers
+# --------------------------------------------------------------------------- #
+
+
+def _router_with(providers: dict):
+    from tinyassets.providers.router import ProviderRouter
+
+    return ProviderRouter(providers=providers)
+
+
+class _CapableProvider:  # declares + enforces the coding-sandbox contract
+    name = "claude-code"
+    family = "anthropic"
+    supports_coding_sandbox = True
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, prompt, system, config, *, universe_dir=None):
+        from tinyassets.providers.base import ProviderResponse
+
+        self.calls += 1
+        return ProviderResponse(
+            text="real-work", provider=self.name, model="m",
+            family=self.family, latency_ms=1.0,
+        )
+
+
+class _TextProvider:  # ignores the hardened config, would fake a 'patched'
+    name = "ollama-local"
+    family = "local"
+    supports_coding_sandbox = False
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, prompt, system, config, *, universe_dir=None):
+        from tinyassets.providers.base import ProviderResponse
+
+        self.calls += 1
+        return ProviderResponse(
+            text="patched", provider=self.name, model="m",
+            family=self.family, latency_ms=1.0,
+        )
+
+
+def test_sandbox_call_never_dispatches_to_a_text_provider(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    capable = _CapableProvider()
+    text = _TextProvider()
+    router = _router_with({"claude-code": capable, "ollama-local": text})
+
+    resp = asyncio.run(
+        router.call("writer", "p", "", coding_node_model_config(timeout=60))
+    )
+    assert resp.text == "real-work"  # served by the capable provider
+    assert text.calls == 0  # ollama NEVER invoked for a coding node
+
+
+def test_sandbox_call_with_only_text_providers_fails_loud(monkeypatch):
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    text = _TextProvider()
+    router = _router_with({"ollama-local": text})
+
+    with pytest.raises(AllProvidersExhaustedError):
+        asyncio.run(
+            router.call("writer", "p", "", coding_node_model_config(timeout=60))
+        )
+    assert text.calls == 0  # never a fake 'patched'

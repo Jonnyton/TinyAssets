@@ -69,9 +69,12 @@ services:
       # is DELIBERATELY OMITTED. Sandbox-required coding nodes (draft_patch etc.)
       # fail closed at run time (enforce_os_sandbox in providers/base.py) until a
       # host provides real per-job OS isolation — this container does NOT, so
-      # coding nodes are refused BY DESIGN. Only set "1" from an entrypoint that
-      # has genuinely confined the whole process; setting it otherwise re-opens
-      # the exfiltration vector the gate closes. See deploy/docker-entrypoint.sh.
+      # coding nodes are refused BY DESIGN (design-only branches unaffected). It
+      # may ONLY be set "1" by a per-job runner providing ALL of: (a) a prepared
+      # per-job repo checkout, (b) tenant/host path invisibility, (c) restricted
+      # egress, (d) resource limits, (e) scoped credential brokering (owner-only
+      # auth, never platform-global). Setting it without all five re-opens the
+      # exfiltration vector the gate closes. See deploy/docker-entrypoint.sh.
       # Pass through anything in the env file.
       TINYASSETS_MCP_CANARY_URL: ${TINYASSETS_MCP_CANARY_URL:-https://tinyassets.io/mcp}
     env_file:
