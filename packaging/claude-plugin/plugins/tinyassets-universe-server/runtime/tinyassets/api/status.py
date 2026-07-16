@@ -1322,18 +1322,27 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                     "workable via ambient legacy execution (non-ambient gate "
                     "off)."
                 )
-                actionable_next_steps.append(
-                    "Bind a BYO API key to run now: universe "
-                    "action=set_engine (stored in your universe vault). Hosted / "
-                    "market-rented / self-hosted execution routing is NOT "
-                    "available yet — those engine_source choices are recorded but "
-                    "do not execute until executor routing lands (run the daemon "
-                    "on your own device once device-executor support ships). The "
-                    "platform never custodies your subscription tokens. Note: "
-                    "hosted BYO keys require vault encryption hardening "
-                    "(KMS-wrapped per-tenant storage) before the non-ambient gate "
-                    "is enabled in production; the gate stays OFF until then."
-                )
+                from tinyassets.engine_binding import byo_execution_enabled
+
+                if byo_execution_enabled():
+                    actionable_next_steps.append(
+                        "Bind a BYO Anthropic API key to run now: universe "
+                        "action=set_engine (stored in your universe vault). "
+                        "Codex BYO + hosted / market-rented / self-hosted routing "
+                        "are recorded but NOT executable yet (unmet sandboxing / "
+                        "no executor routing). The platform never custodies your "
+                        "subscription tokens."
+                    )
+                else:
+                    actionable_next_steps.append(
+                        "Hosted engines are NOT available yet in this deploy: "
+                        "hosted BYO keys require vault encryption hardening "
+                        "(KMS-wrapped per-tenant storage) before the platform will "
+                        "store a founder API key, so BYO deposit + execution are "
+                        "DARK (the gate stays OFF until KMS lands). To run now, "
+                        "run the daemon on YOUR OWN device to use your own engine; "
+                        "the platform never custodies your subscription tokens."
+                    )
         except EngineMisconfiguredError as exc:
             engine_binding = {
                 "bound": False,

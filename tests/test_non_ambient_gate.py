@@ -59,11 +59,18 @@ def _recorders():
     return spawn_calls, sleep_calls, spawn, sleep
 
 
+# A valid Anthropic key (passes the format-level auth-health hook).
+_VALID_ANTHROPIC_KEY = "sk-ant-api03-" + "A" * 40
+
+
 @pytest.fixture(autouse=True)
 def _no_pinned_writer(monkeypatch):
     # Keep the pre-existing auth-quarantine gate inert so these tests exercise
     # only the non-ambient gate (no resolvable writer → auth gate returns None).
     monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
+    # Enable the executable BYO path so a bound universe can actually be bound
+    # (default OFF is DARK — see F3). Harmless for unbound-universe tests.
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
 
 
 def _unbound_universe(tmp_path):
@@ -73,12 +80,13 @@ def _unbound_universe(tmp_path):
 
 
 def _bound_universe(tmp_path):
+    """Anthropic BYO universe → bound, serves claude-code only (F1)."""
     udir = tmp_path / "u-bound"
     udir.mkdir()
     write_credential_vault(udir, [{
         "credential_type": "llm_api_key",
         "service": "anthropic",
-        "secret_b64": base64.b64encode(b"sk-ant-test").decode("ascii"),
+        "secret_b64": base64.b64encode(_VALID_ANTHROPIC_KEY.encode()).decode("ascii"),
     }])
     write_universe_config_fields(udir, engine_source="byo_api_key")
     return udir
@@ -189,22 +197,16 @@ def test_flag_on_skips_host_daemon_declared_choice_as_idle(tmp_path, monkeypatch
     assert state.idle_until_bound_count == 2
 
 
-def _codex_vault_universe(tmp_path, name="u-codexvault"):
-    """Universe bound to a per-universe BYO OpenAI key (codex-eligible, vault)."""
-    udir = tmp_path / name
-    udir.mkdir()
-    write_credential_vault(udir, [{
-        "credential_type": "llm_api_key",
-        "service": "openai",
-        "secret_b64": base64.b64encode(b"sk-openai-test").decode("ascii"),
-    }])
-    write_universe_config_fields(udir, engine_source="byo_api_key")
-    return udir
+def _no_global_claude_auth(monkeypatch, tmp_path):
+    """Make the process-global claude-code subscription auth read not_logged_in."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-claude-config"))
 
 
 def test_flag_on_codex_pinned_worker_skips_anthropic_only_universe(tmp_path, monkeypatch):
     """FINDING 1: the gate is provider-level. An Anthropic-only bound universe
-    must NOT let a Codex-pinned worker spawn (it would run on global Codex auth)."""
+    (serves claude-code only) must NOT let a Codex-pinned worker spawn (it would
+    run on global Codex auth)."""
     monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))  # no global auth
     udir = _bound_universe(tmp_path)  # anthropic BYO key → serves claude-code only
@@ -219,44 +221,44 @@ def test_flag_on_codex_pinned_worker_skips_anthropic_only_universe(tmp_path, mon
     assert state.engine_misconfigured_count == 0
 
 
-def test_flag_on_codex_pinned_worker_runs_codex_eligible_universe(tmp_path, monkeypatch):
-    """FINDING 1/2: a codex-eligible universe backed by per-universe VAULT auth
-    spawns for a Codex-pinned worker even with NO global CODEX_HOME — the child
-    materializes the vault auth, so the global-auth quarantine is skipped.
+def test_flag_on_claude_pinned_worker_runs_byo_bound_universe(tmp_path, monkeypatch):
+    """FINDING 1/2: an Anthropic-BYO-bound universe spawns for a claude-code-pinned
+    worker even with NO global claude auth — the child materializes the vault key,
+    so the global-auth quarantine is skipped.
 
     NOTE: this proves the supervisor SPAWNS the worker. That the router then
-    actually reaches provider.complete() (rather than starving the pinned writer
-    on global auth-health) is proven at the router level by
-    test_provider_auth_router_quarantine.test_pinned_dead_auth_writer_runs_on_universe_vault_auth."""
+    reaches provider.complete() on the vault key is proven at the router level by
+    test_provider_auth_router_quarantine.test_f1_byo_bound_universe_runs_only_eligible_provider."""
     monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))  # no global auth
-    udir = _codex_vault_universe(tmp_path)
+    _no_global_claude_auth(monkeypatch, tmp_path)
+    udir = _bound_universe(tmp_path)  # anthropic BYO → serves claude-code
     spawn_calls, _sleep_calls, spawn, sleep = _recorders()
 
     state = cw.run_supervisor(
         udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
-        daemon_args=["--provider", "codex"],
+        daemon_args=["--provider", "claude-code"],
     )
-    assert len(spawn_calls) == 2, "codex-eligible vault universe must spawn"
+    assert len(spawn_calls) == 2, "claude-eligible vault universe must spawn"
     assert state.auth_quarantine_count == 0, "vault auth must skip global quarantine"
     assert state.idle_until_bound_count == 0
 
 
-def test_flag_off_codex_pinned_worker_still_quarantines_without_global_auth(
+def test_flag_off_claude_pinned_worker_still_quarantines_without_global_auth(
     tmp_path, monkeypatch,
 ):
-    """Flag OFF is a no-op: the vault-aware quarantine skip is gated on the flag,
-    so with the flag off a codex-pinned worker with no global CODEX_HOME
-    quarantines exactly as today (never spawns on missing global auth)."""
+    """Flag OFF is a no-op: the vault-aware quarantine skip is gated on the
+    non-ambient flag, so with the flag off a claude-code-pinned worker with no
+    global claude auth quarantines exactly as today (never spawns on missing
+    global auth)."""
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))
-    udir = _codex_vault_universe(tmp_path)
+    _no_global_claude_auth(monkeypatch, tmp_path)
+    udir = _bound_universe(tmp_path)
     spawn_calls, _sleep_calls, spawn, sleep = _recorders()
 
     state = cw.run_supervisor(
         udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
         auth_quarantine_backoff=1.0,
-        daemon_args=["--provider", "codex"],
+        daemon_args=["--provider", "claude-code"],
     )
     assert spawn_calls == [], "flag off must not change the global-auth quarantine"
     assert state.auth_quarantine_count == 2

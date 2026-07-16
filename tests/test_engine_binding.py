@@ -14,11 +14,23 @@ import pytest
 from tinyassets.config import write_universe_config_fields
 from tinyassets.credential_vault import write_credential_vault
 from tinyassets.engine_binding import (
+    BYO_VAULT_ENCRYPTED_ENV,
     NON_AMBIENT_WORK_ENV,
     EngineMisconfiguredError,
     non_ambient_work_enabled,
     resolve_engine_binding,
 )
+
+# A syntactically-valid Anthropic key (passes the format-level auth-health hook).
+_VALID_ANTHROPIC_KEY = "sk-ant-api03-" + "A" * 40
+
+
+@pytest.fixture
+def byo_enabled(monkeypatch):
+    """Enable the executable BYO path (vault-encryption gate on). DEFAULT is OFF —
+    the executable BYO path is DARK until KMS lands (F3)."""
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+
 
 # ---- non_ambient_work_enabled: default OFF -------------------------------
 
@@ -67,39 +79,68 @@ def test_default_engine_source_alone_is_not_a_bind(tmp_path):
 # ---- resolve_engine_binding: BOUND ---------------------------------------
 
 
-def test_byo_api_key_in_vault_is_bound(tmp_path):
-    udir = tmp_path / "u-byo"
-    udir.mkdir()
+def _valid_anthropic_vault(udir):
     write_credential_vault(udir, [{
         "credential_type": "llm_api_key",
         "service": "anthropic",
-        "secret_b64": base64.b64encode(b"sk-ant-test").decode("ascii"),
+        "secret_b64": base64.b64encode(_VALID_ANTHROPIC_KEY.encode()).decode("ascii"),
     }])
     write_universe_config_fields(udir, engine_source="byo_api_key")
+
+
+def test_byo_anthropic_key_is_bound_when_encryption_gate_on(tmp_path, byo_enabled):
+    udir = tmp_path / "u-byo"
+    udir.mkdir()
+    _valid_anthropic_vault(udir)
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
     assert "byo_api_key" in binding.capacity_kinds
     assert binding.engine_source == "byo_api_key"
-    # Provider-level eligibility: an Anthropic key serves claude-code, NOT codex.
+    # Only claude-code is a BYO-executable provider (codex BYO is idle, F1).
     assert binding.eligible_providers == frozenset({"claude-code"})
     assert binding.is_eligible_for("claude-code") is True
     assert binding.is_eligible_for("codex") is False
     assert binding.serves_via_vault("claude-code") is True
 
 
-def test_byo_openai_key_is_eligible_for_codex_only(tmp_path):
+def test_byo_is_dark_when_encryption_gate_off(tmp_path, monkeypatch):
+    """F3: with the vault-encryption gate OFF (this deploy), even a valid
+    Anthropic BYO key reads as idle — the executable BYO path is DARK."""
+    monkeypatch.delenv(BYO_VAULT_ENCRYPTED_ENV, raising=False)
+    udir = tmp_path / "u-byo-dark"
+    udir.mkdir()
+    _valid_anthropic_vault(udir)
+    binding = resolve_engine_binding(udir)  # must not raise
+    assert binding.bound is False
+    assert "encryption" in binding.reason.lower() or "not enabled" in binding.reason.lower()
+
+
+def test_byo_dead_key_is_not_bound(tmp_path, byo_enabled):
+    """F4: a syntactically-decodable but implausible key ('x') must NOT bind even
+    with the encryption gate on — auth-health rejects it."""
+    udir = tmp_path / "u-byo-deadkey"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": base64.b64encode(b"x").decode("ascii"),
+    }])
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is False
+
+
+def test_byo_openai_key_is_not_executable(tmp_path, byo_enabled):
+    """F1: a Codex/OpenAI BYO key is declared-not-executable (unmet sandboxing) —
+    idle even with the encryption gate on."""
     udir = tmp_path / "u-byo-openai"
     udir.mkdir()
     write_credential_vault(udir, [{
         "credential_type": "llm_api_key",
         "service": "openai",
-        "secret_b64": base64.b64encode(b"sk-openai").decode("ascii"),
+        "secret_b64": base64.b64encode(b"sk-openai-testkey-long-enough").decode("ascii"),
     }])
     binding = resolve_engine_binding(udir)
-    assert binding.bound is True
-    assert binding.eligible_providers == frozenset({"codex"})
-    assert binding.is_eligible_for("codex") is True
-    assert binding.is_eligible_for("claude-code") is False
+    assert binding.bound is False
 
 
 def test_subscription_vault_row_is_not_founder_capacity(tmp_path):
@@ -145,8 +186,8 @@ def test_malformed_byo_empty_secret_fails_loud(tmp_path):
         resolve_engine_binding(udir)
 
 
-def test_malformed_byo_alongside_valid_byo_stays_bound(tmp_path):
-    """Finding 4 scoping: a broken BYO row must not DoS a universe with a real
+def test_malformed_byo_alongside_valid_byo_stays_bound(tmp_path, byo_enabled):
+    """Scoping: a broken BYO row must not DoS a universe with a real Anthropic
     key — it is simply not counted, and eligibility reflects only the valid key."""
     udir = tmp_path / "u-byo-mixed"
     udir.mkdir()
@@ -154,7 +195,8 @@ def test_malformed_byo_alongside_valid_byo_stays_bound(tmp_path):
         {
             "credential_type": "llm_api_key",
             "service": "anthropic",
-            "secret_b64": base64.b64encode(b"sk-ant-real").decode("ascii"),
+            "secret_b64": base64.b64encode(
+                _VALID_ANTHROPIC_KEY.encode()).decode("ascii"),
         },
         {"credential_type": "llm_api_key", "service": "nonsense"},
     ])
@@ -288,16 +330,17 @@ def test_subscription_row_never_counts_and_never_crashes(tmp_path):
     assert binding.bound is False
 
 
-def test_subscription_row_alongside_real_byo_binds_via_byo(tmp_path):
-    """A subscription row does not add capacity; a real BYO key still binds and
-    eligibility reflects only the BYO key."""
+def test_subscription_row_alongside_real_byo_binds_via_byo(tmp_path, byo_enabled):
+    """A subscription row does not add capacity; a real Anthropic BYO key still
+    binds and eligibility reflects only the BYO key."""
     udir = tmp_path / "u-mixed"
     udir.mkdir()
     write_credential_vault(udir, [
         {
             "credential_type": "llm_api_key",
             "service": "anthropic",
-            "secret_b64": base64.b64encode(b"sk-ant-real").decode("ascii"),
+            "secret_b64": base64.b64encode(
+                _VALID_ANTHROPIC_KEY.encode()).decode("ascii"),
         },
         {
             "credential_type": "llm_subscription",
@@ -335,15 +378,17 @@ def test_gemini_byo_row_is_not_founder_capacity(tmp_path):
         resolve_engine_binding(udir)
 
 
-def test_gemini_byo_alongside_valid_openai_binds_via_codex(tmp_path):
-    """A non-consumable gemini row is ignored; a real openai key still binds."""
+def test_gemini_byo_alongside_valid_anthropic_binds_via_claude(tmp_path, byo_enabled):
+    """A non-consumable gemini row is ignored; a real Anthropic key still binds
+    (Anthropic is the only BYO-executable lane)."""
     udir = tmp_path / "u-gemini-mixed"
     udir.mkdir()
     write_credential_vault(udir, [
         {
             "credential_type": "llm_api_key",
-            "service": "openai",
-            "secret_b64": base64.b64encode(b"sk-openai").decode("ascii"),
+            "service": "anthropic",
+            "secret_b64": base64.b64encode(
+                _VALID_ANTHROPIC_KEY.encode()).decode("ascii"),
         },
         {
             "credential_type": "llm_api_key",
@@ -353,7 +398,7 @@ def test_gemini_byo_alongside_valid_openai_binds_via_codex(tmp_path):
     ])
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
-    assert binding.eligible_providers == frozenset({"codex"})
+    assert binding.eligible_providers == frozenset({"claude-code"})
 
 
 # ---- Finding 4: malformed / unknown config declarations fail loud ----------

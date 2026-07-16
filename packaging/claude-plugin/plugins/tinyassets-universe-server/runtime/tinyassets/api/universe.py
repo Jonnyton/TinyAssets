@@ -4918,13 +4918,36 @@ def _action_set_engine(
 
 
 def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
-    """BYO API key → per-universe vault + preferred_writer (fully wired)."""
+    """BYO API key → per-universe vault + preferred_writer.
+
+    Gated behind the vault-encryption prerequisite (F3): until KMS / an external
+    secret manager is implemented AND verified, hosted BYO deposit is REFUSED —
+    the platform must not store founder API keys as plaintext base64. The vault
+    deposit uses an atomic UPSERT that PRESERVES the founder's other credentials
+    (F2), and the vault + config writes are transactional (a config-write failure
+    rolls the vault deposit back — no orphan key).
+    """
+    import base64
+
     from tinyassets.config import write_universe_config_fields
     from tinyassets.credential_vault import (
+        load_credential_vault,
         per_universe_byo_services,
         supported_llm_api_key_services,
+        upsert_credential,
         write_credential_vault,
     )
+    from tinyassets.engine_binding import byo_execution_enabled
+
+    # F3: the executable BYO path is DARK until vault encryption lands.
+    if not byo_execution_enabled():
+        return json.dumps({
+            "error": "hosted BYO keys require vault encryption, not yet enabled "
+                     "— the platform will not store your API key in plaintext. "
+                     "Run the daemon on your own device to use your key now.",
+            "prerequisite": "TINYASSETS_BYO_VAULT_ENCRYPTED (KMS / external secret "
+                            "manager) must be implemented + verified first.",
+        })
 
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
@@ -4940,26 +4963,36 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
                      "reach a provider.",
             "expected_services": sorted(supported_llm_api_key_services()),
         })
-    # gemini/groq/xai keys map only to process-global HTTP providers — there is
-    # no per-universe consumption wiring yet, so binding one would fake capacity
-    # the daemon can't consume (Hard Rule #8). Reject until that path is wired.
     if service not in per_universe_byo_services():
         return json.dumps({
             "error": f"service {service!r} is not yet supported for per-universe "
                      "binding — its key only reaches a process-global provider.",
             "per_universe_services": sorted(per_universe_byo_services()),
         })
+    # F4: reject a syntactically-implausible key at deposit for the EXECUTABLE
+    # lane (Anthropic), so a bound universe never claims work with a dead key.
+    if service == "anthropic" and not (
+        api_key.startswith("sk-ant-") and len(api_key) >= 24
+    ):
+        return json.dumps({
+            "error": "the Anthropic API key does not look valid (expected an "
+                     "'sk-ant-' key) — check the key and re-bind.",
+        })
 
-    import base64
+    # F2: atomic UPSERT (preserve other creds) + transactional rollback. Snapshot
+    # the prior vault so a config-write failure restores it (no orphan key).
     try:
-        vault_summary = write_credential_vault(udir, [{
+        prior_records = load_credential_vault(udir)
+    except ValueError as exc:
+        return json.dumps({"error": f"Existing credential vault unreadable: {exc}"})
+    try:
+        vault_summary = upsert_credential(udir, {
             "credential_type": "llm_api_key",
             "service": service,
-            # base64 at rest (the vault's existing convention; _secret_value
-            # decodes secret_b64). Envelope encryption is the deferred hardening
-            # flagged in the credential-custody research.
+            # base64 at rest (transitional). KMS envelope encryption is the F3
+            # prerequisite gating this whole path.
             "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
-        }])
+        })
     except ValueError as exc:
         return json.dumps({"error": f"Failed to store engine credential: {exc}"})
 
@@ -4969,6 +5002,12 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
     try:
         write_universe_config_fields(udir, **fields)
     except Exception as exc:  # noqa: BLE001
+        # Roll the vault deposit back to its prior state — the two writes commit
+        # or abort together (F2 transactionality).
+        try:
+            write_credential_vault(udir, prior_records)
+        except Exception:  # noqa: BLE001 — best-effort restore; surface original error
+            logger.exception("set_engine: vault rollback failed for %s", uid)
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
 
     return json.dumps({
@@ -4978,8 +5017,13 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
         "service": service,
         "preferred_writer": preferred_writer,
         "credential_types": vault_summary.get("credential_types", []),
+        "executable": service == "anthropic",
         "note": "Engine credential stored in the per-universe vault (never "
-                "echoed).",
+                "echoed)." + (
+                    " Codex BYO is recorded but NOT executable yet (unmet "
+                    "sandboxing) — it stays idle."
+                    if service != "anthropic" else ""
+                ),
     })
 
 

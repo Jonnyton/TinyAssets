@@ -62,7 +62,24 @@ _KNOWN_ENGINE_SOURCES = frozenset({
 #: behavior. See :func:`non_ambient_work_enabled`.
 NON_AMBIENT_WORK_ENV = "TINYASSETS_NON_AMBIENT_WORK"
 
+#: Env flag gating the executable BYO-API-key path. DEFAULT OFF. Hosted BYO keys
+#: are stored plaintext-base64 in the per-universe vault; the custody research
+#: requires KMS-wrapped / external-secret-manager storage BEFORE the platform may
+#: hold + execute founder keys. Until that lands AND is verified, the executable
+#: BYO path is DARK: set_engine refuses BYO deposits, resolve_engine_binding
+#: never reports a BYO key as bound, and the router does no direct BYO routing.
+#: INDEPENDENT of the non-ambient flag (F3) — the non-ambient flag being OFF does
+#: not disable BYO deposit/routing, so BYO needs its own gate.
+BYO_VAULT_ENCRYPTED_ENV = "TINYASSETS_BYO_VAULT_ENCRYPTED"
+
 _TRUTHY = {"1", "true", "yes", "on"}
+
+# Providers a BYO key can EXECUTE today. Codex BYO needs sandboxing (bwrap +
+# attestation) that is unmet, and non-sandboxed `codex exec` runs against the
+# host checkout with --dangerously-bypass — so a Codex/OpenAI BYO key is a
+# DECLARED-not-executable lane (idle + honest guidance), same as the runtime
+# lanes (F1). Only the sandboxed claude-code path is executable.
+_EXECUTABLE_BYO_PROVIDERS = frozenset({"claude-code"})
 
 
 class EngineMisconfiguredError(RuntimeError):
@@ -87,10 +104,8 @@ class EngineMisconfiguredError(RuntimeError):
 # A capacity is eligible for a SPECIFIC provider — a universe holding an
 # Anthropic key must not satisfy a Codex-pinned worker (which would run on
 # global Codex auth). Map each vault service to the writer-provider name it
-# feeds (the names in providers.router.FALLBACK_CHAINS). ``ANY_PROVIDER`` is the
-# wildcard for a generic runtime that declares no specific provider.
-ANY_PROVIDER = "*"
-
+# feeds (the names in providers.router.FALLBACK_CHAINS).
+#
 # Only the CLI-subprocess services are per-universe-consumable today (their key
 # is overlaid onto the subprocess env by provider_auth_env_overrides). gemini /
 # groq / xai keys map only to process-global HTTP providers, so they are NOT
@@ -111,19 +126,19 @@ _SERVICE_TO_PROVIDER: dict[str, str] = {
 class EngineBinding:
     """Resolved engine-capacity binding for one universe.
 
-    ``bound`` is the load-bearing field: True when the universe has at least one
-    real, usable capacity bound to it. ``capacity_kinds`` names each capacity
-    found (e.g. ``("byo_api_key",)`` / ``("subscription:claude",)`` /
-    ``("runtime:host_daemon",)``). ``engine_source`` echoes the founder's declared
-    choice from ``config.yaml`` (empty when none was declared).
+    ``bound`` is the load-bearing field: True when the universe has real, usable,
+    EXECUTABLE capacity bound to it. In S5 the only producible capacity kind is
+    ``byo_api_key`` (a validated Anthropic BYO key, and only while the
+    vault-encryption gate is on) — the runtime / subscription / codex-BYO lanes
+    are declared-not-executable and never bound. ``engine_source`` echoes the
+    founder's declared choice from ``config.yaml`` (empty when none was declared).
 
     ``eligible_providers`` names the writer providers this capacity can actually
     serve — the gate is provider-level, not universe-level, so a Codex-pinned
-    worker treats a claude-only universe as idle-until-bound. ``ANY_PROVIDER``
-    (``"*"``) in the set means a generic runtime that can serve any provider.
-    ``vault_providers`` is the subset whose auth is per-universe VAULT auth that
-    the child materializes at spawn — the pre-spawn global-auth quarantine must
-    be skipped for these (they don't need process-global provider auth).
+    worker treats a claude-only universe as idle-until-bound. ``vault_providers``
+    is the subset whose auth is per-universe VAULT auth that the child
+    materializes at spawn — the pre-spawn global-auth quarantine must be skipped
+    for these (they don't need process-global provider auth).
     """
 
     bound: bool
@@ -137,8 +152,6 @@ class EngineBinding:
         """Return True iff bound capacity can serve *provider_name*."""
         if not self.bound:
             return False
-        if ANY_PROVIDER in self.eligible_providers:
-            return True
         return provider_name.strip() in self.eligible_providers
 
     def serves_via_vault(self, provider_name: str) -> bool:
@@ -172,6 +185,43 @@ def non_ambient_work_enabled() -> bool:
       — they are honestly idle-until-bound (see :func:`resolve_engine_binding`).
     """
     return os.environ.get(NON_AMBIENT_WORK_ENV, "").strip().lower() in _TRUTHY
+
+
+def byo_execution_enabled() -> bool:
+    """Return whether the executable BYO-key path is enabled. DEFAULT OFF.
+
+    Reads :data:`BYO_VAULT_ENCRYPTED_ENV`. Gates BOTH the ``set_engine`` BYO
+    deposit and BYO execution/routing behind an explicit vault-encryption
+    prerequisite (KMS / external secret manager), independent of the non-ambient
+    flag (F3). OFF (this deploy) → the executable BYO path is DARK: no deposit,
+    no bound BYO, no direct BYO routing. Flip ON only once envelope encryption is
+    implemented AND verified.
+    """
+    return os.environ.get(BYO_VAULT_ENCRYPTED_ENV, "").strip().lower() in _TRUTHY
+
+
+def _byo_key_auth_health(provider_name: str, universe_dir: Path) -> str:
+    """Return provider-specific BYO-key auth health: ``ok`` / ``not_logged_in``.
+
+    F4 hook — runs when the vault-encryption gate opens; a syntactically-decodable
+    but implausible key (e.g. ``"x"``) must NEVER read as bound. Today this is a
+    format-level check (better than "non-empty text"): an Anthropic key must
+    carry the ``sk-ant-`` prefix + minimum length. A real network probe (validate
+    the key against the provider) is the documented follow-up — swap it in here;
+    everything downstream already gates ``bound`` on a returned ``ok``.
+    """
+    from tinyassets.credential_vault import resolve_llm_api_key
+
+    if provider_name.strip() == "claude-code":
+        try:
+            key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+        except ValueError:
+            return "not_logged_in"
+        if key.startswith("sk-ant-") and len(key) >= 24:
+            return "ok"
+        return "not_logged_in"
+    # Non-executable BYO providers have no auth-health here (codex is idle by F1).
+    return "not_logged_in"
 
 
 def _raw_config(universe_dir: Path, universe_id: str) -> dict[str, Any]:
@@ -329,31 +379,64 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
 
     try:
         scan = _vault_capacity(udir)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
+        # F6: normalize ALL vault I/O failures (JSON ValueError AND
+        # OSError/PermissionError reading the vault file) into a loud-but-caught
+        # misconfiguration, so get_status + the supervisor (which catch
+        # EngineMisconfiguredError) never crash on a bad vault file.
         raise EngineMisconfiguredError(
             universe_id,
             declared_source or "byo_api_key",
             f"credential vault is unreadable: {exc}",
         ) from exc
 
-    # Lane matching: the ONLY executable capacity in S5 is a validated BYO key,
-    # and it counts only for the byo_api_key lane (or an undeclared universe).
-    # A runtime-backed declared source (host_daemon / market_rented /
-    # self_hosted_endpoint) is a declared CHOICE with no executor routing yet —
-    # NEVER bound — and a stray BYO key does NOT satisfy it (nor does its broken
-    # state fail loud). A legacy subscription source is likewise idle.
+    # Lane matching: the ONLY executable capacity in S5 is a validated BYO key on
+    # the byo_api_key lane (or an undeclared universe). A runtime-backed declared
+    # source (host_daemon / market_rented / self_hosted_endpoint) is a declared
+    # CHOICE with no executor routing yet — NEVER bound — and a stray BYO key does
+    # NOT satisfy it (nor does its broken state fail loud). Subscription is idle.
     byo_lane = declared_source not in _RUNTIME_BACKED_SOURCES and declared_source != "subscription"
     if byo_lane and scan.capacity_kinds:
+        # A BYO key exists syntactically. It is EXECUTABLE only when ALL hold:
+        #   (F3) the vault-encryption gate is on (else the path is DARK), AND
+        #   (F1) the provider is BYO-executable (claude-code; codex BYO is idle), AND
+        #   (F4) the key passes provider-specific auth-health (not just non-empty).
+        if not byo_execution_enabled():
+            reason = (
+                "a BYO API key is present but hosted BYO execution is not "
+                "enabled — vault encryption (KMS / external secret manager) is "
+                "required first; run the daemon on your own device to use your "
+                "key now"
+            )
+        else:
+            healthy: set[str] = set()
+            for provider in scan.eligible_providers:
+                if provider not in _EXECUTABLE_BYO_PROVIDERS:
+                    continue  # codex BYO is declared-not-executable (F1)
+                if _byo_key_auth_health(provider, udir) == "ok":
+                    healthy.add(provider)
+            if healthy:
+                return EngineBinding(
+                    bound=True,
+                    engine_source=declared_source,
+                    capacity_kinds=("byo_api_key",),
+                    reason="bound to byo_api_key (" + ", ".join(sorted(healthy)) + ")",
+                    eligible_providers=frozenset(healthy),
+                    vault_providers=frozenset(healthy),
+                )
+            # A syntactically-present BYO key that is not executable/validated:
+            # codex-only (idle by F1) or a claude key that failed auth-health.
+            reason = (
+                "a BYO API key is present but not executable: Codex BYO needs "
+                "unmet sandboxing, and an Anthropic key must pass auth-health "
+                "(a well-formed, live sk-ant- key) — re-bind a valid key"
+            )
         return EngineBinding(
-            bound=True,
-            engine_source=declared_source,
-            capacity_kinds=tuple(dict.fromkeys(scan.capacity_kinds)),
-            reason="bound to " + ", ".join(dict.fromkeys(scan.capacity_kinds)),
-            eligible_providers=frozenset(scan.eligible_providers),
-            vault_providers=frozenset(scan.vault_providers),
+            bound=False, engine_source=declared_source,
+            capacity_kinds=(), reason=reason,
         )
 
-    # No executable capacity. A present-but-unusable BYO row is genuinely broken
+    # No usable BYO capacity. A present-but-unusable BYO row is genuinely broken
     # → fail loud (Hard Rule #8) so the broken key is re-bound — but ONLY when the
     # BYO lane is the selected one (a runtime-backed universe's stray broken key is
     # irrelevant to its declared lane).

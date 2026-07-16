@@ -8,10 +8,19 @@
 - **Reads (context, not restated):** the relay-architecture note §11; PLAN
   *Daemon Platform* + *Providers* modules; `AGENTS.md` Hard Rule #3 +
   Configuration section.
-- **Load-bearing finding up front (§0):** the "founder brings their **subscription**
-  and we host it 24/7" assumption is **ToS-blocked** on both Anthropic and OpenAI.
-  The clean device-independent paths are **API key** and **self-hosted endpoint**.
+- **Load-bearing finding up front (§0):** the "founder brings their **personal
+  subscription** and we host it 24/7 server-side" assumption is **ToS-blocked** on
+  both Anthropic and OpenAI *as a general server-side custody model*. The clean
+  device-independent paths are **API key** and **self-hosted endpoint**.
   This reshapes the recommendation — read §0 first.
+- **Emerging lane (2026 update — NOT built here, flag prominently):** Anthropic
+  now documents **subscription-backed unattended "routines"** driven by
+  **scoped trigger tokens** (a Claude Code routines/automation API) — a
+  provider-sanctioned automation path that is *narrower and different* from
+  "custody the founder's OAuth login." If it matures, it **may reopen a
+  founder-subscription model** under scoped tokens (not raw login custody). Treat
+  it as **future research**, gated by its own ToS review; do not assume "only two
+  lawful 24/7 lanes" is permanent. See §0.1 for the durable link.
 
 ---
 
@@ -99,11 +108,29 @@ The §0 conclusion rests on the providers' own terms + auth docs. Durable links
   sharing, no powering third-party services on a personal plan):
   <https://openai.com/policies/terms-of-use/> and
   <https://openai.com/policies/business-terms/>.
+- **Anthropic — subscription-backed routines / scoped trigger tokens** (the
+  emerging automation lane; re-verify current shape + ToS):
+  <https://docs.claude.com/en/docs/claude-code/> (Claude Code automation /
+  routines) and the Anthropic API console <https://console.anthropic.com/>.
 
-**Preserve the distinction:** the platform must not custody a founder's *personal
-consumer* subscription (blocked). An **org-level OpenAI Codex access token** (or
-an Anthropic **API key**) is a different, sanctioned server-side credential class —
-those flow through the BYO-API-key vault lane, not a subscription-custody lane.
+**Two DISTINCT credential classes — do not conflate (F5b correction):**
+1. A **BYO API key** (Anthropic `ANTHROPIC_API_KEY`, OpenAI `OPENAI_API_KEY` /
+   headless-codex `CODEX_API_KEY`) — a per-founder key that flows through the
+   **BYO-API-key vault lane**.
+2. An **org-level OpenAI Codex ACCESS TOKEN** — a *different* credential
+   (`CODEX_ACCESS_TOKEN`, NOT `CODEX_API_KEY`) minted for a Business/Enterprise
+   org for non-interactive Codex. It is **not** the same as a personal ChatGPT
+   subscription (that stays blocked) **and it does NOT flow through the API-key
+   lane** — it would need its own access-token credential type + auth plumbing.
+   Enterprise founders / market hosts may legitimately bring one, but it is
+   separate future work, not the BYO-API-key path implemented in S5.
+
+**Resolved self-contradiction (F5c):** there is **NO founder-facing platform
+default engine** — a founder brings their own (BYO key / endpoint / market /
+own-device daemon). The *only* platform-held subscription is the **host's own
+droplet subscription**, which serves **only the host's own universe(s)** on the
+host's own infra (Option E, process-global) — it is never a per-founder default
+and never flows through the founder vault.
 
 ---
 

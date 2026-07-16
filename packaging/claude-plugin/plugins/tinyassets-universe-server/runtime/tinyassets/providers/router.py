@@ -77,6 +77,9 @@ def _universe_provides_provider_auth(
     lane-correct (never accepts a legacy subscription row) AND side-effect-free
     (no auth.json/config.toml materialization; the ``ensure_*`` helpers must not
     run on a read/health path — Fable Finding C). Never raises.
+
+    Gated behind the vault-encryption prerequisite (F3): direct BYO routing is
+    DARK until KMS lands, so with the gate off this returns False (no bypass).
     """
     env_var = _PROVIDER_BYO_ENV_VAR.get(provider_name.strip())
     if not env_var:
@@ -86,6 +89,10 @@ def _universe_provides_provider_auth(
             resolve_llm_api_key,
             resolve_universe_from_env,
         )
+        from tinyassets.engine_binding import byo_execution_enabled
+
+        if not byo_execution_enabled():
+            return False  # F3: no direct BYO routing until vault encryption lands
 
         resolved = (
             universe_dir if universe_dir is not None else resolve_universe_from_env()
@@ -337,13 +344,12 @@ class ProviderRouter:
             if status != "not_logged_in":
                 alive.append(provider_name)
             elif _universe_provides_provider_auth(provider_name, universe_dir):
-                # ACCEPTED flag-OFF delta (deliberate, lead-approved): this bypass
-                # is NOT gated on TINYASSETS_NON_AMBIENT_WORK, so a universe that
-                # already holds a validated BYO key for a provider whose GLOBAL
-                # login is dead is no longer starved — even on a direct/MCP run
-                # with the gate off. That is a latent-bug fix (vault-keyed capacity
-                # was previously dropped), and BYO keys are the sanctioned lane, so
-                # the residual delta is defensible rather than flag-gated.
+                # This bypass is gated behind the vault-encryption prerequisite
+                # (byo_execution_enabled, F3) — DARK by default in this deploy.
+                # Within that gate it is NOT further gated on the non-ambient flag:
+                # a universe holding a validated BYO key for a globally-dead
+                # provider is not starved (latent-bug fix; BYO is the sanctioned
+                # lane). The child materializes the vault env at call time.
                 logger.info(
                     "Provider %s global login is not_logged_in but the universe "
                     "vault authenticates it — keeping (per-universe auth applied "
@@ -395,6 +401,46 @@ class ProviderRouter:
                         chain = self._apply_preference(chain, ucfg.preferred_judge)
             except Exception:
                 pass
+
+        # F1 (S5 round 8): a BYO-BOUND universe's WRITER must NOT fall through to a
+        # platform-auth provider. When BYO execution is gated on and this
+        # universe is bound, constrain the writer chain to its ELIGIBLE providers
+        # ONLY — a bound provider's failure fails the run loudly (never silently
+        # borrows the platform's global CODEX_HOME / subscription). This is the
+        # ambient-platform-auth leak the non-ambient slice exists to prevent.
+        # Inert in this deploy: bound universes require the vault-encryption gate
+        # (byo_execution_enabled), which is OFF by default, so the writer chain is
+        # unchanged unless an operator has enabled BYO execution.
+        if role == "writer" and universe_dir is not None:
+            try:
+                from tinyassets.engine_binding import (
+                    byo_execution_enabled,
+                    resolve_engine_binding,
+                )
+
+                if byo_execution_enabled():
+                    binding = resolve_engine_binding(universe_dir)
+                    if binding.bound:
+                        eligible = set(binding.eligible_providers)
+                        if is_pinned_writer and pin_writer not in eligible:
+                            raise AllProvidersExhaustedError(
+                                f"Pinned writer {pin_writer!r} is not in the "
+                                f"BYO-bound universe's eligible providers "
+                                f"{sorted(eligible)!r}. A bound universe never "
+                                "borrows platform auth; re-bind or clear the pin."
+                            )
+                        constrained = [p for p in chain if p in eligible]
+                        if not constrained:
+                            raise AllProvidersExhaustedError(
+                                "BYO-bound universe has no eligible writer provider "
+                                f"for role=writer (eligible={sorted(eligible)!r}); "
+                                "no fallback to platform auth."
+                            )
+                        chain = constrained
+            except AllProvidersExhaustedError:
+                raise
+            except Exception:  # noqa: BLE001 — binding probe must not break routing
+                logger.debug("F1 eligible-provider constraint skipped", exc_info=True)
 
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces

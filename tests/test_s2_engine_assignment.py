@@ -136,9 +136,35 @@ def test_byo_codex_isolation_failure_fails_closed(tmp_path, monkeypatch):
         subprocess_env_for_provider("codex", universe_dir=tmp_path)
 
 
+_VALID_ANTHROPIC_KEY = "sk-ant-api03-" + "A" * 40
+
+
+def test_set_engine_refused_when_byo_gate_off(tmp_path, monkeypatch):
+    """F3: hosted BYO deposit is REFUSED until the vault-encryption gate opens —
+    the platform must not store a plaintext key. Independent of any other flag."""
+    from tinyassets.api import universe as uni
+
+    monkeypatch.delenv("TINYASSETS_BYO_VAULT_ENCRYPTED", raising=False)
+    udir = tmp_path / "u-gateoff"
+    udir.mkdir()
+    monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": "u-gateoff")
+    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+
+    out = json.loads(uni._action_set_engine(
+        universe_id="u-gateoff",
+        inputs_json=json.dumps({"service": "anthropic", "api_key": _VALID_ANTHROPIC_KEY}),
+    ))
+    assert "error" in out and out.get("status") != "engine_set"
+    assert "vault encryption" in out["error"].lower()
+    # Nothing stored.
+    from tinyassets.credential_vault import load_credential_vault
+    assert load_credential_vault(udir) == []
+
+
 def test_set_engine_action_writes_vault_and_config(tmp_path, monkeypatch):
     from tinyassets.api import universe as uni
 
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")  # gate on for deposit
     udir = tmp_path / "u-test"
     udir.mkdir()
     monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": "u-test")
@@ -146,20 +172,72 @@ def test_set_engine_action_writes_vault_and_config(tmp_path, monkeypatch):
 
     out = json.loads(uni._action_set_engine(
         universe_id="u-test",
-        inputs_json=json.dumps({"service": "anthropic", "api_key": "sk-secret-KEY"}),
+        inputs_json=json.dumps({"service": "anthropic", "api_key": _VALID_ANTHROPIC_KEY}),
     ))
     assert out["status"] == "engine_set"
     assert out["preferred_writer"] == "claude-code"  # inferred from service
     # The key is NEVER echoed in the response.
-    assert "sk-secret-KEY" not in json.dumps(out)
+    assert _VALID_ANTHROPIC_KEY not in json.dumps(out)
     # config.yaml + vault were written and resolve end-to-end.
     assert load_universe_config(udir).preferred_writer == "claude-code"
-    assert resolve_llm_api_key(udir, "ANTHROPIC_API_KEY") == "sk-secret-KEY"
+    assert resolve_llm_api_key(udir, "ANTHROPIC_API_KEY") == _VALID_ANTHROPIC_KEY
+
+
+def test_set_engine_preserves_other_credentials(tmp_path, monkeypatch):
+    """F2: an engine bind must UPSERT (not replace-all) — a founder's other
+    credentials (social / vcs) survive."""
+    from tinyassets.api import universe as uni
+
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    udir = tmp_path / "u-preserve"
+    udir.mkdir()
+    write_credential_vault(udir, [
+        {"credential_type": "vcs", "service": "github",
+         "destination": "owner/repo", "token": "ghp-existing"},
+        {"credential_type": "social", "service": "x", "token": "x-tok"},
+    ])
+    monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": "u-preserve")
+    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+
+    out = json.loads(uni._action_set_engine(
+        universe_id="u-preserve",
+        inputs_json=json.dumps({"service": "anthropic", "api_key": _VALID_ANTHROPIC_KEY}),
+    ))
+    assert out["status"] == "engine_set"
+    from tinyassets.credential_vault import load_credential_vault
+    types = {r.get("credential_type") for r in load_credential_vault(udir)}
+    assert {"vcs", "social", "llm_api_key"} <= types  # all preserved + the new key
+
+
+def test_set_engine_config_failure_rolls_back_vault(tmp_path, monkeypatch):
+    """F2 transactionality: a config-write failure rolls back the vault deposit —
+    no orphan key left behind."""
+    from tinyassets import config as cfg
+    from tinyassets.api import universe as uni
+
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    udir = tmp_path / "u-rollback"
+    udir.mkdir()
+    monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": "u-rollback")
+    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cfg, "write_universe_config_fields", _boom)
+    out = json.loads(uni._action_set_engine(
+        universe_id="u-rollback",
+        inputs_json=json.dumps({"service": "anthropic", "api_key": _VALID_ANTHROPIC_KEY}),
+    ))
+    assert "error" in out and out.get("status") != "engine_set"
+    from tinyassets.credential_vault import load_credential_vault
+    assert load_credential_vault(udir) == []  # deposit rolled back (no orphan key)
 
 
 def test_set_engine_requires_key_and_known_service(tmp_path, monkeypatch):
     from tinyassets.api import universe as uni
 
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     udir = tmp_path / "u-x"
     udir.mkdir()
     monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": "u-x")

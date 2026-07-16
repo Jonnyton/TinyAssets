@@ -29,6 +29,7 @@ def _make_universe(tmp_path, monkeypatch, uid):
 
 def test_status_reports_unbound_universe_idle_until_bound(tmp_path, monkeypatch):
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    monkeypatch.delenv("TINYASSETS_BYO_VAULT_ENCRYPTED", raising=False)  # BYO dark
     _make_universe(tmp_path, monkeypatch, "u-idle")
     payload = json.loads(get_status(universe_id="u-idle"))
 
@@ -37,22 +38,29 @@ def test_status_reports_unbound_universe_idle_until_bound(tmp_path, monkeypatch)
     # Flag OFF (default): ambient work still runs today, so workable stays True.
     assert eb["workable"] is True
     assert eb["non_ambient_gate"] is False
-    # The founder is offered the BYO bind next step, and told hosted/market/
-    # self-hosted execution routing is not available yet (declared choice only).
+    # F3/F5: with the BYO-encryption gate OFF (this deploy), hosted engines are
+    # DARK — the guidance says so and points the founder at their own device.
     steps = " ".join(payload["actionable_next_steps"]).lower()
-    assert "bind a byo api key" in steps
-    assert "set_engine" in steps
     assert "not available yet" in steps
-    # Finding 5: the BYO guidance records the vault-hardening prerequisite +
-    # that the non-ambient gate stays OFF until then.
     assert "vault encryption hardening" in steps
-    assert "gate stays off" in steps
-    # Finding 2 regression: with the gate OFF the caveat must NOT falsely claim
-    # the universe is idle-until-bound (it IS being worked via ambient legacy
-    # execution today). It should say so honestly.
+    assert "your own device" in steps
+    # Finding 2 regression: with the non-ambient gate OFF the caveat must NOT
+    # falsely claim the universe is idle-until-bound (ambient work runs today).
     combined = " ".join(payload["caveats"]).lower()
     assert "idle-until-bound" not in combined
     assert "ambient" in combined and "workable" in combined
+
+
+def test_status_byo_gate_on_offers_byo_bind(tmp_path, monkeypatch):
+    """With the vault-encryption gate ON, the guidance offers the BYO bind + notes
+    codex/hosted lanes are recorded-not-executable."""
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    _make_universe(tmp_path, monkeypatch, "u-idle-byo")
+    payload = json.loads(get_status(universe_id="u-idle-byo"))
+    steps = " ".join(payload["actionable_next_steps"]).lower()
+    assert "bind a byo anthropic api key" in steps
+    assert "not executable yet" in steps
 
 
 def test_status_unbound_with_gate_on_is_not_workable(tmp_path, monkeypatch):
@@ -70,11 +78,13 @@ def test_status_unbound_with_gate_on_is_not_workable(tmp_path, monkeypatch):
 
 def test_status_reports_bound_universe(tmp_path, monkeypatch):
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")  # executable BYO on
     udir = _make_universe(tmp_path, monkeypatch, "u-bound")
     write_credential_vault(udir, [{
         "credential_type": "llm_api_key",
         "service": "anthropic",
-        "secret_b64": base64.b64encode(b"sk-ant-test").decode("ascii"),
+        "secret_b64": base64.b64encode(
+            ("sk-ant-api03-" + "A" * 40).encode()).decode("ascii"),
     }])
     from tinyassets.config import write_universe_config_fields
     write_universe_config_fields(udir, engine_source="byo_api_key")
@@ -165,6 +175,7 @@ def test_set_engine_subscription_is_rejected_with_guidance(tmp_path, monkeypatch
 def test_set_engine_byo_rejects_non_per_universe_service(tmp_path, monkeypatch):
     """Finding 2: gemini/groq/xai keys are not per-universe-consumable — the bind
     is rejected with a clear 'not yet supported' error and stores nothing."""
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")  # past the F3 gate
     uni, udir = _setup_set_engine(tmp_path, monkeypatch, "u-byo-gemini")
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
         "engine_source": "byo_api_key", "service": "gemini", "api_key": "g-key",

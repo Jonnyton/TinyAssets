@@ -185,6 +185,41 @@ def _service(record: dict[str, Any]) -> str:
     return str(record.get("service") or record.get("provider") or "").strip().lower()
 
 
+def _credential_identity(record: dict[str, Any]) -> tuple[str, str, str]:
+    """Identity of a credential record for upsert-by-identity.
+
+    ``(credential_type, service, destination)`` — ``destination`` only
+    distinguishes ``vcs`` records (a founder can bind multiple repos); for
+    llm_api_key / llm_subscription / social the destination component is empty so
+    one record per (type, service) is kept.
+    """
+    ctype = str(record.get("credential_type") or "").strip()
+    dest = str(record.get("destination") or "").strip() if ctype == "vcs" else ""
+    return (ctype, _service(record), dest)
+
+
+def upsert_credential(
+    universe_dir: str | Path,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically add-or-replace ONE credential, PRESERVING all other records.
+
+    ``write_credential_vault`` is a replace-ALL writer — calling it with a single
+    record WIPES a founder's other credentials (social / vcs). This upsert loads
+    the existing vault, replaces only the record with the same
+    :func:`_credential_identity`, appends if none matched, and writes the full
+    set back atomically (F2). Propagates :class:`ValueError` on a malformed
+    existing vault so the caller can fail loud rather than clobber.
+    """
+    universe = Path(universe_dir)
+    normalized = _normalize_record(record)
+    identity = _credential_identity(normalized)
+    existing = load_credential_vault(universe)  # raises ValueError if malformed
+    merged = [r for r in existing if _credential_identity(r) != identity]
+    merged.append(normalized)
+    return write_credential_vault(universe, merged)
+
+
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:
     expected = purpose.strip()
     record_purpose = record.get("purpose")

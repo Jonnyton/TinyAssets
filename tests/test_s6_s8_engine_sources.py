@@ -22,9 +22,11 @@ def _setup(tmp_path, monkeypatch):
 
 
 def test_byo_api_key_still_works_and_records_source(tmp_path, monkeypatch):
+    # F3: BYO deposit requires the vault-encryption gate (DARK by default).
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     uni, udir = _setup(tmp_path, monkeypatch)
-    out = json.loads(uni._action_set_engine(
-        inputs_json=json.dumps({"service": "anthropic", "api_key": "sk-x"})))
+    out = json.loads(uni._action_set_engine(inputs_json=json.dumps(
+        {"service": "anthropic", "api_key": "sk-ant-api03-" + "A" * 40})))
     assert out["engine_source"] == "byo_api_key"  # default source
     assert load_universe_config(udir).engine_source == "byo_api_key"
 
