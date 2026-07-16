@@ -27,6 +27,7 @@ from tinyassets.providers.base import (
     ProviderResponse,
     UniverseContext,
     api_key_providers_enabled,
+    enforce_os_sandbox,
 )
 from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
@@ -296,6 +297,11 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+        # Coding-node fail-closed preflight (patch-loop S3): a call requiring an
+        # OS sandbox must not be dispatched to ANY provider when none is
+        # available — refuse loudly here rather than let a fallback provider (or
+        # a local model producing fake text) run the node unconfined (rule #8).
+        enforce_os_sandbox(cfg)
         chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
 
         # Hard pin: TINYASSETS_PIN_WRITER narrows the writer chain to a
@@ -618,6 +624,8 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+        # Coding-node fail-closed preflight (patch-loop S3) — see call().
+        enforce_os_sandbox(cfg)
 
         if not policy:
             resp = await self.call(

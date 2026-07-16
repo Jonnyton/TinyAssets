@@ -60,7 +60,30 @@ class ModelConfig:
     checkout, exposing repo files / ``CLAUDE.md`` / other universes). Set for the
     founder-facing universe-intelligence turn; leave False for host-trusted engine
     roles. The isolation is only as strong as the tool policy below — pair it with
-    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out)."""
+    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out).
+
+    This is the *conversation* sandbox profile (WebFetch-only, no filesystem
+    tools): safe WITHOUT an OS sandbox because the tool denylist removes every
+    filesystem/shell tool. Coding nodes that must actually READ/WRITE a repo use
+    ``os_sandbox_required`` instead — they keep the coding tools, so their
+    confinement depends on an OS-level sandbox, not the tool denylist."""
+
+    os_sandbox_required: bool = False
+    """Require an OS-level sandbox (bwrap / container) to confine this call, and
+    FAIL CLOSED if none is available. Set for coding nodes (``requires_sandbox``
+    on the NodeDefinition, e.g. the patch loop's ``draft_patch``) that run a
+    coding agent with real filesystem/shell tools against a checked-out repo.
+
+    Unlike ``sandbox_workspace`` (which is safe unsandboxed because it denies all
+    filesystem tools), a coding node KEEPS Read/Write/Edit/Bash so it can produce
+    a patch — and the claude CLI cannot confine those tools to a directory
+    (Read/Glob/Grep are default-allowed, and a bare deny is all-or-nothing). The
+    only real confinement for a repo-touching coding turn is therefore an OS
+    sandbox around the whole subprocess. When True, subprocess providers MUST:
+    (1) refuse to run when no OS sandbox is available (raise
+    :class:`SandboxUnavailableError` — never run unconfined), and (2) never use
+    any bypass-sandbox escape hatch (codex ``--dangerously-bypass-approvals-and-
+    sandbox``). Host-trusted roles leave this False (default) and are unaffected."""
 
     allowed_tools: tuple[str, ...] | None = None
     """Allowlist of CLI tool names the subprocess may use (e.g.
@@ -588,6 +611,33 @@ def check_bwrap_failure(stderr_text: str) -> None:
                 f"(requires_sandbox=false). These nodes don't need bwrap.\n"
                 f"  3. Run the daemon on a host where bwrap is available."
             )
+
+
+def enforce_os_sandbox(config: "ModelConfig") -> None:
+    """Fail closed when *config* requires an OS sandbox that isn't available.
+
+    The build-blocking gate for coding nodes (``os_sandbox_required``): a node
+    that runs a coding agent with real filesystem/shell tools against a repo can
+    only be confined by an OS-level sandbox (bwrap/container) — the CLI tool
+    denylist cannot pin Read/Bash to a directory. Rather than run such a node
+    unconfined on the capacity host (arbitrary-repo exfiltration / abuse vector),
+    raise so the node fails LOUDLY (hard rule #8). Called by subprocess providers
+    BEFORE they spawn. No-op for host-trusted roles (``os_sandbox_required`` is
+    False by default).
+    """
+    if not getattr(config, "os_sandbox_required", False):
+        return
+    status = get_sandbox_status()
+    if not status.get("bwrap_available"):
+        raise SandboxUnavailableError(
+            "This node requires an OS-level sandbox (bwrap) to confine its "
+            "coding-agent filesystem/shell tools, but none is available on this "
+            f"host: {status.get('reason') or 'bwrap unavailable'}. Refusing to "
+            "run the coding node unconfined (fail closed). Enable unprivileged "
+            "user namespaces / bwrap on the host, run the daemon inside a "
+            "container sandbox, or use a design-only branch with no "
+            "requires_sandbox nodes."
+        )
 
 
 def probe_sandbox_available() -> dict[str, object]:

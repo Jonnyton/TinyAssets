@@ -24,6 +24,7 @@ from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
     ProviderResponse,
+    SandboxUnavailableError,
     check_bwrap_failure,
     get_sandbox_status,
     subprocess_env_for_provider,
@@ -78,6 +79,42 @@ def _codex_workdir() -> str:
     return str(Path(__file__).resolve().parents[2])
 
 
+def _codex_sandbox_args(
+    config: ModelConfig, sandbox_status: dict,
+) -> list[str]:
+    """Pick codex's sandbox flags, failing closed for coding-node sandboxes.
+
+    Two regimes:
+
+    * Host-trusted / prompt-node calls (``os_sandbox_required`` False): keep
+      today's behavior — ``--full-auto`` when bwrap is usable, else the hosted
+      subscription mode (``--dangerously-bypass-approvals-and-sandbox``).
+
+    * Coding-node sandbox (``os_sandbox_required`` True — the patch loop's
+      ``draft_patch`` and any ``requires_sandbox`` node): the process MUST be
+      OS-confined. NEVER emit ``--dangerously-bypass-approvals-and-sandbox``
+      (that grants full host access — the exact exfiltration vector a remixed
+      loop could abuse). Require bwrap → ``--full-auto``; when bwrap is absent
+      raise :class:`SandboxUnavailableError` so the node fails LOUDLY instead of
+      running unconfined (hard rule #8).
+    """
+    bwrap_ok = bool(sandbox_status.get("bwrap_available"))
+    if config.os_sandbox_required:
+        if not bwrap_ok:
+            raise SandboxUnavailableError(
+                "codex coding-node requires an OS sandbox (bwrap) and MUST NOT "
+                "use --dangerously-bypass-approvals-and-sandbox, but bwrap is "
+                f"unavailable: {sandbox_status.get('reason') or 'no bwrap'}. "
+                "Refusing to run the coding agent unconfined (fail closed)."
+            )
+        return ["--full-auto"]
+    return (
+        ["--full-auto"]
+        if bwrap_ok
+        else ["--dangerously-bypass-approvals-and-sandbox"]
+    )
+
+
 class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
@@ -113,11 +150,9 @@ class CodexProvider(BaseProvider):
         base_cmd, use_shell = _resolve_codex_cmd()
         model = _codex_model()
         sandbox_status = get_sandbox_status()
-        sandbox_args = (
-            ["--full-auto"]
-            if sandbox_status.get("bwrap_available")
-            else ["--dangerously-bypass-approvals-and-sandbox"]
-        )
+        # Coding-node sandboxes fail closed here (never bypass); host-trusted
+        # calls keep the --full-auto / hosted-mode fallback.
+        sandbox_args = _codex_sandbox_args(config, sandbox_status)
         # Prompt-node calls use Codex as a subscription-backed text model, but
         # loop-investigation coding prompts still need repo source/tests mounted.
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;

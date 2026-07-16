@@ -26,6 +26,7 @@ from tinyassets.providers.base import (
     ModelConfig,
     ProviderResponse,
     check_bwrap_failure,
+    enforce_os_sandbox,
     subprocess_env_for_provider,
 )
 
@@ -64,14 +65,18 @@ def _sandbox_cli_args(
     that leave the config fields at their defaults.
     """
     flags: list[str] = []
-    if config.sandbox_workspace:
+    # Strip ambient MCP + user config for BOTH hardened profiles: the founder
+    # conversation (``sandbox_workspace``) and the coding node
+    # (``os_sandbox_required``).
+    hardened = bool(config.sandbox_workspace or config.os_sandbox_required)
+    if hardened:
         # Load ONLY project-tier settings. A universe dir is bare, so this loads
         # NOTHING — critically it excludes the USER's global settings, which carry
         # MCP servers and `bypassPermissions`. Without it, the sandboxed engine
         # still inherits the user's MCP tools (verified 2026-07-03: it saw
         # `mcp__codex__codex`), so a founder's universe could call e.g. Codex →
         # arbitrary code execution, fully bypassing the Bash deny. This strips all
-        # ambient MCP + config from the founder-facing turn.
+        # ambient MCP + config from the hardened turn.
         flags += ["--setting-sources", "project"]
     allowed = config.allowed_tools
     disallowed = config.disallowed_tools
@@ -82,15 +87,22 @@ def _sandbox_cli_args(
         flags += ["--allowedTools", *allowed]
     if disallowed:
         flags += ["--disallowedTools", *disallowed]
-    # Fail-closed (2026-07-03 P0 review, Codex ADAPT): a sandboxed turn with no
-    # universe_dir would inherit the daemon's cwd (the checkout) — the exact leak
-    # this fixes. Refuse rather than silently run un-isolated.
+    # Fail-closed (2026-07-03 P0 review, Codex ADAPT): a founder-conversation
+    # sandbox with no universe_dir would inherit the daemon's cwd (the checkout)
+    # — the exact leak this fixes. Refuse rather than silently run un-isolated.
+    # (A coding node runs IN the checked-out repo, so it does not require a
+    # universe_dir; its confinement is the OS sandbox enforced separately by
+    # enforce_os_sandbox() before the subprocess spawns.)
     if config.sandbox_workspace and universe_dir is None:
         raise ProviderError(
             "sandboxed universe turn requires a universe_dir — refusing to run "
             "un-isolated in the daemon's working directory (fail-closed)."
         )
-    run_cwd = str(universe_dir) if config.sandbox_workspace else None
+    # Pin cwd to the isolated dir when one is supplied for a hardened turn (the
+    # universe dir for a conversation; a checked-out repo dir when threaded for a
+    # coding node). Otherwise leave cwd unset so a coding node runs in the
+    # daemon's repo checkout, confined by the OS sandbox.
+    run_cwd = str(universe_dir) if (hardened and universe_dir is not None) else None
     return flags, run_cwd
 
 
@@ -112,6 +124,10 @@ class ClaudeProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        # Coding-node fail-closed gate: if this call requires an OS sandbox and
+        # none is available, refuse BEFORE spawning rather than run a coding
+        # agent unconfined against the host (hard rule #8).
+        enforce_os_sandbox(config)
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p"]
         if system:
@@ -203,6 +219,9 @@ class ClaudeProvider(BaseProvider):
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
         """Call with ``--output-format json`` for structured output."""
+        # Coding-node fail-closed gate (see complete()): refuse before spawning
+        # when an OS sandbox is required but unavailable.
+        enforce_os_sandbox(config)
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         if system:

@@ -932,15 +932,40 @@ def _build_prompt_template_node(
     # fast+cheap) + the node's own timeout. Built once per node. ModelConfig is
     # imported lazily so graph_compiler keeps no hard provider import.
     _node_reasoning_effort = (getattr(node, "reasoning_effort", "") or "").strip()
+    # SECURITY (patch-loop S3): decide sandbox requirement up front. A node that
+    # declares requires_sandbox — or a coding-node kind that defaults to it, e.g.
+    # the patch loop's draft_patch — runs its coding agent against a user-bound
+    # repo in our cloud, so it MUST get the hardened, OS-sandboxed ModelConfig
+    # (repo-confined, host connectors + mcp__*/Monitor denied, codex no-bypass,
+    # fail-closed when no OS sandbox exists). It must NEVER silently fall back to
+    # an unsandboxed default — that would re-open the exfiltration vector.
+    from tinyassets.sandbox_policy import (
+        node_requires_sandbox as _node_requires_sandbox,
+    )
+    _node_needs_sandbox = _node_requires_sandbox(node)
     try:
         from tinyassets.providers.base import ModelConfig as _ModelConfig
-        _node_cfg: Any = _ModelConfig(
-            # Floor at 1s: a sub-second node timeout (e.g. 0.5) must not become
-            # a provider timeout of 0 (int(0.5)==0 → instant provider timeout).
-            timeout=max(1, int(timeout_s)),
-            reasoning_effort=_node_reasoning_effort,
-        )
+        if _node_needs_sandbox:
+            from tinyassets.sandbox_policy import (
+                coding_node_model_config as _coding_node_model_config,
+            )
+            _node_cfg: Any = _coding_node_model_config(
+                timeout=timeout_s,
+                reasoning_effort=_node_reasoning_effort,
+            )
+        else:
+            _node_cfg = _ModelConfig(
+                # Floor at 1s: a sub-second node timeout (e.g. 0.5) must not
+                # become a provider timeout of 0 (int(0.5)==0 → instant timeout).
+                timeout=max(1, int(timeout_s)),
+                reasoning_effort=_node_reasoning_effort,
+            )
     except Exception:  # pragma: no cover - defensive; provider import is optional
+        if _node_needs_sandbox:
+            # Fail loud rather than silently run a coding node unsandboxed
+            # (hard rule #8): a hardened config that cannot be built must abort
+            # branch compilation, not degrade to an unconfined call.
+            raise
         _node_cfg = None
     # Only pass config to the injected provider bridge when its signature
     # accepts it (protects test stubs / older bridges).
