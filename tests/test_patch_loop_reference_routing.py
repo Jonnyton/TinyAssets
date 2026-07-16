@@ -1,16 +1,24 @@
-"""Codex S1 round-6 Finding 1 (CRITICAL): the reference patch loop's
-conditional routing must be SAFE — a ``red`` verify verdict can NEVER reach
-``present`` (open the PR), and a ``reject`` owner decision can NEVER reach
-``merge``. Before the fix the ``verify`` / ``owner_gate`` nodes declared no
-output_keys, so ``_build_conditional_router`` fell back to the FIRST condition
-label (green→present, approve→merge) regardless of the node's actual output —
-a rejected patch would merge.
+"""Safety + honesty of the reference patch loop's conditional routing and
+effect contracts.
 
-This is a compiled-graph proof: it builds the REAL artifact spec through the
-ordinary ``_staged_branch_from_spec`` -> ``compile_branch`` -> ``graph.invoke``
-path with fake providers, and asserts on the observed node-visit order (via the
-event sink) — the only way to prove the safety semantics rather than the
-serialized shape.
+Routing safety (Codex round-6/7): a failing verify (``send_back``) can NEVER
+reach ``present`` (open the PR), and a rejected owner gate (``reject``) can NEVER
+reach ``merge``. ``_build_conditional_router`` routes on ``verdict`` and falls
+back to the edge's declared SCALAR ``fallback`` (the SAFE branch) — persistence
+alphabetizes the conditions dict (``_json_dumps(sort_keys=True)``), so key order
+cannot be trusted; the scalar fallback survives it.
+
+Gate convention (Codex r10 #5): verify + owner_gate are gates emitting the
+canonical shape from ``docs/conventions/gate-branch-shape.md`` — ``verdict``
+(``pass`` / ``send_back`` / ``reject``) + ``verdict_evidence``.
+
+Effect honesty (Codex r10 #1): present/merge declare real effects AND the
+matching typed packet output_keys the effectors search, so the emitted packet is
+actually findable.
+
+Compiled-graph proof: builds the REAL artifact spec through
+``_staged_branch_from_spec`` -> ``compile_branch`` -> ``graph.invoke`` with fake
+providers and asserts the observed node-visit order (via the event sink).
 """
 from __future__ import annotations
 
@@ -23,9 +31,9 @@ from tinyassets.api.branches import _staged_branch_from_spec
 from tinyassets.branch_designs import load_design_artifacts
 from tinyassets.graph_compiler import compile_branch
 
-# The seven binding fields a remix would bind; seeded so every node's template
-# renders (the reference nodes declare no input_keys, so the full state is the
-# render view — a referenced-but-unseeded key would raise at compile-run time).
+# Binding fields a remix would bind; seeded so every node's template renders (the
+# reference nodes declare no input_keys, so the full state is the render view — a
+# referenced-but-unseeded key would raise at compile-run time).
 _SEED_STATE: dict[str, str] = {
     "intake_source": "queue://requests",
     "request_payload": "user reports the export button is broken",
@@ -33,6 +41,23 @@ _SEED_STATE: dict[str, str] = {
     "merge_policy": "manual",
     "verify_command": "pytest -q",
     "reshape_notes": "",
+}
+
+_PR_PACKET = {
+    "sink": "github_pull_request",
+    "destination": "example/project",
+    "payload": {
+        "title": "Fix export button", "body": "summary",
+        "base_branch": "main", "head_branch": "auto/fix-export", "draft": False,
+    },
+}
+_MERGE_PACKET = {
+    "sink": "github_merge",
+    "destination": "example/project",
+    "payload": {
+        "pr_number": 1, "expected_head_sha": "a" * 40,
+        "merge_method": "squash", "authorization": {"mode": "github_branch_protection"},
+    },
 }
 
 
@@ -50,32 +75,42 @@ def _reference_branch():
 
 
 def _make_provider(
-    verify_verdicts: list[str], gate_decision: str,
+    verify_verdicts: list[str], gate_verdict: str,
 ) -> Callable[..., str]:
-    """Fake provider: emits a scripted JSON verdict for ``verify`` (advancing
-    through ``verify_verdicts`` per call so a red→green retry can terminate),
-    a scripted JSON decision for ``owner_gate``, and a stable leaf string for
-    every other node. Markers are the unique node prompt-body phrases."""
+    """Fake provider: scripted canonical verdicts for the gates and valid effect
+    packets for present/merge (all four are JSON-contract nodes now). Markers are
+    unique node prompt-body phrases."""
     call_state = {"verify_i": 0}
 
     def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
-        if "Run the project's verification" in prompt:
+        if "verification GATE" in prompt:
             i = call_state["verify_i"]
             call_state["verify_i"] += 1
             verdict = verify_verdicts[min(i, len(verify_verdicts) - 1)]
-            return json.dumps({"verdict": verdict, "verify_output": f"verify:{verdict}"})
-        if "Apply the owner's merge_policy" in prompt:
             return json.dumps({
-                "decision": gate_decision,
-                "reshape_notes": "please fix X" if gate_decision == "reshape" else "",
-                "owner_gate_output": f"gate:{gate_decision}",
+                "verdict": verdict,
+                "verdict_evidence": {"reason": f"verify:{verdict}"},
+            })
+        if "owner review GATE" in prompt:
+            return json.dumps({
+                "verdict": gate_verdict,
+                "verdict_evidence": {"reason": f"gate:{gate_verdict}"},
+                "reshape_notes": "please revise" if gate_verdict == "send_back" else "",
+            })
+        if "github_pull_request external-write packet" in prompt:
+            return json.dumps({
+                "github_pr_packet": _PR_PACKET, "present_output": "queued PR #1",
+            })
+        if "github_merge external-write packet" in prompt:
+            return json.dumps({
+                "github_merge_packet": _MERGE_PACKET, "merge_output": "merge receipt",
             })
         return "step ran"
     return _call
 
 
 def _invoke_compiled(
-    branch, verify_verdicts: list[str], gate_decision: str,
+    branch, verify_verdicts: list[str], gate_verdict: str,
 ) -> tuple[list[str], dict[str, Any]]:
     """Compile + invoke a branch; return (visited_node_order, final_state)."""
     visited: list[str] = []
@@ -86,7 +121,7 @@ def _invoke_compiled(
 
     compiled = compile_branch(
         branch,
-        provider_call=_make_provider(verify_verdicts, gate_decision),
+        provider_call=_make_provider(verify_verdicts, gate_verdict),
         event_sink=_sink,
     )
     result = compiled.graph.compile().invoke(
@@ -95,47 +130,44 @@ def _invoke_compiled(
     return visited, dict(result)
 
 
-def _run(verify_verdicts: list[str], gate_decision: str) -> tuple[list[str], dict[str, Any]]:
+def _run(verify_verdicts: list[str], gate_verdict: str) -> tuple[list[str], dict[str, Any]]:
     """Compile + invoke the STAGED reference branch (never crosses persistence)."""
-    return _invoke_compiled(_reference_branch(), verify_verdicts, gate_decision)
+    return _invoke_compiled(_reference_branch(), verify_verdicts, gate_verdict)
 
 
 # ── Safety semantics ────────────────────────────────────────────────────────
 
 
-def test_happy_path_green_routes_present_then_approve_routes_merge():
-    # ROUTING property only: green -> present, approve -> merge (present before
-    # merge). We assert the graph REACHES merge, NOT that a fake model's
-    # merge_output text means "the PR merged" — the present node EMITS a
-    # github_pull_request effect and merge EMITS a github_merge effect; the
-    # runner performs the writes. Full present -> owner review-queue -> decision
-    # -> merge effector EXECUTION is proven in the bundled S1+S3+S4 integration
-    # test (S4 owns that + the github_merge effector); on S1 the repo-touching
-    # nodes are sandbox-required and fail closed until the sandbox runner ships.
-    visited, _result = _run(verify_verdicts=["green"], gate_decision="approve")
+def test_happy_path_pass_routes_present_then_pass_routes_merge():
+    # ROUTING property only: verify pass -> present, owner pass -> merge (present
+    # before merge). We assert the graph REACHES merge, NOT that a fake model's
+    # merge_output text means "the PR merged" — present EMITS a
+    # github_pull_request effect and merge EMITS a github_merge effect; the runner
+    # performs the writes. Full present -> owner review-queue -> decision -> merge
+    # effector EXECUTION is wired in the durable two-stage resume phase
+    # (lead-tracked); on S1 the repo-touching nodes are sandbox-required and fail
+    # closed until the sandbox runner ships.
+    visited, _result = _run(verify_verdicts=["pass"], gate_verdict="pass")
 
     assert "present" in visited, visited
     assert "merge" in visited, visited
     assert visited.index("present") < visited.index("merge")
 
 
-def test_red_verify_routes_to_draft_patch_and_never_present():
-    # First verify returns red -> MUST route back to draft_patch, NOT present.
-    # Second verify returns green so the run terminates (reject ends it cleanly).
-    visited, result = _run(verify_verdicts=["red", "green"], gate_decision="reject")
+def test_send_back_verify_routes_to_draft_patch_and_never_present():
+    # First verify returns send_back -> MUST route back to draft_patch, NOT
+    # present. Second verify returns pass so the run terminates (reject ends it).
+    visited, _result = _run(verify_verdicts=["send_back", "pass"], gate_verdict="reject")
 
     first_verify = visited.index("verify")
-    # The node immediately after the red verify is draft_patch, never present.
     assert visited[first_verify + 1] == "draft_patch", visited
-    # present is not reached at or before the red verdict.
     assert "present" not in visited[: first_verify + 1], visited
-    # The red verdict caused a second draft_patch attempt.
     assert visited.count("draft_patch") >= 2, visited
 
 
 def test_reject_owner_gate_routes_to_end_and_never_merge():
-    # green gets us to present; reject at the owner gate -> END, never merge.
-    visited, result = _run(verify_verdicts=["green"], gate_decision="reject")
+    # verify pass gets us to present; reject at the owner gate -> END, never merge.
+    visited, result = _run(verify_verdicts=["pass"], gate_verdict="reject")
 
     assert "present" in visited, visited
     assert "owner_gate" in visited, visited
@@ -143,25 +175,31 @@ def test_reject_owner_gate_routes_to_end_and_never_merge():
     assert not result.get("merge_output"), result
 
 
-def test_reshape_owner_gate_routes_back_to_draft_and_never_merge():
-    # reshape must loop back to draft_patch (not merge). One reshape, then a
-    # reject terminates so the graph doesn't spin forever in the test.
+def test_send_back_owner_gate_routes_back_to_draft_and_never_merge():
+    # owner send_back must loop back to draft_patch (not merge). One send_back,
+    # then a reject terminates so the graph doesn't spin forever in the test.
     visited: list[str] = []
     call_state = {"verify_i": 0, "gate_i": 0}
-    gate_decisions = ["reshape", "reject"]
+    gate_verdicts = ["send_back", "reject"]
 
     def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
-        if "Run the project's verification" in prompt:
-            return json.dumps({"verdict": "green", "verify_output": "verify:green"})
-        if "Apply the owner's merge_policy" in prompt:
+        if "verification GATE" in prompt:
+            return json.dumps({
+                "verdict": "pass", "verdict_evidence": {"reason": "verify:pass"},
+            })
+        if "owner review GATE" in prompt:
             i = call_state["gate_i"]
             call_state["gate_i"] += 1
-            decision = gate_decisions[min(i, len(gate_decisions) - 1)]
+            verdict = gate_verdicts[min(i, len(gate_verdicts) - 1)]
             return json.dumps({
-                "decision": decision,
-                "reshape_notes": "tighten error handling" if decision == "reshape" else "",
-                "owner_gate_output": f"gate:{decision}",
+                "verdict": verdict,
+                "verdict_evidence": {"reason": f"gate:{verdict}"},
+                "reshape_notes": "tighten error handling" if verdict == "send_back" else "",
             })
+        if "github_pull_request external-write packet" in prompt:
+            return json.dumps({"github_pr_packet": _PR_PACKET, "present_output": "PR"})
+        if "github_merge external-write packet" in prompt:
+            return json.dumps({"github_merge_packet": _MERGE_PACKET, "merge_output": "m"})
         return "step ran"
 
     def _sink(**kw: Any) -> None:
@@ -176,49 +214,94 @@ def test_reshape_owner_gate_routes_back_to_draft_and_never_merge():
     )
 
     first_gate = visited.index("owner_gate")
-    # After the reshape decision the next node is draft_patch, not merge.
     assert visited[first_gate + 1] == "draft_patch", visited
     assert "merge" not in visited, visited
     assert not dict(result).get("merge_output"), result
 
 
-# ── Honest-reference structure (effects + capability tags) ───────────────────
+# ── Honest-reference structure: gate convention + effect contracts ───────────
 
 
-def test_reference_declares_real_effects_and_sandbox_capabilities():
-    # Codex F1/F2: the reference is HONEST, not a prompt-only simulation. present
-    # and merge carry REAL effect declarations (the runner performs the writes);
-    # the repo-touching nodes are sandbox-required and carry capability tags for
-    # the S3 enforcement slice. Structural proof at the artifact + built layers.
-    #
-    # NOTE: full present -> review-queue -> decision -> merge EFFECTOR EXECUTION
-    # is proven in the bundled S1+S3+S4 integration test (S4 owns it). On S1
-    # requires_sandbox/effects are declarations; enforcement lands with S3/S4.
+def test_gates_use_canonical_verdict_convention():
+    # Codex r10 #5: verify + owner_gate emit the canonical gate shape
+    # (verdict + verdict_evidence), route on the canonical verdict vocabulary,
+    # and the SAFE-first scalar fallback is the canonical safe verdict.
+    spec = _reference_spec()
+    nodes = {n["node_id"]: n for n in spec["node_defs"]}
+    edges = {c["from"]: c for c in spec["conditional_edges"]}
+    fields = {f["name"] for f in spec["state_schema"]}
+
+    assert nodes["verify"]["output_keys"][:2] == ["verdict", "verdict_evidence"]
+    assert nodes["owner_gate"]["output_keys"][:2] == ["verdict", "verdict_evidence"]
+    assert {"verdict", "verdict_evidence"} <= fields
+    # Canonical verdict vocabulary only (no green/red/approve/reshape).
+    assert set(edges["verify"]["conditions"]) == {"pass", "send_back"}
+    assert set(edges["owner_gate"]["conditions"]) == {"pass", "send_back", "reject"}
+    # Safe-first fallback = the canonical SAFE verdict (never forward-to-write).
+    assert edges["verify"]["fallback"] == "send_back"
+    assert edges["owner_gate"]["fallback"] == "reject"
+
+
+def test_reference_declares_real_effects_and_sandbox_node_kinds():
+    # Codex r10 #1 + node_kind reconciliation: present/merge carry REAL effect
+    # declarations AND the packet output_keys the effectors search; the
+    # repo-touching nodes are sandbox-required and carry S3's node_kind values
+    # (repo_read / repo_exec / coding). Full effector EXECUTION is wired in the
+    # durable two-stage resume phase (lead-tracked).
     spec = _reference_spec()
     nodes = {n["node_id"]: n for n in spec["node_defs"]}
 
-    # (a) Capability tags on repo-touching nodes (artifact data for S3).
-    assert nodes["investigate"]["capabilities"] == ["repo-read"]
-    assert nodes["verify"]["capabilities"] == ["repo-exec"]
-    assert nodes["draft_patch"]["capabilities"] == ["repo-write"]
+    # node_kind reconciled with S3's taxonomy (NOT a capabilities list).
+    assert nodes["investigate"]["node_kind"] == "repo_read"
+    assert nodes["verify"]["node_kind"] == "repo_exec"
     assert nodes["draft_patch"]["node_kind"] == "coding"
-    # ...all three are sandbox-required (fail-closed until the sandbox runner).
+    assert "capabilities" not in nodes["investigate"]
     for nid in ("investigate", "verify", "draft_patch"):
         assert nodes[nid]["requires_sandbox"] is True, nid
 
-    # (b) Real effect declarations on present + merge.
+    # Real effect declarations + the matching typed packet output_keys.
     assert nodes["present"]["effects"] == ["github_pull_request"]
+    assert nodes["present"]["output_keys"][0] == "github_pr_packet"
     assert nodes["merge"]["effects"] == ["github_merge"]
+    assert nodes["merge"]["output_keys"][0] == "github_merge_packet"
 
-    # requires_sandbox + effects are REAL NodeDefinition fields — they must
-    # survive the build into the compiled branch (capabilities/node_kind are
-    # artifact-only data the current build drops; S3 consumes them).
+    # requires_sandbox + effects are REAL NodeDefinition fields — they survive
+    # the build (node_kind/capabilities are artifact-only data the build drops).
     branch = _reference_branch()
     built = {n.node_id: n for n in branch.node_defs}
     for nid in ("investigate", "verify", "draft_patch"):
         assert built[nid].requires_sandbox is True, nid
     assert built["present"].effects == ["github_pull_request"]
     assert built["merge"].effects == ["github_merge"]
+
+
+def test_present_output_keys_satisfy_github_pr_effector_contract():
+    # Codex r10 #1 (effector contract): a valid github_pull_request packet placed
+    # under one of present's declared output_keys must be FOUND by the effector —
+    # NOT no_matching_packet. Proves the node's declared keys match what the
+    # effector searches.
+    from tinyassets.effectors.github_pr import run_github_pr_effector
+
+    present = next(n for n in _reference_branch().node_defs if n.node_id == "present")
+    run_state = {"github_pr_packet": dict(_PR_PACKET)}
+    result = run_github_pr_effector(
+        node_id="present", output_keys=present.output_keys,
+        run_state=run_state, base_path=None,
+    )
+    assert result.get("error_kind") != "no_matching_packet", result
+    assert result.get("matched_output_key") == "github_pr_packet" or result.get("dry_run"), result
+
+
+def test_merge_output_keys_satisfy_github_merge_effector_contract():
+    from tinyassets.effectors.github_merge import run_github_merge_effector
+
+    merge = next(n for n in _reference_branch().node_defs if n.node_id == "merge")
+    run_state = {"github_merge_packet": dict(_MERGE_PACKET)}
+    result = run_github_merge_effector(
+        node_id="merge", output_keys=merge.output_keys,
+        run_state=run_state, base_path=None,
+    )
+    assert result.get("error_kind") != "no_matching_packet", result
 
 
 # ── Persistence-crossing safety (the durable lesson) ─────────────────────────
@@ -274,28 +357,28 @@ class TestRegistryRoundTripRoutingIsSafe:
             c for c in branch.conditional_edges if c.from_node == "owner_gate"
         )
         # sort_keys reordered the safe-first authoring order at the DB layer...
-        assert list(verify_ce.conditions.keys()) == ["green", "red"]
-        assert list(gate_ce.conditions.keys()) == ["approve", "reject", "reshape"]
-        # ...but the scalar fallback survived and still pins the SAFE branch.
-        assert verify_ce.fallback == "red"
+        assert list(verify_ce.conditions.keys()) == ["pass", "send_back"]
+        assert list(gate_ce.conditions.keys()) == ["pass", "reject", "send_back"]
+        # ...but the scalar fallback survived and still pins the SAFE verdict.
+        assert verify_ce.fallback == "send_back"
         assert gate_ce.fallback == "reject"
 
     def test_offlabel_verify_routes_to_draft_across_persistence(self, data_dir):
-        # An off-label verdict ("orange": capitalization/synonym/truncation) must
-        # route to draft_patch, NEVER present — across the persistence boundary.
+        # An off-label verdict ("orange") must route to draft_patch, NEVER
+        # present — across the persistence boundary.
         branch = _persisted_reference_branch(data_dir)
-        visited, result = _invoke_compiled(
-            branch, verify_verdicts=["orange", "green"], gate_decision="maybe",
+        visited, _result = _invoke_compiled(
+            branch, verify_verdicts=["orange", "pass"], gate_verdict="maybe",
         )
         first_verify = visited.index("verify")
         assert visited[first_verify + 1] == "draft_patch", visited
         assert "present" not in visited[: first_verify + 1], visited
 
-    def test_offlabel_decision_routes_to_end_across_persistence(self, data_dir):
-        # An off-label decision ("maybe") must route to END, NEVER merge.
+    def test_offlabel_owner_verdict_routes_to_end_across_persistence(self, data_dir):
+        # An off-label owner verdict ("maybe") must route to END, NEVER merge.
         branch = _persisted_reference_branch(data_dir)
         visited, result = _invoke_compiled(
-            branch, verify_verdicts=["green"], gate_decision="maybe",
+            branch, verify_verdicts=["pass"], gate_verdict="maybe",
         )
         assert "present" in visited, visited
         assert "owner_gate" in visited, visited
@@ -304,8 +387,7 @@ class TestRegistryRoundTripRoutingIsSafe:
 
     def test_happy_path_survives_persistence(self, data_dir):
         branch = _persisted_reference_branch(data_dir)
-        visited, result = _invoke_compiled(
-            branch, verify_verdicts=["green"], gate_decision="approve",
+        visited, _result = _invoke_compiled(
+            branch, verify_verdicts=["pass"], gate_verdict="pass",
         )
         assert "present" in visited and "merge" in visited, visited
-        assert result.get("merge_output"), result

@@ -220,11 +220,12 @@ def test_seed_repairs_incomplete_prior_seed(data_dir):
     assert fixed_id in {b["branch_def_id"] for b in post["branches"]}
 
 
-def test_rolled_back_only_reference_is_repaired_not_present(data_dir):
-    # S2 Codex gate (routed 2026-07-15): "any version exists" is NOT health.
-    # After the ONLY version is rolled back, active-only discovery no longer
-    # lists the reference, so the reseed must REPAIR (restore an active version),
-    # never report it present.
+def test_rolled_back_only_reference_repaired_with_fresh_version_audit_preserved(data_dir):
+    # S2 Codex gate + Codex r10 #3: "any version exists" is NOT health, AND the
+    # repair must PRESERVE the rollback audit. After the ONLY version is rolled
+    # back (a deliberate security/regression decision), the reseed must publish a
+    # FRESH ACTIVE version — NEVER reactivate the rolled-back one or clear its
+    # rolled_back_at/by/reason.
     from tinyassets.branch_designs import _reference_branch_id
     from tinyassets.branch_versions import _connect, list_branch_versions
     from tinyassets.daemon_server import list_branch_definitions
@@ -234,14 +235,16 @@ def test_rolled_back_only_reference_is_repaired_not_present(data_dir):
     fixed_id = _reference_branch_id("patch_loop_reference", 1)
     versions = list_branch_versions(data_dir, fixed_id, limit=50)
     assert len(versions) == 1 and versions[0].status == "active"
+    rolled_id = versions[0].branch_version_id
 
-    # Roll back the only version — exactly what the rollback engine does.
+    # Roll back the only version WITH audit fields — as the rollback engine does.
     with _connect(data_dir) as conn:
         conn.execute(
-            "UPDATE branch_versions SET status='rolled_back' "
-            "WHERE branch_def_id=?", (fixed_id,),
+            "UPDATE branch_versions SET status='rolled_back', "
+            "rolled_back_at='2026-07-15T00:00:00Z', rolled_back_by='security', "
+            "rolled_back_reason='regression detected' WHERE branch_version_id=?",
+            (rolled_id,),
         )
-    # No ACTIVE version now — the reference is invisible to active-only discovery.
     assert not any(
         v.status == "active"
         for v in list_branch_versions(data_dir, fixed_id, limit=50)
@@ -250,11 +253,19 @@ def test_rolled_back_only_reference_is_repaired_not_present(data_dir):
     results = seed_reference_designs(data_dir)
     assert tag in results["seeded"]              # repaired, NOT present
     assert tag not in results["present"]
-    # An ACTIVE version exists again; still exactly one reference row.
-    assert any(
-        v.status == "active"
-        for v in list_branch_versions(data_dir, fixed_id, limit=50)
-    )
+
+    after = {v.branch_version_id: v for v in list_branch_versions(data_dir, fixed_id, limit=50)}
+    # The rolled-back version is UNTOUCHED — still rolled_back, audit intact.
+    rolled = after[rolled_id]
+    assert rolled.status == "rolled_back"
+    assert rolled.rolled_back_by == "security"
+    assert rolled.rolled_back_reason == "regression detected"
+    assert rolled.rolled_back_at == "2026-07-15T00:00:00Z"
+    # A DISTINCT fresh active version now exists (the reference is discoverable).
+    active = [v for v in after.values() if v.status == "active"]
+    assert len(active) == 1
+    assert active[0].branch_version_id != rolled_id
+    # Still exactly one reference branch row.
     rows = list_branch_definitions(data_dir, tag=tag)
     assert len(rows) == 1
     assert rows[0]["branch_def_id"] == fixed_id
@@ -731,6 +742,22 @@ def test_load_design_artifacts_rejects_missing_and_bad_format(tmp_path, monkeypa
         bd.load_design_artifacts()
 
 
+def test_empty_package_fails_loud_on_required_artifact(data_dir, tmp_path, monkeypatch):
+    # Codex r10 #4: an EMPTY designs dir (or a package that dropped the required
+    # artifact) must FAIL LOUD, not look healthy. The required-artifact manifest
+    # makes the seed report the missing required id in `failed`.
+    import tinyassets.branch_designs as bd
+
+    empty = tmp_path / "empty_designs"
+    empty.mkdir()
+    monkeypatch.setattr(bd, "DESIGNS_DIR", empty)
+
+    results = bd.seed_reference_designs(data_dir)
+    assert results["seeded"] == []
+    assert results["present"] == []
+    assert "<missing-required-artifact:patch_loop_reference>" in results["failed"], results
+
+
 def test_artifact_semantic_fields_survive_build(data_dir):
     # Finding 4b: the safety-critical artifact fields must survive the build ->
     # persist -> reload round trip: routing output keys, the sandbox flag, the
@@ -748,12 +775,15 @@ def test_artifact_semantic_fields_survive_build(data_dir):
     assert verify.output_keys[:1] == ["verdict"]     # routing key is output_keys[0]
     draft = next(n for n in branch.node_defs if n.node_id == "draft_patch")
     assert draft.requires_sandbox is True            # sandbox flag survives
+    present = next(n for n in branch.node_defs if n.node_id == "present")
+    assert present.effects == ["github_pull_request"]  # effect declaration survives
     verify_ce = next(c for c in branch.conditional_edges if c.from_node == "verify")
     gate_ce = next(c for c in branch.conditional_edges if c.from_node == "owner_gate")
-    assert verify_ce.fallback == "red"               # safe scalar fallback survives
+    assert verify_ce.fallback == "send_back"          # safe scalar fallback survives
     assert gate_ce.fallback == "reject"
     field_names = {f["name"] for f in branch.state_schema}
-    assert {"verdict", "decision"} <= field_names     # routing state survives
+    # Canonical gate-convention routing state survives.
+    assert {"verdict", "verdict_evidence"} <= field_names
 
 
 # ── G4: dead-handler fail-loud guard ──────────────────────────────────────

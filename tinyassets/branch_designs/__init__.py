@@ -47,6 +47,14 @@ REFERENCE_TAG = "reference-design"
 # invisible to the seeder.
 RESERVED_SEED_AUTHOR = "reference-designs"
 
+# Required-artifact manifest (Codex r10 #4): the design_ids that MUST ship. An
+# empty designs dir, a missing required artifact, or a package that dropped one
+# would otherwise make ``load_design_artifacts`` return [] and the seed report
+# all-empty (seeded/present/failed) — a BROKEN package looking healthy. The seed
+# fails loud (``failed:[<missing-required-artifact:...>]``, reflected in
+# ``last_seed_result()``) when any required id is absent.
+REQUIRED_DESIGN_IDS = frozenset({"patch_loop_reference"})
+
 _REQUIRED_ENVELOPE_KEYS = ("design_format", "design_id", "design_version", "spec")
 # Top-level envelope keys the artifact loader accepts. Anything else is a typo
 # or a forward-compat field the current loader does not understand — reject it
@@ -164,14 +172,17 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
     filters on versions, not the bare flag. ``publish_branch_version`` dedupes
     by content hash, so re-publishing a healthy reference is a no-op.
 
-    Rolled-back restore (S2 Codex gate): ``publish_branch_version`` dedupes on
-    content hash and returns the EXISTING row WITHOUT reactivating it — so a
-    reference whose only version was rolled back cannot be re-minted active by a
-    plain re-publish. The reserved reference is a durable commons design that
-    must stay discoverable, and its content is the re-verified repo artifact, so
-    the seeder REACTIVATES a dedup-hit rolled-back version (seeder-owned id only).
+    Rolled-back repair — AUDIT-PRESERVING (Codex r10 #3): ``publish_branch_version``
+    dedupes on content hash and returns the EXISTING row WITHOUT reactivating it.
+    A rolled-back version is a deliberate security/regression decision — it must
+    STAY inactive and KEEP its ``rolled_back_at/by/reason`` audit intact; NEVER
+    reactivate it. When the dedup hits a rolled-back version, publish a FRESH
+    active version (distinct id, same authoritative content) so active-only
+    discovery lists the reference again, leaving the rolled-back version's audit
+    untouched. (Superseded the earlier reactivate-and-clear approach, which
+    erased a rollback's audit at restart.)
     """
-    from tinyassets.branch_versions import _connect, publish_branch_version
+    from tinyassets.branch_versions import publish_branch_version
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import (
         get_branch_definition,
@@ -188,19 +199,53 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
         notes=f"reference design seed {tag}",
     )
     if (version.status or "active") != "active":
-        # Dedup hit a rolled-back version — restore the reserved reference to
-        # active so active-only discovery lists it again.
-        with _connect(base_path) as conn:
-            conn.execute(
-                "UPDATE branch_versions SET status='active', "
-                "rolled_back_at=NULL, rolled_back_by=NULL, "
-                "rolled_back_reason=NULL WHERE branch_version_id=?",
-                (version.branch_version_id,),
-            )
-        logger.info(
-            "reactivated rolled-back reference version %s for %s",
-            version.branch_version_id, tag,
+        # Dedup hit a rolled-back version — DO NOT touch it. Mint a fresh
+        # active version so the reference is discoverable again, audit intact.
+        _publish_fresh_active_reference_version(base_path, saved, tag)
+
+
+def _publish_fresh_active_reference_version(
+    base_path: str | Path, branch_dict: dict, tag: str,
+) -> None:
+    """Insert a NEW active branch_version (distinct id) with the current
+    authoritative content, bypassing ``publish_branch_version``'s content-hash
+    dedup. Used only to repair a reference whose sole version was rolled back —
+    the rolled-back row (and its audit) is left untouched; only ``branch_version_id``
+    is the primary key, so a same-content row with a fresh id is legal.
+    """
+    import uuid
+    from datetime import datetime, timezone
+
+    from tinyassets.branch_versions import (
+        _canonical_snapshot,
+        _connect,
+        compute_content_hash,
+    )
+
+    snapshot = _canonical_snapshot(branch_dict)
+    content_hash = compute_content_hash(snapshot)
+    branch_def_id = branch_dict.get("branch_def_id", "")
+    version_id = f"{branch_def_id}@{content_hash[:8]}-reseed-{uuid.uuid4().hex[:8]}"
+    with _connect(base_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO branch_versions
+                (branch_version_id, branch_def_id, content_hash, snapshot_json,
+                 notes, publisher, published_at, parent_version_id,
+                 status, watch_window_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+            """,
+            (
+                version_id, branch_def_id, content_hash,
+                json.dumps(snapshot, default=str),
+                f"reference reseed after rollback {tag}", "reference-designs",
+                datetime.now(timezone.utc).isoformat(), None, 86400,
+            ),
         )
+    logger.info(
+        "published fresh active reference version %s after rollback for %s "
+        "(rolled-back version left intact)", version_id, tag,
+    )
 
 
 def _content_fingerprint(branch_dict: dict) -> str:
@@ -356,6 +401,17 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
         logger.exception("reference design seeding: artifact load failed")
         results["failed"].append("<load-design-artifacts-failed>")
         return results
+
+    # Required-artifact manifest (#4): a missing required design (or an empty
+    # package dir) must FAIL LOUD, not look healthy. Record each absent required
+    # id in ``failed`` so ``last_seed_result()`` / get_status surface it.
+    present_ids = {a.get("design_id") for a in artifacts}
+    for required_id in sorted(REQUIRED_DESIGN_IDS - present_ids):
+        logger.error(
+            "reference design seeding: REQUIRED artifact %r is missing from the "
+            "package (present=%s)", required_id, sorted(present_ids),
+        )
+        results["failed"].append(f"<missing-required-artifact:{required_id}>")
 
     for artifact in artifacts:
         tag = design_tag(artifact["design_id"], artifact["design_version"])
