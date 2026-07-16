@@ -142,6 +142,42 @@ def _policy_signature(
     return f"{policy}|{oauth}|{bdid}|{delay}"
 
 
+def _binding_default() -> dict[str, Any]:
+    return {
+        "merge_policy": "manual",
+        "founder_oauth_per_merge": False,
+        "merge_timer_delay_s": 0.0,
+        "review_required": False,
+        "generation": 0,
+        "bound": False,
+    }
+
+
+def _resolve_binding_row(conn: "sqlite3.Connection", branch_def_id: Any) -> dict[str, Any]:
+    """Resolve the owner-bound merge policy within an ALREADY-OPEN connection —
+    so policy resolution is ATOMIC with the surrounding claim / approval mint
+    (Codex R10 #1). Same shape as :func:`resolve_merge_policy_binding`."""
+    bdid = str(branch_def_id or "").strip()
+    if not bdid:
+        return _binding_default()
+    row = conn.execute(
+        "SELECT merge_policy, founder_oauth_per_merge, merge_timer_delay_s, "
+        "review_required, generation FROM merge_policy_bindings "
+        "WHERE branch_def_id = ?",
+        (bdid,),
+    ).fetchone()
+    if row is None:
+        return _binding_default()
+    return {
+        "merge_policy": row["merge_policy"],
+        "founder_oauth_per_merge": bool(row["founder_oauth_per_merge"]),
+        "merge_timer_delay_s": row["merge_timer_delay_s"],
+        "review_required": bool(row["review_required"]),
+        "generation": row["generation"],
+        "bound": True,
+    }
+
+
 class InvalidReviewTransition(ValueError):
     """Raised when an owner decision is attempted from a terminal status."""
 
@@ -305,10 +341,22 @@ CREATE TABLE IF NOT EXISTS reshape_outbox (
 CREATE INDEX IF NOT EXISTS idx_reshape_outbox_pending
     ON reshape_outbox(created_at) WHERE consumed_at IS NULL;
 
--- Owner-bound merge-policy config (Codex R6 C2): the governing policy is
--- resolved from HERE by (branch_def_id) — set by the OWNER (S2 remix binding /
--- an owner-gated verb), NOT from a model-emitted packet. The present node reads
--- this to stamp each queued PR. S4 owns the store; S2 converges on it.
+-- Owner-bound merge-policy config: this is THE ONE authoritative policy
+-- representation for the patch loop (owner-bound, config-driven — the S4
+-- architectural through-line). Resolved by (branch_def_id) — set by the OWNER
+-- via ``set_merge_policy_binding`` (S4's owner-gated setter / MCP
+-- ``review_queue_set_policy``), NOT from a model-emitted packet.
+--
+-- Convergence contract (Codex R10 #2): S2's per-universe store holds private
+-- FIELD VALUES (a different concern) and MUST NOT treat a branch's
+-- state_schema ``merge_policy`` default as policy truth. At integration-branch
+-- assembly, S2's connector bind route writes the owner's policy fields INTO
+-- THIS store (calling set_merge_policy_binding). The full connector-path e2e is
+-- integration-gated (see tests/test_patch_loop_bundle_e2e.py).
+--
+-- ``generation`` is a monotonic counter bumped on every set — a merge claim
+-- CASes against it so a policy TIGHTENING between the gate's evaluation and the
+-- claim cannot merge under stale policy (Codex R10 #1).
 CREATE TABLE IF NOT EXISTS merge_policy_bindings (
     branch_def_id TEXT PRIMARY KEY,
     merge_policy   TEXT NOT NULL DEFAULT 'manual',
@@ -319,6 +367,7 @@ CREATE TABLE IF NOT EXISTS merge_policy_bindings (
     -- — a remixed loop's node CANNOT opt out of owner review by omitting a
     -- packet block. Defaults to 1 (required) for any bound branch.
     review_required INTEGER NOT NULL DEFAULT 1,
+    generation    INTEGER NOT NULL DEFAULT 1,
     bound_by      TEXT NOT NULL DEFAULT '',
     bound_at      REAL NOT NULL DEFAULT 0
 );
@@ -731,15 +780,21 @@ def approve_item(
     approval_id = f"ap-{uuid.uuid4().hex[:16]}"
     with _connect(universe_dir) as conn:
         with _write(conn):
-            # In-txn owner authority check on the OAuth-gated item, BEFORE any
-            # mutation (Codex R6 C1). Read the row's governing flag inside the
-            # write lock so it can't change under us.
-            row = conn.execute(
-                "SELECT founder_oauth_per_merge, merge_policy "
-                "FROM review_queue WHERE item_id = ?",
+            # Read the item's branch first, then resolve the CURRENT owner-bound
+            # binding INSIDE this write transaction (Codex R10 #1b) — the OAuth
+            # requirement AND the minted token's regime come from the CURRENT
+            # binding, not the stale policy stamped on the queue row. This fixes
+            # the liveness hole where a fresh approval after a tightening minted
+            # a token that could never satisfy the tightened gate.
+            item_row = conn.execute(
+                "SELECT branch_def_id FROM review_queue WHERE item_id = ?",
                 (item_id,),
             ).fetchone()
-            if row is not None and row["founder_oauth_per_merge"] and not actor_is_owner:
+            branch_def_id = item_row["branch_def_id"] if item_row is not None else ""
+            bound = _resolve_binding_row(conn, branch_def_id)
+            # In-txn owner authority check against the CURRENT binding's OAuth
+            # requirement, BEFORE any mutation (Codex R6 C1 + R10 #1b).
+            if bound["founder_oauth_per_merge"] and not actor_is_owner:
                 raise OwnerRequired(
                     f"approving item {item_id!r} mints a founder-OAuth-per-merge "
                     "credential; only the universe owner/founder may do that"
@@ -765,9 +820,10 @@ def approve_item(
                 "WHERE item_id = ? AND consumed_at IS NULL",
                 (ts, item_id),
             )
+            # Mint under the CURRENT binding regime (not the item's stamp).
             generation = _policy_signature(
-                updated["merge_policy"], updated["founder_oauth_per_merge"],
-                updated["branch_def_id"], updated["merge_timer_delay_s"],
+                bound["merge_policy"], bound["founder_oauth_per_merge"],
+                updated["branch_def_id"], bound["merge_timer_delay_s"],
             )
             conn.execute(
                 """
@@ -928,6 +984,7 @@ def claim_for_merge(
     item_id: str,
     expected_head_sha: str,
     expected_updated_at: float | None = None,
+    expected_binding_generation: int | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Atomically CLAIM an eligible item for merge, flipping it to ``merging``.
@@ -978,6 +1035,18 @@ def claim_for_merge(
                 # longer hold. Refuse (Codex R6 C2).
                 return {"claimed": False, "reason": "facts_changed",
                         "current_status": status}
+            if expected_binding_generation is not None:
+                # CAS against the owner-bound policy generation (Codex R10 #1):
+                # if the owner TIGHTENED the binding between the gate's
+                # evaluation and this claim, its generation advanced — refuse, so
+                # a stale-policy merge cannot proceed. Read the CURRENT binding
+                # generation atomically inside this write transaction.
+                current_gen = _resolve_binding_row(
+                    conn, row["branch_def_id"]
+                )["generation"]
+                if current_gen != expected_binding_generation:
+                    return {"claimed": False, "reason": "binding_changed",
+                            "current_status": status}
             if status in _TERMINAL_STATUSES:
                 return {"claimed": False, "reason": "already_decided",
                         "current_status": status}
@@ -1306,28 +1375,37 @@ def set_merge_policy_binding(
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
         with _write(conn):
+            # Bump the monotonic generation on every set so a merge claim can
+            # CAS against it (Codex R10 #1).
             conn.execute(
                 """
                 INSERT INTO merge_policy_bindings (
                     branch_def_id, merge_policy, founder_oauth_per_merge,
-                    merge_timer_delay_s, review_required, bound_by, bound_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    merge_timer_delay_s, review_required, generation,
+                    bound_by, bound_at
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                 ON CONFLICT(branch_def_id) DO UPDATE SET
                     merge_policy = excluded.merge_policy,
                     founder_oauth_per_merge = excluded.founder_oauth_per_merge,
                     merge_timer_delay_s = excluded.merge_timer_delay_s,
                     review_required = excluded.review_required,
+                    generation = merge_policy_bindings.generation + 1,
                     bound_by = excluded.bound_by,
                     bound_at = excluded.bound_at
                 """,
                 (bdid, policy_str, oauth_int, delay, review_int, bound_by, ts),
             )
+            generation = conn.execute(
+                "SELECT generation FROM merge_policy_bindings WHERE branch_def_id = ?",
+                (bdid,),
+            ).fetchone()["generation"]
     return {
         "branch_def_id": bdid,
         "merge_policy": policy_str,
         "founder_oauth_per_merge": bool(oauth_int),
         "merge_timer_delay_s": delay,
         "review_required": bool(review_int),
+        "generation": generation,
         "bound_by": bound_by,
         "bound_at": ts,
     }
@@ -1344,6 +1422,7 @@ def resolve_merge_policy_binding(
         "founder_oauth_per_merge": False,
         "merge_timer_delay_s": 0.0,
         "review_required": False,
+        "generation": 0,
         "bound": False,
     }
     bdid = (branch_def_id or "").strip()
@@ -1353,7 +1432,8 @@ def resolve_merge_policy_binding(
     with _connect(universe_dir) as conn:
         row = conn.execute(
             "SELECT merge_policy, founder_oauth_per_merge, merge_timer_delay_s, "
-            "review_required FROM merge_policy_bindings WHERE branch_def_id = ?",
+            "review_required, generation FROM merge_policy_bindings "
+            "WHERE branch_def_id = ?",
             (bdid,),
         ).fetchone()
     if row is None:
@@ -1363,6 +1443,7 @@ def resolve_merge_policy_binding(
         "founder_oauth_per_merge": bool(row["founder_oauth_per_merge"]),
         "merge_timer_delay_s": row["merge_timer_delay_s"],
         "review_required": bool(row["review_required"]),
+        "generation": row["generation"],
         "bound": True,
     }
 

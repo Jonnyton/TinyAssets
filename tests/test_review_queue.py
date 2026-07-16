@@ -631,11 +631,16 @@ def test_enqueue_rejects_malformed_timer_delay(tmp_path, bad):
 
 
 def test_founder_oauth_mint_requires_owner_in_txn(tmp_path):
+    # The OAuth requirement comes from the owner-bound BINDING (Codex R10 #1b).
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="auto",
+        founder_oauth_per_merge=True, bound_by="owner",
+    )
     item = rq.enqueue_pr(
         tmp_path, destination=_DEST, pr_number=181,
         pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
         verify_verdict=rq.VERIFY_PASS, merge_policy="auto",
-        founder_oauth_per_merge=True,
+        founder_oauth_per_merge=True, branch_def_id="bd",
     )
     with pytest.raises(rq.OwnerRequired):
         rq.approve_item(
@@ -649,51 +654,53 @@ def test_founder_oauth_mint_requires_owner_in_txn(tmp_path):
     assert rq.get_item(tmp_path, item_id=item["item_id"])["status"] == "pending"
 
 
-def test_regime_change_invalidates_prior_token(tmp_path):
-    """Codex R6 C1 repro (d): a token minted while OAuth was OFF must not
-    satisfy a later OAuth-ON gate."""
+def test_binding_tightening_invalidates_prior_token(tmp_path):
+    """A token minted while OAuth was OFF must not satisfy a later OAuth-ON gate
+    — the regime comes from the owner-bound BINDING (Codex R10 #1b)."""
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="auto",
+        founder_oauth_per_merge=False, bound_by="owner",
+    )
     item = rq.enqueue_pr(
         tmp_path, destination=_DEST, pr_number=181,
         pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
         verify_verdict=rq.VERIFY_PASS, merge_policy="auto",
-        founder_oauth_per_merge=False,
+        founder_oauth_per_merge=False, branch_def_id="bd",
     )
-    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="writer")
-    off_gen = rq._policy_signature("auto", False)
-    on_gen = rq._policy_signature("auto", True)
+    rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
+    off_gen = rq._policy_signature("auto", False, "bd", 0.0)
+    on_gen = rq._policy_signature("auto", True, "bd", 0.0)
     assert rq.has_fresh_merge_approval(
         tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
         policy_generation=off_gen,
     )
-    # Owner re-enqueues the SAME head with OAuth ON → regime change.
-    rq.enqueue_pr(
-        tmp_path, destination=_DEST, pr_number=181,
-        pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
-        verify_verdict=rq.VERIFY_PASS, merge_policy="auto",
-        founder_oauth_per_merge=True,
+    # Owner TIGHTENS the binding to OAuth-ON.
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="auto",
+        founder_oauth_per_merge=True, bound_by="owner",
     )
-    # The old token is invalidated AND its generation no longer matches.
+    # The old token does NOT satisfy the tightened (OAuth-ON) regime.
     assert not rq.has_fresh_merge_approval(
         tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
         policy_generation=on_gen,
     )
-    assert not rq.has_fresh_merge_approval(
-        tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
-        policy_generation=off_gen,
-    )
 
 
 def test_approve_does_not_stockpile_tokens(tmp_path):
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="manual",
+        founder_oauth_per_merge=True, bound_by="owner",
+    )
     item = rq.enqueue_pr(
         tmp_path, destination=_DEST, pr_number=181,
         pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
         verify_verdict=rq.VERIFY_PASS, merge_policy="manual",
-        founder_oauth_per_merge=True,
+        founder_oauth_per_merge=True, branch_def_id="bd",
     )
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="owner")
-    gen = rq._policy_signature("manual", True)
+    gen = rq._policy_signature("manual", True, "bd", 0.0)
     # At most ONE token is consumable despite three approvals.
     first = rq.consume_merge_approval(
         tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
@@ -708,16 +715,20 @@ def test_approve_does_not_stockpile_tokens(tmp_path):
 
 
 def test_approval_expires(tmp_path):
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd", merge_policy="manual",
+        founder_oauth_per_merge=True, bound_by="owner",
+    )
     item = rq.enqueue_pr(
         tmp_path, destination=_DEST, pr_number=181,
         pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,
         verify_verdict=rq.VERIFY_PASS, merge_policy="manual",
-        founder_oauth_per_merge=True,
+        founder_oauth_per_merge=True, branch_def_id="bd",
     )
     rq.approve_item(
         tmp_path, item_id=item["item_id"], approved_by="owner", now=1000.0
     )
-    gen = rq._policy_signature("manual", True)
+    gen = rq._policy_signature("manual", True, "bd", 0.0)
     # Well past the TTL → no longer fresh.
     assert not rq.has_fresh_merge_approval(
         tmp_path, destination=_DEST, pr_number=181, head_sha=_HEAD,
@@ -810,6 +821,10 @@ def test_held_item_same_head_reenqueue_stays_held(tmp_path):
 
 
 def test_token_bound_to_branch_identity(tmp_path):
+    rq.set_merge_policy_binding(
+        tmp_path, branch_def_id="bd_A", merge_policy="manual",
+        founder_oauth_per_merge=True, bound_by="owner",
+    )
     item = rq.enqueue_pr(
         tmp_path, destination=_DEST, pr_number=181,
         pr_url=f"https://github.com/{_DEST}/pull/181", head_sha=_HEAD,

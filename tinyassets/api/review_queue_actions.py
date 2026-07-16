@@ -443,6 +443,86 @@ def _action_review_queue_release(kwargs: dict[str, Any]) -> str:
     return json.dumps({"status": "released", "item": item})
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip():
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _action_review_queue_set_policy(kwargs: dict[str, Any]) -> str:
+    """Owner-bind the governing merge policy for a branch (remix) design.
+
+    This is the OWNER-GATED public path that sets the authoritative
+    ``merge_policy_bindings`` row (Codex R10 #6): the present node and the merge
+    gate both resolve policy from the binding, never from a model-emitted packet.
+    Owner-only, same authority as the decision verbs — a write collaborator may
+    not rebind the founder's merge regime. At S2 integration the connector remix
+    bind route writes into this same store.
+    """
+    from tinyassets.merge_policy import MERGE_POLICIES
+
+    universe_id = (kwargs.get("universe_id") or "").strip()
+    branch_def_id = (kwargs.get("branch_def_id") or "").strip()
+    if not branch_def_id:
+        return json.dumps({
+            "error": "review_queue_set_policy requires 'branch_def_id'",
+            "failure_class": "missing_branch_def_id",
+            "actionable_by": "chatbot",
+        })
+    merge_policy = (kwargs.get("merge_policy") or "manual").strip().lower() or "manual"
+    if merge_policy not in MERGE_POLICIES:
+        return json.dumps({
+            "error": (
+                f"invalid merge_policy {merge_policy!r}; expected one of "
+                f"{sorted(MERGE_POLICIES)}"
+            ),
+            "failure_class": "invalid_merge_policy",
+            "actionable_by": "chatbot",
+        })
+    founder_oauth_per_merge = _coerce_bool(kwargs.get("founder_oauth_per_merge"), False)
+    review_required = _coerce_bool(kwargs.get("review_required"), True)
+    raw_delay = kwargs.get("merge_timer_delay_s")
+    try:
+        merge_timer_delay_s = float(raw_delay) if raw_delay not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return json.dumps({
+            "error": "merge_timer_delay_s must be a finite non-negative number",
+            "failure_class": "invalid_timer_delay",
+            "actionable_by": "chatbot",
+        })
+    target_universe, err = _owner_gate("review_queue_set_policy", universe_id)
+    if err is not None:
+        return json.dumps(err)
+    try:
+        from tinyassets.storage.review_queue import set_merge_policy_binding
+
+        binding = set_merge_policy_binding(
+            _universe_dir_for(target_universe),
+            branch_def_id=branch_def_id,
+            merge_policy=merge_policy,
+            founder_oauth_per_merge=founder_oauth_per_merge,
+            merge_timer_delay_s=merge_timer_delay_s,
+            review_required=review_required,
+            bound_by=_current_actor(),
+        )
+    except ValueError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "failure_class": "invalid_binding",
+            "actionable_by": "chatbot",
+        })
+    except Exception as exc:
+        logger.exception("review_queue_set_policy failed")
+        return json.dumps({
+            "error": f"review_queue_set_policy failed: {exc}",
+            "failure_class": "storage_error",
+            "actionable_by": "host",
+        })
+    return json.dumps({"status": "bound", "binding": binding})
+
+
 _REVIEW_QUEUE_ACTIONS = {
     "review_queue_list": _action_review_queue_list,
     "review_queue_approve": _action_review_queue_approve,
@@ -450,6 +530,7 @@ _REVIEW_QUEUE_ACTIONS = {
     "review_queue_reject": _action_review_queue_reject,
     "review_queue_hold": _action_review_queue_hold,
     "review_queue_release": _action_review_queue_release,
+    "review_queue_set_policy": _action_review_queue_set_policy,
 }
 
 __all__ = ["_REVIEW_QUEUE_ACTIONS"]

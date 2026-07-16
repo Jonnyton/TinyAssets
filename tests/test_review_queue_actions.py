@@ -355,3 +355,63 @@ def test_owner_can_use_all_review_verbs(owner_env):
             expected_head_sha=_HEAD,
         )["status"] == "released"
     )
+
+
+# ── R10 #6: review_queue_set_policy — owner-gated public path to the binding ──
+
+
+def test_owner_can_set_merge_policy_binding(owner_env):
+    """The owner binds the authoritative merge policy via the MCP verb; the
+    binding round-trips through resolve_merge_policy_binding (the same store the
+    present node + merge gate read)."""
+    out = _call(
+        "review_queue_set_policy", universe_id="u1", branch_def_id="bd-1",
+        merge_policy="auto", founder_oauth_per_merge=True,
+        merge_timer_delay_s="0", review_required=True,
+    )
+    assert out["status"] == "bound"
+    assert out["binding"]["merge_policy"] == "auto"
+    assert out["binding"]["founder_oauth_per_merge"] is True
+    assert out["binding"]["bound_by"] == "owner-actor"
+    resolved = rq.resolve_merge_policy_binding(owner_env, branch_def_id="bd-1")
+    assert resolved["merge_policy"] == "auto"
+    assert resolved["founder_oauth_per_merge"] is True
+    assert resolved["generation"] >= 1
+
+
+def test_set_policy_rejects_unknown_policy(owner_env):
+    out = _call(
+        "review_queue_set_policy", universe_id="u1", branch_def_id="bd-1",
+        merge_policy="yolo",
+    )
+    assert out["failure_class"] == "invalid_merge_policy"
+    # Nothing bound.
+    resolved = rq.resolve_merge_policy_binding(owner_env, branch_def_id="bd-1")
+    assert resolved["generation"] == 0
+
+
+def test_set_policy_requires_branch_def_id(owner_env):
+    out = _call("review_queue_set_policy", universe_id="u1", branch_def_id="")
+    assert out["failure_class"] == "missing_branch_def_id"
+
+
+def test_set_policy_non_owner_denied(non_owner_env):
+    out = _call(
+        "review_queue_set_policy", universe_id="u1", branch_def_id="bd-1",
+        merge_policy="auto",
+    )
+    assert out["error"] == "universe_access_denied"
+    resolved = rq.resolve_merge_policy_binding(non_owner_env, branch_def_id="bd-1")
+    assert resolved["generation"] == 0
+
+
+def test_set_policy_write_collaborator_denied(writer_not_owner_env):
+    """A write collaborator cannot rebind the founder's merge regime (owner-only,
+    same authority as the decision verbs)."""
+    out = _call(
+        "review_queue_set_policy", universe_id="u1", branch_def_id="bd-1",
+        merge_policy="auto",
+    )
+    assert out["failure_class"] == "owner_required"
+    resolved = rq.resolve_merge_policy_binding(writer_not_owner_env, branch_def_id="bd-1")
+    assert resolved["generation"] == 0
