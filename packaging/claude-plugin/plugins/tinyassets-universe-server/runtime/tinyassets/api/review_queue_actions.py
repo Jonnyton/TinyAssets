@@ -412,14 +412,62 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
     if err is not None:
         return json.dumps(err)
     try:
-        from tinyassets.storage.review_queue import set_merge_preference_binding
+        from tinyassets.storage.review_queue import (
+            WORKFLOW_APPROVED,
+            cancel_timers_for_branch,
+            list_projections,
+            set_merge_preference_binding,
+        )
 
+        universe_dir = _universe_dir_for(target_universe)
         binding = set_merge_preference_binding(
-            _universe_dir_for(target_universe),
+            universe_dir,
             branch_def_id=branch_def_id, merge_preference=preference,
             not_before_delay_s=not_before_delay_s, review_required=review_required,
             bound_by=_current_actor(),
         )
+        # ATOMIC tightening (Codex r11 #2): re-binding revokes prior scheduled /
+        # standing merge authority in the SAME operation — cancel every pending
+        # not_before timer this branch authorized, and record the GitHub effects
+        # (disable auto-merge; dismiss a prior approval if renewed consent is
+        # required) for each affected open PR. A due timer can no longer outrun
+        # an owner switch to manual.
+        cancelled = cancel_timers_for_branch(universe_dir, branch_def_id=branch_def_id)
+        revoke_calls: list[dict[str, Any]] = []
+        seen_prs: set[tuple[str, int]] = set()
+        open_projs = [
+            p for p in list_projections(universe_dir)
+            if (p.get("branch_def_id") or "") == branch_def_id
+            and p.get("workflow_outcome") not in ("merged", "rejected")
+        ]
+        for proj in open_projs:
+            dest = proj.get("destination") or ""
+            pr = proj.get("pr_number")
+            if not dest or not isinstance(pr, int):
+                continue
+            seen_prs.add((dest, pr))
+            revoke_calls.append(
+                github_native.disable_auto_merge(destination=dest, pr_number=pr).to_dict()
+            )
+            if proj.get("workflow_outcome") == WORKFLOW_APPROVED:
+                revoke_calls.append({
+                    "kind": "dismiss_prior_approval_intent",
+                    "destination": dest, "pr_number": pr,
+                    "summary": (
+                        f"dismiss the prior approval on {dest}#{pr} — the merge "
+                        "preference changed and renewed owner consent is required"
+                    ),
+                })
+        # A cancelled timer whose PR isn't in the projection list still gets a
+        # disable_auto_merge recorded (belt-and-suspenders).
+        for t in cancelled:
+            key = (t.get("destination") or "", t.get("pr_number"))
+            if key not in seen_prs and isinstance(key[1], int):
+                revoke_calls.append(
+                    github_native.disable_auto_merge(
+                        destination=key[0], pr_number=key[1]
+                    ).to_dict()
+                )
     except ValueError as exc:
         return json.dumps({
             "error": str(exc),
@@ -438,10 +486,17 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
         note = (
             f"'{preference}' is an autonomous preference: the merge effector "
             "REFUSES it unless the repo's required-review ruleset is verified "
-            "active at merge time (CODEOWNERS present + App not a bypass actor); "
-            "'manual' stays available for an unprotected repo with a warning."
+            "active at merge time (required checks + code-owner review + "
+            "stale-dismissal + latest-push + CODEOWNERS catch-all + App not a "
+            "bypass actor); 'manual' stays available with a warning."
         )
-    return json.dumps({"status": "bound", "binding": binding, "note": note})
+    return json.dumps({
+        "status": "bound",
+        "binding": binding,
+        "cancelled_timers": len(cancelled),
+        "revoke_calls": revoke_calls,
+        "note": note,
+    })
 
 
 _REVIEW_QUEUE_ACTIONS = {

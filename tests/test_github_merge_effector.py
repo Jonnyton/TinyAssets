@@ -34,6 +34,10 @@ def _packet():
 
 
 def _run(tmp_path, **kw):
+    # Default the gate inputs the hardened autonomous path needs; individual
+    # tests override (e.g. drop the api to assert fail-closed).
+    kw.setdefault("app_actor_id", 4242)
+    kw.setdefault("expected_owner", "owner")
     return github_merge.run_github_merge_effector(
         node_id="merge", output_keys=["merge_packet"], run_state=_packet(),
         base_path=str(tmp_path), run_id="run-1",
@@ -84,7 +88,7 @@ def test_auto_refuses_when_gate_not_configured(tmp_path):
     out = _run(tmp_path, github_api=api)
     assert out["error_kind"] == "review_gate_not_configured"
     assert "required_code_owner_review_rule" in out["setup"]["missing"]
-    assert "codeowners_present" in out["setup"]["missing"]
+    assert "codeowners_catchall_owner" in out["setup"]["missing"]
 
 
 def test_auto_refuses_when_app_is_bypass_actor(tmp_path):

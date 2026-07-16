@@ -223,3 +223,54 @@ def test_cancel_not_before_removes_pending(tmp_path):
     rq.schedule_not_before(tmp_path, destination=_DEST, pr_number=_PR, not_before=100.0)
     assert rq.cancel_not_before(tmp_path, destination=_DEST, pr_number=_PR) is True
     assert rq.due_not_before_timers(tmp_path, now=200.0) == []
+
+
+# ── Codex r11 #2: binding revision + timer re-authorization ──────────────────
+
+
+def test_binding_revision_bumps_on_each_set(tmp_path):
+    b1 = rq.set_merge_preference_binding(
+        tmp_path, branch_def_id="bd", merge_preference="auto", bound_by="owner",
+    )
+    b2 = rq.set_merge_preference_binding(
+        tmp_path, branch_def_id="bd", merge_preference="manual", bound_by="owner",
+    )
+    assert b2["revision"] == b1["revision"] + 1
+    assert rq.resolve_merge_preference_binding(tmp_path, branch_def_id="bd")[
+        "revision"
+    ] == b2["revision"]
+
+
+def test_cancel_timers_for_branch(tmp_path):
+    rq.schedule_not_before(
+        tmp_path, destination=_DEST, pr_number=1, not_before=100.0, branch_def_id="bd",
+    )
+    rq.schedule_not_before(
+        tmp_path, destination=_DEST, pr_number=2, not_before=100.0, branch_def_id="bd",
+    )
+    rq.schedule_not_before(
+        tmp_path, destination=_DEST, pr_number=3, not_before=100.0, branch_def_id="other",
+    )
+    cancelled = rq.cancel_timers_for_branch(tmp_path, branch_def_id="bd")
+    assert len(cancelled) == 2
+    # Only the other-branch timer survives.
+    remaining = rq.due_not_before_timers(tmp_path, now=200.0)
+    assert [t["pr_number"] for t in remaining] == [3]
+
+
+def test_authorize_timer_fire_refuses_stale_binding(tmp_path):
+    timer = rq.schedule_not_before(
+        tmp_path, destination=_DEST, pr_number=_PR, not_before=100.0,
+        branch_def_id="bd", expected_head_sha=_HEAD, binding_revision=1,
+    )
+    # Same revision + same head → authorized.
+    ok, reason = rq.authorize_timer_fire(timer, current_revision=1, current_head_sha=_HEAD)
+    assert ok is True and reason == "authorized"
+    # Owner tightened (revision moved) → refused.
+    ok, reason = rq.authorize_timer_fire(timer, current_revision=2, current_head_sha=_HEAD)
+    assert ok is False and reason == "binding_changed"
+    # Head moved on GitHub → refused.
+    ok, reason = rq.authorize_timer_fire(
+        timer, current_revision=1, current_head_sha="b" * 40
+    )
+    assert ok is False and reason == "head_moved"

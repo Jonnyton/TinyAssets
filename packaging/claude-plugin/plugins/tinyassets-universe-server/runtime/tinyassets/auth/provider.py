@@ -579,12 +579,15 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     extension_writes.update({
         "grant_effector_consent", "revoke_effector_consent",
     })
-    # Patch-loop S4 (G3): owner review-queue decisions are per-item owner
-    # writes (approve/reshape/reject). `review_queue_list` stays read-effect;
-    # the handler's owner-gate confines it to the universe owner regardless.
+    # Patch-loop S4 (GitHub-native): owner review decisions are owner WRITES
+    # (approve/reshape/reject record intent + the GitHub call; set_preference
+    # mutates the merge-preference binding). `review_queue_list` stays
+    # read-effect; the handler's owner-gate confines every verb to the universe
+    # owner regardless. (Codex r11 #5: set_preference is a write, not a read;
+    # the old hold/release verbs no longer exist.)
     extension_writes.update({
         "review_queue_approve", "review_queue_reshape", "review_queue_reject",
-        "review_queue_hold", "review_queue_release",
+        "review_queue_set_preference",
     })
     _extend_scope_rows(
         rows,

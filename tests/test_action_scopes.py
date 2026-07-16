@@ -102,6 +102,30 @@ def test_money_escrow_writes_require_write_scope_not_read() -> None:
         assert row.oauth_scope != "tinyassets.extensions.read", action
 
 
+def test_review_queue_mutating_verbs_require_write_scope() -> None:
+    """Codex r11 #5: the owner review verbs that MUTATE (approve/reshape/reject
+    record intent + the GitHub call; set_preference rebinds the merge preference)
+    must derive a write (or costlier) scope — a read classification would let an
+    under-scoped reader decide on the founder's PRs. `review_queue_list` is the
+    only read. The removed hold/release verbs must not appear."""
+    registry = build_action_scope_registry()
+
+    for action in (
+        "review_queue_approve",
+        "review_queue_reshape",
+        "review_queue_reject",
+        "review_queue_set_preference",
+    ):
+        row = registry[f"extensions.{action}"]
+        assert row.effect in ("write", "costly", "admin"), (action, row.effect)
+        assert row.oauth_scope != "tinyassets.extensions.read", action
+
+    assert registry["extensions.review_queue_list"].effect == "read"
+    # The deleted verbs are gone from the registry entirely.
+    assert "extensions.review_queue_hold" not in registry
+    assert "extensions.review_queue_release" not in registry
+
+
 def test_action_scope_status_self_audit_reports_table_and_caveats() -> None:
     from tinyassets.api.extensions import _extensions_impl
 

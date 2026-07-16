@@ -267,12 +267,14 @@ class HttpGitHubApi:
                 detail=json.dumps(pr)[:500],
             )
         head = pr.get("head") or {}
+        base = pr.get("base") or {}
         return {
             "state": "merged" if pr.get("merged") else (pr.get("state") or "unknown"),
             "merged": bool(pr.get("merged")),
             "mergeable_state": pr.get("mergeable_state") or "unknown",
             "review_decision": "unknown",
             "head_sha": head.get("sha") or "",
+            "base_ref": base.get("ref") or "",
             "merge_commit_sha": pr.get("merge_commit_sha") or "",
             "node_id": pr.get("node_id") or "",
         }
@@ -303,12 +305,17 @@ class HttpGitHubApi:
         return {"ok": True, "kind": call.kind, "status": status, "result": result}
 
     def _run_graphql(self, call: GitHubCall) -> dict[str, Any]:
-        """auto-merge mutations need the PR's GraphQL node id — resolve it via
-        REST, then run the mutation."""
+        """auto-merge mutations need the PR's GraphQL node id. Prefer the node id
+        the recorded call already resolved (Codex r11 #4); fall back to a REST
+        lookup only if it's absent. When an ``expected_head_oid`` is present the
+        mutation is head-bound via ``expectedHeadOid``."""
         destination = call.params.get("destination", "")
         pr_number = call.params.get("pr_number")
-        pull = self.get_pull(destination=destination, pr_number=pr_number)
-        node_id = pull.get("node_id")
+        node_id = (call.params.get("pull_request_id") or "").strip()
+        expected_head_oid = (call.params.get("expected_head_oid") or "").strip()
+        if not node_id:
+            pull = self.get_pull(destination=destination, pr_number=pr_number)
+            node_id = pull.get("node_id")
         if not node_id:
             raise GitHubHttpError(
                 f"could not resolve GraphQL node id for {destination}#{pr_number}",
@@ -317,12 +324,20 @@ class HttpGitHubApi:
         mutation = call.params.get("mutation")
         if mutation == "enablePullRequestAutoMerge":
             merge_method = str(call.params.get("merge_method") or "SQUASH").upper()
-            query = (
-                "mutation($pr:ID!,$m:PullRequestMergeMethod!){"
-                "enablePullRequestAutoMerge(input:{pullRequestId:$pr,mergeMethod:$m})"
-                "{clientMutationId}}"
-            )
-            variables = {"pr": node_id, "m": merge_method}
+            if expected_head_oid:
+                query = (
+                    "mutation($pr:ID!,$m:PullRequestMergeMethod!,$oid:GitObjectID!){"
+                    "enablePullRequestAutoMerge(input:{pullRequestId:$pr,"
+                    "mergeMethod:$m,expectedHeadOid:$oid}){clientMutationId}}"
+                )
+                variables = {"pr": node_id, "m": merge_method, "oid": expected_head_oid}
+            else:
+                query = (
+                    "mutation($pr:ID!,$m:PullRequestMergeMethod!){"
+                    "enablePullRequestAutoMerge(input:{pullRequestId:$pr,mergeMethod:$m})"
+                    "{clientMutationId}}"
+                )
+                variables = {"pr": node_id, "m": merge_method}
         elif mutation == "disablePullRequestAutoMerge":
             query = (
                 "mutation($pr:ID!){"

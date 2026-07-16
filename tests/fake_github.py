@@ -11,16 +11,24 @@ from __future__ import annotations
 from typing import Any
 
 
-def code_owner_review_ruleset(
+def fully_gated_ruleset(
     *,
     enforcement: str = "active",
     dismiss_stale: bool = True,
     require_last_push: bool = True,
+    required_status_checks: list[dict[str, Any]] | None = None,
     bypass_actors: list[dict[str, Any]] | None = None,
     ruleset_id: int = 1,
 ) -> dict[str, Any]:
-    """A ruleset that requires PR + code-owner review — the gate the autonomous
-    preferences need. Tweak the args to build the not-configured variants."""
+    """A ruleset satisfying EVERY hard precondition of the hardened gate: a
+    pull_request rule (>=1 approval + code-owner review + stale-dismissal +
+    latest-push approval) AND a required_status_checks rule with a check. Tweak
+    the args to break one condition at a time. ``bypass_actors`` is present
+    (empty) by default; delete the key on the returned dict to test the
+    fail-closed-on-missing-bypass case."""
+    checks = required_status_checks
+    if checks is None:
+        checks = [{"context": "ci/tests", "integration_id": None}]
     return {
         "id": ruleset_id,
         "enforcement": enforcement,
@@ -34,9 +42,17 @@ def code_owner_review_ruleset(
                     "dismiss_stale_reviews_on_push": dismiss_stale,
                     "require_last_push_approval": require_last_push,
                 },
-            }
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": checks},
+            },
         ],
     }
+
+
+# Back-compat alias for older test call sites.
+code_owner_review_ruleset = fully_gated_ruleset
 
 
 class InMemoryGitHubApi:
@@ -49,11 +65,13 @@ class InMemoryGitHubApi:
         codeowners: str | None = "* @owner\n",
         pulls: dict[int, dict[str, Any]] | None = None,
         raise_on_rulesets: bool = False,
+        default_base_ref: str = "main",
     ) -> None:
-        self._rulesets = rulesets if rulesets is not None else [code_owner_review_ruleset()]
+        self._rulesets = rulesets if rulesets is not None else [fully_gated_ruleset()]
         self._codeowners = codeowners
         self._pulls = pulls or {}
         self._raise_on_rulesets = raise_on_rulesets
+        self._default_base_ref = default_base_ref
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def list_active_rulesets(self, *, destination: str, branch: str) -> list[dict[str, Any]]:
@@ -68,4 +86,11 @@ class InMemoryGitHubApi:
 
     def get_pull(self, *, destination: str, pr_number: int) -> dict[str, Any]:
         self.calls.append(("get_pull", {"destination": destination, "pr_number": pr_number}))
-        return dict(self._pulls.get(pr_number, {"state": "open", "merged": False}))
+        default = {
+            "state": "open", "merged": False, "mergeable_state": "clean",
+            "review_decision": "unknown", "head_sha": "a" * 40,
+            "base_ref": self._default_base_ref, "merge_commit_sha": "",
+            "node_id": f"PR_node_{pr_number}",
+        }
+        default.update(self._pulls.get(pr_number, {}))
+        return default

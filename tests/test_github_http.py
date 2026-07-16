@@ -78,8 +78,9 @@ def test_list_active_rulesets_assembles_shape():
 
 
 def test_http_api_feeds_verify_review_gate_active():
-    """The assembled ruleset shape drives the fail-closed setup verification end
-    to end (the read API is a drop-in for the fake used elsewhere)."""
+    """The assembled ruleset shape (branch rules + per-ruleset bypass_actors)
+    drives the hardened fail-closed setup verification end to end — the live read
+    API is a drop-in for the in-memory fake."""
     encoded = base64.b64encode(b"* @owner\n").decode()
     transport = ScriptedTransport({
         ("GET", "/rules/branches/main"): [(200, [
@@ -88,6 +89,8 @@ def test_http_api_feeds_verify_review_gate_active():
                             "require_code_owner_review": True,
                             "dismiss_stale_reviews_on_push": True,
                             "require_last_push_approval": True}},
+            {"type": "required_status_checks", "ruleset_id": 5,
+             "parameters": {"required_status_checks": [{"context": "ci/tests"}]}},
         ])],
         ("GET", "/rulesets/5"): [(200, {"enforcement": "active", "bypass_actors": []})],
         ("GET", "/contents/.github/CODEOWNERS"): [
@@ -95,8 +98,11 @@ def test_http_api_feeds_verify_review_gate_active():
         ],
     })
     api = _api(transport)
-    gated, summary = gn.verify_review_gate_active(api, destination=_DEST, branch="main")
-    assert gated is True
+    gated, summary = gn.verify_review_gate_active(
+        api, destination=_DEST, branch="main", app_actor_id=4242,
+        expected_owner="owner",
+    )
+    assert gated is True, summary["missing"]
     assert summary["missing"] == []
 
 
@@ -164,12 +170,21 @@ def test_enable_auto_merge_resolves_node_id_then_mutates():
 
 
 def test_graphql_errors_field_is_a_failure():
+    # A RESOLVED enable_auto_merge (node id + expected head already resolved) —
+    # the recorded call is exact + head-bound (Codex r11 #4).
     transport = ScriptedTransport({
-        ("GET", "/pulls/7"): [(200, {"head": {"sha": "a"}, "node_id": "PR_1"})],
-        ("POST", "/graphql"): [(200, {"errors": [{"message": "Pull request is in clean status"}]})],
+        ("POST", "/graphql"): [
+            (200, {"errors": [{"message": "Pull request is in clean status"}]})
+        ],
     })
+    call = gn.enable_auto_merge(
+        destination=_DEST, pr_number=7, expected_head_sha="a" * 40,
+        pull_request_id="PR_1",
+    )
+    assert call.kind == "enable_auto_merge"  # resolved
+    assert call.params["expected_head_oid"] == "a" * 40
     with pytest.raises(gh.GitHubHttpError) as exc:
-        _api(transport).run_call(gn.enable_auto_merge(destination=_DEST, pr_number=7))
+        _api(transport).run_call(call)
     assert exc.value.error_class == "enable_auto_merge_failed"
 
 

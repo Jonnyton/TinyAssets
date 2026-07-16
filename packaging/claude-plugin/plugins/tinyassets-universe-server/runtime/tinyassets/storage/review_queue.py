@@ -154,6 +154,13 @@ CREATE TABLE IF NOT EXISTS merge_preference_bindings (
     merge_preference   TEXT NOT NULL DEFAULT 'manual',
     not_before_delay_s REAL NOT NULL DEFAULT 0,
     review_required    INTEGER NOT NULL DEFAULT 1,
+    -- Monotonic revision bumped on every set (Codex r11 #2): a not_before timer
+    -- persists the revision it was scheduled under and re-authorizes against the
+    -- CURRENT revision on fire, so an owner tightening the preference can't be
+    -- outrun by an already-scheduled timer. GitHub state (head) is the other
+    -- half of the re-authorization — this is the GitHub-native analog of the
+    -- deleted policy_generation, with GitHub as truth rather than local tokens.
+    revision           INTEGER NOT NULL DEFAULT 1,
     bound_by           TEXT NOT NULL DEFAULT '',
     bound_at           REAL NOT NULL DEFAULT 0
 );
@@ -176,11 +183,18 @@ CREATE INDEX IF NOT EXISTS idx_reshape_outbox_pending
     ON reshape_outbox(created_at) WHERE consumed_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS not_before_timers (
-    destination TEXT NOT NULL,
-    pr_number   INTEGER NOT NULL,
-    not_before  REAL NOT NULL,
-    enqueued_at REAL NOT NULL,
-    fired_at    REAL,
+    destination      TEXT NOT NULL,
+    pr_number        INTEGER NOT NULL,
+    not_before       REAL NOT NULL,
+    enqueued_at      REAL NOT NULL,
+    fired_at         REAL,
+    -- Re-authorization anchors (Codex r11 #2): the head the timer was authorized
+    -- for + the binding it was scheduled under + which branch bound it. On fire
+    -- the scheduler re-reads GitHub and refuses if the head moved or the binding
+    -- revision changed (owner tightened).
+    branch_def_id    TEXT NOT NULL DEFAULT '',
+    expected_head_sha TEXT NOT NULL DEFAULT '',
+    binding_revision INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (destination, pr_number)
 );
 
@@ -541,6 +555,7 @@ def _preference_default(branch_def_id: str) -> dict[str, Any]:
         "merge_preference": "manual",
         "not_before_delay_s": 0.0,
         "review_required": True,
+        "revision": 0,
         "bound": False,
         "bound_by": "",
         "bound_at": 0.0,
@@ -577,26 +592,34 @@ def set_merge_preference_binding(
     ts = _now(now)
     with _connect(universe_dir) as conn:
         with _write(conn):
+            # Bump the monotonic revision on every set so a scheduled timer can
+            # re-authorize against the current binding (Codex r11 #2).
             conn.execute(
                 """
                 INSERT INTO merge_preference_bindings (
                     branch_def_id, merge_preference, not_before_delay_s,
-                    review_required, bound_by, bound_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    review_required, revision, bound_by, bound_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?)
                 ON CONFLICT(branch_def_id) DO UPDATE SET
                     merge_preference = excluded.merge_preference,
                     not_before_delay_s = excluded.not_before_delay_s,
                     review_required = excluded.review_required,
+                    revision = merge_preference_bindings.revision + 1,
                     bound_by = excluded.bound_by,
                     bound_at = excluded.bound_at
                 """,
                 (bdid, pref, delay, 1 if review_required else 0, bound_by, ts),
             )
+            revision = conn.execute(
+                "SELECT revision FROM merge_preference_bindings WHERE branch_def_id = ?",
+                (bdid,),
+            ).fetchone()["revision"]
     return {
         "branch_def_id": bdid,
         "merge_preference": pref,
         "not_before_delay_s": delay,
         "review_required": bool(review_required),
+        "revision": revision,
         "bound": True,
         "bound_by": bound_by,
         "bound_at": ts,
@@ -622,6 +645,7 @@ def resolve_merge_preference_binding(
         "merge_preference": row["merge_preference"],
         "not_before_delay_s": row["not_before_delay_s"],
         "review_required": bool(row["review_required"]),
+        "revision": row["revision"],
         "bound": True,
         "bound_by": row["bound_by"],
         "bound_at": row["bound_at"],
@@ -637,10 +661,16 @@ def schedule_not_before(
     destination: str,
     pr_number: int,
     not_before: float,
+    expected_head_sha: str = "",
+    branch_def_id: str = "",
+    binding_revision: int = 0,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Schedule (or reschedule) the single ``not_before`` timer for a PR. A
-    re-push reschedules by upserting a fresh fire time and clearing ``fired_at``."""
+    """Schedule (or reschedule) the single ``not_before`` timer for a PR,
+    persisting the re-authorization anchors (Codex r11 #2): the head it was
+    authorized for, the binding it was scheduled under, and which branch bound
+    it. A re-push reschedules by upserting a fresh fire time + head and clearing
+    ``fired_at``."""
     initialize_review_queue_db(universe_dir)
     ts = _now(now)
     dest = (destination or "").strip()
@@ -652,18 +682,28 @@ def schedule_not_before(
             conn.execute(
                 """
                 INSERT INTO not_before_timers (
-                    destination, pr_number, not_before, enqueued_at, fired_at
-                ) VALUES (?, ?, ?, ?, NULL)
+                    destination, pr_number, not_before, enqueued_at, fired_at,
+                    branch_def_id, expected_head_sha, binding_revision
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
                 ON CONFLICT(destination, pr_number) DO UPDATE SET
                     not_before = excluded.not_before,
                     enqueued_at = excluded.enqueued_at,
-                    fired_at = NULL
+                    fired_at = NULL,
+                    branch_def_id = excluded.branch_def_id,
+                    expected_head_sha = excluded.expected_head_sha,
+                    binding_revision = excluded.binding_revision
                 """,
-                (dest, pr_number, fire, ts),
+                (
+                    dest, pr_number, fire, ts, (branch_def_id or "").strip(),
+                    (expected_head_sha or "").strip(), int(binding_revision or 0),
+                ),
             )
     return {
-        "destination": dest, "pr_number": pr_number,
-        "not_before": fire, "enqueued_at": ts, "fired_at": None,
+        "destination": dest, "pr_number": pr_number, "not_before": fire,
+        "enqueued_at": ts, "fired_at": None,
+        "branch_def_id": (branch_def_id or "").strip(),
+        "expected_head_sha": (expected_head_sha or "").strip(),
+        "binding_revision": int(binding_revision or 0),
     }
 
 
@@ -723,6 +763,51 @@ def cancel_not_before(
     return removed > 0
 
 
+def cancel_timers_for_branch(
+    universe_dir: str | Path, *, branch_def_id: str
+) -> list[dict[str, Any]]:
+    """Cancel ALL pending timers scheduled under ``branch_def_id`` and return the
+    cancelled rows. Used by the atomic preference-tightening path (Codex r11 #2):
+    when the owner changes a branch's preference, every not_before timer it
+    authorized is revoked in the same operation so a due timer can't outrun the
+    tighten."""
+    initialize_review_queue_db(universe_dir)
+    bdid = (branch_def_id or "").strip()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            rows = conn.execute(
+                "SELECT * FROM not_before_timers "
+                "WHERE branch_def_id = ? AND fired_at IS NULL",
+                (bdid,),
+            ).fetchall()
+            cancelled = [dict(r) for r in rows]
+            conn.execute(
+                "DELETE FROM not_before_timers "
+                "WHERE branch_def_id = ? AND fired_at IS NULL",
+                (bdid,),
+            )
+    return cancelled
+
+
+def authorize_timer_fire(
+    timer: dict[str, Any], *, current_revision: int, current_head_sha: str
+) -> tuple[bool, str]:
+    """Re-authorize a due timer against CURRENT truth before it acts (Codex r11
+    #2). Returns ``(ok, reason)``. Refuses when the owner tightened the binding
+    after scheduling (``binding_revision`` moved) or when GitHub's current PR
+    head differs from the head the timer was authorized for. GitHub state is the
+    authority — this is the GitHub-native analog of the deleted policy-generation
+    race, solved with GitHub head + binding revision rather than local tokens."""
+    scheduled_rev = int(timer.get("binding_revision") or 0)
+    if scheduled_rev != int(current_revision or 0):
+        return False, "binding_changed"
+    want_head = (timer.get("expected_head_sha") or "").strip()
+    got_head = (current_head_sha or "").strip()
+    if want_head and want_head != got_head:
+        return False, "head_moved"
+    return True, "authorized"
+
+
 __all__ = [
     "VERIFY_PASS",
     "VERIFY_FAIL",
@@ -752,4 +837,6 @@ __all__ = [
     "due_not_before_timers",
     "mark_timer_fired",
     "cancel_not_before",
+    "cancel_timers_for_branch",
+    "authorize_timer_fire",
 ]

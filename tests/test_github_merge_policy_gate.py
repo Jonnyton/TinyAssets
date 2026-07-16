@@ -40,70 +40,113 @@ def test_enable_auto_merge_is_graphql():
     assert call.params["mutation"] == "enablePullRequestAutoMerge"
 
 
-# ── setup verification: the happy path ───────────────────────────────────────
+# ── setup verification: the happy path (ALL hard preconditions) ──────────────
+
+_APP = 4242  # a known App actor id that is NOT a bypass actor by default
+
+
+def _verify(api, **over):
+    kw = {"destination": _DEST, "branch": "main", "app_actor_id": _APP,
+          "expected_owner": "owner"}
+    kw.update(over)
+    return gn.verify_review_gate_active(api, **kw)
 
 
 def test_verify_gate_active_when_fully_configured():
-    api = InMemoryGitHubApi()
-    gated, summary = gn.verify_review_gate_active(
-        api, destination=_DEST, branch="main"
-    )
-    assert gated is True
+    """Codex r11 #1: gated=True only when EVERY hard precondition holds —
+    required checks + code-owner review + stale-dismissal + latest-push +
+    CODEOWNERS '* @owner' catch-all + known App identity + visible bypass with
+    the App absent."""
+    gated, summary = _verify(InMemoryGitHubApi())
+    assert gated is True, summary["missing"]
     assert summary["missing"] == []
     assert summary["review_rule"]["require_code_owner_review"] is True
 
 
-# ── setup verification: fail-closed variants ─────────────────────────────────
+# ── setup verification: fail-closed variants (each breaks ONE precondition) ───
 
 
-def test_verify_gate_fails_without_review_rule():
-    api = InMemoryGitHubApi(rulesets=[])
-    gated, summary = gn.verify_review_gate_active(api, destination=_DEST, branch="main")
+def test_fails_without_review_rule():
+    gated, summary = _verify(InMemoryGitHubApi(rulesets=[]))
     assert gated is False
     assert "required_code_owner_review_rule" in summary["missing"]
 
 
-def test_verify_gate_fails_without_codeowners():
-    api = InMemoryGitHubApi(codeowners=None)
-    gated, summary = gn.verify_review_gate_active(api, destination=_DEST, branch="main")
+def test_fails_without_required_status_checks():
+    rs = code_owner_review_ruleset(required_status_checks=[])
+    gated, summary = _verify(InMemoryGitHubApi(rulesets=[rs]))
     assert gated is False
-    assert "codeowners_present" in summary["missing"]
+    assert "required_status_checks" in summary["missing"]
 
 
-def test_verify_gate_fails_when_app_is_bypass_actor():
+def test_fails_without_stale_dismissal():
+    rs = code_owner_review_ruleset(dismiss_stale=False)
+    gated, summary = _verify(InMemoryGitHubApi(rulesets=[rs]))
+    assert gated is False
+    assert "dismiss_stale_reviews_on_push" in summary["missing"]
+
+
+def test_fails_without_last_push_approval():
+    rs = code_owner_review_ruleset(require_last_push=False)
+    gated, summary = _verify(InMemoryGitHubApi(rulesets=[rs]))
+    assert gated is False
+    assert "require_last_push_approval" in summary["missing"]
+
+
+def test_fails_without_codeowners_catchall():
+    # A docs-only CODEOWNERS (no '*' catch-all) is NOT enough.
+    api = InMemoryGitHubApi(codeowners="/docs @owner\n")
+    gated, summary = _verify(api)
+    assert gated is False
+    assert "codeowners_catchall_owner" in summary["missing"]
+
+
+def test_fails_when_catchall_owned_by_someone_else():
+    api = InMemoryGitHubApi(codeowners="* @not-the-founder\n")
+    gated, summary = _verify(api, expected_owner="owner")
+    assert gated is False
+    assert "codeowners_catchall_owner" in summary["missing"]
+
+
+def test_fails_when_expected_owner_unknown():
+    gated, summary = _verify(InMemoryGitHubApi(), expected_owner="")
+    assert gated is False
+    assert "expected_owner_unknown" in summary["missing"]
+
+
+def test_fails_when_app_identity_unknown():
+    gated, summary = _verify(InMemoryGitHubApi(), app_actor_id=None)
+    assert gated is False
+    assert "app_identity_known" in summary["missing"]
+
+
+def test_fails_when_app_is_bypass_actor():
     rs = code_owner_review_ruleset(
-        bypass_actors=[{"actor_id": 99, "actor_type": "Integration"}]
+        bypass_actors=[{"actor_id": _APP, "actor_type": "Integration"}]
     )
-    api = InMemoryGitHubApi(rulesets=[rs])
-    gated, summary = gn.verify_review_gate_active(
-        api, destination=_DEST, branch="main", app_actor_id=99
-    )
+    gated, summary = _verify(InMemoryGitHubApi(rulesets=[rs]))
     assert gated is False
     assert "app_not_bypass_actor" in summary["missing"]
 
 
-def test_verify_gate_fails_closed_when_rulesets_uninspectable():
-    api = InMemoryGitHubApi(raise_on_rulesets=True)
-    gated, summary = gn.verify_review_gate_active(api, destination=_DEST, branch="main")
+def test_fails_when_bypass_actors_not_visible():
+    """GitHub omits bypass_actors unless the caller has ruleset-read; MISSING
+    bypass data must fail closed, not be assumed empty (Codex r11 #1)."""
+    rs = code_owner_review_ruleset()
+    del rs["bypass_actors"]  # simulate the omitted field
+    gated, summary = _verify(InMemoryGitHubApi(rulesets=[rs]))
+    assert gated is False
+    assert "bypass_actors_visible" in summary["missing"]
+
+
+def test_fails_closed_when_rulesets_uninspectable():
+    gated, summary = _verify(InMemoryGitHubApi(raise_on_rulesets=True))
     assert gated is False
     assert "rulesets_uninspectable" in summary["missing"]
 
 
 def test_inactive_ruleset_does_not_gate():
     rs = code_owner_review_ruleset(enforcement="disabled")
-    api = InMemoryGitHubApi(rulesets=[rs])
-    gated, summary = gn.verify_review_gate_active(api, destination=_DEST, branch="main")
+    gated, summary = _verify(InMemoryGitHubApi(rulesets=[rs]))
     assert gated is False
     assert "required_code_owner_review_rule" in summary["missing"]
-
-
-def test_stale_and_last_push_flags_are_warnings_not_hard_gate():
-    """Missing dismiss-stale / last-push-approval are surfaced as quality
-    warnings but do not by themselves un-gate (the hard gate is the review rule +
-    CODEOWNERS + no App bypass)."""
-    rs = code_owner_review_ruleset(dismiss_stale=False, require_last_push=False)
-    api = InMemoryGitHubApi(rulesets=[rs])
-    gated, summary = gn.verify_review_gate_active(api, destination=_DEST, branch="main")
-    assert gated is True
-    assert "dismiss_stale_reviews_on_push" in summary["missing"]
-    assert "require_last_push_approval" in summary["missing"]

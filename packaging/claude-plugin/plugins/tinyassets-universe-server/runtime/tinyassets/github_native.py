@@ -121,12 +121,23 @@ def merge_pr(
 
 
 def enable_auto_merge(
-    *, destination: str, pr_number: int, merge_method: str = "SQUASH"
+    *, destination: str, pr_number: int, merge_method: str = "SQUASH",
+    expected_head_sha: str = "", pull_request_id: str = "",
 ) -> GitHubCall:
     """Auto / fired timer → GraphQL ``enablePullRequestAutoMerge``; GitHub merges
-    once its own required reviews/checks are satisfied."""
+    once its own required reviews/checks are satisfied.
+
+    GitHub's mutation requires the PR's GraphQL ``pullRequestId`` (node id) and
+    supports ``expectedHeadOid`` for head-binding (Codex r11 #4). ``kind`` is
+    ``enable_auto_merge`` only when the node id AND expected head are BOTH
+    resolved — otherwise it is honestly named ``enable_auto_merge_intent`` (an
+    unresolved intent, not an exact call), so a caller never mistakes an
+    unbound record for a ready-to-run call."""
+    head = (expected_head_sha or "").strip()
+    node_id = (pull_request_id or "").strip()
+    resolved = bool(head and node_id)
     return GitHubCall(
-        kind="enable_auto_merge",
+        kind="enable_auto_merge" if resolved else "enable_auto_merge_intent",
         transport="graphql",
         method="POST",
         path="graphql",
@@ -135,10 +146,14 @@ def enable_auto_merge(
             "destination": destination,
             "pr_number": pr_number,
             "merge_method": merge_method,
+            "pull_request_id": node_id,
+            "expected_head_oid": head,
+            "resolved": resolved,
         },
         summary=(
             f"GraphQL enablePullRequestAutoMerge on {destination}#{pr_number} "
-            f"({merge_method})"
+            f"({merge_method}); head {head[:8] or '(unresolved)'} "
+            f"node {node_id or '(unresolved)'}"
         ),
     )
 
@@ -202,107 +217,153 @@ class GitHubApi(Protocol):
 
     def get_pull(self, *, destination: str, pr_number: int) -> dict[str, Any]:
         """Current GitHub PR state: ``{"state", "merged", "mergeable_state",
-        "review_decision", "head_sha", "merge_commit_sha"}``."""
+        "review_decision", "head_sha", "base_ref", "merge_commit_sha",
+        "node_id"}``. ``base_ref`` is authoritative — the gate verifies against
+        the PR's ACTUAL base branch, never a packet-supplied ref (Codex r11
+        #1)."""
         ...
 
 
 # ── Fail-closed setup verification ──────────────────────────────────────────
 
 
-def _rule_requires_code_owner_review(rules: list[dict[str, Any]]) -> tuple[bool, dict[str, Any]]:
-    """Scan a ruleset's rules for a ``pull_request`` rule requiring >=1 approval
-    and code-owner review. Returns ``(ok, flags)`` where flags surfaces the
-    stale-dismissal / last-push-approval quality signals."""
+def _find_review_rule(rules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the parameters of a ``pull_request`` rule requiring >=1 approval +
+    code-owner review, or None."""
     for rule in rules:
         if not isinstance(rule, dict) or rule.get("type") != "pull_request":
             continue
         params = rule.get("parameters") or {}
-        approvals = params.get("required_approving_review_count") or 0
-        code_owner = bool(params.get("require_code_owner_review"))
-        if approvals >= 1 and code_owner:
-            return True, {
-                "required_approving_review_count": approvals,
-                "require_code_owner_review": True,
-                "dismiss_stale_reviews_on_push": bool(
-                    params.get("dismiss_stale_reviews_on_push")
-                ),
-                "require_last_push_approval": bool(
-                    params.get("require_last_push_approval")
-                ),
-            }
-    return False, {}
+        if (params.get("required_approving_review_count") or 0) >= 1 and bool(
+            params.get("require_code_owner_review")
+        ):
+            return params
+    return None
 
 
-def _app_is_bypass_actor(rulesets: list[dict[str, Any]], app_actor_id: Any) -> bool:
-    if app_actor_id in (None, ""):
+def _has_required_status_checks(rules: list[dict[str, Any]]) -> bool:
+    """True iff an active ``required_status_checks`` rule lists >=1 check."""
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            continue
+        params = rule.get("parameters") or {}
+        checks = params.get("required_status_checks") or []
+        if isinstance(checks, list) and len(checks) >= 1:
+            return True
+    return False
+
+
+def _codeowners_catchall_owner(text: str, expected_owner: str) -> bool:
+    """True iff CODEOWNERS has a ``*`` catch-all owned by ``expected_owner`` — so
+    the founder owns the ENTIRE merge path (a docs-only entry is NOT enough)."""
+    want = (expected_owner or "").strip().lstrip("@").lower()
+    if not want:
         return False
-    for rs in rulesets:
-        for actor in rs.get("bypass_actors") or []:
-            if str(actor.get("actor_id")) == str(app_actor_id):
-                return True
+    for raw in (text or "").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != "*":
+            continue
+        if any(o.strip().lstrip("@").lower() == want for o in parts[1:]):
+            return True
     return False
 
 
 def verify_review_gate_active(
-    api: GitHubApi, *, destination: str, branch: str, app_actor_id: Any = None
+    api: GitHubApi, *, destination: str, branch: str, app_actor_id: Any = None,
+    expected_owner: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     """FAIL-CLOSED: is ``destination``'s ``branch`` actually review-gated?
 
-    Returns ``(gated, summary)``. ``gated`` is True ONLY when an active ruleset
-    requires PR + code-owner review, ``CODEOWNERS`` is present, and the App is
-    not a ruleset bypass actor. The ``summary`` names every missing precondition
-    so the caller can tell the owner exactly what to configure. Any API failure
-    is treated as "not verifiably gated" (fail closed), never as gated.
+    Returns ``(gated, summary)``. Every precondition below is HARD — ``gated`` is
+    True only when ALL hold; anything missing or uninspectable un-gates (Codex
+    r11 #1). ``summary['missing']`` names each gap so the owner is told exactly
+    what to configure. The caller MUST pass the PR's ACTUAL base branch (read
+    from GitHub), not a packet-supplied ref.
+
+    Hard preconditions:
+
+    - an active ``pull_request`` rule requiring >=1 approval + code-owner review;
+    - ``dismiss_stale_reviews_on_push`` AND ``require_last_push_approval`` on it
+      (stale/newly-pushed commits can't ride a prior approval);
+    - an active ``required_status_checks`` rule with >=1 check (no red merge);
+    - ``CODEOWNERS`` with a ``*`` catch-all owned by the EXPECTED founder;
+    - a KNOWN App identity (``app_actor_id``) AND positively-visible bypass
+      config on every active ruleset — GitHub omits ``bypass_actors`` unless the
+      caller has ruleset-read, so MISSING bypass data fails closed (not assumed
+      empty), and the App must not be in any bypass list.
     """
     summary: dict[str, Any] = {
-        "destination": destination,
-        "branch": branch,
-        "missing": [],
+        "destination": destination, "branch": branch, "missing": [],
     }
+    missing: list[str] = summary["missing"]
     try:
         rulesets = api.list_active_rulesets(destination=destination, branch=branch)
     except Exception as exc:  # noqa: BLE001 — uninspectable ⇒ not verifiably gated
-        summary["missing"].append("rulesets_uninspectable")
+        missing.append("rulesets_uninspectable")
         summary["error"] = str(exc)
         return False, summary
 
+    active = [
+        rs for rs in (rulesets or [])
+        if str(rs.get("enforcement", "active")).lower() == "active"
+    ]
     all_rules: list[dict[str, Any]] = []
-    for rs in rulesets or []:
-        if str(rs.get("enforcement", "active")).lower() != "active":
-            continue
+    for rs in active:
         all_rules.extend(rs.get("rules") or [])
-    has_review_rule, flags = _rule_requires_code_owner_review(all_rules)
-    if not has_review_rule:
-        summary["missing"].append("required_code_owner_review_rule")
+
+    review = _find_review_rule(all_rules)
+    if review is None:
+        missing.append("required_code_owner_review_rule")
     else:
-        summary["review_rule"] = flags
-        # Quality signals — surfaced, not hard-required by this gate.
-        if not flags.get("dismiss_stale_reviews_on_push"):
-            summary["missing"].append("dismiss_stale_reviews_on_push")
-        if not flags.get("require_last_push_approval"):
-            summary["missing"].append("require_last_push_approval")
+        summary["review_rule"] = {
+            "required_approving_review_count": review.get("required_approving_review_count"),
+            "require_code_owner_review": True,
+        }
+        if not review.get("dismiss_stale_reviews_on_push"):
+            missing.append("dismiss_stale_reviews_on_push")
+        if not review.get("require_last_push_approval"):
+            missing.append("require_last_push_approval")
+
+    if not _has_required_status_checks(all_rules):
+        missing.append("required_status_checks")
+
+    # App identity + POSITIVELY visible bypass config (fail closed on either gap).
+    if app_actor_id in (None, ""):
+        missing.append("app_identity_known")
+    if not active:
+        # No active ruleset at all → bypass config not verifiable.
+        missing.append("bypass_actors_visible")
+    else:
+        for rs in active:
+            if "bypass_actors" not in rs:
+                missing.append("bypass_actors_visible")
+                break
+        if app_actor_id not in (None, ""):
+            for rs in active:
+                for actor in rs.get("bypass_actors") or []:
+                    if str(actor.get("actor_id")) == str(app_actor_id):
+                        missing.append("app_not_bypass_actor")
+                        break
 
     try:
         codeowners = api.get_codeowners(destination=destination)
     except Exception as exc:  # noqa: BLE001
         codeowners = None
         summary["error_codeowners"] = str(exc)
-    if not (codeowners or "").strip():
-        summary["missing"].append("codeowners_present")
+    if not (expected_owner or "").strip():
+        missing.append("expected_owner_unknown")
+    elif not _codeowners_catchall_owner(codeowners or "", expected_owner):
+        missing.append("codeowners_catchall_owner")
     else:
-        summary["codeowners_present"] = True
+        summary["codeowners_catchall_owner"] = expected_owner.strip().lstrip("@")
 
-    if _app_is_bypass_actor(rulesets or [], app_actor_id):
-        summary["missing"].append("app_not_bypass_actor")
-
-    # Hard preconditions: the required-review rule, CODEOWNERS, and no App bypass.
-    # Stale/last-push are quality warnings that do not by themselves un-gate.
-    hard_missing = {
-        "required_code_owner_review_rule",
-        "codeowners_present",
-        "app_not_bypass_actor",
-    } & set(summary["missing"])
-    gated = not hard_missing
+    # De-dup while preserving order.
+    seen: set[str] = set()
+    summary["missing"] = [m for m in missing if not (m in seen or seen.add(m))]
+    gated = not summary["missing"]
     summary["gated"] = gated
     return gated, summary
 

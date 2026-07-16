@@ -210,6 +210,54 @@ def test_set_preference_requires_branch_def_id(owner_env):
     assert out["failure_class"] == "missing_branch_def_id"
 
 
+def test_set_preference_tightening_is_atomic(owner_env):
+    """Codex r11 #2: re-binding cancels the pending not_before timer AND records
+    the disable-auto-merge revoke effect in the SAME operation — a due timer
+    can't survive an owner switch to manual."""
+    # A PR is projected + a not_before timer is scheduled under the branch.
+    rq.project_pr(
+        owner_env, destination=_DEST, pr_number=_PR, head_sha=_HEAD,
+        branch_def_id="bd", universe_id="u1",
+    )
+    rq.schedule_not_before(
+        owner_env, destination=_DEST, pr_number=_PR, not_before=100.0,
+        branch_def_id="bd", expected_head_sha=_HEAD, binding_revision=1,
+    )
+    assert len(rq.due_not_before_timers(owner_env, now=200.0)) == 1
+
+    # Owner tightens to manual.
+    out = _call(
+        "review_queue_set_preference", universe_id="u1", branch_def_id="bd",
+        merge_preference="manual",
+    )
+    assert out["status"] == "bound"
+    assert out["cancelled_timers"] == 1
+    kinds = [c.get("kind") for c in out["revoke_calls"]]
+    assert "disable_auto_merge" in kinds
+    # The timer is gone — it cannot fire after the tighten.
+    assert rq.due_not_before_timers(owner_env, now=1000.0) == []
+
+
+def test_set_preference_dismisses_prior_approval(owner_env):
+    """An approved PR under a re-bound branch gets a dismiss-prior-approval
+    revoke effect recorded (renewed owner consent required)."""
+    rq.project_pr(
+        owner_env, destination=_DEST, pr_number=_PR, head_sha=_HEAD,
+        branch_def_id="bd", universe_id="u1",
+    )
+    rq.record_owner_intent(
+        owner_env, destination=_DEST, pr_number=_PR, intent=rq.INTENT_APPROVE,
+        workflow_outcome=rq.WORKFLOW_APPROVED, decided_by="owner-actor",
+        expected_head_sha=_HEAD,
+    )
+    out = _call(
+        "review_queue_set_preference", universe_id="u1", branch_def_id="bd",
+        merge_preference="manual",
+    )
+    kinds = [c.get("kind") for c in out["revoke_calls"]]
+    assert "dismiss_prior_approval_intent" in kinds
+
+
 # ── non-owner / write-collaborator denied on every verb ──────────────────────
 
 
