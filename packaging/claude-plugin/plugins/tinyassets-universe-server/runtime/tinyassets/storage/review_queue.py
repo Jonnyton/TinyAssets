@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     notes          TEXT NOT NULL DEFAULT '',
     merge_commit_sha TEXT NOT NULL DEFAULT '',
     created_at     REAL NOT NULL,
+    head_queued_at REAL NOT NULL DEFAULT 0,
     updated_at     REAL NOT NULL,
     decided_by     TEXT NOT NULL DEFAULT '',
     decided_at     REAL
@@ -173,6 +174,7 @@ def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
         "notes": row["notes"],
         "merge_commit_sha": row["merge_commit_sha"],
         "created_at": row["created_at"],
+        "head_queued_at": row["head_queued_at"],
         "updated_at": row["updated_at"],
         "decided_by": row["decided_by"],
         "decided_at": row["decided_at"],
@@ -198,6 +200,12 @@ def enqueue_pr(
     resets the item to ``pending`` so the owner re-reviews the new head, but
     keeps the original ``item_id`` + ``created_at``.
 
+    ``head_queued_at`` is the per-head clock the timer merge policy counts
+    from: it is reset to ``now`` whenever ``head_sha`` changes (initial enqueue
+    or a re-push to a new head), so a freshly-pushed head is not instantly
+    timer-eligible off the first-ever enqueue timestamp (Codex R2 REQUIRED 2).
+    Re-presenting the SAME head keeps the existing ``head_queued_at``.
+
     Raises ``ValueError`` on missing required fields (contract violation, not a
     recoverable state — fail loud per hard rule 8).
     """
@@ -215,22 +223,26 @@ def enqueue_pr(
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
         existing = conn.execute(
-            "SELECT item_id, created_at FROM review_queue "
-            "WHERE destination = ? AND pr_number = ?",
+            "SELECT item_id, created_at, head_sha, head_queued_at "
+            "FROM review_queue WHERE destination = ? AND pr_number = ?",
             (dest, pr_number),
         ).fetchone()
         if existing is not None:
             item_id = existing["item_id"]
+            # Reset the timer clock only when the head actually changed; a
+            # same-head re-present keeps the original head_queued_at.
+            head_changed = (existing["head_sha"] or "") != (head_sha or "")
+            head_queued_at = ts if head_changed else existing["head_queued_at"]
             conn.execute(
                 """
                 UPDATE review_queue
                    SET pr_url = ?, head_sha = ?, request_ref = ?,
                        verify_verdict = ?, status = 'pending',
-                       notes = '', updated_at = ?,
+                       notes = '', head_queued_at = ?, updated_at = ?,
                        decided_by = '', decided_at = NULL
                  WHERE item_id = ?
                 """,
-                (url, head_sha, request_ref, verdict, ts, item_id),
+                (url, head_sha, request_ref, verdict, head_queued_at, ts, item_id),
             )
         else:
             item_id = f"rq-{uuid.uuid4().hex[:16]}"
@@ -239,12 +251,12 @@ def enqueue_pr(
                 INSERT INTO review_queue (
                     item_id, destination, pr_number, pr_url, head_sha,
                     request_ref, verify_verdict, status, notes,
-                    created_at, updated_at, decided_by, decided_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, '', NULL)
+                    created_at, head_queued_at, updated_at, decided_by, decided_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?, '', NULL)
                 """,
                 (
                     item_id, dest, pr_number, url, head_sha,
-                    request_ref, verdict, ts, ts,
+                    request_ref, verdict, ts, ts, ts,
                 ),
             )
         conn.commit()

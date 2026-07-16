@@ -67,6 +67,34 @@ def test_enqueue_idempotent_on_repush(tmp_path):
     assert len(rq.list_queue(tmp_path)) == 1
 
 
+def test_head_queued_at_resets_on_new_head_only(tmp_path):
+    """The per-head timer clock resets when head_sha changes, but a same-head
+    re-present keeps it (Codex R2 REQUIRED 2). created_at never changes."""
+    url = f"https://github.com/{_DEST}/pull/181"
+    first = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=url, head_sha=_HEAD, now=1000.0,
+    )
+    assert first["created_at"] == 1000.0
+    assert first["head_queued_at"] == 1000.0
+
+    # Same head, later time → head_queued_at unchanged.
+    same = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=url, head_sha=_HEAD, now=2000.0,
+    )
+    assert same["created_at"] == 1000.0
+    assert same["head_queued_at"] == 1000.0
+
+    # New head → head_queued_at resets to the new time; created_at stays.
+    moved = rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=181,
+        pr_url=url, head_sha=_HEAD2, now=5000.0,
+    )
+    assert moved["created_at"] == 1000.0
+    assert moved["head_queued_at"] == 5000.0
+
+
 def test_list_status_filter(tmp_path):
     a = _enqueue(tmp_path, pr_number=1)
     _enqueue(tmp_path, pr_number=2)

@@ -215,38 +215,97 @@ def test_founder_oauth_requires_fresh_approval_not_standing_consent(
     monkeypatch.setattr(github_merge, "_github_api", fake)
 
     blocked = _run(
-        tmp_path, _packet(merge_policy="auto", founder_oauth_required=True)
+        tmp_path, _packet(merge_policy="auto", founder_oauth_per_merge=True)
     )
     assert blocked["error_kind"] == "merge_policy_blocked"
     assert blocked["policy_reason"] == "founder_oauth_required"
     assert not _put_fired(fake)
 
 
-def test_founder_oauth_fresh_approval_merges_once_then_is_spent(
+def test_canonical_oauth_key_blocks_auto_merge_without_fresh_approval(
+    monkeypatch, tmp_path
+):
+    """Codex R2 CRITICAL 1: the effector must read the CANONICAL state field
+    (`founder_oauth_per_merge`). Before the fix it read a divergent literal, so
+    a packet carrying the canonical key with NO fresh approval still merged.
+    Auto policy + green verify would otherwise release immediately."""
+    _with_capability(monkeypatch)
+    _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
+    fake = _scripted_api(allow_merge=False)  # PUT must NOT fire
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(
+        tmp_path,
+        _packet(merge_policy="auto", founder_oauth_per_merge=True),
+    )
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "founder_oauth_required"
+    assert not _put_fired(fake)
+
+
+def test_founder_oauth_fresh_approval_merges_once_and_consumes_exactly_once(
     monkeypatch, tmp_path
 ):
     _with_capability(monkeypatch)
     item = _enqueue(tmp_path, verdict=rq.VERIFY_PASS)
     # Fresh founder-authenticated approval action (mints a single-use token).
     rq.approve_item(tmp_path, item_id=item["item_id"], approved_by="founder")
+    assert rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=_PR, head_sha=_HEAD
+    )
 
     fake = _scripted_api(allow_merge=True)
     monkeypatch.setattr(github_merge, "_github_api", fake)
     merged = _run(
-        tmp_path, _packet(merge_policy="manual", founder_oauth_required=True)
+        tmp_path, _packet(merge_policy="manual", founder_oauth_per_merge=True)
     )
     assert merged.get("merged") is True
-    assert merged["founder_oauth_required"] is True
+    assert merged["founder_oauth_per_merge"] is True
     assert merged.get("consumed_approval_id")
     assert merged["review_queue_status"] == "merged"  # R4: item marked merged
     assert _put_fired(fake)
+    # The fresh approval was consumed exactly once — none remain.
+    assert not rq.has_fresh_merge_approval(
+        tmp_path, destination=_DEST, pr_number=_PR, head_sha=_HEAD
+    )
 
     # The queue item is now terminal-merged; a SECOND merge attempt fails closed.
     fake2 = _scripted_api(allow_merge=False)
     monkeypatch.setattr(github_merge, "_github_api", fake2)
     second = _run(
-        tmp_path, _packet(merge_policy="manual", founder_oauth_required=True)
+        tmp_path, _packet(merge_policy="manual", founder_oauth_per_merge=True)
     )
     assert second["error_kind"] == "merge_policy_blocked"
     assert second["policy_reason"] == "already_merged"
     assert not _put_fired(fake2)
+
+
+def test_timer_resets_on_repushed_head(monkeypatch, tmp_path):
+    """Codex R2 REQUIRED 2: a re-pushed head restarts the timer clock. Without
+    the per-head `head_queued_at` reset, the timer would count from the
+    first-ever enqueue and a freshly-pushed head would be instantly eligible."""
+    _with_capability(monkeypatch)
+    # Original enqueue long ago at _HEAD.
+    rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=_PR,
+        pr_url=f"https://github.com/{_DEST}/pull/{_PR}",
+        head_sha=_HEAD, verify_verdict=rq.VERIFY_PASS, now=1000.0,
+    )
+    # Re-push: NEW head enqueued ~now → resets the timer clock to ~now.
+    rq.enqueue_pr(
+        tmp_path, destination=_DEST, pr_number=_PR,
+        pr_url=f"https://github.com/{_DEST}/pull/{_PR}",
+        head_sha=_HEAD2, verify_verdict=rq.VERIFY_PASS,
+    )
+    fake = _scripted_api(allow_merge=False, live_head=_HEAD2)
+    monkeypatch.setattr(github_merge, "_github_api", fake)
+    result = _run(
+        tmp_path,
+        _packet(
+            merge_policy="timer", expected_head_sha=_HEAD2,
+            merge_timer_delay_s=3600,
+        ),
+    )
+    # The fresh head was queued < 3600s ago, so it is NOT yet timer-eligible.
+    assert result["error_kind"] == "merge_policy_blocked"
+    assert result["policy_reason"] == "timer_policy_delay_not_elapsed"
+    assert not _put_fired(fake)

@@ -168,14 +168,14 @@ def _evaluate_merge_policy_gate(
     packet is a raw branch-protection merge (existing behavior) and the gate is
     a no-op. ``gate_info`` is merged into the success payload for auditability.
     """
-    if "merge_policy" not in payload:
-        return None, {}
-
     from tinyassets import merge_policy as mp
     from tinyassets.storage import review_queue as rq
 
+    if mp.MERGE_POLICY_STATE_FIELD not in payload:
+        return None, {}
+
     try:
-        policy = mp.normalize_policy(payload.get("merge_policy"))
+        policy = mp.normalize_policy(payload.get(mp.MERGE_POLICY_STATE_FIELD))
     except ValueError as exc:
         return _error(
             "invalid_merge_policy",
@@ -185,7 +185,11 @@ def _evaluate_merge_policy_gate(
             matched_output_key=matched_key,
         ), {}
 
-    founder_oauth_required = _payload_bool(payload, "founder_oauth_required")
+    # Read the CANONICAL founder-OAuth state field defined in merge_policy — the
+    # loop's owner_gate node binds it under this exact key. A divergent literal
+    # here silently bypasses the founder's per-merge OAuth guarantee (Codex R2
+    # CRITICAL 1).
+    founder_oauth_per_merge = _payload_bool(payload, mp.FOUNDER_OAUTH_STATE_FIELD)
 
     if universe_dir is None:
         return _error(
@@ -253,11 +257,13 @@ def _evaluate_merge_policy_gate(
         policy=policy,
         verify_verdict=item.get("verify_verdict"),
         item_status=item.get("status", ""),
-        founder_oauth_required=founder_oauth_required,
+        founder_oauth_required=founder_oauth_per_merge,
         fresh_approval_present=fresh_approval_present,
-        created_at=item.get("created_at"),
+        # Timer counts from when the CURRENT head was queued, not the first-ever
+        # enqueue — a re-pushed head resets the clock (Codex R2 REQUIRED 2).
+        created_at=item.get("head_queued_at", item.get("created_at")),
         now=time.time(),
-        timer_delay_s=float(payload.get("merge_timer_delay_s") or 0.0),
+        timer_delay_s=float(payload.get(mp.TIMER_DELAY_STATE_FIELD) or 0.0),
     )
     if not decision.get("eligible"):
         return _error(
@@ -272,12 +278,12 @@ def _evaluate_merge_policy_gate(
             policy_reason=decision.get("reason"),
             verify_verdict=item.get("verify_verdict"),
             item_status=item.get("status"),
-            founder_oauth_required=founder_oauth_required,
+            founder_oauth_per_merge=founder_oauth_per_merge,
             matched_output_key=matched_key,
         ), {}
 
     consumed_approval_id = ""
-    if founder_oauth_required:
+    if founder_oauth_per_merge:
         consumed_approval_id = rq.consume_merge_approval(
             universe_dir,
             destination=destination,
@@ -303,7 +309,7 @@ def _evaluate_merge_policy_gate(
     gate_info = {
         "merge_policy": policy,
         "policy_reason": decision.get("reason"),
-        "founder_oauth_required": founder_oauth_required,
+        "founder_oauth_per_merge": founder_oauth_per_merge,
         "review_queue_item_id": item.get("item_id"),
     }
     if consumed_approval_id:
