@@ -186,6 +186,15 @@ def test_renamed_coding_node_cannot_escape_via_rename():
     assert "Bash" in (cfg.allowed_tools or ())
 
 
+def test_node_requires_sandbox_accepts_raw_node_def_dicts():
+    # build_branch / list_branches classify from persisted node_def DICTS (not
+    # NodeDefinition objects), so the classifier must read either shape.
+    assert node_requires_sandbox({"node_id": "x", "node_kind": "coding"}) is True
+    assert node_requires_sandbox({"node_id": "x", "requires_sandbox": True}) is True
+    assert node_requires_sandbox({"node_id": "draft_patch"}) is True  # backstop
+    assert node_requires_sandbox({"node_id": "summarize", "node_kind": ""}) is False
+
+
 def test_node_kind_round_trips_through_serialization():
     # node_kind must survive export/import so a remix carries its capability.
     node = NodeDefinition(

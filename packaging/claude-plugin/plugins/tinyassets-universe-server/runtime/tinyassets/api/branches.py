@@ -589,7 +589,11 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             if (r.get("author") or "") != actor:
                 continue
         node_defs = r.get("node_defs", [])
-        has_sandbox_nodes = any(nd.get("requires_sandbox") for nd in node_defs)
+        # Classify by CAPABILITY (node_requires_sandbox), not the raw flag: a
+        # coding node (node_kind="coding") is sandbox-required even with
+        # requires_sandbox unset, so the filter must not miss it (patch-loop S3).
+        from tinyassets.sandbox_policy import node_requires_sandbox
+        has_sandbox_nodes = any(node_requires_sandbox(nd) for nd in node_defs)
         if rs_filter == "none" and has_sandbox_nodes:
             continue
         if rs_filter == "any" and not has_sandbox_nodes:
@@ -894,10 +898,15 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
         from tinyassets.providers.base import get_sandbox_status
         sb = get_sandbox_status()
         if not sb.get("bwrap_available"):
+            # Classify by CAPABILITY: a coding node (node_kind="coding") is
+            # sandbox-required even without requires_sandbox set, so the compat
+            # warning must flag it too (patch-loop S3) — otherwise a coding-node
+            # branch would be told it runs fine, then fail closed at run time.
+            from tinyassets.sandbox_policy import node_requires_sandbox
             sandbox_nodes = [
                 nd.node_id
                 for nd in branch.node_defs
-                if getattr(nd, "requires_sandbox", False)
+                if node_requires_sandbox(nd)
             ]
             if sandbox_nodes:
                 reason = sb.get("reason") or "bwrap unavailable"

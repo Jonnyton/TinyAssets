@@ -89,21 +89,34 @@ CODING_NODE_KINDS: frozenset[str] = frozenset({
 SANDBOX_DEFAULT_NODE_IDS: frozenset[str] = frozenset({"draft_patch"})
 
 
+def _node_attr(node: Any, name: str) -> Any:
+    """Read *name* from a NodeDefinition object OR a raw node_def dict.
+
+    build_branch / list_branches classify from dicts (the persisted node_def
+    shape) while graph_compiler classifies from NodeDefinition objects — both go
+    through :func:`node_requires_sandbox`, so it must read either.
+    """
+    if isinstance(node, dict):
+        return node.get(name)
+    return getattr(node, name, None)
+
+
 def node_requires_sandbox(node: Any) -> bool:
     """True when *node* must run with the hardened coding-node sandbox posture.
 
-    Precedence (Codex S3 adapt): (1) the STABLE ``node_kind`` capability — a
-    coding/repo-writing kind is always sandbox-required, and it survives a rename
-    so a remix cannot escape by renaming the node; (2) the explicit
-    ``requires_sandbox`` contract; (3) the ``draft_patch`` node_id BACKSTOP for
-    the current reference design (until its node_def carries node_kind="coding").
+    Accepts a NodeDefinition object OR a raw node_def dict. Precedence (Codex S3
+    adapt): (1) the STABLE ``node_kind`` capability — a coding/repo-writing kind
+    is always sandbox-required, and it survives a rename so a remix cannot escape
+    by renaming the node; (2) the explicit ``requires_sandbox`` contract; (3) the
+    ``draft_patch`` node_id BACKSTOP for the current reference design (until its
+    node_def carries node_kind="coding").
     """
-    node_kind = str(getattr(node, "node_kind", "") or "").strip().lower()
+    node_kind = str(_node_attr(node, "node_kind") or "").strip().lower()
     if node_kind in CODING_NODE_KINDS:
         return True
-    if bool(getattr(node, "requires_sandbox", False)):
+    if bool(_node_attr(node, "requires_sandbox")):
         return True
-    node_id = str(getattr(node, "node_id", "") or "").strip()
+    node_id = str(_node_attr(node, "node_id") or "").strip()
     return node_id in SANDBOX_DEFAULT_NODE_IDS
 
 
