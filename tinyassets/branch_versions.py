@@ -474,6 +474,35 @@ def get_newest_active_version(
     return _row_to_version(row)
 
 
+def get_newest_active_versions(
+    base_path: str | Path,
+    branch_def_ids: "list[str]",
+) -> dict[str, BranchVersion]:
+    """Newest ACTIVE version per branch_def_id in ONE query (no N+1).
+
+    Codex S2 F4: the published listing used one query per row (N+1). This
+    batches the active-version lookup into a single ``WHERE branch_def_id IN
+    (...) AND status='active'`` scan so the listing's query count is bounded.
+    """
+    ids = [str(i) for i in (branch_def_ids or []) if i]
+    if not ids:
+        return {}
+    initialize_branch_versions_db(base_path)
+    placeholders = ",".join("?" * len(ids))
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM branch_versions WHERE branch_def_id IN ({placeholders}) "
+            "AND status = 'active' ORDER BY published_at DESC",
+            ids,
+        ).fetchall()
+    out: dict[str, BranchVersion] = {}
+    for row in rows:
+        version = _row_to_version(row)
+        # Newest first -> first row per branch_def_id wins.
+        out.setdefault(version.branch_def_id, version)
+    return out
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,

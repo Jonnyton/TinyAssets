@@ -702,6 +702,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             actor=actor,
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            # Immutable run universe (ACL-gated) -> owner-only binding resolution.
+            _enqueue_universe_id=str(kwargs.get("universe_id") or "").strip(),
         )
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)

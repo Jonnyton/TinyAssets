@@ -2363,46 +2363,32 @@ def _invoke_graph(
             # state_schema-declared fields with defaults are available to
             # strict-isolation prompt placeholders from step 1.
             #
-            # Binding-privacy — the LOAD-BEARING choke point at the SHARED
-            # consumer (Codex+Fable S2). Both run entries converge here:
-            # execute_branch (direct) and _build_invoke_branch_node -> execute_
-            # branch (sub-branch invoke). A NON-AUTHOR invocation of a branch
-            # with binding fields must NEVER seed the owner's bound values into
-            # run state, or an invoke_branch_spec node could exfiltrate them.
-            # The invoking actor is the one threaded through execute_branch
-            # (enqueue_context.actor); for a sub-branch that is the parent run's
-            # actor. Top-level direct MCP runs are also guarded at the boundary
-            # by _action_run_branch (OAuth subject). Full single-subject
-            # threading converges with S3's run-context work at the rebase.
-            seed_schema = getattr(branch, "state_schema", None)
-            invoking_actor = (
-                (enqueue_context.actor if enqueue_context else "") or ""
+            # Binding VALUES are NOT in the shared branch row (PLAN §4 — the
+            # platform never stores private content; Codex+Fable latest-model).
+            # They live in the host-local per-universe binding store and are
+            # resolved HERE keyed by the run's IMMUTABLE universe
+            # (enqueue_context.universe_id — set by the ACL-gated top-level run
+            # and inherited by sub-branch invocations; NOT the branch-authored
+            # child_actor, which can narrow attribution but never claim a
+            # universe for resolution). A run in a non-owner universe finds no
+            # rows -> empty binding slots. Nothing to leak from the row; nothing
+            # to resolve from a foreign universe.
+            binding_values: dict[str, Any] = {}
+            run_universe = (
+                (enqueue_context.universe_id if enqueue_context else "") or ""
             ).strip()
-            branch_author = (getattr(branch, "author", "") or "").strip()
-            # invocation_depth > 0 == a sub-branch invoke_branch_spec dispatch
-            # (the egress with no other guard). Top-level runs (depth 0) are
-            # gated by _action_run_branch's OAuth-subject check; the threaded
-            # actor there is universe-scoped, so applying this to depth 0 would
-            # wrongly redact the OWNER's own bound values.
-            if (
-                invocation_depth > 0
-                and branch_author
-                and invoking_actor
-                and invoking_actor != branch_author
-            ):
-                from tinyassets.branch_versions import (
-                    branch_has_bound_fields,
-                    redact_bound_state_values,
-                )
+            if run_universe:
+                from tinyassets.branch_bindings import resolve_branch_bindings
 
-                if branch_has_bound_fields(seed_schema):
-                    # Cross-actor execution of a bound branch: strip the owner's
-                    # binding VALUES so they never enter this run's state (the
-                    # slot survives — a non-owner must bind their own).
-                    seed_schema = redact_bound_state_values(
-                        seed_schema, drop_marker=True,
-                    )
-            initial_state = seed_initial_state(dict(inputs), seed_schema)
+                binding_values = resolve_branch_bindings(
+                    base_path,
+                    universe_id=run_universe,
+                    branch_def_id=getattr(branch, "branch_def_id", ""),
+                )
+            initial_state = seed_initial_state(
+                dict(inputs), getattr(branch, "state_schema", None),
+                binding_values=binding_values,
+            )
             result = app.invoke(
                 initial_state,
                 config={
@@ -3012,6 +2998,7 @@ def _execute_branch_core(
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -3043,6 +3030,13 @@ def _execute_branch_core(
     executor = _get_executor(invocation_depth=_invocation_depth)
     effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
 
+    # Carry the run's IMMUTABLE universe (ACL-gated at the top-level entry;
+    # inherited by sub-branches — never child_actor) so the seed can resolve
+    # owner-only binding VALUES from the host-local store. Codex+Fable S2.
+    _binding_ctx = NodeEnqueueContext(
+        universe_id=_enqueue_universe_id, actor=actor,
+    )
+
     def _worker() -> RunOutcome:
         try:
             return _invoke_graph(
@@ -3053,6 +3047,7 @@ def _execute_branch_core(
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
                 invocation_depth=_invocation_depth,
+                enqueue_context=_binding_ctx,
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -3091,6 +3086,7 @@ def execute_branch_async(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
     in the background. Returns within a few ms with ``status=queued``.
@@ -3126,6 +3122,7 @@ def execute_branch_async(
         on_node_status=on_node_status,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
+        _enqueue_universe_id=_enqueue_universe_id,
     )
 
 

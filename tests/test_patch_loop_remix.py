@@ -148,8 +148,10 @@ def test_bind_sets_defaults_and_is_author_gated(data_dir, monkeypatch):
     parent = _reference_bid(data_dir)
     child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
 
-    # Bind the reference's stable slots (target_repo/merge_policy) — see note in
-    # test_remix_forks_* re avoiding credential_ref for rebase robustness.
+    # Bindings are per-universe host-local (PLAN §4): pass graph_id; the VALUE
+    # goes to the store, never the shared row.
+    from tinyassets.branch_bindings import resolve_branch_bindings
+
     bind_ops = json.dumps([
         {"op": "set_state_field_default", "name": "target_repo",
          "default_value": "github.com/alice/game"},
@@ -160,24 +162,25 @@ def test_bind_sets_defaults_and_is_author_gated(data_dir, monkeypatch):
     # A DIFFERENT user cannot bind alice's branch (author gate — BUG-081).
     _actor(monkeypatch, "bob")
     denied = json.loads(write_graph(
-        target="branch", branch_id=child, changes_json=bind_ops,
+        target="branch", branch_id=child, graph_id="u-alice", changes_json=bind_ops,
     ))
     assert denied["status"] == "rejected"
     assert "denied" in denied["error"]
 
-    # The owner binds successfully; defaults land on the state fields.
+    # The owner binds successfully; values land in the host-local per-universe
+    # store, and the shared row keeps only the is_binding schema flag (no value).
     _actor(monkeypatch, "alice")
     ok = json.loads(write_graph(
-        target="branch", branch_id=child, changes_json=bind_ops,
+        target="branch", branch_id=child, graph_id="u-alice", changes_json=bind_ops,
     ))
     assert ok["status"] == "patched", ok
 
-    bound = _load(data_dir, child)
-    defaults = {
-        f["name"]: f.get("default_value") for f in bound.state_schema
-    }
-    assert defaults["target_repo"] == "github.com/alice/game"
-    assert defaults["merge_policy"] == "manual"
+    stored = resolve_branch_bindings(data_dir, universe_id="u-alice", branch_def_id=child)
+    assert stored["target_repo"] == "github.com/alice/game"
+    assert stored["merge_policy"] == "manual"
+    # The shared row holds NO binding value.
+    for field in _load(data_dir, child).state_schema:
+        assert not field.get("default_value")
 
 
 def test_bind_unknown_field_is_rejected(data_dir):
@@ -654,33 +657,43 @@ def test_bob_cannot_read_or_inherit_bound_value_via_public_or_fork(data_dir, mon
     seed_reference_designs(data_dir)
     parent = _reference_bid(data_dir)
     child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
-    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+    write_graph(target="branch", branch_id=child, graph_id="u-alice", changes_json=json.dumps([
         {"op": "set_state_field_default", "name": "target_repo",
          "default_value": "github.com/alice/SECRET"},
     ]))
     # Alice explicitly makes the design public to share it.
-    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+    write_graph(target="branch", branch_id=child, graph_id="u-alice", changes_json=json.dumps([
         {"op": "set_visibility", "visibility": "public"},
     ]))
+
+    from tinyassets.branch_bindings import resolve_branch_bindings
 
     def _has_secret(blob):
         return "SECRET" in json.dumps(blob)
 
-    # The owner still sees her own bound value.
-    assert _has_secret(json.loads(read_graph(target="branch", branch_id=child)))
+    # The VALUE lives ONLY in Alice's host-local per-universe store — not even
+    # the owner's read of the shared row exposes it (the row has no value).
+    assert not _has_secret(json.loads(read_graph(target="branch", branch_id=child)))
+    assert resolve_branch_bindings(
+        data_dir, universe_id="u-alice", branch_def_id=child,
+    )["target_repo"] == "github.com/alice/SECRET"
 
     _actor(monkeypatch, "bob")
     # (1) public read of the row does NOT expose the value.
     assert not _has_secret(json.loads(read_graph(target="branch", branch_id=child)))
     # (2) export does NOT expose it.
     assert not _has_secret(json.loads(read_graph(target="design", branch_id=child)))
-    # (3) Bob's fork inherits the SLOT to re-bind, never the value or marker.
+    # (3) Bob's fork inherits the SLOT to re-bind, never the value or flag.
     bob_child = json.loads(write_graph(target="remix", branch_id=child))
     assert bob_child["status"] == "remixed"
     forked = _load(data_dir, bob_child["branch_def_id"])
     tr = next(f for f in forked.state_schema if f["name"] == "target_repo")
-    assert not tr.get("default_value")   # empty — Bob must re-bind
-    assert not tr.get("is_binding")      # flag not inherited as owner-trust
+    assert not tr.get("default_value")
+    assert not tr.get("is_binding")
+    # (4) Bob's own universe store holds nothing for Alice's branch.
+    assert resolve_branch_bindings(
+        data_dir, universe_id="u-bob", branch_def_id=child,
+    ) == {}
 
 
 def test_policy_budget_survive_publish_remix_rollback_export(data_dir):
@@ -733,6 +746,80 @@ def test_policy_budget_survive_publish_remix_rollback_export(data_dir):
     assert cf2.concurrency_budget == 3
 
 
+def test_bound_value_never_in_any_shared_artifact(data_dir):
+    # PLAN §4 (platform never stores private content): a bound VALUE lives only
+    # in the host-local per-universe store — never the shared row, published
+    # version, or export.
+    from tinyassets.branch_bindings import resolve_branch_bindings
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import get_branch_definition
+
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+    child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
+    write_graph(target="branch", branch_id=child, graph_id="u-alice", changes_json=json.dumps([
+        {"op": "set_state_field_default", "name": "target_repo",
+         "default_value": "github.com/alice/SECRET"},
+    ]))
+
+    assert resolve_branch_bindings(
+        data_dir, universe_id="u-alice", branch_def_id=child,
+    )["target_repo"] == "github.com/alice/SECRET"
+    assert "SECRET" not in json.dumps(get_branch_definition(data_dir, branch_def_id=child))
+    assert "SECRET" not in json.dumps(json.loads(read_graph(target="design", branch_id=child)))
+    for version in list_branch_versions(data_dir, child, limit=50):
+        assert "SECRET" not in json.dumps(version.snapshot)
+
+
+def test_directory_export_of_private_design_is_public_only(data_dir, monkeypatch):
+    # F2: the unauthenticated directory host must use PUBLIC-ONLY viewer — never
+    # UNIVERSE_SERVER_USER. A private design authored by that env id is still
+    # not-found; public designs still list.
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_patch
+    from tinyassets.directory_server import read_graph as dir_read
+
+    _actor(monkeypatch, "author-x")  # the directory host's env identity
+    priv = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "author-x private",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "secret prompt body"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    _ext_branch_patch({
+        "branch_def_id": priv,
+        "changes_json": json.dumps([
+            {"op": "set_visibility", "visibility": "private"},
+        ]),
+    })
+
+    # Even though UNIVERSE_SERVER_USER == the author, the directory is not-found.
+    exp = json.loads(dir_read(target="design", branch_id=priv))
+    assert "not found" in exp["error"].lower()
+    assert "secret prompt body" not in json.dumps(exp)
+    assert priv not in {
+        b["branch_def_id"] for b in json.loads(dir_read(target="designs"))["branches"]
+    }
+
+    # A public design IS discoverable via the directory host.
+    pub = json.loads(_ext_branch_build({"spec_json": json.dumps({
+        "name": "public design",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N",
+                       "prompt_template": "x"}],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+    })}))["branch_def_id"]
+    _ext_branch_patch({
+        "branch_def_id": pub,
+        "changes_json": json.dumps([
+            {"op": "set_description", "description": "publish"},
+        ]),
+    })
+    assert pub in {
+        b["branch_def_id"] for b in json.loads(dir_read(target="designs"))["branches"]
+    }
+
+
 def test_directory_surface_designs_is_read_only(data_dir):
     # F3 decision: the directory host is the public DISCOVERY surface — discover
     # + export (READ) parity only. Remix/import (WRITE) is NOT offered here
@@ -769,11 +856,12 @@ def test_cross_actor_run_of_bound_branch_is_refused(data_dir, monkeypatch):
     seed_reference_designs(data_dir)
     parent = _reference_bid(data_dir)
     child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
-    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+    # Bind (declares is_binding on the row; value goes to Alice's store).
+    write_graph(target="branch", branch_id=child, graph_id="u-alice", changes_json=json.dumps([
         {"op": "set_state_field_default", "name": "target_repo",
          "default_value": "github.com/alice/SECRET"},
     ]))
-    write_graph(target="branch", branch_id=child, changes_json=json.dumps([
+    write_graph(target="branch", branch_id=child, graph_id="u-alice", changes_json=json.dumps([
         {"op": "set_visibility", "visibility": "public"},
     ]))
 
@@ -803,6 +891,7 @@ def test_cross_actor_invoke_branch_of_bound_branch_does_not_seed_owner_value(dat
     # output_mapping. The load-bearing guard lives at the SHARED consumer
     # (_invoke_graph seed): a NON-AUTHOR invocation must NOT seed the owner's
     # bound value, but the OWNER's own invoke still seeds it.
+    from tinyassets.branch_bindings import set_branch_binding
     from tinyassets.branches import (
         BranchDefinition,
         EdgeDefinition,
@@ -815,8 +904,9 @@ def test_cross_actor_invoke_branch_of_bound_branch_does_not_seed_owner_value(dat
     initialize_author_server(data_dir)
     initialize_runs_db(data_dir)
 
-    # Alice's bound child. The node writes to `result`, leaving the bound
-    # `target_repo` untouched so output_mapping surfaces the SEEDED value.
+    # Alice's child: target_repo is an is_binding SLOT with NO value in the row.
+    # The VALUE lives only in Alice's universe (u-alice) store. The node writes
+    # to `result`, leaving target_repo for output_mapping to surface.
     child = BranchDefinition(
         branch_def_id="alice-child",
         name="alice bound child",
@@ -830,12 +920,14 @@ def test_cross_actor_invoke_branch_of_bound_branch_does_not_seed_owner_value(dat
         )],
         state_schema=[
             {"name": "result", "type": "str"},
-            {"name": "target_repo", "type": "str",
-             "default_value": "github.com/alice/SECRET",
-             "default": "github.com/alice/SECRET", "is_binding": True},
+            {"name": "target_repo", "type": "str", "is_binding": True},
         ],
     )
     save_branch_definition(data_dir, branch_def=child.to_dict())
+    set_branch_binding(
+        data_dir, universe_id="u-alice", branch_def_id="alice-child",
+        field_name="target_repo", value="github.com/alice/SECRET",
+    )
 
     def _parent(bid: str, author: str) -> BranchDefinition:
         p = BranchDefinition(
@@ -858,19 +950,21 @@ def test_cross_actor_invoke_branch_of_bound_branch_does_not_seed_owner_value(dat
 
     _ok = lambda *a, **k: "ok"  # noqa: E731 - trivial fake provider
 
-    # Non-author (Bob) invoke: the bound SECRET is NOT seeded -> never returns.
+    # Bob runs his parent in HIS universe (u-bob): the child inherits u-bob ->
+    # resolves nothing -> the SECRET never seeds or returns.
     bob_out = execute_branch(
         data_dir, branch=_parent("bob-parent", "bob"), inputs={},
-        actor="bob", provider_call=_ok,
+        actor="universe:u-bob", provider_call=_ok, _enqueue_universe_id="u-bob",
     )
     assert (bob_out.output or {}).get("parent_seen") in (None, "")
     assert "SECRET" not in json.dumps(bob_out.output or {})
 
-    # Owner (Alice) invoke of her own child: the value IS seeded (guard is
-    # load-bearing but does not false-positive on the owner).
+    # Alice runs her parent in HER universe (u-alice): the child inherits
+    # u-alice -> resolves her value from the store. child_actor cannot spoof
+    # this — resolution keys on the parent run's immutable universe.
     alice_out = execute_branch(
         data_dir, branch=_parent("alice-parent", "alice"), inputs={},
-        actor="alice", provider_call=_ok,
+        actor="universe:u-alice", provider_call=_ok, _enqueue_universe_id="u-alice",
     )
     assert (alice_out.output or {}).get("parent_seen") == "github.com/alice/SECRET"
 

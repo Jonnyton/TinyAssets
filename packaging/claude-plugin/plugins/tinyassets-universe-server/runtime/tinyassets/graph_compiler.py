@@ -751,15 +751,21 @@ def _state_schema_defaults(
 def seed_initial_state(
     inputs: dict[str, Any],
     state_schema: list[dict[str, Any]] | None,
+    binding_values: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a fresh dict with state_schema defaults merged UNDER inputs.
+    """Return a fresh dict merging, in precedence order (lowest to highest):
+    design defaults (state_schema ``default_value``) < resolved binding VALUES
+    (host-local per-universe store — owner-only; empty for a non-owner run) <
+    caller ``inputs``.
 
-    BUG-085 M3 — used at branch invocation to pre-populate the runtime
-    state with any state_schema field that carries a ``default_value``.
-    Explicit caller-provided ``inputs`` always win; defaults only fill
-    keys the caller did not pass.
+    BUG-085 M3 — design defaults pre-populate runtime state so declared fields
+    are available to strict-isolation placeholders. ``binding_values`` carries
+    the owner's personal bindings resolved at run time from the host-local store
+    (PLAN §4: never stored in the shared row); a non-owner run resolves none.
     """
     seeded = dict(_state_schema_defaults(state_schema))
+    if binding_values:
+        seeded.update(binding_values)
     seeded.update(inputs or {})
     return seeded
 
@@ -2109,6 +2115,25 @@ def _emit_invoke_design_used(
     )
 
 
+def _parent_run_universe(base_path: str | Path, parent_run_id: str) -> str:
+    """The parent run's IMMUTABLE universe for owner-only binding resolution.
+
+    Derived from the parent run's actor (a top-level universe run's actor is
+    ``universe:<uid>``, set under the universe ACL) — NEVER from the
+    branch-authored ``child_actor``, which can narrow attribution but must
+    never claim a universe for a resolution decision (Codex+Fable F1). A
+    non-universe parent (subject actor) yields ``""`` -> no bindings resolved.
+    """
+    if not parent_run_id:
+        return ""
+    from tinyassets.runs import get_run
+
+    parent = get_run(base_path, parent_run_id)
+    actor = str((parent or {}).get("actor") or "")
+    prefix = "universe:"
+    return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
+
+
 def _build_invoke_branch_node(
     node: NodeDefinition,
     *,
@@ -2194,6 +2219,7 @@ def _build_invoke_branch_node(
                     actor=actor_arg,
                     provider_call=provider_call,
                     _invocation_depth=depth + 1,
+                    _enqueue_universe_id=_parent_run_universe(_base, parent_run_id),
                 )
                 if outcome.status == "completed":
                     try:
@@ -2242,6 +2268,7 @@ def _build_invoke_branch_node(
                 actor=actor_arg,
                 provider_call=provider_call,
                 _invocation_depth=depth + 1,
+                _enqueue_universe_id=_parent_run_universe(_base, parent_run_id),
             )
             # async: write the child run_id into the first output_mapping target.
             # design_used emit deferred to await_branch_run on success

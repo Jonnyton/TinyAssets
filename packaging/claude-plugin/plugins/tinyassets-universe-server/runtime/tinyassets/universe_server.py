@@ -538,6 +538,77 @@ _mcp_read_graph = _register_structured_tool(
 )
 
 
+def _binding_pairs_from_changes(changes_json: str) -> list[tuple[str, object]]:
+    """Extract ``(field_name, value)`` for each set_state_field_default op that
+    carries a personal binding value. Empty on parse error / no such ops."""
+    import json as _json
+
+    try:
+        ops = _json.loads(changes_json or "[]")
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(ops, list):
+        return []
+    pairs: list[tuple[str, object]] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        if (op.get("op") or "").strip().lower() != "set_state_field_default":
+            continue
+        field = (op.get("name") or op.get("field_name") or "").strip()
+        if not field:
+            continue
+        if not any(k in op for k in ("default_value", "default", "value")):
+            continue
+        value = op.get("default_value", op.get("default", op.get("value", "")))
+        pairs.append((field, value))
+    return pairs
+
+
+def _write_graph_branch_with_bindings(
+    *, branch_id: str, changes_json: str, universe_id: str,
+) -> str:
+    """Patch a branch (author-gated), then persist any binding VALUES to the
+    host-local per-universe store (never the shared row). PLAN §4."""
+    import json as _json
+
+    binding_pairs = _binding_pairs_from_changes(changes_json)
+    universe_id = (universe_id or "").strip()
+    if binding_pairs and not universe_id:
+        return _json.dumps({
+            "status": "rejected",
+            "error": (
+                "Binding a personal value requires a universe (pass graph_id). "
+                "Binding values are host-local per-universe and are never stored "
+                "in the shared design."
+            ),
+        })
+    result_str = _extensions_impl(
+        action="patch_branch", branch_def_id=branch_id, changes_json=changes_json,
+    )
+    if not binding_pairs:
+        return result_str
+    try:
+        result = _json.loads(result_str)
+    except (ValueError, TypeError):
+        return result_str
+    # Only persist bindings if the (author-gated) patch actually landed.
+    if not isinstance(result, dict) or result.get("status") != "patched":
+        return result_str
+    resolved_bid = result.get("branch_def_id") or branch_id
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.branch_bindings import set_branch_binding
+
+    for field, value in binding_pairs:
+        set_branch_binding(
+            _base_path(), universe_id=universe_id,
+            branch_def_id=resolved_bid, field_name=field, value=value,
+        )
+    result["bound_fields"] = [f for f, _ in binding_pairs]
+    result["binding_universe_id"] = universe_id
+    return _json.dumps(result, default=str)
+
+
 def write_graph(
     target: str,
     name: str = "",
@@ -647,10 +718,12 @@ def write_graph(
     if normalized == "branch":
         # PR-180 EDIT half: a founder patches their own branch graph via the
         # existing transactional patch_branch handler (author-gated: BUG-081).
-        return _extensions_impl(
-            action="patch_branch",
-            branch_def_id=branch_id,
-            changes_json=changes_json,
+        # BIND (set_state_field_default) carries a personal VALUE. PLAN §4: the
+        # platform never stores private content, so that value goes to the
+        # host-local per-universe binding store (keyed by graph_id), NEVER the
+        # shared branch row. The patch only marks the field is_binding.
+        return _write_graph_branch_with_bindings(
+            branch_id=branch_id, changes_json=changes_json, universe_id=graph_id,
         )
     if normalized == "design":
         # IMPORT (patch-loop S2): a user hands their chatbot a design artifact

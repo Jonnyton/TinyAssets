@@ -227,16 +227,18 @@ def read_graph(
     if normalized == "runs":
         return _extensions_impl(action="list_runs", status=run_status, limit=limit)
     if normalized == "designs":
-        # DISCOVER parity with the /mcp surface: list PUBLISHED remixable branch
-        # designs (per-viewer; other users' private designs never listed).
+        # DISCOVER: PUBLIC-ONLY on the unauthenticated directory host (Codex
+        # F2) — never the env/server identity as viewer, so a private design is
+        # never listed regardless of UNIVERSE_SERVER_USER.
         return _extensions_impl(
             action="list_branches", scope="published",
-            author=author, limit=limit,
+            author=author, limit=limit, public_only=True,
         )
     if normalized == "design":
-        # EXPORT parity: serialize one branch as the portable design artifact.
+        # EXPORT: PUBLIC-ONLY — a private design returns not-found here.
         return _extensions_impl(
             action="export_design", branch_def_id=(branch_id or graph_id),
+            public_only=True,
         )
     return _unknown_target(
         "read_graph",

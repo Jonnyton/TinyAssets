@@ -569,6 +569,12 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         })
 
     actor = _current_actor()
+    # PUBLIC-ONLY viewer (Codex F2): the unauthenticated directory discovery
+    # surface must NEVER use the env/server identity as viewer, or a private
+    # design authored by whoever UNIVERSE_SERVER_USER names would leak. When
+    # public_only is set, the viewer is empty -> strictly public rows.
+    public_only = bool(kwargs.get("public_only"))
+    viewer = "" if public_only else actor
 
     # Phase 6.2.2 — visibility-aware listing. Viewer sees public
     # Branches and any private Branches they authored.
@@ -577,7 +583,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         domain_id=kwargs.get("domain_id", ""),
         author=kwargs.get("author", ""),
         goal_id=kwargs.get("goal_id", ""),
-        viewer=actor,
+        viewer=viewer,
     )
 
     # requires_sandbox filter: "none" = design-only branches only (no node
@@ -585,15 +591,23 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     # sandbox-requiring node. Omit / empty = no filter.
     rs_filter = (kwargs.get("requires_sandbox") or "").strip().lower()
 
+    # Batch the active-version lookup (Codex S2 F4): ONE query for all rows
+    # instead of N+1 per-row queries.
+    active_by_bid: dict[str, Any] = {}
+    if scope == "published":
+        from tinyassets.branch_versions import get_newest_active_versions
+
+        active_by_bid = get_newest_active_versions(
+            _base_path(), [r.get("branch_def_id", "") for r in rows],
+        )
+
     summaries = []
     for r in rows:
         published_version_id = None
         if scope == "published":
             # Newest ACTIVE version only — a rolled-back version must not stay
             # discoverable (Codex S2 latest-model, finding 3).
-            active = _newest_active_branch_version(
-                _base_path(), r.get("branch_def_id", ""),
-            )
+            active = active_by_bid.get(r.get("branch_def_id", ""))
             if active is None:
                 continue
             published_version_id = active.branch_version_id
@@ -2643,13 +2657,12 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
             return f"remove_state_field: '{fname}' not found"
         return ""
     if name == "set_state_field_default":
-        # BIND op (patch-loop S2): set the default value of an EXISTING state
-        # field. This is how a user binds a repo-blind reference's unbound
-        # params (target_repo / credential_ref / merge_policy) as a user act —
-        # the value is seeded into initial run state via _state_schema_defaults.
-        # It never creates a field (use add_state_field for that) and never
-        # bakes a value into the design itself; it sets the owner's binding on
-        # their own remixed copy.
+        # BIND op (patch-loop S2). Codex+Fable latest-model / PLAN §4: the
+        # platform NEVER stores private content, so a personal binding VALUE is
+        # NOT written into this shared branch row. This op only DECLARES the
+        # field a binding slot (is_binding schema flag); the VALUE is stored
+        # host-local per-universe (see write_graph target=branch router ->
+        # branch_bindings). Any value carried here is stripped from the row.
         fname = (op.get("name") or op.get("field_name") or "").strip()
         if not fname:
             return "set_state_field_default requires name"
@@ -2661,23 +2674,10 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                 f"set_state_field_default: state field '{fname}' not found. "
                 "Add it with add_state_field first, or fix the name."
             )
-        if not any(k in op for k in ("default_value", "default", "value")):
-            return (
-                "set_state_field_default requires 'default_value' "
-                f"for field '{fname}'."
-            )
-        default = op.get(
-            "default_value", op.get("default", op.get("value", "")),
-        )
-        # Dual-write both keys, mirroring _apply_state_field_spec so PR #932's
-        # _state_schema_defaults finds the seed value at runtime.
-        target_field["default_value"] = default
-        target_field["default"] = default
-        # Declaratively flag the field's SCHEMA as a personal binding (Codex+
-        # Fable S2): every non-owner consumer (read/export/fork/snapshot/run)
-        # redacts or refuses on this flag, so the owner's repo/credential/intake
-        # value never travels or runs under another user.
+        # Declare the binding slot; NEVER persist the value into the shared row.
         target_field["is_binding"] = True
+        for value_key in ("default_value", "default"):
+            target_field.pop(value_key, None)
         return ""
     if name == "update_node":
         nid = (op.get("node_id") or "").strip()
@@ -3663,12 +3663,16 @@ def _newest_active_branch_version(base_path: Any, branch_def_id: str) -> Any:
     return get_newest_active_version(base_path, branch_def_id)
 
 
-def _load_owned_or_public_branch(bid_or_name: str) -> tuple[Any, str]:
+def _load_owned_or_public_branch(
+    bid_or_name: str, *, public_only: bool = False,
+) -> tuple[Any, str]:
     """Resolve + load a branch, applying the private-author visibility gate.
 
     Returns ``(BranchDefinition_or_None, error_json)``. Mirrors
     ``_ext_branch_get``: a private branch owned by someone else answers the
-    "not found" envelope so existence isn't leaked.
+    "not found" envelope so existence isn't leaked. When ``public_only`` (the
+    unauthenticated directory surface), a private branch is ALWAYS not-found
+    regardless of the env/server identity (Codex F2).
     """
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branches import BranchDefinition
@@ -3682,7 +3686,9 @@ def _load_owned_or_public_branch(bid_or_name: str) -> tuple[Any, str]:
     except KeyError:
         return None, json.dumps({"error": f"Branch '{bid}' not found."})
     visibility = row.get("visibility", "public") or "public"
-    if visibility == "private" and row.get("author", "") != _current_actor():
+    if visibility == "private" and (
+        public_only or row.get("author", "") != _current_actor()
+    ):
         return None, json.dumps({"error": f"Branch '{bid}' not found."})
     return BranchDefinition.from_dict(row), ""
 
@@ -3700,6 +3706,7 @@ def _ext_branch_export_design(kwargs: dict[str, Any]) -> str:
 
     branch, err = _load_owned_or_public_branch(
         kwargs.get("branch_def_id", "") or kwargs.get("name", ""),
+        public_only=bool(kwargs.get("public_only")),
     )
     if err:
         return err
