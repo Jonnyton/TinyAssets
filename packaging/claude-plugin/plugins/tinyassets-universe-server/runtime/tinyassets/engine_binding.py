@@ -126,11 +126,23 @@ def _raw_config(universe_dir: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+# Engine sources that persist only a config CHOICE — the runtime that actually
+# consumes work is provisioned separately (``universe action=daemon_summon`` for
+# host_daemon, a matched market runtime for market_rented, a wired endpoint route
+# for self_hosted_endpoint; the deeper routing is post-M1 per PLAN §config.py).
+# A choice with no live runtime is NOT executable capacity — it reads as
+# idle-until-bound, never bound.
+_RUNTIME_BACKED_SOURCES = frozenset(
+    {"host_daemon", "market_rented", "self_hosted_endpoint"}
+)
+
+
 def _vault_capacity(universe_dir: Path) -> list[str]:
     """Return capacity kinds present in the per-universe credential vault.
 
     Recognizes the founder's own engines: a BYO ``llm_api_key`` deposit and a
-    subscription-CLI ``llm_subscription`` bundle (claude / codex). Propagates
+    subscription-CLI ``llm_subscription`` bundle (claude / codex). These are
+    directly executable — provider routing consumes them at call time. Propagates
     :class:`ValueError` (malformed vault) so the caller can fail loud.
     """
     from tinyassets.credential_vault import load_credential_vault
@@ -147,19 +159,56 @@ def _vault_capacity(universe_dir: Path) -> list[str]:
     return kinds
 
 
+def _has_live_runtime_instance(universe_dir: Path) -> bool:
+    """Return True iff a NON-RETIRED runtime instance is assigned to this universe.
+
+    This is the executable-capacity proof for the config-declared engine sources
+    in :data:`_RUNTIME_BACKED_SOURCES`: those persist only a choice, so a live
+    ``author_runtime_instances`` row is what proves the worker can actually run
+    the universe. A missing / uninitialized registry degrades to ``False`` (no
+    runtime yet → idle-until-bound) and never raises — an absent registry is not
+    a misconfigured binding.
+    """
+    try:
+        from tinyassets.daemon_server import list_runtime_instances
+
+        instances = list_runtime_instances(
+            universe_dir.parent, universe_id=universe_dir.name,
+        )
+    except Exception:  # noqa: BLE001 — no DB / no table = no assigned runtime
+        return False
+    return any(
+        str(inst.get("status") or "").strip().lower() != "retired"
+        for inst in instances
+    )
+
+
 def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
     """Inspect a universe's vault + config to resolve its bound engine capacity.
 
     Reads only the primitives the bind acts already write (the credential vault
     and ``config.yaml``) — no parallel capacity store.
 
-    Returns an :class:`EngineBinding`. ``bound`` is True when the universe has
-    real, usable capacity. A fresh universe with no bind act returns
-    ``bound=False`` (idle-until-bound), quietly.
+    Returns an :class:`EngineBinding`. ``bound`` is True ONLY when the worker can
+    actually execute the universe:
 
-    Raises :class:`EngineMisconfiguredError` when a source was **declared** in
-    ``config.yaml`` but nothing backs it (Hard Rule #8: fail loud, never treat a
-    broken binding as merely unbound).
+    * a vault-backed BYO ``llm_api_key`` or ``llm_subscription`` (provider
+      routing consumes these directly), or
+    * a config-declared runtime-backed source (``host_daemon`` /
+      ``market_rented`` / ``self_hosted_endpoint``) that has a live, non-retired
+      runtime instance assigned to the universe.
+
+    A config CHOICE with no runtime yet, and a fresh universe with no bind act,
+    both return ``bound=False`` (idle-until-bound) — quietly. This split matters:
+    a bare ``engine_source: host_daemon`` value with no summoned daemon is NOT
+    executable capacity, so the non-ambient gate must not spawn for it.
+
+    Raises :class:`EngineMisconfiguredError` only when a **vault-backed** source
+    (``byo_api_key`` / ``subscription``) was declared but its credential is
+    absent — those bind acts deposit the credential atomically, so a declared
+    vault source with no credential is genuinely broken (Hard Rule #8: fail loud,
+    never treat a broken binding as merely unbound). A malformed vault is
+    likewise loud.
     """
     udir = Path(universe_dir)
     universe_id = udir.name or "default-universe"
@@ -175,19 +224,11 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             f"credential vault is unreadable: {exc}",
         ) from exc
 
-    endpoint = str(raw.get("engine_endpoint") or "").strip()
-    market_model = str(raw.get("market_model") or "").strip()
-
-    # Endpoint / market capacity counts whenever it is present, even if the
-    # founder did not pin the matching engine_source (a bound endpoint is a
-    # bound endpoint). host_daemon is a recorded choice: the running daemon is
-    # the capacity, so a declared host_daemon is bound on its own.
-    if endpoint:
-        capacity.append("self_hosted_endpoint")
-    if market_model:
-        capacity.append("market_rented")
-    if declared_source == "host_daemon":
-        capacity.append("host_daemon")
+    # Config-declared runtime-backed sources are executable ONLY with a live
+    # runtime instance assigned to the universe (the config value alone is a
+    # choice, not capacity). A missing runtime is idle-until-bound, not an error.
+    if declared_source in _RUNTIME_BACKED_SOURCES and _has_live_runtime_instance(udir):
+        capacity.append(f"runtime:{declared_source}")
 
     # Deduplicate while preserving discovery order.
     capacity = list(dict.fromkeys(capacity))
@@ -200,23 +241,28 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             reason="bound to " + ", ".join(capacity),
         )
 
-    # No capacity present. A DECLARED source with nothing behind it is broken —
-    # fail loud. No declared source at all is simply a never-bound universe.
-    if declared_source:
+    # No executable capacity. A DECLARED vault-backed source with no credential
+    # is genuinely broken → fail loud. A declared runtime-backed source with no
+    # runtime yet is a legitimate not-yet-provisioned state → idle-until-bound.
+    if declared_source in {"byo_api_key", "subscription"}:
         detail = {
             "byo_api_key": (
                 "no BYO API key or subscription credential in the per-universe "
                 "vault"
             ),
             "subscription": "no subscription credential in the per-universe vault",
-            "self_hosted_endpoint": "engine_endpoint is empty",
-            "market_rented": "market_model is empty",
-        }.get(declared_source, f"unrecognized engine_source {declared_source!r}")
+        }[declared_source]
         raise EngineMisconfiguredError(universe_id, declared_source, detail)
 
+    reason = (
+        f"engine_source={declared_source!r} chosen but no runtime instance is "
+        "assigned yet"
+        if declared_source
+        else "no engine capacity bound to this universe"
+    )
     return EngineBinding(
         bound=False,
-        engine_source="",
+        engine_source=declared_source,
         capacity_kinds=(),
-        reason="no engine capacity bound to this universe",
+        reason=reason,
     )

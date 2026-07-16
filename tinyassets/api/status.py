@@ -1316,6 +1316,11 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                 caveats.append(
                     "engine_binding.bound is false — no engine/daemon capacity "
                     "is bound to this universe. It is idle-until-bound."
+                    if gate_on
+                    else "engine_binding.bound is false — no engine/daemon "
+                    "capacity is bound to this universe, but it is currently "
+                    "workable via ambient legacy execution (non-ambient gate "
+                    "off)."
                 )
                 actionable_next_steps.append(
                     "Bind an engine so your universe can run: universe "

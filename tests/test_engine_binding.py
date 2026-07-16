@@ -96,41 +96,78 @@ def test_subscription_record_in_vault_is_bound(tmp_path):
     assert "subscription:claude" in binding.capacity_kinds
 
 
-def test_self_hosted_endpoint_is_bound(tmp_path):
-    udir = tmp_path / "u-self"
+# ---- config-only CHOICE is NOT executable capacity → idle-until-bound -----
+# A bare engine_source value persists a *choice*; the runtime that consumes work
+# is provisioned separately. Without a live runtime instance, these must read as
+# idle-until-bound (bound=False) so the non-ambient gate does NOT spawn for them.
+
+
+@pytest.mark.parametrize("source,extra", [
+    ("self_hosted_endpoint", {"engine_endpoint": "http://localhost:11434"}),
+    ("self_hosted_endpoint", {}),          # even an empty endpoint: still no runtime
+    ("market_rented", {"market_model": "glm-5.2"}),
+    ("market_rented", {}),                  # empty model: still no runtime
+    ("host_daemon", {}),
+])
+def test_config_only_choice_is_idle_until_bound(tmp_path, source, extra):
+    udir = tmp_path / f"u-{source}-{len(extra)}"
     udir.mkdir()
-    write_universe_config_fields(
-        udir,
-        engine_source="self_hosted_endpoint",
-        engine_endpoint="http://localhost:11434",
+    write_universe_config_fields(udir, engine_source=source, **extra)
+    binding = resolve_engine_binding(udir)
+    assert binding.bound is False, f"{source} config-only must not count as bound"
+    assert binding.capacity_kinds == ()
+    assert binding.engine_source == source
+
+
+# ---- config source WITH a live runtime instance → bound -------------------
+
+
+def _assign_runtime(base, uid, *, status="provisioned"):
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        retire_runtime_instance,
+        spawn_runtime_instance,
     )
+
+    initialize_author_server(base)
+    inst = spawn_runtime_instance(
+        base, universe_id=uid, author_id="author-1",
+        provider_name="claude-code", model_name="claude", created_by="test",
+    )
+    if status == "retired":
+        retire_runtime_instance(base, instance_id=inst["instance_id"])
+    return inst
+
+
+@pytest.mark.parametrize(
+    "source", ["host_daemon", "market_rented", "self_hosted_endpoint"],
+)
+def test_config_source_with_live_runtime_is_bound(tmp_path, source):
+    uid = f"u-rt-{source}"
+    udir = tmp_path / uid
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source=source)
+    _assign_runtime(tmp_path, uid)
     binding = resolve_engine_binding(udir)
     assert binding.bound is True
-    assert "self_hosted_endpoint" in binding.capacity_kinds
+    assert f"runtime:{source}" in binding.capacity_kinds
 
 
-def test_market_rented_is_bound(tmp_path):
-    udir = tmp_path / "u-mkt"
-    udir.mkdir()
-    write_universe_config_fields(
-        udir, engine_source="market_rented", market_model="glm-5.2",
-    )
-    binding = resolve_engine_binding(udir)
-    assert binding.bound is True
-    assert "market_rented" in binding.capacity_kinds
-
-
-def test_host_daemon_declared_is_bound(tmp_path):
-    """host_daemon is a recorded choice; the running daemon is the capacity."""
-    udir = tmp_path / "u-host"
+def test_retired_runtime_instance_does_not_count(tmp_path):
+    uid = "u-rt-retired"
+    udir = tmp_path / uid
     udir.mkdir()
     write_universe_config_fields(udir, engine_source="host_daemon")
+    _assign_runtime(tmp_path, uid, status="retired")
     binding = resolve_engine_binding(udir)
-    assert binding.bound is True
-    assert "host_daemon" in binding.capacity_kinds
+    assert binding.bound is False
 
 
-# ---- resolve_engine_binding: MISCONFIGURED (declared but broken) → LOUD ---
+# ---- resolve_engine_binding: MISCONFIGURED (vault source, no credential) ---
+# Only the vault-backed sources fail loud when declared without a credential —
+# those bind acts deposit atomically, so a declared-without-credential state is
+# genuinely broken (Hard Rule #8). Runtime-backed config choices do NOT fail
+# loud (they are legitimately not-yet-provisioned; see idle-until-bound above).
 
 
 def test_declared_byo_without_key_fails_loud(tmp_path):
@@ -140,22 +177,6 @@ def test_declared_byo_without_key_fails_loud(tmp_path):
     with pytest.raises(EngineMisconfiguredError) as excinfo:
         resolve_engine_binding(udir)
     assert excinfo.value.engine_source == "byo_api_key"
-
-
-def test_declared_self_hosted_without_endpoint_fails_loud(tmp_path):
-    udir = tmp_path / "u-badself"
-    udir.mkdir()
-    write_universe_config_fields(udir, engine_source="self_hosted_endpoint")
-    with pytest.raises(EngineMisconfiguredError):
-        resolve_engine_binding(udir)
-
-
-def test_declared_market_without_model_fails_loud(tmp_path):
-    udir = tmp_path / "u-badmkt"
-    udir.mkdir()
-    write_universe_config_fields(udir, engine_source="market_rented")
-    with pytest.raises(EngineMisconfiguredError):
-        resolve_engine_binding(udir)
 
 
 def test_declared_subscription_without_credential_fails_loud(tmp_path):

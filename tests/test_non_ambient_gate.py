@@ -104,18 +104,38 @@ def test_flag_off_still_works_unbound_universe(tmp_path, monkeypatch):
 
 
 def test_flag_off_ignores_misconfigured_binding(tmp_path, monkeypatch):
-    """Flag off = today's behavior: a broken binding is NOT gated (today there
-    is no binding check at all), so the universe is worked exactly as before."""
+    """Flag off = today's behavior: even a genuinely broken binding is NOT gated
+    (today there is no binding check at all), so the universe is worked exactly
+    as before."""
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
     udir = tmp_path / "u-broken"
     udir.mkdir()
-    write_universe_config_fields(udir, engine_source="self_hosted_endpoint")
+    # Declared byo_api_key with NO vault key = genuinely misconfigured.
+    write_universe_config_fields(udir, engine_source="byo_api_key")
     spawn_calls, _sleep_calls, spawn, sleep = _recorders()
 
     state = cw.run_supervisor(
         udir, idle_backoff=1.0, max_iterations=1, spawn_fn=spawn, sleep_fn=sleep,
     )
     assert len(spawn_calls) == 1
+    assert state.engine_misconfigured_count == 0
+
+
+def test_flag_on_skips_config_only_host_daemon_as_idle(tmp_path, monkeypatch):
+    """A bare `engine_source: host_daemon` value with NO summoned runtime is a
+    CHOICE, not executable capacity — the gate must treat it as idle-until-bound
+    (not spawned, not a loud misconfiguration)."""
+    monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
+    udir = tmp_path / "u-choice-only"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="host_daemon")
+    spawn_calls, _sleep_calls, spawn, sleep = _recorders()
+
+    state = cw.run_supervisor(
+        udir, idle_backoff=1.0, max_iterations=2, spawn_fn=spawn, sleep_fn=sleep,
+    )
+    assert spawn_calls == [], "config-only host_daemon must NOT spawn under gate"
+    assert state.idle_until_bound_count == 2
     assert state.engine_misconfigured_count == 0
 
 
@@ -156,8 +176,9 @@ def test_flag_on_fails_loud_on_misconfigured_binding(tmp_path, monkeypatch):
     monkeypatch.setenv(NON_AMBIENT_WORK_ENV, "1")
     udir = tmp_path / "u-broken"
     udir.mkdir()
-    # engine_source declared self_hosted_endpoint but no endpoint set.
-    write_universe_config_fields(udir, engine_source="self_hosted_endpoint")
+    # Declared byo_api_key (a vault-backed source) with NO vault key = a
+    # genuinely broken binding (the bind act deposits the key atomically).
+    write_universe_config_fields(udir, engine_source="byo_api_key")
     spawn_calls, _sleep_calls, spawn, sleep = _recorders()
 
     state = cw.run_supervisor(

@@ -42,6 +42,12 @@ def test_status_reports_unbound_universe_idle_until_bound(tmp_path, monkeypatch)
     steps = " ".join(payload["actionable_next_steps"]).lower()
     assert "bind an engine" in steps
     assert "set_engine" in steps
+    # Finding 2 regression: with the gate OFF the caveat must NOT falsely claim
+    # the universe is idle-until-bound (it IS being worked via ambient legacy
+    # execution today). It should say so honestly.
+    combined = " ".join(payload["caveats"]).lower()
+    assert "idle-until-bound" not in combined
+    assert "ambient" in combined and "workable" in combined
 
 
 def test_status_unbound_with_gate_on_is_not_workable(tmp_path, monkeypatch):
@@ -82,7 +88,8 @@ def test_status_reports_misconfigured_binding_without_crashing(tmp_path, monkeyp
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
     udir = _make_universe(tmp_path, monkeypatch, "u-broken")
     from tinyassets.config import write_universe_config_fields
-    write_universe_config_fields(udir, engine_source="self_hosted_endpoint")
+    # Declared byo_api_key (vault source) with NO vault key = genuinely broken.
+    write_universe_config_fields(udir, engine_source="byo_api_key")
 
     payload = json.loads(get_status(universe_id="u-broken"))
     eb = payload["engine_binding"]
