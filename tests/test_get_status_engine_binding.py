@@ -152,11 +152,11 @@ def test_set_engine_subscription_is_rejected_with_guidance(tmp_path, monkeypatch
     assert "error" in out
     assert out.get("status") != "engine_set"
     guidance = json.dumps(out).lower()
-    # Advertises the four sanctioned lanes.
-    assert "byo_api_key" in guidance or "api key" in guidance
+    # Advertises the NON-SECRET sanctioned lanes (no raw-key solicitation, F3).
     assert "self_hosted_endpoint" in guidance or "endpoint" in guidance
     assert "market_rented" in guidance or "market" in guidance
     assert "host_daemon" in guidance or "own device" in guidance
+    assert "api_key" not in guidance  # never solicit a raw key
     # Nothing was persisted — no phantom subscription binding, no token leak.
     from tinyassets.credential_vault import load_credential_vault
     assert load_credential_vault(udir) == []

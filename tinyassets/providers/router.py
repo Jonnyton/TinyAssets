@@ -122,10 +122,15 @@ def _enforce_writer_binding(
     swallowed → never leaks to a platform-auth provider).
 
     Inert unless executable BYO is enabled (DARK by default), because only then
-    can a universe be bound. Non-writer roles are unconstrained (see the design
-    note: the non-ambient guarantee is writer-role only).
+    can a universe be bound. The non-ambient guarantee is writer-role only (see
+    the custody design note §0.2) — BUT a WRITER route is not just ``role ==
+    "writer"``: ``FALLBACK_CHAINS.get(role, writer)`` gives any UNKNOWN role the
+    writer chain, and ``model_hint`` is user-authored free-form that becomes the
+    role verbatim. So an unknown role is a writer route and MUST be enforced too
+    (F1a — else ``model_hint:"novelist"`` silently escapes the constraint).
     """
-    if role != "writer":
+    is_writer_route = role == "writer" or role not in FALLBACK_CHAINS
+    if not is_writer_route:
         return chain
     from tinyassets.engine_binding import byo_execution_enabled, resolve_engine_binding
 

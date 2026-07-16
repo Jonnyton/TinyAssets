@@ -327,13 +327,13 @@ class TestPatchBranchUpdateNodeKeys:
         res = _patch(us, bid, [{
             "op": "update_node",
             "node_id": "capture",
-            "model_hint": "checker",
+            "model_hint": "judge",
             "llm_policy": policy,
         }])
 
         assert res.get("status") != "rejected", res
         node = _node(_load(us, base, bid), "capture")
-        assert node["model_hint"] == "checker"
+        assert node["model_hint"] == "judge"
         assert node["llm_policy"] == policy
 
     def test_update_node_patch_op_rejects_invalid_llm_policy(self, ext_env):
@@ -623,14 +623,14 @@ class TestUpdateNodeKwargs:
             branch_def_id=bid,
             node_id="capture",
             changes_json=json.dumps({
-                "model_hint": "checker",
+                "model_hint": "judge",
                 "llm_policy": policy,
             }),
         )
 
         assert res.get("status") == "updated", res
         node = _node(_load(us, base, bid), "capture")
-        assert node["model_hint"] == "checker"
+        assert node["model_hint"] == "judge"
         assert node["llm_policy"] == policy
 
     def test_update_node_changes_json_rejects_invalid_llm_policy(self, ext_env):

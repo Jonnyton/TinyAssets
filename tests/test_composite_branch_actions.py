@@ -729,7 +729,7 @@ def test_patch_branch_update_node_persists_node_config(comp_env):
         changes_json=json.dumps([{
             "op": "update_node",
             "node_id": "capture",
-            "model_hint": "reviewer",
+            "model_hint": "judge",
             "llm_policy": policy,
             "retry_policy": retry,
             "timeout_seconds": 450,
@@ -740,7 +740,7 @@ def test_patch_branch_update_node_persists_node_config(comp_env):
     assert result["ops_applied"] == 1
     got = _call(us, "get_branch", branch_def_id=bid)
     capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
-    assert capture["model_hint"] == "reviewer"
+    assert capture["model_hint"] == "judge"
     assert capture["llm_policy"] == policy
     assert capture["retry_policy"] == retry
     assert capture["timeout_seconds"] == 450.0
@@ -1005,7 +1005,7 @@ def test_update_node_persists_retry_policy_and_timeout(comp_env):
         branch_def_id=bid,
         node_id="capture",
         changes_json=json.dumps({
-            "model_hint": "reviewer",
+            "model_hint": "judge",
             "llm_policy": policy,
             "retry_policy": retry,
             "timeout_seconds": 450,
@@ -1018,7 +1018,7 @@ def test_update_node_persists_retry_policy_and_timeout(comp_env):
     }
     got = _call(us, "get_branch", branch_def_id=bid)
     capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
-    assert capture["model_hint"] == "reviewer"
+    assert capture["model_hint"] == "judge"
     assert capture["llm_policy"] == policy
     assert capture["retry_policy"] == retry
     assert capture["timeout_seconds"] == 450.0

@@ -81,38 +81,30 @@ infra), serving whatever universe(s) he creates, never a per-founder default. Th
 **zero-engine path is the chatbot's own LLM in-session** (interactive-only via
 subagents), not a platform engine.
 
-### 0.1 Durable first-party sources (freshness: fetched 2026-07-02)
+### 0.1 Durable first-party sources (re-verify before acting; providers revise terms)
 
-The §0 conclusion rests on the providers' own terms + auth docs. Durable links
-(re-verify before acting; providers revise terms):
+The §0 conclusion is a **policy/legal INFERENCE** from the providers' own terms +
+auth docs — NOT a verbatim provider quote. (C7: an earlier draft quoted specific
+sentences that could not be re-verified on the current pages; the API-key-
+exception + no-credential-sharing conclusion still follows from the terms as a
+whole, but treat it as an inference and get counsel before productionizing any
+subscription-adjacent lane.) Exact current sources:
 
-- **Anthropic — Consumer Terms of Service** (automated-access + credential-sharing
-  bars; "API Key is the appropriate path for server-side access"):
-  <https://www.anthropic.com/legal/consumer-terms>
-- **Anthropic — Usage Policy / compliance hub** (acceptable-use + enforcement
-  context, incl. the 2026-04-04 automated-access enforcement):
-  <https://www.anthropic.com/legal/aup> and <https://trust.anthropic.com/>
-- **Anthropic — OAuth-tokens-are-for-Claude-Code/Claude.ai-only** statement lives in
-  the Consumer Terms above; API keys are issued/managed at
-  <https://console.anthropic.com/> (server-side path).
-- **OpenAI — Codex non-interactive / CI auth** ("the right way to authenticate
-  automation is with an API key"; `CODEX_API_KEY` for headless `codex exec`):
-  <https://developers.openai.com/codex/local-config> and the Codex CLI auth guide
-  <https://developers.openai.com/codex/cloud/environments>.
-- **OpenAI — Business/Enterprise Codex access tokens** (org-level non-interactive
-  path — DISTINCT from a *personal* ChatGPT Plus/Pro subscription; relevant to
-  enterprise founders + market hosts who may legitimately bring an **org access
-  token** as their engine, NOT a personal sub):
-  <https://help.openai.com/en/articles/11369540-codex-in-chatgpt> (Codex access +
-  plans) and the OpenAI platform docs at <https://platform.openai.com/docs/>.
+- **OpenAI — Codex non-interactive mode auth** (the `CODEX_API_KEY` per-run path
+  for headless `codex exec`): <https://learn.chatgpt.com/docs/non-interactive-mode>.
+- **OpenAI — Codex Enterprise access tokens** (`CODEX_ACCESS_TOKEN`, org-level,
+  DISTINCT from a personal ChatGPT subscription AND from an API key):
+  <https://developers.openai.com/codex/enterprise/access-tokens>.
 - **OpenAI — Terms of Use / Business terms** (individual-use, no credential
   sharing, no powering third-party services on a personal plan):
   <https://openai.com/policies/terms-of-use/> and
   <https://openai.com/policies/business-terms/>.
-- **Anthropic — subscription-backed routines / scoped trigger tokens** (the
-  emerging automation lane; re-verify current shape + ToS):
-  <https://docs.claude.com/en/docs/claude-code/> (Claude Code automation /
-  routines) and the Anthropic API console <https://console.anthropic.com/>.
+- **Anthropic — Claude routines** (the emerging subscription-backed unattended-
+  automation / scoped-trigger-token lane; re-verify current shape + ToS):
+  <https://code.claude.com/docs/en/routines>.
+- **Anthropic — Consumer Terms of Service** (the automated-access / credential-
+  sharing terms this note infers from): <https://www.anthropic.com/legal/consumer-terms>.
+  API keys are issued/managed at <https://console.anthropic.com/>.
 
 **Two DISTINCT credential classes — do not conflate (F5b correction):**
 1. A **BYO API key** (Anthropic `ANTHROPIC_API_KEY`, OpenAI `OPENAI_API_KEY` /
@@ -146,13 +138,29 @@ env overlay injects nothing. The `TINYASSETS_BYO_VAULT_ENCRYPTED` flag is gated
 behind a **code-backed encryption-capability attestation** that returns False
 until Phase-2 lands, so no flag flip can unlock plaintext-key deposit+execution.
 
-**Enforcement scope — writer-role only.** The non-ambient provider-isolation
-guarantee (a BYO-bound universe never borrows platform provider auth) is enforced
-on the **writer** role only. Judge/extract calls may still use platform capacity,
-because the judge/extract fallback chains have no claude-code entry (a claude-only
-BYO universe would have an EMPTY judge chain and could not evaluate at all).
-Per-universe judge/extract routing is Phase-2 work; until then a bound universe's
-judge/extract may run on platform providers by design.
+**⚠ The non-ambient gate is Phase-1 SCAFFOLDING — it does NOT yet fully prevent
+ambient execution at every boundary. `TINYASSETS_NON_AMBIENT_WORK` MUST stay OFF;
+flipping it ON is unsafe until Phase 2 closes the execution-boundary gate.** The
+gate today lives only in the cloud-worker supervisor (`cloud_worker.py`), and the
+provider router still permits ambient execution whenever BYO is dark / no
+universe context is threaded / the universe is unbound / the role is non-writer.
+The COMPLETE guarantee requires (a) **S3's universe-context threading** so
+`run_branch` / `converse` / version / resume carry authoritative universe
+identity to the router, plus (b) an **all-roles router gate that fails closed
+when a FOUNDER universe is unbound** (the host's OWN universes legitimately use
+the droplet subscription, so the gate must distinguish founder-vs-host). Both are
+**Phase 2**; S3's context threading is not on this branch, so the full
+router-execution gate is deliberately NOT built here.
+
+**Enforcement scope — writer-role only (Phase-1 tightening applied).** What IS
+enforced today: a BYO-bound universe's **writer** never borrows platform provider
+auth (the writer-binding constraint, centralized + fail-closed). A "writer route"
+is `role == "writer"` OR any role NOT in `FALLBACK_CHAINS` (an unknown role aliases
+to the writer chain — `model_hint` is user free-form — so it must be enforced too;
+`model_hint` is also whitelisted at the write surface). Judge/extract calls may
+still use platform capacity — the judge/extract fallback chains have no claude-code
+entry, so a claude-only BYO universe would have an EMPTY judge chain and could not
+evaluate at all. Per-universe judge/extract routing is Phase-2 work.
 
 ---
 
@@ -296,7 +304,7 @@ what a droplet compromise exposes.
 | **B. Founder API key (Anthropic/OpenAI/etc.)** | per-universe vault, **KMS-wrapped** | **Yes** | per-tenant DEK + encryption context | one founder's key **iff** per-tenant key; all keys iff shared/base64 (today) | **CLEAN** — API key is the *sanctioned* server path | Med — add write surface + envelope encryption; router already resolves per-universe |
 | **C. Self-hosted OSS endpoint (Ollama/vLLM/`ANTHROPIC_BASE_URL`)** | vault holds **endpoint URL + bearer token**, not model creds | **Depends on founder's host** being up | endpoint+token per universe | one endpoint token (low-value; founder's infra) | **CLEAN** — no provider account shared; provider-agnostic base-url already in PLAN | Low — endpoint+token is a thin vault record; router needs base-url binding per universe |
 | **D. BYO-cloud / Workload Identity Federation** | **no stored secret** — OIDC federation to founder's cloud LLM | **Yes** | per-founder OIDC trust | **nothing** — no long-lived secret at rest | **CLEANEST** — no key custody at all | High — federation plumbing; forward-looking, not MVP |
-| **E. Platform default (host's own subscription)** | droplet `/data/.codex` + `/data/.claude` (exists) | **Yes** | shared — it's the platform's, not per-founder | platform's own account only | **OK** — first-party, host's own account/infra (§0) | Zero — already live |
+| **E. Host's-own subscription (NOT a founder default)** | droplet `/data/.codex` + `/data/.claude` (exists) | **Yes** | host's own account, serving ONLY the host's own universe(s) — never a per-founder default | host's own account only | **OK** — first-party, host's own account/infra (§0) | Zero — already live |
 
 ---
 
@@ -348,9 +356,11 @@ provided default engine for founders (host correction 2026-07-02).**
    Track it as the eventual replacement for stored API keys, especially for the
    platform's own engine.
 
-**One-line version:** *founders bring an **API key** or an **endpoint**; the platform
-brings the **default subscription**; nobody's personal subscription gets custodied
-server-side.*
+**One-line version (F5 corrected):** *founders bring an **API key** or an
+**endpoint** (or run the daemon on their own device); there is **NO founder-facing
+platform default engine** — the host's own droplet subscription serves **only the
+host's own universe(s)**, never a per-founder default; and nobody's personal
+subscription gets custodied server-side.*
 
 ---
 

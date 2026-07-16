@@ -10,17 +10,11 @@ from __future__ import annotations
 import base64
 import json
 import os
-import threading
 from pathlib import Path
 from typing import Any
 
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
-
-# Per-vault-path locks so a load→merge→write upsert is atomic against concurrent
-# writers in the same process (C5). Keyed by the resolved vault file path.
-_VAULT_LOCKS: dict[str, threading.Lock] = {}
-_VAULT_LOCKS_GUARD = threading.Lock()
 VALID_CREDENTIAL_TYPES = frozenset(
     {"social", "llm_subscription", "llm_api_key", "vcs"}
 )
@@ -170,53 +164,14 @@ def _service(record: dict[str, Any]) -> str:
     return str(record.get("service") or record.get("provider") or "").strip().lower()
 
 
-def _credential_identity(record: dict[str, Any]) -> tuple[str, str, str]:
-    """Identity of a credential record for upsert-by-identity.
-
-    ``(credential_type, service, destination)`` — ``destination`` only
-    distinguishes ``vcs`` records (a founder can bind multiple repos); for
-    llm_api_key / llm_subscription / social the destination component is empty so
-    one record per (type, service) is kept.
-    """
-    ctype = str(record.get("credential_type") or "").strip()
-    dest = str(record.get("destination") or "").strip() if ctype == "vcs" else ""
-    return (ctype, _service(record), dest)
-
-
-def _vault_lock(universe_dir: str | Path) -> threading.Lock:
-    """Return the process-wide lock for *universe_dir*'s vault file."""
-    key = str(credential_vault_path(universe_dir).resolve())
-    with _VAULT_LOCKS_GUARD:
-        lock = _VAULT_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _VAULT_LOCKS[key] = lock
-        return lock
-
-
-def upsert_credential(
-    universe_dir: str | Path,
-    record: dict[str, Any],
-) -> dict[str, Any]:
-    """Atomically add-or-replace ONE credential, PRESERVING all other records.
-
-    ``write_credential_vault`` is a replace-ALL writer — calling it with a single
-    record WIPES a founder's other credentials (social / vcs). This upsert loads
-    the existing vault, replaces only the record with the same
-    :func:`_credential_identity`, appends if none matched, and writes the full
-    set back (F2). The load→merge→write is held under a per-vault LOCK so two
-    concurrent upserts cannot each read a stale set and clobber the other's write
-    (C5) — both distinct records survive. Propagates :class:`ValueError` on a
-    malformed existing vault so the caller can fail loud rather than clobber.
-    """
-    universe = Path(universe_dir)
-    normalized = _normalize_record(record)
-    identity = _credential_identity(normalized)
-    with _vault_lock(universe):
-        existing = load_credential_vault(universe)  # raises ValueError if malformed
-        merged = [r for r in existing if _credential_identity(r) != identity]
-        merged.append(normalized)
-        return write_credential_vault(universe, merged)
+# NOTE: an add-or-replace `upsert_credential` primitive was removed in Phase-1
+# (round 10, F4). It had NO production caller (hosted BYO deposit is refused
+# through the chat until Phase 2) and its claimed atomicity was FALSE across
+# processes (process-local lock + a shared fixed ``.tmp`` name → lost writes +
+# Windows PermissionError under concurrency). A real multiprocess-safe atomic
+# vault (OS-level lock + unique temp files + a transactional backend) lands with
+# the Phase-2 out-of-chat deposit flow. A false atomicity claim on dead code is
+# worse than its absence.
 
 
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:

@@ -52,14 +52,18 @@ class UniverseConfig:
     and ``.claude/agent-memory/navigator/q63_section4_dispositions.md``
     for the design rationale."""
 
-    # Engine source (how this universe's intelligence is powered) — set by
-    # `universe action=set_engine`. The founder chooses at onboard.
+    # Engine source (how this universe's intelligence is powered) — the founder's
+    # DECLARED lane. NOTE (Phase-1 scaffolding): NONE of these is a working
+    # end-to-end bind-and-run lane yet. Hosted BYO-key deposit is refused through
+    # the chat (a raw secret must not cross the relay); executable BYO is gated
+    # behind a code-backed KMS attestation that is False until Phase 2; and
+    # host_daemon / market_rented / self_hosted_endpoint have no executor routing
+    # yet. A real out-of-chat deposit + real KMS + a real executor are Phase 2.
     engine_source: str = "byo_api_key"
-    """How this universe sources its engine: ``byo_api_key`` (default; a BYO API
-    key in the vault) / ``self_hosted_endpoint`` / ``market_rented`` /
-    ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
-    persist the founder's choice (deeper market-matching / endpoint-routing
-    runtime is post-M1 hardening)."""
+    """How this universe DECLARES its engine lane: ``byo_api_key`` /
+    ``self_hosted_endpoint`` / ``market_rented`` / ``host_daemon``. These are
+    stored declarations only — none executes end-to-end in Phase-1 S5 (see the
+    2026-07-02 custody note §0.2 Phase-1/Phase-2 split)."""
 
     engine_endpoint: str = ""
     """Self-hosted engine endpoint (e.g. an ``OLLAMA_HOST`` / ``ANTHROPIC_BASE_URL``

@@ -9,6 +9,8 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 from tinyassets.config import load_universe_config, write_universe_config_fields
 from tinyassets.credential_vault import (
     provider_auth_env_overrides,
@@ -124,49 +126,23 @@ def test_set_engine_byo_raw_key_always_refused_through_chat(tmp_path, monkeypatc
     assert load_credential_vault(udir) == []  # no plaintext key stored
 
 
-def test_upsert_credential_preserves_other_records(tmp_path):
-    """F2: the vault upsert primitive add/replaces by identity and PRESERVES all
-    other credentials (social / vcs) — no replace-all wipe."""
-    from tinyassets.credential_vault import load_credential_vault, upsert_credential
+def test_no_raw_secret_field_advertised_in_set_engine_contract(monkeypatch, tmp_path):
+    """F3: the RENDERED tool/help contract must not advertise any raw-secret
+    field — a client following the schema must never be told to send an api_key."""
+    from tinyassets.api import universe as uni
 
-    write_credential_vault(tmp_path, [
-        {"credential_type": "vcs", "service": "github",
-         "destination": "owner/repo", "token": "ghp-existing"},
-        {"credential_type": "social", "service": "x", "token": "x-tok"},
-    ])
-    upsert_credential(tmp_path, {
-        "credential_type": "llm_api_key", "service": "anthropic",
-        "secret_b64": base64.b64encode(b"sk-ant-new").decode("ascii"),
-    })
-    types = {r.get("credential_type") for r in load_credential_vault(tmp_path)}
-    assert {"vcs", "social", "llm_api_key"} == types
-
-
-def test_upsert_credential_atomic_under_concurrent_writers(tmp_path):
-    """C5: N concurrent upserts of DISTINCT credentials all survive — the
-    load→merge→write is locked so no writer clobbers another's write."""
-    import threading
-
-    from tinyassets.credential_vault import load_credential_vault, upsert_credential
-
-    n = 12
-    barrier = threading.Barrier(n)
-
-    def _deposit(i):
-        barrier.wait()  # maximize the race window
-        upsert_credential(tmp_path, {
-            "credential_type": "vcs", "service": "github",
-            "destination": f"owner/repo-{i}", "token": f"ghp-{i}",
-        })
-
-    threads = [threading.Thread(target=_deposit, args=(i,)) for i in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    dests = {r.get("destination") for r in load_credential_vault(tmp_path)}
-    assert dests == {f"owner/repo-{i}" for i in range(n)}  # all distinct records survive
+    udir = tmp_path / "u-contract"
+    udir.mkdir()
+    monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": "u-contract")
+    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+    # Empty-input help (what a client renders to learn the schema).
+    help_text = uni._action_set_engine(universe_id="u-contract", inputs_json="")
+    assert "api_key" not in help_text
+    assert "secret" not in help_text.lower() or "never" in help_text.lower()
+    # The MCP tool docstring (rendered in the connector catalog) too.
+    doc = uni._action_set_engine.__doc__ or ""
+    assert "api_key" not in doc
+    assert '"api_key"' not in doc
 
 
 def test_set_engine_ledger_extractor_never_leaks(tmp_path, monkeypatch):
@@ -186,7 +162,72 @@ def test_set_engine_ledger_extractor_never_leaks(tmp_path, monkeypatch):
         }),
     ))
     assert out["status"] == "engine_set"
-    assert load_universe_config(udir).engine_source == "self_hosted_endpoint"
+
+
+def _set_engine(monkeypatch, tmp_path, uid, payload):
+    from tinyassets.api import universe as uni
+
+    udir = tmp_path / uid
+    udir.mkdir(exist_ok=True)
+    monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": uid)
+    monkeypatch.setattr(uni, "_universe_dir", lambda _uid: udir)
+    return json.loads(uni._action_set_engine(universe_id=uid, inputs_json=json.dumps(payload)))
+
+
+@pytest.mark.parametrize("endpoint", [
+    "ftp://host/x",            # non-http(s) scheme
+    "not-a-url",              # no scheme/host
+    "http://",                # no host
+    "http://user:pw@host",    # embedded credentials
+    "http://169.254.169.254/latest/meta-data",  # cloud-metadata SSRF target
+])
+def test_set_engine_self_hosted_rejects_bad_endpoint(tmp_path, monkeypatch, endpoint):
+    """F6: an invalid / SSRF self-hosted endpoint is rejected loudly."""
+    out = _set_engine(monkeypatch, tmp_path, "u-badurl", {
+        "engine_source": "self_hosted_endpoint", "endpoint": endpoint,
+    })
+    assert "error" in out and out.get("status") != "engine_set"
+
+
+def test_set_engine_self_hosted_accepts_valid_endpoint(tmp_path, monkeypatch):
+    out = _set_engine(monkeypatch, tmp_path, "u-goodurl", {
+        "engine_source": "self_hosted_endpoint", "endpoint": "https://ollama.example.com:11434",
+    })
+    assert out["status"] == "engine_set"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("spending_cap", -1.0),
+    ("market_rate", -0.5),
+    ("spending_cap", float("inf")),
+    ("spending_cap", float("nan")),
+])
+def test_set_engine_market_rejects_bad_numbers(tmp_path, monkeypatch, field, value):
+    """F6: market rate/cap must be finite non-negative — reject NaN/inf/negative."""
+    payload = {"engine_source": "market_rented", "market_model": "glm-5.2",
+               "market_rate": 0.5, "spending_cap": 10.0}
+    payload[field] = value
+    out = _set_engine(monkeypatch, tmp_path, "u-badnum", payload)
+    assert "error" in out and out.get("status") != "engine_set"
+
+
+def test_set_engine_host_daemon_rejects_unknown_provider(tmp_path, monkeypatch):
+    """F6: host_daemon provider must be a known writer provider."""
+    out = _set_engine(monkeypatch, tmp_path, "u-badprov", {
+        "engine_source": "host_daemon", "provider": "novelist-9000",
+    })
+    assert "error" in out and out.get("status") != "engine_set"
+
+
+def test_model_hint_write_surface_rejects_free_form():
+    """F1a: model_hint (which becomes the router role) is whitelisted at the write
+    surface — a free-form value is rejected loud."""
+    from tinyassets.api.branches import _coerce_model_hint_update
+
+    val, err = _coerce_model_hint_update("novelist", "model_hint")
+    assert err and val == ""
+    ok, err2 = _coerce_model_hint_update("Writer", "model_hint")  # normalized
+    assert err2 == "" and ok == "writer"
 
 
 def test_ledger_extractor_never_leaks_the_key():

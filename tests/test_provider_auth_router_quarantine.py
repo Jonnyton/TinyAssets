@@ -502,6 +502,46 @@ def test_f1_byo_bound_universe_runs_only_eligible_provider(
     assert providers["ollama-local"].call_count == 0
 
 
+def test_f1a_unknown_role_is_enforced_as_writer_route(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """F1a: an UNKNOWN role (a free-form model_hint that reached the router) aliases
+    to the writer fallback chain, so it MUST be enforced too — a claude-only
+    BYO-bound universe must NOT let a 'novelist' role reach platform codex."""
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
+    router, providers = _router(dead=set())  # codex globally healthy
+
+    # role="novelist" is not in FALLBACK_CHAINS → gets the writer chain.
+    resp = _run(router.call(
+        "novelist", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+    ))
+    assert resp.provider == "claude-code"
+    assert providers["codex"].call_count == 0
+
+
+def test_f1a_unknown_role_policy_naming_codex_is_refused(
+    isolated_universe_config, tmp_path, monkeypatch,
+):
+    """F1a + C1: an unknown role + a policy naming codex in a BYO-bound universe is
+    REFUSED, never routed to platform codex."""
+    from tinyassets.providers.base import UniverseContext
+
+    _enable_byo(monkeypatch)
+    udir = _byo_claude_universe(tmp_path)
+    router, providers = _router(dead=set())
+    policy = {"preferred": {"provider": "codex"},
+              "fallback_chain": [{"provider": "ollama-local"}]}
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call_with_policy(
+            "novelist", "p", "s", policy,
+            universe_context=UniverseContext(universe_dir=udir),
+        ))
+    assert providers["codex"].call_count == 0
+
+
 # ---------------------------------------------------------------------------
 # Policy routing + judge ensemble honour the same gate
 # ---------------------------------------------------------------------------

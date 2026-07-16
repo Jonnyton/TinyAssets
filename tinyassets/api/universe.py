@@ -4838,18 +4838,17 @@ def _action_set_engine(
     inputs_json: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Founder-only: assign the universe's engine (`universe action=set_engine`).
+    """Founder-only: DECLARE the universe's engine lane (`universe action=set_engine`).
 
-    Deposits a BYO LLM API key into the universe's credential vault and sets the
-    preferred writer, so the universe's own intelligence runs on the founder's
-    engine (BYO API key → CLI-subprocess provider). Founder-only: gated by the
-    ``universe:admin`` scope + the universe write ACL. The key is stored in the
-    per-universe vault and injected into the CLI subprocess env at call time; it
-    is never echoed back or written to the ledger.
+    Records a NON-SECRET engine-lane choice (self-hosted endpoint / market-rented /
+    host-daemon). Founder-only: gated by the ``universe:admin`` scope + the
+    universe write ACL.
 
-    ``inputs_json``: ``{"service": "anthropic"|"openai", "api_key": "...",
-    "preferred_writer": "claude-code"|"codex"}`` (preferred_writer inferred from
-    service when omitted).
+    A hosted BYO API key is NEVER accepted here — a raw secret must not travel
+    over the chatbot/MCP relay. Hosted BYO-key deposit is a Phase-2,
+    founder-authenticated, out-of-chat flow returning an opaque credential
+    reference (not yet available); until then, run the daemon on your own device.
+    ``inputs_json`` carries ONLY non-secret fields (see ``expected`` below).
     """
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
@@ -4860,11 +4859,13 @@ def _action_set_engine(
     if not raw:
         return json.dumps({
             "error": "inputs_json is required.",
+            "note": "Declare a NON-SECRET engine lane. Hosted BYO API keys are "
+                    "NOT deposited here (never send a raw key over the chat) — "
+                    "that is a Phase-2 out-of-chat flow; run the daemon on your "
+                    "own device to use your key now.",
             "expected": {
-                "engine_source": "byo_api_key | self_hosted_endpoint | "
-                                 "market_rented | host_daemon",
-                "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
-                                "preferred_writer": "claude-code|codex (opt)"},
+                "engine_source": "self_hosted_endpoint | market_rented | "
+                                 "host_daemon",
                 "self_hosted_endpoint": {"endpoint": "https://…",
                                          "preferred_writer": "…"},
                 "market_rented": {"market_model": "glm-5.2", "market_rate": 0.0,
@@ -4897,7 +4898,6 @@ def _action_set_engine(
                      "engine lane — the platform never stores your subscription "
                      "tokens (Anthropic/OpenAI ToS).",
             "use_instead": [
-                "byo_api_key — bring an API key (stored in your universe vault)",
                 "self_hosted_endpoint — point at your own OSS endpoint",
                 "market_rented — rent daemon capacity from the market",
                 "host_daemon — run the daemon on YOUR own device to use your "
@@ -4941,6 +4941,34 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
     })
 
 
+_KNOWN_ENGINE_PROVIDERS: frozenset[str] = frozenset({"claude-code", "codex"})
+
+
+def _validate_engine_endpoint(endpoint: str) -> str | None:
+    """Return an error string for an invalid self-hosted endpoint, else None (F6).
+
+    Policy: must be an ``http(s)`` URL with a host and no embedded credentials;
+    reject the cloud-metadata link-local address (169.254.169.254 / fd00:ec2::254)
+    — the canonical SSRF target. (Deeper egress policy lands with the Phase-2
+    executor that would actually fetch the endpoint.)"""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(endpoint)
+    except ValueError as exc:
+        return f"endpoint is not a valid URL: {exc}"
+    if parsed.scheme not in ("http", "https"):
+        return "endpoint must be an http(s) URL."
+    if not parsed.hostname:
+        return "endpoint must include a host."
+    if parsed.username or parsed.password:
+        return "endpoint must not embed credentials (user:pass@)."
+    host = parsed.hostname.strip("[]").lower()
+    if host in ("169.254.169.254", "fd00:ec2::254", "metadata.google.internal"):
+        return "endpoint points at a cloud-metadata address (SSRF) — rejected."
+    return None
+
+
 def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
     """Self-hosted endpoint → persist the endpoint + writer choice."""
     from tinyassets.config import write_universe_config_fields
@@ -4948,6 +4976,9 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
     endpoint = str(data.get("endpoint", "")).strip()
     if not endpoint:
         return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
+    endpoint_err = _validate_engine_endpoint(endpoint)
+    if endpoint_err:
+        return json.dumps({"error": endpoint_err})
     fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
@@ -4969,11 +5000,19 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
     market_model = str(data.get("market_model", "")).strip()
     if not market_model:
         return json.dumps({"error": "market_model is required for market_rented."})
+    import math
     try:
         market_rate = float(data.get("market_rate", 0.0) or 0.0)
         spending_cap = float(data.get("spending_cap", 0.0) or 0.0)
     except (TypeError, ValueError):
         return json.dumps({"error": "market_rate and spending_cap must be numbers."})
+    # F6: reject NaN / inf / negative — a spending cap must be a finite,
+    # non-negative amount (an inf/NaN cap would silently disable the ceiling).
+    for name, value in (("market_rate", market_rate), ("spending_cap", spending_cap)):
+        if not math.isfinite(value) or value < 0:
+            return json.dumps({
+                "error": f"{name} must be a finite, non-negative number.",
+            })
     fields = {
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
@@ -5005,6 +5044,11 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     from tinyassets.config import write_universe_config_fields
 
     provider = str(data.get("provider", "")).strip() or "claude-code"
+    if provider not in _KNOWN_ENGINE_PROVIDERS:
+        return json.dumps({
+            "error": f"unknown provider {provider!r} for host_daemon.",
+            "expected_providers": sorted(_KNOWN_ENGINE_PROVIDERS),
+        })
     fields = {"engine_source": "host_daemon",
               "preferred_writer": preferred_writer or provider}
     try:
