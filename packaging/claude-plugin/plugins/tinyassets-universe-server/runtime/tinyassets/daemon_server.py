@@ -2254,10 +2254,15 @@ def list_branch_definitions(
     goal_id: str = "",
     viewer: str = "",
     include_private: bool = False,
+    limit: int = 0,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """List branch definitions with optional filters.
 
     Args:
+        limit: SQL ``LIMIT`` (>0) so discovery paginates at the DB boundary
+            instead of loading every row (Codex r11 #6). 0 = no limit.
+        offset: SQL ``OFFSET`` cursor for keyset-style paging.
         published_only: If True, return only published branches.
         author: Filter by author name (exact match).
         domain_id: Filter by domain (exact match).
@@ -2303,12 +2308,20 @@ def list_branch_definitions(
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
+    # DB-boundary pagination (Codex r11 #6): LIMIT/OFFSET in the query, keyed by
+    # the stable updated_at DESC, branch_def_id order so paging is deterministic.
+    page = ""
+    if limit and limit > 0:
+        page = "LIMIT ? OFFSET ?"
+        params = [*params, int(limit), max(0, int(offset))]
+
     with _connect(base_path) as conn:
         rows = conn.execute(
             f"""
             SELECT * FROM branch_definitions
             {where}
-            ORDER BY updated_at DESC
+            ORDER BY updated_at DESC, branch_def_id ASC
+            {page}
             """,
             params,
         ).fetchall()

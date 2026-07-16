@@ -2363,31 +2363,38 @@ def _invoke_graph(
             # state_schema-declared fields with defaults are available to
             # strict-isolation prompt placeholders from step 1.
             #
-            # Binding VALUES are NOT in the shared branch row (PLAN §4 — the
-            # platform never stores private content; Codex+Fable latest-model).
-            # They live in the host-local per-universe binding store and are
-            # resolved HERE keyed by the run's IMMUTABLE universe
-            # (enqueue_context.universe_id — set by the ACL-gated top-level run
-            # and inherited by sub-branch invocations; NOT the branch-authored
-            # child_actor, which can narrow attribution but never claim a
-            # universe for resolution). A run in a non-owner universe finds no
-            # rows -> empty binding slots. Nothing to leak from the row; nothing
-            # to resolve from a foreign universe.
-            binding_values: dict[str, Any] = {}
-            run_universe = (
-                (enqueue_context.universe_id if enqueue_context else "") or ""
-            ).strip()
-            if run_universe:
-                from tinyassets.branch_bindings import resolve_branch_bindings
+            # Binding fields are OWNER-BOUND (PLAN §4 — the platform never stores
+            # private content; Codex r11 re-scope). Phase 1 has NO value store at
+            # all: binding VALUES are deferred to a bound engine/vault (Phase 2).
+            # So a binding-declared field must NOT be settable at run time via
+            # inputs_json OR a child inputs_mapping — that would let a caller
+            # inject a target_repo / credential the owner never bound. Reject
+            # loudly (top-level AND sub-branch converge here).
+            from tinyassets.branch_versions import is_binding_field
 
-                binding_values = resolve_branch_bindings(
-                    base_path,
-                    universe_id=run_universe,
-                    branch_def_id=getattr(branch, "branch_def_id", ""),
+            binding_fields = {
+                (f.get("name") or "")
+                for f in (getattr(branch, "state_schema", None) or [])
+                if is_binding_field(f)
+            }
+            offending = sorted(binding_fields & set(inputs or {}))
+            if offending:
+                reason = (
+                    "binding fields cannot be set at run time: "
+                    f"{offending}. They are owner-bound — a non-owner run gets "
+                    "empty slots; the owner binds them on their own copy via a "
+                    "bound engine (Phase 2)."
+                )
+                update_run_status(
+                    base_path, run_id, status=RUN_STATUS_FAILED,
+                    error=reason, finished_at=_now(),
+                )
+                return RunOutcome(
+                    run_id=run_id, status=RUN_STATUS_FAILED,
+                    output={}, error=reason,
                 )
             initial_state = seed_initial_state(
                 dict(inputs), getattr(branch, "state_schema", None),
-                binding_values=binding_values,
             )
             result = app.invoke(
                 initial_state,
@@ -2998,7 +3005,6 @@ def _execute_branch_core(
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
     _invocation_depth: int = 0,
-    _enqueue_universe_id: str = "",
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -3030,13 +3036,6 @@ def _execute_branch_core(
     executor = _get_executor(invocation_depth=_invocation_depth)
     effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
 
-    # Carry the run's IMMUTABLE universe (ACL-gated at the top-level entry;
-    # inherited by sub-branches — never child_actor) so the seed can resolve
-    # owner-only binding VALUES from the host-local store. Codex+Fable S2.
-    _binding_ctx = NodeEnqueueContext(
-        universe_id=_enqueue_universe_id, actor=actor,
-    )
-
     def _worker() -> RunOutcome:
         try:
             return _invoke_graph(
@@ -3047,7 +3046,6 @@ def _execute_branch_core(
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
                 invocation_depth=_invocation_depth,
-                enqueue_context=_binding_ctx,
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -3086,7 +3084,6 @@ def execute_branch_async(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
-    _enqueue_universe_id: str = "",
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
     in the background. Returns within a few ms with ``status=queued``.
@@ -3122,7 +3119,6 @@ def execute_branch_async(
         on_node_status=on_node_status,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
-        _enqueue_universe_id=_enqueue_universe_id,
     )
 
 

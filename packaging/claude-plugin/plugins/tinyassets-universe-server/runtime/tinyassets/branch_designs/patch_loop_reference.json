@@ -6,7 +6,7 @@
   "provenance": "TinyAssets reference design — docs/design-notes/2026-07-15-user-patch-loop-reference-design.md",
   "spec": {
     "name": "Patch Loop (reference design)",
-    "description": "Turn user comments and patch requests for YOUR project into ready-to-merge pull requests on YOUR repository. This reference is repo-blind: it carries no repository identity. Remix it, then bind your own target_repo + credential_ref (per-universe vault), choose a merge_policy (manual / auto / timer; manual supports owner-OAuth-per-merge), and point intake_source at your project's request stream. A remix with no binding is inert. Output contract: a ready-to-merge PR (branch + passing verify + description linking the originating request) queued for the owner's review — approve / reshape (send back with notes) / reject, from any surface.",
+    "description": "Turn user comments and patch requests for YOUR project into ready-to-merge pull requests on YOUR repository. This reference is repo-blind: it carries no repository identity. Remix it, then bind your own target_repo (the owner/repo destination) and choose a merge_policy (manual / auto / timer; manual supports owner-OAuth-per-merge), and point intake_source at your project's request stream. Credentials are NOT part of this design and never appear in state or prompts: the GitHub effector resolves the push credential from the per-universe vault BY DESTINATION at write time, never exposing a handle to the model. A remix with no binding is inert. The repo-touching nodes are honestly classified and effectful, not a prompt-only simulation: investigate (node_kind repo_read), verify (node_kind repo_exec), and draft_patch (node_kind coding) are sandbox-required and FAIL CLOSED until the sandbox runner ships; the verify and owner_gate nodes are gates that emit the canonical verdict shape (verdict + verdict_evidence); present EMITS a github_pull_request effect packet and merge EMITS a github_merge effect packet (the runner performs the actual writes, resolving credentials from the vault by destination). Output contract: a ready-to-merge PR (branch + passing verify + description linking the originating request) queued for the owner's review — pass / send_back (revise) / reject, from any surface.",
     "entry_point": "intake",
     "node_defs": [
       {
@@ -17,32 +17,44 @@
       {
         "node_id": "investigate",
         "display_name": "Investigate against the bound repo",
+        "requires_sandbox": true,
+        "node_kind": "repo_read",
         "prompt_template": "Investigate this work item against the repository bound as target_repo={target_repo}. Reproduce the issue if possible, locate the responsible code, and produce an investigation summary with concrete file/line references and a proposed fix approach. Work item: {intake_output}"
       },
       {
         "node_id": "draft_patch",
         "display_name": "Draft the patch (coding agent)",
+        "requires_sandbox": true,
+        "node_kind": "coding",
         "prompt_template": "Implement the fix for target_repo={target_repo} on a new branch, following the investigation. Write the minimal correct change plus regression tests. If reshape_notes is non-empty, it contains the owner's send-back notes from review — apply them. Produce: branch name, commit(s), and a PR-ready description linking the originating request. Investigation: {investigate_output}. Owner reshape notes: {reshape_notes}"
       },
       {
         "node_id": "verify",
-        "display_name": "Verify (tests / checks)",
-        "prompt_template": "Run the project's verification for the drafted patch using verify_command={verify_command} against the patch branch. Report verdict=green when all checks pass, verdict=red with the failure detail otherwise. Patch: {draft_patch_output}"
+        "display_name": "Verify gate (tests / checks)",
+        "requires_sandbox": true,
+        "node_kind": "repo_exec",
+        "output_keys": ["verdict", "verdict_evidence"],
+        "prompt_template": "You are the verification GATE for the drafted patch. Run the project's verification using verify_command={verify_command} against the patch branch, then emit the canonical gate verdict shape. Set verdict to EXACTLY one canonical value: the string pass when ALL checks pass, or the string send_back when ANY check fails, errors, or is inconclusive. The graph routes a send_back verdict straight back to draft_patch for another attempt and forwards ONLY a pass verdict to open the pull request, so never emit pass unless verification actually passed. Set verdict_evidence to a JSON object holding reason (a one-line why) and, for send_back, suggestions (a list of what to fix, e.g. which checks failed and the command output). Patch: {draft_patch_output}"
       },
       {
         "node_id": "present",
         "display_name": "Open PR + queue for owner review",
-        "prompt_template": "Open (or update) the pull request on target_repo={target_repo} using the bound credential credential_ref={credential_ref}, and queue it on the owner's review surface with a plain-language summary: what the user asked, what the patch changes, verification evidence. PR must be ready-to-merge. Verified patch: {verify_output}"
+        "effects": ["github_pull_request"],
+        "output_keys": ["github_pr_packet", "present_output"],
+        "prompt_template": "Compose and EMIT a github_pull_request external-write packet as the output key github_pr_packet (a JSON object) for target_repo={target_repo}. Set its fields: sink to the string github_pull_request; destination to the owner/repo from target_repo; payload to a JSON object holding title, body (a plain-language summary — what the user asked, what the patch changes, verification evidence), base_branch (the base to merge into, e.g. main), head_branch (the patch branch from the draft), draft set to false, changes_json (the file changes from the drafted patch as a JSON object mapping each repo-relative path to its full new file contents, or null to delete — the github_pull_request effector builds the head branch from these; in Phase 2 the sandbox coding node produces the actual diff and this carries that reference), and review_queue (a JSON object with the two flat fields the owner review-queue reads: request_ref set to the originating request reference from the intake work item, and verify_verdict set to the canonical verification verdict — a flat string, one of pass, fail, or unknown, sourced from the verify gate's verdict (pass here, since only a passing verify reaches this node). review_queue is advisory metadata only: whether owner review is required is decided by the owner-bound universe config, NOT this packet — a remix cannot enable or disable the gate from here, and run/branch/universe identifiers are injected by the owner review-queue from run context, not read from the packet. Do NOT put the verification evidence in review_queue; it goes in the PR body and present_output for the owner to read). The github_pull_request effector performs the actual open/update at run time and resolves the push credential from the universe vault BY DESTINATION (owner/repo); never place a credential in state or this prompt. Do NOT claim the PR is already open — you EMIT the packet and the runner performs the write, then queues the ready-to-merge PR on the owner review-queue. Also set present_output to a short human-readable summary of the queued PR including the verification evidence. Originating request: {intake_output}. Verification evidence (for the PR body / present_output, not review_queue): {verdict_evidence}. Patch to open: {draft_patch_output}"
       },
       {
         "node_id": "owner_gate",
         "display_name": "Owner review gate (merge policy)",
-        "prompt_template": "Apply the owner's merge_policy={merge_policy} to the queued PR. manual: wait for the owner's decision (approve / reshape / reject); when the policy requires owner-OAuth-per-merge, a fresh authenticated approval is mandatory — never a standing consent. auto: proceed only if verify is green. timer: proceed after the configured delay unless held. On reshape, capture the owner's notes into reshape_notes and route back to draft_patch. Decision context: {present_output}"
+        "output_keys": ["verdict", "verdict_evidence", "reshape_notes"],
+        "prompt_template": "You are the owner review GATE. Apply the owner's merge_policy={merge_policy} to the PR waiting on the owner review-queue (the S4 review-queue contract holds the queued PR until the owner acts from any surface). manual: wait for the owner's decision; when the policy requires owner-OAuth-per-merge, a fresh authenticated approval is mandatory — never a standing consent. auto: proceed only if verify passed. timer: proceed after the configured delay unless held. Emit the canonical gate verdict shape. Set verdict to EXACTLY one canonical value: pass (the owner approves — the graph routes to merge), send_back (the owner requests changes — routes back to draft_patch), or reject (the owner abandons — routes to END). Emit pass ONLY on a genuine owner approval. Set verdict_evidence to a JSON object holding reason and, for send_back, suggestions (a list). Set reshape_notes to the owner's send-back notes for draft_patch on send_back (empty string otherwise) — draft_patch reads them on the next pass. Decision context: {present_output}"
       },
       {
         "node_id": "merge",
         "display_name": "Merge on approval",
-        "prompt_template": "Merge the approved PR on target_repo={target_repo} via the merge effector with the bound credential credential_ref={credential_ref}, honoring branch protection and the expected head SHA. Record the merge receipt linking back to the originating user request. Approval: {owner_gate_output}"
+        "effects": ["github_merge"],
+        "output_keys": ["github_merge_packet", "merge_output"],
+        "prompt_template": "On owner approval, compose and EMIT a github_merge external-write packet as the output key github_merge_packet (a JSON object) for target_repo={target_repo}. Set its fields: sink to the string github_merge; destination to the owner/repo from target_repo; payload to a JSON object holding pr_number (the queued PR number), expected_head_sha (the current 40-character head commit SHA of the PR), merge_method (squash), and authorization set to a JSON object whose mode is the string github_branch_protection. The github_merge effector performs the actual merge at run time, honoring branch protection and the expected head SHA and resolving the push credential from the universe vault BY DESTINATION. Do NOT claim the merge already happened — you EMIT the packet and the runner performs the write, then records the merge receipt linking back to the originating user request. Also set merge_output to a short human-readable summary including the merge receipt reference. Approved PR context: {present_output}"
       }
     ],
     "edges": [
@@ -56,27 +68,30 @@
     "conditional_edges": [
       {
         "from": "verify",
-        "conditions": {"green": "present", "red": "draft_patch"}
+        "conditions": {"send_back": "draft_patch", "pass": "present"},
+        "fallback": "send_back"
       },
       {
         "from": "owner_gate",
-        "conditions": {"approve": "merge", "reshape": "draft_patch", "reject": "END"}
+        "conditions": {"reject": "END", "send_back": "draft_patch", "pass": "merge"},
+        "fallback": "reject"
       }
     ],
     "state_schema": [
       {"name": "intake_source", "type": "str"},
       {"name": "request_payload", "type": "str"},
       {"name": "target_repo", "type": "str"},
-      {"name": "credential_ref", "type": "str"},
       {"name": "merge_policy", "type": "str"},
       {"name": "verify_command", "type": "str"},
       {"name": "reshape_notes", "type": "str"},
       {"name": "intake_output", "type": "str"},
       {"name": "investigate_output", "type": "str"},
       {"name": "draft_patch_output", "type": "str"},
-      {"name": "verify_output", "type": "str"},
+      {"name": "verdict", "type": "str"},
+      {"name": "verdict_evidence", "type": "dict"},
+      {"name": "github_pr_packet", "type": "dict"},
       {"name": "present_output", "type": "str"},
-      {"name": "owner_gate_output", "type": "str"},
+      {"name": "github_merge_packet", "type": "dict"},
       {"name": "merge_output", "type": "str"}
     ]
   }

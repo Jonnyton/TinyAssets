@@ -206,23 +206,18 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
         )
 
 
-# Declarative binding-privacy contract (Codex+Fable S2 latest-model).
+# Declarative binding-schema contract (Codex r11 re-scope, PLAN §4).
 #
-# A state field is a personal BINDING when its SCHEMA is flagged — the flag is a
-# property of the field, not a per-value runtime marker, so ANY consumer decides
-# "is this field a binding?" from the schema alone regardless of which authoring
-# path set the default. Binding VALUES (repo identity, vault/credential refs,
-# intake sources) are owner-private and must NEVER leave the owner.
-#
-# These are the SINGLE source of that decision: every non-owner consumer — read,
-# export, fork, snapshot, AND the run/seed path — routes through
-# ``is_binding_field`` / ``branch_has_bound_fields`` / ``redact_bound_state_values``.
-# Adding a future consumer means calling one of these, not discovering a new leak.
-# ``is_binding`` is canonical; ``bound`` / ``sensitive`` are accepted as aliases
-# so a flag set by any authoring path is honored.
+# A state field is a personal BINDING slot when its SCHEMA is flagged
+# ``is_binding`` (aliases ``bound`` / ``sensitive``). The flag is a property of
+# the field, decided from the schema alone. Phase 1 carries ONLY the schema (the
+# flag + an empty slot) through every shared artifact; binding VALUES do not
+# exist platform-side at all (deferred to a Phase-2 bound engine/vault), so there
+# is nothing to redact and nothing to leak. These predicates are the single
+# source consumers use to decide "is this a binding slot?" (the run-entry guard
+# rejects run-time values for them).
 BINDING_FLAG = "is_binding"
 _BINDING_FLAG_KEYS = ("is_binding", "bound", "sensitive")
-_BOUND_VALUE_KEYS = ("default_value", "default")
 
 
 def is_binding_field(field: Any) -> bool:
@@ -237,40 +232,13 @@ def branch_has_bound_fields(state_schema: Any) -> bool:
     return any(is_binding_field(f) for f in (state_schema or []))
 
 
-def redact_bound_state_values(
-    state_schema: Any, *, drop_marker: bool = False,
-) -> list[Any]:
-    """Return ``state_schema`` with personal binding VALUES stripped.
-
-    Only binding-flagged fields are affected; design-level defaults pass through
-    untouched. The binding flag itself is kept by default (it documents the slot
-    for readers) but dropped when ``drop_marker`` is set — used by fork/remix
-    inheritance so the child gets a fresh unbound slot to re-bind, never the
-    parent's flag as owner-trust.
-    """
-    out: list[Any] = []
-    for field in state_schema or []:
-        if not isinstance(field, dict):
-            out.append(field)
-            continue
-        entry = dict(field)
-        if is_binding_field(entry):
-            for value_key in _BOUND_VALUE_KEYS:
-                entry.pop(value_key, None)
-            if drop_marker:
-                for flag in _BINDING_FLAG_KEYS:
-                    entry.pop(flag, None)
-        out.append(entry)
-    return out
-
-
 def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
     """Extract fields that define published branch behavior.
 
-    Personal binding VALUES are redacted from ``state_schema`` at this source
-    (the field schema + ``bound`` marker survive, never the value). Branch-level
-    routing/concurrency knobs are included so publish -> remix/rollback/export
-    preserve them (they are behavior-affecting, so they belong in the hash).
+    The ``state_schema`` (incl. any ``is_binding`` slot declarations) travels
+    verbatim — Phase 1 stores no binding VALUES, so there is nothing to redact.
+    Branch-level routing/concurrency knobs are included so publish ->
+    remix/rollback/export preserve them (behavior-affecting -> in the hash).
     """
     from tinyassets.branches import BranchDefinition
 
@@ -283,9 +251,7 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
         "edges": normalized.get("edges", []),
         "conditional_edges": normalized.get("conditional_edges", []),
         "node_defs": normalized.get("node_defs", []),
-        "state_schema": redact_bound_state_values(
-            normalized.get("state_schema", []),
-        ),
+        "state_schema": normalized.get("state_schema", []),
     }
     if normalized.get("default_llm_policy") is not None:
         snapshot["default_llm_policy"] = normalized["default_llm_policy"]

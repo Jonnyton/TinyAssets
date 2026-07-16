@@ -445,16 +445,8 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     visibility = branch.get("visibility", "public") or "public"
     if visibility == "private" and branch.get("author", "") != _current_actor():
         return json.dumps({"error": f"Branch '{bid}' not found."})
-    # Binding privacy (Codex+Fable S2): a NON-OWNER reading a public branch must
-    # not see the owner's personal bound VALUES (target_repo/credential/intake).
-    # The field slot + marker survive; the value is redacted. The owner reading
-    # their own branch still sees everything.
-    if branch.get("author", "") != _current_actor():
-        from tinyassets.branch_versions import redact_bound_state_values
-
-        branch["state_schema"] = redact_bound_state_values(
-            branch.get("state_schema", []),
-        )
+    # (Binding VALUES never exist in the shared row in Phase 1 — nothing to
+    # redact on read; the is_binding SCHEMA is public design metadata.)
     # Phase 6.4: non-retracted claims for this Branch across all
     # Goals. Flag-gated placeholder when GATES_ENABLED=0 so UIs
     # render "gates off" distinct from "no claims yet."
@@ -576,6 +568,19 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     public_only = bool(kwargs.get("public_only"))
     viewer = "" if public_only else actor
 
+    # DB-boundary pagination (Codex r11 #6): fetch ONE bounded page from SQL
+    # (LIMIT/OFFSET) instead of loading every visible branch and slicing in
+    # memory. Default 30, capped 500; ``offset`` is the keyset cursor.
+    try:
+        limit = int(kwargs.get("limit") or 30)
+    except (TypeError, ValueError):
+        limit = 30
+    limit = max(1, min(limit, 500))
+    try:
+        offset = max(0, int(kwargs.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+
     # Phase 6.2.2 — visibility-aware listing. Viewer sees public
     # Branches and any private Branches they authored.
     rows = list_branch_definitions(
@@ -584,15 +589,19 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         author=kwargs.get("author", ""),
         goal_id=kwargs.get("goal_id", ""),
         viewer=viewer,
+        limit=limit,
+        offset=offset,
     )
+    # A full page implies more rows may exist -> expose the next-offset cursor.
+    next_offset = offset + len(rows) if len(rows) == limit else None
 
     # requires_sandbox filter: "none" = design-only branches only (no node
     # has requires_sandbox=True); "any" = branches that have at least one
     # sandbox-requiring node. Omit / empty = no filter.
     rs_filter = (kwargs.get("requires_sandbox") or "").strip().lower()
 
-    # Batch the active-version lookup (Codex S2 F4): ONE query for all rows
-    # instead of N+1 per-row queries.
+    # Batch the active-version lookup (Codex S2 F4): ONE query for this page's
+    # rows instead of N+1 per-row queries.
     active_by_bid: dict[str, Any] = {}
     if scope == "published":
         from tinyassets.branch_versions import get_newest_active_versions
@@ -643,22 +652,13 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             summary["branch_version_id"] = published_version_id
         summaries.append(summary)
 
-    # Enforce a bounded limit + expose truncation/total (Codex S2 F2): the
-    # listing previously ignored ``limit`` and returned every match. Default 30
-    # (matches the read_graph handle default); a caller can raise it, capped at
-    # 500 to keep the response bounded.
-    total = len(summaries)
-    try:
-        limit = int(kwargs.get("limit") or 30)
-    except (TypeError, ValueError):
-        limit = 30
-    limit = max(1, min(limit, 500))
-    page = summaries[:limit]
+    # The page was already bounded at the DB (LIMIT). ``next_offset`` is the
+    # cursor for the next page; ``truncated`` signals more rows may follow.
     return json.dumps({
-        "branches": page,
-        "count": len(page),
-        "total": total,
-        "truncated": total > len(page),
+        "branches": summaries,
+        "count": len(summaries),
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
     })
 
 
@@ -1996,19 +1996,23 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     # so PR #932's ``_state_schema_defaults`` finds the seed value at runtime;
     # also dual-write ``default`` for back-compat with any reader that still
     # uses the legacy storage key.
-    default = raw.get(
-        "default_value",
-        raw.get("default", raw.get("field_default", "")),
+    # A binding slot declared from ANY authoring path (build_branch /
+    # add_state_field) carries the schema flag but NO value — Phase 1 stores no
+    # binding values platform-side (Codex r11 re-scope / PLAN §4). A non-binding
+    # field's design default travels normally.
+    is_binding = any(
+        raw.get(flag) for flag in ("is_binding", "bound", "sensitive")
     )
-    if default != "":
-        entry["default_value"] = default
-        entry["default"] = default
-    # Preserve a declared binding flag from ANY authoring path (build_branch /
-    # add_state_field), so a binding slot pre-filled at build time is still
-    # redacted — not just ones set via the BIND op (Codex+Fable S2 F2). Normalize
-    # the aliases to the canonical is_binding key.
-    if any(raw.get(flag) for flag in ("is_binding", "bound", "sensitive")):
+    if is_binding:
         entry["is_binding"] = True
+    else:
+        default = raw.get(
+            "default_value",
+            raw.get("default", raw.get("field_default", "")),
+        )
+        if default != "":
+            entry["default_value"] = default
+            entry["default"] = default
     branch.state_schema.append(entry)
     if ftype_raw.lower() not in _VALID_STATE_TYPES:
         return (
@@ -2358,15 +2362,10 @@ def _staged_branch_from_spec(
             if not _spec_has_graph_key("entry_point"):
                 branch.entry_point = parent_copy.entry_point
             if "state_schema" not in spec:
-                # Binding privacy (Codex+Fable S2): a fork inherits the parent's
-                # binding SLOTS to re-bind, never the parent's bound VALUES or
-                # the ``bound`` owner-trust marker. (The snapshot is already
-                # value-free; drop_marker gives the child a fresh unbound slot.)
-                from tinyassets.branch_versions import redact_bound_state_values
-
-                branch.state_schema = redact_bound_state_values(
-                    parent_copy.state_schema, drop_marker=True,
-                )
+                # A fork inherits the parent's binding SLOTS (the is_binding
+                # SCHEMA) to re-bind on a Phase-2 bound engine. No values exist
+                # to strip in Phase 1 (Codex r11 re-scope).
+                branch.state_schema = list(parent_copy.state_schema)
             # Branch-level routing/concurrency inherit through a fork too, or a
             # remix silently loses them (Codex S2 F2).
             if "default_llm_policy" not in spec:
@@ -2657,12 +2656,13 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
             return f"remove_state_field: '{fname}' not found"
         return ""
     if name == "set_state_field_default":
-        # BIND op (patch-loop S2). Codex+Fable latest-model / PLAN §4: the
-        # platform NEVER stores private content, so a personal binding VALUE is
-        # NOT written into this shared branch row. This op only DECLARES the
-        # field a binding slot (is_binding schema flag); the VALUE is stored
-        # host-local per-universe (see write_graph target=branch router ->
-        # branch_bindings). Any value carried here is stripped from the row.
+        # BIND op. Codex r11 re-scope / PLAN §4: the platform NEVER stores
+        # private content, and Phase 1 has no owner-side execution host to hold
+        # binding VALUES (the owner's engine/daemon host is a Phase-2 construct).
+        # So a value-binding attempt is REFUSED here — Phase 1 keeps only the
+        # binding SCHEMA. The field is still DECLARED a binding slot (is_binding)
+        # so remix/import/export carry the empty slot; the VALUE waits for a
+        # bound engine.
         fname = (op.get("name") or op.get("field_name") or "").strip()
         if not fname:
             return "set_state_field_default requires name"
@@ -2674,10 +2674,17 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                 f"set_state_field_default: state field '{fname}' not found. "
                 "Add it with add_state_field first, or fix the name."
             )
-        # Declare the binding slot; NEVER persist the value into the shared row.
+        # Declare the binding slot (schema flag), never a value.
         target_field["is_binding"] = True
         for value_key in ("default_value", "default"):
             target_field.pop(value_key, None)
+        if any(k in op for k in ("default_value", "default", "value")):
+            return (
+                f"binding a VALUE for '{fname}' requires a bound engine "
+                "(Phase 2 — the owner's engine/daemon host holds binding values "
+                "in a per-universe vault). Phase 1 declares the binding SLOT "
+                "only; run/remix/import/export carry the empty slot."
+            )
         return ""
     if name == "update_node":
         nid = (op.get("node_id") or "").strip()
@@ -3564,30 +3571,15 @@ def _node_def_to_design_spec(nd: Any) -> dict[str, Any]:
     return spec
 
 
-# A state field is a personal BINDING once the owner sets its default via the
-# set_state_field_default op (which marks it ``bound``). Personal binding VALUES
-# (repo identity, vault/credential refs, intake sources) must never travel in a
-# portable artifact or a listing another user can read — export carries the
-# field SCHEMA, never the bound value (Codex S2 latest-model, finding 1a).
-_STATE_FIELD_VALUE_KEYS = ("default_value", "default")
-
-
 def _state_field_to_design_spec(field: dict[str, Any]) -> dict[str, Any]:
-    """Serialize a state_schema entry, redacting personal binding VALUES.
+    """Serialize a state_schema entry.
 
-    Routes through the single ``is_binding_field`` decision: design defaults
-    (no binding flag) travel; a binding slot keeps its name/type/description/
-    reducer but never the value, and the owner-trust flag itself never travels.
+    Phase 1 (Codex r11 re-scope): binding VALUES never exist in the shared row,
+    so there is nothing to redact — the field SCHEMA travels verbatim, including
+    the ``is_binding`` declaration + empty slot, so remix/import/export carry the
+    binding slot for a Phase-2 bound engine to fill.
     """
-    from tinyassets.branch_versions import _BINDING_FLAG_KEYS, is_binding_field
-
-    spec = dict(field)
-    if is_binding_field(field):
-        for value_key in _STATE_FIELD_VALUE_KEYS:
-            spec.pop(value_key, None)
-    for flag in _BINDING_FLAG_KEYS:
-        spec.pop(flag, None)
-    return spec
+    return dict(field)
 
 
 def _branch_to_design_spec(
@@ -3700,9 +3692,9 @@ def _ext_branch_export_design(kwargs: dict[str, Any]) -> str:
     remix commons); private branches are author-gated via
     ``_load_owned_or_public_branch``.
     """
-    from tinyassets.branch_designs import wrap_spec_as_design_artifact
     from tinyassets.branch_versions import list_branch_versions
     from tinyassets.branches import BranchDefinition
+    from tinyassets.design_artifacts import wrap_spec_as_design_artifact
 
     branch, err = _load_owned_or_public_branch(
         kwargs.get("branch_def_id", "") or kwargs.get("name", ""),
@@ -3764,7 +3756,7 @@ def _ext_branch_import_design(kwargs: dict[str, Any]) -> str:
     the lineage-preserving path), and the caller becomes the author.
     """
     from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.branch_designs import is_design_envelope, unwrap_design_artifact
+    from tinyassets.design_artifacts import is_design_envelope, unwrap_design_artifact
 
     raw = (kwargs.get("artifact_json") or kwargs.get("spec_json") or "").strip()
     if not raw:
@@ -3814,9 +3806,24 @@ def _ext_branch_import_design(kwargs: dict[str, Any]) -> str:
         out = json.loads(out_str)
     except (json.JSONDecodeError, TypeError):
         return out_str
-    if out.get("status") == "built":
-        out["status"] = "imported"
-        out["imported_as"] = out.get("branch_def_id", "")
+    if out.get("status") != "built" or not out.get("branch_def_id"):
+        return out_str
+
+    # An imported working copy defaults PRIVATE until the owner explicitly
+    # publishes it (Codex r11 #5): it is the caller's own draft, not commons.
+    # Flip at the import boundary (not the global BranchDefinition default).
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+
+    imported = BranchDefinition.from_dict(
+        get_branch_definition(_base_path(), branch_def_id=out["branch_def_id"]),
+    )
+    imported.visibility = "private"
+    save_branch_definition(_base_path(), branch_def=imported.to_dict())
+
+    out["status"] = "imported"
+    out["imported_as"] = out["branch_def_id"]
+    out["visibility"] = "private"
     return json.dumps(out, default=str)
 
 
