@@ -192,3 +192,51 @@ Bundle e2e: the integration test is split into a pre-runner REFUSAL case
 (provider/runner absent → the sandbox-required nodes refuse at `investigate`,
 fail-closed) and a runner-enabled continuation case (only exercised when a real
 isolated executor is present). Production stays fail-closed.
+
+## Addendum (2026-07-16, Codex r17 REJECT rework): platform-enforced gates
+
+r17 rejected because each round exposed the next unbuilt layer — the real GitHub
+App **auth lifecycle** was never built (static tokens, no refresh) and the merge
+trusted local state. This round builds the non-credential gates; the credential
+lifecycle (#2) is HELD to land as **vault-broker consumption**, not reinvented
+token handling (a static-token/self-refresh path now would be a Rule-11 dual-path).
+
+- **#1 Merge requires a CONFIRMED owner review ON GitHub.** `execute_manual_merge`
+  now refuses (`owner_review_unconfirmed`) unless GitHub holds an APPROVED review
+  by the connected owner at the exact reviewed head — read via `list_pull_reviews`,
+  NEVER local `WORKFLOW_APPROVED`. So even an unprotected repo can't merge without
+  a real owner approval. An **independent** durable `review_effect_outbox` (+
+  `execute_pending_review_effects` worker) submits the owner's review with the
+  owner USER token regardless of any run suspension — the enqueue happens in the
+  approve/reshape/reject verbs.
+- **#3 Autonomous is reachable in prod.** `run_review_recovery_for_universe` now
+  builds a per-destination ruleset-read **VERIFIER** client
+  (`verifier_client_from_vault`), resolves the App bypass-actor id
+  (`resolve_github_app_actor_id`) + owner, and INVOKES `fire_due_not_before_timers`
+  each cycle. `fire_due_not_before_timers` resolves the merge client, verifier,
+  owner, and App-actor per destination; no verifier ⇒ the gate fails closed and
+  the timer stays due.
+- **#4 App-authored-PR invariant.** `get_pull` now carries `author_login` /
+  `author_type`; the merge gate + the review-effect worker reject a PR authored by
+  the connected owner (self-approval is impossible on GitHub) or a non-App human /
+  PAT (`author_type != "Bot"`) — `pr_author_invalid` before any merge or doomed
+  self-review.
+- **#5 Idempotent schema migration.** `initialize_review_queue_db` runs
+  `_apply_column_migrations` (ALTER-in the `revocation_outbox.expected_head_sha` /
+  `founder_handle` columns) so a DB on the preceding schema upgrades forward
+  instead of raising `OperationalError` on the first new-column insert.
+- **#6 head-binding + parity.** Merge/reconcile require `head == expected_head`;
+  the receipt id includes the head; the exact owner review id is resolved for
+  dismissal. The 4 MCP dispatch/docstring parity failures were pre-existing
+  UPSTREAM drift (gates conformance-pack actions in a parser-blind format, a stale
+  hand-maintained `_wiki_dispatch_keys` mirror vs `wiki.WIKI_ACTIONS`, a
+  glued-to-prose `cosign_bug`, an undocumented `goals.archive_consultation`) —
+  fixed honestly (documented the real actions; the test now derives wiki keys from
+  the authoritative dict).
+
+**HELD for the vault freeze (#2):** the App ID / private-key / installation-id
+record shape + installation-token and user-token refresh land as consumption of
+the vault broker (`github_client_from_vault` / `verifier_client_from_vault` swap
+their `StaticTokenProvider` for the refreshing broker provider). Until then the
+Codex re-gate is HELD — the recovery workers already fail closed without live
+credentials.

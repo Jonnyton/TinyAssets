@@ -203,6 +203,27 @@ def _continue_run(universe_dir, pending: dict[str, Any] | None) -> dict[str, Any
         return {"applied": False, "reason": "continue_error"}
 
 
+def _enqueue_review_effect(
+    universe_dir, *, destination: str, pr_number: int, head: str, event: str,
+    projection: dict[str, Any] | None, body: str = "",
+) -> None:
+    """Durably enqueue the owner's GitHub review INDEPENDENT of any run suspension
+    (Codex r17 #1) so the daemon submits it even for a fire-and-forget projection.
+    Best-effort: the decision is already durable, so a review-effect enqueue hiccup
+    never fails the verb (startup replay + the projection's recorded_call remain)."""
+    try:
+        from tinyassets.storage.review_queue import enqueue_review_effect
+
+        enqueue_review_effect(
+            universe_dir, destination=destination, pr_number=pr_number,
+            expected_head_sha=head, event=event, body=body,
+            branch_def_id=(projection or {}).get("branch_def_id") or "",
+            decided_by=_current_actor(),
+        )
+    except Exception:  # noqa: BLE001 — non-fatal; decision stays durable
+        logger.exception("enqueue_review_effect failed for %s#%s", destination, pr_number)
+
+
 # ── list ────────────────────────────────────────────────────────────────────
 
 
@@ -290,6 +311,14 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_approve", destination, pr_number)
+    # INDEPENDENT durable review-effect (Codex r17 #1): the owner's APPROVE review
+    # is enqueued regardless of whether a run is suspended, so the daemon submits
+    # it to GitHub and the manual-merge gate can require a CONFIRMED owner review.
+    _enqueue_review_effect(
+        _universe_dir_for(target_universe), destination=destination,
+        pr_number=pr_number, head=head, event="APPROVE",
+        projection=result["projection"],
+    )
     run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
     confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
@@ -386,6 +415,10 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_reshape", destination, pr_number)
+    _enqueue_review_effect(
+        universe_dir, destination=destination, pr_number=pr_number, head=head,
+        event="REQUEST_CHANGES", projection=result["projection"], body=notes,
+    )
     run_continued = _continue_run(universe_dir, result["pending"])
     confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
@@ -450,6 +483,11 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_reject", destination, pr_number)
+    _enqueue_review_effect(
+        _universe_dir_for(target_universe), destination=destination,
+        pr_number=pr_number, head=head, event="REQUEST_CHANGES",
+        projection=result["projection"], body=notes,
+    )
     run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
     confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({

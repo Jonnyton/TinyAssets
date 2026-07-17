@@ -294,6 +294,30 @@ CREATE TABLE IF NOT EXISTS manual_merge_outbox (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_merge_pending
     ON manual_merge_outbox(destination, pr_number, expected_head_sha)
     WHERE executed_at IS NULL;
+
+-- Durable REVIEW-EFFECT outbox (Codex r17 #1): the owner's decision to submit a
+-- GitHub review (APPROVE / REQUEST_CHANGES) at an exact head, recorded
+-- INDEPENDENTLY of any run suspension. A daemon worker submits the owner's review
+-- with the owner USER token — so a projection with NO suspension still gets its
+-- owner review onto GitHub, and the manual-merge gate can require a CONFIRMED
+-- owner review before merging (never trusting local WORKFLOW_APPROVED). One
+-- pending review-effect per (destination, pr_number, head, event).
+CREATE TABLE IF NOT EXISTS review_effect_outbox (
+    review_effect_id  TEXT PRIMARY KEY,
+    destination       TEXT NOT NULL DEFAULT '',
+    pr_number         INTEGER NOT NULL DEFAULT 0,
+    expected_head_sha TEXT NOT NULL DEFAULT '',
+    event             TEXT NOT NULL DEFAULT 'APPROVE',
+    body              TEXT NOT NULL DEFAULT '',
+    branch_def_id     TEXT NOT NULL DEFAULT '',
+    decided_by        TEXT NOT NULL DEFAULT '',
+    created_at        REAL NOT NULL,
+    executed_at       REAL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_effect_pending
+    ON review_effect_outbox(destination, pr_number, expected_head_sha, event)
+    WHERE executed_at IS NULL;
 """
 
 SUSPENSION_SUSPENDED = "suspended"
@@ -311,8 +335,41 @@ SUSPENSION_RESUMED = "resumed"
 SUSPENSION_SUPERSEDED = "superseded"
 
 
+#: Idempotent column migrations for tables that gained columns after they first
+#: shipped (Codex r17 #5). ``CREATE TABLE IF NOT EXISTS`` never alters an existing
+#: table, so a DB created under the preceding schema is missing these columns and
+#: raises ``OperationalError`` on the first insert that names them. Each entry is
+#: ``(column_name, column_definition)``; a column already present is skipped, so
+#: this is safe to run on every init. NEW tables (e.g. ``manual_merge_outbox``)
+#: need no entry — ``CREATE TABLE IF NOT EXISTS`` creates them whole.
+_COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "revocation_outbox": [
+        ("expected_head_sha", "TEXT NOT NULL DEFAULT ''"),
+        ("founder_handle", "TEXT NOT NULL DEFAULT ''"),
+    ],
+}
+
+
+def _apply_column_migrations(conn: sqlite3.Connection) -> None:
+    """Add any missing columns to existing tables (idempotent). Runs AFTER the
+    ``CREATE TABLE IF NOT EXISTS`` schema, so a table is guaranteed to exist; we
+    only ALTER-in columns the preceding schema lacked. Each added column carries a
+    ``DEFAULT`` so it is valid for the rows already present."""
+    for table, columns in _COLUMN_MIGRATIONS.items():
+        existing = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        if not existing:
+            continue  # table absent (defensive; _SCHEMA creates it first)
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def initialize_review_queue_db(universe_dir: str | Path) -> Path:
-    """Ensure the projection DB exists. Idempotent + cached per db path."""
+    """Ensure the projection DB exists + is at the current schema. Idempotent +
+    cached per db path; a DB from a preceding schema is migrated forward
+    (Codex r17 #5) rather than failing on the first insert of a new column."""
     path = review_queue_db_path(universe_dir)
     key = str(path)
     if key in _INITIALIZED and path.exists():
@@ -320,6 +377,7 @@ def initialize_review_queue_db(universe_dir: str | Path) -> Path:
     with _INIT_LOCK:
         with _connect(universe_dir) as conn:
             conn.executescript(_SCHEMA)
+            _apply_column_migrations(conn)
         _INITIALIZED.add(key)
     return path
 
@@ -1584,6 +1642,65 @@ def mark_manual_merge_executed(
             return cur.rowcount > 0
 
 
+# ── review-effect outbox (owner review submission, suspension-independent) ────
+
+
+def enqueue_review_effect(
+    universe_dir: str | Path, *, destination: str, pr_number: int,
+    expected_head_sha: str, event: str = "APPROVE", body: str = "",
+    branch_def_id: str = "", decided_by: str = "", now: float | None = None,
+) -> dict[str, Any]:
+    """Durably enqueue the owner's GitHub review (Codex r17 #1), INDEPENDENT of any
+    run suspension, so a projection with no suspension still gets its owner review
+    onto GitHub. Idempotent: at most one pending review-effect per
+    (destination, pr_number, head, event). Returns
+    ``{"review_effect_id"|None, "enqueued": bool}``."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    rid = f"rve-{uuid.uuid4().hex[:16]}"
+    ev = (event or "APPROVE").strip().upper()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO review_effect_outbox "
+                "(review_effect_id, destination, pr_number, expected_head_sha, "
+                "event, body, branch_def_id, decided_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    rid, (destination or "").strip(), pr_number,
+                    (expected_head_sha or "").strip(), ev, body, branch_def_id,
+                    decided_by, ts,
+                ),
+            )
+            enqueued = cur.rowcount > 0
+    return {"review_effect_id": rid if enqueued else None, "enqueued": enqueued}
+
+
+def list_pending_review_effects(universe_dir: str | Path) -> list[dict[str, Any]]:
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT * FROM review_effect_outbox WHERE executed_at IS NULL "
+            "ORDER BY created_at",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_review_effect_executed(
+    universe_dir: str | Path, *, review_effect_id: str, now: float | None = None
+) -> bool:
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "UPDATE review_effect_outbox SET executed_at = ? "
+                "WHERE review_effect_id = ? AND executed_at IS NULL",
+                (ts, (review_effect_id or "").strip()),
+            )
+            return cur.rowcount > 0
+
+
 def has_effect_receipt(
     universe_dir: str | Path, *, run_id: str, effect_kind: str
 ) -> dict[str, Any] | None:
@@ -1658,4 +1775,7 @@ __all__ = [
     "enqueue_manual_merge",
     "list_pending_manual_merges",
     "mark_manual_merge_executed",
+    "enqueue_review_effect",
+    "list_pending_review_effects",
+    "mark_review_effect_executed",
 ]

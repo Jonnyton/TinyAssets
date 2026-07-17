@@ -218,10 +218,11 @@ class GitHubApi(Protocol):
 
     def get_pull(self, *, destination: str, pr_number: int) -> dict[str, Any]:
         """Current GitHub PR state: ``{"state", "merged", "mergeable_state",
-        "review_decision", "head_sha", "base_ref", "merge_commit_sha",
-        "node_id"}``. ``base_ref`` is authoritative — the gate verifies against
-        the PR's ACTUAL base branch, never a packet-supplied ref (Codex r11
-        #1)."""
+        "review_decision", "head_sha", "base_ref", "merge_commit_sha", "node_id",
+        "author_login", "author_type"}``. ``base_ref`` is authoritative — the gate
+        verifies against the PR's ACTUAL base branch, never a packet-supplied ref
+        (Codex r11 #1). ``author_type`` is ``"Bot"`` for App-installation-authored
+        PRs (Codex r17 #4)."""
         ...
 
     def list_pull_reviews(

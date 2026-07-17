@@ -23,8 +23,10 @@ _PR = 7
 class FakeClient:
     def __init__(self, *, pull=None, reviews=None):
         self.submitted = []
+        # App-installation-authored PR by default (Codex r17 #4).
         self._pull = pull or {"state": "open", "merged": False, "head_sha": _HEAD,
-                              "node_id": "PR_1", "base_ref": "main"}
+                              "node_id": "PR_1", "base_ref": "main",
+                              "author_login": "workflow-app[bot]", "author_type": "Bot"}
         self._reviews = reviews or []
 
     def run_call(self, call):
@@ -96,15 +98,51 @@ def test_manual_merge_requires_approval_first(owner_env):
 
 def test_execute_manual_merge_confirms_via_github_reread(owner_env):
     """With a client, execute_manual_merge submits the merge AND only reports
-    merged after re-reading GitHub confirms it."""
+    merged after re-reading GitHub confirms it — gated on a CONFIRMED owner review
+    at head (Codex r17 #1)."""
     _approved_pr(owner_env)
-    client = FakeClient()
+    client = FakeClient(reviews=[
+        {"id": 1, "commit_id": _HEAD, "state": "APPROVED", "user_login": "owner"},
+    ])
     res = runs.execute_manual_merge(
         owner_env, destination=_DEST, pr_number=_PR, expected_head_sha=_HEAD,
-        github_api=client,
+        github_api=client, expected_owner="owner",
     )
     assert res["confirmed"] is True and res["state"] == "merged"
     assert any(c.kind == "merge_pr" for c in client.submitted)
+
+
+def test_manual_merge_refused_without_owner_review(owner_env):
+    """Codex r17 #1: the merge is REFUSED when GitHub holds no APPROVED owner
+    review at the head — local WORKFLOW_APPROVED is NOT sufficient (an unprotected
+    repo still can't merge without a real owner approval)."""
+    _approved_pr(owner_env)
+    client = FakeClient(reviews=[])  # nothing on GitHub
+    res = runs.execute_manual_merge(
+        owner_env, destination=_DEST, pr_number=_PR, expected_head_sha=_HEAD,
+        github_api=client, expected_owner="owner",
+    )
+    assert res["confirmed"] is False
+    assert res["state"] == "owner_review_unconfirmed"
+    assert all(c.kind != "merge_pr" for c in client.submitted)  # never merged
+
+
+def test_manual_merge_refused_when_pr_authored_by_owner(owner_env):
+    """Codex r17 #4: a PR the owner authored can never carry the required owner
+    review (GitHub blocks self-approval) — refuse before merge."""
+    _approved_pr(owner_env)
+    client = FakeClient(
+        pull={"state": "open", "merged": False, "head_sha": _HEAD, "node_id": "PR_1",
+              "base_ref": "main", "author_login": "owner", "author_type": "User"},
+        reviews=[{"id": 1, "commit_id": _HEAD, "state": "APPROVED", "user_login": "owner"}],
+    )
+    res = runs.execute_manual_merge(
+        owner_env, destination=_DEST, pr_number=_PR, expected_head_sha=_HEAD,
+        github_api=client, expected_owner="owner",
+    )
+    assert res["confirmed"] is False
+    assert res["state"] == "pr_author_invalid"
+    assert all(c.kind != "merge_pr" for c in client.submitted)
 
 
 def test_manual_merge_reconciles_already_merged(owner_env):
@@ -200,8 +238,8 @@ def test_register_review_workers_entrypoint(owner_env):
     client = FakeClient()
     workers = runs.register_review_workers(base_path=owner_env, github_api=client)
     assert set(workers) == {
-        "replay_continuations", "drain_manual_merges", "execute_revocations",
-        "fire_timers",
+        "replay_continuations", "submit_review_effects", "drain_manual_merges",
+        "execute_revocations", "fire_timers",
     }
     # Each is callable and returns a list (drives its store queue).
     for name, fn in workers.items():

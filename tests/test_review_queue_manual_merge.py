@@ -49,6 +49,22 @@ def _real_client(transport):
     return gh.HttpGitHubApi(tp, request_fn=transport, sleep_fn=lambda _s: None)
 
 
+# App-installation-authored PR + a CONFIRMED owner APPROVED review at head are
+# prerequisites for the merge gate (Codex r17 #1/#4).
+def _pull(*, merged, head=_HEAD):
+    return {
+        "state": "closed" if merged else "open", "merged": merged,
+        "head": {"sha": head}, "base": {"ref": "main"}, "node_id": "PR_1",
+        "merge_commit_sha": "m" * 40 if merged else "",
+        "user": {"login": "workflow-app[bot]", "type": "Bot"},
+    }
+
+
+def _owner_reviews(head=_HEAD):
+    return [{"id": 1, "commit_id": head, "state": "APPROVED",
+             "user": {"login": "owner"}}]
+
+
 @pytest.fixture
 def owner_env(monkeypatch, tmp_path):
     monkeypatch.setattr(helpers_mod, "_request_universe", lambda uid="": uid or "u1")
@@ -129,17 +145,12 @@ def test_worker_drains_outbox_with_real_client(owner_env):
     )
     transport = ScriptedTransport({
         # reconcile read (open) then confirm read (merged, same head).
-        ("GET", f"/pulls/{_PR}"): [
-            (200, {"state": "open", "merged": False, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1", "merge_commit_sha": ""}),
-            (200, {"state": "closed", "merged": True, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1",
-                   "merge_commit_sha": "m" * 40}),
-        ],
+        ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False)), (200, _pull(merged=True))],
+        ("GET", f"/pulls/{_PR}/reviews"): [(200, _owner_reviews())],
         ("PUT", f"/pulls/{_PR}/merge"): [(200, {"merged": True, "sha": "m" * 40})],
     })
     results = runs.execute_pending_manual_merges(
-        owner_env, github_api=_real_client(transport)
+        owner_env, github_api=_real_client(transport), expected_owner="owner"
     )
     assert len(results) == 1 and results[0]["confirmed"] is True
     # outbox drained + projection reconciled to merged.
@@ -179,17 +190,12 @@ def test_worker_head_bound_receipt_is_idempotent(owner_env):
         owner_env, destination=_DEST, pr_number=_PR, expected_head_sha=_HEAD,
     )
     transport = ScriptedTransport({
-        ("GET", f"/pulls/{_PR}"): [
-            (200, {"state": "open", "merged": False, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1", "merge_commit_sha": ""}),
-            (200, {"state": "closed", "merged": True, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1",
-                   "merge_commit_sha": "m" * 40}),
-        ],
+        ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False)), (200, _pull(merged=True))],
+        ("GET", f"/pulls/{_PR}/reviews"): [(200, _owner_reviews())],
         ("PUT", f"/pulls/{_PR}/merge"): [(200, {"merged": True})],
     })
     client = _real_client(transport)
-    runs.execute_pending_manual_merges(owner_env, github_api=client)
+    runs.execute_pending_manual_merges(owner_env, github_api=client, expected_owner="owner")
     # A second drive with a fresh enqueue at the same head short-circuits on the
     # head-bound receipt (no second PUT).
     rq.enqueue_manual_merge(owner_env, destination=_DEST, pr_number=_PR,
@@ -197,7 +203,7 @@ def test_worker_head_bound_receipt_is_idempotent(owner_env):
     transport2 = ScriptedTransport({})  # no routes: a real call would AssertionError
     out = runs.execute_manual_merge(
         owner_env, destination=_DEST, pr_number=_PR, expected_head_sha=_HEAD,
-        github_api=_real_client(transport2),
+        github_api=_real_client(transport2), expected_owner="owner",
     )
     assert out["confirmed"] is True and out["detail"] == "receipt"
     assert transport2.calls == []  # receipt short-circuit, no network
@@ -211,7 +217,7 @@ def test_run_review_recovery_builds_client_from_vault(tmp_path):
     from the per-universe vault BY DESTINATION and drains the outbox."""
     write_credential_vault(tmp_path, [{
         "credential_type": "vcs", "service": "github", "destination": _DEST,
-        "token": "ghs_installtoken", "purpose": "write",
+        "token": "ghs_installtoken", "purpose": "write", "account_login": "owner",
     }])
     rq.project_pr(tmp_path, destination=_DEST, pr_number=_PR, head_sha=_HEAD,
                   branch_def_id="bd", universe_id="u1")
@@ -222,14 +228,11 @@ def test_run_review_recovery_builds_client_from_vault(tmp_path):
     )
     rq.enqueue_manual_merge(tmp_path, destination=_DEST, pr_number=_PR,
                             expected_head_sha=_HEAD)
+    # The owner review is already on GitHub (App-authored PR); the daemon caller
+    # resolves the owner from the vault (account_login) and gates the merge on it.
     transport = ScriptedTransport({
-        ("GET", f"/pulls/{_PR}"): [
-            (200, {"state": "open", "merged": False, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1", "merge_commit_sha": ""}),
-            (200, {"state": "closed", "merged": True, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1",
-                   "merge_commit_sha": "m" * 40}),
-        ],
+        ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False)), (200, _pull(merged=True))],
+        ("GET", f"/pulls/{_PR}/reviews"): [(200, _owner_reviews())],
         ("PUT", f"/pulls/{_PR}/merge"): [(200, {"merged": True})],
     })
     out = runs.run_review_recovery_for_universe(tmp_path, request_fn=transport)
@@ -333,16 +336,13 @@ def test_full_manual_flow_end_to_end_via_daemon(monkeypatch, tmp_path):
                for m, s in transport1.calls)
 
     # Owner merges → enqueue; Daemon tick 2 drains it against the real client.
+    # The owner review submitted in tick 1 now persists on GitHub (the merge gate
+    # requires a CONFIRMED owner review at head before merging).
     rq.enqueue_manual_merge(tmp_path, destination=_DEST, pr_number=_PR,
                             expected_head_sha=_HEAD, branch_def_id="bd")
     transport2 = ScriptedTransport({
-        ("GET", f"/pulls/{_PR}"): [
-            (200, {"state": "open", "merged": False, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1", "merge_commit_sha": ""}),
-            (200, {"state": "closed", "merged": True, "head": {"sha": _HEAD},
-                   "base": {"ref": "main"}, "node_id": "PR_1",
-                   "merge_commit_sha": "m" * 40}),
-        ],
+        ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False)), (200, _pull(merged=True))],
+        ("GET", f"/pulls/{_PR}/reviews"): [(200, _owner_reviews())],
         ("PUT", f"/pulls/{_PR}/merge"): [(200, {"merged": True})],
     })
     out2 = runs.run_review_recovery_for_universe(tmp_path, request_fn=transport2)

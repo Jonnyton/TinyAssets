@@ -294,6 +294,7 @@ class HttpGitHubApi:
             )
         head = pr.get("head") or {}
         base = pr.get("base") or {}
+        author = pr.get("user") or {}
         return {
             "state": "merged" if pr.get("merged") else (pr.get("state") or "unknown"),
             "merged": bool(pr.get("merged")),
@@ -303,6 +304,11 @@ class HttpGitHubApi:
             "base_ref": base.get("ref") or "",
             "merge_commit_sha": pr.get("merge_commit_sha") or "",
             "node_id": pr.get("node_id") or "",
+            # PR author identity (Codex r17 #4): App-installation-authored PRs have
+            # ``user.type == "Bot"``; the owner-review gate rejects a PR authored by
+            # the connected owner (self-approval is impossible).
+            "author_login": (author.get("login") or ""),
+            "author_type": (author.get("type") or ""),
         }
 
     def list_pull_reviews(
@@ -523,10 +529,32 @@ def verifier_client(ruleset_verify_token: str, **kwargs: Any) -> HttpGitHubApi:
     return HttpGitHubApi(tp, read_purpose=PURPOSE_RULESET_VERIFY, **kwargs)
 
 
+def verifier_client_from_vault(
+    universe_dir: Any, destination: str, **kwargs: Any
+) -> HttpGitHubApi | None:
+    """Build the per-destination VERIFIER client for the AUTONOMOUS-merge gate
+    (Codex r17 #3) from the per-universe vault. Autonomous (``auto``/``not_before``)
+    merge needs the owner's elevated ruleset-read token to positively see
+    ``bypass_actors`` — a separate opt-in grant the App's minimal merge scope
+    lacks. Returns ``None`` (fail closed — the timer stays due) when the
+    ``ruleset_verify`` credential is not connected for the destination, so a
+    universe that never opted into autonomous merge never enables it silently."""
+    from tinyassets.credential_vault import resolve_github_token
+
+    dest = (destination or "").strip()
+    if not dest:
+        return None
+    token = resolve_github_token(universe_dir, dest, purpose="ruleset_verify")
+    if not token:
+        return None
+    return verifier_client(token, **kwargs)
+
+
 __all__ = [
     "GitHubHttpError",
     "HttpGitHubApi",
     "installation_token_exchange",
     "github_client_from_vault",
     "verifier_client",
+    "verifier_client_from_vault",
 ]

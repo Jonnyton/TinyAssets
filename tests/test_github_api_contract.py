@@ -80,6 +80,7 @@ def _real_adapter():
             "state": "open", "merged": False, "mergeable_state": "clean",
             "head": {"sha": _HEAD}, "base": {"ref": "main"}, "node_id": "PR_1",
             "merge_commit_sha": "",
+            "user": {"login": "workflow-app[bot]", "type": "Bot"},
         })],
         ("GET", f"/pulls/{_PR}/reviews"): [
             # page 1 (full) then page 2 (short) — the real client MUST paginate.
@@ -112,8 +113,11 @@ def test_get_pull_shape(adapter):
     assert pull["head_sha"] == _HEAD
     assert pull["base_ref"] == "main"
     assert pull["node_id"] == "PR_1"
+    # PR author identity (Codex r17 #4) is part of the shared shape on both.
+    assert pull["author_type"] == "Bot"
+    assert pull["author_login"] == "workflow-app[bot]"
     assert set(pull) >= {"state", "merged", "head_sha", "base_ref",
-                         "merge_commit_sha", "node_id"}
+                         "merge_commit_sha", "node_id", "author_login", "author_type"}
 
 
 def test_list_pull_reviews_normalized_shape(adapter):

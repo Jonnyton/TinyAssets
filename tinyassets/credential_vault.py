@@ -260,6 +260,40 @@ def resolve_github_login(
     return next(iter(logins)) if len(logins) == 1 else ""
 
 
+def resolve_github_app_actor_id(
+    universe_dir: str | Path | None,
+    *,
+    destination: str = "",
+) -> str:
+    """Resolve the GitHub App's ruleset bypass-actor id from the AUTHORITATIVE
+    vault credential record (Codex r17 #3) — the identity ``verify_review_gate_active``
+    checks against every active ruleset's ``bypass_actors`` for the autonomous
+    gate. Read from the GitHub ``vcs`` record's ``app_actor_id`` field (bound to
+    ``destination`` when given; otherwise the unambiguous universe value). Returns
+    ``""`` when unconnected/ambiguous (the autonomous gate then fails closed on
+    ``app_identity_known``)."""
+    if universe_dir is None:
+        return ""
+    wanted = (destination or "").strip()
+    ids: set[str] = set()
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "vcs" or _service(record) != "github":
+            continue
+        raw = record.get("app_actor_id")
+        actor_id = str(raw).strip() if raw not in (None, "") else ""
+        if not actor_id:
+            continue
+        rec_dest = str(record.get("destination") or "").strip()
+        if wanted:
+            if rec_dest == wanted:
+                return actor_id
+        else:
+            ids.add(actor_id)
+    if wanted:
+        return ""
+    return next(iter(ids)) if len(ids) == 1 else ""
+
+
 def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str, Any]]:
     if universe_dir is None:
         return []

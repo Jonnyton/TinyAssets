@@ -1627,6 +1627,8 @@ def goals(
                    tags. Needs query.
       leaderboard  Rank bound Branches by metric (run_count/forks/outcome).
       common_nodes Nodes appearing in >=`min_branches` Branches.
+      archive_consultation Archive a completed Goal consultation thread.
+                   Needs goal_id.
 
     """
     return _goals_impl(
@@ -1708,15 +1710,17 @@ def gates(
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
-      record_conformance_pack
-                    Store a standards/readiness conformance pack for a
-                    Goal or Branch before gated rungs.
+      record_conformance_pack  Store a standards/readiness conformance
+                    pack for a Goal or Branch before gated rungs.
+      get_conformance_pack  Read a stored conformance pack. Needs
+                    conformance_pack_id.
+      list_conformance_packs  List conformance packs for a Goal or
+                    Branch.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url.
-      claim_from_branch_run
-                    Claim a rung whose key (and optionally evidence
-                    URL) came from a completed run's final output.
-                    Needs run_id. The branch's
+      claim_from_branch_run  Claim a rung whose key (and optionally
+                    evidence URL) came from a completed run's final
+                    output. Needs run_id. The branch's
                     ``recommended_rung_claim`` field selects the rung;
                     validated against the bound Goal's ladder.
       retract       Soft-delete a claim. Needs branch_def_id, rung_key,
@@ -1840,8 +1844,8 @@ def wiki(
     Args:
         action: One of — reads: read, search, since, list, lint;
             writes: write, patch, delete, consolidate, promote, ingest, supersede,
-            sync_projects, file_bug, cosign_bug.
-            `search` is lexical best-effort, not a completeness proof; use
+            sync_projects, file_bug, cosign_bug;
+            note: `search` is lexical best-effort, not a completeness proof — use
             `since` with `changed_since` to review pages updated after a known
             timestamp, then `read` the candidate pages.
         old_text/new_text: For action="patch", exact text to replace server-side.

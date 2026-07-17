@@ -128,6 +128,9 @@ class InMemoryGitHubApi:
             "review_decision": "unknown", "head_sha": "a" * 40,
             "base_ref": self._default_base_ref, "merge_commit_sha": "",
             "node_id": f"PR_node_{pr_number}",
+            # App-installation-authored by default (Codex r17 #4); override to
+            # simulate a founder-PAT-authored PR.
+            "author_login": "workflow-app[bot]", "author_type": "Bot",
         }
         default.update(self._pulls.get(pr_number, {}))
         return default
