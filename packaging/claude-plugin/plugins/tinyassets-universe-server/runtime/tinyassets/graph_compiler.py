@@ -2670,32 +2670,47 @@ def _build_node(
     """
     from tinyassets.domain_registry import resolve_domain_callable
 
-    # SECURITY (Codex S3 r9 #3): the capability fail-closed gate lives at THIS
-    # single choke point — BEFORE the adapter fan-out — so source_code / opaque /
-    # invoke nodes cannot route AROUND it (they never reach the prompt-template
-    # adapter that formerly held the only gate). A repo-touching node
-    # (coding/repo_exec/repo_read) with no per-job runner fails closed
-    # deterministically for EVERY adapter, matching what validate + get_status
-    # report — validation and runtime tell the same story.
+    # SECURITY (Codex S3 r9 #3 + r12 #1): the capability fail-closed gate lives at
+    # THIS single choke point — BEFORE the adapter fan-out — so source_code /
+    # opaque / invoke nodes cannot route AROUND it (they never reach the adapter
+    # that formerly held the only gate). Capability is the EFFECTIVE capability:
+    # source/metadata classification PLUS opaque-adapter resolution (a registered
+    # opaque callable's capability is its adapter type, invisible to node fields —
+    # a repo-reading `read_repo_files` node otherwise looks like plain text). A
+    # repo-touching node with no per-job runner, AND an UNCLASSIFIED opaque adapter
+    # (no declared capability), fail closed deterministically for EVERY adapter —
+    # matching what validate + get_status report.
+    from tinyassets.sandbox_policy import (
+        _OPAQUE_UNCLASSIFIED as _OPAQUE_UNCLASSIFIED,
+    )
     from tinyassets.sandbox_policy import (
         coding_nodes_runnable as _cnr,
     )
     from tinyassets.sandbox_policy import (
-        node_capability as _ncap,
+        effective_node_capability as _eff_cap,
     )
-    from tinyassets.sandbox_policy import (
-        node_requires_sandbox_runner as _nrsr,
-    )
-    if _nrsr(node):
-        _runner_ok, _runner_reason = _cnr()
-        if not _runner_ok:
+    _node_eff_cap = _eff_cap(node, domain_id)
+    if _node_eff_cap != "text":
+        if _node_eff_cap == _OPAQUE_UNCLASSIFIED:
+            # An opaque adapter with no declared capability refuses unconditionally
+            # — the Phase-2 runner cannot vouch for an adapter nobody classified.
+            _refuse = True
+            _runner_reason = (
+                "it is a registered opaque adapter with NO declared sandbox "
+                "capability class; refusing an unclassified host-code adapter "
+                "(fail closed)"
+            )
+        else:
+            _runner_ok, _runner_reason = _cnr()
+            _refuse = not _runner_ok
+        if _refuse:
             try:
                 from tinyassets.providers.base import (
                     SandboxUnavailableError as _NodeSUE,
                 )
             except Exception:  # noqa: BLE001
                 _NodeSUE = type("_SandboxUnavailableError", (Exception,), {})
-            _cap_kind = _ncap(node)
+            _cap_kind = _node_eff_cap
             _cap_nid = node.node_id
 
             def _repo_capability_fail_closed_node(
@@ -2889,9 +2904,23 @@ def compile_branch(
     branch
         The branch to compile. Must have passed ``branch.validate()``.
     provider_call
-        Synchronous LLM caller with signature ``(prompt, system, *, role)
-        -> str``. When ``None``, prompt_template nodes return a mock
-        string (useful for tests).
+        Synchronous, CAPABILITY-BEARING LLM caller. Enforced signature (matches
+        ``tinyassets.providers.call.call_provider``)::
+
+            (prompt, system, *, role, config=None, universe_context=None) -> str
+
+        ``config`` is a first-class parameter, NOT optional plumbing: it carries
+        the node's hardened ``ModelConfig`` (the closed ``--tools ""`` text
+        surface, and any sandbox posture) that MUST reach the subprocess. Every
+        runnable text node is ``closed_tool_surface``, so the bridge REFUSES
+        (fail closed, ``SandboxUnavailableError``) any ``provider_call`` that
+        cannot carry ``config`` — i.e. one whose signature names neither
+        ``config`` nor ``**kwargs``. The legacy config-less
+        ``(prompt, system, *, role)`` trusted-callback form is therefore no
+        longer sufficient to RUN a node; it is rejected before dispatch rather
+        than run unrestricted (a config-less provider would drop the tool
+        policy and leave claude with default Bash). ``None`` disables provider
+        dispatch — runnable (closed-surface) nodes then fail closed at run.
     event_sink
         Optional callable invoked after each node executes with
         per-node diagnostics. Used by the runner to record

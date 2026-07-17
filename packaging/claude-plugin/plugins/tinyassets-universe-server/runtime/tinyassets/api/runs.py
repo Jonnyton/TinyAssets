@@ -603,7 +603,8 @@ def _sandbox_enqueue_refusal(branch: Any) -> str | None:
     from tinyassets.sandbox_policy import branch_sandbox_status
 
     sandbox_blocked, repo_nodes, sandbox_warnings = branch_sandbox_status(
-        getattr(branch, "node_defs", []) or []
+        getattr(branch, "node_defs", []) or [],
+        getattr(branch, "domain_id", "") or "",
     )
     if not sandbox_blocked:
         return None

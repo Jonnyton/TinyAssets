@@ -159,16 +159,72 @@ def node_capability(node: Any) -> str:
     return "text"
 
 
+def effective_node_capability(node: Any, domain_id: str = "") -> str:
+    """Capability INCLUDING opaque-adapter resolution (Codex S3 r12 #1).
+
+    :func:`node_capability` classifies by the node's own fields (source_code /
+    node_kind / requires_sandbox / node_id). But an OPAQUE adapter's capability is
+    the nature of its REGISTERED CALLABLE — invisible to those fields: a
+    repo-reading ``read_repo_files`` node looks like plain text. This resolves the
+    registered adapter's DECLARED capability so the graph choke-point + validate +
+    enqueue classify it identically (readiness never drifts from runtime).
+
+    An opaque adapter registered with NO declared capability returns
+    ``opaque_unclassified`` — the caller must fail it closed, never treat it as
+    text. A node dispatched by its own source/template adapter (not an opaque
+    callable) keeps its base capability.
+    """
+    base = node_capability(node)
+    if base != "text":
+        return base
+    # A source/template node is dispatched by that adapter, not an opaque one.
+    if str(_node_attr(node, "source_code") or "").strip():
+        return base
+    if str(_node_attr(node, "prompt_template") or "").strip():
+        return base
+    dom = str(domain_id or "").strip()
+    nid = str(_node_attr(node, "node_id") or "").strip()
+    if not dom or not nid:
+        return base
+    # Best-effort: import the effectors package so platform opaque callables are
+    # registered before we resolve (same registration side-effect the compiler
+    # relies on). Guarded — a missing optional dep never breaks classification.
+    try:
+        import tinyassets.effectors  # noqa: F401
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from tinyassets.domain_registry import (
+            resolve_domain_callable,
+            resolve_domain_capability,
+        )
+    except Exception:  # noqa: BLE001
+        return base
+    if resolve_domain_callable(dom, nid) is None:
+        return base  # not an opaque adapter — a plain node in a domain branch
+    cap = resolve_domain_capability(dom, nid)
+    if not cap:
+        return _OPAQUE_UNCLASSIFIED
+    return str(cap).strip().lower() or _OPAQUE_UNCLASSIFIED
+
+
+# A registered opaque adapter with NO declared capability class (Codex S3 r12 #1).
+# It is UNCLASSIFIED — the choke-point refuses it unconditionally (not even the
+# Phase-2 runner can vouch for an adapter whose capability nobody declared).
+_OPAQUE_UNCLASSIFIED = "opaque_unclassified"
+
 # Sandbox class ordering (least → most restricted). Used to detect a security
 # DOWNGRADE at the mutation surface (Codex S3 r11 #3): metadata may escalate a
 # node's sandbox class but never lower it. ``source_exec`` is the strongest
-# (in-process host code); ``text`` is the only runnable class in Phase 1.
+# (in-process host code); ``text`` is the only runnable class in Phase 1. An
+# unclassified opaque adapter ranks at the maximum (fail closed).
 _CAPABILITY_RANK: dict[str, int] = {
     "text": 0,
     "repo_read": 1,
     "repo_exec": 2,
     "coding": 3,
     _SOURCE_EXEC_CAPABILITY: 4,
+    _OPAQUE_UNCLASSIFIED: 5,
 }
 
 
@@ -225,27 +281,44 @@ def coding_nodes_runnable() -> "tuple[bool, str]":
 
 def branch_sandbox_status(
     node_defs: Iterable[Any],
+    domain_id: str = "",
 ) -> "tuple[bool, list[str], list[str]]":
     """Classify a branch's nodes for the per-job sandbox-runner gate.
 
-    Returns ``(sandbox_blocked, repo_node_ids, warnings)``. A repo-touching node
-    (coding / repo_exec / repo_read) with no per-job runner
-    (:func:`coding_nodes_runnable` == ``False``) blocks the branch. Classification
-    errors fail CLOSED (``sandbox_blocked=True``).
+    Returns ``(sandbox_blocked, repo_node_ids, warnings)``. A node whose EFFECTIVE
+    capability (source/metadata classification PLUS opaque-adapter resolution —
+    Codex S3 r12 #1) is not ``text`` blocks the branch: a repo-touching adapter
+    (coding / repo_exec / repo_read / source_exec) has no per-job runner
+    (:func:`coding_nodes_runnable` == ``False``), and an UNCLASSIFIED opaque
+    adapter fails closed unconditionally. Classification errors fail CLOSED.
 
-    This is the SINGLE readiness computation shared by ``validate_branch`` AND the
-    ``run_branch`` / ``resume`` / version-pinned enqueue paths, so a queue-time
-    refusal can never drift from validate-time readiness or the runtime choke
-    point — all three read the same truth.
+    ``domain_id`` (the Branch-level domain) lets opaque adapters be resolved by
+    their registered capability. This is the SINGLE readiness computation shared
+    by ``validate_branch`` AND the ``run_branch`` / ``resume`` / version-pinned
+    enqueue paths, so a queue-time refusal can never drift from validate-time
+    readiness or the runtime choke point.
     """
     warnings: list[str] = []
     try:
-        repo_nodes = sorted(
-            str(_node_attr(nd, "node_id") or "")
-            for nd in node_defs
-            if node_requires_sandbox_runner(nd)
-        )
-        repo_nodes = [nid for nid in repo_nodes if nid]
+        repo_nodes: list[str] = []
+        has_unclassified = False
+        for nd in node_defs:
+            cap = effective_node_capability(nd, domain_id)
+            if cap == "text":
+                continue
+            nid = str(_node_attr(nd, "node_id") or "").strip()
+            if nid:
+                repo_nodes.append(nid)
+            if cap == _OPAQUE_UNCLASSIFIED:
+                has_unclassified = True
+        repo_nodes = sorted(repo_nodes)
+        if has_unclassified:
+            warnings.append(
+                f"This branch has opaque adapter node(s) "
+                f"({', '.join(repo_nodes)}) with NO declared sandbox capability; "
+                "refusing to run an unclassified adapter (fail closed)."
+            )
+            return True, repo_nodes, warnings
         if repo_nodes:
             runnable, reason = coding_nodes_runnable()
             if not runnable:
@@ -293,6 +366,7 @@ __all__ = [
     "TEXT_NODE_KINDS",
     "SANDBOX_DEFAULT_NODE_IDS",
     "node_capability",
+    "effective_node_capability",
     "node_has_source_code",
     "node_kind_is_known",
     "capability_rank",

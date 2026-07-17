@@ -69,6 +69,7 @@ def fresh_registrations(clean_registry):
     from fantasy_daemon.branch_registrations import universe_cycle_wrapper
     clean_registry.register_domain_callable(
         "fantasy_author", "universe_cycle_wrapper", universe_cycle_wrapper,
+        capability="text",  # Codex S3 r12 #1: safe writer wrapper, no repo/exec
     )
     return clean_registry
 
@@ -140,7 +141,7 @@ def test_opaque_node_resolves_via_registry(clean_registry):
         called.append(state)
         return {"seen": True}
 
-    clean_registry.register_domain_callable("testdom", "x", fake)
+    clean_registry.register_domain_callable("testdom", "x", fake, capability="text")
     from tinyassets.graph_compiler import compile_branch
 
     branch = _minimal_branch(domain_id="testdom")
@@ -194,7 +195,7 @@ def test_opaque_node_bypasses_source_code_validation(clean_registry):
     from tinyassets.graph_compiler import compile_branch
 
     clean_registry.register_domain_callable(
-        "testdom", "x", lambda s: {"ok": True},
+        "testdom", "x", lambda s: {"ok": True}, capability="text",
     )
     branch = _minimal_branch(
         domain_id="testdom",
@@ -574,6 +575,7 @@ def test_flag_on_boundary_state_resumes_only_six_fields(
                 "total_words": 10, "total_chapters": 1,
                 "health": {"stopped": True},
             },
+            capability="text",  # Codex S3 r12 #1: safe stubbed writer wrapper
         )
         # Re-build + recompile so the new callable is bound.
         graph2 = _build_unified_graph_builder()

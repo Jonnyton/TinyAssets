@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 _DomainCallable = Callable[[dict[str, Any]], dict[str, Any]]
 
 _REGISTRY: dict[tuple[str, str], _DomainCallable] = {}
+# Codex S3 r12 #1: an opaque callable's SANDBOX CAPABILITY (what it actually
+# does — read/exec a repo, run commands, or pure text transform) is invisible to
+# the node-field classifier in ``sandbox_policy.node_capability``. Bind it to the
+# registered adapter here so the graph choke-point + validate + enqueue can
+# classify an opaque node by its adapter type. A callable registered WITHOUT a
+# declared capability is UNCLASSIFIED and fails closed (never defaults to text).
+_CAPABILITY_REGISTRY: dict[tuple[str, str], str | None] = {}
 _DOMAIN_BRANCH_SLUGS: dict[str, set[str]] = {}
 
 
@@ -48,6 +55,8 @@ def register_domain_callable(
     domain_id: str,
     node_id: str,
     fn: _DomainCallable,
+    *,
+    capability: str | None = None,
 ) -> None:
     """Register a domain-trusted opaque node callable.
 
@@ -55,6 +64,14 @@ def register_domain_callable(
     updates. Called from `_build_opaque_node` inside the compiler;
     must be safe under LangGraph's execution model (no hidden
     globals, no blocking I/O beyond domain contract).
+
+    ``capability`` declares the adapter's SANDBOX CLASS — one of
+    ``text`` / ``repo_read`` / ``repo_exec`` / ``coding`` / ``source_exec``
+    (Codex S3 r12 #1). A repo-touching adapter (read/exec/write a repo) fails
+    closed until the per-job sandbox runner exists; a ``text`` adapter runs.
+    An adapter registered with ``capability=None`` is UNCLASSIFIED and the graph
+    choke-point refuses it (fail closed) — a trusted domain callable MUST declare
+    what it does so it can never silently ride the sandbox gate as ``text``.
     """
     key = (domain_id, node_id)
     if key in _REGISTRY and _REGISTRY[key] is not fn:
@@ -63,6 +80,9 @@ def register_domain_callable(
             key,
         )
     _REGISTRY[key] = fn
+    _CAPABILITY_REGISTRY[key] = (
+        str(capability).strip().lower() if capability else None
+    )
 
 
 def resolve_domain_callable(
@@ -73,9 +93,24 @@ def resolve_domain_callable(
     return _REGISTRY.get((domain_id, node_id))
 
 
+def resolve_domain_capability(
+    domain_id: str,
+    node_id: str,
+) -> str | None:
+    """Return the registered opaque adapter's declared sandbox capability.
+
+    ``None`` means either (a) not a registered opaque adapter, or (b) registered
+    with no declared capability (UNCLASSIFIED). Callers distinguish the two via
+    :func:`resolve_domain_callable` (non-None ⇒ it is an opaque adapter), and an
+    opaque adapter whose capability is ``None`` MUST fail closed.
+    """
+    return _CAPABILITY_REGISTRY.get((domain_id, node_id))
+
+
 def clear_registry() -> None:
     """Testing-only helper; drops all registrations."""
     _REGISTRY.clear()
+    _CAPABILITY_REGISTRY.clear()
     _EPISODIC_COORDINATE_SHAPES.clear()
     _DOMAIN_BRANCH_SLUGS.clear()
 

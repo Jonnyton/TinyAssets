@@ -1206,3 +1206,132 @@ def test_legacy_unclassified_approved_source_fails_closed():
     fn = _build_node(n, provider_call=None, event_sink=None)
     with pytest.raises(SandboxUnavailableError):
         fn({})
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r12 #1 — opaque ADAPTER callables are classified by their registered
+# capability (not node fields). A repo-touching or UNCLASSIFIED opaque adapter
+# fails closed at the SAME choke point, before dispatch.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _opaque_registry():
+    """Snapshot + restore the domain registry so per-test registrations don't
+    leak. Ensures the platform effectors are registered for the test."""
+    import tinyassets.domain_registry as dr
+    import tinyassets.effectors  # noqa: F401 — registers read_repo_files etc.
+
+    saved = dict(dr._REGISTRY)
+    saved_cap = dict(dr._CAPABILITY_REGISTRY)
+    yield dr
+    dr._REGISTRY.clear()
+    dr._REGISTRY.update(saved)
+    dr._CAPABILITY_REGISTRY.clear()
+    dr._CAPABILITY_REGISTRY.update(saved_cap)
+
+
+def test_opaque_repo_read_adapter_fails_closed(_opaque_registry):
+    """read_repo_files reads a user-bound repo — declared capability=repo_read, so
+    it fails closed at the choke point (the sibling of the source_code escape:
+    a real repo adapter that classified as `text` and EXECUTED)."""
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    node = NodeDefinition(node_id="read_repo_files", display_name="Read")
+    assert effective_node_capability(node, "tinyassets") == "repo_read"
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="tinyassets")
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_unclassified_opaque_adapter_fails_closed(_opaque_registry):
+    """An opaque adapter registered with NO declared capability is UNCLASSIFIED
+    and must refuse — never default to text (Codex S3 r12 #1)."""
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    _opaque_registry.register_domain_callable(
+        "testdom", "mystery", lambda s: {"x": 1},  # NO capability declared
+    )
+    node = NodeDefinition(node_id="mystery", display_name="Mystery")
+    assert effective_node_capability(node, "testdom") == "opaque_unclassified"
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="testdom")
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_text_declared_opaque_adapter_runs(_opaque_registry):
+    """A safe opaque adapter that DECLARES capability=text runs (it is not a
+    repo/exec surface) — the classifier doesn't over-block."""
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    _opaque_registry.register_domain_callable(
+        "testdom", "safe", lambda s: {"safe_out": "ok"}, capability="text",
+    )
+    node = NodeDefinition(node_id="safe", display_name="Safe", output_keys=["safe_out"])
+    assert effective_node_capability(node, "testdom") == "text"
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="testdom")
+    assert fn({}) == {"safe_out": "ok"}
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r12 #2 — provider_call is a CAPABILITY-BEARING interface. A provider
+# that cannot carry the hardened `config` is REJECTED (fail closed), not run
+# unrestricted. Proven directly, not via a **kwargs-swallowing stub.
+# --------------------------------------------------------------------------- #
+
+
+def _text_node() -> NodeDefinition:
+    return NodeDefinition(
+        node_id="t", display_name="T", prompt_template="do {x}",
+        input_keys=["x"], output_keys=["t_out"],
+    )
+
+
+def test_config_less_provider_rejected_for_closed_surface_node():
+    """Every runnable text node is closed_tool_surface; a provider_call whose
+    signature carries NEITHER `config` NOR `**kwargs` cannot receive the hardened
+    tool policy, so the bridge REFUSES it before dispatch (fail closed) rather
+    than run claude with default Bash."""
+    called: list = []
+
+    def legacy(prompt, system, *, role="writer"):  # NO config, NO **kwargs
+        called.append(1)
+        return "unrestricted"
+
+    fn = _build_prompt_template_node(_text_node(), provider_call=legacy, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({"x": "1"})
+    assert not called, "a config-less provider must be refused BEFORE dispatch"
+
+
+def test_config_bearing_provider_receives_hardened_config():
+    """A provider that names `config` receives the closed-tool-surface config —
+    proving the config actually reaches the (would-be) subprocess."""
+    captured: list = []
+
+    def provider(prompt, system, *, role="writer", config=None):
+        captured.append(config)
+        return "ok"
+
+    fn = _build_prompt_template_node(_text_node(), provider_call=provider, event_sink=None)
+    fn({"x": "1"})
+    assert captured and captured[-1] is not None
+    assert getattr(captured[-1], "closed_tool_surface", False) is True
+
+
+def test_kwargs_provider_carries_config():
+    """A `**kwargs` provider (the real bridge is `call_provider` + partial) IS
+    config-bearing — it receives the hardened config, so it is not refused."""
+    captured: dict = {}
+
+    def provider(prompt, system, *, role="writer", **kw):
+        captured.update(kw)
+        return "ok"
+
+    fn = _build_prompt_template_node(_text_node(), provider_call=provider, event_sink=None)
+    fn({"x": "1"})
+    assert "config" in captured
+    assert getattr(captured["config"], "closed_tool_surface", False) is True

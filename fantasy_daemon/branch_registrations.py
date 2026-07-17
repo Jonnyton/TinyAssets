@@ -211,6 +211,9 @@ def _restartable_work_exists(universe_path: Path) -> bool:
 
 register_domain_callable(
     "fantasy_author", "universe_cycle_wrapper", universe_cycle_wrapper,
+    # Codex S3 r12 #1: the universe cycle is the fiction WRITER path (state
+    # transform + LLM) — no repo/exec surface. capability="text" (runs today).
+    capability="text",
 )
 register_domain_branch_slug("fantasy_author", "fantasy_author/universe-cycle")
 register_domain_branch_slug("fantasy_author", "fantasy_author:universe_cycle_wrapper")

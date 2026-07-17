@@ -293,7 +293,12 @@ def register_read_repo_files() -> None:
     """
     from tinyassets.domain_registry import register_domain_callable
 
-    register_domain_callable(DOMAIN_ID, NODE_ID, read_repo_files)
+    # Codex S3 r12 #1: read_repo_files reads a user-bound repo (GitHub API) into
+    # state — a repo-READ capability that requires the per-job sandbox runner, so
+    # it fails closed until the runner lands (like coding / repo_exec nodes).
+    register_domain_callable(
+        DOMAIN_ID, NODE_ID, read_repo_files, capability="repo_read",
+    )
 
 
 __all__ = ["read_repo_files", "register_read_repo_files", "DOMAIN_ID", "NODE_ID"]

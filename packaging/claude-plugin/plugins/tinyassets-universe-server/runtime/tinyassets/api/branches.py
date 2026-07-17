@@ -906,7 +906,7 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     from tinyassets.sandbox_policy import branch_sandbox_status
 
     sandbox_blocked, _repo_nodes, sandbox_warnings = branch_sandbox_status(
-        branch.node_defs
+        branch.node_defs, getattr(branch, "domain_id", "") or "",
     )
 
     return json.dumps({
