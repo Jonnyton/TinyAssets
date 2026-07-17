@@ -1392,6 +1392,38 @@ def test_private_seed_reads_unhealthy_and_repairs_to_public(data_dir):
     assert fixed_id in {b["branch_def_id"] for b in listed2["branches"]}
 
 
+def test_health_normalizes_metadata_padded_name_null_description(data_dir, tmp_path, monkeypatch):
+    # Codex r24 #2: expected discovery metadata is derived from the NORMALIZED
+    # BranchDefinition, not raw artifact values. An artifact with a PADDED name +
+    # null description + unsorted duplicate tags must seed HEALTHY immediately —
+    # the raw-vs-normalized mismatch previously reported failed right after seeding.
+    import tinyassets.branch_designs as bd
+
+    real = dict(
+        next(a for a in bd.load_design_artifacts() if a["design_id"] == "patch_loop_reference")
+    )
+    spec = dict(real["spec"])
+    spec["name"] = "  " + str(spec.get("name") or "") + "  "   # padded (build trims)
+    spec["description"] = None                                  # null -> "" on build
+    spec["tags"] = ["z", "a", "a"]                              # unsorted + duplicate
+    real["spec"] = spec
+    designs = tmp_path / "designs_norm"
+    designs.mkdir()
+    (designs / "patch_loop_reference.json").write_text(
+        json.dumps(real), encoding="utf-8",
+    )
+    monkeypatch.setattr(bd, "DESIGNS_DIR", designs)
+
+    results = bd.seed_reference_designs(data_dir)
+    tag = bd.design_tag("patch_loop_reference", 1)
+    assert tag in results["seeded"], results          # HEALTHY immediately
+    assert tag not in results["failed"], results
+    assert bd.reference_designs_live_health(data_dir)["healthy"]
+    # Idempotent: an immediate reseed reads present (not a repair churn).
+    results2 = bd.seed_reference_designs(data_dir)
+    assert tag in results2["present"], results2
+
+
 def test_packaged_version_mismatch_fails_health(data_dir, tmp_path, monkeypatch):
     # Codex r21 #4: health must compare EXACT (design_id, version) tuples. A
     # packaged design present at the WRONG version (not the manifest's) seeds a

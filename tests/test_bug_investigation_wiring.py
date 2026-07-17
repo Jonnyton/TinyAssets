@@ -625,6 +625,52 @@ def test_retry_clears_stale_goal_on_env_rebind(tmp_path, monkeypatch):
     assert not rec.goal_id, rec.goal_id   # STALE "goal-old" CLEARED, not preserved
 
 
+def test_retry_dedup_loser_keeps_winner_provenance(tmp_path, monkeypatch):
+    # Codex r24 #1: handler A wins the stable-id enqueue; the canonical changes to
+    # B; the retry (resolving B) LOSES the dedup and MUST record A (the persisted
+    # winner), never overwrite it with B. Exactly one task, receipt = A.
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.bug_investigation import (
+        enqueue_investigation_request,
+        investigation_task_id,
+        retry_pending_investigation_triggers,
+    )
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch, branch_def_id="branch-A")
+    save_branch_definition(
+        tmp_path, branch_def=BranchDefinition(branch_def_id="branch-B", name="B").to_dict(),
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+
+    # A pending receipt (handler A recorded).
+    receipt = _tr.create_pending(
+        request_id="BUG-AB", request_kind="bug", request_page="p",
+        branch_def_id="branch-A", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-AB"}',
+    )
+    stable_id = investigation_task_id(receipt.trigger_attempt_id)
+    # INITIAL enqueue wins for handler A (task-A).
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-A")
+    enqueue_investigation_request(
+        bug_ref={"bug_id": "BUG-AB"}, canonical_branch_def_id="branch-A",
+        base_path=tmp_path, request_id=stable_id,
+    )
+    # Canonical CHANGES to B before the retry runs.
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-B")
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    q = [t for t in read_queue(tmp_path) if t.request_type == "bug_investigation"]
+    assert len(q) == 1, [t.branch_task_id for t in q]   # exactly ONE task
+    assert q[0].branch_def_id == "branch-A"             # the persisted WINNER
+    rec = next(
+        r for r in _tr.recent_attempts(limit=10) if r.request_id == "BUG-AB"
+    )
+    assert rec.branch_def_id == "branch-A"   # receipt = winner (A), NOT the loser B
+
+
 def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
     # Codex r14 #4 (G4 deletion race): a handler deleted between the upstream
     # existence check and the durable enqueue must NOT queue a dead reference —

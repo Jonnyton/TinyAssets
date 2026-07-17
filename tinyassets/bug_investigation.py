@@ -633,21 +633,38 @@ def retry_pending_investigation_triggers(
                     universe_id=universe_id,
                     request_id=stable_id,
                 )
-                _tr.mark_queued(
-                    receipt,
-                    dispatcher_request_id=stable_id,
-                    branch_def_id=resolved,
-                    # Codex r23 #3: pass the RESOLVED goal RAW (a str, "" for the
-                    # env handler) — NOT ``goal_id or None``, which would pass None
-                    # and mark_queued would PRESERVE a STALE goal. Rebinding an
-                    # old-goal receipt to the env handler must CLEAR the goal.
-                    goal_id=goal_id,
-                    resolution_source=source,
-                )
+                # Codex r24 #1: derive receipt provenance from the ACTUAL PERSISTED
+                # task, NEVER from this retry's own resolution. If the canonical
+                # changed during the crash window (or a concurrent poll resolved
+                # differently), a PRIOR task (handler A) already owns the stable
+                # id and our enqueue DEDUP'd — so this retry (handler B) is a
+                # dedup LOSER and must record A, not overwrite it with B.
+                persisted_handler = _persisted_task_handler(base_path, stable_id)
+                if persisted_handler is None or persisted_handler == resolved:
+                    # We own the task (fresh append, or an identical resolution)
+                    # -> record full provenance incl. goal + source (r23 #3:
+                    # goal passed RAW so an env rebind CLEARS a stale goal).
+                    _tr.mark_queued(
+                        receipt,
+                        dispatcher_request_id=stable_id,
+                        branch_def_id=(persisted_handler or resolved),
+                        goal_id=goal_id,
+                        resolution_source=source,
+                    )
+                else:
+                    # Dedup LOSER: a prior task with a DIFFERENT handler already
+                    # exists. Record the WINNER's handler; do NOT overwrite the
+                    # winner's goal/source with ours.
+                    _tr.mark_queued(
+                        receipt,
+                        dispatcher_request_id=stable_id,
+                        branch_def_id=persisted_handler,
+                    )
                 summary["queued"].append(request_id)
                 _logger.info(
                     "retry | pending trigger %s RECOVERED -> queued %s "
-                    "(handler=%s src=%s)", request_id, stable_id, resolved, source,
+                    "(handler=%s persisted=%s src=%s)",
+                    request_id, stable_id, resolved, persisted_handler, source,
                 )
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(
@@ -671,6 +688,22 @@ def retry_pending_investigation_triggers(
             # handler_unavailable / not_configured -> still retryable next sweep.
             summary["still_pending"].append(request_id)
     return summary
+
+
+def _persisted_task_handler(base_path: "Path | str", branch_task_id: str) -> str | None:
+    """The ``branch_def_id`` of the task CURRENTLY in the queue under
+    ``branch_task_id``, or None if absent (Codex r24 #1). The retry derives
+    receipt provenance from the ACTUAL persisted task so a dedup loser can never
+    overwrite the winner's handler."""
+    from tinyassets.branch_tasks import read_queue
+
+    try:
+        for t in read_queue(Path(base_path)):
+            if t.branch_task_id == branch_task_id:
+                return t.branch_def_id
+    except Exception:  # noqa: BLE001 — best-effort; fall back to our resolution
+        return None
+    return None
 
 
 def _reconstruct_bug_ref(receipt: object, request_id: str) -> dict:

@@ -331,13 +331,32 @@ def _reference_expected_meta(artifact: dict, tag: str) -> dict:
     """The DISCOVERY metadata a healthy reserved-seed row MUST carry (Codex r23
     #2). ``_content_fingerprint`` covers only node/edge/state content, so a
     private seed (undiscoverable), or a drifted name/description/tags, passes the
-    fingerprint yet breaks discovery. The reference tags (REFERENCE_TAG +
-    design_tag) are added at build time, so they are part of the expected set."""
-    spec = artifact.get("spec") or {}
+    fingerprint yet breaks discovery.
+
+    Derived from the NORMALIZED canonical ``BranchDefinition`` — NOT raw artifact
+    values (Codex r24 #2). The build path (``_staged_branch_from_spec``, which the
+    seeder's ``_ext_branch_build`` uses) TRIMS the name and converts a null
+    description -> "", so comparing RAW artifact metadata against the normalized
+    persisted row spuriously failed health right after seeding. Stage the SAME
+    reference-tagged spec the seeder builds and read the normalized result."""
+    spec = dict(artifact.get("spec") or {})
+    spec["tags"] = sorted(set(list(spec.get("tags") or []) + [REFERENCE_TAG, tag]))
+    try:
+        from tinyassets.api.branches import _staged_branch_from_spec
+
+        staged, _errors = _staged_branch_from_spec(spec)
+        d = staged.to_dict()
+        name = d.get("name", "")
+        description = d.get("description", "")
+        tags = sorted(set(d.get("tags") or []))
+    except Exception:  # noqa: BLE001 — apply the same normalization by hand
+        name = str(spec.get("name") or "").strip()
+        description = spec.get("description") or ""
+        tags = sorted(set(spec.get("tags") or []))
     return {
-        "name": spec.get("name", ""),
-        "description": spec.get("description", ""),
-        "tags": sorted(set(list(spec.get("tags") or []) + [REFERENCE_TAG, tag])),
+        "name": name,
+        "description": description,
+        "tags": tags,
         "visibility": "public",
     }
 
