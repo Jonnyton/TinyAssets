@@ -109,7 +109,7 @@ def test_platform_never_leaks_canary(tmp_path, caplog_root):
     with be.get(d_token.binding, SCOPE) as lease:
         assert CANARY_TOKEN in lease.reveal()
 
-    # 1. persisted bytes (DB + WAL + any temp) contain no plaintext
+    # 1. persisted bytes (DB + rollback journal + any temp) contain no plaintext
     disk = _collect_all_bytes(tmp_path)
     assert len(disk) > 0
     _assert_absent(CANARY_TOKEN, disk, "platform disk")
@@ -234,11 +234,43 @@ def test_refresh_and_attestation_reprs_are_redacted(tmp_path):
             repr(lease), str(lease),
         ]
         forbidden = ["STOREID-CANARY", "HOLDER-CANARY", result.boot_id, result.custody]
-        cap_hex = ticket.secret.hex()
+        cap_hex = ticket._reveal_capability().hex()
         for surface in surfaces:
             for token in forbidden:
                 assert token not in surface, f"leaked {token!r} in {surface!r}"
             assert cap_hex not in surface  # minted capability never in a repr
+
+
+def test_refresh_ticket_capability_not_extractable(tmp_path):
+    """The minted capability must survive EVERY introspection path — asdict,
+    vars, copy, deepcopy, pickle, repr, str, format — without revealing bytes."""
+    import copy
+    import dataclasses
+    import pickle
+
+    kek = sodium.randombytes(32)
+    be = PlatformVaultBackend(
+        InMemoryKeyProvider({"k1": kek}, "k1"), store_id="platform:default",
+        db_path=tmp_path / "vault.db",
+    )
+    store = VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default")
+    d = be.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    ticket = be.begin_refresh(d.binding, SCOPE, "A", at_version=1)
+    cap_hex = ticket._reveal_capability().hex()
+
+    with pytest.raises(TypeError):
+        dataclasses.asdict(ticket)  # not a dataclass
+    with pytest.raises(TypeError):
+        vars(ticket)  # slotted, no __dict__
+    with pytest.raises(TypeError):
+        pickle.dumps(ticket)
+    with pytest.raises(TypeError):
+        copy.copy(ticket)
+    with pytest.raises(TypeError):
+        copy.deepcopy(ticket)
+    for surface in (repr(ticket), str(ticket), format(ticket), format(ticket, "x")):
+        assert cap_hex not in surface
+        assert "capability" in surface or "<redacted" in surface
 
 
 def test_public_projection_is_allowlist_only(tmp_path):

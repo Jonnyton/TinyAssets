@@ -546,6 +546,99 @@ def test_broker_protocol_includes_refresh(platform):
     assert hasattr(VaultBroker, "complete_refresh")
 
 
+# ===========================================================================
+# Review r6 finding 1 — short writes must not destroy the existing credential
+# ===========================================================================
+
+
+@WINDOWS_ONLY
+def test_short_write_no_progress_preserves_old_credential(tmp_path, monkeypatch):
+    from tinyassets.credentials import local_backend as lb
+
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"original"))
+
+    def _no_progress(_fd, _data):
+        return 0  # os.write makes no progress → must raise, never truncate
+
+    monkeypatch.setattr(lb.os, "write", _no_progress)
+    with pytest.raises(CredentialUnavailable):
+        be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"replacement"),
+               replace=d.binding.ref, expected_version=1)
+    monkeypatch.undo()
+    with be.get(d.binding, SCOPE) as lease:
+        assert lease.reveal() == b"original"  # OLD credential survived, no CORRUPT
+
+
+@WINDOWS_ONLY
+def test_partial_write_completes_without_truncation(tmp_path, monkeypatch):
+    from tinyassets.credentials import local_backend as lb
+
+    real_write = os.write
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v1"))
+
+    def _partial(fd, data):
+        half = max(1, len(bytes(data)) // 2)
+        return real_write(fd, bytes(data)[:half])  # write at most half per call
+
+    monkeypatch.setattr(lb.os, "write", _partial)
+    d2 = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v2-full-new-value"),
+                replace=d.binding.ref, expected_version=1)
+    monkeypatch.undo()
+    with be.get(d2.binding, SCOPE) as lease:
+        assert lease.reveal() == b"v2-full-new-value"  # complete, not truncated
+
+
+# ===========================================================================
+# Review r6 finding 3 — corrupt rotation metadata → typed CORRUPT_RECORD
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "column,badval",
+    [("custody", "forged"), ("kind", "not-a-kind"), ("version", "not-an-int")],
+)
+def test_rotate_kek_typed_on_corrupt_hint(platform, store, tmp_path, column, badval):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    conn.execute(
+        f"UPDATE vault_secrets SET {column} = ? WHERE ref = ?", (badval, d.binding.ref)
+    )
+    conn.commit()
+    conn.close()
+    platform._keys._active = "k2"
+    with pytest.raises(CredentialUnavailable) as exc:  # never a raw ValueError
+        platform.rotate_kek("k2")
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+    assert platform._attested is None  # cached gate invalidated
+
+
+# ===========================================================================
+# Review r6 finding 4 — reject empty (and oversized) payloads, preserve prior
+# ===========================================================================
+
+
+def test_empty_and_oversized_payloads_rejected(platform, store):
+    # empty on a fresh put
+    with pytest.raises(ValueError):
+        platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b""))
+    # oversized on a fresh put
+    with pytest.raises(ValueError):
+        platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x" * (1024 * 1024 + 1)))
+    # a rejected CAS preserves the prior value
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"keep"))
+    with pytest.raises(ValueError):
+        platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b""),
+                     replace=d.binding.ref, expected_version=1)
+    with platform.get(d.binding, SCOPE) as lease:
+        assert lease.reveal() == b"keep"
+
+
 def test_put_replace_refused_for_rotating_kind(platform, store):
     """A rotating one-time-token kind cannot be advanced by a bare CAS — only
     complete_refresh (with a minted capability) may."""

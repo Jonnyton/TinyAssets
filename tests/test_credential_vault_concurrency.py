@@ -3,9 +3,9 @@
 This closes the known concurrent-refresh CVE class (Better Auth CVE-2026-53517;
 rotating-refresh providers revoke the whole token family on replay). Two proofs:
 
-* **50+ concurrent put/get/delete** across real OS processes against one WAL DB —
-  proves the store survives simultaneous writers with no corruption or lost
-  fail-closed semantics.
+* **50+ concurrent put/get/delete** across real OS processes against one
+  rollback-journal (TRUNCATE + EXTRA, NOT WAL) DB — proves the store survives
+  simultaneous writers with no corruption or lost fail-closed semantics.
 * **single-refresh race** — many workers race to refresh ONE ref; the fenced
   exclusive per-ref lease + still-held check + fenced commit means exactly ONE
   refresh runs and the losers skip gracefully (no error, no double token-burn).
@@ -313,9 +313,9 @@ def test_refresh_makes_exactly_one_provider_call(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Worker 6: refresh claims are power-loss durable — survive a HARD process kill
-# (review r3 crit #1; synchronous=FULL). Real crash via os._exit, not a Python
-# exception.
+# Worker 6: refresh claims survive a HARD process kill (os._exit) — this proves
+# PROCESS-CRASH durability (committed rollback-journal + EXTRA). Full power-cut /
+# VM-reset durability is a deploy-validation release gate, NOT proven by os._exit.
 # ---------------------------------------------------------------------------
 
 
@@ -366,8 +366,9 @@ def test_vault_db_durability_posture(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Worker 7: daemon-local writes are power-loss durable (fsync) — survive a HARD
-# process kill (review r4 #6).
+# Worker 7: daemon-local writes survive a HARD process kill (os._exit) — the
+# durable-write sequence (fsync + write-through). Proves PROCESS-CRASH durability;
+# full power-cut proof is a deploy-validation gate (review r4 #6).
 # ---------------------------------------------------------------------------
 
 
