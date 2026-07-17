@@ -1226,6 +1226,12 @@ def _opaque_registry():
     import tinyassets.domain_registry as dr
     import tinyassets.effectors  # noqa: F401 — registers read_repo_files etc.
 
+    # FORCE re-registration: a prior test may have called clear_registry(); the
+    # cached ``import tinyassets.effectors`` won't re-run its registration side
+    # effects, so read_repo_files would otherwise be missing here.
+    from tinyassets.effectors.github_read import register_read_repo_files
+    register_read_repo_files()
+
     saved = dict(dr._REGISTRY)
     saved_cap = dict(dr._CAPABILITY_REGISTRY)
     saved_host = dict(dr._HOST_ONLY_REGISTRY)
@@ -1576,21 +1582,34 @@ def test_source_exec_refused_even_when_repo_runner_ready(monkeypatch):
         fn({})
 
 
-def test_repo_read_runs_when_repo_runner_ready_proving_the_split(_opaque_registry, monkeypatch):
-    """The split is a SEPARATION, not a blanket block: a repo_read adapter DOES
-    run when the repo runner is ready (only source_exec stays closed)."""
+def test_repo_adapter_never_invoked_in_daemon_process(_opaque_registry, monkeypatch):
+    """Codex S3 r16 #1: a readiness BOOLEAN is not an execution boundary. Even
+    with coding_nodes_runnable monkeypatched True, a sandbox-required adapter is
+    routed to an ISOLATED EXECUTOR — and with no executor (Phase 1) it is REFUSED,
+    so the registered callable is NEVER invoked in the daemon process. (The prior
+    version of this test, which expected the adapter to RUN when the flag was
+    true, certified the vulnerability; this is the corrected contract.)"""
     import tinyassets.sandbox_policy as sp
     from tinyassets.graph_compiler import _build_node
 
-    monkeypatch.setattr(sp, "coding_nodes_runnable", lambda: (True, "repo runner ready"))
+    # Adversary flips the readiness flag — must NOT enable in-process execution.
+    monkeypatch.setattr(sp, "coding_nodes_runnable", lambda: (True, "flag flipped"))
+    invoked = {"n": 0}
+
+    def repo_cb(state):
+        invoked["n"] += 1
+        return {"ok": True}
+
     _opaque_registry.register_domain_callable(
-        "rd", "rr", lambda s: {"ok": True}, capability="repo_read",
+        "rd", "rr", repo_cb, capability="repo_read",
     )
     node = NodeDefinition(node_id="rr", display_name="R", output_keys=["ok"])
-    out = _build_node(
-        node, provider_call=None, event_sink=None, domain_id="rd",
-    )({})
-    assert out == {"ok": True}
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="rd")
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+    assert invoked["n"] == 0, "the adapter must NEVER run in the daemon process"
+    # No isolated executor exists in Phase 1 — the boolean cannot conjure one.
+    assert sp.resolve_isolated_executor(sp.EXECUTOR_CLASS_REPO) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1689,3 +1708,136 @@ def test_trusted_persist_bypasses_the_gate(_opaque_registry, tmp_path):
         "entry_point": "danger",
         "node_defs": [{"node_id": "danger", "display_name": "D"}], "edges": [],
     }, _trusted=True)
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r16 #2 — omitting domain_id must not bypass the gate (validation and
+# storage normalize the SAME effective domain).
+# --------------------------------------------------------------------------- #
+
+
+def test_save_omitting_domain_id_refuses_host_only_under_default_domain(
+    _opaque_registry, tmp_path,
+):
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    # host-only under the DEFAULT domain ("workflow").
+    _opaque_registry.register_domain_callable(
+        "workflow", "danger", lambda s: {"ran": True}, host_only=True,
+    )
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    # domain_id OMITTED entirely — validation must resolve it to "workflow" too.
+    rec = {
+        "branch_def_id": "b1", "name": "x", "entry_point": "danger",
+        "node_defs": [{"node_id": "danger", "display_name": "D"}], "edges": [],
+    }
+    with pytest.raises(ValueError, match="HOST-ONLY|may never run|host-only"):
+        save_branch_definition(base, branch_def=rec)
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r16 #3 — updates validate the FULL MERGED row, atomically.
+# --------------------------------------------------------------------------- #
+
+
+def test_update_partial_container_validates_untouched_container(
+    _opaque_registry, tmp_path,
+):
+    """Updating ONE node container (legacy `nodes`) must still validate the
+    UNTOUCHED container (existing `node_defs`) — a forbidden node there is
+    refused, not left persisted."""
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+        update_branch_definition,
+    )
+
+    _opaque_registry.register_domain_callable(
+        "workflow", "danger", lambda s: {"ran": True}, host_only=True,
+    )
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    # Seed (trusted) a branch whose node_defs already contains the host-only node.
+    save_branch_definition(base, branch_def={
+        "branch_def_id": "b3", "name": "z", "domain_id": "workflow",
+        "entry_point": "danger",
+        "node_defs": [{"node_id": "danger", "display_name": "D"}], "edges": [],
+    }, _trusted=True)
+    # A user update that touches ONLY the legacy `nodes` container must still
+    # re-validate the untouched node_defs (which is host-only) → refused.
+    with pytest.raises(ValueError, match="HOST-ONLY|may never run|host-only"):
+        update_branch_definition(base, branch_def_id="b3", updates={
+            "nodes": [{"id": "danger", "node_def_id": "danger"}],
+        })
+
+
+def test_update_concurrent_writers_serialize_no_host_only_pair(
+    _opaque_registry, tmp_path,
+):
+    """Two synchronized writers each trying to install a host-only node must be
+    serialized (BEGIN IMMEDIATE) and BOTH refused — no host-only pair slips
+    through, and the persisted node set is unchanged."""
+    import threading
+
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        initialize_author_server,
+        save_branch_definition,
+        update_branch_definition,
+    )
+
+    _opaque_registry.register_domain_callable(
+        "workflow", "danger", lambda s: {"ran": True}, host_only=True,
+    )
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    save_branch_definition(base, branch_def={
+        "branch_def_id": "b4", "name": "w", "domain_id": "workflow",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N", "prompt_template": "hi"}],
+        "edges": [],
+    })
+    errors: list[int] = []
+    barrier = threading.Barrier(2)
+
+    def _writer(which: int) -> None:
+        barrier.wait()
+        try:
+            update_branch_definition(base, branch_def_id="b4", updates={
+                "domain_id": "workflow",
+                "node_defs": [{"node_id": "danger", "display_name": "D"}],
+            })
+        except ValueError:
+            errors.append(which)
+
+    threads = [threading.Thread(target=_writer, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(errors) == 2, "both concurrent writers must be refused"
+    final = get_branch_definition(base, branch_def_id="b4")
+    assert [n["node_id"] for n in final["node_defs"]] == ["n"]
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r16 #4 — readiness observability: get_status exposes BOTH readiness
+# classes + the isolated-executor model.
+# --------------------------------------------------------------------------- #
+
+
+def test_get_status_exposes_both_readiness_states(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    import json as _json
+
+    from tinyassets.api.status import get_status
+
+    payload = _json.loads(get_status())
+    sb = payload.get("sandbox_status", {})
+    assert sb.get("coding_nodes_runnable") is False   # repo-runner readiness
+    assert sb.get("source_exec_runnable") is False     # in-process-code readiness
+    assert "isolated" in sb.get("sandbox_readiness_model", "").lower()

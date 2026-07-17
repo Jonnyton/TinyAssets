@@ -2657,6 +2657,32 @@ def _build_await_branch_run_node(
     return _node_fn
 
 
+def _build_isolated_executor_dispatch_node(
+    node: NodeDefinition,
+    executor: Any,
+    executor_class: str,
+    *,
+    in_worker_node_builder: Callable[[], Callable[[dict[str, Any]], dict[str, Any]]],
+    event_sink: Callable[..., None] | None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Phase-2 seam (Codex S3 r16 #1): DISPATCH a sandbox-required adapter to the
+    isolated executor (subprocess/container) — the adapter runs INSIDE the worker,
+    NEVER as ``fn(state)`` in the daemon. ``in_worker_node_builder`` builds the
+    adapter node that the worker would run; the daemon must NOT call it here (that
+    would be in-process execution). Unreachable in Phase 1
+    (:func:`resolve_isolated_executor` returns ``None``); implemented FAIL-LOUD so
+    that wiring an executor handle without a real subprocess/container dispatch can
+    never silently fall through to in-process execution. (Tests may monkeypatch
+    this to run the builder, explicitly simulating the isolated worker in-process.)
+    """
+    raise CompilerError(
+        f"Node '{node.node_id}': an isolated '{executor_class}' executor was "
+        "supplied but isolated-executor DISPATCH is not implemented (Phase-2 "
+        "seam). Refusing to run the adapter in the daemon process (fail loud) — "
+        "implement the subprocess/container dispatch before enabling the executor."
+    )
+
+
 def _build_node(
     node: NodeDefinition,
     *,
@@ -2671,6 +2697,7 @@ def _build_node(
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     trusted: bool = False,
+    _skip_executor_gate: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2712,45 +2739,87 @@ def _build_node(
         _SOURCE_EXEC_CAPABILITY as _SOURCE_EXEC,
     )
     from tinyassets.sandbox_policy import (
-        coding_nodes_runnable as _cnr,
+        EXECUTOR_CLASS_REPO as _EXEC_REPO,
+    )
+    from tinyassets.sandbox_policy import (
+        EXECUTOR_CLASS_SOURCE_EXEC as _EXEC_SRC,
     )
     from tinyassets.sandbox_policy import (
         effective_node_capability as _eff_cap,
     )
     from tinyassets.sandbox_policy import (
-        source_exec_runnable as _ser,
+        resolve_isolated_executor as _resolve_executor,
     )
     _node_eff_cap = _eff_cap(node, domain_id)
     # A HOST-ONLY adapter is allowed ONLY for a trusted (daemon) compile.
     if _node_eff_cap == _HOST_ONLY and trusted:
         _node_eff_cap = "text"  # trusted daemon path — proceed to opaque dispatch
     if _node_eff_cap != "text":
+        _refuse = True
         if _node_eff_cap == _HOST_ONLY:
             # A user-authored branch selected a daemon-internal callable.
-            _refuse = True
             _runner_reason = (
                 "it is a HOST-ONLY (daemon-internal) adapter that a user-authored "
                 "branch may not compile/queue/execute; refusing (fail closed)"
             )
         elif _node_eff_cap == _OPAQUE_UNCLASSIFIED:
             # An opaque adapter with no declared capability refuses unconditionally
-            # — the Phase-2 runner cannot vouch for an adapter nobody classified.
-            _refuse = True
+            # — no isolated executor can vouch for an adapter nobody classified.
             _runner_reason = (
                 "it is a registered opaque adapter with NO declared sandbox "
                 "capability class; refusing an unclassified host-code adapter "
                 "(fail closed)"
             )
-        elif _node_eff_cap == _SOURCE_EXEC:
-            # Codex S3 r15 #1: source_code runs arbitrary Python IN-PROCESS —
-            # gated by its OWN OS-isolation readiness, SEPARATE from the per-job
-            # REPO runner. Repo-runner readiness must NEVER enable in-process exec.
-            _runner_ok, _runner_reason = _ser()
-            _refuse = not _runner_ok
+        elif _skip_executor_gate:
+            # Re-entry FROM the isolated-executor dispatch (the worker context):
+            # the executor already vouched, so build the adapter here. The daemon
+            # NEVER reaches this branch on its own — only the dispatch node's
+            # in-worker builder sets it.
+            _refuse = False
         else:
-            # coding / repo_exec / repo_read — the per-job repo/container runner.
-            _runner_ok, _runner_reason = _cnr()
-            _refuse = not _runner_ok
+            # SECURITY (Codex S3 r16 #1): a sandbox-required adapter (source_exec /
+            # coding / repo_exec / repo_read) must be DISPATCHED to an ISOLATED
+            # EXECUTOR (subprocess/container) — NEVER invoked as fn(state) in the
+            # daemon. A readiness BOOLEAN is not a boundary: the gate requires a
+            # concrete executor HANDLE. In Phase 1 no executor exists, so this
+            # ALWAYS refuses (never falls through to the in-process adapter). Phase
+            # 2 returns a real handle and we route to it instead.
+            _exec_class = _EXEC_SRC if _node_eff_cap == _SOURCE_EXEC else _EXEC_REPO
+            _executor = _resolve_executor(_exec_class)
+            if _executor is not None:
+                # Phase 2: dispatch to the isolated worker (subprocess/container) —
+                # NEVER in-process. The adapter the worker runs is passed as a
+                # closure so the dispatch controls WHERE it runs; the daemon never
+                # invokes it. Guarded so wiring an executor without the dispatch
+                # node fails LOUD instead of silently running in-process.
+                def _in_worker_node_builder() -> Callable[[dict[str, Any]], dict[str, Any]]:
+                    return _build_node(
+                        node,
+                        provider_call=provider_call,
+                        event_sink=event_sink,
+                        domain_id=domain_id,
+                        state_schema=state_schema,
+                        llm_policy=llm_policy,
+                        concurrency_tracker=concurrency_tracker,
+                        base_path=base_path,
+                        parent_run_id=parent_run_id,
+                        invocation_depth=invocation_depth,
+                        enqueue_context=enqueue_context,
+                        trusted=trusted,
+                        _skip_executor_gate=True,
+                    )
+                return _build_isolated_executor_dispatch_node(
+                    node, _executor, _exec_class,
+                    in_worker_node_builder=_in_worker_node_builder,
+                    event_sink=event_sink,
+                )
+            _refuse = True
+            _runner_reason = (
+                f"it requires an isolated {_exec_class} executor "
+                f"(subprocess/container) to run — a readiness flag is not a "
+                f"boundary; NO isolated executor is available, so the adapter is "
+                f"refused (never invoked in the daemon process, fail closed)"
+            )
         if _refuse:
             try:
                 from tinyassets.providers.base import (
@@ -2765,8 +2834,8 @@ def _build_node(
                 state: dict[str, Any],
             ) -> dict[str, Any]:
                 exc = _NodeSUE(
-                    f"Node '{_cap_nid}' has {_cap_kind} (repo-touching) capability "
-                    f"and cannot run: {_runner_reason}"
+                    f"Node '{_cap_nid}' has {_cap_kind} (sandbox-required) "
+                    f"capability and cannot run: {_runner_reason}"
                 )
                 # Codex r10 #2: a sandbox refusal is a terminal node failure —
                 # emit the same failed event every other failure gets so a failed

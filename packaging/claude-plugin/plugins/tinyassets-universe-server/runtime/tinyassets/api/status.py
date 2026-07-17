@@ -1218,25 +1218,42 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         sandbox_status = get_sandbox_status()
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         sandbox_status = {"bwrap_available": False, "reason": f"probe_error: {exc}"}
-    # Repo-touching node runnability (Codex S3 REJECT R4/5c): bwrap_available
-    # alone hid whether coding/repo nodes can ACTUALLY run. Report the ONE shared
-    # readiness truth (`coding_nodes_runnable`) the node runtime + validate use —
-    # in this deploy it is ALWAYS False (no per-job sandbox runner subsystem), so
-    # get_status can never claim "ready because a CLI is on PATH". Also surface the
-    # attestation for operators.
+    # Sandbox-required node runnability (Codex S3 REJECT R4/5c + r15 #1 + r16 #4):
+    # bwrap_available alone hid whether repo/source nodes can ACTUALLY run. There
+    # are now TWO SEPARATE readiness classes, each meaning "an ISOLATED EXECUTOR
+    # for this class is available and the adapter routes through it" (a boolean is
+    # not a boundary — Codex r16 #1): `coding_nodes_runnable` = the per-job REPO
+    # executor; `source_exec_runnable` = the in-process-code OS-isolation worker.
+    # Both are ALWAYS False in this deploy (no isolated executor exists), so
+    # get_status can never claim "ready because a CLI is on PATH". Surface the
+    # attestation for operators too.
     try:
         from tinyassets.providers.base import os_sandbox_attested
         sandbox_status["os_sandbox_attested"] = bool(os_sandbox_attested())
     except Exception:  # noqa: BLE001
         sandbox_status["os_sandbox_attested"] = False
     try:
-        from tinyassets.sandbox_policy import coding_nodes_runnable
-        _runnable, _reason = coding_nodes_runnable()
+        from tinyassets.sandbox_policy import (
+            coding_nodes_runnable,
+            source_exec_runnable,
+        )
+        _repo_ok, _repo_reason = coding_nodes_runnable()
+        _src_ok, _src_reason = source_exec_runnable()
     except Exception as exc:  # noqa: BLE001 — unknown ⇒ not runnable (honest)
-        _runnable, _reason = False, f"readiness check failed: {exc}"
-    sandbox_status["coding_nodes_runnable"] = bool(_runnable)
-    if not _runnable:
-        sandbox_status["coding_nodes_note"] = _reason
+        _repo_ok, _repo_reason = False, f"readiness check failed: {exc}"
+        _src_ok, _src_reason = False, f"readiness check failed: {exc}"
+    sandbox_status["coding_nodes_runnable"] = bool(_repo_ok)  # repo-runner readiness
+    if not _repo_ok:
+        sandbox_status["coding_nodes_note"] = _repo_reason
+    sandbox_status["source_exec_runnable"] = bool(_src_ok)  # in-process-code readiness
+    if not _src_ok:
+        sandbox_status["source_exec_note"] = _src_reason
+    sandbox_status["sandbox_readiness_model"] = (
+        "readiness = an ISOLATED EXECUTOR (subprocess/container) is available AND "
+        "the adapter is DISPATCHED to it — NOT a boolean flip. Phase 2 must build "
+        "the executor + route through it; flipping a readiness flag alone does "
+        "nothing (the runtime requires an executor handle)."
+    )
 
     # BUG-027 — probe required static data files so operators can see which
     # files are absent in the cloud image without waiting for ASP to fail.

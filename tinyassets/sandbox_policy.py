@@ -290,50 +290,75 @@ def node_coding_capability(node: Any) -> bool:
 node_requires_sandbox = node_requires_sandbox_runner
 
 
-def coding_nodes_runnable() -> "tuple[bool, str]":
-    """Single source of truth (Codex S3 REJECT R4): can repo-touching nodes
-    ACTUALLY run in this deployment?
+# The isolated-executor classes (Codex S3 r16 #1). A sandbox-required adapter must
+# be DISPATCHED to one of these — never invoked as ``fn(state)`` in the daemon.
+EXECUTOR_CLASS_REPO = "repo"          # per-job checkout runner (coding/repo_exec/repo_read)
+EXECUTOR_CLASS_SOURCE_EXEC = "source_exec"  # in-process-code OS-isolation worker
 
-    S3 honest state: **ALWAYS False.** There is no per-job sandbox runner
-    subsystem (prepared per-job checkout + tenant/host path invisibility +
-    restricted egress + resource limits + scoped credential brokering) — that
-    runner is a FUTURE slice, NOT S3. A CLI being on PATH or bwrap/attestation
-    being present does NOT make a repo node runnable: without the runner there is
-    no checked-out workspace and no isolation, so coding/repo-exec/repo-read nodes
-    fail closed on EVERY provider. validate + get_status + the node runtime all
-    read this one function, so readiness never drifts from runtime truth. The
-    future runner slice replaces the hard-coded False with real runner detection.
+
+def resolve_isolated_executor(executor_class: str) -> "Any | None":
+    """Return the ISOLATED EXECUTOR HANDLE (a subprocess/container dispatcher) that
+    a sandbox-required adapter of *executor_class* MUST be routed through — or
+    ``None`` when no such executor exists (Codex S3 r16 #1).
+
+    THE STRUCTURAL INVARIANT: a readiness BOOLEAN is NOT an execution boundary.
+    With a boolean flipped true but no executor, a repo/source adapter would still
+    run IN-PROCESS in the daemon (reading host credentials, touching the host FS) —
+    the exact vulnerability. So the runtime gate requires a concrete executor
+    HANDLE, and the adapter is DISPATCHED to it (never called as ``fn(state)``
+    here). Phase 1 has NO isolated-executor subsystem, so this ALWAYS returns
+    ``None`` → every sandbox-required adapter is REFUSED. It cannot be defeated by
+    monkeypatching a readiness flag, because there is no executor object to route
+    through. Phase 2 builds the real subprocess/container executor and returns its
+    handle here; only then does a repo/coding/source_exec adapter run — inside the
+    isolated worker, never in the daemon process.
     """
+    return None
+
+
+def coding_nodes_runnable() -> "tuple[bool, str]":
+    """Repo-runner READINESS (observability). True iff an isolated REPO executor
+    is available (Codex S3 r16: derives from :func:`resolve_isolated_executor`, so
+    readiness can never disagree with the runtime gate).
+
+    S3 honest state: **False** — no isolated repo executor exists. A CLI on PATH
+    or bwrap/attestation does NOT make a repo node runnable: readiness means "an
+    isolated executor is available AND the adapter routes through it," not "a
+    boolean is true." validate + get_status + the node runtime all agree because
+    they all trace back to the executor handle.
+    """
+    ok = resolve_isolated_executor(EXECUTOR_CLASS_REPO) is not None
+    if ok:
+        return True, ""
     return False, (
-        "repo-touching nodes (coding / repo-exec / repo-read) require the per-job "
-        "sandbox runner subsystem (prepared per-job checkout + tenant isolation + "
-        "scoped credentials + egress/resource limits), which is NOT available in "
-        "this deployment. They fail closed on every provider until the runner "
-        "lands (a future slice). Use a design-only / text-only (prompt_template) "
+        "repo-touching nodes (coding / repo-exec / repo-read) must be DISPATCHED "
+        "to an isolated per-job executor (the sandbox runner: prepared checkout + "
+        "tenant isolation + scoped credentials + egress/resource limits); NO such "
+        "runner/executor exists in this deployment, so they are REFUSED (never run "
+        "in the daemon process). Use a design-only / text-only (prompt_template) "
         "branch."
     )
 
 
 def source_exec_runnable() -> "tuple[bool, str]":
-    """Can an in-process ``source_code`` (``source_exec``) node ACTUALLY run
-    SAFELY in this deployment? (Codex S3 r15 #1 — split from repo-runner readiness.)
+    """In-process-code (``source_exec``) READINESS (observability). True iff an
+    isolated SOURCE-EXEC executor is available (Codex S3 r15 #1 split + r16 derive).
 
-    **ALWAYS False.** A ``source_exec`` node runs arbitrary Python IN-PROCESS with
-    full builtins (``graph_compiler._build_source_code_node`` → ``exec``). The
-    per-job REPO runner that :func:`coding_nodes_runnable` gates does NOT sandbox
-    in-process ``exec`` — it prepares a repo checkout for a SUBPROCESS coding
-    agent. So repo-runner readiness must NEVER enable ``source_exec``: in-process
-    host-code execution needs its OWN OS-isolation worker (a source-execution
-    attestation), which does not exist. Kept hard-False until that isolation lands
-    — a SEPARATE gate so a future ``coding_nodes_runnable``==True can never
-    accidentally re-open the in-process ``exec`` surface.
+    S3 honest state: **False** — a ``source_code`` node runs arbitrary Python
+    IN-PROCESS with full builtins; the per-job REPO runner does NOT sandbox
+    in-process ``exec`` (it prepares a checkout for a SUBPROCESS agent). So
+    ``source_exec`` needs its OWN OS-isolation worker, SEPARATE from repo-runner
+    readiness — a future ``coding_nodes_runnable``==True can never re-open the
+    in-process ``exec`` surface.
     """
+    ok = resolve_isolated_executor(EXECUTOR_CLASS_SOURCE_EXEC) is not None
+    if ok:
+        return True, ""
     return False, (
-        "source_code runs arbitrary Python IN-PROCESS with full builtins; the "
-        "per-job repo runner does NOT sandbox in-process exec (it prepares a "
-        "checkout for a subprocess agent). A source_exec node requires its OWN "
-        "OS-isolation worker (a source-execution attestation), SEPARATE from "
-        "repo-runner readiness, which does not exist. Fail closed."
+        "source_code runs arbitrary Python IN-PROCESS with full builtins; it must "
+        "be DISPATCHED to its OWN OS-isolation worker (SEPARATE from the repo "
+        "runner), and NO such worker exists in this deployment, so it is REFUSED "
+        "(never exec'd in the daemon process). Fail closed."
     )
 
 
@@ -524,6 +549,9 @@ __all__ = [
     "node_requires_sandbox_runner",
     "node_coding_capability",
     "node_requires_sandbox",
+    "EXECUTOR_CLASS_REPO",
+    "EXECUTOR_CLASS_SOURCE_EXEC",
+    "resolve_isolated_executor",
     "coding_nodes_runnable",
     "source_exec_runnable",
     "branch_sandbox_status",

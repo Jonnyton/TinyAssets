@@ -2172,6 +2172,11 @@ def save_branch_definition(
     HOST-ONLY or UNCLASSIFIED opaque adapter is refused (ValueError). ``_trusted``
     (daemon-internal persistence only) skips the gate.
     """
+    # Codex S3 r16 #2: NORMALIZE the effective domain ONCE (resolve the "workflow"
+    # default) so validation and storage use the IDENTICAL resolved domain —
+    # omitting domain_id previously validated under "" but PERSISTED under
+    # "workflow", a bypass for a node that's host-only under the default domain.
+    effective_domain = (branch_def.get("domain_id") or "").strip() or "workflow"
     # Codex S3 r15 #3: validate the FULLY-MERGED node set — node_defs UNION the
     # legacy ``nodes`` input (a legacy node dict can carry source_code / node_kind
     # / an opaque adapter selection, so validating only node_defs left the legacy
@@ -2179,9 +2184,7 @@ def save_branch_definition(
     _nodes_to_check = list(branch_def.get("node_defs") or [])
     if "nodes" in branch_def:
         _nodes_to_check += list(branch_def.get("nodes") or [])
-    _enforce_user_branch_capabilities(
-        _nodes_to_check, branch_def.get("domain_id", ""), _trusted,
-    )
+    _enforce_user_branch_capabilities(_nodes_to_check, effective_domain, _trusted)
     now = _now()
     branch_def_id = branch_def.get("branch_def_id", uuid.uuid4().hex[:12])
 
@@ -2226,7 +2229,7 @@ def save_branch_definition(
                 branch_def.get("name", ""),
                 branch_def.get("description", ""),
                 branch_def.get("author", "anonymous"),
-                branch_def.get("domain_id", "workflow"),
+                effective_domain,  # Codex S3 r16 #2: same resolved domain as validated
                 _json_dumps(branch_def.get("tags", [])),
                 branch_def.get("version", 1),
                 _json_dumps(skills),
@@ -2348,34 +2351,20 @@ def update_branch_definition(
     entry_point, graph_nodes, edges, conditional_edges, node_defs,
     state_schema, published, stats. Also accepts legacy "nodes" key.
     """
-    # Codex S3 r15 #3: this is a WRITE path — it persists domain_id / node_defs /
-    # legacy nodes DIRECTLY, so it MUST run the same fail-closed capability gate as
-    # save_branch_definition, on the FULLY-MERGED record (existing + updates). A
-    # domain-only change (e.g. → "fantasy_author") can turn an existing benign node
-    # into a host-only selection, so re-validate the existing node set against the
-    # merged domain when no node change is supplied.
-    if not _trusted:
-        _existing = get_branch_definition(base_path, branch_def_id=branch_def_id)
-        _merged_domain = updates.get("domain_id", _existing.get("domain_id", ""))
-        _node_sources: list[Any] = []
-        if "node_defs" in updates:
-            _node_sources += list(updates.get("node_defs") or [])
-        if "nodes" in updates:
-            _node_sources += list(updates.get("nodes") or [])
-        if not _node_sources:
-            _node_sources = list(_existing.get("node_defs") or [])
-            _node_sources += list((_existing.get("graph", {}) or {}).get("nodes", []) or [])
-        _enforce_user_branch_capabilities(_node_sources, _merged_domain, _trusted)
-
     now = _now()
+
+    # Field updates that do NOT depend on the existing row (built first; the
+    # DB-dependent parts — fork_from immutability, graph merge, and the fail-closed
+    # capability gate — run INSIDE the atomic transaction below).
     sets: list[str] = ["updated_at = ?"]
     params: list[Any] = [now]
 
+    # ``domain_id`` is handled specially (normalized) inside the transaction so
+    # validation and storage use the IDENTICAL resolved domain (Codex S3 r16 #2).
     simple_fields = {
         "name": "name",
         "description": "description",
         "author": "author",
-        "domain_id": "domain_id",
         "version": "version",
         "entry_point": "entry_point",
         # Phase 5: goal binding. `None` or empty string unbinds.
@@ -2390,6 +2379,12 @@ def update_branch_definition(
             sets.append(f"{col} = ?")
             params.append(value)
 
+    if "domain_id" in updates:
+        # Codex S3 r16 #2: normalize once — the SAME resolved domain is validated
+        # (below) and stored, so omitting/emptying domain_id can't diverge.
+        sets.append("domain_id = ?")
+        params.append((updates.get("domain_id") or "").strip() or "workflow")
+
     if "visibility" in updates:
         # Phase 6.2.2. Default to public for any unrecognized string
         # so the column never holds an unknown state.
@@ -2397,16 +2392,6 @@ def update_branch_definition(
         normalized = "private" if incoming == "private" else "public"
         sets.append("visibility = ?")
         params.append(normalized)
-
-    if "fork_from" in updates:
-        # fork_from is immutable-after-set. Only write if not already set.
-        existing_row = get_branch_definition(base_path, branch_def_id=branch_def_id)
-        if existing_row.get("fork_from") is not None:
-            raise ValueError(
-                f"fork_from is immutable after set on branch '{branch_def_id}'."
-            )
-        sets.append("fork_from = ?")
-        params.append(updates["fork_from"] or None)
 
     json_fields = {
         "tags": "tags_json",
@@ -2432,28 +2417,71 @@ def update_branch_definition(
         sets.append("node_defs_json = ?")
         params.append(_json_dumps(updates["node_defs"]))
 
-    # If graph topology fields are updated, rebuild graph_json
-    graph_keys = {"graph_nodes", "edges", "conditional_edges", "nodes"}
-    if graph_keys & updates.keys():
-        existing = get_branch_definition(base_path, branch_def_id=branch_def_id)
-        graph = existing.get("graph", {})
-        if "graph_nodes" in updates:
-            graph["nodes"] = updates["graph_nodes"]
-        elif "nodes" in updates:
-            # Legacy compat
-            graph["nodes"] = updates["nodes"]
-        if "edges" in updates:
-            graph["edges"] = updates["edges"]
-        if "conditional_edges" in updates:
-            graph["conditional_edges"] = updates["conditional_edges"]
-        if "entry_point" in updates:
-            graph["entry_point"] = updates["entry_point"]
-        sets.append("graph_json = ?")
-        params.append(_json_dumps(graph))
-
-    params.append(branch_def_id)
-
+    # Codex S3 r16 #3: read/merge/normalize/validate/write in ONE atomic
+    # transaction. ``BEGIN IMMEDIATE`` takes the write lock BEFORE the read, so a
+    # concurrent writer blocks until this one commits and then sees the merged
+    # row (no two-writers-both-validate-stale race). Validation raises INSIDE the
+    # transaction → the whole update rolls back (nothing persisted).
     with _connect(base_path) as conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM branch_definitions WHERE branch_def_id = ?",
+            (branch_def_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(branch_def_id)
+        existing = _branch_def_from_row(row)
+
+        if "fork_from" in updates:
+            # fork_from is immutable-after-set. Only write if not already set.
+            if existing.get("fork_from") is not None:
+                raise ValueError(
+                    f"fork_from is immutable after set on branch '{branch_def_id}'."
+                )
+            sets.append("fork_from = ?")
+            params.append(updates["fork_from"] or None)
+
+        # If graph topology fields are updated, rebuild graph_json (merge existing).
+        graph_keys = {"graph_nodes", "edges", "conditional_edges", "nodes"}
+        if graph_keys & updates.keys():
+            graph = existing.get("graph", {}) or {}
+            if "graph_nodes" in updates:
+                graph["nodes"] = updates["graph_nodes"]
+            elif "nodes" in updates:
+                graph["nodes"] = updates["nodes"]  # legacy compat
+            if "edges" in updates:
+                graph["edges"] = updates["edges"]
+            if "conditional_edges" in updates:
+                graph["conditional_edges"] = updates["conditional_edges"]
+            if "entry_point" in updates:
+                graph["entry_point"] = updates["entry_point"]
+            sets.append("graph_json = ?")
+            params.append(_json_dumps(graph))
+
+        # SECURITY (Codex S3 r16 #2/#3): validate the FULLY-MERGED row — BOTH node
+        # containers (each from updates if supplied, else existing) under the
+        # normalized effective domain. A partial update touching one container must
+        # NOT leave a forbidden node in the untouched container persisted.
+        if not _trusted:
+            merged_domain = (
+                (updates.get("domain_id") if "domain_id" in updates
+                 else existing.get("domain_id")) or ""
+            ).strip() or "workflow"
+            merged_nodes: list[Any] = []
+            if "node_defs" in updates:
+                merged_nodes += list(updates.get("node_defs") or [])
+            else:
+                merged_nodes += list(existing.get("node_defs") or [])
+            if "nodes" in updates:
+                merged_nodes += list(updates.get("nodes") or [])
+            else:
+                merged_nodes += list(
+                    (existing.get("graph", {}) or {}).get("nodes", []) or []
+                )
+            _enforce_user_branch_capabilities(merged_nodes, merged_domain, _trusted)
+
+        params.append(branch_def_id)
         conn.execute(
             f"UPDATE branch_definitions SET {', '.join(sets)} "
             f"WHERE branch_def_id = ?",

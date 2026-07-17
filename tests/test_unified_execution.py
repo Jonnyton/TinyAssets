@@ -34,15 +34,20 @@ def _sandbox_runner_present(monkeypatch):
     ``tests/test_patch_loop_sandbox_enforcement.py`` and the r11 regression tests
     in ``tests/test_patch_loop_sandbox_authoring.py``; the production default here
     is unchanged (still fail-closed)."""
+    import tinyassets.graph_compiler as _gc
     import tinyassets.sandbox_policy as _sp
-
+    # Codex S3 r16 #1: a readiness boolean is NOT a boundary — the daemon
+    # requires a concrete isolated-executor HANDLE and routes the adapter to
+    # it. These mechanics tests provide that handle + a dispatch that runs the
+    # adapter as the isolated worker would (in a test the worker is in-process).
+    # The SECURITY invariant (the daemon REFUSES with no executor / never runs
+    # the adapter itself) is covered by test_patch_loop_sandbox_enforcement.
+    _executor = object()
+    monkeypatch.setattr(_sp, "resolve_isolated_executor", lambda _cls: _executor)
     monkeypatch.setattr(
-        _sp, "coding_nodes_runnable", lambda: (True, "test: runner present"),
-    )
-    # Codex S3 r15 #1: source_exec has its OWN gate — simulate the source-
-    # execution worker present too so mechanics tests exercise in-process nodes.
-    monkeypatch.setattr(
-        _sp, "source_exec_runnable", lambda: (True, "test: source worker present"),
+        _gc, "_build_isolated_executor_dispatch_node",
+        lambda node, executor, executor_class, *, in_worker_node_builder,
+        event_sink: in_worker_node_builder(),
     )
 
 
