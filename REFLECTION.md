@@ -11,3 +11,11 @@ What surprised me: merging the connector slice onto the broker world exposed pri
 Pattern worth capturing: private runtime values need one ingress boundary and a complete egress audit. In-memory execution, recursive redaction, author-scoped lookup, and destination-resolved credentials form one invariant rather than separate fixes.
 
 One thing I would do differently: run the binding concurrency and persistence scans immediately after establishing the canonical binding write path, before expanding the connector surface tests.
+
+---
+
+What surprised me: S4's isolated tests hid two integration contracts—the retired plaintext vault made every live client unusable, and a valid merge packet without universe storage crashed before it could fail closed.
+
+Pattern worth capturing: credential integration is complete only when production factories consume rotating broker bindings and cross-slice contract probes exercise the same factories; static-token test helpers are not evidence of live wiring.
+
+One thing I would do differently: add the broker-backed live-client and no-universe effector probes before resolving the larger merge, so those architectural mismatches become the first red tests.

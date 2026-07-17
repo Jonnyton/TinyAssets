@@ -2958,6 +2958,41 @@ def _invoke_graph_inner(
         if errors:
             output["external_write_errors"] = errors
 
+    # S4 / E3 (Codex r12 #1 + #5): a present node that opened + projected a PR
+    # for owner review installs a durable review CHECKPOINT and the run must NOT
+    # sail past it. The disposition of that checkpoint decides the run's status:
+    #   - failed:    a REQUIRED review checkpoint could not be persisted →
+    #                fail VISIBLY (Hard Rule 8); never complete past an
+    #                un-checkpointed gate.
+    #   - suspended: the checkpoint persisted → the canonical run stays
+    #                INTERRUPTED (awaiting the owner's decision), NOT completed;
+    #                the owner verb resumes it via ``continue_reviewed_run``.
+    #   - complete:  no review checkpoint → normal completion.
+    disposition, detail = _review_gate_disposition(external_write_evidence)
+    if disposition == "failed":
+        msg = (
+            "review checkpoint could not be persisted; refusing to complete a "
+            f"run past an un-checkpointed required review gate: {detail}"
+        )
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_FAILED, output=output, error=msg, finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_FAILED, output=output, error=msg,
+        )
+    if disposition == "suspended":
+        output["awaiting_owner_review"] = detail
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_INTERRUPTED, output=output, finished_at=_now(),
+            provider_used=provider_tracker["last"], model=provider_tracker["model"],
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_INTERRUPTED, output=output,
+            error="awaiting_owner_review",
+        )
+
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -3064,6 +3099,1097 @@ def _collect_external_write_errors(
                     "error_kind": ev.get("error_kind") or "unknown",
                 })
     return errors
+
+
+def _review_gate_disposition(
+    evidence_map: dict[str, Any],
+) -> tuple[str, Any]:
+    """Decide how a run's review checkpoint disposes the run status (Codex r12
+    #1 / #5). Returns ``(disposition, detail)`` where disposition is one of
+    ``"complete"`` / ``"suspended"`` / ``"failed"``.
+
+    Reads the present node's github_pull_request evidence:
+    - ``review_queue_enqueue_error`` present ⇒ ``failed`` (a required review
+      checkpoint could not be persisted — the run must not complete past it).
+    - ``review_queue_run_suspended`` truthy ⇒ ``suspended`` (the run pauses
+      awaiting the owner's decision).
+    - otherwise ⇒ ``complete``.
+    """
+    suspended_detail: dict[str, Any] | None = None
+    for node_id, per_node in (evidence_map or {}).items():
+        if not isinstance(per_node, dict):
+            continue
+        for _sink, ev in per_node.items():
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("review_queue_enqueue_error"):
+                return "failed", ev.get("review_queue_enqueue_error")
+            if ev.get("review_queue_run_suspended"):
+                suspended_detail = {
+                    "node_id": node_id,
+                    "pr_number": ev.get("review_queue_pr_number"),
+                    "destination": ev.get("destination"),
+                }
+    if suspended_detail is not None:
+        return "suspended", suspended_detail
+    return "complete", None
+
+
+_GH_CALL_KEYS = ("kind", "transport", "method", "path", "params", "summary")
+
+
+_REVIEW_EVENT_STATE = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}
+
+
+def _review_already_on_github(
+    github_api: Any, call_dict: dict[str, Any], *, expected_owner: str = "",
+) -> bool:
+    """Codex r15 #3 + REJECT #3: reconcile against GitHub's ACTUAL state before
+    re-submitting — was a review with THIS commit_id, by the CONNECTED OWNER, in
+    the matching state already submitted? Closes the crash-after-remote-before-
+    receipt double-submit window WITHOUT accepting a DIFFERENT actor's review at
+    the same commit (the security hole the REJECT reproduced).
+
+    ``expected_owner`` is the resolved connected-owner login; an EMPTY owner
+    NEVER reconciles (fail safe → re-submit with the owner's own token rather
+    than trust an unattributed review). Tolerant of a client without
+    ``list_pull_reviews`` (returns False → submit)."""
+    params = call_dict.get("params") or {}
+    commit_id = (params.get("commit_id") or "").strip()
+    want_event = (params.get("event") or "").strip().upper()
+    owner = (expected_owner or "").strip().lstrip("@").lower()
+    path = call_dict.get("path") or ""
+    # path is /repos/{owner}/{repo}/pulls/{n}/reviews
+    m = re.search(r"/repos/([^/]+/[^/]+)/pulls/(\d+)/reviews", path)
+    if not commit_id or not owner or m is None:
+        return False
+    destination, pr_number = m.group(1), int(m.group(2))
+    try:
+        reviews = github_api.list_pull_reviews(
+            destination=destination, pr_number=pr_number,
+        )
+    except Exception:  # noqa: BLE001 — no reconcile method / error ⇒ submit
+        return False
+    want_state = _REVIEW_EVENT_STATE.get(want_event, want_event)
+    for rv in reviews or []:
+        if (
+            (rv.get("commit_id") or "").strip() == commit_id
+            and (rv.get("user_login") or "").strip().lstrip("@").lower() == owner
+            and (rv.get("state") or "").strip().upper() == want_state
+        ):
+            return True
+    return False
+
+
+def _submit_github_review(
+    base_path: str | Path, *, run_id: str, call_dict: dict[str, Any] | None,
+    effect_kind: str, github_api: Any, effects: dict[str, Any],
+    expected_owner: str = "",
+) -> bool:
+    """Submit a HEAD-BOUND GitHub review (APPROVE / REQUEST_CHANGES), idempotent
+    via a receipt AND GitHub-state reconciliation bound to the CONNECTED OWNER
+    (Codex r15 #3 + REJECT #3). Returns True only when the review is CONFIRMED
+    submitted (or a prior receipt / GitHub state by the owner proves it). Without
+    a client → False (the run stays interrupted — no false success)."""
+    from tinyassets.github_native import GitHubCall
+    from tinyassets.storage import review_queue as _rq
+
+    if _rq.has_effect_receipt(base_path, run_id=run_id, effect_kind=effect_kind):
+        effects[effect_kind] = "already_submitted"
+        return True
+    if github_api is None or not call_dict:
+        return False
+    # Reconcile FIRST: if GitHub already has the OWNER's review at this commit
+    # (crash between remote success and receipt write), record the receipt + do
+    # NOT re-submit. A different actor's review at the same commit does NOT match.
+    if _review_already_on_github(github_api, call_dict, expected_owner=expected_owner):
+        _rq.record_effect_receipt(
+            base_path, run_id=run_id, effect_kind=effect_kind,
+            detail={"reconciled": True},
+        )
+        effects[effect_kind] = "already_submitted"
+        return True
+    res = github_api.run_call(GitHubCall(**{
+        k: call_dict[k] for k in _GH_CALL_KEYS if k in call_dict
+    }))
+    if not res.get("ok"):
+        effects[effect_kind] = "failed"
+        return False
+    _rq.record_effect_receipt(
+        base_path, run_id=run_id, effect_kind=effect_kind,
+        detail={"status": res.get("status")},
+    )
+    effects[effect_kind] = "submitted"
+    return True
+
+
+def _execute_review_directive(
+    base_path: str | Path, *, run_id: str, suspension: dict[str, Any],
+    directive: dict[str, Any], github_api: Any = None, verifier_api: Any = None,
+    run_starter: Callable[[dict[str, Any]], str] | None = None,
+    app_actor_id: Any = None, expected_owner: str = "", now: float | None = None,
+) -> dict[str, Any]:
+    """EXECUTE a resume directive with NO FALSE SUCCESS (Codex r14 #1/#2/#4/#5).
+
+    Returns ``{"confirmed": bool, "state": str, "effects": dict, "reason"?: str}``.
+    ``confirmed`` is True ONLY when every REQUIRED external effect actually
+    executed (or a durable receipt proves a prior run did). Without a client — or
+    on any gate/effect failure — ``confirmed`` is False and the caller leaves the
+    run INTERRUPTED for replay. Every autonomous action re-runs the shared
+    fail-closed merge executor (fresh gate + verifier). All effects are
+    idempotent via receipts, so replay can't double-submit or double-create.
+    """
+    from tinyassets.effectors import github_merge as _gm
+    from tinyassets.storage import review_queue as _rq
+
+    action = (directive or {}).get("action")
+    destination = (suspension or {}).get("destination") or ""
+    pr_number = (suspension or {}).get("pr_number")
+    branch_def_id = (suspension or {}).get("branch_def_id") or ""
+    head = (suspension or {}).get("head_sha") or ""
+    effects: dict[str, Any] = {}
+
+    if action == "merge":
+        if not _submit_github_review(
+            base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
+            effect_kind="submit_review_approve", github_api=github_api, effects=effects,
+            expected_owner=expected_owner,
+        ):
+            return {"confirmed": False, "state": "approve_awaiting_execution",
+                    "effects": effects, "reason": "review_not_submitted"}
+        # Merge path via THE ONE shared fail-closed executor (fresh gate + verifier).
+        merge = _gm.run_autonomous_merge(
+            base_path, destination=destination, pr_number=pr_number,
+            branch_def_id=branch_def_id, expected_head_sha=head,
+            github_api=github_api, verifier_api=verifier_api,
+            app_actor_id=app_actor_id, expected_owner=expected_owner, now=now,
+        )
+        if not merge.get("ok"):
+            return {"confirmed": False, "state": "autonomous_gate_failed",
+                    "effects": effects, "reason": merge.get("error_kind")}
+        if merge.get("action") == "enable_auto_merge":
+            if not _rq.has_effect_receipt(
+                base_path, run_id=run_id, effect_kind="enable_auto_merge"
+            ):
+                from tinyassets.github_native import GitHubCall
+                call = merge.get("github_call") or {}
+                res = github_api.run_call(GitHubCall(**{
+                    k: call[k] for k in _GH_CALL_KEYS if k in call
+                }))
+                if not res.get("ok"):
+                    return {"confirmed": False, "state": "auto_merge_enable_failed",
+                            "effects": effects, "reason": "enable_auto_merge_failed"}
+                _rq.record_effect_receipt(
+                    base_path, run_id=run_id, effect_kind="enable_auto_merge",
+                    detail={"status": res.get("status")},
+                )
+            effects["auto_merge_enabled"] = True
+        return {"confirmed": True, "state": merge.get("state"), "effects": effects}
+
+    if action == "draft_patch":
+        if not _submit_github_review(
+            base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
+            effect_kind="submit_review_request_changes", github_api=github_api,
+            effects=effects, expected_owner=expected_owner,
+        ):
+            return {"confirmed": False, "state": "reshape_awaiting_execution",
+                    "effects": effects, "reason": "request_changes_not_submitted"}
+        # Create the revised run — idempotent via receipt (Codex r14 #7: replay
+        # must not double-create).
+        existing = _rq.has_effect_receipt(
+            base_path, run_id=run_id, effect_kind="revised_run"
+        )
+        if existing is not None:
+            effects["revised_run"] = "already_created"
+        elif run_starter is not None:
+            revised = run_starter((directive or {}).get("route_back") or {})
+            _rq.record_effect_receipt(
+                base_path, run_id=run_id, effect_kind="revised_run",
+                detail={"revised_run_id": revised},
+            )
+            effects["revised_run_id"] = revised
+        else:
+            return {"confirmed": False, "state": "reshape_awaiting_revision",
+                    "effects": effects, "reason": "no_run_starter"}
+        _rq.mark_reshape_outbox_consumed(base_path, run_id=run_id)
+        return {"confirmed": True, "state": "reshaped_revising", "effects": effects}
+
+    if action == "terminal_reject":
+        if not _submit_github_review(
+            base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
+            effect_kind="submit_review_request_changes", github_api=github_api,
+            effects=effects, expected_owner=expected_owner,
+        ):
+            return {"confirmed": False, "state": "reject_awaiting_execution",
+                    "effects": effects, "reason": "request_changes_not_submitted"}
+        return {"confirmed": True, "state": "rejected", "effects": effects}
+
+    return {"confirmed": True, "state": "resumed", "effects": effects}
+
+
+def continue_reviewed_run(
+    base_path: str | Path, *, run_id: str, decision: str,
+    directive: dict[str, Any] | None = None,
+    github_api: Any = None, verifier_api: Any = None,
+    run_starter: Callable[[dict[str, Any]], str] | None = None,
+    app_actor_id: Any = None, expected_owner: str = "",
+) -> dict[str, Any]:
+    """Runtime consumer that resumes an interrupted run once the owner decided —
+    with NO FALSE SUCCESS (Codex r14 #1). It EXECUTES the directive and moves the
+    run to COMPLETED **only after the required GitHub effect is CONFIRMED** (and,
+    for reshape, the revised run is created). If the effect can't execute (no
+    client) or the autonomous gate fails, the run STAYS INTERRUPTED and the
+    suspension stays ``decided`` for idempotent replay — the decision is durable
+    and never lost, but the run never falsely completes.
+
+    Only an INTERRUPTED run awaiting review transitions; anything else is a
+    no-op (``applied=False``)."""
+    run = get_run(base_path, run_id)
+    if run is None:
+        return {"applied": False, "reason": "run_not_found"}
+    if run.get("status") != RUN_STATUS_INTERRUPTED:
+        return {"applied": False, "reason": f"run_not_awaiting_review:{run.get('status')}"}
+    output = dict(run.get("output") or {})
+    if "awaiting_owner_review" not in output:
+        return {"applied": False, "reason": "not_a_review_suspension"}
+    from tinyassets.storage.review_queue import get_suspension
+    susp = get_suspension(base_path, run_id=run_id) or {}
+    if directive is None:
+        directive = susp.get("resume_directive") or {}
+    try:
+        result = _execute_review_directive(
+            base_path, run_id=run_id, suspension=susp, directive=directive,
+            github_api=github_api, verifier_api=verifier_api,
+            run_starter=run_starter, app_actor_id=app_actor_id,
+            expected_owner=expected_owner,
+        )
+    except Exception as exc:  # noqa: BLE001 — leave pending for replay, fail loud
+        logger.exception("review directive execution failed for run %s", run_id)
+        return {"applied": False, "reason": f"directive_failed:{exc}"}
+
+    if not result["confirmed"]:
+        # NO FALSE SUCCESS: the effect didn't execute → the run STAYS interrupted
+        # and the suspension stays `decided` for replay when a client is wired.
+        return {
+            "applied": False, "reason": result.get("reason") or "awaiting_execution",
+            "state": result["state"], "effects": result.get("effects", {}),
+        }
+
+    output["review_decision"] = decision
+    output["review_workflow_state"] = result["state"]
+    if result.get("effects"):
+        output["review_continuation_effects"] = result["effects"]
+    output.pop("awaiting_owner_review", None)
+    update_run_status(
+        base_path, run_id,
+        status=RUN_STATUS_COMPLETED, output=output, finished_at=_now(),
+    )
+    # Ack the durable resume-pending marker ONLY after the canonical transition.
+    try:
+        from tinyassets.storage.review_queue import ack_continuation
+        ack_continuation(base_path, run_id=run_id)
+    except Exception:  # noqa: BLE001 — run already completed; ack is idempotent
+        logger.exception("ack_continuation failed for run %s", run_id)
+    return {
+        "applied": True, "run_id": run_id, "decision": decision,
+        "review_workflow_state": result["state"],
+        "effects": result.get("effects", {}),
+    }
+
+
+def supersede_stranded_review_runs(
+    base_path: str | Path, run_ids: list[str] | None,
+) -> list[str]:
+    """Cancel the CANONICAL runs of suspensions that were superseded by a newer
+    run on the same PR (Codex r13 #5) — otherwise an older run stranded at
+    INTERRUPTED waits for an owner decision that will never come. Returns the
+    run_ids actually cancelled. Only an interrupted awaiting-review run is
+    touched."""
+    cancelled: list[str] = []
+    for rid in run_ids or []:
+        run = get_run(base_path, rid)
+        if run is None or run.get("status") != RUN_STATUS_INTERRUPTED:
+            continue
+        output = dict(run.get("output") or {})
+        if "awaiting_owner_review" not in output:
+            continue
+        output["review_workflow_state"] = "superseded"
+        output.pop("awaiting_owner_review", None)
+        update_run_status(
+            base_path, rid,
+            status=RUN_STATUS_CANCELLED, output=output,
+            error="superseded by a newer run on the same PR", finished_at=_now(),
+        )
+        cancelled.append(rid)
+    return cancelled
+
+
+def replay_pending_continuations(
+    base_path: str | Path, *, github_api: Any = None, verifier_api: Any = None,
+    run_starter: Callable[[dict[str, Any]], str] | None = None,
+    app_actor_id: Any = None, expected_owner: str = "",
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — idempotent startup replay (Codex r13 #1 / r14 #7):
+    re-drive every DECIDED-but-not-acked suspension so a decision made just
+    before a crash still continues its run. Effects are receipt-guarded, so a
+    replay never double-submits a review or double-creates a revised run. Safe to
+    call repeatedly — each already-continued run is a no-op. Daemon-loop
+    registration is the integration seam (the host wires the real client)."""
+    from tinyassets.storage.review_queue import list_pending_continuations
+
+    results: list[dict[str, Any]] = []
+    for susp in list_pending_continuations(base_path):
+        results.append(continue_reviewed_run(
+            base_path, run_id=susp["run_id"],
+            decision=susp.get("resume_decision") or "",
+            directive=susp.get("resume_directive") or {},
+            github_api=github_api, verifier_api=verifier_api,
+            run_starter=run_starter, app_actor_id=app_actor_id,
+            expected_owner=expected_owner,
+        ))
+    return results
+
+
+def _app_authored_pr(pull: dict[str, Any], *, expected_owner: str) -> tuple[bool, str]:
+    """App-authored-PR invariant (Codex r17 #4). Returns ``(ok, reason)``.
+
+    GitHub blocks a PR author from approving their own PR, so a PR authored by the
+    connected owner (e.g. via a founder PAT) could NEVER receive the required owner
+    review — reject it before merge instead of merging on a self-approval that
+    can't exist. App-installation-authored PRs carry ``author_type == "Bot"``; a
+    human/PAT author is rejected. Fail closed when author identity is absent (can't
+    verify App authorship)."""
+    owner = (expected_owner or "").strip().lstrip("@").lower()
+    author = (pull.get("author_login") or "").strip().lstrip("@").lower()
+    author_type = (pull.get("author_type") or "").strip().lower()
+    if not author:
+        return False, "pr_author_unknown"
+    if owner and author == owner:
+        return False, "pr_authored_by_owner"  # self-approval is impossible
+    if author_type != "bot":
+        return False, "pr_not_app_authored"  # a human/PAT-authored PR
+    return True, "app_authored"
+
+
+def _owner_approval_confirmed(
+    github_api: Any, *, destination: str, pr_number: int, head: str,
+    expected_owner: str,
+) -> bool:
+    """PLATFORM-ENFORCED owner-review gate (Codex r17 #1): is there, RIGHT NOW on
+    GitHub, an APPROVED review by the CONNECTED OWNER at the EXACT head (not
+    dismissed/superseded)? This does NOT trust local ``WORKFLOW_APPROVED`` — so an
+    UNPROTECTED repo (no required-review ruleset) still cannot be merged without a
+    real owner approval on GitHub. An empty owner or head, an unreadable reviews
+    list, or no matching review ⇒ False (fail closed, refuse the merge)."""
+    owner = (expected_owner or "").strip().lstrip("@").lower()
+    want = (head or "").strip()
+    if not owner or not want:
+        return False
+    try:
+        reviews = github_api.list_pull_reviews(
+            destination=destination, pr_number=pr_number,
+        )
+    except Exception:  # noqa: BLE001 — can't verify ⇒ fail closed
+        return False
+    effective_states = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+    latest = next(
+        (
+            rv
+            for rv in reversed(reviews or [])
+            if (rv.get("user_login") or "").strip().lstrip("@").lower() == owner
+            and (rv.get("state") or "").strip().upper() in effective_states
+        ),
+        None,
+    )
+    return bool(
+        latest
+        and (latest.get("commit_id") or "").strip() == want
+        and (latest.get("state") or "").strip().upper() == "APPROVED"
+    )
+
+
+def execute_manual_merge(
+    base_path: str | Path, *, destination: str, pr_number: int,
+    expected_head_sha: str, github_api: Any = None, expected_owner: str = "",
+) -> dict[str, Any]:
+    """Execute the MANUAL merge (Codex r15 #1b / r17 #1) — the default flow.
+
+    GATE (Codex r17 #1): before submitting the merge this REQUIRES a CONFIRMED
+    APPROVED review by the CONNECTED OWNER at the exact reviewed head — read from
+    GitHub, never local ``WORKFLOW_APPROVED``. So even an unprotected repo cannot
+    merge without a real owner approval on GitHub. Head-bound: reports
+    pending→merged ONLY after re-reading GitHub confirms the merge at the reviewed
+    head.
+
+    Idempotent + crash-safe (r15 #3): reconciles against GitHub state (is the PR
+    ALREADY merged at this sha?) before submitting, so a replay never
+    double-merges. Without a client → ``confirmed=False`` (pending), never a
+    false 'merged'. Returns ``{"confirmed", "state", ...}``."""
+    from tinyassets import github_native as _gn
+    from tinyassets.storage import review_queue as _rq
+
+    want = (expected_head_sha or "").strip()
+    if not want:
+        # Head-bound by contract (Codex REJECT #5): without the reviewed head we
+        # cannot prove the head that merges is the head the owner approved.
+        return {"confirmed": False, "state": "missing_expected_head",
+                "reason": "manual merge requires the reviewed expected_head_sha"}
+    # HEAD-BOUND receipt (Codex REJECT #5): a receipt only vouches for THIS head,
+    # so a later head can't ride a prior head's confirmation.
+    receipt_kind = f"manual_merge:{pr_number}:{want[:12]}"
+    if _rq.has_effect_receipt(base_path, run_id=destination, effect_kind=receipt_kind):
+        return {"confirmed": True, "state": "merged", "detail": "receipt"}
+    if github_api is None:
+        return {"confirmed": False, "state": "pending_no_client",
+                "github_call": _gn.merge_pr(
+                    destination=destination, pr_number=pr_number,
+                    expected_head_sha=want).to_dict()}
+    # Reconcile: is the PR ALREADY merged AT THE REVIEWED HEAD? A merged PR whose
+    # live head != the reviewed head means head A was replaced and head B merged
+    # (a real security hole the REJECT reproduced) — refuse, never confirm.
+    try:
+        pull = github_api.get_pull(destination=destination, pr_number=pr_number)
+    except Exception as exc:  # noqa: BLE001 — can't confirm ⇒ pending
+        return {"confirmed": False, "state": "pull_unreadable", "reason": str(exc)}
+    live_head = (pull.get("head_sha") or "").strip()
+    if pull.get("merged"):
+        if live_head and live_head != want:
+            return {"confirmed": False, "state": "head_replaced_merge",
+                    "reason": (f"PR merged at head {live_head[:8]} != reviewed head "
+                               f"{want[:8]}; a replaced head merged")}
+        _rq.record_effect_receipt(
+            base_path, run_id=destination, effect_kind=receipt_kind,
+            detail={"reconciled": True, "head_sha": want,
+                    "merge_commit_sha": pull.get("merge_commit_sha")},
+        )
+        return {"confirmed": True, "state": "merged", "detail": "reconciled",
+                "head_sha": want, "merge_commit_sha": pull.get("merge_commit_sha")}
+    if live_head and want != live_head:
+        return {"confirmed": False, "state": "head_moved",
+                "reason": f"reviewed head {want[:8]} != live {live_head[:8]}"}
+    # APP-AUTHORED-PR INVARIANT (Codex r17 #4): reject a PR the connected owner (or
+    # a non-App human/PAT) authored BEFORE merging — GitHub blocks self-approval, so
+    # such a PR can never carry the required owner review.
+    app_ok, app_reason = _app_authored_pr(pull, expected_owner=expected_owner)
+    if not app_ok:
+        return {"confirmed": False, "state": "pr_author_invalid", "reason": app_reason}
+    # PLATFORM OWNER-REVIEW GATE (Codex r17 #1): require a confirmed owner approval
+    # on GitHub at this exact head BEFORE merging — never trust WORKFLOW_APPROVED.
+    if not _owner_approval_confirmed(
+        github_api, destination=destination, pr_number=pr_number, head=want,
+        expected_owner=expected_owner,
+    ):
+        return {"confirmed": False, "state": "owner_review_unconfirmed",
+                "reason": (
+                    "no confirmed GitHub APPROVED review by the connected owner "
+                    f"at head {want[:8]}; refusing to merge (local approval is not "
+                    "sufficient)")}
+    from tinyassets.github_native import GitHubCall
+    # The merge call carries sha=want, so GitHub ALSO rejects a moved head (409).
+    call = _gn.merge_pr(destination=destination, pr_number=pr_number,
+                        expected_head_sha=want)
+    cd = call.to_dict()
+    res = github_api.run_call(GitHubCall(**{k: cd[k] for k in _GH_CALL_KEYS if k in cd}))
+    if not res.get("ok"):
+        return {"confirmed": False, "state": "merge_failed", "reason": "merge_call_failed"}
+    # Re-read GitHub to CONFIRM the merge happened AT THE REVIEWED HEAD before
+    # reporting merged (head-bound receipt identity — Codex REJECT #5).
+    confirm = github_api.get_pull(destination=destination, pr_number=pr_number)
+    confirm_head = (confirm.get("head_sha") or "").strip()
+    if not confirm.get("merged"):
+        return {"confirmed": False, "state": "merge_unconfirmed"}
+    if confirm_head and confirm_head != want:
+        return {"confirmed": False, "state": "head_replaced_merge",
+                "reason": (f"post-merge head {confirm_head[:8]} != reviewed head "
+                           f"{want[:8]}")}
+    _rq.record_effect_receipt(
+        base_path, run_id=destination, effect_kind=receipt_kind,
+        detail={"head_sha": want, "merge_commit_sha": confirm.get("merge_commit_sha")},
+    )
+    return {"confirmed": True, "state": "merged", "head_sha": want,
+            "merge_commit_sha": confirm.get("merge_commit_sha")}
+
+
+def _resolve_worker_client(
+    github_api: Any, client_factory: Any, destination: str
+) -> Any:
+    """Resolve the credentialed client a recovery worker uses for ``destination``:
+    the directly-injected ``github_api`` (tests / single-repo), else
+    ``client_factory(destination)`` which the daemon builds from the per-universe
+    vault BY DESTINATION. Returns None when neither yields a client (fail closed —
+    the row stays queued)."""
+    if github_api is not None:
+        return github_api
+    if client_factory is None:
+        return None
+    return client_factory(destination)
+
+
+def execute_pending_manual_merges(
+    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
+    expected_owner: str = "", owner_resolver: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — drain the head-bound MANUAL-MERGE outbox (Codex REJECT
+    #1). For each queued merge it resolves the credentialed client (injected, or
+    built from the vault BY DESTINATION via ``client_factory``) AND the connected
+    owner login (``expected_owner`` or ``owner_resolver(destination)``), runs the
+    head-bound + owner-review-gated :func:`execute_manual_merge`, and marks the
+    outbox row executed ONLY when GitHub confirms the merge at the reviewed head.
+    On confirmation it reconciles the PR projection to ``merged``. Without a client
+    (or a confirmed owner review) the row stays queued (honest — never falsely
+    drained). The REAL daemon path the chat verb's ``pending`` merge depends on."""
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    for row in _rq.list_pending_manual_merges(base_path):
+        merge_id = row["merge_id"]
+        dest = (row.get("destination") or "").strip()
+        pr = row.get("pr_number")
+        head = (row.get("expected_head_sha") or "").strip()
+        try:
+            client = _resolve_worker_client(github_api, client_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": f"client_error:{exc}"})
+            continue
+        if client is None:
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": "no_client"})
+            continue
+        owner = expected_owner
+        if not owner and owner_resolver is not None:
+            try:
+                owner = owner_resolver(dest) or ""
+            except Exception:  # noqa: BLE001 — unresolvable owner ⇒ gate fails closed
+                owner = ""
+        try:
+            outcome = execute_manual_merge(
+                base_path, destination=dest, pr_number=pr,
+                expected_head_sha=head, github_api=client, expected_owner=owner,
+            )
+        except Exception as exc:  # noqa: BLE001 — leave queued for retry
+            logger.exception("manual merge drain failed for %s#%s", dest, pr)
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": f"error:{exc}"})
+            continue
+        if outcome.get("confirmed"):
+            _rq.mark_manual_merge_executed(base_path, merge_id=merge_id)
+            try:
+                _rq.reconcile_projection(
+                    base_path, destination=dest, pr_number=pr,
+                    github_state="merged",
+                    merge_commit_sha=outcome.get("merge_commit_sha") or "",
+                    head_sha=head,
+                )
+            except Exception:  # noqa: BLE001 — merge is durable; cache is advisory
+                logger.exception("projection reconcile after merge failed")
+            results.append({"merge_id": merge_id, "confirmed": True, "pr_number": pr,
+                            "merge_commit_sha": outcome.get("merge_commit_sha")})
+        else:
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "state": outcome.get("state"),
+                            "reason": outcome.get("reason")})
+    return results
+
+
+def execute_pending_review_effects(
+    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
+    expected_owner: str = "", owner_resolver: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — submit the owner's queued GitHub reviews (Codex r17 #1),
+    INDEPENDENT of any run suspension, so a projection with NO suspension still
+    gets its owner review onto GitHub (which the manual-merge gate then requires).
+
+    For each queued review-effect it resolves the client + connected owner,
+    reconciles against GitHub (already the OWNER's review at this head+event? →
+    skip), else submits the review with the owner USER token, and marks the row
+    executed. Idempotent — a replay never double-submits. Without a client the row
+    stays queued (honest)."""
+    from tinyassets import github_native as _gn
+    from tinyassets.github_native import GitHubCall
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    for row in _rq.list_pending_review_effects(base_path):
+        rid = row["review_effect_id"]
+        dest = (row.get("destination") or "").strip()
+        pr = row.get("pr_number")
+        head = (row.get("expected_head_sha") or "").strip()
+        event = (row.get("event") or "APPROVE").strip().upper()
+        body = row.get("body") or ""
+        try:
+            client = _resolve_worker_client(github_api, client_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
+            results.append({"review_effect_id": rid, "submitted": False,
+                            "reason": f"client_error:{exc}"})
+            continue
+        if client is None:
+            results.append({"review_effect_id": rid, "submitted": False,
+                            "reason": "no_client"})
+            continue
+        owner = expected_owner
+        if not owner and owner_resolver is not None:
+            try:
+                owner = owner_resolver(dest) or ""
+            except Exception:  # noqa: BLE001 — unresolvable owner ⇒ submit fresh
+                owner = ""
+        # App-authored-PR invariant (Codex r17 #4): reject submitting an owner
+        # APPROVE on a PR the owner authored (GitHub blocks self-approval) BEFORE
+        # the doomed call. The row stays queued so the authorship problem surfaces.
+        if event == "APPROVE":
+            try:
+                pull = client.get_pull(destination=dest, pr_number=pr)
+                app_ok, app_reason = _app_authored_pr(pull, expected_owner=owner)
+            except Exception as exc:  # noqa: BLE001 — unreadable ⇒ retry later
+                results.append({"review_effect_id": rid, "submitted": False,
+                                "reason": f"pull_unreadable:{exc}"})
+                continue
+            if not app_ok:
+                results.append({"review_effect_id": rid, "submitted": False,
+                                "reason": app_reason})
+                continue
+        if event == "APPROVE":
+            call = _gn.review_approve(destination=dest, pr_number=pr, head_sha=head)
+        else:
+            call = _gn.review_request_changes(
+                destination=dest, pr_number=pr, head_sha=head, body=body,
+            )
+        cd = call.to_dict()
+        # Reconcile: the OWNER's review at this head+event already on GitHub (crash
+        # window)? → do NOT re-submit; mark done.
+        if _review_already_on_github(client, cd, expected_owner=owner):
+            _rq.mark_review_effect_executed(base_path, review_effect_id=rid)
+            results.append({"review_effect_id": rid, "submitted": True,
+                            "detail": "already_on_github", "pr_number": pr})
+            continue
+        try:
+            res = client.run_call(GitHubCall(**{
+                k: cd[k] for k in _GH_CALL_KEYS if k in cd
+            }))
+        except Exception as exc:  # noqa: BLE001 — leave queued for retry
+            logger.exception("review-effect submit failed for %s#%s", dest, pr)
+            results.append({"review_effect_id": rid, "submitted": False,
+                            "reason": f"error:{exc}"})
+            continue
+        if not res.get("ok"):
+            results.append({"review_effect_id": rid, "submitted": False,
+                            "reason": "call_failed"})
+            continue
+        _rq.mark_review_effect_executed(base_path, review_effect_id=rid)
+        results.append({"review_effect_id": rid, "submitted": True, "event": event,
+                        "pr_number": pr})
+    return results
+
+
+def _resolve_owner_approval_id(
+    reviews: list[dict[str, Any]] | None, *, owner: str, head: str
+) -> int | None:
+    """The review_id of the CONNECTED OWNER's APPROVED review at ``head`` (Codex
+    REJECT #4) — the EXACT id a dismissal needs, never the hardcoded 0. Matches on
+    the reviewer login AND (when known) the reviewed commit, returning the most
+    recent match. None when no such standing owner approval exists."""
+    want_owner = (owner or "").strip().lstrip("@").lower()
+    want_head = (head or "").strip()
+    if not want_owner:
+        return None
+    resolved: int | None = None
+    for rv in reviews or []:
+        if (rv.get("user_login") or "").strip().lstrip("@").lower() != want_owner:
+            continue
+        if (rv.get("state") or "").strip().upper() != "APPROVED":
+            continue
+        if want_head and (rv.get("commit_id") or "").strip() != want_head:
+            continue
+        rid = rv.get("id")
+        if isinstance(rid, int):
+            resolved = rid  # most recent matching approval wins
+    return resolved
+
+
+def execute_pending_revocations(
+    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — execute queued preference-tightening revocations (Codex
+    r15 #2): actually DISABLE auto-merge / DISMISS the prior approval via the
+    client and confirm, then mark the revocation executed. The client is the
+    injected ``github_api`` or ``client_factory(destination)`` (vault-built by
+    destination). Without a client the revocations stay queued (honest — nothing
+    is falsely marked done). Daemon-loop registration is the integration seam.
+
+    Dismissal (Codex REJECT #4): the EXACT owner review_id is resolved from
+    GitHub via ``list_pull_reviews`` (owner login + reviewed head) — never the
+    old hardcoded ``review_id=0`` that the permissive fake accepted. The dismiss
+    call runs under the owner USER token (the authorized dismisser on a protected
+    branch), not the App's minimal installation scope. When no standing owner
+    approval exists (already dismissed / head auto-dismissed), the revocation
+    goal is already met and the row is marked done."""
+    from tinyassets import github_native as _gn
+    from tinyassets.github_native import GitHubCall
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    for rev in _rq.list_pending_revocations(base_path):
+        rev_id = rev["revocation_id"]
+        dest, pr, kind = rev.get("destination") or "", rev.get("pr_number"), rev.get("kind")
+        try:
+            github_api_dest = _resolve_worker_client(github_api, client_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
+            results.append({"revocation_id": rev_id, "executed": False,
+                            "reason": f"client_error:{exc}"})
+            continue
+        if github_api_dest is None:
+            results.append({"revocation_id": rev_id, "executed": False,
+                            "reason": "no_client"})
+            continue
+        try:
+            if kind == "disable_auto_merge":
+                call = _gn.disable_auto_merge(destination=dest, pr_number=pr)
+            elif kind == "dismiss_prior_approval":
+                # Resolve the EXACT owner review_id from GitHub (never 0).
+                try:
+                    reviews = github_api_dest.list_pull_reviews(
+                        destination=dest, pr_number=pr
+                    )
+                except Exception as exc:  # noqa: BLE001 — unreadable ⇒ retry later
+                    results.append({"revocation_id": rev_id, "executed": False,
+                                    "reason": f"reviews_unreadable:{exc}"})
+                    continue
+                review_id = _resolve_owner_approval_id(
+                    reviews, owner=rev.get("founder_handle") or "",
+                    head=rev.get("expected_head_sha") or "",
+                )
+                if review_id is None:
+                    # No standing owner approval to dismiss → goal already met.
+                    _rq.mark_revocation_executed(base_path, revocation_id=rev_id)
+                    results.append({"revocation_id": rev_id, "executed": True,
+                                    "kind": kind, "pr_number": pr,
+                                    "detail": "no_standing_owner_approval"})
+                    continue
+                call = _gn.dismiss_review(
+                    destination=dest, pr_number=pr, review_id=review_id,
+                    message="merge preference changed; renewed owner consent required",
+                )
+            else:
+                results.append({"revocation_id": rev_id, "executed": False,
+                                "reason": f"unknown_kind:{kind}"})
+                continue
+            cd = call.to_dict()
+            res = github_api_dest.run_call(GitHubCall(**{
+                k: cd[k] for k in _GH_CALL_KEYS if k in cd
+            }))
+            if not res.get("ok"):
+                results.append({"revocation_id": rev_id, "executed": False,
+                                "reason": "call_failed"})
+                continue
+            _rq.mark_revocation_executed(base_path, revocation_id=rev_id)
+            results.append({"revocation_id": rev_id, "executed": True,
+                            "kind": kind, "pr_number": pr})
+        except Exception as exc:  # noqa: BLE001 — leave queued for retry
+            logger.exception("revocation execution failed")
+            results.append({"revocation_id": rev_id, "executed": False,
+                            "reason": f"error:{exc}"})
+    return results
+
+
+def fire_due_not_before_timers(
+    base_path: str | Path, *, github_api: Any = None, verifier_api: Any = None,
+    app_actor_id: Any = None, expected_owner: str = "", now: float | None = None,
+    client_factory: Any = None, verifier_factory: Any = None,
+    owner_resolver: Any = None, app_actor_resolver: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — the not_before timer-watcher (Codex r14 #5 / r17 #3). For
+    each due timer it RE-VALIDATES the binding revision + GitHub head, RE-RUNS the
+    shared fail-closed autonomous gate (VERIFIER identity + fresh base/head), and
+    only then executes the auto-merge enable — marking the timer fired ONLY on
+    confirmed success (idempotent via receipt). A stale binding (owner tightened)
+    or moved head refuses without firing.
+
+    Per-destination wiring (Codex r17 #3): the merge client, the ruleset-read
+    VERIFIER client, the connected owner, and the App bypass-actor id are resolved
+    PER DESTINATION via the factories/resolvers (the daemon builds them from the
+    vault) — falling back to the single injected values for tests. Without a
+    verifier the autonomous gate fails closed and the timer stays due."""
+    from tinyassets.effectors import github_merge as _gm
+    from tinyassets.github_native import GitHubCall
+    from tinyassets.storage import review_queue as _rq
+
+    ts = now if now is not None else _now()
+    fired: list[dict[str, Any]] = []
+    for timer in _rq.due_not_before_timers(base_path, now=ts):
+        dest = timer.get("destination") or ""
+        pr = timer.get("pr_number")
+        bdid = timer.get("branch_def_id") or ""
+        binding = _rq.resolve_merge_preference_binding(base_path, branch_def_id=bdid)
+        ok, reason = _rq.authorize_timer_fire(
+            timer, current_revision=int(binding.get("revision") or 0),
+            current_head_sha=timer.get("expected_head_sha") or "",
+        )
+        if not ok:
+            fired.append({"pr_number": pr, "fired": False, "reason": reason})
+            continue
+        # Resolve the per-destination merge client + verifier + owner + App actor.
+        try:
+            github_api_dest = _resolve_worker_client(github_api, client_factory, dest)
+            verifier_dest = _resolve_worker_client(verifier_api, verifier_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ stay due
+            fired.append({"pr_number": pr, "fired": False,
+                          "reason": f"client_error:{exc}"})
+            continue
+        owner_dest = expected_owner or (
+            (owner_resolver(dest) or "") if owner_resolver else "")
+        actor_dest = app_actor_id if app_actor_id not in (None, "") else (
+            (app_actor_resolver(dest) or None) if app_actor_resolver else None)
+        # Re-run the shared fail-closed gate against FRESH GitHub state.
+        merge = _gm.run_autonomous_merge(
+            base_path, destination=dest, pr_number=pr, branch_def_id=bdid,
+            expected_head_sha=timer.get("expected_head_sha") or "",
+            github_api=github_api_dest, verifier_api=verifier_dest,
+            app_actor_id=actor_dest, expected_owner=owner_dest,
+            firing=True, now=ts,
+        )
+        if not merge.get("ok") or merge.get("action") != "enable_auto_merge":
+            fired.append({"pr_number": pr, "fired": False,
+                          "reason": merge.get("error_kind") or merge.get("action")})
+            continue
+        receipt_key = (
+            f"timer_enable_auto_merge:{pr}:"
+            f"{(timer.get('expected_head_sha') or '')[:12]}:"
+            f"r{int(timer.get('binding_revision') or 0)}"
+        )
+        if _rq.has_effect_receipt(base_path, run_id=dest, effect_kind=receipt_key) is None:
+            call = merge.get("github_call") or {}
+            res = github_api_dest.run_call(GitHubCall(**{
+                k: call[k] for k in _GH_CALL_KEYS if k in call
+            }))
+            if not res.get("ok"):
+                fired.append({"pr_number": pr, "fired": False, "reason": "enable_failed"})
+                continue
+            _rq.record_effect_receipt(
+                base_path, run_id=dest, effect_kind=receipt_key,
+                detail={"status": res.get("status")},
+            )
+        _rq.mark_timer_fired(base_path, destination=dest, pr_number=pr, now=ts)
+        fired.append({"pr_number": pr, "fired": True})
+    return fired
+
+
+def register_review_workers(
+    *, base_path: str | Path, github_api: Any = None, verifier_api: Any = None,
+    run_starter: Callable[[dict[str, Any]], str] | None = None,
+    app_actor_id: Any = None, expected_owner: str = "", client_factory: Any = None,
+    verifier_factory: Any = None, owner_resolver: Any = None,
+    app_actor_resolver: Any = None,
+) -> dict[str, Callable[[], list[dict[str, Any]]]]:
+    """THE single daemon-registration ENTRYPOINT (Codex r15 #1c) for the S4
+    review-recovery workers. Returns a dict of ``name -> zero-arg callable`` the
+    daemon loop invokes on each tick: continuation replay, the owner REVIEW-EFFECT
+    submitter (Codex r17 #1), the MANUAL-MERGE drain (owner-review-gated), the
+    revocation executor, and the not_before timer-watcher (Codex r17 #3) — each
+    bound to the credentialed client (``github_api`` directly, or
+    ``client_factory(destination)`` / ``verifier_factory(destination)`` built from
+    the vault per destination), with the owner + App-actor resolved per
+    destination.
+
+    Live wiring: :func:`run_review_recovery_for_universe` builds the factories +
+    resolvers from the per-universe vault and the daemon loop calls it each cycle
+    (:func:`fantasy_daemon.__main__._dispatcher_startup`)."""
+    return {
+        "replay_continuations": lambda: replay_pending_continuations(
+            base_path, github_api=github_api, verifier_api=verifier_api,
+            run_starter=run_starter, app_actor_id=app_actor_id,
+            expected_owner=expected_owner,
+        ),
+        "submit_review_effects": lambda: execute_pending_review_effects(
+            base_path, github_api=github_api, client_factory=client_factory,
+            expected_owner=expected_owner, owner_resolver=owner_resolver,
+        ),
+        "drain_manual_merges": lambda: execute_pending_manual_merges(
+            base_path, github_api=github_api, client_factory=client_factory,
+            expected_owner=expected_owner, owner_resolver=owner_resolver,
+        ),
+        "execute_revocations": lambda: execute_pending_revocations(
+            base_path, github_api=github_api, client_factory=client_factory,
+        ),
+        "fire_timers": lambda: fire_due_not_before_timers(
+            base_path, github_api=github_api, verifier_api=verifier_api,
+            app_actor_id=app_actor_id, expected_owner=expected_owner,
+            client_factory=client_factory, verifier_factory=verifier_factory,
+            owner_resolver=owner_resolver, app_actor_resolver=app_actor_resolver,
+        ),
+    }
+
+
+def _start_review_revision(
+    universe_dir: str | Path, route_back: dict[str, Any]
+) -> str:
+    """Start the revised workflow run requested by an owner reshape decision."""
+    from tinyassets.api.runs import (
+        _bind_universe_context,
+        _default_run_execution_scope,
+        _resolve_runtime_bindings,
+    )
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+
+    source_run_id = str(route_back.get("run_id") or "").strip()
+    source = get_run(universe_dir, source_run_id)
+    if source is None:
+        raise LookupError("reshape source run was not found")
+    branch_def_id = str(
+        route_back.get("branch_def_id") or source.get("branch_def_id") or ""
+    ).strip()
+    if not branch_def_id:
+        raise LookupError("reshape route has no branch definition")
+    universe_id = str(
+        route_back.get("universe_id")
+        or source.get("universe_id")
+        or Path(universe_dir).name
+    ).strip()
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(universe_dir, branch_def_id=branch_def_id)
+    )
+    errors = branch.validate()
+    if errors:
+        raise ValueError("reshape branch definition is invalid")
+    runtime_bindings, refusal = _resolve_runtime_bindings(branch, universe_id)
+    if refusal is not None:
+        raise RuntimeError("reshape runtime bindings are unavailable")
+
+    inputs = dict(source.get("inputs") or {})
+    owner_notes = str(route_back.get("owner_notes") or "").strip()
+    if owner_notes:
+        inputs["owner_notes"] = owner_notes
+    try:
+        from tinyassets.providers.call import call_provider as provider_call
+    except ImportError:
+        provider_call = None
+    provider_call = _bind_universe_context(provider_call, universe_id)
+    outcome = execute_branch_async(
+        universe_dir,
+        branch=branch,
+        inputs=inputs,
+        run_name="Owner-requested revision",
+        actor=str(source.get("actor") or "anonymous"),
+        provider_call=provider_call,
+        runtime_bindings=runtime_bindings,
+        _enqueue_universe_id=universe_id,
+        execution_scope=_default_run_execution_scope(universe_dir, universe_id),
+    )
+    return outcome.run_id
+
+
+def run_review_recovery_for_universe(
+    universe_dir: str | Path, *, request_fn: Any = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """LIVE DAEMON CALLER (Codex REJECT #1 / r17 #1 + #3) — drive the S4
+    review-recovery workers for ONE universe with REAL vault-built clients.
+
+    Builds, from the platform credential vault BY DESTINATION: the merge/read
+    client (:func:`github_http.github_client_from_vault`), the ruleset-read
+    VERIFIER client (:func:`github_http.verifier_client_from_vault`), the connected
+    owner login and App bypass-actor id from the non-secret connection metadata.
+    Then,
+    in order: submits queued owner REVIEW-EFFECTS, drives manual-flow continuations,
+    drains owner-review-GATED manual merges, executes revocations, and fires due
+    not_before timers (autonomous) through the verifier.
+
+    Fail-closed everywhere: a destination with no connected credential yields no
+    client, so its rows stay queued; a manual merge with no CONFIRMED owner review
+    on GitHub is refused; an autonomous timer with no verifier stays due. Called
+    each cycle from the daemon's per-universe startup recovery; safe to call
+    repeatedly (every worker is idempotent + receipt- / outbox-guarded). Returns
+    per-worker result lists for observability."""
+    from tinyassets.credential_broker import github_connection_metadata
+    from tinyassets.github_http import (
+        github_client_from_vault,
+        verifier_client_from_vault,
+    )
+    from tinyassets.storage import review_queue as _rq
+
+    _client_cache: dict[str, Any] = {}
+    _verifier_cache: dict[str, Any] = {}
+    universe_id = Path(universe_dir).name
+
+    def client_factory(destination: str) -> Any:
+        dest = (destination or "").strip()
+        if dest not in _client_cache:
+            try:
+                _client_cache[dest] = github_client_from_vault(
+                    universe_dir, dest, request_fn=request_fn,
+                )
+            except Exception:  # noqa: BLE001 — no/invalid credential ⇒ fail closed
+                logger.exception("building github client for %s failed", dest)
+                _client_cache[dest] = None
+        return _client_cache[dest]
+
+    def verifier_factory(destination: str) -> Any:
+        dest = (destination or "").strip()
+        if dest not in _verifier_cache:
+            try:
+                _verifier_cache[dest] = verifier_client_from_vault(
+                    universe_dir, dest, request_fn=request_fn,
+                )
+            except Exception:  # noqa: BLE001 — no ruleset-verify grant ⇒ fail closed
+                logger.exception("building verifier client for %s failed", dest)
+                _verifier_cache[dest] = None
+        return _verifier_cache[dest]
+
+    def owner_resolver(destination: str) -> str:
+        return github_connection_metadata(
+            universe_id, destination
+        ).get("account_login", "")
+
+    def app_actor_resolver(destination: str) -> str:
+        return github_connection_metadata(
+            universe_id, destination
+        ).get("app_actor_id", "")
+
+    def run_starter(route_back: dict[str, Any]) -> str:
+        return _start_review_revision(universe_dir, route_back)
+
+    # 1) Submit the owner's queued reviews (independent of any suspension) so the
+    #    merge gate can find a CONFIRMED owner review on GitHub.
+    review_effects = execute_pending_review_effects(
+        universe_dir, client_factory=client_factory, owner_resolver=owner_resolver,
+    )
+
+    # 2) Drive manual-flow continuations (submit the owner's review + complete the
+    #    run; manual merge needs no verifier). Owner resolved for owner-bound
+    #    reconciliation; no verifier, so an autonomous decision fails closed.
+    continuations: list[dict[str, Any]] = []
+    for susp in _rq.list_pending_continuations(universe_dir):
+        dest = (susp.get("destination") or "").strip()
+        client = client_factory(dest)
+        if client is None:
+            continuations.append({"run_id": susp.get("run_id"), "applied": False,
+                                  "reason": "no_client"})
+            continue
+        continuations.append(continue_reviewed_run(
+            universe_dir, run_id=susp["run_id"],
+            decision=susp.get("resume_decision") or "",
+            directive=susp.get("resume_directive") or {},
+            github_api=client,
+            verifier_api=verifier_factory(dest),
+            run_starter=run_starter,
+            app_actor_id=app_actor_resolver(dest),
+            expected_owner=owner_resolver(dest),
+        ))
+
+    return {
+        "submit_review_effects": review_effects,
+        "replay_continuations": continuations,
+        "drain_manual_merges": execute_pending_manual_merges(
+            universe_dir, client_factory=client_factory, owner_resolver=owner_resolver,
+        ),
+        "execute_revocations": execute_pending_revocations(
+            universe_dir, client_factory=client_factory,
+        ),
+        "fire_timers": fire_due_not_before_timers(
+            universe_dir, client_factory=client_factory,
+            verifier_factory=verifier_factory, owner_resolver=owner_resolver,
+            app_actor_resolver=app_actor_resolver,
+        ),
+    }
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:

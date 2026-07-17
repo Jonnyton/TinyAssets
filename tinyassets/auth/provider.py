@@ -506,6 +506,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _GOAL_WRITE_ACTIONS,
         _OUTCOME_ACTIONS,
     )
+    from tinyassets.api.review_queue_actions import _REVIEW_QUEUE_ACTIONS
     from tinyassets.api.runs import _RUN_ACTIONS, _RUN_WRITE_ACTIONS
     from tinyassets.api.runtime_ops import (
         _INSPECT_DRY_ACTIONS,
@@ -552,6 +553,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _EFFECTOR_CONSENT_ACTIONS,
         _ATTRIBUTION_ACTIONS,
         _LEADERBOARD_ACTIONS,
+        _REVIEW_QUEUE_ACTIONS,
     ):
         extension_actions.update(action_map)
     extension_writes.update(_BRANCH_WRITE_ACTIONS)
@@ -580,6 +582,16 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     extension_writes.update({"record_outcome", "record_remix"})
     extension_writes.update({
         "grant_effector_consent", "revoke_effector_consent",
+    })
+    # Patch-loop S4 (GitHub-native): owner review decisions are owner WRITES
+    # (approve/reshape/reject record intent + the GitHub call; set_preference
+    # mutates the merge-preference binding). `review_queue_list` stays
+    # read-effect; the handler's owner-gate confines every verb to the universe
+    # owner regardless. (Codex r11 #5: set_preference is a write, not a read;
+    # the old hold/release verbs no longer exist.)
+    extension_writes.update({
+        "review_queue_approve", "review_queue_reshape", "review_queue_reject",
+        "review_queue_merge", "review_queue_set_preference",
     })
     _extend_scope_rows(
         rows,

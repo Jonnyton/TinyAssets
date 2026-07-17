@@ -358,6 +358,18 @@ CREATE TABLE IF NOT EXISTS credential_bindings (
     updated_at   REAL NOT NULL,
     PRIMARY KEY (universe_id, provider, destination, purpose)
 );
+
+CREATE TABLE IF NOT EXISTS github_connection_metadata (
+    universe_id     TEXT NOT NULL,
+    destination     TEXT NOT NULL,
+    app_id          TEXT NOT NULL DEFAULT '',
+    installation_id TEXT NOT NULL DEFAULT '',
+    app_actor_id    TEXT NOT NULL DEFAULT '',
+    account_login   TEXT NOT NULL DEFAULT '',
+    client_id       TEXT NOT NULL DEFAULT '',
+    updated_at      REAL NOT NULL,
+    PRIMARY KEY (universe_id, destination)
+);
 """
 
 
@@ -401,6 +413,142 @@ def _clean_field(value: object, field: str, *, max_len: int = 4096) -> str:
         logger.error("credential binding field %s failed validation", field)
         raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
     return cleaned
+
+
+def _clean_optional_metadata(value: object, field: str) -> str:
+    if value in (None, ""):
+        return ""
+    return _clean_field(value, field, max_len=512)
+
+
+def set_github_connection_metadata(
+    universe_id: str,
+    destination: str,
+    *,
+    app_id: str = "",
+    installation_id: str = "",
+    app_actor_id: str = "",
+    account_login: str = "",
+    client_id: str = "",
+    base: str | Path | None = None,
+) -> None:
+    """Persist GitHub's non-secret connection identifiers beside bindings.
+
+    The fixed columns deliberately exclude tokens, refresh tokens, private keys,
+    and client secrets; those values belong only in the encrypted vault record.
+    """
+    values = {
+        "universe_id": _clean_field(universe_id, "universe_id"),
+        "destination": _clean_field(destination, "destination"),
+        "app_id": _clean_optional_metadata(app_id, "app_id"),
+        "installation_id": _clean_optional_metadata(
+            installation_id, "installation_id"
+        ),
+        "app_actor_id": _clean_optional_metadata(app_actor_id, "app_actor_id"),
+        "account_login": _clean_optional_metadata(
+            account_login, "account_login"
+        ).lstrip("@").lower(),
+        "client_id": _clean_optional_metadata(client_id, "client_id"),
+    }
+    conn = _registry_connect(base, create=True)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """
+            INSERT INTO github_connection_metadata(
+                universe_id, destination, app_id, installation_id,
+                app_actor_id, account_login, client_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(universe_id, destination) DO UPDATE SET
+                app_id = excluded.app_id,
+                installation_id = excluded.installation_id,
+                app_actor_id = excluded.app_actor_id,
+                account_login = excluded.account_login,
+                client_id = excluded.client_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                values["universe_id"],
+                values["destination"],
+                values["app_id"],
+                values["installation_id"],
+                values["app_actor_id"],
+                values["account_login"],
+                values["client_id"],
+                time.time(),
+            ),
+        )
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("ROLLBACK")
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+
+def github_connection_metadata(
+    universe_id: str,
+    destination: str,
+    *,
+    base: str | Path | None = None,
+) -> dict[str, str]:
+    """Return only the allowlisted, non-secret GitHub connection metadata."""
+    if not registry_exists(base):
+        return {}
+    universe = _clean_field(universe_id, "universe_id")
+    dest = _clean_field(destination, "destination")
+    conn = _registry_connect(base, create=False)
+    try:
+        row = conn.execute(
+            "SELECT app_id, installation_id, app_actor_id, account_login, client_id "
+            "FROM github_connection_metadata WHERE universe_id = ? AND destination = ?",
+            (universe, dest),
+        ).fetchone()
+    except sqlite3.Error:
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    if row is None:
+        return {}
+    return {
+        "app_id": _clean_optional_metadata(row["app_id"], "app_id"),
+        "installation_id": _clean_optional_metadata(
+            row["installation_id"], "installation_id"
+        ),
+        "app_actor_id": _clean_optional_metadata(row["app_actor_id"], "app_actor_id"),
+        "account_login": _clean_optional_metadata(
+            row["account_login"], "account_login"
+        ).lstrip("@").lower(),
+        "client_id": _clean_optional_metadata(row["client_id"], "client_id"),
+    }
+
+
+def github_account_login(
+    universe_id: str, *, base: str | Path | None = None
+) -> str:
+    """Return the universe's one unambiguous connected GitHub account login."""
+    if not registry_exists(base):
+        return ""
+    universe = _clean_field(universe_id, "universe_id")
+    conn = _registry_connect(base, create=False)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT lower(account_login) AS account_login "
+            "FROM github_connection_metadata "
+            "WHERE universe_id = ? AND account_login != ''",
+            (universe,),
+        ).fetchall()
+    except sqlite3.Error:
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    if len(rows) != 1:
+        return ""
+    return _clean_optional_metadata(rows[0]["account_login"], "account_login")
 
 
 def _binding_from_row(row: sqlite3.Row) -> tuple[SecretBinding, str]:

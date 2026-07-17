@@ -225,6 +225,29 @@ def _dispatcher_startup(universe_path: Path) -> None:
         logger.exception(
             "Phase E dispatcher_startup failed for %s", universe_path,
         )
+    _run_review_recovery(universe_path)
+
+
+def _run_review_recovery(universe_path: Path) -> None:
+    """LIVE daemon caller for the S4 review-recovery workers (Codex REJECT #1):
+    each cycle, drain this universe's head-bound manual-merge outbox + revocation
+    outbox with the REAL credentialed client built from the universe's vault. Only
+    runs when the universe actually has a review-queue DB (no empty-DB creation on
+    universes with no patch loop), and fail-closed when no GitHub credential is
+    connected (rows stay queued). Isolated in its own try/except so a review-queue
+    hiccup never wedges the dispatcher startup path."""
+    try:
+        from tinyassets.storage.review_queue import review_queue_db_path
+
+        if not review_queue_db_path(universe_path).exists():
+            return
+        from tinyassets.runs import run_review_recovery_for_universe
+
+        run_review_recovery_for_universe(universe_path)
+    except Exception:  # noqa: BLE001 — recovery is best-effort; never wedge startup
+        logger.exception(
+            "S4 review-recovery drain failed for %s", universe_path,
+        )
 
 
 def _phase_f_enabled() -> bool:
