@@ -1686,40 +1686,6 @@ def mark_manual_merge_executed(
             return cur.rowcount > 0
 
 
-# ── review-effect outbox (owner review submission, suspension-independent) ────
-
-
-def enqueue_review_effect(
-    universe_dir: str | Path, *, destination: str, pr_number: int,
-    expected_head_sha: str, event: str = "APPROVE", body: str = "",
-    branch_def_id: str = "", decided_by: str = "", now: float | None = None,
-) -> dict[str, Any]:
-    """Durably enqueue the owner's GitHub review (Codex r17 #1), INDEPENDENT of any
-    run suspension, so a projection with no suspension still gets its owner review
-    onto GitHub. Idempotent: at most one pending review-effect per
-    (destination, pr_number, head, event). Returns
-    ``{"review_effect_id"|None, "enqueued": bool}``."""
-    initialize_review_queue_db(universe_dir)
-    ts = _now(now)
-    rid = f"rve-{uuid.uuid4().hex[:16]}"
-    ev = (event or "APPROVE").strip().upper()
-    with _connect(universe_dir) as conn:
-        with _write(conn):
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO review_effect_outbox "
-                "(review_effect_id, destination, pr_number, expected_head_sha, "
-                "event, body, branch_def_id, decided_by, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    rid, (destination or "").strip(), pr_number,
-                    (expected_head_sha or "").strip(), ev, body, branch_def_id,
-                    decided_by, ts,
-                ),
-            )
-            enqueued = cur.rowcount > 0
-    return {"review_effect_id": rid if enqueued else None, "enqueued": enqueued}
-
-
 def list_pending_review_effects(universe_dir: str | Path) -> list[dict[str, Any]]:
     initialize_review_queue_db(universe_dir)
     with _connect(universe_dir) as conn:
@@ -1819,7 +1785,6 @@ __all__ = [
     "enqueue_manual_merge",
     "list_pending_manual_merges",
     "mark_manual_merge_executed",
-    "enqueue_review_effect",
     "list_pending_review_effects",
     "mark_review_effect_executed",
 ]

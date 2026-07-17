@@ -96,6 +96,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         "submit_node_bid",  # Phase G
         "set_tier_config",  # Phase H
         "set_engine",  # S5 founder engine-assignment (offer_engine removed, round-16 #3)
+        "bind_design",  # S2 private design bindings
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
         "daemon_create", "daemon_summon", "daemon_banish",
         "daemon_pause", "daemon_resume", "daemon_restart",
@@ -104,6 +105,28 @@ def test_write_actions_table_is_exhaustive() -> None:
         "daemon_memory_promote",
     }
     assert set(us.WRITE_ACTIONS.keys()) == expected
+
+
+def test_bind_design_ledger_extractor_never_leaks_values() -> None:
+    secret = "private-repository-binding"
+    target, summary, payload = us._extract_bind_design(
+        {"inputs_json": json.dumps({"repository": secret})},
+        {
+            "branch_def_id": "branch-1",
+            "bound_fields": ["repository"],
+            "missing_fields": [],
+            "status": "bound",
+        },
+    )
+
+    rendered = json.dumps({"target": target, "summary": summary, "payload": payload})
+    assert secret not in rendered
+    assert payload == {
+        "branch_def_id": "branch-1",
+        "bound_fields": ["repository"],
+        "missing_fields": [],
+        "status": "bound",
+    }
 
 
 def test_set_premise_appends_ledger(universe: str) -> None:

@@ -53,6 +53,27 @@ def _merge_client(transport):
     return gh.HttpGitHubApi(tp, request_fn=transport, sleep_fn=lambda _s: None)
 
 
+def _enqueue_review_effect(universe_dir):
+    rq.project_pr(
+        universe_dir,
+        destination=_DEST,
+        pr_number=_PR,
+        head_sha=_HEAD,
+        branch_def_id="bd",
+    )
+    rq.decide_and_resume(
+        universe_dir,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_APPROVE,
+        workflow_outcome=rq.WORKFLOW_APPROVED,
+        decided_by="owner",
+        expected_head_sha=_HEAD,
+        directive={"action": "merge"},
+        review_effect={"event": "APPROVE", "branch_def_id": "bd"},
+    )
+
+
 def _pull(*, merged, head=_HEAD, author_login="workflow-app[bot]", author_type="Bot"):
     return {
         "state": "closed" if merged else "open", "merged": merged,
@@ -158,8 +179,7 @@ def test_merge_refused_when_owner_authored_pr_real_client(tmp_path):
 
 
 def test_review_effect_worker_submits_owner_review_real_client(tmp_path):
-    rq.enqueue_review_effect(tmp_path, destination=_DEST, pr_number=_PR,
-                             expected_head_sha=_HEAD, event="APPROVE")
+    _enqueue_review_effect(tmp_path)
     transport = ScriptedTransport({
         ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False))],       # app-authored ok
         ("GET", f"/pulls/{_PR}/reviews"): [(200, [])],                # not yet reviewed
@@ -174,8 +194,7 @@ def test_review_effect_worker_submits_owner_review_real_client(tmp_path):
 
 
 def test_review_effect_worker_idempotent_when_already_on_github(tmp_path):
-    rq.enqueue_review_effect(tmp_path, destination=_DEST, pr_number=_PR,
-                             expected_head_sha=_HEAD, event="APPROVE")
+    _enqueue_review_effect(tmp_path)
     transport = ScriptedTransport({
         ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False))],
         ("GET", f"/pulls/{_PR}/reviews"): [(200, _owner_reviews())],  # already there
@@ -190,8 +209,7 @@ def test_review_effect_worker_idempotent_when_already_on_github(tmp_path):
 
 
 def test_review_effect_worker_rejects_owner_authored_pr(tmp_path):
-    rq.enqueue_review_effect(tmp_path, destination=_DEST, pr_number=_PR,
-                             expected_head_sha=_HEAD, event="APPROVE")
+    _enqueue_review_effect(tmp_path)
     transport = ScriptedTransport({
         ("GET", f"/pulls/{_PR}"): [
             (200, _pull(merged=False, author_login="owner", author_type="User")),
@@ -246,8 +264,13 @@ def test_not_before_timer_fires_through_real_verifier(tmp_path):
     )
     transport = ScriptedTransport(_gated_ruleset_routes())
     merge_client = _merge_client(transport)
-    verifier = gh.verifier_client(
-        "gho_ruleset", request_fn=transport, sleep_fn=lambda _s: None,
+    verifier = gh.HttpGitHubApi(
+        ga.StaticTokenProvider(
+            "gho_ruleset", purposes={ga.PURPOSE_RULESET_VERIFY},
+        ),
+        read_purpose=ga.PURPOSE_RULESET_VERIFY,
+        request_fn=transport,
+        sleep_fn=lambda _s: None,
     )
     fired = runs.fire_due_not_before_timers(
         tmp_path, github_api=merge_client, verifier_api=verifier,
@@ -257,6 +280,11 @@ def test_not_before_timer_fires_through_real_verifier(tmp_path):
     assert ("POST", "/graphql") in transport.calls  # auto-merge enabled
     # Timer marked fired (idempotent) — no longer due.
     assert rq.due_not_before_timers(tmp_path, now=5000.0) == []
+
+
+def test_dead_dual_path_exports_are_removed():
+    assert not hasattr(gh, "verifier_client")
+    assert not hasattr(rq, "enqueue_review_effect")
 
 
 def test_not_before_timer_stays_due_without_verifier(tmp_path):

@@ -699,17 +699,6 @@ def github_client_from_vault(
     return HttpGitHubApi(provider, **kwargs)
 
 
-def verifier_client(ruleset_verify_token: str, **kwargs: Any) -> HttpGitHubApi:
-    """Build a VERIFIER GitHub client (Codex r13 #3) whose reads use the owner's
-    elevated ruleset-read token — the identity that can positively see
-    ``bypass_actors``. Used ONLY for autonomous-merge gate verification; manual
-    merge never needs one."""
-    from tinyassets.github_auth import StaticTokenProvider
-
-    tp = StaticTokenProvider(ruleset_verify_token, purposes={PURPOSE_RULESET_VERIFY})
-    return HttpGitHubApi(tp, read_purpose=PURPOSE_RULESET_VERIFY, **kwargs)
-
-
 def verifier_client_from_vault(
     universe_dir: Any, destination: str, **kwargs: Any
 ) -> HttpGitHubApi | None:
@@ -737,6 +726,5 @@ __all__ = [
     "VaultBackedTokenProvider",
     "installation_token_exchange",
     "github_client_from_vault",
-    "verifier_client",
     "verifier_client_from_vault",
 ]
