@@ -6,9 +6,13 @@ rotating-refresh providers revoke the whole token family on replay). Two proofs:
 * **50+ concurrent put/get/delete** across real OS processes against one WAL DB —
   proves the store survives simultaneous writers with no corruption or lost
   fail-closed semantics.
-* **single-refresh race** — many workers race to refresh ONE ref; the DB-backed
-  exclusive per-ref lease + re-check-inside-lock means exactly ONE refresh runs
-  and the losers skip gracefully (no error, no double token-burn).
+* **single-refresh race** — many workers race to refresh ONE ref; the fenced
+  exclusive per-ref lease + still-held check + fenced commit means exactly ONE
+  refresh runs and the losers skip gracefully (no error, no double token-burn).
+  The fenced TTL-overrun / crash-reacquire proof lives in
+  ``test_credential_vault_hardening.py``.
+* **daemon-local CAS** — concurrent DPAPI writers serialize through the control
+  DB mutation lock; exactly one CAS winner.
 
 Workers are module-level so they pickle under Windows spawn.
 """
@@ -16,14 +20,17 @@ Workers are module-level so they pickle under Windows spawn.
 from __future__ import annotations
 
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import nacl.bindings as sodium
+import pytest
 
 from tinyassets.credentials import (
     CredentialUnavailable,
     Custody,
+    DpapiVaultBackend,
     InMemoryKeyProvider,
     PlatformVaultBackend,
     SecretBinding,
@@ -34,6 +41,10 @@ from tinyassets.credentials import (
     VaultStore,
 )
 
+WINDOWS_ONLY = pytest.mark.skipif(
+    sys.platform != "win32", reason="DPAPI local backend is Windows-only"
+)
+
 SCOPE = SecretScope(
     founder_id="founder:cc",
     universe_id="u-conc",
@@ -42,6 +53,7 @@ SCOPE = SecretScope(
     purpose="external_write",
 )
 STORE_ID = "platform:default"
+DAEMON_ID = "daemon-conc"
 
 
 def _build(db_path: str, kek_hex: str, key_id: str) -> PlatformVaultBackend:
@@ -155,18 +167,20 @@ def _refresh_worker(args: tuple[str, str, str, str, str, int]) -> str:
         ref=ref, kind=SecretKind.GITHUB_APP_USER_TOKEN, scope=SCOPE, store=_store()
     )
     try:
-        with be.refresh_lease(ref, f"worker-{n}", wait=60.0):
+        with be.refresh_lease(ref, f"worker-{n}", wait=60.0) as lease:
+            if not lease.still_held():
+                return "aborted-stale"
             # re-check the stored version INSIDE the lock
-            with be.get(binding, SCOPE) as lease:
-                current = lease.version
+            with be.get(binding, SCOPE) as got:
+                current = got.version
             if current == 1:
-                # this is the one-time refresh exchange
+                # one-time refresh exchange, committed under the fence
+                Path(marker_dir, f"refresh-{n}.marker").write_text("1", encoding="utf-8")
                 be.put(
                     _store(), SCOPE, SecretKind.GITHUB_APP_USER_TOKEN,
                     SecretBytes(f"refreshed-by-{n}".encode()),
-                    replace=ref, expected_version=current,
+                    replace=ref, expected_version=current, fence=lease,
                 )
-                Path(marker_dir, f"refresh-{n}.marker").write_text("1", encoding="utf-8")
                 return "refreshed"
             return "skipped"
     except Exception as exc:  # noqa: BLE001
@@ -204,3 +218,51 @@ def test_single_refresh_race_runs_exactly_once(tmp_path):
     with be.get(d.binding, SCOPE) as lease:
         assert lease.version == 2
         assert lease.reveal().startswith(b"refreshed-by-")
+
+
+# ---------------------------------------------------------------------------
+# Worker 4: daemon-local (DPAPI) CAS is atomic under the mutation lock
+# ---------------------------------------------------------------------------
+
+
+def _dpapi_store(store_id: str, daemon_id: str) -> VaultStore:
+    return VaultStore(custody=Custody.DAEMON_LOCAL, store_id=store_id, daemon_id=daemon_id)
+
+
+def _dpapi_cas_worker(args: tuple[str, str, str]) -> str:
+    base, ref, n = args
+    be = DpapiVaultBackend(daemon_id=DAEMON_ID, store_id=STORE_ID, base=base)
+    store = _dpapi_store(STORE_ID, DAEMON_ID)
+    try:
+        be.put(
+            store, SCOPE, SecretKind.API_KEY, SecretBytes(f"dpapi-cas-{n}".encode()),
+            replace=ref, expected_version=1,
+        )
+        return "won"
+    except CredentialUnavailable as exc:
+        return f"conflict:{exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return f"error:{type(exc).__name__}:{exc}"
+
+
+@WINDOWS_ONLY
+def test_dpapi_concurrent_cas_exactly_one_winner(tmp_path):
+    base = str(tmp_path / "local")
+    be = DpapiVaultBackend(daemon_id=DAEMON_ID, store_id=STORE_ID, base=base)
+    be.attest()
+    store = _dpapi_store(STORE_ID, DAEMON_ID)
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"initial"))
+    ref = d.binding.ref
+
+    racers = 10
+    args = [(base, ref, i) for i in range(racers)]
+    results: list[str] = []
+    with ProcessPoolExecutor(max_workers=racers) as pool:
+        for fut in as_completed([pool.submit(_dpapi_cas_worker, a) for a in args]):
+            results.append(fut.result())
+
+    errors = [r for r in results if r.startswith("error:")]
+    assert not errors, f"dpapi cas workers errored: {errors}"
+    assert results.count("won") == 1, f"results: {results}"
+    with be.get(d.binding, SCOPE) as lease:
+        assert lease.version == 2
