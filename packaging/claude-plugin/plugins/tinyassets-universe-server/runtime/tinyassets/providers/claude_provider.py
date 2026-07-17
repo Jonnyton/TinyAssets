@@ -25,6 +25,7 @@ from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
     ProviderResponse,
+    SandboxUnavailableError,
     check_bwrap_failure,
     subprocess_env_for_provider,
 )
@@ -117,19 +118,48 @@ def _byo_hardening_flags(proc_env: dict[str, str]) -> list[str]:
     ``subprocess_env_for_provider`` sets (round-13 #1) after it has scrubbed every
     host credential from the child env.
 
-    Round-16 #5: hardening is an ALLOWLIST (default-deny), NOT a denylist. A denylist
-    fails OPEN on any new built-in / skill (the r13/r14 static deny-list could miss
-    one); an EMPTY allowlist fails CLOSED — nothing is permitted unless explicitly
-    added. ``--bare`` already disables MCP servers, hooks, plugins, keychain/OAuth
-    and ambient instructions; the empty ``--allowedTools`` denies every built-in
-    tool (file Read/Edit/Write, shell, web). Phase-2 explicitly ADDS only the
-    capabilities a real BYO turn needs — pairs with the sandbox runner's OS
-    isolation (execution stays dark until sandbox attestation, so this interim is
-    belt-and-suspenders). Real-binary enforcement is a Phase-2 rollout gate.
+    Round-16 #5 / round-17 #1: hardening is an ALLOWLIST (default-deny), NOT a
+    denylist. A denylist fails OPEN on any new built-in / skill; an EMPTY allowlist
+    fails CLOSED — nothing is permitted unless explicitly added. ``--bare`` already
+    disables MCP servers, hooks, plugins, keychain/OAuth and ambient instructions.
+    The tool floor is the empty ``--tools ""`` set — NOT ``--allowedTools ""``.
+    ``--allowedTools`` only PRE-APPROVES tools (removes the permission prompt); it
+    does NOT restrict AVAILABILITY, so under ``--bare`` the child would still expose
+    Bash/Read/Edit (round-17 #1 critical: the r16 flag was fail-open). ``--tools ""``
+    is the closed tool surface — the exact flag S3 uses for its closed text node —
+    which disables ALL built-in tools (file Read/Edit/Write, shell, web). Phase-2
+    explicitly ADDS only the capabilities a real BYO turn needs — pairs with the
+    sandbox runner's OS isolation (execution stays dark until sandbox attestation,
+    so this interim is belt-and-suspenders). Real-binary enforcement (Bash/Read
+    genuinely unavailable) is a Phase-2 rollout gate — see the skipped
+    ``test_byo_hardening_real_binary_tools_unavailable`` regression.
     """
     if proc_env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") != "1":
         return []
-    return ["--bare", "--allowedTools", ""]
+    return ["--bare", "--tools", ""]
+
+
+def _refuse_hardened_byo_shell(hardening: list[str], use_shell: bool) -> None:
+    """Fail closed for a BYO-hardened claude call routed through a shell wrapper.
+
+    Round-17 #1 (mirrors S3's ``_refuse_hardened_shell``): a ``.cmd``/``.bat`` claude
+    wrapper is spawned via ``shlex.join(cmd)`` through ``cmd.exe``, where POSIX
+    single-quotes are LITERAL — the security-critical empty ``--tools ""`` becomes
+    literal ``''`` (which does NOT disable tools), silently UN-hardening the spawn.
+    Refuse rather than run a BYO turn on the host's checkout with tools still live;
+    the router then routes to another capable provider or fails loud (Hard Rule #8).
+    Only fires when hardening is actually active (a byo-bound spawn) AND the install
+    is shell-wrapped; native-executable installs are unaffected.
+    """
+    if hardening and use_shell:
+        raise SandboxUnavailableError(
+            "Hardened BYO claude call (closed tool surface) cannot run through the "
+            "Windows .cmd/.bat shell wrapper: shlex.join under cmd.exe mangles the "
+            "security-critical empty --tools \"\" into literal '', silently "
+            "un-hardening the spawn (tools stay live). Refusing (fail closed). Use a "
+            "native claude executable (not a .cmd/.bat wrapper) on hosts that run "
+            "hardened BYO engines."
+        )
 
 
 class ClaudeProvider(BaseProvider):
@@ -158,6 +188,7 @@ class ClaudeProvider(BaseProvider):
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
         hardening = _byo_hardening_flags(proc_env)  # round-13 #1: --bare + tool floor
+        _refuse_hardened_byo_shell(hardening, use_shell)  # round-17 #1: fail closed
         cmd.extend(hardening)
         if hardening:  # round-14 #2: pin a hardened BYO spawn to an empty scratch cwd
             run_cwd = _byo_scratch_dir(universe_dir) or run_cwd
@@ -253,6 +284,7 @@ class ClaudeProvider(BaseProvider):
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
         hardening = _byo_hardening_flags(proc_env)  # round-13 #1: --bare + tool floor
+        _refuse_hardened_byo_shell(hardening, use_shell)  # round-17 #1: fail closed
         cmd.extend(hardening)
         if hardening:  # round-14 #2: pin a hardened BYO spawn to an empty scratch cwd
             run_cwd = _byo_scratch_dir(universe_dir) or run_cwd

@@ -8,11 +8,14 @@ secret values only to daemon-side effectors/providers that need them.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
+import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
@@ -269,6 +272,85 @@ def has_legacy_subscription_records(universe_dir: str | Path | None) -> bool:
 #: Where quarantined legacy subscription records are archived on migration.
 QUARANTINE_FILENAME = ".credential-vault-quarantine.json"
 
+#: Sidecar lock serializing the quarantine/rollback migration for one universe.
+VAULT_LOCK_FILENAME = ".credential-vault.lock"
+
+
+@contextlib.contextmanager
+def _vault_lock(universe_dir: Path) -> Iterator[None]:
+    """Cross-platform exclusive lock serializing quarantine/rollback for one
+    universe (round-17 #3).
+
+    Mirrors :func:`tinyassets.soul_edit._soul_lock` (msvcrt on Windows, fcntl on
+    POSIX). Held across the whole read→write-quarantine→rewrite-vault section so two
+    concurrent migrations cannot interleave their read-modify-write on the vault +
+    quarantine files. Combined with content-ID dedup (:func:`_dedup_records`), this
+    makes the migration crash-idempotent at EVERY write boundary.
+    """
+    universe_dir = Path(universe_dir)
+    universe_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = universe_dir / VAULT_LOCK_FILENAME
+    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                import msvcrt
+
+                try:
+                    os.lseek(fd, 0, 0)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                import fcntl
+
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+    finally:
+        os.close(fd)
+
+
+def _record_id(record: dict[str, Any]) -> str:
+    """Stable content ID for a credential record — sha256 of its canonical JSON.
+
+    Two records with the same content share an ID. Used to DEDUPLICATE the
+    quarantine archive and the rollback re-add so a crash-then-retry at ANY write
+    boundary converges to exactly one copy (round-17 #3). ``sort_keys`` makes key
+    order irrelevant; ``default=str`` tolerates any stray non-JSON scalar.
+    """
+    canonical = json.dumps(record, sort_keys=True, ensure_ascii=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return *records* with content-duplicate entries removed, order preserved."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for record in records:
+        rid = _record_id(record)
+        if rid in seen:
+            continue
+        seen.add(rid)
+        out.append(record)
+    return out
+
 
 def quarantine_legacy_subscription_records(
     universe_dir: str | Path,
@@ -280,40 +362,62 @@ def quarantine_legacy_subscription_records(
     them — so the universe stops raising :class:`RetiredSubscriptionLaneError` on
     every spawn and surfaces as migrated. This is the explicit remediation for the
     "re-declaring an engine only edits config.yaml, it can't remove the vault
-    record → stranded forever" bug. Idempotent: a vault with no subscription
-    records is a no-op. Raises ``ValueError`` on a malformed vault (fail loud —
-    never silently rewrite unreadable state). Returns a non-secret summary.
+    record → stranded forever" bug. Raises ``ValueError`` on a malformed vault (fail
+    loud — never silently rewrite unreadable state). Returns a non-secret summary.
+
+    CRASH-IDEMPOTENT (round-17 #3): serialized under :func:`_vault_lock`, and the
+    quarantine archive is a content-ID-DEDUPed union of prior + newly-removed
+    records. The quarantine is written BEFORE the vault is rewritten so a crash
+    between the two writes never LOSES the credential (it stays in both places).
+    Previously that ordering DUPLICATED it: a retry re-read the still-present vault
+    record, appended it to the already-written quarantine, and produced TWO copies
+    (rollback then restored two active creds). Dedup makes the union idempotent, so
+    a retry at any boundary yields exactly one quarantined copy. An
+    already-clean vault is a no-op.
     """
     universe = Path(universe_dir)
-    records = load_credential_vault(universe)  # raises ValueError if malformed
-    legacy = [r for r in records if r.get("credential_type") == "llm_subscription"]
-    if not legacy:
-        return {"migrated": 0, "remaining": len(records), "quarantine_path": None}
-    kept = [r for r in records if r.get("credential_type") != "llm_subscription"]
-    qpath = universe / QUARANTINE_FILENAME
-    prior: list[dict[str, Any]] = []
-    if qpath.is_file():
-        try:
-            loaded = json.loads(qpath.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict) and isinstance(loaded.get("quarantined"), list):
-                prior = loaded["quarantined"]
-        except (OSError, ValueError):
-            prior = []
-    tmp = qpath.with_name(f"{qpath.name}.tmp")
-    tmp.write_text(
-        json.dumps({"schema_version": 1, "quarantined": prior + legacy}, indent=2)
-        + "\n",
-        encoding="utf-8",
-    )
-    _chmod_best_effort(tmp, 0o600)
-    tmp.replace(qpath)
-    _chmod_best_effort(qpath, 0o600)
-    write_credential_vault(universe, kept)  # rewrite vault WITHOUT the legacy rows
-    return {
-        "migrated": len(legacy),
-        "remaining": len(kept),
-        "quarantine_path": str(qpath),
-    }
+    with _vault_lock(universe):
+        records = load_credential_vault(universe)  # raises ValueError if malformed
+        legacy = [
+            r for r in records if r.get("credential_type") == "llm_subscription"
+        ]
+        if not legacy:
+            return {
+                "migrated": 0, "remaining": len(records), "quarantine_path": None,
+            }
+        kept = [
+            r for r in records if r.get("credential_type") != "llm_subscription"
+        ]
+        qpath = universe / QUARANTINE_FILENAME
+        prior: list[dict[str, Any]] = []
+        if qpath.is_file():
+            try:
+                loaded = json.loads(qpath.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and isinstance(
+                    loaded.get("quarantined"), list
+                ):
+                    prior = loaded["quarantined"]
+            except (OSError, ValueError):
+                prior = []
+        # Round-17 #3: content-ID-DEDUPed union. A crash-then-retry re-reads the
+        # still-present vault legacy AND the already-archived quarantine; the naive
+        # ``prior + legacy`` append made TWO copies. Dedup collapses them to one.
+        merged = _dedup_records(prior + legacy)
+        tmp = qpath.with_name(f"{qpath.name}.tmp")
+        tmp.write_text(
+            json.dumps({"schema_version": 1, "quarantined": merged}, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+        _chmod_best_effort(tmp, 0o600)
+        tmp.replace(qpath)
+        _chmod_best_effort(qpath, 0o600)
+        write_credential_vault(universe, kept)  # rewrite vault WITHOUT the legacy rows
+        return {
+            "migrated": len(legacy),
+            "remaining": len(kept),
+            "quarantine_path": str(qpath),
+        }
 
 
 def restore_quarantined_subscription_records(
@@ -322,32 +426,87 @@ def restore_quarantined_subscription_records(
     """ROLLBACK the retired-subscription migration (round-16 #2): re-add the
     quarantined ``llm_subscription`` records back into the vault and clear the
     quarantine archive. Idempotent — no quarantine file is a no-op. This exists so
-    the predeployment migration is REVERSIBLE. Returns a non-secret summary."""
+    the predeployment migration is REVERSIBLE. Returns a non-secret summary.
+
+    CRASH-IDEMPOTENT (round-17 #3): serialized under :func:`_vault_lock`, and only
+    records whose content ID is NOT already in the current vault are re-added. The
+    vault is rewritten BEFORE the quarantine is deleted, so a crash between the two
+    never LOSES the credential. Previously that ordering DUPLICATED it on retry (the
+    naive ``current + quarantined`` append re-added an already-restored record);
+    content-ID dedup makes the re-add idempotent, so a retry yields exactly one
+    clean rollback.
+    """
     universe = Path(universe_dir)
-    qpath = universe / QUARANTINE_FILENAME
-    if not qpath.is_file():
-        return {"restored": 0, "quarantine_path": None}
-    try:
-        loaded = json.loads(qpath.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"quarantine file at {qpath} is unreadable: {exc}") from exc
-    quarantined = loaded.get("quarantined") if isinstance(loaded, dict) else None
-    if not isinstance(quarantined, list) or not quarantined:
+    with _vault_lock(universe):
+        qpath = universe / QUARANTINE_FILENAME
+        if not qpath.is_file():
+            return {"restored": 0, "quarantine_path": None}
+        try:
+            loaded = json.loads(qpath.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"quarantine file at {qpath} is unreadable: {exc}"
+            ) from exc
+        quarantined = loaded.get("quarantined") if isinstance(loaded, dict) else None
+        if not isinstance(quarantined, list) or not quarantined:
+            qpath.unlink(missing_ok=True)
+            return {"restored": 0, "quarantine_path": str(qpath)}
+        current = load_credential_vault(universe)  # raises ValueError if malformed
+        # Round-17 #3: only re-add records not already present by content ID. A
+        # crash between the vault rewrite and the quarantine delete leaves the
+        # records already in the vault; the naive ``current + quarantined`` append
+        # would restore a SECOND copy on retry.
+        current_ids = {_record_id(r) for r in current}
+        to_add = [q for q in quarantined if _record_id(q) not in current_ids]
+        if to_add:
+            write_credential_vault(universe, current + to_add)
         qpath.unlink(missing_ok=True)
-        return {"restored": 0, "quarantine_path": str(qpath)}
-    current = load_credential_vault(universe)  # raises ValueError if malformed
-    write_credential_vault(universe, current + quarantined)
-    qpath.unlink(missing_ok=True)
-    return {"restored": len(quarantined), "quarantine_path": str(qpath)}
+        return {"restored": len(to_add), "quarantine_path": str(qpath)}
+
+
+#: SANCTIONED-CUSTODY registry (round-17 #5). DISTINCT from the transport mapping
+#: ``_LLM_API_KEY_ENV_BY_SERVICE`` (which providers the router CAN call once a key
+#: is present). This is the set of services the platform may accept as a credential
+#: DEPOSIT target. DEFAULT-DENY: EMPTY until a provider's custody path is EXPLICITLY
+#: approved (dedicated-key + founder consent + spend-limit + LEGAL review per the
+#: 2026-07-02 credential-custody research §2b). No provider is approved yet:
+#:   - OpenAI: NOT-OFFERED — the Services Agreement prohibits transferring an API
+#:     key to a third party; consent + encryption + spend-limits do not cure it. It
+#:     needs a provider-approved delegated/service path (the GitHub-App analogue).
+#:   - Gemini / Groq / xAI: not-offered pending per-provider terms research.
+#:   - Anthropic: CONDITIONAL — its Commercial Terms permit powering products for
+#:     your users, but the contracting-party/agent relationship still needs legal
+#:     resolution before it is implementation authority (custody note §2b, §0).
+#: A transport-consumable service (anthropic/openai) is therefore NOT automatically
+#: a sanctioned deposit target — that was the round-17 #5 fail-open. Add a service
+#: here ONLY when its custody path is explicitly approved.
+_SANCTIONED_CUSTODY_SERVICES: frozenset[str] = frozenset()
+
+
+def sanctioned_custody_services() -> frozenset[str]:
+    """Services whose custody path is EXPLICITLY approved as a deposit target.
+
+    DEFAULT-DENY — empty until a provider's raw-key custody is approved (dedicated
+    key + consent + spend-limit + legal review; see the 2026-07-02 custody research
+    §2b). This is the deposit-sanction authority; it is deliberately SEPARATE from
+    the transport mapping (:func:`per_universe_byo_services`), which only says which
+    provider env var a key WOULD map to if one were present."""
+    return _SANCTIONED_CUSTODY_SERVICES
 
 
 def supported_llm_api_key_services() -> frozenset[str]:
     """Services a BYO ``llm_api_key`` deposit may target.
 
-    Only these reach a CLI-subprocess provider via the vault env overlay; a
-    deposit for any other service would never inject and the founder's engine
-    would silently not run (validate at deposit time — Hard Rule #8)."""
-    return frozenset(_LLM_API_KEY_ENV_BY_SERVICE)
+    The DEPOSIT-sanction allowlist: the intersection of the explicitly-approved
+    sanctioned-custody registry (:func:`sanctioned_custody_services`, DEFAULT-DENY)
+    and the transport-consumable services (a key that could actually reach a
+    CLI-subprocess provider via the vault env overlay). EMPTY today because no
+    provider's custody path is approved yet — advertising OpenAI + unresearched
+    Gemini/Groq/xAI as deposit targets (the round-16 behavior) contradicted the
+    OpenAI-NOT-OFFERED + research-others-first decisions (round-17 #5). Deposit is
+    validated against THIS set — never against the raw transport mapping — so an
+    unsanctioned service is refused loudly at deposit time (Hard Rule #8)."""
+    return _SANCTIONED_CUSTODY_SERVICES & frozenset(_LLM_API_KEY_ENV_BY_SERVICE)
 
 
 # Only these env vars are overlaid per-universe onto the CLI subprocess by

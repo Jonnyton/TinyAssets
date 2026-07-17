@@ -1,9 +1,14 @@
 # Universe Engine Credential Custody — Research + Options
 
-- **Status:** Design note — **IMPLEMENTED by the patch-loop-s5 branch** (round-16 #6
-  reconciliation: dropped the stale "no build authority" line; the S5 engine-
-  onboarding + non-ambient-gate core built to this design and passed the
-  Codex opposite-provider review gate). Resolves the open research lane in
+- **Status:** Design note — the patch-loop-s5 branch builds the engine-onboarding
+  + non-ambient-gate core to this design. It is **STILL UNDER the Codex
+  opposite-provider CODE-review gate** (iterating — round-17 verdict = adapt); do
+  **not** read this note as having cleared that gate. (Round-17 #6 correction: an
+  earlier draft circularly claimed the S5 build had already "passed the Codex
+  opposite-provider review gate" — it has not; the gate is the ongoing r1–r17
+  review of this very branch.) This is DISTINCT from the 2026-07-02 review of the
+  research *finding* (the ToS conclusion) at the end of this note, which is a
+  separate, completed artifact. Resolves the open research lane in
   `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md`
   §11 item #2 (host: "research and think about it"). The source conclusions stand:
   OpenAI prohibits API-key transfer (raw-key custody NOT-offered pending a
@@ -124,8 +129,13 @@ subscription-adjacent lane.) Exact current sources:
 - **Anthropic — Claude routines** (the emerging subscription-backed unattended-
   automation / scoped-trigger-token lane; re-verify current shape + ToS):
   <https://code.claude.com/docs/en/routines>.
-- **Anthropic — Consumer Terms of Service** (the automated-access / credential-
-  sharing terms this note infers from): <https://www.anthropic.com/legal/consumer-terms>.
+- **Anthropic — Consumer Terms of Service** (governs the SUBSCRIPTION / login lane —
+  the automated-access / credential-sharing terms §0 infers the no-subscription-
+  custody conclusion from): <https://www.anthropic.com/legal/consumer-terms>.
+- **Anthropic — Commercial Terms of Service** (governs the **API-key** lane, per
+  Anthropic — NOT the Consumer Terms; permits customers to build products/services
+  on the API for their own users. The instrument for the §2b Anthropic verdict):
+  <https://www.anthropic.com/legal/commercial-terms>.
   API keys are issued/managed at <https://console.anthropic.com/>.
 
 **Two DISTINCT credential classes — do not conflate (F5b correction):**
@@ -379,13 +389,28 @@ provided default engine for founders (host correction 2026-07-02).**
      build the raw-key lane for OpenAI.** (The personal-*subscription* prohibition in
      §0 is unchanged; the Business/Enterprise **Codex access-token** path in §0.1 is a
      separate, provider-sanctioned org flow — that IS a delegated-style path.)
-   - **Anthropic — CONDITIONAL.** Anthropic warns that an uploaded API key **grants
-     account access** ([API-key best practices](https://support.anthropic.com/en/articles/9767949-api-key-best-practices-keeping-your-keys-safe-and-secure)).
-     Not a categorical prohibition like OpenAI's transfer ban, but it requires, before
-     productionizing: **(a)** a dedicated key (never a personal all-scopes key),
-     **(b)** explicit founder **consent** at deposit, **(c)** per-key **spend limits**,
-     and **(d) legal review**. Label any "sanctioned" reading an INFERENCE from the
-     terms, not a provider endorsement.
+   - **Anthropic — CONDITIONAL (re-evaluated via COMMERCIAL Terms, round-17 #6).**
+     Anthropic states that **API keys are governed by its Commercial Terms of
+     Service** ([Anthropic Commercial Terms](https://www.anthropic.com/legal/commercial-terms)),
+     **not** the Consumer Terms that govern the subscription/login lane (§0). This
+     matters: the Consumer-Terms framing an earlier draft leaned on is the WRONG
+     instrument for the API-key lane. The Commercial Terms permit a **customer to
+     build products and services that use the API to serve THEIR OWN users** — so a
+     platform custodying a founder's API key to power that founder's universe may be
+     **MORE viable** under Commercial Terms than the Consumer-Terms framing implied.
+     This is **not** a green light. Anthropic still warns an uploaded API key
+     **grants account access** ([API-key best practices](https://support.anthropic.com/en/articles/9767949-api-key-best-practices-keeping-your-keys-safe-and-secure)),
+     and the load-bearing open question is the **contracting-party / agent
+     relationship**: is TinyAssets the Anthropic *customer* (contracting in its own
+     name, serving founders as its users) or the founder's *agent* (the founder is
+     the customer)? That must be **resolved by legal counsel before this becomes
+     implementation authority** — it is not settled by this note. Before
+     productionizing it still requires: **(a)** a dedicated key (never a personal
+     all-scopes key), **(b)** explicit founder **consent** at deposit, **(c)** per-key
+     **spend limits**, and **(d) legal review** of the contracting-party
+     question above. Label any "sanctioned" reading an INFERENCE, not a provider
+     endorsement. (Custody remains DEFAULT-DENY in code — `credential_vault.
+     sanctioned_custody_services()` is empty until this legal question resolves.)
    - **Others (Gemini / Groq / xAI)** — state each per its own current terms before
      offering; do not assume the Anthropic verdict transfers. (Not researched here.)
    This converges with the credential vault's provider-generic model: the vault offers
@@ -532,8 +557,13 @@ Dispatched per the AGENTS.md research-finding gate (Claude-made finding →
 Codex review before it gates build). Verdict **ADAPT** — the load-bearing ToS
 conclusion is **confirmed**, with one narrowing.
 
-- **CONFIRMED (Anthropic):** don't route third-party requests through Free/Pro/Max
-  credentials; Consumer Terms bar credential sharing + most non-API automation.
+- **CONFIRMED (Anthropic, SUBSCRIPTION lane):** don't route third-party requests
+  through Free/Pro/Max credentials; **Consumer Terms** bar credential sharing + most
+  non-API automation. NOTE (round-17 #6): this Consumer-Terms conclusion is about the
+  *subscription/login* lane only. The separate **API-key** lane is governed by
+  Anthropic's **Commercial Terms** (§2b) — do not extend the Consumer-Terms bar to
+  the API-key custody question, which is CONDITIONAL pending the contracting-party
+  legal review, not barred.
 - **ADAPT (OpenAI):** the note overstated the OpenAI side. OpenAI recommends API
   keys for programmatic Codex and forbids account sharing / programmatic
   extraction, **but also documents Business/Enterprise Codex access tokens for

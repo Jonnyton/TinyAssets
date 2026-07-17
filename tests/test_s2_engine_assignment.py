@@ -13,7 +13,9 @@ import pytest
 
 from tinyassets.config import load_universe_config, write_universe_config_fields
 from tinyassets.credential_vault import (
+    per_universe_byo_services,
     provider_auth_env_overrides,
+    sanctioned_custody_services,
     supported_llm_api_key_services,
     write_credential_vault,
 )
@@ -419,6 +421,20 @@ def test_set_engine_is_founder_admin_scoped():
     assert "set_engine" in WRITE_ACTIONS
 
 
-def test_supported_services_cover_both_cli_routes():
-    services = supported_llm_api_key_services()
-    assert {"anthropic", "openai"} <= services
+def test_transport_mapping_covers_both_cli_routes():
+    """The TRANSPORT mapping (which providers the router CAN call once a key is
+    present) covers both CLI routes — this is separate from the deposit-sanction
+    registry (round-17 #5)."""
+    assert {"anthropic", "openai"} <= per_universe_byo_services()
+
+
+def test_deposit_custody_registry_is_default_deny():
+    """Round-17 #5: the SANCTIONED-CUSTODY registry (which providers may be a
+    credential DEPOSIT target) is DEFAULT-DENY — empty until a provider's custody
+    path is explicitly approved. Advertising OpenAI + unresearched Gemini/Groq/xAI
+    as deposit targets (the old fail-open behavior) contradicted the
+    OpenAI-NOT-OFFERED + research-others-first decisions."""
+    assert sanctioned_custody_services() == frozenset()
+    # The deposit-sanction allowlist (intersection of sanctioned-custody and
+    # transport-consumable) is therefore empty — no service is a deposit target yet.
+    assert supported_llm_api_key_services() == frozenset()

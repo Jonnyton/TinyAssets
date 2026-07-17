@@ -798,13 +798,16 @@ def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
 
     # Clean bare context.
     assert "--bare" in argv
-    # DEFAULT-DENY via an ALLOWLIST (round-16 #5), NOT a denylist: --allowedTools
-    # with an EMPTY value denies every built-in (fails closed on new tools), so
-    # there is no --disallowedTools list to keep exhaustive.
-    assert "--allowedTools" in argv
-    ai = argv.index("--allowedTools")
-    assert argv[ai + 1] == "", "the BYO allowlist must be empty (allow nothing)"
-    assert "--disallowedTools" not in argv  # allowlist, not denylist
+    # DEFAULT-DENY via the CLOSED TOOL SURFACE (round-17 #1): `--tools ""` disables
+    # EVERY built-in tool (file Read/Edit/Write, shell, web) — fails closed on any
+    # new tool. NOT `--allowedTools ""`, which only pre-approves and would leave
+    # Bash/Read/Edit exposed under --bare (the r16 fail-open). No --disallowedTools
+    # denylist to keep exhaustive.
+    assert "--tools" in argv
+    ti = argv.index("--tools")
+    assert argv[ti + 1] == "", "the BYO tool surface must be empty (allow nothing)"
+    assert "--allowedTools" not in argv  # pre-approval is NOT restriction (r17 #1)
+    assert "--disallowedTools" not in argv  # closed surface, not a denylist
     # cwd is pinned to an isolated scratch dir (round-14 #2), NOT the daemon cwd.
     assert "claude-byo-scratch" in child_cwd
     assert Path(child_cwd).resolve() != Path.cwd().resolve()
@@ -822,12 +825,14 @@ def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
 
 
 @pytest.mark.skip(reason=(
-    "ROLLOUT GATE (round-14 #2): a hostile real-CLI filesystem test — spawn the "
-    "REAL `claude -p` hardened for BYO and assert Read/Edit of a host file FAILS — "
-    "requires the actual claude binary (absent in this env) AND the per-job runner's "
-    "OS sandbox. BYO execution stays dark (sandbox attestation False) until both "
-    "land; enable + implement this at Phase-2 rollout. The stub test above proves "
-    "our CODE emits --bare + default-deny + cwd-pin; it cannot prove the binary's "
+    "ROLLOUT GATE (round-14 #2 / round-17 #1): a hostile real-CLI filesystem test — "
+    "spawn the REAL `claude -p` hardened for BYO with `--bare --tools \"\"` and assert "
+    "Bash/Read/Edit of a host file are GENUINELY UNAVAILABLE — requires the actual "
+    "claude binary (absent in this env) AND the per-job runner's OS sandbox. BYO "
+    "execution stays dark (sandbox attestation False) until both land; enable + "
+    "implement this at Phase-2 rollout. The stub tests above prove our CODE emits "
+    "`--bare` + the closed `--tools \"\"` surface + cwd-pin (round-17 #1 corrected the "
+    "flag from the fail-open `--allowedTools \"\"`); they cannot prove the binary's "
     "real filesystem enforcement."
 ))
 def test_r14_2_byo_hostile_real_cli_filesystem_isolation():  # pragma: no cover
@@ -1030,15 +1035,114 @@ def test_r16_3_offer_engine_removed():
     assert not hasattr(uni, "_extract_offer_engine")
 
 
-def test_r16_5_byo_hardening_is_default_deny_allowlist(monkeypatch):
-    """Round-16 #5: BYO CLI hardening uses an ALLOWLIST (default-deny), not a
-    denylist — --bare + an EMPTY --allowedTools, no --disallowedTools."""
+def test_r17_1_byo_hardening_uses_closed_tool_surface(monkeypatch):
+    """Round-17 #1: BYO CLI hardening must use the CLOSED TOOL SURFACE `--tools ""`,
+    NOT `--allowedTools ""`. `--allowedTools` only PRE-APPROVES tools (removes the
+    permission prompt); under `--bare` it does NOT restrict availability, so the r16
+    flag was fail-open (Bash/Read/Edit still exposed). `--tools ""` disables ALL
+    built-in tools — the fail-closed empty tool set S3 uses for its closed surface."""
     from tinyassets.providers.claude_provider import _byo_hardening_flags
 
     # No signal → no hardening flags.
     assert _byo_hardening_flags({}) == []
     flags = _byo_hardening_flags({"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"})
     assert "--bare" in flags
-    assert "--allowedTools" in flags
-    assert flags[flags.index("--allowedTools") + 1] == ""  # empty allowlist
+    # The security-critical flag is --tools "" (closed surface), not --allowedTools.
+    assert "--tools" in flags
+    assert flags[flags.index("--tools") + 1] == ""  # empty tool set = allow nothing
+    assert "--allowedTools" not in flags, (
+        "--allowedTools only pre-approves; it does NOT restrict availability (r17 #1)"
+    )
     assert "--disallowedTools" not in flags
+
+
+def test_r17_1_refuse_hardened_byo_shell_fails_closed():
+    """Round-17 #1: `shlex.join` under a Windows .cmd/.bat shell wrapper mangles the
+    security-critical empty `--tools ""` into literal `''` (which does NOT disable
+    tools) — silently un-hardening a BYO spawn. The guard fails CLOSED for a hardened
+    BYO call routed through the shell wrapper, and is a no-op otherwise."""
+    from tinyassets.providers.base import SandboxUnavailableError
+    from tinyassets.providers.claude_provider import _refuse_hardened_byo_shell
+
+    hardened = ["--bare", "--tools", ""]
+    # Hardened + shell-wrapped → refuse (would otherwise run with tools live).
+    with pytest.raises(SandboxUnavailableError):
+        _refuse_hardened_byo_shell(hardened, use_shell=True)
+    # Hardened + native executable (no shell) → allowed.
+    _refuse_hardened_byo_shell(hardened, use_shell=False)
+    # Non-hardened (ordinary, non-BYO call) + shell → allowed.
+    _refuse_hardened_byo_shell([], use_shell=True)
+
+
+def test_r17_1_complete_refuses_byo_through_shell_wrapper(tmp_path, monkeypatch):
+    """Round-17 #1 (wiring): a BYO-bound `complete()` on a shell-wrapped claude
+    install FAILS CLOSED before spawning — never silently runs the un-hardened
+    (tools-live) subprocess through cmd.exe."""
+    import asyncio as _asyncio
+    import sys as _sys
+
+    import tinyassets.providers.claude_provider as cp
+    from tinyassets.providers.base import ModelConfig, SandboxUnavailableError
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    # Force the shell-wrapper path (use_shell=True) the guard must reject for BYO.
+    monkeypatch.setattr(
+        cp, "_resolve_claude_cmd", lambda: ([_sys.executable], True),
+    )
+    udir = _byo_claude_universe(tmp_path)  # engine_source=byo_api_key + valid key
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+    with pytest.raises(SandboxUnavailableError):
+        _asyncio.run(cp.ClaudeProvider().complete(
+            "hello", "", ModelConfig(timeout=30), universe_dir=udir,
+        ))
+
+
+def test_r17_4_snapshot_lane_aware_retained_key_on_non_byo_lane(tmp_path, monkeypatch):
+    """Round-17 #4: the pinned routing snapshot is LANE-AWARE. A universe switched to
+    a NON-BYO lane (self_hosted_endpoint) that RETAINS an Anthropic key in its vault
+    must NOT have that key pinned as a selected BYO route. Otherwise the spawn
+    misclassifies it as BYO, scrubs ambient auth, fails to inject (the lane-aware
+    overlay declines a non-BYO lane), and CRASHES. With the fix the snapshot captures
+    NO credential_digest and the spawn proceeds on ambient auth, not treated as BYO."""
+    import base64
+
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.engine_binding import pin_byo_execution_snapshot
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "platform-oauth")  # ambient login
+    udir = tmp_path / "u-switched-self-hosted"
+    udir.mkdir()
+    (udir / "config.yaml").write_text(
+        "engine_source: self_hosted_endpoint\n", encoding="utf-8"
+    )
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": base64.b64encode(
+            ("sk-ant-api03-" + "A" * 40).encode()).decode("ascii"),
+    }])
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+
+    with pin_byo_execution_snapshot(udir) as snap:
+        # The retained key is NOT a selected BYO route on a non-BYO lane.
+        assert snap.credential_digest is None
+        # Spawn proceeds (no ProviderUnavailableError), not treated as BYO.
+        env = subprocess_env_for_provider("claude-code", universe_dir=udir)
+        assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in env  # not byo-hardened
+        assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "platform-oauth"  # ambient kept
+
+
+def test_r17_4_snapshot_lane_aware_byo_lane_still_pins(tmp_path, monkeypatch):
+    """Guard the guard: an ACTUAL byo_api_key lane STILL pins the credential digest —
+    the lane-aware gate must not over-block the sanctioned BYO lane (round-17 #4)."""
+    from tinyassets.engine_binding import pin_byo_execution_snapshot
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    udir = _byo_claude_universe(tmp_path)  # engine_source=byo_api_key + valid key
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+    with pin_byo_execution_snapshot(udir) as snap:
+        assert snap.credential_digest is not None

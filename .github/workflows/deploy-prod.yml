@@ -674,11 +674,31 @@ jobs:
             echo "- API-key providers forced off when the Codex subscription bundle is synced."
             echo "- TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          # Pull + restart via the systemd unit (which runs docker
-          # compose down + up with the new env).
+          # Pull the new image, run the retired-subscription migration FROM that
+          # image against the shared data volume BEFORE starting the daemon on it,
+          # then restart via the systemd unit (docker compose down + up with the new
+          # env). Round-17 #2: the migration is a packaged module
+          # (tinyassets.migrations.retired_subscription_records), runnable via
+          # `python -m`, and crash-idempotent (round-17 #3). `--entrypoint python`
+          # bypasses the auth-seeding shim (the migration only rewrites vault files).
+          # `--inventory` (read-only) logs what will change; `--migrate` quarantines
+          # the retired llm_subscription records. `set -e` makes ANY non-zero exit
+          # (including the migration's exit 2 on a per-universe failure) ABORT BEFORE
+          # the restart, so a migration failure leaves the OLD image serving — never
+          # a half-migrated new daemon.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
+              "set -e; \
+               sudo docker pull '${NEW_IMAGE}'; \
+               echo '[deploy] retired-subscription migration: inventory (read-only)'; \
+               sudo docker run --rm --entrypoint python \
+                   -e TINYASSETS_DATA_DIR=/data -v tinyassets-data:/data \
+                   '${NEW_IMAGE}' -m tinyassets.migrations.retired_subscription_records --inventory; \
+               echo '[deploy] retired-subscription migration: migrate'; \
+               sudo docker run --rm --entrypoint python \
+                   -e TINYASSETS_DATA_DIR=/data -v tinyassets-data:/data \
+                   '${NEW_IMAGE}' -m tinyassets.migrations.retired_subscription_records --migrate; \
+               sudo systemctl restart tinyassets-daemon"
 
       # Independent of the helper's in-call readability assert: re-verify
       # after the systemd restart has settled. Steady-state canary that

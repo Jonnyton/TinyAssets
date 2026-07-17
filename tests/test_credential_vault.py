@@ -184,9 +184,11 @@ def test_quarantine_then_rollback_round_trips(tmp_path):
     assert restore_quarantined_subscription_records(tmp_path)["restored"] == 0
 
 
-def test_migration_script_inventory_migrate_rollback(tmp_path, monkeypatch):
-    """The runnable predeployment script inventories, migrates (idempotent), and
-    rolls back across universe dirs under the data root (round-16 #2)."""
+def test_migration_module_inventory_migrate_rollback(tmp_path, monkeypatch):
+    """The runnable predeployment migration MODULE inventories, migrates
+    (idempotent), and rolls back across universe dirs under the data root. Runnable
+    as ``python -m tinyassets.migrations.retired_subscription_records`` so it ships
+    inside the package + production image (round-16 #2 / round-17 #2 deployability)."""
     import importlib
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -202,18 +204,138 @@ def test_migration_script_inventory_migrate_rollback(tmp_path, monkeypatch):
          "destination": "o/r", "token": "t"},
     ])
 
-    script = importlib.import_module("scripts.migrate_retired_subscription_records")
+    module = importlib.import_module(
+        "tinyassets.migrations.retired_subscription_records"
+    )
 
-    assert script.main(["--inventory"]) == 0
+    assert module.main(["--inventory"]) == 0
     # Migrate: only u-legacy is affected; idempotent on re-run.
-    assert script.main(["--migrate"]) == 0
+    assert module.main(["--migrate"]) == 0
     assert not [r for r in _load_vault_types(tmp_path / "u-legacy")
                 if r == "llm_subscription"]
-    assert script.main(["--migrate"]) == 0  # idempotent
+    assert module.main(["--migrate"]) == 0  # idempotent
     # Rollback restores it.
-    assert script.main(["--rollback"]) == 0
+    assert module.main(["--rollback"]) == 0
     assert "llm_subscription" in _load_vault_types(tmp_path / "u-legacy")
+
+
+def test_migration_module_importable_as_module(monkeypatch, tmp_path):
+    """Regression for round-17 #2: the migration is importable via its package path
+    (the old ``scripts/`` path raised ModuleNotFoundError in the production image
+    because ``scripts/`` is not copied). Importing the module resolves
+    ``tinyassets`` cleanly and exposes a ``main`` entrypoint."""
+    import importlib
+
+    module = importlib.import_module(
+        "tinyassets.migrations.retired_subscription_records"
+    )
+    assert callable(module.main)
+    # Runs end-to-end against an empty data root (no universes) → clean exit 0.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    assert module.main(["--inventory"]) == 0
 
 
 def _load_vault_types(universe_dir):
     return [r.get("credential_type") for r in load_credential_vault(universe_dir)]
+
+
+# ── Crash-idempotency of the migration (round-17 #3) ─────────────────────────
+
+
+def test_r17_3_crash_between_quarantine_and_vault_rewrite_is_idempotent(
+    tmp_path, monkeypatch,
+):
+    """Round-17 #3: the reported bug — a crash BETWEEN the quarantine write and the
+    vault rewrite, followed by a retry, produced TWO quarantined copies (and rollback
+    then restored TWO active subscription creds). The quarantine-BEFORE-vault order
+    is kept (so a crash never LOSES the credential), and content-ID dedup makes the
+    retry converge to exactly ONE quarantine copy + ONE clean rollback."""
+    import json as _json
+
+    import tinyassets.credential_vault as cv
+
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": "legacy"},
+    ])
+
+    # Inject a fault AT the vault-rewrite boundary: the quarantine file has already
+    # been written (tmp.replace done) but the vault has NOT yet been rewritten. The
+    # SAME patched function heals on the retry (2nd call runs the real write), so no
+    # broad monkeypatch.undo() is needed.
+    real_write = cv.write_credential_vault
+    calls = {"n": 0}
+
+    def _crash_first_write(universe_dir, credentials):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(
+                "simulated crash after quarantine write, before vault rewrite"
+            )
+        return real_write(universe_dir, credentials)
+
+    monkeypatch.setattr(cv, "write_credential_vault", _crash_first_write)
+
+    with pytest.raises(RuntimeError):
+        cv.quarantine_legacy_subscription_records(tmp_path)
+
+    # Post-crash state: quarantine written (ONE copy), vault still holds the legacy.
+    qpath = tmp_path / cv.QUARANTINE_FILENAME
+    assert qpath.is_file()
+    assert len(_json.loads(qpath.read_text(encoding="utf-8"))["quarantined"]) == 1
+    assert cv.has_legacy_subscription_records(tmp_path) is True
+
+    # RETRY (2nd write call runs for real): converges to exactly ONE quarantine copy
+    # + a clean vault — NOT two (the pre-fix append duplicated on retry).
+    result = cv.quarantine_legacy_subscription_records(tmp_path)
+    assert result["migrated"] == 1
+    quarantined = _json.loads(qpath.read_text(encoding="utf-8"))["quarantined"]
+    assert len(quarantined) == 1, "retry must not duplicate the quarantine archive"
+    assert cv.has_legacy_subscription_records(tmp_path) is False
+
+    # Rollback restores exactly ONE active subscription cred (not two).
+    back = cv.restore_quarantined_subscription_records(tmp_path)
+    assert back["restored"] == 1
+    assert _load_vault_types(tmp_path).count("llm_subscription") == 1
+
+
+def test_r17_3_rollback_crash_before_quarantine_delete_is_idempotent(tmp_path):
+    """Round-17 #3: a crash in ROLLBACK between the vault rewrite (records restored)
+    and the quarantine delete, followed by a retry, must not restore a SECOND copy.
+    Content-ID dedup on re-add makes the retry a no-op that just clears the archive."""
+    import tinyassets.credential_vault as cv
+
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": "legacy"},
+    ])
+    # Real migrate → a normalized quarantine archive (matches what a real crash sees).
+    cv.quarantine_legacy_subscription_records(tmp_path)
+    qpath = tmp_path / cv.QUARANTINE_FILENAME
+    archive_snapshot = qpath.read_text(encoding="utf-8")
+
+    # One full rollback: vault now holds the record; quarantine deleted.
+    cv.restore_quarantined_subscription_records(tmp_path)
+    assert cv.has_legacy_subscription_records(tmp_path) is True
+
+    # Simulate the crash: vault already restored, but the quarantine file was NOT
+    # deleted (re-materialize the exact archive). A retry must not double-restore.
+    qpath.write_text(archive_snapshot, encoding="utf-8")
+    back = cv.restore_quarantined_subscription_records(tmp_path)
+    assert back["restored"] == 0  # already present by content id → no second copy
+    assert not qpath.exists()
+    assert _load_vault_types(tmp_path).count("llm_subscription") == 1
+
+
+def test_r17_3_migration_creates_serializing_lock(tmp_path):
+    """Round-17 #3: the migration is serialized under a per-universe sidecar lock so
+    concurrent migrations cannot interleave their read-modify-write on vault +
+    quarantine. Verify the lock file exists after a migration runs."""
+    import tinyassets.credential_vault as cv
+
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "codex",
+         "auth_json_b64": "e30="},
+    ])
+    cv.quarantine_legacy_subscription_records(tmp_path)
+    assert (tmp_path / cv.VAULT_LOCK_FILENAME).exists()

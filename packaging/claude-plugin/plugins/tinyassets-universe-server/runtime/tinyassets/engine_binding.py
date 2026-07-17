@@ -270,11 +270,25 @@ def _byo_execution_enabled_uncached(universe_dir: str | Path | None = None) -> b
 
 def _compute_byo_snapshot(universe_dir: str | Path | None) -> ByoExecutionSnapshot:
     """Capture the immutable routing-time binding: attestation + the SELECTED BYO
-    credential's identity+version (round-16 #1)."""
+    credential's identity+version (round-16 #1), BOUND TO THE RESOLVED LANE
+    (round-17 #4).
+
+    The digest is captured ONLY when the resolved engine lane is the BYO-key lane
+    (:func:`byo_lane_selected` — an undeclared universe or explicit
+    ``engine_source=byo_api_key``). A RETAINED Anthropic key on a universe switched
+    to a NON-BYO lane (``self_hosted_endpoint`` / ``market_rented`` / ``host_daemon``)
+    is NOT a selected BYO route, so no digest is pinned — otherwise the spawn
+    (:func:`tinyassets.providers.base.subprocess_env_for_provider`) would read the
+    pinned digest as a selected BYO route, scrub ambient auth, fail to inject the key
+    (the lane-aware overlay declines a non-BYO lane), and crash the spawn (round-17
+    #4 reproduction). The digest already encodes the credential's identity+version
+    (a content hash of the resolved key); gating its capture on the lane binds the
+    snapshot to lane + provider (claude-code / ANTHROPIC_API_KEY) + record.
+    """
     enabled = _byo_execution_enabled_uncached(universe_dir)
     udir_str = str(Path(universe_dir)) if universe_dir is not None else None
     digest: str | None = None
-    if enabled:
+    if enabled and universe_dir is not None and byo_lane_selected(universe_dir):
         try:
             from tinyassets.credential_vault import byo_credential_digest
 
