@@ -604,19 +604,35 @@ class ConditionalEdge:
 
     Maps outcomes to target nodes. The routing function is determined
     by the source node's evaluation at runtime.
+
+    ``fallback`` is the scalar outcome label selected for an off-label value.
+    Persisting it explicitly avoids relying on mapping insertion order, which
+    does not survive sorted JSON serialization.
     """
 
     from_node: str
     conditions: dict[str, str] = field(default_factory=dict)
+    fallback: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"from": self.from_node, "conditions": self.conditions}
+        out: dict[str, Any] = {"from": self.from_node, "conditions": self.conditions}
+        if self.fallback:
+            out["fallback"] = self.fallback
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ConditionalEdge:
+        raw_fallback = data.get("fallback")
+        if isinstance(raw_fallback, str):
+            fallback: Any = raw_fallback.strip()
+        elif raw_fallback is None:
+            fallback = ""
+        else:
+            fallback = raw_fallback
         return cls(
             from_node=data.get("from", data.get("from_node", "")),
             conditions=data.get("conditions", {}),
+            fallback=fallback,
         )
 
 
@@ -1125,6 +1141,17 @@ class BranchDefinition:
                         f"'{ce.from_node}' is not defined."
                     )
                 adjacency.setdefault(ce.from_node, set()).add(target)
+            if ce.fallback and not isinstance(ce.fallback, str):
+                errors.append(
+                    f"Conditional edge fallback from '{ce.from_node}' must be a "
+                    f"string outcome label, got {type(ce.fallback).__name__}."
+                )
+            elif ce.fallback and ce.fallback not in ce.conditions:
+                errors.append(
+                    f"Conditional edge fallback '{ce.fallback}' from "
+                    f"'{ce.from_node}' is not one of its outcome labels "
+                    f"{sorted(ce.conditions)!r}."
+                )
 
         # Orphan detection: check all graph nodes are reachable from entry point
         if self.entry_point and seen_graph:

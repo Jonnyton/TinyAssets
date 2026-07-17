@@ -2183,13 +2183,22 @@ def _wiki_file_bug(
         }
         target_universe_id = universe_id.strip() or _default_universe()
         universe_path = _universe_dir(target_universe_id)
-        # Pre-write trigger receipt (status=pending). Read canonical branch_def_id
-        # from env so the receipt records what we *expected* to invoke even if the
-        # enqueue helper rejects.
-        import os as _os
-        canonical_branch_def_id = _os.environ.get(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "",
-        ).strip() or None
+        # Pre-write trigger receipt (status=pending). Resolve the handler with
+        # its G4 existence-validated detail so the receipt records what we
+        # *expected* to invoke even if the enqueue helper rejects — including a
+        # dead ref (handler_not_found), where the receipt keeps the dead id for
+        # audit while the enqueue is refused.
+        canonical_branch_def_id, _handler_reason = (
+            bug_investigation.resolve_investigation_handler_detail(universe_path)
+        )
+        if not canonical_branch_def_id and _handler_reason.startswith(
+            "handler_not_found:"
+        ):
+            # Record the first dead id we expected to invoke.
+            canonical_branch_def_id = (
+                _handler_reason.split(":", 1)[1].split(",")[0] or None
+            )
+        canonical_branch_def_id = canonical_branch_def_id or None
         try:
             _receipt = _tr.create_pending(
                 request_id=bug_id,
@@ -2268,15 +2277,35 @@ def _wiki_file_bug(
                 except Exception:  # noqa: BLE001
                     pass
         else:
-            # Skipped because no canonical branch configured (env var empty
-            # or filing without bug_id). Record on the receipt for audit.
-            if _receipt is not None:
-                try:
-                    _receipt = _tr.mark_skipped(
-                        _receipt, reason="no_canonical_branch",
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+            if _handler_reason.startswith("handler_not_found:"):
+                # G4: a handler RESOLVED but its branch def does not exist
+                # (dead ref — e.g. wiped registry). Fail loudly on the
+                # trigger, never the filing: explicit failed status, nothing
+                # enqueued, the filing itself persists.
+                investigation = {
+                    "status": "failed",
+                    "error": "handler_not_found",
+                    "detail": _handler_reason,
+                }
+                if _receipt is not None:
+                    try:
+                        _receipt = _tr.mark_failed(
+                            _receipt,
+                            error_class="handler_not_found",
+                            error_message=_handler_reason,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                # Skipped because no canonical branch configured (env var
+                # empty or filing without bug_id). Record for audit.
+                if _receipt is not None:
+                    try:
+                        _receipt = _tr.mark_skipped(
+                            _receipt, reason="no_canonical_branch",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
 
         if _receipt is not None:
             trigger_block = _receipt.to_response()

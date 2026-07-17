@@ -94,6 +94,24 @@ def base_path(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
+def _register_handler_branch(base: Path, branch_def_id: str) -> None:
+    """Register a minimal branch def so the G4 existence guard accepts it.
+
+    G4 (2026-07-15): the resolver refuses handler ids that don't exist in the
+    branch registry, so tests exercising the env-fallback path must register
+    their fake ids first.
+    """
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import save_branch_definition
+
+    save_branch_definition(
+        base,
+        branch_def=BranchDefinition(
+            branch_def_id=branch_def_id, name=branch_def_id,
+        ).to_dict(),
+    )
+
+
 def _seed_goal_with_canonical(
     base: Path,
     *,
@@ -225,6 +243,7 @@ def test_empty_bug_id_skipped_even_with_env(base_path, monkeypatch):
 
 
 def test_env_fallback_preserved_when_no_goal_id(base_path, monkeypatch):
+    _register_handler_branch(base_path, "fallback-branch")
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
     )
@@ -258,6 +277,7 @@ def test_env_fallback_used_when_goal_id_has_no_canonical(
             author="host", tags=[], visibility="public",
         ),
     )
+    _register_handler_branch(base_path, "fallback-branch")
     monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g1")
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
@@ -445,6 +465,7 @@ def test_resolve_handler_returns_empty_when_no_goal_and_no_env(base_path):
 
 
 def test_resolve_handler_strips_whitespace_in_env(base_path, monkeypatch):
+    _register_handler_branch(base_path, "legit-branch")
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "  legit-branch  ",
     )

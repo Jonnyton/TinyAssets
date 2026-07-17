@@ -2100,7 +2100,8 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     ) or "public"
     fork_from = row["fork_from"] if "fork_from" in row_keys else None
     skills = _json_loads(row["skills_json"], []) if "skills_json" in row_keys else []
-    return {
+    graph = _json_loads(row["graph_json"], {})
+    result = {
         "branch_def_id": row["branch_def_id"],
         "name": row["name"],
         "description": row["description"],
@@ -2111,7 +2112,7 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "skills": skills,
         "parent_def_id": row["parent_def_id"],
         "entry_point": row["entry_point"],
-        "graph": _json_loads(row["graph_json"], {}),
+        "graph": graph,
         "node_defs": _json_loads(row["node_defs_json"], []),
         "state_schema": _json_loads(row["state_schema_json"], []),
         "published": bool(row["published"]),
@@ -2122,6 +2123,14 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "visibility": visibility,
         "fork_from": fork_from,
     }
+    # Surface the branch-level knobs stored in graph_json as top-level keys so
+    # BranchDefinition.from_dict picks them up (Codex S2 F2).
+    if isinstance(graph, dict):
+        if graph.get("default_llm_policy") is not None:
+            result["default_llm_policy"] = graph["default_llm_policy"]
+        if graph.get("concurrency_budget") is not None:
+            result["concurrency_budget"] = graph["concurrency_budget"]
+    return result
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2195,6 +2204,15 @@ def save_branch_definition(
         "conditional_edges": branch_def.get("conditional_edges", []),
         "entry_point": branch_def.get("entry_point", ""),
     }
+    # Branch-level routing/concurrency knobs ride the existing graph_json blob
+    # so they persist without a schema migration (Codex S2 F2). Previously
+    # dropped on save -> always None on reload (the root of the export/import
+    # drop the reviewer probed). _canonical_snapshot excludes these keys, so
+    # version content hashes are unaffected.
+    if branch_def.get("default_llm_policy") is not None:
+        graph["default_llm_policy"] = branch_def["default_llm_policy"]
+    if branch_def.get("concurrency_budget") is not None:
+        graph["concurrency_budget"] = branch_def["concurrency_budget"]
 
     # Legacy compat: if "nodes" key exists and graph_nodes doesn't,
     # store nodes in graph_json (migration path from old format)
@@ -2277,10 +2295,15 @@ def list_branch_definitions(
     goal_id: str = "",
     viewer: str = "",
     include_private: bool = False,
+    limit: int = 0,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """List branch definitions with optional filters.
 
     Args:
+        limit: SQL ``LIMIT`` (>0) so discovery paginates at the DB boundary
+            instead of loading every row (Codex r11 #6). 0 = no limit.
+        offset: SQL ``OFFSET`` cursor for keyset-style paging.
         published_only: If True, return only published branches.
         author: Filter by author name (exact match).
         domain_id: Filter by domain (exact match).
@@ -2326,16 +2349,90 @@ def list_branch_definitions(
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
+    # DB-boundary pagination (Codex r11 #6): LIMIT/OFFSET in the query, keyed by
+    # the stable updated_at DESC, branch_def_id order so paging is deterministic.
+    page = ""
+    if limit and limit > 0:
+        page = "LIMIT ? OFFSET ?"
+        params = [*params, int(limit), max(0, int(offset))]
+
     with _connect(base_path) as conn:
         rows = conn.execute(
             f"""
             SELECT * FROM branch_definitions
             {where}
-            ORDER BY updated_at DESC
+            ORDER BY updated_at DESC, branch_def_id ASC
+            {page}
             """,
             params,
         ).fetchall()
     return [_branch_def_from_row(row) for row in rows]
+
+
+def list_visible_published_branch_ids(
+    base_path: str | Path,
+    *,
+    viewer: str = "",
+    author: str = "",
+    limit: int = 0,
+    offset: int = 0,
+) -> list[str]:
+    """Branch_def_ids that are BOTH active-published AND visible to ``viewer``,
+    newest-published first — filtered AND paginated in ONE cross-DB query.
+
+    Codex r13: pagination must apply visibility BEFORE LIMIT/OFFSET, or newer
+    private designs consume the public page and hide older public designs behind
+    a cursor. branch_definitions (visibility) lives in ``.tinyassets.db`` and
+    branch_versions (active status) in ``.runs.db``, so the runs DB is ATTACHed
+    and joined. ``viewer`` empty = strictly public (the directory surface).
+
+    Codex r14 #4: ``author``, when set, is an ADDITIONAL predicate applied inside
+    the SQL (before LIMIT/OFFSET). The published listing forwarded ``author`` but
+    dropped it here, so filtering published designs by author was a silent no-op.
+    It composes with the visibility clause (you still only see public rows plus
+    your own), it does not widen visibility.
+    """
+    from tinyassets.branch_versions import initialize_branch_versions_db
+    from tinyassets.runs import runs_db_path
+
+    # Guarantee the runs DB + branch_versions table exist before ATTACH/JOIN.
+    initialize_branch_versions_db(base_path)
+    runs_db = str(runs_db_path(base_path))
+
+    if viewer:
+        clauses = ["(bd.visibility = 'public' OR bd.author = ?)"]
+        params: list[Any] = [viewer]
+    else:
+        clauses = ["bd.visibility = 'public'"]
+        params = []
+    if author:
+        clauses.append("bd.author = ?")
+        params.append(author)
+    where = " AND ".join(clauses)
+    page = ""
+    if limit and limit > 0:
+        page = "LIMIT ? OFFSET ?"
+        params += [int(limit), max(0, int(offset))]
+
+    with _connect(base_path) as conn:
+        conn.execute("ATTACH DATABASE ? AS rdb", (runs_db,))
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT bd.branch_def_id AS bid, MAX(v.published_at) AS latest
+                FROM branch_definitions bd
+                JOIN rdb.branch_versions v
+                    ON v.branch_def_id = bd.branch_def_id AND v.status = 'active'
+                WHERE {where}
+                GROUP BY bd.branch_def_id
+                ORDER BY latest DESC, bd.branch_def_id ASC
+                {page}
+                """,
+                params,
+            ).fetchall()
+        finally:
+            conn.execute("DETACH DATABASE rdb")
+    return [row["bid"] for row in rows]
 
 
 def update_branch_definition(

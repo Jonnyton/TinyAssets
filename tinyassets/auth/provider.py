@@ -406,6 +406,10 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "escrow_refund",
     "record_outcome",
     "record_remix",
+    # remix_design is a COMPOSITE that internally calls record_remix (costly);
+    # it must carry the strictest scope it composes, or a write-scoped token
+    # could drive a costly op through it (Codex S2 adapt round 2, finding 2).
+    "remix_design",
 })
 _EXTENSIONS_ADMIN_ACTIONS = frozenset({
     "approve",

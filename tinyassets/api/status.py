@@ -1436,10 +1436,34 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
 
     release_state = _load_release_state()
 
+    # Reference designs are optional feature state, so status reporting must
+    # never take down the control plane. Recompute registry health on every
+    # read; the process-global seed result is retained separately as history.
+    try:
+        from tinyassets.branch_designs import reference_designs_live_health
+        from tinyassets.universe_server import last_seed_result
+
+        live_reference_designs = reference_designs_live_health(_base_path())
+        seed_result = last_seed_result()
+        reference_designs = {
+            "healthy": live_reference_designs["healthy"],
+            "unhealthy": live_reference_designs["unhealthy"],
+            "per_design": live_reference_designs["per_design"],
+            "last_seed": {
+                "ran": seed_result is not None,
+                "seeded": list((seed_result or {}).get("seeded", [])),
+                "present": list((seed_result or {}).get("present", [])),
+                "failed": list((seed_result or {}).get("failed", [])),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001 - best-effort observability
+        reference_designs = {"error": "compute_failed", "detail": str(exc)}
+
     response = {
         "schema_version": 1,
         "active_host": policy_payload["active_host"],
         "tier_routing_policy": tier_routing_policy,
+        "reference_designs": reference_designs,
         "evidence": {
             "last_completed_request_llm_used": last_completed_llm,
             "activity_log_tail": activity_tail,

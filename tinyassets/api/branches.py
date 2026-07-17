@@ -379,11 +379,19 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
 
     visibility_in = (kwargs.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
+    author_in = kwargs.get("author")
+    if author_in is not None and not isinstance(author_in, str):
+        return json.dumps({
+            "error": f"author must be a string (got {type(author_in).__name__}).",
+        })
+    create_author = _sanitize_reserved_author(author_in).strip()
     branch = BranchDefinition(
         name=name,
         description=kwargs.get("description", ""),
         domain_id=kwargs.get("domain_id") or "workflow",
-        author=kwargs.get("author") or _current_actor(),
+        author=create_author or _current_actor(),
         visibility=visibility,
     )
     try:
@@ -428,6 +436,27 @@ def _resolve_branch_id(bid_or_name: str, base_path: str) -> str:
     return bid_or_name
 
 
+def _reserved_seed_mutation_error(bid_or_name: str) -> str:
+    """Refuse public mutation of the authoritative reference-design seed."""
+    from tinyassets.branch_designs import RESERVED_SEED_AUTHOR
+    from tinyassets.daemon_server import get_branch_definition
+
+    resolved = _resolve_branch_id((bid_or_name or "").strip(), _base_path())
+    if not resolved:
+        return ""
+    try:
+        row = get_branch_definition(_base_path(), branch_def_id=resolved)
+    except KeyError:
+        return ""
+    if (row.get("author") or "") != RESERVED_SEED_AUTHOR:
+        return ""
+    return (
+        f"Branch '{resolved}' is a protected reference-design seed and cannot "
+        "be deleted or modified through the public API. It is owned by the "
+        "reference-design seeder and self-heals at startup."
+    )
+
+
 def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.api.market import _gates_enabled
@@ -445,6 +474,8 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     visibility = branch.get("visibility", "public") or "public"
     if visibility == "private" and branch.get("author", "") != _current_actor():
         return json.dumps({"error": f"Branch '{bid}' not found."})
+    # (Binding VALUES never exist in the shared row in Phase 1 — nothing to
+    # redact on read; the is_binding SCHEMA is public design metadata.)
     # Phase 6.4: non-retracted claims for this Branch across all
     # Goals. Flag-gated placeholder when GATES_ENABLED=0 so UIs
     # render "gates off" distinct from "no claims yet."
@@ -487,6 +518,9 @@ def _ext_branch_approve_source_code(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"status": "rejected", "error": seed_error})
 
     try:
         source = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -559,16 +593,64 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         })
 
     actor = _current_actor()
+    # PUBLIC-ONLY viewer (Codex F2): the unauthenticated directory discovery
+    # surface must NEVER use the env/server identity as viewer, or a private
+    # design authored by whoever UNIVERSE_SERVER_USER names would leak. When
+    # public_only is set, the viewer is empty -> strictly public rows.
+    public_only = bool(kwargs.get("public_only"))
+    viewer = "" if public_only else actor
 
-    # Phase 6.2.2 — visibility-aware listing. Viewer sees public
-    # Branches and any private Branches they authored.
-    rows = list_branch_definitions(
-        _base_path(),
-        domain_id=kwargs.get("domain_id", ""),
-        author=kwargs.get("author", ""),
-        goal_id=kwargs.get("goal_id", ""),
-        viewer=actor,
-    )
+    # DB-boundary pagination (Codex r11 #6): fetch ONE bounded page from SQL
+    # (LIMIT/OFFSET) instead of loading every visible branch and slicing in
+    # memory. Default 30, capped 500; ``offset`` is the keyset cursor.
+    try:
+        limit = int(kwargs.get("limit") or 30)
+    except (TypeError, ValueError):
+        limit = 30
+    limit = max(1, min(limit, 500))
+    try:
+        offset = max(0, int(kwargs.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+
+    from tinyassets.daemon_server import get_branch_definition
+
+    active_by_bid: dict[str, Any] = {}
+    if scope == "published":
+        # Codex r13: the PUBLISHED page must apply BOTH the active-published
+        # filter AND visibility BEFORE LIMIT/OFFSET (one cross-DB query), or
+        # newer private designs consume the public page and hide older public
+        # designs behind the cursor. public_only (directory) -> strictly public.
+        from tinyassets.branch_versions import get_newest_active_versions
+        from tinyassets.daemon_server import list_visible_published_branch_ids
+
+        published_ids = list_visible_published_branch_ids(
+            _base_path(),
+            viewer="" if public_only else actor,
+            author=(kwargs.get("author") or "").strip(),
+            limit=limit,
+            offset=offset,
+        )
+        next_offset = offset + len(published_ids) if len(published_ids) == limit else None
+        active_by_bid = get_newest_active_versions(_base_path(), published_ids)
+        rows = []
+        for bid in published_ids:
+            try:
+                rows.append(get_branch_definition(_base_path(), branch_def_id=bid))
+            except KeyError:
+                continue
+    else:
+        # scope=all / mine — visibility-aware DB-boundary pagination.
+        rows = list_branch_definitions(
+            _base_path(),
+            domain_id=kwargs.get("domain_id", ""),
+            author=kwargs.get("author", ""),
+            goal_id=kwargs.get("goal_id", ""),
+            viewer=viewer,
+            limit=limit,
+            offset=offset,
+        )
+        next_offset = offset + len(rows) if len(rows) == limit else None
 
     # requires_sandbox filter: "none" = design-only branches only (no node
     # has requires_sandbox=True); "any" = branches that have at least one
@@ -579,12 +661,10 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     for r in rows:
         published_version_id = None
         if scope == "published":
-            from tinyassets.branch_versions import list_branch_versions
-
-            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
-            if not versions:
+            active = active_by_bid.get(r.get("branch_def_id", ""))
+            if active is None:
                 continue
-            published_version_id = versions[0].branch_version_id
+            published_version_id = active.branch_version_id
         elif scope == "mine":
             if (r.get("author") or "") != actor:
                 continue
@@ -620,7 +700,15 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         if published_version_id is not None:
             summary["branch_version_id"] = published_version_id
         summaries.append(summary)
-    return json.dumps({"branches": summaries, "count": len(summaries)})
+
+    # The page was already bounded at the DB (LIMIT). ``next_offset`` is the
+    # cursor for the next page; ``truncated`` signals more rows may follow.
+    return json.dumps({
+        "branches": summaries,
+        "count": len(summaries),
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
+    })
 
 
 def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
@@ -629,6 +717,9 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
     bid = kwargs.get("branch_def_id", "").strip()
     if not bid:
         return json.dumps({"error": "branch_def_id is required."})
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"error": seed_error})
     removed = delete_branch_definition(_base_path(), branch_def_id=bid)
     if not removed:
         return json.dumps({"error": f"Branch '{bid}' not found."})
@@ -652,6 +743,9 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"error": seed_error})
 
     # Normalize kwargs into a node spec dict so we can share the
     # build_branch resolver (which checks node_ref / intent and
@@ -731,6 +825,9 @@ def _ext_branch_connect_nodes(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id, from_node, and to_node are required.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"error": seed_error})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -777,6 +874,9 @@ def _ext_branch_set_entry_point(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"error": seed_error})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -823,6 +923,9 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and field_name are required.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"error": seed_error})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -1595,6 +1698,142 @@ def _lookup_node_body(
     )
 
 
+# Node fields _apply_node_spec sets explicitly via the NodeDefinition(...)
+# constructor call below. Approval fields are set there too, guarded by
+# _approval_provenance_valid. Every OTHER NodeDefinition field is applied
+# generically by _apply_passthrough_node_fields so export -> import round-trips
+# losslessly and future node fields survive without editing an allowlist
+# (Codex S2 adapt, finding 1).
+_NODE_SPEC_CONSTRUCTOR_FIELDS = frozenset({
+    "node_id", "display_name", "description", "phase",
+    "input_keys", "output_keys", "tools_allowed", "strict_input_isolation",
+    "source_code", "prompt_template", "model_hint", "reasoning_effort",
+    "llm_policy", "timeout_seconds", "author",
+    "invoke_branch_spec", "invoke_branch_version_spec", "await_run_spec",
+    "effects",
+})
+_NODE_SPEC_APPROVAL_FIELDS = frozenset({
+    "approved", "approved_by", "approved_at",
+    "approved_source_hash", "approval_reason",
+})
+
+# Resolved NodeDefinition field types, cached. Passthrough is generic AND
+# type-checked (Codex S2 adapt round 2, finding 1): a hostile import that sends
+# a string for a bool field ("false"), or a mis-shaped list/dict, is REJECTED
+# loudly (hard rule 8) instead of persisting a truthy garbage value. Validation
+# is driven off the dataclass's own type hints, so it stays generic — no
+# hand-maintained per-field type list.
+_NODE_FIELD_HINTS: dict[str, Any] | None = None
+
+
+def _node_field_hints() -> dict[str, Any]:
+    global _NODE_FIELD_HINTS
+    if _NODE_FIELD_HINTS is None:
+        import typing
+
+        from tinyassets.branches import NodeDefinition
+
+        _NODE_FIELD_HINTS = typing.get_type_hints(NodeDefinition)
+    return _NODE_FIELD_HINTS
+
+
+def _value_matches_node_type(value: Any, hint: Any) -> bool:
+    """True when a JSON-decoded ``value`` satisfies the declared field type.
+
+    Bool is checked strictly (a JSON string "false" is NOT a bool); numbers
+    reject bools; containers must match list/dict and, for typed lists, their
+    element type. Union/Optional accept any member. Unknown/``Any`` accept.
+    """
+    import types as _types
+    import typing
+
+    origin = typing.get_origin(hint)
+    if origin is None:
+        if hint is bool:
+            return isinstance(value, bool)
+        if hint is int:
+            return isinstance(value, int) and not isinstance(value, bool)
+        if hint is float:
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if hint is str:
+            return isinstance(value, str)
+        if hint is type(None):
+            return value is None
+        if hint is Any:
+            return True
+        return isinstance(value, hint) if isinstance(hint, type) else True
+    if origin in (typing.Union, getattr(_types, "UnionType", ())):
+        return any(_value_matches_node_type(value, a) for a in typing.get_args(hint))
+    if origin is list:
+        if not isinstance(value, list):
+            return False
+        args = typing.get_args(hint)
+        return all(_value_matches_node_type(v, args[0]) for v in value) if args else True
+    if origin is dict:
+        return isinstance(value, dict)
+    if origin in (tuple, set, frozenset):
+        return isinstance(value, list)
+    return True
+
+
+def _node_type_label(hint: Any) -> str:
+    import types as _types
+    import typing
+
+    origin = typing.get_origin(hint)
+    if origin is list:
+        return "a JSON array"
+    if origin is dict:
+        return "a JSON object"
+    if origin in (typing.Union, getattr(_types, "UnionType", ())):
+        parts = [
+            _node_type_label(a) for a in typing.get_args(hint)
+            if a is not type(None)
+        ]
+        return " or ".join(parts) if parts else "null"
+    return getattr(hint, "__name__", str(hint))
+
+
+def _apply_passthrough_node_fields(node: Any, raw: dict[str, Any]) -> str:
+    """Carry every behavior-affecting NodeDefinition field the explicit
+    constructor call did not set — ``requires_sandbox``, ``enabled``,
+    ``retry_policy``, ``dependencies``, ``checkpoints``,
+    ``evaluation_criteria``, and any FUTURE field such as S3's ``node_kind``.
+
+    Generic by construction: it iterates the dataclass fields, so a new node
+    field round-trips through export/import with no allowlist edit. Each value
+    is type-checked against the field's declared type BEFORE persistence, and a
+    mismatch returns a loud error (nothing is applied). Approval provenance is
+    excluded — the constructor path already gated it and a raw passthrough must
+    never overwrite that decision.
+
+    Returns "" on success, or a human-readable error string on a type mismatch.
+    """
+    from tinyassets.branches import NodeDefinition
+
+    hints = _node_field_hints()
+    handled = _NODE_SPEC_CONSTRUCTOR_FIELDS | _NODE_SPEC_APPROVAL_FIELDS
+    # Two-pass: validate everything first, then apply — so a rejected node is
+    # never left half-populated.
+    updates: dict[str, Any] = {}
+    for fname in NodeDefinition.__dataclass_fields__:
+        if fname in handled or fname not in raw:
+            continue
+        value = raw[fname]
+        hint = hints.get(fname)
+        if hint is not None and not _value_matches_node_type(value, hint):
+            return (
+                f"node field '{fname}' has the wrong type: expected "
+                f"{_node_type_label(hint)}, got {type(value).__name__} "
+                f"({value!r}). Imports/specs must be correctly typed — no "
+                "string booleans, no mis-shaped lists/objects."
+            )
+        updates[fname] = value
+    for key, val in updates.items():
+        setattr(node, key, val)
+    return ""
+
+
 def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branches import GraphNodeRef, NodeDefinition
@@ -1778,6 +2017,13 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     except ValueError as exc:
         return str(exc)
 
+    # Preserve every behavior-affecting field the constructor didn't set
+    # (requires_sandbox, enabled, node_kind, …) so import/build is lossless.
+    # Type-validated: a mis-typed passthrough field rejects the whole node.
+    passthrough_err = _apply_passthrough_node_fields(node, raw)
+    if passthrough_err:
+        return passthrough_err
+
     if any(n.node_id == nid for n in branch.node_defs):
         return f"node '{nid}' already exists on the branch"
 
@@ -1820,14 +2066,28 @@ def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
                 "conditional edge outcome/target must be non-empty strings"
             )
         conditions[outcome_str] = target_str
+    fallback_raw = raw.get("fallback")
+    if fallback_raw is not None and not isinstance(fallback_raw, str):
+        return (
+            "conditional edge 'fallback' must be a string outcome label "
+            f"(got {type(fallback_raw).__name__})"
+        )
+    fallback = (fallback_raw or "").strip()
+    if fallback and fallback not in conditions:
+        return (
+            f"conditional edge fallback '{fallback}' must be one of the "
+            f"declared outcome labels {sorted(conditions)!r}"
+        )
     # Merge onto any existing edge from the same source so callers can
     # add one outcome at a time without wiping siblings.
     for existing in branch.conditional_edges:
         if existing.from_node == src:
             existing.conditions.update(conditions)
+            if fallback:
+                existing.fallback = fallback
             return ""
     branch.conditional_edges.append(
-        ConditionalEdge(from_node=src, conditions=conditions)
+        ConditionalEdge(from_node=src, conditions=conditions, fallback=fallback)
     )
     return ""
 
@@ -1853,13 +2113,23 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     # so PR #932's ``_state_schema_defaults`` finds the seed value at runtime;
     # also dual-write ``default`` for back-compat with any reader that still
     # uses the legacy storage key.
-    default = raw.get(
-        "default_value",
-        raw.get("default", raw.get("field_default", "")),
+    # A binding slot declared from ANY authoring path (build_branch /
+    # add_state_field) carries the schema flag but NO value — Phase 1 stores no
+    # binding values platform-side (Codex r11 re-scope / PLAN §4). A non-binding
+    # field's design default travels normally.
+    is_binding = any(
+        raw.get(flag) for flag in ("is_binding", "bound", "sensitive")
     )
-    if default != "":
-        entry["default_value"] = default
-        entry["default"] = default
+    if is_binding:
+        entry["is_binding"] = True
+    else:
+        default = raw.get(
+            "default_value",
+            raw.get("default", raw.get("field_default", "")),
+        )
+        if default != "":
+            entry["default_value"] = default
+            entry["default"] = default
     branch.state_schema.append(entry)
     if ftype_raw.lower() not in _VALID_STATE_TYPES:
         return (
@@ -2209,15 +2479,30 @@ def _staged_branch_from_spec(
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
+    author_raw = spec.get("author")
+    if author_raw is not None and not isinstance(author_raw, str):
+        errors.append(
+            f"branch 'author' must be a string (got {type(author_raw).__name__})"
+        )
+        author_raw = None
+    spec_author = _sanitize_reserved_author(author_raw).strip()
+
+    # Visibility is set at CONSTRUCTION (Codex r12 #1) so import/remix persist
+    # PRIVATE in the INITIAL save — never a public row flipped afterward (a
+    # crash between saves must not leave a permanently public working copy).
+    _vis_in = (spec.get("visibility") or "public").strip().lower()
     branch = BranchDefinition(
         name=(spec.get("name") or "").strip(),
         description=spec.get("description") or "",
         domain_id=(spec.get("domain_id") or "").strip() or "workflow",
         goal_id=(spec.get("goal_id") or "").strip(),
-        author=(spec.get("author") or _current_actor()),
+        author=spec_author or _current_actor(),
         tags=list(spec.get("tags") or []),
         skills=[],
         fork_from=spec.get("fork_from") or None,
+        visibility="private" if _vis_in == "private" else "public",
     )
 
     try:
@@ -2291,7 +2576,16 @@ def _staged_branch_from_spec(
             if not _spec_has_graph_key("entry_point"):
                 branch.entry_point = parent_copy.entry_point
             if "state_schema" not in spec:
+                # A fork inherits the parent's binding SLOTS (the is_binding
+                # SCHEMA) to re-bind on a Phase-2 bound engine. No values exist
+                # to strip in Phase 1 (Codex r11 re-scope).
                 branch.state_schema = list(parent_copy.state_schema)
+            # Branch-level routing/concurrency inherit through a fork too, or a
+            # remix silently loses them (Codex S2 F2).
+            if "default_llm_policy" not in spec:
+                branch.default_llm_policy = parent_copy.default_llm_policy
+            if "concurrency_budget" not in spec:
+                branch.concurrency_budget = parent_copy.concurrency_budget
 
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
@@ -2318,6 +2612,41 @@ def _staged_branch_from_spec(
         entry = (graph_blob.get("entry_point") or "").strip()
     if entry:
         branch.entry_point = entry
+
+    # Branch-level knobs: explicit spec values override any inherited default,
+    # with typed validation and no silent coercion (Codex S2 F2).
+    if "default_llm_policy" in spec:
+        raw_policy = spec.get("default_llm_policy")
+        if raw_policy is None:
+            branch.default_llm_policy = None
+        elif isinstance(raw_policy, dict):
+            from tinyassets.branches import _validate_llm_policy_shape
+
+            policy_errors = _validate_llm_policy_shape(
+                raw_policy, context="default_llm_policy",
+            )
+            if policy_errors:
+                errors.extend(policy_errors)
+            else:
+                branch.default_llm_policy = raw_policy
+        else:
+            errors.append(
+                "default_llm_policy must be a JSON object or null, got "
+                f"{type(raw_policy).__name__}"
+            )
+    if "concurrency_budget" in spec:
+        raw_budget = spec.get("concurrency_budget")
+        if (
+            isinstance(raw_budget, bool)
+            or not isinstance(raw_budget, int)
+            or raw_budget < 1
+        ):
+            errors.append(
+                "concurrency_budget must be a positive integer, got "
+                f"{type(raw_budget).__name__} ({raw_budget!r})"
+            )
+        else:
+            branch.concurrency_budget = raw_budget
 
     return branch, errors
 
@@ -2348,6 +2677,116 @@ def _build_branch_text(branch: Any, *, truncated: bool) -> str:
     mermaid = _branch_mermaid(branch)
     state_lines = [f"State schema: {len(branch.state_schema)} field(s)."]
     return "\n".join([head, "", mermaid, "", *state_lines])
+
+
+# Field-type contract for a build_branch spec. Scalars are validated as
+# strings (None/absent allowed — downstream coerces to ""); list fields must
+# be JSON arrays; list-of-dict fields additionally require every element to be
+# a JSON object. Enforced at the PUBLIC boundary (Codex S2 r13 #2) so a
+# malformed import — e.g. `name:123`, `tags:5`, `state_schema:[7]` — returns a
+# STRUCTURED rejection instead of a raw AttributeError/TypeError 500 from
+# `_staged_branch_from_spec`. `default_llm_policy`/`concurrency_budget` are
+# intentionally omitted here — staging already returns structured errors for
+# those without crashing.
+_BUILD_SPEC_STRING_FIELDS = (
+    "name",
+    "description",
+    "domain_id",
+    "goal_id",
+    "author",
+    "entry_point",
+    "fork_from",
+    "visibility",
+)
+_BUILD_SPEC_LIST_OF_DICT_FIELDS = (
+    "node_defs",
+    "nodes",
+    "edges",
+    "conditional_edges",
+    "state_schema",
+)
+
+
+def _validate_list_of_dicts(value: Any, field: str) -> list[str]:
+    """Return type errors if ``value`` is not a JSON array of JSON objects.
+
+    ``None`` (absent) is allowed — the caller treats it as an empty list.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"`{field}` must be a JSON array, got {type(value).__name__}."]
+    errs: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            errs.append(
+                f"`{field}[{idx}]` must be a JSON object, "
+                f"got {type(item).__name__}."
+            )
+    return errs
+
+
+def _validate_build_spec_shape(spec: dict[str, Any]) -> list[str]:
+    """Validate every field's TYPE before staging (Codex S2 r13 #2).
+
+    Returns a list of human-readable type errors; empty means the shape is
+    safe to stage. This is the crash boundary: `_staged_branch_from_spec`
+    calls ``.strip()`` on string fields and ``list(...)`` / ``.get()`` on
+    collection fields, so a wrong-typed value raises an uncaught exception
+    (HTTP 500) unless rejected here first.
+    """
+    errors: list[str] = []
+
+    for field in _BUILD_SPEC_STRING_FIELDS:
+        val = spec.get(field)
+        if val is not None and not isinstance(val, str):
+            errors.append(
+                f"`{field}` must be a string, got {type(val).__name__}."
+            )
+
+    tags = spec.get("tags")
+    if tags is not None:
+        if not isinstance(tags, list):
+            errors.append(
+                f"`tags` must be a JSON array of strings, "
+                f"got {type(tags).__name__}."
+            )
+        else:
+            for idx, tag in enumerate(tags):
+                if not isinstance(tag, str):
+                    errors.append(
+                        f"`tags[{idx}]` must be a string, "
+                        f"got {type(tag).__name__}."
+                    )
+
+    skills = spec.get("skills")
+    if skills is not None and not isinstance(skills, list):
+        errors.append(
+            f"`skills` must be a JSON array, got {type(skills).__name__}."
+        )
+
+    for field in _BUILD_SPEC_LIST_OF_DICT_FIELDS:
+        errors.extend(_validate_list_of_dicts(spec.get(field), field))
+
+    graph = spec.get("graph")
+    if graph is not None:
+        if not isinstance(graph, dict):
+            errors.append(
+                f"`graph` must be a JSON object, got {type(graph).__name__}."
+            )
+        else:
+            for field in ("edges", "conditional_edges", "nodes", "node_defs"):
+                errors.extend(
+                    _validate_list_of_dicts(graph.get(field), f"graph.{field}")
+                )
+            g_entry = graph.get("entry_point")
+            if g_entry is not None and not isinstance(g_entry, str):
+                errors.append(
+                    "`graph.entry_point` must be a string, "
+                    f"got {type(g_entry).__name__}."
+                )
+
+    return errors
 
 
 def _ext_branch_build(kwargs: dict[str, Any]) -> str:
@@ -2386,6 +2825,21 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
                 "issue": "Top-level spec is not an object.",
                 "proposed_fix": "Wrap the spec in { ... }.",
             }],
+        })
+
+    # Validate every field's TYPE before staging (Codex S2 r13 #2). Staging
+    # calls `.strip()`/`list(...)`/`.get()` on these, so a wrong-typed value
+    # would otherwise escape as a raw AttributeError/TypeError (HTTP 500).
+    shape_errors = _validate_build_spec_shape(spec)
+    if shape_errors:
+        return json.dumps({
+            "status": "rejected",
+            "error": "spec_json has malformed field types: "
+            + "; ".join(shape_errors),
+            "suggestions": [
+                {"issue": msg, "proposed_fix": "Correct the field type and resend."}
+                for msg in shape_errors
+            ],
         })
 
     top_level_goal_id = (kwargs.get("goal_id") or "").strip()
@@ -2550,6 +3004,37 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
         if len(branch.state_schema) == before:
             return f"remove_state_field: '{fname}' not found"
         return ""
+    if name == "set_state_field_default":
+        # BIND op. Codex r11 re-scope / PLAN §4: the platform NEVER stores
+        # private content, so binding VALUES (a repo, a credential, a policy)
+        # are never persisted platform-side — an engine binds them host-side.
+        # A value-binding attempt is REFUSED here; only the binding SCHEMA
+        # lives on the platform. The field is still DECLARED a binding slot
+        # (is_binding) so remix/import/export carry the empty slot; the VALUE
+        # is bound host-side by the engine.
+        fname = (op.get("name") or op.get("field_name") or "").strip()
+        if not fname:
+            return "set_state_field_default requires name"
+        target_field = next(
+            (f for f in branch.state_schema if f.get("name") == fname), None,
+        )
+        if target_field is None:
+            return (
+                f"set_state_field_default: state field '{fname}' not found. "
+                "Add it with add_state_field first, or fix the name."
+            )
+        # Declare the binding slot (schema flag), never a value.
+        target_field["is_binding"] = True
+        for value_key in ("default_value", "default"):
+            target_field.pop(value_key, None)
+        if any(k in op for k in ("default_value", "default", "value")):
+            return (
+                f"binding a VALUE for '{fname}' is not stored on the platform "
+                "— bind the private repo/policy value to a universe with write_graph "
+                "target=binding; deposit credentials through the encrypted "
+                "broker. Remix/import/export carry only the empty slot."
+            )
+        return ""
     if name == "update_node":
         nid = (op.get("node_id") or "").strip()
         if not nid:
@@ -2710,6 +3195,9 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id is required.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"status": "rejected", "error": seed_error})
     raw = (kwargs.get("changes_json") or "").strip()
     if not raw:
         return json.dumps({
@@ -2934,6 +3422,9 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"status": "rejected", "error": seed_error})
 
     # Accept updates as a JSON blob (changes_json) OR as individual
     # kwargs. Individual kwargs are the phone-friendly shape;
@@ -3260,6 +3751,9 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id is required for patch_nodes.",
         })
+    seed_error = _reserved_seed_mutation_error(bid)
+    if seed_error:
+        return json.dumps({"status": "rejected", "error": seed_error})
     field = (kwargs.get("field") or "").strip()
     if field not in _PATCH_NODES_FIELDS:
         return json.dumps({
@@ -3475,6 +3969,537 @@ def _resolve_udir() -> Path:
     return _base_path()
 
 
+# ── Portable design artifacts: export / import / remix (patch-loop S2) ─────
+# The connector remix path so a signed-in user's chatbot can take a published
+# branch DESIGN and make it their own: discover (list_branches scope=published)
+# -> import an artifact OR remix a published design by id -> bind params ->
+# export back to the same portable envelope. These reuse the composite
+# build_branch path and the record_remix provenance edge — no parallel
+# machinery (PLAN commons-first + minimal-primitives). Design basis:
+# docs/design-notes/2026-07-15-user-patch-loop-reference-design.md (G2/S2).
+
+
+# Approval provenance is host/actor-scoped trust; it must NOT travel inside a
+# portable artifact (a shared artifact carrying approved=True would smuggle
+# execution authority across hosts). Everything ELSE on the node passes through.
+# Re-import re-runs the approve gate (fail-closed, hard rule 8) and the runtime
+# gate is the backstop.
+_NODE_EXPORT_REDACTED_FIELDS = (
+    "approved", "approved_by", "approved_at",
+    "approved_source_hash", "approval_reason",
+)
+
+
+def _node_def_to_design_spec(nd: Any) -> dict[str, Any]:
+    """Serialize a NodeDefinition into a build_branch node spec that PRESERVES
+    every behavior-affecting field.
+
+    Dumps the WHOLE dataclass via ``to_dict`` (not a hand-maintained allowlist)
+    so security/behavior flags like ``requires_sandbox`` and ``enabled`` — and
+    any FUTURE node field (e.g. S3's ``node_kind``) — round-trip through
+    export -> import unchanged. The only redaction is approval provenance
+    (see ``_NODE_EXPORT_REDACTED_FIELDS``). Codex S2 adapt (finding 1).
+    """
+    spec = dict(nd.to_dict())
+    for redacted in _NODE_EXPORT_REDACTED_FIELDS:
+        spec.pop(redacted, None)
+    return spec
+
+
+def _state_field_to_design_spec(field: dict[str, Any]) -> dict[str, Any]:
+    """Serialize a state_schema entry.
+
+    Binding VALUES never exist in the shared row,
+    so there is nothing to redact — the field SCHEMA travels verbatim, including
+    the ``is_binding`` declaration + empty slot, so remix/import/export carry the
+    binding slot for a private universe binding store to fill.
+    """
+    return dict(field)
+
+
+def _branch_to_design_spec(
+    branch: Any, *, metadata_branch: Any = None,
+) -> dict[str, Any]:
+    """Reconstruct a build_branch-compatible spec from a BranchDefinition.
+
+    ``branch`` supplies the TOPOLOGY (nodes/edges/state/skills) — for export
+    this is the immutable active-version snapshot (finding 3). Branch-level
+    METADATA (name/description/domain/goal/tags + the F2 routing/concurrency
+    knobs) is not part of the content-hashed snapshot, so it comes from
+    ``metadata_branch`` (the live row) when provided, else from ``branch``.
+
+    Topology lives in an embedded graph blob on the raw registry row, so the
+    caller MUST pass a rebuilt ``BranchDefinition`` (from_dict), never the raw
+    row, or edges/conditional_edges come back empty (S1 review lesson).
+    """
+    from tinyassets.branch_designs import REFERENCE_TAG
+
+    meta = metadata_branch if metadata_branch is not None else branch
+    spec: dict[str, Any] = {
+        "name": meta.name,
+        "description": meta.description,
+        "domain_id": meta.domain_id,
+        "entry_point": branch.entry_point,
+        "node_defs": [_node_def_to_design_spec(nd) for nd in branch.node_defs],
+        "edges": [
+            {"from": e.from_node, "to": e.to_node} for e in branch.edges
+        ],
+        "conditional_edges": [
+            {"from": ce.from_node, "conditions": dict(ce.conditions)}
+            for ce in branch.conditional_edges
+        ],
+        "state_schema": [
+            _state_field_to_design_spec(f) for f in branch.state_schema
+        ],
+    }
+    if meta.goal_id:
+        spec["goal_id"] = meta.goal_id
+    # Branch-level routing/cost/concurrency knobs come from the TOPOLOGY source
+    # (the immutable active-version snapshot on export), NOT the mutable row, so
+    # a mutate-after-publish can't change what an active-version export returns
+    # (Codex S2 F5). They also round-trip through remix, so routing/concurrency
+    # aren't silently lost (F2). For the unpublished-draft path branch == row.
+    if getattr(branch, "default_llm_policy", None) is not None:
+        spec["default_llm_policy"] = branch.default_llm_policy
+    concurrency = getattr(branch, "concurrency_budget", None)
+    if concurrency is not None:
+        spec["concurrency_budget"] = concurrency
+    # Drop the seed-only tags — an exported/imported copy is not the seeded
+    # reference and must not masquerade as it (idempotency tag + reference tag).
+    tags = [
+        t for t in (meta.tags or [])
+        if t != REFERENCE_TAG and not str(t).startswith("design:")
+    ]
+    if tags:
+        spec["tags"] = tags
+    if getattr(branch, "skills", None):
+        spec["skills"] = branch.skills
+    return spec
+
+
+def _newest_active_branch_version(base_path: Any, branch_def_id: str) -> Any:
+    """Newest ACTIVE published version of a branch, or ``None``.
+
+    A rolled-back / superseded version must never be listed, remixed, or
+    exported (Codex S2 latest-model, finding 3): select the newest version
+    whose ``status == "active"`` via direct SQL — correct even when hundreds of
+    newer versions were rolled back but an older active one exists (F3).
+    """
+    from tinyassets.branch_versions import get_newest_active_version
+
+    return get_newest_active_version(base_path, branch_def_id)
+
+
+def _load_owned_or_public_branch(
+    bid_or_name: str, *, public_only: bool = False,
+) -> tuple[Any, str]:
+    """Resolve + load a branch, applying the private-author visibility gate.
+
+    Returns ``(BranchDefinition_or_None, error_json)``. Mirrors
+    ``_ext_branch_get``: a private branch owned by someone else answers the
+    "not found" envelope so existence isn't leaked. When ``public_only`` (the
+    unauthenticated directory surface), a private branch is ALWAYS not-found
+    regardless of the env/server identity (Codex F2).
+    """
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+
+    bid = _resolve_branch_id((bid_or_name or "").strip(), _base_path())
+    if not bid:
+        return None, json.dumps({"error": "branch_def_id is required."})
+    try:
+        row = get_branch_definition(_base_path(), branch_def_id=bid)
+    except KeyError:
+        return None, json.dumps({"error": f"Branch '{bid}' not found."})
+    visibility = row.get("visibility", "public") or "public"
+    if visibility == "private" and (
+        public_only or row.get("author", "") != _current_actor()
+    ):
+        return None, json.dumps({"error": f"Branch '{bid}' not found."})
+    return BranchDefinition.from_dict(row), ""
+
+
+def _ext_branch_export_design(kwargs: dict[str, Any]) -> str:
+    """Export an owned/public branch as a portable design artifact envelope.
+
+    Read-only. Anyone may export what they can read (public branches are the
+    remix commons); private branches are author-gated via
+    ``_load_owned_or_public_branch``.
+    """
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.design_artifacts import wrap_spec_as_design_artifact
+
+    branch, err = _load_owned_or_public_branch(
+        kwargs.get("branch_def_id", "") or kwargs.get("name", ""),
+        public_only=bool(kwargs.get("public_only")),
+    )
+    if err:
+        return err
+
+    # Topology comes from the newest ACTIVE version's immutable snapshot, never
+    # the mutable row (finding 3): a rolled-back topology is not exportable.
+    # Branch-level metadata (name/description/routing) is not in the snapshot,
+    # so it comes from the row. A published-but-all-rolled-back branch refuses;
+    # an unpublished draft (no versions) exports its live row for the owner.
+    active = _newest_active_branch_version(_base_path(), branch.branch_def_id)
+    if active is not None:
+        topology_branch = BranchDefinition.from_dict(active.snapshot)
+    elif list_branch_versions(_base_path(), branch.branch_def_id, limit=1):
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"Branch '{branch.branch_def_id}' has no active published "
+                "version (its latest versions were rolled back); nothing safe "
+                "to export. Publish a fresh version first."
+            ),
+        })
+    else:
+        topology_branch = branch  # unpublished draft — the row is the only state
+
+    spec = _branch_to_design_spec(topology_branch, metadata_branch=branch)
+    design_id = (kwargs.get("design_id") or branch.branch_def_id or "").strip()
+    try:
+        design_version = int(kwargs.get("design_version") or 1)
+    except (TypeError, ValueError):
+        design_version = 1
+    artifact = wrap_spec_as_design_artifact(
+        spec,
+        design_id=design_id,
+        design_version=design_version,
+        title=branch.name,
+        provenance=(
+            f"Exported from TinyAssets branch {branch.branch_def_id} "
+            f"by {branch.author}"
+        ),
+    )
+    return json.dumps({
+        "status": "exported",
+        "branch_def_id": branch.branch_def_id,
+        "design_id": design_id,
+        "artifact": artifact,
+        "artifact_json": json.dumps(artifact),
+    }, default=str)
+
+
+def _ext_branch_import_design(kwargs: dict[str, Any]) -> str:
+    """Import a design artifact (envelope OR raw spec) as a NEW owned branch.
+
+    Reuses the composite ``build_branch`` path. Identity/lineage fields are
+    stripped (an import is a fresh owned branch, not a fork — remix_design is
+    the lineage-preserving path), and the caller becomes the author.
+    """
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.design_artifacts import is_design_envelope, unwrap_design_artifact
+
+    raw = (kwargs.get("artifact_json") or kwargs.get("spec_json") or "").strip()
+    if not raw:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "artifact_json is required for import_design (a design "
+                "envelope or a raw build_branch spec)."
+            ),
+        })
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"artifact_json is not valid JSON: {exc}",
+        })
+
+    if is_design_envelope(data):
+        try:
+            spec = unwrap_design_artifact(data)
+        except ValueError as exc:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"invalid design envelope: {exc}",
+            })
+    elif isinstance(data, dict):
+        spec = dict(data)
+    else:
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "artifact_json must decode to a design envelope or a "
+                "build_branch spec object."
+            ),
+        })
+
+    # An import is a fresh owned branch: strip identity + lineage so build
+    # does not try to resolve a foreign branch_version_id, force the caller as
+    # author, and default PRIVATE (Codex r11 #5 / r12 #1) — an imported working
+    # copy is the owner's draft, not commons, exposed only after explicit
+    # publication. Set BEFORE build so the FIRST persist is private (atomic).
+    for identity_key in ("branch_def_id", "fork_from"):
+        spec.pop(identity_key, None)
+    spec["author"] = _current_actor()
+    spec["visibility"] = "private"
+
+    out_str = _ext_branch_build({"spec_json": json.dumps(spec)})
+    try:
+        out = json.loads(out_str)
+    except (json.JSONDecodeError, TypeError):
+        return out_str
+    if out.get("status") != "built" or not out.get("branch_def_id"):
+        return out_str
+
+    out["status"] = "imported"
+    out["imported_as"] = out["branch_def_id"]
+    out["visibility"] = "private"
+    return json.dumps(out, default=str)
+
+
+def _design_needs_attested_sandbox(node_defs: Any) -> bool:
+    """True when any node in the design must run on an attested-sandbox host.
+
+    Derived purely from NODE DATA — a node with ``requires_sandbox`` set, or
+    ``node_kind == "coding"`` (S3's coding-node capability) — NOT from S3 code.
+    ``getattr`` defaults keep this working on this branch (where NodeDefinition
+    has no ``node_kind`` field yet) AND after the S1->S3->S2 rebase (where the
+    seeded reference carries the flag and the runtime gate fails coding nodes
+    closed without attestation). Codex S2 adapt round 3, finding 1(i).
+    """
+    for nd in node_defs or []:
+        if getattr(nd, "requires_sandbox", False):
+            return True
+        if (getattr(nd, "node_kind", "") or "").strip().lower() == "coding":
+            return True
+    return False
+
+
+def _abort_remix_after_child_built(
+    child_id: str,
+    *,
+    internal_detail: str,
+    log_context: str,
+    provenance_maybe_partial: bool,
+) -> str:
+    """Abort a remix after the child branch was built (Codex r14 #5, security).
+
+    Three things the naive path got wrong:
+
+    1. **Do not leak internals.** The raw failure cause (exception type/message,
+       or the upstream error string from ``_action_record_remix``) can carry
+       actor ids, ledger internals, or stack detail. It is logged SERVER-SIDE
+       and NEVER returned to the chatbot user, who gets a stable opaque message.
+    2. **Verify the compensation.** ``delete_branch_definition`` returns whether
+       a row was deleted, and can itself raise; either way the authoritative
+       signal is "does the orphan row still exist?" — so we re-check and report
+       honestly instead of unconditionally claiming "the orphan copy was
+       removed."
+    3. **Partially-committed provenance.** When provenance recording RAISED we
+       cannot know whether the lineage edge was written; that possibility is
+       logged for maintenance reconciliation rather than silently ignored.
+    """
+    import tinyassets.daemon_server as _ds
+
+    logger.error(
+        "remix provenance %s for child %s: %s",
+        log_context, child_id, internal_detail,
+    )
+    if provenance_maybe_partial:
+        logger.error(
+            "remix provenance may be PARTIALLY COMMITTED for child %s "
+            "(recording raised mid-operation) — a dangling lineage edge may "
+            "need maintenance reconciliation", child_id,
+        )
+
+    # Best-effort cleanup that never raises out of here.
+    deleted_row = False
+    try:
+        deleted_row = _ds.delete_branch_definition(
+            _base_path(), branch_def_id=child_id,
+        )
+    except Exception:  # noqa: BLE001 — cleanup must not raise; report instead
+        logger.exception(
+            "remix orphan cleanup raised for child %s (%s)", child_id, log_context,
+        )
+
+    # Authoritative check: is the orphan actually gone?
+    still_present = True
+    try:
+        _ds.get_branch_definition(_base_path(), branch_def_id=child_id)
+    except KeyError:
+        still_present = False
+    except Exception:  # noqa: BLE001 — cannot confirm -> assume it may remain
+        logger.exception(
+            "remix orphan existence re-check failed for child %s", child_id,
+        )
+
+    if still_present:
+        logger.error(
+            "remix orphan child %s STILL PRESENT after cleanup "
+            "(delete_row=%s) — needs admin attention", child_id, deleted_row,
+        )
+        note = (
+            " A partial working copy may remain and will be reconciled by "
+            "maintenance. Wait for host reconciliation before retrying."
+        )
+    else:
+        note = " No partial copy remains; you can safely retry."
+
+    return json.dumps({
+        "status": "rejected",
+        "error": (
+            "remix could not be completed because its provenance could not be "
+            "recorded." + note
+        ),
+    })
+
+
+def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
+    """Fork-copy a PUBLISHED design into the caller's own branch + record it.
+
+    Discovery/remix promise covers PUBLISHED public designs only: the source
+    must have a published version (private branches answer "not found" via the
+    visibility gate; unpublished ones are refused). The child inherits the
+    parent's topology via ``build_branch fork_from`` and a ``record_remix``
+    provenance edge is written so lineage is queryable.
+    """
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_versions import branch_has_bound_fields, list_branch_versions
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+    )
+
+    branch, err = _load_owned_or_public_branch(kwargs.get("branch_def_id", ""))
+    if err:
+        return err
+
+    # Remix the newest ACTIVE version only — a rolled-back / superseded version
+    # must not be remixable (finding 3).
+    active = _newest_active_branch_version(_base_path(), branch.branch_def_id)
+    if active is None:
+        if list_branch_versions(_base_path(), branch.branch_def_id, limit=1):
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    f"Branch '{branch.branch_def_id}' has no active published "
+                    "version (its latest versions were rolled back); a "
+                    "regressed design is not remixable. Publish a fresh "
+                    "version first."
+                ),
+            })
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                f"Branch '{branch.branch_def_id}' is not a published design; "
+                "only published designs are remixable. Ask the author to "
+                "publish a version, or import an exported artifact instead."
+            ),
+        })
+    parent_version_id = active.branch_version_id
+
+    child_name = (kwargs.get("name") or "").strip() or f"{branch.name} (remix)"
+    spec = {
+        "name": child_name,
+        "description": branch.description,
+        "fork_from": parent_version_id,
+        "author": _current_actor(),
+        # PRIVATE from the INITIAL persist (Codex r12 #1) — a remix is the
+        # caller's own working copy, exposed only after explicit publication.
+        "visibility": "private",
+    }
+    out_str = _ext_branch_build({"spec_json": json.dumps(spec)})
+    try:
+        out = json.loads(out_str)
+    except (json.JSONDecodeError, TypeError):
+        return out_str
+    if out.get("status") != "built" or not out.get("branch_def_id"):
+        return out_str
+
+    child_id = out["branch_def_id"]
+
+    # Atomic provenance (finding 4): the child exists only if its lineage edge
+    # is recorded. On any provenance failure (returned-error OR raised
+    # exception) delete the orphan child and fail loudly — never a fake success.
+    from tinyassets.api.market import _action_record_remix
+
+    try:
+        provenance = json.loads(_action_record_remix({
+            "parent_branch_def_id": branch.branch_def_id,
+            "child_branch_def_id": child_id,
+            "contribution_kind": "remix",
+            "actor_id": _current_actor(),
+        }))
+    except Exception as exc:  # noqa: BLE001 - compensate then fail loud
+        # RAISED mid-operation: provenance MAY be partially committed. Log the
+        # cause server-side, verify cleanup, return an opaque error (r14 #5).
+        return _abort_remix_after_child_built(
+            child_id,
+            internal_detail=f"{type(exc).__name__}: {exc}",
+            log_context="raised",
+            provenance_maybe_partial=True,
+        )
+    if not isinstance(provenance, dict) or provenance.get("error"):
+        # Structured error return implies no commit; still log the internal
+        # reason server-side and return an opaque error to the user (r14 #5).
+        reason = (
+            provenance.get("error")
+            if isinstance(provenance, dict) else "malformed provenance response"
+        )
+        return _abort_remix_after_child_built(
+            child_id,
+            internal_detail=str(reason),
+            log_context="returned-error",
+            provenance_maybe_partial=False,
+        )
+
+    # Honest next-steps guidance (Codex r12 #3): do NOT instruct users to bind
+    # values here — the platform never stores them. A design with binding SLOTS
+    # is inert until an engine binds it host-side; a binding-free design runs now.
+    child_def = BranchDefinition.from_dict(
+        get_branch_definition(_base_path(), branch_def_id=child_id),
+    )
+    has_binding = branch_has_bound_fields(
+        getattr(child_def, "state_schema", None),
+    )
+    needs_sandbox = _design_needs_attested_sandbox(child_def.node_defs)
+    head = (
+        f"Remixed '{branch.name}' into your own PRIVATE branch "
+        f"'{child_name}' ({child_id})."
+    )
+    tail = (
+        " Publish it (write_graph target=branch set_visibility=public) to "
+        "share it."
+    )
+    if has_binding:
+        # The shared design carries slots; private values bind per universe.
+        guidance = (
+            head + " This design declares binding slots (e.g. target_repo / "
+            "credentials). The platform carries the design SCHEMA only — binding "
+            "VALUES are never stored on the platform and must be bound host-side "
+            "with write_graph target=binding. Credentials stay in the encrypted "
+            "broker and resolve by destination. Until those slots are filled, "
+            "the design is INERT." + tail
+        )
+    elif needs_sandbox:
+        guidance = (
+            head + " It has a coding node that runs ONLY on an "
+            "attested-sandbox host — it fails closed (inert) until it runs on "
+            "one." + tail
+        )
+    else:
+        guidance = head + " It has no binding slots — you can run it now (run_graph)." + tail
+    return json.dumps({
+        "status": "remixed",
+        "branch_def_id": child_id,
+        "name": child_name,
+        "parent_branch_def_id": branch.branch_def_id,
+        "fork_from": parent_version_id,
+        "node_count": out.get("node_count"),
+        "visibility": "private",
+        "requires_attested_sandbox": needs_sandbox,
+        "provenance": provenance,
+        "text": guidance,
+    }, default=str)
+
+
 def _action_fork_tree(kwargs: dict[str, Any]) -> str:
     from tinyassets.branch_versions import get_branch_version, list_branch_versions
     from tinyassets.daemon_server import get_branch_definition, list_branch_definitions
@@ -3558,6 +4583,9 @@ _BRANCH_ACTIONS: dict[str, Any] = {
     "update_node": _ext_branch_update_node,
     "search_nodes": _ext_branch_search_nodes,
     "fork_tree": _action_fork_tree,
+    "export_design": _ext_branch_export_design,
+    "import_design": _ext_branch_import_design,
+    "remix_design": _ext_branch_remix_design,
 }
 
 _BRANCH_WRITE_ACTIONS: frozenset[str] = frozenset({
@@ -3565,6 +4593,8 @@ _BRANCH_WRITE_ACTIONS: frozenset[str] = frozenset({
     "set_entry_point", "add_state_field", "delete_branch",
     "build_branch", "patch_branch", "patch_nodes", "update_node",
     "approve_source_code",
+    # Remix path (patch-loop S2): both mint a new owned branch.
+    "import_design", "remix_design",
 })
 
 

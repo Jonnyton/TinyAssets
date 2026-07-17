@@ -808,7 +808,9 @@ def seed_initial_state(
     BUG-085 M3 — used at branch invocation to pre-populate the runtime
     state with any state_schema field that carries a ``default_value``.
     Explicit caller-provided ``inputs`` always win; defaults only fill
-    keys the caller did not pass.
+    keys the caller did not pass. (Binding fields carry NO default value —
+    they are owner-bound and the run-entry guard rejects run-time values for
+    them; PLAN §4.)
     """
     seeded = dict(_state_schema_defaults(state_schema))
     seeded.update(inputs or {})

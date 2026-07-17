@@ -645,6 +645,57 @@ def _sandbox_enqueue_refusal(branch: Any) -> str | None:
     })
 
 
+def _resolve_runtime_bindings(
+    branch: Any,
+    universe_id: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Load private design bindings for one universe, or return an opaque refusal."""
+    from tinyassets.branch_bindings import (
+        BranchBindingError,
+        declared_binding_fields,
+        load_branch_values,
+    )
+
+    declared = declared_binding_fields(getattr(branch, "state_schema", None))
+    if not declared:
+        return {}, None
+    if not (universe_id or "").strip():
+        return {}, json.dumps({
+            "error": (
+                "This design is inert until its declared repo/policy slots are "
+                "bound to a universe with write_graph target=binding."
+            ),
+            "failure_class": "binding_unbound_phase1",
+            "actionable_by": "chatbot",
+        })
+    try:
+        context = _run_universe_context(universe_id)
+        values = load_branch_values(
+            context.universe_dir,
+            branch.branch_def_id,
+            branch.state_schema,
+        )
+    except (BranchBindingError, OSError, ValueError):
+        logger.exception("private binding resolution failed for %s", branch.branch_def_id)
+        return {}, json.dumps({
+            "error": "Private design bindings could not be resolved; the run was refused.",
+            "failure_class": "binding_resolution_failed",
+            "actionable_by": "host",
+        })
+    missing = sorted(declared - set(values))
+    if missing:
+        return {}, json.dumps({
+            "error": (
+                "This design is inert until all declared repo/policy slots are "
+                "bound with write_graph target=binding."
+            ),
+            "failure_class": "binding_unbound_phase1",
+            "missing_fields": missing,
+            "actionable_by": "chatbot",
+        })
+    return values, None
+
+
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
 
@@ -684,6 +735,19 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     except KeyError:
         return json.dumps({"error": f"Branch '{bid}' not found."})
 
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_bindings import declared_binding_fields
+
+    request_actor = _current_actor()
+    branch_author = str(source_dict.get("author") or "anonymous")
+    is_private = str(source_dict.get("visibility") or "public") != "public"
+    has_private_bindings = bool(
+        declared_binding_fields(source_dict.get("state_schema", [])),
+    )
+    if branch_author != request_actor and (is_private or has_private_bindings):
+        # Deliberately indistinguishable from a missing private design.
+        return json.dumps({"error": f"Branch '{bid}' not found."})
+
     branch = BranchDefinition.from_dict(source_dict)
     errors = branch.validate()
     if errors:
@@ -691,6 +755,11 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             "error": "Branch is not valid. Fix these before running:",
             "validation_errors": errors,
         })
+
+    universe_id = str(kwargs.get("universe_id") or "").strip()
+    runtime_bindings, binding_refusal = _resolve_runtime_bindings(branch, universe_id)
+    if binding_refusal is not None:
+        return binding_refusal
 
     _sandbox_refusal = _sandbox_enqueue_refusal(branch)
     if _sandbox_refusal is not None:
@@ -800,7 +869,6 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
 
     try:
         base_path = _base_path()
-        universe_id = str(kwargs.get("universe_id") or "").strip()
         outcome = execute_branch_async(
             base_path,
             branch=branch,
@@ -809,6 +877,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             actor=actor,
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            runtime_bindings=runtime_bindings,
             _enqueue_universe_id=universe_id,
             execution_scope=_default_run_execution_scope(base_path, universe_id),
         )

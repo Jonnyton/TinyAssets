@@ -174,11 +174,13 @@ def branch_from_yaml_payload(
         for c in (payload.get("conditional_edges") or [])
     ]
 
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
     branch = BranchDefinition(
         branch_def_id=payload.get("id") or "",
         name=payload.get("name", ""),
         description=payload.get("description", ""),
-        author=payload.get("author", "anonymous"),
+        author=_sanitize_reserved_author(payload.get("author")) or "anonymous",
         domain_id=payload.get("domain_id", "workflow"),
         goal_id=payload.get("goal_id", ""),
         tags=list(payload.get("tags", []) or []),

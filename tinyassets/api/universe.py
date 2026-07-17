@@ -647,12 +647,33 @@ def _extract_set_engine(
     )
 
 
+def _extract_bind_design(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger a binding mutation without ever reading or recording its values."""
+    from tinyassets.api.engine_helpers import _truncate
+
+    branch_def_id = str(result.get("branch_def_id", ""))
+    bound_fields = list(result.get("bound_fields") or [])
+    return (
+        branch_def_id,
+        _truncate(f"design bindings updated: {', '.join(bound_fields)}"),
+        {
+            "branch_def_id": branch_def_id,
+            "bound_fields": bound_fields,
+            "missing_fields": list(result.get("missing_fields") or []),
+            "status": result.get("status", ""),
+        },
+    )
+
+
 WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
     "soul.edit": (_extract_soul_edit, None),
     "set_engine": (_extract_set_engine, None),
+    "bind_design": (_extract_bind_design, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -4848,6 +4869,73 @@ def _action_create_universe(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _action_bind_design(
+    universe_id: str = "",
+    branch_def_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Bind a design's declared repo/policy slots in a private universe store."""
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_bindings import BranchBindingError, bind_branch_values
+    from tinyassets.daemon_server import get_branch_definition
+
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({
+            "error": f"Universe '{uid}' not found.",
+            "status": "rejected",
+        })
+
+    bid = (branch_def_id or "").strip()
+    if not bid:
+        return json.dumps({
+            "error": "branch_def_id is required.",
+            "status": "rejected",
+        })
+    try:
+        branch = get_branch_definition(_base_path(), branch_def_id=bid)
+    except KeyError:
+        return json.dumps({
+            "error": "Design not found.",
+            "status": "rejected",
+        })
+
+    actor = _current_actor()
+    if str(branch.get("author") or "anonymous") != actor:
+        return json.dumps({
+            "error": "Only the design owner can bind it to a private universe.",
+            "status": "rejected",
+        })
+
+    try:
+        values = json.loads(inputs_json or "{}")
+    except json.JSONDecodeError:
+        return json.dumps({
+            "error": "changes_json must be a valid JSON object.",
+            "status": "rejected",
+        })
+    try:
+        result = bind_branch_values(
+            udir,
+            bid,
+            branch.get("state_schema", []),
+            values,
+            actor=actor,
+        )
+    except BranchBindingError as exc:
+        return json.dumps({"error": str(exc), "status": "rejected"})
+
+    return json.dumps({
+        "status": "bound",
+        "universe_id": uid,
+        "branch_def_id": bid,
+        **result,
+        "credential_resolution": "vault_by_destination",
+    })
+
+
 def _action_set_engine(
     universe_id: str = "",
     inputs_json: str = "",
@@ -5371,6 +5459,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "set_premise": _action_set_premise,
     "soul.edit": _action_soul_edit,
     "set_engine": _action_set_engine,
+    "bind_design": _action_bind_design,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,

@@ -51,6 +51,42 @@ def test_get_status_tool_is_safe_to_call() -> None:
         assert getattr(ann, "destructiveHint", None) is False
 
 
+def test_get_status_reference_designs_health_is_live_not_boot_cached(
+    tmp_path, monkeypatch,
+) -> None:
+    """Live registry health must remain distinct from boot-seed history."""
+    import tinyassets.universe_server as universe_server
+    from tinyassets.branch_designs import _reference_branch_id, seed_reference_designs
+    from tinyassets.daemon_server import delete_branch_definition
+
+    base = tmp_path / "data"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    seed_reference_designs(base)
+    monkeypatch.setattr(
+        universe_server,
+        "_LAST_SEED_RESULT",
+        {"seeded": ["design:patch_loop_reference@v1"], "present": [], "failed": []},
+    )
+
+    reference_status = json.loads(get_status())["reference_designs"]
+    assert reference_status["healthy"] is True
+    assert reference_status["unhealthy"] == []
+    assert reference_status["last_seed"]["seeded"] == [
+        "design:patch_loop_reference@v1",
+    ]
+
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    delete_branch_definition(base, branch_def_id=fixed_id)
+
+    reference_status = json.loads(get_status())["reference_designs"]
+    assert reference_status["healthy"] is False
+    assert "patch_loop_reference" in reference_status["unhealthy"]
+    assert reference_status["last_seed"]["seeded"] == [
+        "design:patch_loop_reference@v1",
+    ]
+
+
 def test_get_status_returns_required_shape() -> None:
     """Response must carry the 4 load-bearing blocks the chatbot narrates
     when answering privacy-critical questions: active_host,

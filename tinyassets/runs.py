@@ -2300,6 +2300,39 @@ def _coherent_execution_scope(
     return resolved
 
 
+_PRIVATE_BINDING_REDACTION = "[private binding]"
+
+
+def _redact_private_binding_values(value: Any, bindings: dict[str, Any]) -> Any:
+    """Recursively remove private binding values from durable run telemetry."""
+    private_values = [item for item in bindings.values() if item is not None]
+    for private in private_values:
+        if not isinstance(value, (dict, list, tuple)) and value == private:
+            return _PRIVATE_BINDING_REDACTION
+    if isinstance(value, str):
+        redacted = value
+        for private in private_values:
+            candidates = {str(private)}
+            try:
+                candidates.add(json.dumps(private, sort_keys=True))
+            except (TypeError, ValueError):
+                pass
+            for candidate in candidates:
+                if candidate:
+                    redacted = redacted.replace(candidate, _PRIVATE_BINDING_REDACTION)
+        return redacted
+    if isinstance(value, dict):
+        return {
+            key: _redact_private_binding_values(item, bindings)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_private_binding_values(item, bindings) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_private_binding_values(item, bindings) for item in value)
+    return value
+
+
 def _invoke_graph(
     base_path: str | Path,
     *,
@@ -2307,6 +2340,7 @@ def _invoke_graph(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     provider_call: Callable[..., str] | None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -2346,6 +2380,7 @@ def _invoke_graph(
             branch=branch,
             inputs=inputs,
             provider_call=provider_call,
+            runtime_bindings=runtime_bindings,
             recursion_limit=recursion_limit,
             concurrency_budget_override=concurrency_budget_override,
             on_node_status=on_node_status,
@@ -2362,6 +2397,7 @@ def _invoke_graph_inner(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     provider_call: Callable[..., str] | None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -2380,6 +2416,25 @@ def _invoke_graph_inner(
     """
     thread_id = run_id
     execution_cursor = {"step": 0}
+    private_bindings = dict(runtime_bindings or {})
+
+    def _safe_private(value: Any) -> Any:
+        return _redact_private_binding_values(value, private_bindings)
+
+    if private_bindings and provider_call is not None:
+        raw_provider_call = provider_call
+
+        def _private_safe_provider_call(*args: Any, **kwargs: Any) -> str:
+            try:
+                return raw_provider_call(*args, **kwargs)
+            except Exception as exc:
+                safe = RuntimeError(f"{type(exc).__name__}: {_safe_private(str(exc))}")
+                for attr in ("chain_state", "attempts"):
+                    if hasattr(exc, attr):
+                        setattr(safe, attr, _safe_private(getattr(exc, attr)))
+                raise safe from None
+
+        provider_call = _private_safe_provider_call
     # Telemetry accumulator: "last" feeds runs.provider_used (legacy
     # last-wins), "model" feeds the runs.model column, "calls" becomes a
     # per-run ``provider_calls`` system event (one entry per provider-served
@@ -2444,6 +2499,10 @@ def _invoke_graph_inner(
         # Cancelling mid-provider-call would orphan the LLM call; the
         # node boundary is the right checkpoint.
         phase = detail.pop("phase", "ran")
+        detail = _redact_private_binding_values(
+            detail,
+            dict(runtime_bindings or {}),
+        )
         step = execution_cursor["step"]
         execution_cursor["step"] += 1
 
@@ -2613,17 +2672,49 @@ def _invoke_graph_inner(
     _retry_budget_reset()
 
     try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
+        # Binding values may exist in live graph state, but never in the durable
+        # SqliteSaver checkpoint. Bound runs are terminal-on-restart already, so
+        # an in-memory checkpointer preserves the v1 contract without a second
+        # private-value store.
+        from tinyassets.branch_bindings import declared_binding_fields
 
-        saver_path = str(Path(base_path) / ".langgraph_runs.db")
-        Path(saver_path).parent.mkdir(parents=True, exist_ok=True)
-        with SqliteSaver.from_conn_string(saver_path) as checkpointer:
+        binding_fields = declared_binding_fields(
+            getattr(branch, "state_schema", None),
+        )
+        missing_bindings = sorted(binding_fields - set(private_bindings))
+        if missing_bindings:
+            reason = (
+                "This design is inert until all declared repo/policy slots "
+                "are bound to its universe with write_graph target=binding."
+            )
+            update_run_status(
+                base_path, run_id, status=RUN_STATUS_FAILED,
+                error=reason, finished_at=_now(),
+            )
+            return RunOutcome(
+                run_id=run_id, status=RUN_STATUS_FAILED,
+                output={}, error=reason,
+            )
+
+        if binding_fields:
+            from langgraph.checkpoint.memory import MemorySaver
+
+            checkpointer_context = contextlib.nullcontext(MemorySaver())
+        else:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+
+            saver_path = str(Path(base_path) / ".langgraph_runs.db")
+            Path(saver_path).parent.mkdir(parents=True, exist_ok=True)
+            checkpointer_context = SqliteSaver.from_conn_string(saver_path)
+
+        with checkpointer_context as checkpointer:
             app = compiled.graph.compile(checkpointer=checkpointer)
             # BUG-085 M3: seed state_schema defaults UNDER caller inputs so
             # state_schema-declared fields with defaults are available to
             # strict-isolation prompt placeholders from step 1.
             initial_state = seed_initial_state(
-                dict(inputs), getattr(branch, "state_schema", None),
+                {**inputs, **private_bindings},
+                getattr(branch, "state_schema", None),
             )
             result = app.invoke(
                 initial_state,
@@ -2633,15 +2724,16 @@ def _invoke_graph_inner(
                 },
             )
     except RunCancelledError as exc:
+        msg = str(_safe_private(str(exc)))
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_CANCELLED,
-            error=str(exc),
+            error=msg,
             finished_at=_now(),
         )
         return RunOutcome(
             run_id=run_id, status=RUN_STATUS_CANCELLED,
-            output={}, error=str(exc),
+            output={}, error=msg,
         )
     except ChildFailedError as exc:
         # Phase A item 5 / Task #76b — sub-branch propagated a non-completed
@@ -2649,7 +2741,7 @@ def _invoke_graph_inner(
         # ChildFailure surfaced on RunOutcome.child_failures so downstream
         # observers (Task #48 contribution-ledger caused_regression emit;
         # Task #53 route-back gate verdicts) can consume the failure.
-        msg = str(exc)
+        msg = str(_safe_private(str(exc)))
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_FAILED, error=msg, finished_at=_now(),
@@ -2707,6 +2799,7 @@ def _invoke_graph_inner(
                     f"GraphRecursionError: recursion limit {recursion_limit} reached. "
                     f"Raise via recursion_limit_override on run_branch. Detail: {exc}"
                 )
+                msg = str(_safe_private(msg))
                 update_run_status(
                     base_path, run_id,
                     status=RUN_STATUS_FAILED, error=msg, finished_at=_now(),
@@ -2736,7 +2829,7 @@ def _invoke_graph_inner(
         # node_id and timeout value.
         timeout_exc = _find_timeout_exception(exc)
         if timeout_exc is not None:
-            msg = f"Node timeout: {timeout_exc}"
+            msg = str(_safe_private(f"Node timeout: {timeout_exc}"))
             step = execution_cursor["step"]
             execution_cursor["step"] += 1
             record_event(base_path, RunStepEvent(
@@ -2746,7 +2839,7 @@ def _invoke_graph_inner(
                 status=NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
-                detail={"reason": "timeout", "message": str(timeout_exc)},
+                detail={"reason": "timeout", "message": msg},
             ))
             _emit_node_status(
                 _node_id_from_timeout_exc(timeout_exc),
@@ -2764,7 +2857,7 @@ def _invoke_graph_inner(
             )
         empty_exc = _find_empty_response_exception(exc)
         if empty_exc is not None:
-            msg = f"Empty LLM response: {empty_exc}"
+            msg = str(_safe_private(f"Empty LLM response: {empty_exc}"))
             step = execution_cursor["step"]
             execution_cursor["step"] += 1
             record_event(base_path, RunStepEvent(
@@ -2774,7 +2867,7 @@ def _invoke_graph_inner(
                 status=NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
-                detail={"reason": "empty_response", "message": str(empty_exc)},
+                detail={"reason": "empty_response", "message": msg},
             ))
             _emit_node_status(
                 empty_exc.node_id or "(unknown)",
@@ -2790,19 +2883,29 @@ def _invoke_graph_inner(
                 run_id=run_id, status=RUN_STATUS_FAILED,
                 output={}, error=msg,
             )
-        logger.exception("Run %s failed at invoke", run_id)
+        msg = str(_safe_private(f"{type(exc).__name__}: {exc}"))
+        if private_bindings:
+            logger.error("Run %s failed at invoke: %s", run_id, msg)
+        else:
+            logger.exception("Run %s failed at invoke", run_id)
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_FAILED,
-            error=f"{type(exc).__name__}: {exc}",
+            error=msg,
             finished_at=_now(),
         )
         return RunOutcome(
             run_id=run_id, status=RUN_STATUS_FAILED,
-            output={}, error=f"{type(exc).__name__}: {exc}",
+            output={}, error=msg,
         )
 
     output = dict(result) if isinstance(result, dict) else {"result": result}
+    output = _safe_private(output)
+
+    # Private binding values may flow through graph state while executing but
+    # must never be persisted in the public run output.
+    for field_name in binding_fields:
+        output.pop(field_name, None)
 
     # Emit concurrency_stats event so get_run can surface peak + budget.
     if compiled.concurrency_tracker is not None:
@@ -3040,6 +3143,7 @@ def execute_branch(
     run_name: str = "",
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -3102,6 +3206,7 @@ def execute_branch(
         base_path,
         run_id=run_id, branch=branch, inputs=inputs,
         provider_call=provider_call,
+        runtime_bindings=runtime_bindings,
         recursion_limit=recursion_limit_override or DEFAULT_RECURSION_LIMIT,
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
@@ -3245,6 +3350,7 @@ def _execute_branch_core(
     run_name: str = "",
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -3308,6 +3414,7 @@ def _execute_branch_core(
                 base_path,
                 run_id=run_id, branch=branch, inputs=inputs,
                 provider_call=provider_call,
+                runtime_bindings=runtime_bindings,
                 recursion_limit=effective_limit,
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
@@ -3348,6 +3455,7 @@ def execute_branch_async(
     run_name: str = "",
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -3388,6 +3496,7 @@ def execute_branch_async(
         run_name=run_name,
         actor=actor,
         provider_call=provider_call,
+        runtime_bindings=runtime_bindings,
         recursion_limit_override=recursion_limit_override,
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,

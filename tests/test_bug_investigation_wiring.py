@@ -51,11 +51,30 @@ class TestEnvGate:
         assert read_queue(tmp_path) == []
 
 
+
+def _register_handler_branch(base, monkeypatch, branch_def_id="branch-canonical-abc"):
+    """G4 (2026-07-15): the resolver refuses handler ids that don't exist in
+    the branch registry, so happy-path tests must register their id first —
+    and pin TINYASSETS_DATA_DIR so the guard reads THIS test's registry."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    initialize_author_server(base)
+    save_branch_definition(
+        base,
+        branch_def=BranchDefinition(
+            branch_def_id=branch_def_id, name=branch_def_id,
+        ).to_dict(),
+    )
+
+
 # ── _maybe_enqueue_investigation: happy path ──────────────────────────────────
 
 
 class TestEnqueuesWhenBound:
     def test_enqueues_when_canonical_bound(self, tmp_path, monkeypatch):
+        _register_handler_branch(tmp_path, monkeypatch)
         monkeypatch.setenv(
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
         )
@@ -83,6 +102,7 @@ class TestEnqueuesWhenBound:
         assert task.inputs["severity"] == "high"
 
     def test_passes_universe_id_through(self, tmp_path, monkeypatch):
+        _register_handler_branch(tmp_path, monkeypatch)
         monkeypatch.setenv(
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
         )
@@ -97,6 +117,7 @@ class TestEnqueuesWhenBound:
         assert queue[0].universe_id == "custom-universe"
 
     def test_frontmatter_bug_id_overridden_by_arg(self, tmp_path, monkeypatch):
+        _register_handler_branch(tmp_path, monkeypatch)
         """Even if frontmatter has a stale bug_id, the explicit arg wins."""
         monkeypatch.setenv(
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
@@ -164,6 +185,7 @@ class TestGracefulFailure:
         assert result is None
 
     def test_none_frontmatter_does_not_crash(self, tmp_path, monkeypatch):
+        _register_handler_branch(tmp_path, monkeypatch)
         monkeypatch.setenv(
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
         )

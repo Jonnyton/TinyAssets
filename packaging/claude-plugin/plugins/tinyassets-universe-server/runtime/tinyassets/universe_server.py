@@ -435,18 +435,22 @@ def read_graph(
     author: str = "",
     run_status: str = "",
     limit: int = 30,
+    offset: int = 0,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            or branch.
+            branch, designs (list remixable branch designs — public published
+            ones plus your own; other users' private designs are never listed),
+            or design (export one branch as a portable design artifact).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
-            branch's full graph + node configs). Falls back to graph_id.
+            branch's full graph + node configs) or target=design (the branch
+            to export). Falls back to graph_id.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
@@ -491,10 +495,31 @@ def read_graph(
         # even confirm existence. get_branch was already callable here via the
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
+    if normalized == "designs":
+        # DISCOVER (patch-loop S2): enumerate remixable branch designs — PUBLIC
+        # published designs plus your OWN published designs. Paginates at the DB
+        # over the PUBLISHED surface (drafts never consume the page); pass
+        # ``offset`` (from a prior response's ``next_offset``) to browse further.
+        return _extensions_impl(
+            action="list_branches",
+            scope="published",
+            author=author,
+            limit=limit,
+            offset=offset,
+        )
+    if normalized == "design":
+        # EXPORT (patch-loop S2): serialize one branch as the portable design
+        # artifact (envelope + spec) — the same format the repo seed uses, so
+        # export -> import round-trips. Public branches export for anyone;
+        # private branches are author-gated.
+        return _extensions_impl(
+            action="export_design", branch_def_id=(branch_id or graph_id),
+        )
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs", "run", "branch"),
+        ("status", "graphs", "graph", "goals", "goal", "runs", "run",
+         "branch", "designs", "design"),
     )
 
 
@@ -524,17 +549,25 @@ def write_graph(
     request_type: str = "general",
     branch_id: str = "",
     changes_json: str = "",
+    artifact_json: str = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, branch, universe, or engine. The
+        target: What to write: goal, request, branch, universe, engine, design,
+            binding, or remix. The
             founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when a
             create-scoped sign-in declined auto-birth). target=engine DECLARES the
             universe's engine lane (graph_id=universe, changes_json=the non-secret
             declaration, e.g. {"engine_source":"self_hosted_endpoint",
             "endpoint":"https://…"}); a raw API key is never accepted here.
+            target=design
+            imports a portable design artifact as a new owned branch;
+            target=binding stores a design's declared repo/policy values in a
+            private universe store;
+            target=remix forks a published design (by branch_id) into an owned
+            copy with provenance recorded.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -546,7 +579,18 @@ def write_graph(
             branch_def_id to patch.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
-            only the branch's author can edit it.
+            only the branch's author can edit it. You can edit a design's
+            topology and its binding SCHEMA (which slots are `is_binding`), but
+            you cannot set binding VALUES (a target repo, a credential, a merge
+            policy) here — the platform never stores private binding values.
+            A design with unfilled binding slots is INERT until target=binding
+            fills them for a selected universe. Credentials are deposited into
+            the encrypted broker separately and resolve by destination.
+        artifact_json: With target=design, the portable design artifact to
+            import — a design envelope OR a raw build_branch spec.
+        changes_json: With target=binding, private values for the design's
+            declared ``is_binding`` repo/policy slots. Values stay in the
+            selected universe and never enter the shared design or response.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -617,6 +661,9 @@ def write_graph(
     if normalized == "branch":
         # PR-180 EDIT half: a founder patches their own branch graph via the
         # existing transactional patch_branch handler (author-gated: BUG-081).
+        # A set_state_field_default op only DECLARES the binding slot; binding
+        # VALUES never enter the shared branch row (PLAN §4); bind them to a
+        # private universe with target=binding instead.
         return _extensions_impl(
             action="patch_branch",
             branch_def_id=branch_id,
@@ -635,8 +682,37 @@ def write_graph(
             universe_id=graph_id,
             inputs_json=changes_json,
         )
+    if normalized == "binding":
+        # BIND (patch-loop S2): store only declared repo/policy slot values in
+        # the selected universe's private host-local store. Credentials remain
+        # in the encrypted broker and resolve by destination at execution.
+        return _universe_impl(
+            action="bind_design",
+            universe_id=graph_id,
+            branch_def_id=branch_id,
+            inputs_json=changes_json,
+        )
+    if normalized == "design":
+        # IMPORT (patch-loop S2): a user hands their chatbot a design artifact
+        # (envelope or raw spec) and it becomes a branch they own.
+        return _extensions_impl(
+            action="import_design",
+            artifact_json=artifact_json,
+        )
+    if normalized == "remix":
+        # FORK/REMIX (patch-loop S2): fork a published design (branch_id) into
+        # an owned copy; provenance (fork_from + record_remix edge) is recorded.
+        return _extensions_impl(
+            action="remix_design",
+            branch_def_id=branch_id,
+            name=name,
+        )
     return _unknown_target(
-        "write_graph", target, ("goal", "request", "branch", "universe", "engine")
+        "write_graph", target,
+        (
+            "goal", "request", "branch", "universe", "engine", "binding",
+            "design", "remix",
+        ),
     )
 
 
@@ -1283,6 +1359,7 @@ def extensions(
     max_wait_s: int = 60,
     limit: int = 50,
     spec_json: str = "",
+    artifact_json: str = "",
     changes_json: str = "",
     judgment_text: str = "",
     judgment_id: str = "",
@@ -1429,6 +1506,7 @@ def extensions(
         max_wait_s=max_wait_s,
         limit=limit,
         spec_json=spec_json,
+        artifact_json=artifact_json,
         changes_json=changes_json,
         judgment_text=judgment_text,
         judgment_id=judgment_id,
@@ -2270,6 +2348,43 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+_LAST_SEED_RESULT: dict[str, list[str]] | None = None
+
+
+def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
+    """Seed durable reference designs on every transport without risking uptime."""
+    global _LAST_SEED_RESULT
+    from tinyassets.branch_designs import unhealthy_packaged_designs
+
+    try:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.branch_designs import seed_reference_designs
+
+        results = seed_reference_designs(_base_path())
+        if results["failed"]:
+            logger.error("reference design seeding had failures: %s", results)
+        else:
+            logger.info("reference design seeding: %s", results)
+    except Exception:  # noqa: BLE001 - a feature failure must not restart-loop MCP
+        logger.exception("reference design seeding crashed")
+        results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
+    _LAST_SEED_RESULT = results
+
+    unhealthy = unhealthy_packaged_designs(results)
+    if unhealthy:
+        logger.error(
+            "packaged reference design(s) unhealthy: %s — server stays UP, "
+            "reporting unhealthy via get_status.reference_designs",
+            unhealthy,
+        )
+    return results
+
+
+def last_seed_result() -> dict[str, list[str]] | None:
+    """Return the most recent transport-agnostic reference-design seed result."""
+    return _LAST_SEED_RESULT
+
+
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -2287,6 +2402,8 @@ def main(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,
     )
+
+    _seed_reference_designs_best_effort()
 
     if transport == "streamable-http":
         app = create_streamable_http_app()
