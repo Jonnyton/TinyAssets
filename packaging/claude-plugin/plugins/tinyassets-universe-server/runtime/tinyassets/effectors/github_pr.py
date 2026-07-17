@@ -31,8 +31,8 @@ Authority model (Phase 2)
 A real write fires only when ALL THREE gates are open:
 
 1. **Capability token (vault first, then secrets-vended env).** The
-   per-universe credential vault (``tinyassets.credential_vault``) is the
-   higher-priority source; a vault-bound universe never falls through to
+   platform credential vault (``tinyassets.credential_broker``) is the
+   higher-priority source; a vault-routed universe never falls through to
    the process-env tier. When no vault is bound, the shared auth provider
    (``tinyassets.auth.provider.vend_github_destination_secret``) resolves a
    destination-scoped GitHub ``push`` credential from
@@ -197,22 +197,25 @@ def _vend_push_token(destination: str) -> str:
 def _read_capability(destination: str, universe_dir: Path | None = None) -> str:
     """Return the capability token for ``destination`` (empty string if missing).
 
-    Two-tier resolution, vault first: the per-universe credential vault
-    (``tinyassets.credential_vault``) is the higher-priority source; when a
-    universe has a vault we never fall through to the process-env tier
-    (an empty vault means "this universe is not authorized", not "look at
-    the host env"). When no vault is bound, the env-vended ``push`` token
-    from the shared auth provider is used. Never echoed into
+    Two-tier resolution, vault first: the platform credential vault
+    (``tinyassets.credential_broker``) is the higher-priority source; a
+    vault-routed universe never falls through to the process-env tier
+    ("no credential for this destination" means "this universe is not
+    authorized", not "look at the host env"). When the universe is not
+    vault-routed at all, the env-vended ``push`` token from the shared auth
+    provider is used. Fail-closed vault states (unmigrated legacy plaintext,
+    ``needs_redeposit``/revoked bindings) RAISE — a quarantined universe
+    must never silently push with the host's token. Never echoed into
     branch-visible state; callers must NOT include this value in returned
     evidence.
     """
     if not destination:
         return ""
     if universe_dir is not None:
-        from tinyassets.credential_vault import resolve_github_token, vault_exists
+        from tinyassets.credential_broker import github_token
 
-        token = resolve_github_token(universe_dir, destination, purpose="write")
-        if token or vault_exists(universe_dir):
+        token = github_token(universe_dir, destination)
+        if token is not None:
             return token
     return _vend_push_token(destination)
 
@@ -1286,14 +1289,15 @@ def run_github_pr_effector(
             # ``push_capability_env_var`` advertises the canonical map.
             "capability_env_var": _CAPABILITIES_ENV,
             "push_capability_env_var": _PUSH_CAPABILITIES_ENV,
-            "capability_vault": "per-universe credential vault",
+            "capability_vault": "platform credential vault",
             "legacy_capability_env_var": _CAPABILITIES_ENV,
             "capability_lookup_failed_for": destination,
             "hint": (
-                "Add a vcs/github/write credential to this universe's "
-                f"per-universe credential vault keyed by destination "
-                f'"{destination}", or set the {_PUSH_CAPABILITIES_ENV} '
-                f'JSON map keyed by "{destination}" on the daemon env '
+                "Deposit a github/external_write credential for this "
+                f"universe in the platform credential vault keyed by "
+                f'destination "{destination}", or set the '
+                f'{_PUSH_CAPABILITIES_ENV} JSON map keyed by "{destination}" '
+                f"on the daemon env "
                 f"(legacy {_CAPABILITIES_ENV} still accepted)."
             ),
             "intent": packet,

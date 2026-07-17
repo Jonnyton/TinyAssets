@@ -6,7 +6,8 @@ import json
 from types import SimpleNamespace
 
 from tinyassets import effectors
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.credential_broker import deposit_credential
+from tinyassets.credentials import SecretKind
 from tinyassets.effectors import github_merge
 
 _DEST = "Jonnyton/TinyAssets"
@@ -132,22 +133,17 @@ def test_missing_capability_returns_dry_run(monkeypatch):
     assert fake.calls == []
 
 
-def test_vault_capability_overrides_env_when_base_path_is_bound(tmp_path, monkeypatch):
+def test_vault_capability_overrides_env_when_base_path_is_bound(
+    platform_vault_env, tmp_path, monkeypatch
+):
     monkeypatch.setenv(
         "TINYASSETS_GITHUB_PR_CAPABILITIES",
         json.dumps({_DEST: "env-token"}),
     )
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "vcs",
-                "service": "github",
-                "destination": _DEST,
-                "purpose": "write",
-                "token": "vault-token",
-            }
-        ],
+    deposit_credential(
+        universe_id=tmp_path.name, founder_id="founder-1",
+        provider="github", destination=_DEST, purpose="external_write",
+        kind=SecretKind.GITHUB_PAT, value=b"vault-token",
     )
     fake = _scripted_api([
         (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(), None)),

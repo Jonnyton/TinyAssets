@@ -3,7 +3,8 @@
 This is the router/provider/vault-layer proof for option (b): a single daemon
 process serving interleaved calls for two different universes must resolve each
 call's engine preference (``preferred_writer``) AND credential-vault auth
-(``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``) from the ``universe_context`` threaded
+(``CODEX_HOME`` / ``CLAUDE_CODE_OAUTH_TOKEN``) from the ``universe_context``
+threaded
 on the call stack — NOT from the process-global ``runtime.universe_config`` /
 ``TINYASSETS_UNIVERSE``.
 
@@ -25,7 +26,8 @@ import pytest
 
 from tinyassets import runtime_singletons as runtime
 from tinyassets.config import load_universe_config
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.credential_broker import deposit_credential
+from tinyassets.credentials import SecretKind
 from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
@@ -71,47 +73,39 @@ class _RecordingProvider(BaseProvider):
         )
 
 
-def _write_codex_universe(root: Path) -> tuple[Path, Path]:
-    """Universe A: preferred_writer=codex + a codex vault record."""
+def _write_codex_universe(root: Path) -> tuple[Path, str]:
+    """Universe A: preferred_writer=codex + a vaulted codex auth bundle.
+
+    The broker materializes the bundle to ``<universe>/.engine-auth/codex``
+    at env-overlay time, so CODEX_HOME is per-universe by construction.
+    """
     root.mkdir(parents=True, exist_ok=True)
     (root / "config.yaml").write_text("preferred_writer: codex\n", encoding="utf-8")
-    codex_home = root / "codex_home"
-    write_credential_vault(
-        root,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": "codex",
-                "codex_home": str(codex_home),
-            }
-        ],
+    deposit_credential(
+        universe_id=root.name, founder_id="founder-a", provider="codex",
+        destination="cli_subprocess", purpose="engine_auth",
+        kind=SecretKind.OAUTH2_GENERIC, value=b"{}",
     )
+    codex_home = str(root / ".engine-auth" / "codex")
     return root, codex_home
 
 
-def _write_claude_universe(root: Path) -> tuple[Path, Path]:
-    """Universe B: preferred_writer=claude-code + a claude vault record."""
+def _write_claude_universe(root: Path) -> tuple[Path, str]:
+    """Universe B: preferred_writer=claude-code + a vaulted OAuth token."""
     root.mkdir(parents=True, exist_ok=True)
     (root / "config.yaml").write_text(
         "preferred_writer: claude-code\n", encoding="utf-8"
     )
-    claude_cfg = root / "claude_cfg"
-    write_credential_vault(
-        root,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": "claude",
-                "claude_config_dir": str(claude_cfg),
-                "oauth_token": "tok-universe-b",
-            }
-        ],
+    deposit_credential(
+        universe_id=root.name, founder_id="founder-b", provider="claude",
+        destination="cli_subprocess", purpose="engine_auth",
+        kind=SecretKind.OAUTH2_GENERIC, value=b"tok-universe-b",
     )
-    return root, claude_cfg
+    return root, "tok-universe-b"
 
 
 @pytest.fixture
-def _pinned_to_universe_a(tmp_path, monkeypatch):
+def _pinned_to_universe_a(platform_vault_env, tmp_path, monkeypatch):
     """Build two universes and pin ALL process globals to universe A."""
     universe_a, codex_home = _write_codex_universe(tmp_path / "universe_a")
     universe_b, claude_cfg = _write_claude_universe(tmp_path / "universe_b")
@@ -147,7 +141,7 @@ def test_call_sync_resolves_engine_and_auth_per_universe_context(
 
     router = ProviderRouter()
     router.register(_RecordingProvider("codex", "openai", "CODEX_HOME"))
-    router.register(_RecordingProvider("claude-code", "anthropic", "CLAUDE_CONFIG_DIR"))
+    router.register(_RecordingProvider("claude-code", "anthropic", "CLAUDE_CODE_OAUTH_TOKEN"))
 
     ctx_a = UniverseContext(
         universe_dir=universe_a, config=load_universe_config(universe_a)
@@ -195,7 +189,7 @@ def test_call_sync_resolves_engine_and_auth_per_universe_context(
                 f"claude-code must see universe_dir==B, saw {resp.text!r}"
             )
             assert resp.model == str(claude_cfg), (
-                f"claude-code must resolve B's CLAUDE_CONFIG_DIR, got {resp.model!r}"
+                f"claude-code must resolve B's vaulted OAuth token, got {resp.model!r}"
             )
 
     assert a_count == 12
@@ -213,7 +207,7 @@ def test_call_provider_forwards_universe_context(_pinned_to_universe_a, monkeypa
 
     router = ProviderRouter()
     router.register(_RecordingProvider("codex", "openai", "CODEX_HOME"))
-    router.register(_RecordingProvider("claude-code", "anthropic", "CLAUDE_CONFIG_DIR"))
+    router.register(_RecordingProvider("claude-code", "anthropic", "CLAUDE_CODE_OAUTH_TOKEN"))
 
     # conftest force-mocks call_provider globally; disable it so the real
     # router path (which threads universe_context) runs for this test.

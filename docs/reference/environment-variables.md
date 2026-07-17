@@ -82,6 +82,24 @@ the precedence logic elsewhere — call the resolver.
 **Container deploys:** set `TINYASSETS_DATA_DIR=/data` + bind-mount the
 host path to `/data`. See `deploy/README.md` for the full pattern.
 
+## Credential vault (platform custody)
+
+The provider-generic credential vault (`tinyassets/credentials/` +
+`tinyassets/credential_broker.py`) — universe/founder credentials, NOT the
+operator secrets in the next section.
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `TINYASSETS_VAULT_KEK_DIR` | Root-only directory holding the platform vault's KEK files (`<key_id>.bin`, 32 bytes each, plus an `active` marker file). MUST live OUTSIDE `/data` so a stolen data volume or backup cannot decrypt the vault. Unset ⇒ platform custody is unavailable and every vault operation fails closed (`KEY_UNAVAILABLE`). | Unset (fail closed). |
+| `TINYASSETS_VAULT_ACTIVE_KEY_ID` | Overrides which KEK id is active for new writes (rotation window). | The `active` file in `TINYASSETS_VAULT_KEK_DIR`. |
+| `TINYASSETS_VAULT_ROLLBACK_GUARD` | Directory for the vault's anti-rollback epoch guard (a tiny SQLite DB). MUST be a persistent volume OUTSIDE `/data`: under `/data` a restore would carry the guard with the vault and mask the rollback; on an ephemeral container home every rebuild would read as a rollback and force full re-authorization of every stored credential. Deploy sets it to the `tinyassets-vault-guard` named volume (`/vault-guard`); `deploy/backup-restore.sh` bumps it via `scripts/vault_restore_bump.py` after every restore. | `~/.tinyassets-vault-guard`. |
+
+Fail-closed note (intended, not a bug): a failed vault mutation commit or a
+detected rollback surfaces as `REAUTHORIZATION_REQUIRED` for the WHOLE store —
+founders must reconnect their credentials. A restored one-use refresh token may
+already be redeemed at the provider, so serving restored/uncertain state would
+be dishonest.
+
 ## Local secrets — vault-first
 
 Local operator secrets (Cloudflare tokens, DigitalOcean token, Hetzner creds, OpenAI key) load from a password manager, not a plaintext file. Vendor is chosen via `TINYASSETS_SECRETS_VENDOR` — `1password` (default), `bitwarden`, or `plaintext` (migration-period opt-out, to be retired after cutover).

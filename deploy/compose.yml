@@ -50,6 +50,15 @@ services:
       CODEX_HOME: /data/.codex
       # Persist Claude subscription auth on the shared tinyassets-data volume.
       CLAUDE_CONFIG_DIR: /data/.claude
+      # Credential-vault anti-rollback guard: MUST live on a persistent
+      # NON-/data volume. Under /data a restore would carry the guard along
+      # with the vault (defeating rollback detection); on the ephemeral
+      # container home every rebuild would look like a rollback and force a
+      # full re-authorization of every stored credential.
+      TINYASSETS_VAULT_ROLLBACK_GUARD: /vault-guard
+      # Platform-vault KEKs: root-only host dir OUTSIDE /data (bind-mounted
+      # ro below) so a stolen data volume/backup cannot decrypt the vault.
+      TINYASSETS_VAULT_KEK_DIR: /vault-keys
       TINYASSETS_REPO_ROOT: /data/community-pool
       TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
@@ -71,6 +80,13 @@ services:
       - /etc/tinyassets/env
     volumes:
       - tinyassets-data:/data
+      # Persistent NON-/data guard volume (anti-rollback epoch). Backups
+      # deliberately do NOT snapshot it; backup-restore.sh bumps it via
+      # scripts/vault_restore_bump.py after every restore.
+      - tinyassets-vault-guard:/vault-guard
+      # Root-only KEK dir on the host (outside /data + outside backups).
+      # Provision: 32-byte k1.bin (mode 0400 root) + `active` file naming it.
+      - /etc/tinyassets/vault-keys:/vault-keys:ro
     healthcheck:
       # Use the same canary shape as Layer-1 / tier-3 / docker-build
       # CI. Python already in the image.
@@ -231,6 +247,12 @@ volumes:
     name: tinyassets-data
     # Local named volume backed by Docker's default driver. Backups
     # (Row J) snapshot this to Hetzner Storage Box.
+  tinyassets-vault-guard:
+    name: tinyassets-vault-guard
+    # Credential-vault anti-rollback guard. An INDEPENDENT recovery domain:
+    # never snapshotted with tinyassets-data and never restored — restoring
+    # it alongside /data would mask vault rollbacks. Persistent across
+    # container rebuilds so normal deploys do not force re-authorization.
 
 networks:
   default:

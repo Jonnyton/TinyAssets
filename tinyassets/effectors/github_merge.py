@@ -251,8 +251,9 @@ def run_github_merge_effector(
             "destination": destination,
             "matched_output_key": matched_key,
             "hint": (
-                "Add a vcs/github/write credential to this universe's "
-                f'per-universe credential vault under destination "{destination}".'
+                "Deposit a github/external_write credential for this "
+                f'universe under destination "{destination}" via the '
+                "platform credential vault."
             ),
             "intent": packet,
         }

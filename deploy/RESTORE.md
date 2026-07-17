@@ -162,6 +162,27 @@ Log the drill date + result in SUCCESSION.md acceptance criteria.
 
 ---
 
+## Credential vault after a restore (intended fail-closed)
+
+`backup-restore.sh` advances the vault's anti-rollback guard
+(`scripts/vault_restore_bump.py`, run through the daemon image against the
+`tinyassets-vault-guard` volume) after every restore. From that moment every
+stored universe/founder credential raises `REAUTHORIZATION_REQUIRED` until
+its founder reconnects. **This is the intended contract, not a failure:**
+a restored one-use refresh token may already have been redeemed at the
+provider, so serving restored credential state would be dishonest. The same
+applies to a failed vault mutation commit at runtime — the whole store fails
+closed into re-authorization rather than guessing.
+
+Do NOT restore or delete the `tinyassets-vault-guard` volume itself: it is
+an independent recovery domain by design. If the bump step warned/failed,
+run `python scripts/vault_restore_bump.py` inside the daemon container.
+
+**Grant GC (S3 seam):** expired `vault_job_grants` rows are inert (resolve
+fails `EXPIRED`) but need `revoke_grant` on job completion for tidy storage.
+The daemon-side completion hook lands with the S3 executor merge — until
+then expired rows simply accumulate; there is no dual cleanup path.
+
 ## What this runbook does NOT cover
 
 - **Partial restore** (one universe's state, not whole-volume). Extract

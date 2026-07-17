@@ -4898,12 +4898,15 @@ def _action_set_engine(
 
 
 def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
-    """BYO API key → per-universe vault + preferred_writer (fully wired)."""
+    """BYO API key → platform credential vault + preferred_writer."""
     from tinyassets.config import write_universe_config_fields
-    from tinyassets.credential_vault import (
+    from tinyassets.credential_broker import (
+        LegacyCredentialVaultError,
+        deposit_engine_api_key,
+        require_no_legacy_vault,
         supported_llm_api_key_services,
-        write_credential_vault,
     )
+    from tinyassets.credentials import CredentialUnavailable
 
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
@@ -4920,18 +4923,23 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
             "expected_services": sorted(supported_llm_api_key_services()),
         })
 
-    import base64
     try:
-        vault_summary = write_credential_vault(udir, [{
-            "credential_type": "llm_api_key",
-            "service": service,
-            # base64 at rest (the vault's existing convention; _secret_value
-            # decodes secret_b64). Envelope encryption is the deferred hardening
-            # flagged in the credential-custody research.
-            "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
-        }])
-    except ValueError as exc:
-        return json.dumps({"error": f"Failed to store engine credential: {exc}"})
+        require_no_legacy_vault(udir)
+        projection = deposit_engine_api_key(
+            universe_id=uid,
+            founder_id=permissions.current_actor_id(),
+            service=service,
+            api_key=api_key,
+        )
+    except LegacyCredentialVaultError as exc:
+        return json.dumps({"error": str(exc)})
+    except CredentialUnavailable as exc:
+        # Typed vault failure — the code names the class, never the key.
+        return json.dumps({
+            "error": f"Failed to store engine credential [{exc.code}]. "
+                     "The platform vault refused the deposit; nothing was "
+                     "stored.",
+        })
 
     fields = {"engine_source": "byo_api_key"}
     if preferred_writer:
@@ -4947,8 +4955,10 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
         "engine_source": "byo_api_key",
         "service": service,
         "preferred_writer": preferred_writer,
-        "credential_types": vault_summary.get("credential_types", []),
-        "note": "Engine credential stored in the per-universe vault (never "
+        # Non-secret public projection: opaque ref + kind only.
+        "credential_ref": projection.get("ref", ""),
+        "credential_kind": projection.get("kind", ""),
+        "note": "Engine credential stored in the platform vault (never "
                 "echoed).",
     })
 

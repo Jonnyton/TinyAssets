@@ -35,9 +35,10 @@ logger = logging.getLogger("universe_server.auth")
 # daemon-side consumer (the PR/push effector today; read/search later)
 # resolves a destination-scoped token through one helper instead of each
 # effector hand-parsing its own JSON-map env var. This is the operator
-# (process-env) capability tier; the per-universe credential vault
-# (``tinyassets.credential_vault``) remains the higher-priority source —
-# effectors check the vault first and fall through to this vended token.
+# (process-env) capability tier; the platform credential vault
+# (``tinyassets.credential_broker``) remains the higher-priority source —
+# effectors check the vault first, and only a universe that is not
+# vault-routed at all falls through to this vended token.
 #
 # ``push`` reads the canonical ``TINYASSETS_GITHUB_PUSH_CAPABILITIES`` map
 # and accepts the older ``TINYASSETS_GITHUB_PR_CAPABILITIES`` as a legacy

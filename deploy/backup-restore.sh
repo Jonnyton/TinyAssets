@@ -150,6 +150,38 @@ fi
 rm -f "${TAR_PATH}"
 log "  extract OK"
 
+# ----- 7b. vault anti-rollback guard ------------------------------------
+#
+# A restored data volume is by definition a rollback of the credential
+# vault's recovery domain. Advance the external epoch guard so EVERY vault
+# operation fails closed into whole-store re-authorization — intended
+# behavior, not an error: a restored one-use refresh token may already
+# have been redeemed at the provider, so serving restored credentials
+# would be dishonest. scripts/vault_restore_bump.py bumps through the
+# backend's OWN identity-derived epoch guard (never a raw store_id, which
+# would silently target the wrong guard row). The guard volume is the
+# persistent NON-/data tinyassets-vault-guard volume (see compose.yml).
+DAEMON_IMAGE="$(docker inspect tinyassets-daemon --format '{{.Config.Image}}' 2>/dev/null || echo "${TINYASSETS_IMAGE:-}")"
+if [[ -n "${DAEMON_IMAGE}" ]]; then
+    log "advancing vault anti-rollback guard..."
+    if docker run --rm \
+            -e TINYASSETS_DATA_DIR=/data \
+            -e TINYASSETS_VAULT_ROLLBACK_GUARD=/vault-guard \
+            -v "${BACKUP_VOLUME}:/data" \
+            -v tinyassets-vault-guard:/vault-guard \
+            "${DAEMON_IMAGE}" \
+            python /app/scripts/vault_restore_bump.py; then
+        log "  vault guard advanced — credentials now require re-authorization (intended)"
+    else
+        log "WARNING: vault guard bump failed. The vault still fails closed on"
+        log "  its own epoch mismatch, but run scripts/vault_restore_bump.py"
+        log "  manually so the restore is recorded explicitly."
+    fi
+else
+    log "WARNING: no daemon image found for the vault guard bump; run"
+    log "  scripts/vault_restore_bump.py manually after starting the daemon."
+fi
+
 # ----- 8. done — caller starts the daemon -------------------------------
 #
 # Restore's job is to put the data in the right place. Starting the

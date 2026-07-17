@@ -16,8 +16,17 @@ from tinyassets.auth.provider import (
     _load_destination_secret_map,
     vend_github_destination_secret,
 )
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.credential_broker import deposit_credential
+from tinyassets.credentials import SecretKind
 from tinyassets.effectors.github_pr import _read_capability
+
+
+def _deposit_github(universe_dir, destination: str, token: str) -> None:
+    deposit_credential(
+        universe_id=universe_dir.name, founder_id="founder-1",
+        provider="github", destination=destination, purpose="external_write",
+        kind=SecretKind.GITHUB_PAT, value=token.encode("utf-8"),
+    )
 
 _DESTINATION = "Jonnyton/TinyAssets"
 
@@ -188,33 +197,25 @@ def test_read_capability_legacy_env_still_works(monkeypatch):
     assert _read_capability(_DESTINATION) == "tok-legacy"
 
 
-def test_read_capability_vault_beats_env(universe_dir, monkeypatch):
+def test_read_capability_vault_beats_env(platform_vault_env, universe_dir, monkeypatch):
     monkeypatch.setenv(
         "TINYASSETS_GITHUB_PUSH_CAPABILITIES",
         json.dumps({_DESTINATION: "tok-push"}),
     )
-    write_credential_vault(
-        universe_dir,
-        [
-            {
-                "credential_type": "vcs",
-                "service": "github",
-                "destination": _DESTINATION,
-                "purpose": "write",
-                "token": "vault-token",
-            }
-        ],
-    )
+    _deposit_github(universe_dir, _DESTINATION, "vault-token")
     assert _read_capability(_DESTINATION, universe_dir) == "vault-token"
 
 
-def test_read_capability_empty_vault_blocks_env(universe_dir, monkeypatch):
-    """A bound-but-empty vault means 'not authorized', not 'fall to env'."""
+def test_read_capability_vault_routed_universe_blocks_env(
+    platform_vault_env, universe_dir, monkeypatch
+):
+    """A vault-routed universe with no credential for this destination means
+    'not authorized', not 'fall to env'."""
     monkeypatch.setenv(
         "TINYASSETS_GITHUB_PUSH_CAPABILITIES",
         json.dumps({_DESTINATION: "tok-push"}),
     )
-    write_credential_vault(universe_dir, [])
+    _deposit_github(universe_dir, "octo/some-other-repo", "other-token")
     assert _read_capability(_DESTINATION, universe_dir) == ""
 
 

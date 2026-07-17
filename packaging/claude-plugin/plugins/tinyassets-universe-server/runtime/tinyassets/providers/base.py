@@ -149,19 +149,26 @@ def subprocess_env_for_provider(
     When *universe_dir* is given it takes precedence over the process-global
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
+
+    Engine credentials come from the platform vault via
+    :mod:`tinyassets.credential_broker`. A universe with no engine deposits
+    gets no overrides (the host_daemon default engine). Fail-closed states —
+    unmigrated legacy plaintext, ``needs_redeposit``/revoked bindings — RAISE:
+    the universe's engine stops rather than silently running on the host's
+    credentials (the ambient identity leak).
     """
     env = subprocess_env_without_api_keys() or os.environ.copy()
-    try:
-        from tinyassets.credential_vault import apply_provider_auth_env
+    from tinyassets.credential_broker import (
+        provider_auth_env_overrides,
+        resolve_universe_from_env,
+    )
 
-        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
-    except ValueError:
-        raise
-    except Exception:
-        # Provider calls should not crash merely because no universe/vault
-        # helper is available in a local import context. Malformed vaults still
-        # raise ValueError above and fail loudly.
-        pass
+    resolved_universe = (
+        universe_dir if universe_dir is not None else resolve_universe_from_env(env)
+    )
+    if resolved_universe is None:
+        return env
+    env.update(provider_auth_env_overrides(provider_name, resolved_universe))
     return env
 
 
