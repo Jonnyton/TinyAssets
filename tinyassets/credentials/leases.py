@@ -105,7 +105,39 @@ CREATE TABLE IF NOT EXISTS vault_local_live (
     ref          TEXT PRIMARY KEY,
     live_version INTEGER NOT NULL
 );
+
+-- Durable pending-GC: on-disk versioned sidecars that a delete/rotation could
+-- not remove yet (locked file). Recorded IN the mutation transaction so cleanup
+-- survives a crash and is retried (swept) on every subsequent operation — a
+-- delete never claims the bytes are gone while a row remains here.
+CREATE TABLE IF NOT EXISTS vault_local_pending_gc (
+    ref     TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (ref, version)
+);
 """
+
+
+def add_pending_gc(conn: sqlite3.Connection, ref: str, version: int) -> None:
+    conn.execute(
+        "INSERT INTO vault_local_pending_gc(ref, version) VALUES(?, ?) "
+        "ON CONFLICT(ref, version) DO NOTHING",
+        (ref, int(version)),
+    )
+
+
+def list_pending_gc(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+    return [
+        (row["ref"], int(row["version"]))
+        for row in conn.execute("SELECT ref, version FROM vault_local_pending_gc")
+    ]
+
+
+def clear_pending_gc(conn: sqlite3.Connection, ref: str, version: int) -> None:
+    conn.execute(
+        "DELETE FROM vault_local_pending_gc WHERE ref = ? AND version = ?",
+        (ref, int(version)),
+    )
 
 
 def read_epoch(conn: sqlite3.Connection) -> int:

@@ -30,7 +30,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from . import crypto, grants, leases, record
@@ -40,7 +40,7 @@ from .errors import CredentialUnavailable, VaultErrorCode
 from .grants import JobGrant
 from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import platform_vault_db_path
-from .rollback import EpochMirror, mirror_filename
+from .rollback import EpochGuard, GuardUnavailable
 from .secret_bytes import SecretBytes, SecretLease, require_nonempty_bounded
 from .types import (
     ROTATING_TOKEN_KINDS,
@@ -98,6 +98,7 @@ class PlatformVaultBackend:
         store_id: str = "platform:default",
         db_path: str | Path | None = None,
         base: str | Path | None = None,
+        guard_dir: str | Path | None = None,
     ) -> None:
         self._keys = key_provider
         self._store_id = store_id
@@ -107,16 +108,15 @@ class PlatformVaultBackend:
         self._attested: bool | None = None
         self._initialized = False
         self._leases = RefreshLeaseManager(self._connect)
-        # Anti-rollback epoch mirror OUTSIDE the DB file (a sibling subdir of the
-        # DB's directory) so a restore of the DB file leaves the mirror ahead;
-        # kept under the DB's own directory so it is isolated per store location.
-        self._epoch = EpochMirror(
-            self._db_path.parent / ".credential-vault-epoch" / mirror_filename(store_id)
-        )
+        # Anti-rollback epoch guard in an INDEPENDENT recovery domain OUTSIDE
+        # /data (so a full-volume restore does not carry it).
+        self._epoch = EpochGuard(store_id, guard_dir=guard_dir)
 
     def _require_no_rollback(self, conn: sqlite3.Connection | None = None) -> None:
         """Raise REAUTHORIZATION_REQUIRED if the store was restored from an older
-        snapshot (DB epoch behind the external mirror) — the honest guarantee."""
+        snapshot (DB epoch behind the external guard). Fail CLOSED if the guard is
+        unavailable — never silently proceed.
+        """
         if conn is not None:
             db_epoch = leases.read_epoch(conn)
         else:
@@ -127,7 +127,11 @@ class PlatformVaultBackend:
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     c.close()
-        if self._epoch.is_rolled_back(db_epoch):
+        try:
+            rolled = self._epoch.is_rolled_back(db_epoch)
+        except GuardUnavailable:
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        if rolled:
             raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED)
 
     # ------------------------------------------------------------------
@@ -276,6 +280,7 @@ class PlatformVaultBackend:
         require_nonempty_bounded(value)  # reject empty/oversized before any write
         leases.require_cas_pairing(replace, expected_version)
         self._ensure_attested()
+        self._require_no_rollback()  # EVERY mutation checks rollback FIRST
         return self._put(
             store, scope, kind, value, replace, expected_version, expires_at, fence
         )
@@ -289,6 +294,7 @@ class PlatformVaultBackend:
     def delete(self, binding: SecretBinding, expected: SecretScope) -> None:
         self._require_platform_store(binding.store)
         self._ensure_attested()
+        self._require_no_rollback()  # EVERY mutation checks rollback FIRST
         self._delete(binding, expected)
 
     # ------------------------------------------------------------------
@@ -473,7 +479,8 @@ class PlatformVaultBackend:
         finally:
             conn.close()
         if new_epoch is not None:
-            self._epoch.advance(new_epoch)  # mirror the epoch outside the snapshot
+            with contextlib.suppress(GuardUnavailable):
+                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
 
         binding = SecretBinding(ref=ref, kind=kind, scope=scope, store=store)
         return SecretDescriptor(
@@ -559,7 +566,8 @@ class PlatformVaultBackend:
         finally:
             conn.close()
         if new_epoch is not None:
-            self._epoch.advance(new_epoch)
+            with contextlib.suppress(GuardUnavailable):
+                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
 
     # ------------------------------------------------------------------
     # Fenced exclusive per-ref refresh lease
@@ -669,7 +677,8 @@ class PlatformVaultBackend:
         finally:
             conn.close()
         if new_epoch is not None:
-            self._epoch.advance(new_epoch)
+            with contextlib.suppress(GuardUnavailable):
+                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
         if not won:
             return None
         return RefreshTicket(
@@ -694,6 +703,7 @@ class PlatformVaultBackend:
         self._require_platform_store(binding.store)
         require_nonempty_bounded(value)  # reject empty/oversized before any write
         self._ensure_attested()
+        self._require_no_rollback()  # EVERY mutation checks rollback FIRST
         if not is_secret_ref(binding.ref):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
@@ -718,17 +728,19 @@ class PlatformVaultBackend:
     ) -> JobGrant:
         """Mint an OPAQUE, single job-scoped grant for an isolated worker (S3).
 
-        Derived from the authoritative run: the grant binds ``run_id`` and the
-        credential's ``universe_id`` so a worker can resolve the credential
-        without holding a raw, forgeable ``universe_id`` or the ``ref``.
-        Authenticates the record first (a grant is never minted for a
-        missing/invalid credential).
+        The authoritative ``run_id`` + universe are recorded in the broker-side
+        row (from the run record); the returned grant carries ONLY an opaque id +
+        a private capability, so a bearer holds nothing to replay. Authenticates
+        the record first (a grant is never minted for a missing/invalid
+        credential) and validates a finite, positive, bounded ``ttl`` — a
+        non-expiring grant (``ttl=inf``) is rejected.
         """
         self._require_platform_store(binding.store)
         self._ensure_attested()
         self._require_no_rollback()
         if not run_id or not isinstance(run_id, str) or "\n" in run_id:
             raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
+        ttl = grants.validate_ttl(ttl)  # finite, positive, bounded — reject inf/nan/<=0
         # Authenticate the credential exists + is active (zero the revealed value).
         self._get(binding, expected).zero()
         grant_id = grants.new_grant_id()
@@ -756,23 +768,33 @@ class PlatformVaultBackend:
             raise
         finally:
             conn.close()
-        return JobGrant(
-            grant_id=grant_id, run_id=run_id,
-            universe_id=expected.universe_id, secret=secret,
-        )
+        return JobGrant(grant_id=grant_id, secret=secret)
 
     def resolve_job_grant(
-        self, grant: JobGrant, run_id: str, universe_id: str
+        self,
+        grant: JobGrant,
+        *,
+        verify_context: Callable[[grants.JobContext], bool] | None = None,
     ) -> SecretLease:
         """Resolve a job grant to a credential lease, failing CLOSED.
 
-        The worker presents the opaque grant plus its OWN authoritative
-        ``run_id``/``universe_id`` (from the run record, not the grant). Rejects
-        (typed) a missing/malformed grant, a bad capability, a wrong run, a
-        cross-universe mismatch, or an expired grant.
+        The worker presents ONLY the opaque grant. The broker resolves against
+        the grant's OWN authoritative run/universe (recorded at mint), NEVER
+        against caller-supplied identifiers — there is nothing for a bearer to
+        forge. Authorization is the unforgeable capability + a non-expired TTL.
+
+        S3 SHOULD pass ``verify_context`` to bind resolution to the LIVE
+        authenticated executor identity: the broker hands it the authoritative
+        :class:`grants.JobContext` and requires ``True``; any falsey result or
+        raised exception fails closed. Rejects (typed) a non-grant object, a
+        missing/malformed grant, a bad capability, an expired grant, or a
+        rejected context.
         """
         self._ensure_attested()
         self._require_no_rollback()
+        if not isinstance(grant, JobGrant):
+            # Malformed grant object — typed failure, never a raw AttributeError.
+            raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
         if not grants.is_grant_id(grant.grant_id):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         self.initialize()
@@ -789,14 +811,21 @@ class PlatformVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if not grants.capability_matches(row["capability_hash"], grant._reveal_capability()):
             raise CredentialUnavailable(VaultErrorCode.LEASE_LOST)
-        if row["run_id"] != run_id or grant.run_id != run_id:
-            # wrong / forged run — a grant is usable only by its own job
-            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
-        if row["universe_id"] != universe_id:
-            # cross-universe resolution is forbidden
-            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
         if float(row["expires_at"]) <= time.time():
             raise CredentialUnavailable(VaultErrorCode.EXPIRED)
+        # Authoritative context is the STORED row (minted from the run record).
+        context = grants.JobContext(
+            run_id=row["run_id"], universe_id=row["universe_id"],
+            founder_id=row["founder_id"],
+        )
+        if verify_context is not None:
+            try:
+                approved = verify_context(context)
+            except Exception:  # noqa: BLE001 - any callback failure fails closed
+                raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN) from None
+            if not approved:
+                # live executor identity does not match the grant's job
+                raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
         scope = SecretScope(
             founder_id=row["founder_id"], universe_id=row["universe_id"],
             provider=row["provider"], destination=row["destination"],

@@ -58,6 +58,16 @@ def _kp(*ids: str) -> InMemoryKeyProvider:
     return InMemoryKeyProvider({i: sodium.randombytes(32) for i in ids}, ids[0])
 
 
+@pytest.fixture(autouse=True)
+def _isolate_rollback_guard(tmp_path, monkeypatch):
+    """Point the anti-rollback guard at a per-test domain OUTSIDE the vault data
+    dir. Without this, backends fall back to the home-dir default guard and its
+    epoch bumps leak across tests (false rollbacks); an independent per-test guard
+    also lets a full-volume-restore test model 'the guard survives a /data restore'.
+    """
+    monkeypatch.setenv("TINYASSETS_VAULT_ROLLBACK_GUARD", str(tmp_path / "_vault_guard"))
+
+
 @pytest.fixture()
 def platform(tmp_path):
     be = PlatformVaultBackend(
@@ -618,7 +628,7 @@ def test_full_local_directory_rollback_forces_reauth(tmp_path):
 
 
 def test_job_grant_resolves_and_fails_closed(platform, store):
-    from tinyassets.credentials import JobGrant
+    from tinyassets.credentials import JobContext, JobGrant
 
     universe_scope = SecretScope(
         founder_id="founder1", universe_id="universe-A", provider="github",
@@ -626,27 +636,90 @@ def test_job_grant_resolves_and_fails_closed(platform, store):
     )
     d = platform.put(store, universe_scope, SecretKind.GITHUB_PAT, SecretBytes(b"ghp_worker"))
     grant = platform.mint_job_grant(d.binding, universe_scope, run_id="run-1", ttl=3600)
-    # opaque + non-observable
+
+    # Opaque + non-observable: the grant exposes NO run_id/universe_id (nothing to
+    # replay) and the capability cannot be extracted.
+    assert not hasattr(grant, "run_id")
+    assert not hasattr(grant, "universe_id")
     with pytest.raises(TypeError):
         import dataclasses
         dataclasses.asdict(grant)
-    # resolves with the correct authoritative run + universe
-    with platform.resolve_job_grant(grant, run_id="run-1", universe_id="universe-A") as lease:
+
+    # Resolves against the grant's OWN authoritative context — no caller-supplied ids.
+    with platform.resolve_job_grant(grant) as lease:
         assert lease.reveal() == b"ghp_worker"
-    # wrong run → fail closed
+
+    # The broker hands the AUTHORITATIVE context (from the stored row, not caller
+    # input) to verify_context so S3 can bind to the live executor identity.
+    seen: dict[str, object] = {}
+
+    def _capture(ctx: JobContext) -> bool:
+        seen.update(run_id=ctx.run_id, universe_id=ctx.universe_id, founder_id=ctx.founder_id)
+        return True
+
+    with platform.resolve_job_grant(grant, verify_context=_capture) as lease:
+        assert lease.reveal() == b"ghp_worker"
+    assert seen == {"run_id": "run-1", "universe_id": "universe-A", "founder_id": "founder1"}
+
+    # A rejecting executor-identity check fails CLOSED (typed).
     with pytest.raises(CredentialUnavailable) as exc:
-        platform.resolve_job_grant(grant, run_id="run-EVIL", universe_id="universe-A")
+        platform.resolve_job_grant(grant, verify_context=lambda _ctx: False)
     assert exc.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
-    # cross-universe → fail closed
-    with pytest.raises(CredentialUnavailable) as exc2:
-        platform.resolve_job_grant(grant, run_id="run-1", universe_id="universe-EVIL")
-    assert exc2.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
-    # forged capability → fail closed
-    forged = JobGrant(grant_id=grant.grant_id, run_id="run-1", universe_id="universe-A",
-                      secret=b"\x00" * 32)
+
+    # A RAISING verify_context also fails closed (never leaks the exception).
+    def _raise(_ctx):
+        raise RuntimeError("executor identity service down")
+
+    with pytest.raises(CredentialUnavailable) as exc_raise:
+        platform.resolve_job_grant(grant, verify_context=_raise)
+    assert exc_raise.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+
+    # Forged capability → fail closed.
+    forged = JobGrant(grant_id=grant.grant_id, secret=b"\x00" * 32)
     with pytest.raises(CredentialUnavailable) as exc3:
-        platform.resolve_job_grant(forged, run_id="run-1", universe_id="universe-A")
+        platform.resolve_job_grant(forged)
     assert exc3.value.code == VaultErrorCode.LEASE_LOST
+
+
+def test_job_grant_rejects_malformed_grant_object(platform, store):
+    """r10 #4: a non-JobGrant object is a TYPED INVALID_ARGUMENT, never a raw
+    AttributeError leaking from ``grant.grant_id``."""
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    platform.mint_job_grant(d.binding, SCOPE, run_id="run-x")
+    for bad in (None, "grant:v1:deadbeef", object(), 42, {"grant_id": "x"}):
+        with pytest.raises(CredentialUnavailable) as exc:
+            platform.resolve_job_grant(bad)
+        assert exc.value.code == VaultErrorCode.INVALID_ARGUMENT
+
+
+def test_job_grant_rejects_non_finite_and_unbounded_ttl(platform, store):
+    """r10 #4: a grant can never be non-expiring — inf/nan/<=0/over-cap TTLs are
+    rejected at mint; a finite, positive, bounded TTL is accepted."""
+    from tinyassets.credentials.grants import MAX_JOB_GRANT_TTL
+
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    for bad in (float("inf"), float("nan"), float("-inf"), 0.0, -1.0, MAX_JOB_GRANT_TTL + 1):
+        with pytest.raises(CredentialUnavailable) as exc:
+            platform.mint_job_grant(d.binding, SCOPE, run_id="run-1", ttl=bad)
+        assert exc.value.code == VaultErrorCode.INVALID_ARGUMENT
+    grant = platform.mint_job_grant(d.binding, SCOPE, run_id="run-1", ttl=60.0)
+    with platform.resolve_job_grant(grant) as lease:
+        assert lease.reveal() == b"tok"
+
+
+def test_job_grant_expired_fails_closed(platform, store, tmp_path):
+    """An expired grant resolves to a typed EXPIRED, never a stale credential."""
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    grant = platform.mint_job_grant(d.binding, SCOPE, run_id="run-1", ttl=60.0)
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    conn.execute(
+        "UPDATE vault_job_grants SET expires_at = 0 WHERE grant_id = ?", (grant.grant_id,)
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.resolve_job_grant(grant)
+    assert exc.value.code == VaultErrorCode.EXPIRED
 
 
 # ===========================================================================
@@ -1137,3 +1210,174 @@ def test_local_attestation_verifies_dacl_honestly(tmp_path):
     assert lb.dacl_is_current_user_and_system_only(blob) is False
     ev = be.inspect_persisted(d.binding.ref, b"probe")
     assert ev["dacl_current_user_only"] is False
+
+
+# ===========================================================================
+# Review r10 finding 1 — anti-rollback vs FULL-VOLUME restore
+# (guard is an INDEPENDENT recovery domain OUTSIDE /data)
+# ===========================================================================
+
+
+def test_full_volume_restore_forces_reauthorization(tmp_path):
+    """Restoring the ENTIRE data volume rolls the DB epoch back; the guard lives
+    in an INDEPENDENT recovery domain OUTSIDE the volume, so the restore does not
+    carry it and every op forces reauthorization — the real backup/restore path."""
+    data = tmp_path / "data"
+    data.mkdir()
+    guard = tmp_path / "guard-domain"  # independent recovery domain, NOT under /data
+    kp = _kp("k1")
+    be = PlatformVaultBackend(
+        kp, store_id="platform:default", db_path=data / "vault.db", guard_dir=guard
+    )
+    be.attest()
+    store = VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default")
+    d = be.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    snap = tmp_path / "data-snapshot"
+    shutil.copytree(data, snap)  # snapshot the WHOLE volume
+    tk = be.begin_refresh(d.binding, SCOPE, "A", at_version=1)
+    be.complete_refresh(d.binding, SCOPE, tk, SecretBytes(b"tok2"))
+    # restore the WHOLE volume; the guard-domain is untouched (outside /data)
+    shutil.rmtree(data)
+    shutil.copytree(snap, data)
+    fresh = PlatformVaultBackend(
+        kp, store_id="platform:default", db_path=data / "vault.db", guard_dir=guard
+    )
+    with pytest.raises(CredentialUnavailable) as exc:
+        fresh.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+    with pytest.raises(CredentialUnavailable) as exc2:
+        fresh.begin_refresh(d.binding, SCOPE, "B", at_version=1)
+    assert exc2.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+def test_bump_for_restore_forces_reauth(tmp_path):
+    """``backup-restore.sh`` explicitly advances the guard so a restore ALWAYS
+    forces reauthorization — belt-and-suspenders even if the guard were co-located
+    and carried by a restore."""
+    from tinyassets.credentials.rollback import EpochGuard
+
+    guard = tmp_path / "guard"
+    kp = _kp("k1")
+    be = PlatformVaultBackend(
+        kp, store_id="platform:default", db_path=tmp_path / "vault.db", guard_dir=guard
+    )
+    be.attest()
+    store = VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v"))
+    with be.get(d.binding, SCOPE) as lease:
+        assert lease.reveal() == b"v"  # fine before the restore signal
+    EpochGuard("platform:default", guard_dir=guard).bump_for_restore()
+    with pytest.raises(CredentialUnavailable) as exc:
+        be.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+# ===========================================================================
+# Review r10 finding 2 — rollback detection is fail-OPEN unless EVERY mutation
+# checks it; the guard must be durable, fail-closed, and concurrency-safe
+# ===========================================================================
+
+
+def test_put_and_delete_check_rollback_first(platform, store, tmp_path):
+    """A rolled-back store must be refused by put() AND delete(), not only reads —
+    else one unrelated put catches the DB epoch up and re-exposes the credential."""
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v1"))
+    db = tmp_path / "vault.db"
+    snap = tmp_path / "snap.db"
+    shutil.copy(db, snap)  # snapshot at epoch N
+    platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v2"))  # advance epoch
+    shutil.copy(snap, db)  # roll the DB back to epoch N (guard stays ahead)
+    fresh = PlatformVaultBackend(platform._keys, store_id="platform:default", db_path=db)
+    with pytest.raises(CredentialUnavailable) as exc_put:
+        fresh.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"attack"))
+    assert exc_put.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+    with pytest.raises(CredentialUnavailable) as exc_del:
+        fresh.delete(d.binding, SCOPE)
+    assert exc_del.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+def test_epoch_guard_never_regresses_under_concurrent_advance(tmp_path):
+    """The guard's high-water is monotonic: concurrent advances (including
+    out-of-order lower values) never regress it below the max — the deterministic
+    race Codex reproduced (epoch 1 left after epoch 2) cannot happen."""
+    import threading
+
+    from tinyassets.credentials.rollback import EpochGuard
+
+    guard = EpochGuard("s", guard_dir=tmp_path / "g")
+    guard.advance(1)
+    errors: list[Exception] = []
+
+    def _adv(v: int) -> None:
+        try:
+            guard.advance(v)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_adv, args=(v,)) for v in (5, 2, 4, 3, 5, 1)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert guard.read() == 5  # high-water preserved, never regressed
+
+
+def test_rollback_guard_unavailable_fails_closed(platform, store, monkeypatch):
+    """If the guard cannot be consulted, a mutation FAILS CLOSED
+    (BACKEND_UNAVAILABLE) — never silently proceeds as if not rolled back."""
+    from tinyassets.credentials.rollback import EpochGuard, GuardUnavailable
+
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v"))
+
+    def _boom(self, db_epoch):
+        raise GuardUnavailable("guard volume offline")
+
+    monkeypatch.setattr(EpochGuard, "is_rolled_back", _boom)
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+
+# ===========================================================================
+# Review r10 finding 3 — local delete never claims success while bytes remain
+# ===========================================================================
+
+
+@WINDOWS_ONLY
+def test_delete_with_locked_sidecar_reports_pending_then_sweeps(tmp_path, monkeypatch):
+    """A locked sidecar during delete: the credential is already unreadable
+    (tombstone committed) but delete() must NOT claim a full delete — it surfaces
+    DELETE_PENDING, durably records the leftover, and a later op sweeps it."""
+    from tinyassets.credentials import local_backend as lb
+
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v1"))
+    tail = d.binding.ref.rsplit(":", 1)[-1]
+
+    real_remove = os.remove
+    lock = {"on": True}
+
+    def _locked_remove(path):
+        if lock["on"] and str(path).endswith(".json"):
+            raise PermissionError("sidecar locked by another handle")
+        return real_remove(path)
+
+    monkeypatch.setattr(lb.os, "remove", _locked_remove)
+
+    with pytest.raises(CredentialUnavailable) as exc:
+        be.delete(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.DELETE_PENDING
+    # already unreadable (tombstone committed), but bytes still on disk while locked
+    with pytest.raises(CredentialUnavailable) as g:
+        be.get(d.binding, SCOPE)
+    assert g.value.code == VaultErrorCode.NOT_FOUND
+    assert len(list(be._dir.glob(f"{tail}.v*.json"))) == 1  # leftover recorded pending
+
+    # unlock: the NEXT op's sweep removes the leftover (no read path skips GC)
+    lock["on"] = False
+    with pytest.raises(CredentialUnavailable):
+        be.get(d.binding, SCOPE)  # still NOT_FOUND, but sweeps the pending GC first
+    assert len(list(be._dir.glob(f"{tail}.v*.json"))) == 0  # bytes now gone

@@ -39,7 +39,7 @@ from .crypto import (
     identity_aad,
 )
 from .errors import CredentialUnavailable, VaultErrorCode
-from .grants import JobGrant
+from .grants import JobContext, JobGrant
 from .leases import RefreshLease, RefreshTicket
 from .local_backend import DpapiVaultBackend
 from .platform_backend import PlatformVaultBackend
@@ -91,6 +91,7 @@ __all__ = [
     "RefreshLease",
     "RefreshTicket",
     "JobGrant",
+    "JobContext",
     # crypto
     "KeyProvider",
     "InMemoryKeyProvider",

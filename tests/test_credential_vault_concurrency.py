@@ -58,6 +58,15 @@ STORE_ID = "platform:default"
 DAEMON_ID = "daemon-conc"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_rollback_guard(tmp_path, monkeypatch):
+    """Per-test anti-rollback guard OUTSIDE the vault data dir. Set in the parent
+    BEFORE workers spawn so every worker process inherits the SAME guard domain
+    (concurrent ``advance`` is BEGIN IMMEDIATE + monotonic-max, race-safe); the
+    home-dir default would otherwise leak epochs across tests as false rollbacks."""
+    monkeypatch.setenv("TINYASSETS_VAULT_ROLLBACK_GUARD", str(tmp_path / "_vault_guard"))
+
+
 def _build(db_path: str, kek_hex: str, key_id: str) -> PlatformVaultBackend:
     kp = InMemoryKeyProvider({key_id: bytes.fromhex(kek_hex)}, key_id)
     return PlatformVaultBackend(kp, store_id=STORE_ID, db_path=db_path)

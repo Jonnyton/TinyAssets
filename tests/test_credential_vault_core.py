@@ -58,6 +58,14 @@ def _key_provider(*key_ids: str, active: str | None = None) -> InMemoryKeyProvid
     return InMemoryKeyProvider(keys, active or ids[0])
 
 
+@pytest.fixture(autouse=True)
+def _isolate_rollback_guard(tmp_path, monkeypatch):
+    """Per-test anti-rollback guard OUTSIDE the vault data dir — see the hardening
+    suite for the full rationale (home-dir default guard would leak epochs across
+    tests as false rollbacks)."""
+    monkeypatch.setenv("TINYASSETS_VAULT_ROLLBACK_GUARD", str(tmp_path / "_vault_guard"))
+
+
 @pytest.fixture()
 def platform(tmp_path) -> PlatformVaultBackend:
     return PlatformVaultBackend(

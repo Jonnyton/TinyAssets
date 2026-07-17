@@ -54,6 +54,14 @@ SCOPE = SecretScope(
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_rollback_guard(tmp_path, monkeypatch):
+    """Per-test anti-rollback guard OUTSIDE the vault data dir (the guard DB holds
+    only store_id + epoch integers — never a secret — so it is canary-safe even
+    under the leak-scan root). Prevents home-dir guard epoch leakage across tests."""
+    monkeypatch.setenv("TINYASSETS_VAULT_ROLLBACK_GUARD", str(tmp_path / "_vault_guard"))
+
+
 def _collect_all_bytes(root) -> bytes:
     chunks: list[bytes] = []
     for path in root.rglob("*"):

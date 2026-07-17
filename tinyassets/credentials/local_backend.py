@@ -47,7 +47,7 @@ from .crypto import identity_aad
 from .errors import CredentialUnavailable, VaultErrorCode
 from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import local_store_dir
-from .rollback import EpochMirror, mirror_filename
+from .rollback import EpochGuard, GuardUnavailable
 from .secret_bytes import SecretBytes, SecretLease, require_nonempty_bounded
 from .types import (
     ROTATING_TOKEN_KINDS,
@@ -301,6 +301,7 @@ class DpapiVaultBackend:
         daemon_id: str,
         store_id: str = "daemon:default",
         base: str | Path | None = None,
+        guard_dir: str | Path | None = None,
     ) -> None:
         self._daemon_id = daemon_id
         self._store_id = store_id
@@ -308,11 +309,9 @@ class DpapiVaultBackend:
         self._attested: bool | None = None
         self._control_db = self._dir / "_control.db"
         self._leases = RefreshLeaseManager(self._control_connect)
-        # Anti-rollback epoch mirror OUTSIDE the credential-store directory so a
-        # full-directory restore leaves the control-DB epoch behind the mirror.
-        self._epoch = EpochMirror(
-            self._dir.parent.parent / ".credential-vault-epoch" / mirror_filename(store_id)
-        )
+        # Anti-rollback epoch guard in an INDEPENDENT recovery domain OUTSIDE the
+        # store directory (so a full-directory restore does not carry it).
+        self._epoch = EpochGuard(store_id, guard_dir=guard_dir)
 
     def _all_version_paths(self, ref: str) -> list[Path]:
         """Every on-disk versioned sidecar for a ref (for durable GC)."""
@@ -321,18 +320,68 @@ class DpapiVaultBackend:
         except OSError:
             return []
 
-    def _gc_versions(self, ref: str, keep: int | None) -> None:
-        """Remove EVERY versioned sidecar for ``ref`` except ``keep`` (best-effort).
-
-        Called on rotation (keep new) and deletion (keep None) so old encrypted
-        blobs do not survive; any that stay locked are retried on the next access.
-        """
-        keep_name = _ref_filename(ref, keep) if keep is not None else None
+    def _versions_on_disk(self, ref: str) -> list[int]:
+        tail = _ref_tail(ref)
+        versions: list[int] = []
         for path in self._all_version_paths(ref):
-            if keep_name is not None and path.name == keep_name:
+            try:
+                versions.append(int(path.name[len(tail) + 2 : -5]))  # <tail>.v<N>.json
+            except ValueError:
                 continue
-            with contextlib.suppress(OSError):
-                os.remove(path)
+        return versions
+
+    def _sweep_pending_gc(self) -> None:
+        """Retry durable pending GC: remove any recorded leftover version file and
+        clear its row. Called on every operation so a locked file left by a prior
+        delete is eventually removed (the read path DOES invoke GC now)."""
+        self._leases.ensure_schema()
+        conn = self._control_connect()
+        try:
+            pending = leases.list_pending_gc(conn)
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+            return
+        for ref, version in pending:
+            removed = False
+            try:
+                os.remove(self._blob_path(ref, version))
+                removed = True
+            except FileNotFoundError:
+                removed = True  # already gone
+            except OSError:
+                removed = False  # still locked — leave the row for the next sweep
+            if removed:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute("BEGIN IMMEDIATE")
+                    leases.clear_pending_gc(conn, ref, version)
+                    conn.execute("COMMIT")
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    def _record_pending_gc(self, ref: str, versions: list[int]) -> None:
+        """Durably record leftover version files as pending GC (fail-closed).
+
+        Recording is durable BEFORE the file removal is attempted, so a crash or
+        lock between recording and removal still leaves a row the next sweep acts
+        on — no encrypted blob can silently survive a delete/rotation.
+        """
+        if not versions:
+            return
+        self._leases.ensure_schema()
+        conn = self._control_connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for version in versions:
+                leases.add_pending_gc(conn, ref, version)
+            conn.execute("COMMIT")
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
 
     def _require_no_rollback(self, conn: sqlite3.Connection | None = None) -> None:
         if conn is not None:
@@ -345,7 +394,11 @@ class DpapiVaultBackend:
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     c.close()
-        if self._epoch.is_rolled_back(db_epoch):
+        try:
+            rolled = self._epoch.is_rolled_back(db_epoch)
+        except GuardUnavailable:
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        if rolled:
             raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED)
 
     @property
@@ -449,6 +502,8 @@ class DpapiVaultBackend:
         require_nonempty_bounded(value)  # reject empty/oversized before any write
         leases.require_cas_pairing(replace, expected_version)
         self._ensure_attested()
+        self._require_no_rollback()  # EVERY mutation checks rollback FIRST
+        self._sweep_pending_gc()  # retry any pending durable GC before mutating
         return self._put(store, scope, kind, value, replace, expected_version, expires_at, fence)
 
     def get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
@@ -456,12 +511,15 @@ class DpapiVaultBackend:
         self._require_local_store(binding.store)
         self._ensure_attested()
         self._require_no_rollback()  # restored (rolled-back) store → forced reauth
+        self._sweep_pending_gc()  # read path retries any pending durable GC
         return self._get(binding, expected)
 
     def delete(self, binding: SecretBinding, expected: SecretScope) -> None:
         self._require_available()
         self._require_local_store(binding.store)
         self._ensure_attested()
+        self._require_no_rollback()  # EVERY mutation checks rollback FIRST
+        self._sweep_pending_gc()  # retry any pending durable GC before mutating
         self._delete(binding, expected)
 
     # ------------------------------------------------------------------
@@ -665,9 +723,14 @@ class DpapiVaultBackend:
 
         # Commit succeeded — the new version is authoritative.
         if new_epoch is not None:
-            self._epoch.advance(new_epoch)
-        # Durable GC: remove EVERY non-live versioned sidecar (not just old_version).
-        self._gc_versions(ref, keep=version)
+            with contextlib.suppress(GuardUnavailable):
+                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
+        # Durable GC: record EVERY non-live versioned sidecar as pending FIRST
+        # (durable), then sweep. A locked/leftover old blob is retried on a later
+        # op's sweep instead of silently surviving the rotation.
+        stale = [v for v in self._versions_on_disk(ref) if v != version]
+        self._record_pending_gc(ref, stale)
+        self._sweep_pending_gc()
 
         binding = SecretBinding(ref=ref, kind=kind, scope=scope, store=store)
         return SecretDescriptor(
@@ -749,6 +812,11 @@ class DpapiVaultBackend:
                     leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
                     new_epoch = leases.bump_epoch(conn)
                 leases.clear_live_version(conn, binding.ref)
+                # Record EVERY on-disk version as DURABLE pending GC in the SAME
+                # committed transaction as the tombstone — so a crash/lock after
+                # commit cannot leave an untracked encrypted blob on disk.
+                for version in self._versions_on_disk(binding.ref):
+                    leases.add_pending_gc(conn, binding.ref, version)
                 did_delete = True
         except CredentialUnavailable:
             raise
@@ -758,9 +826,16 @@ class DpapiVaultBackend:
         # control-DB state committed durably — now GC EVERY versioned sidecar for
         # the ref (durable, not just the live one), so no old encrypted blob stays.
         if new_epoch is not None:
-            self._epoch.advance(new_epoch)
+            with contextlib.suppress(GuardUnavailable):
+                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
         if did_delete:
-            self._gc_versions(binding.ref, keep=None)
+            self._sweep_pending_gc()  # remove the just-recorded pending blobs
+            if self._versions_on_disk(binding.ref):
+                # The credential is already UNREADABLE (tombstone committed), but a
+                # locked sidecar could not be removed. Never claim a full delete
+                # while bytes remain — surface a typed pending failure; the durable
+                # pending rows guarantee removal on a later op's sweep.
+                raise CredentialUnavailable(VaultErrorCode.DELETE_PENDING, binding.ref)
 
     # ------------------------------------------------------------------
     # Fenced exclusive per-ref refresh lease
@@ -797,6 +872,7 @@ class DpapiVaultBackend:
         self._require_available()
         self._require_local_store(binding.store)
         self._ensure_attested()
+        self._sweep_pending_gc()  # retry any pending durable GC before mutating
         if not is_secret_ref(binding.ref):
             # Validate before use; never echo a malformed ref (injection defense).
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
@@ -848,7 +924,8 @@ class DpapiVaultBackend:
             self._attested = None
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         if new_epoch is not None:
-            self._epoch.advance(new_epoch)
+            with contextlib.suppress(GuardUnavailable):
+                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
         if not won:
             return None
         return RefreshTicket(
@@ -869,6 +946,8 @@ class DpapiVaultBackend:
         self._require_local_store(binding.store)
         require_nonempty_bounded(value)  # reject empty/oversized before any write
         self._ensure_attested()
+        self._require_no_rollback()  # EVERY mutation checks rollback FIRST
+        self._sweep_pending_gc()  # retry any pending durable GC before mutating
         if not is_secret_ref(binding.ref):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:

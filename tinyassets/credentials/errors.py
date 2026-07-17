@@ -45,6 +45,12 @@ class VaultErrorCode:
     # pairing, inactive rotation key). Typed so the broker contract holds: every
     # failure is CredentialUnavailable, never a raw ValueError.
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    # A local delete committed the durable tombstone (the credential is no longer
+    # readable) but at least one encrypted sidecar file could not be removed yet
+    # (e.g. a transient file lock). The leftover versions are recorded as DURABLE
+    # pending GC and removed on a later op's sweep. Surfacing this typed failure is
+    # the HONEST alternative to reporting a full delete while bytes remain on disk.
+    DELETE_PENDING = "DELETE_PENDING"
 
     _ALL = frozenset(
         {
@@ -65,6 +71,7 @@ class VaultErrorCode:
             DISABLED,
             REAUTHORIZATION_REQUIRED,
             INVALID_ARGUMENT,
+            DELETE_PENDING,
         }
     )
 
