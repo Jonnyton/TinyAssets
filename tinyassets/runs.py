@@ -2772,16 +2772,90 @@ def _review_gate_disposition(
     return "complete", None
 
 
+def _execute_review_directive(
+    base_path: str | Path, *, suspension: dict[str, Any], directive: dict[str, Any],
+    github_api: Any = None, run_starter: Callable[[dict[str, Any]], str] | None = None,
+) -> dict[str, Any]:
+    """EXECUTE a resume directive (Codex r13 #2) — this is the real continuation,
+    not a status flip. Returns the resulting ``review_workflow_state`` + effect
+    evidence, or raises so the caller leaves the run pending for replay.
+
+    - ``merge`` (approve): submit the owner's GitHub review, then drive the merge
+      path per the owner-bound preference (manual → owner-triggered; auto →
+      enable auto-merge; not_before → schedule the timer) via the E4
+      ``github_api``. Without a client the calls are recorded as pending (an
+      explicit un-executed state, never a silent success).
+    - ``draft_patch`` (reshape): re-enter draft_patch through the outbox resume
+      identity via ``run_starter`` — a real revised run.
+    - ``terminal_reject`` (reject): terminal.
+
+    The merge-path context (destination / pr_number / branch_def_id) comes from
+    the DURABLE suspension row, not the model-influenced directive.
+    """
+    action = (directive or {}).get("action")
+    destination = (suspension or {}).get("destination") or ""
+    pr_number = (suspension or {}).get("pr_number")
+    branch_def_id = (suspension or {}).get("branch_def_id") or ""
+    effects: dict[str, Any] = {}
+    if action == "merge":
+        call = (directive or {}).get("github_call")
+        if github_api is not None and call is not None:
+            from tinyassets.github_native import GitHubCall
+            review = github_api.run_call(GitHubCall(**{
+                k: call[k] for k in ("kind", "transport", "method", "path", "params", "summary")
+                if k in call
+            }))
+            effects["review_submitted"] = review.get("ok", False)
+        else:
+            effects["review_submit"] = "pending_no_client"
+        # Merge path per owner-bound preference (resolved from durable binding).
+        from tinyassets.storage import review_queue as _rq
+        pref = _rq.resolve_merge_preference_binding(
+            base_path, branch_def_id=branch_def_id,
+        )["merge_preference"]
+        if pref == "auto" and github_api is not None and destination and pr_number:
+            from tinyassets import github_native as _gn
+            enable = github_api.run_call(_gn.enable_auto_merge(
+                destination=destination, pr_number=pr_number,
+            ))
+            effects["auto_merge_enabled"] = enable.get("ok", False)
+            state = "approved_auto_merge_enabled"
+        elif pref == "not_before" and destination and pr_number:
+            _rq.schedule_not_before(
+                base_path, destination=destination, pr_number=pr_number,
+                not_before=_now(), branch_def_id=branch_def_id,
+            )
+            state = "approved_timer_scheduled"
+        else:
+            state = "approved_awaiting_owner_merge"  # manual
+        return {"review_workflow_state": state, "effects": effects}
+    if action == "draft_patch":
+        route_back = (directive or {}).get("route_back") or {}
+        if run_starter is not None:
+            revised = run_starter(route_back)
+            effects["revised_run_id"] = revised
+            return {"review_workflow_state": "reshaped_revising", "effects": effects}
+        return {"review_workflow_state": "reshaped_awaiting_revision", "effects": effects}
+    if action == "terminal_reject":
+        return {"review_workflow_state": "rejected", "effects": effects}
+    return {"review_workflow_state": "resumed", "effects": effects}
+
+
 def continue_reviewed_run(
     base_path: str | Path, *, run_id: str, decision: str,
+    directive: dict[str, Any] | None = None,
+    github_api: Any = None,
+    run_starter: Callable[[dict[str, Any]], str] | None = None,
 ) -> dict[str, Any]:
-    """Runtime consumer that RESUMES an interrupted run once the owner has
-    decided (Codex r12 #1). The MCP owner verb calls this after
-    ``decide_and_resume`` records the decision + directive: it moves the
-    canonical run off its INTERRUPTED (awaiting-review) status to a real terminal
-    status driven by the decision — approve/reshape-scheduled → completed,
-    reject → completed-rejected. Only an INTERRUPTED run awaiting review
-    transitions; anything else is a no-op (returns ``applied=False``)."""
+    """Runtime consumer that RESUMES an interrupted run once the owner decided
+    (Codex r13 #2). It EXECUTES the resume directive (submit review + drive merge
+    path / re-enter draft_patch / terminal reject) and only moves the canonical
+    run to COMPLETED once the directive SUCCEEDS. On any execution failure the
+    run stays INTERRUPTED and the suspension stays ``decided`` for idempotent
+    replay (Codex r13 #1) — the decision is durable and never lost.
+
+    Only an INTERRUPTED run awaiting review transitions; anything else is a
+    no-op (``applied=False``)."""
     run = get_run(base_path, run_id)
     if run is None:
         return {"applied": False, "reason": "run_not_found"}
@@ -2790,13 +2864,87 @@ def continue_reviewed_run(
     output = dict(run.get("output") or {})
     if "awaiting_owner_review" not in output:
         return {"applied": False, "reason": "not_a_review_suspension"}
+    # Load the durable suspension for merge-path context + (replay) the directive.
+    from tinyassets.storage.review_queue import get_suspension
+    susp = get_suspension(base_path, run_id=run_id) or {}
+    if directive is None:
+        directive = susp.get("resume_directive") or {}
+    try:
+        result = _execute_review_directive(
+            base_path, suspension=susp, directive=directive,
+            github_api=github_api, run_starter=run_starter,
+        )
+    except Exception as exc:  # noqa: BLE001 — leave pending for replay, fail loud
+        logger.exception("review directive execution failed for run %s", run_id)
+        return {"applied": False, "reason": f"directive_failed:{exc}"}
     output["review_decision"] = decision
+    output["review_workflow_state"] = result["review_workflow_state"]
+    if result.get("effects"):
+        output["review_continuation_effects"] = result["effects"]
     output.pop("awaiting_owner_review", None)
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED, output=output, finished_at=_now(),
     )
-    return {"applied": True, "run_id": run_id, "decision": decision}
+    # Ack the durable resume-pending marker ONLY after the canonical transition
+    # succeeded (Codex r13 #1).
+    try:
+        from tinyassets.storage.review_queue import ack_continuation
+        ack_continuation(base_path, run_id=run_id)
+    except Exception:  # noqa: BLE001 — run already completed; ack is idempotent
+        logger.exception("ack_continuation failed for run %s", run_id)
+    return {
+        "applied": True, "run_id": run_id, "decision": decision,
+        "review_workflow_state": result["review_workflow_state"],
+        "effects": result.get("effects", {}),
+    }
+
+
+def supersede_stranded_review_runs(
+    base_path: str | Path, run_ids: list[str] | None,
+) -> list[str]:
+    """Cancel the CANONICAL runs of suspensions that were superseded by a newer
+    run on the same PR (Codex r13 #5) — otherwise an older run stranded at
+    INTERRUPTED waits for an owner decision that will never come. Returns the
+    run_ids actually cancelled. Only an interrupted awaiting-review run is
+    touched."""
+    cancelled: list[str] = []
+    for rid in run_ids or []:
+        run = get_run(base_path, rid)
+        if run is None or run.get("status") != RUN_STATUS_INTERRUPTED:
+            continue
+        output = dict(run.get("output") or {})
+        if "awaiting_owner_review" not in output:
+            continue
+        output["review_workflow_state"] = "superseded"
+        output.pop("awaiting_owner_review", None)
+        update_run_status(
+            base_path, rid,
+            status=RUN_STATUS_CANCELLED, output=output,
+            error="superseded by a newer run on the same PR", finished_at=_now(),
+        )
+        cancelled.append(rid)
+    return cancelled
+
+
+def replay_pending_continuations(
+    base_path: str | Path, *, github_api: Any = None,
+    run_starter: Callable[[dict[str, Any]], str] | None = None,
+) -> list[dict[str, Any]]:
+    """Idempotent startup replay (Codex r13 #1): re-drive every DECIDED-but-not-
+    acked suspension so a decision made just before a crash still continues its
+    run. Safe to call repeatedly — each already-continued run is a no-op."""
+    from tinyassets.storage.review_queue import list_pending_continuations
+
+    results: list[dict[str, Any]] = []
+    for susp in list_pending_continuations(base_path):
+        results.append(continue_reviewed_run(
+            base_path, run_id=susp["run_id"],
+            decision=susp.get("resume_decision") or "",
+            directive=susp.get("resume_directive") or {},
+            github_api=github_api, run_starter=run_starter,
+        ))
+    return results
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:

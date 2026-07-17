@@ -137,3 +137,21 @@ def test_composite_without_user_provider_fails_closed_on_review():
     )
     with pytest.raises(ga.TokenUnavailable):
         comp.get_token(purpose=ga.PURPOSE_USER_REVIEW)
+
+
+def test_composite_routes_ruleset_verify_when_wired():
+    """Codex r13 #3: the elevated ruleset-read verifier identity routes on its
+    own purpose; without it, autonomous-merge verification fails closed."""
+    comp = ga.CompositeTokenProvider(
+        installation=ga.StaticTokenProvider("ghs_inst", purposes={ga.PURPOSE_INSTALLATION}),
+        ruleset_verify=ga.StaticTokenProvider(
+            "gho_owner_ruleset", purposes={ga.PURPOSE_RULESET_VERIFY}
+        ),
+    )
+    assert comp.get_token(purpose=ga.PURPOSE_RULESET_VERIFY) == "gho_owner_ruleset"
+    # Minimal-scope composite (no verifier) → autonomous verification fails closed.
+    minimal = ga.CompositeTokenProvider(
+        installation=ga.StaticTokenProvider("ghs_inst", purposes={ga.PURPOSE_INSTALLATION}),
+    )
+    with pytest.raises(ga.TokenUnavailable):
+        minimal.get_token(purpose=ga.PURPOSE_RULESET_VERIFY)

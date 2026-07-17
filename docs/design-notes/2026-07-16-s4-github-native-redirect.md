@@ -114,3 +114,28 @@ recording owner intent + the exact GitHub call each will make, the preference
 config, the timer scaffold, and the setup-verification logic — all tested
 against a faked GitHub API with no live network, and every response text honest
 about the Phase-2 dependency. Phase 2 wires real GitHub App auth + live calls.
+
+## Addendum (2026-07-16, Codex r13 host decision): manual default / autonomous opt-in
+
+The fail-closed gate must read `bypass_actors`, which GitHub returns ONLY to a
+ruleset-WRITE caller — but the App's steady-state scope is `Contents:write` +
+`Pull requests:write` + `Metadata:read`, which can't see it. That made `auto` /
+`not_before` always fail closed. Resolution (host-decided):
+
+- **MANUAL merge is the default and needs no elevated read.** The owner reviews
+  every PR and GitHub's native ruleset enforcement runs at merge — the owner is
+  in the loop each time, so the platform never pre-reads `bypass_actors` for
+  manual. Works with the minimal App scope.
+- **AUTONOMOUS merge (`auto`/`not_before`) is an explicit OPT-IN** requiring a
+  separate, narrowly-scoped **verifier identity** — the owner's ruleset-read
+  token (`github_auth` purpose `ruleset_verify`; `github_http.verifier_client`)
+  used ONLY for the gate read, never for merging. Without it, autonomous fails
+  closed (`autonomous_requires_verifier`); manual stays available. The App's
+  merge identity stays minimal — no `Administration` grant.
+
+Also landed this round: the run-lifecycle state machine is now real, not a
+status flip — the owner decision moves the suspension to a durable `decided`
+(resume-pending) outbox state, a runtime consumer EXECUTES the directive (submit
+the GitHub review + drive the merge path / re-enter draft_patch / terminal
+reject) and only then completes the run + acks the suspension; idempotent startup
+replay recovers a decision made just before a crash.

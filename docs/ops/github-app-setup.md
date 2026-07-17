@@ -2,9 +2,29 @@
 
 A **5-minute checklist** the host runs personally when we go live. It creates the
 GitHub App that AUTHORS patch PRs (so the owner can't self-approve), installs it
-on the target repo, and records where each credential goes. Least privilege:
-**`Contents: write` + `Pull requests: write` + `Metadata: read` only.** No
-webhook for the MVP (polling reconciliation is fine; webhooks are a later
+on the target repo, and records where each credential goes.
+
+## Two merge modes → two scope tiers (Codex r13 #3 / host decision 2026-07-16)
+
+**MANUAL merge is the DEFAULT and works with MINIMAL scope:**
+**`Contents: write` + `Pull requests: write` + `Metadata: read` only.** The
+owner reviews every PR themselves and GitHub's native ruleset enforcement runs
+AT MERGE — the owner is in the loop each time, so the platform does NOT pre-read
+`bypass_actors`, and the App needs no elevated access. This is the whole MVP.
+
+**AUTONOMOUS merge (`auto` / `not_before`) is an explicit OPT-IN with an extra
+disclosed grant.** It merges without a per-PR owner action, so before enabling
+it the platform must positively verify the repo is review-gated — which requires
+reading `bypass_actors`. GitHub returns `bypass_actors` **only to a caller with
+ruleset *write* access**, which the App's minimal merge identity deliberately
+lacks. So autonomous merge uses a **separate, narrowly-scoped VERIFIER identity
+— the owner's own token, which already has ruleset access — used ONLY for the
+gate read**, never for merging. If that verifier identity isn't wired, `auto` /
+`not_before` fail closed (`autonomous_requires_verifier`) and `manual` stays
+available. Do NOT grant the App `Administration` to make autonomous work — use
+the owner verifier token.
+
+No webhook for the MVP (polling reconciliation is fine; webhooks are a later
 upgrade).
 
 > Why an App (not a PAT): GitHub does not let a PR author approve their own PR.
@@ -81,11 +101,13 @@ repo: Settings → Rules → **New branch ruleset**, targeting the default branc
 - Add a repo-root `CODEOWNERS` (`.github/CODEOWNERS` or `CODEOWNERS`) with
   `* @<owner>` and protect it (it should itself require code-owner review).
 - **Bypass list**: leave it EMPTY. The App must NOT be a bypass actor — if it
-  is, `verify_review_gate_active` fails closed and autonomous merge refuses.
+  is, autonomous-merge verification fails closed and refuses.
 
-`verify_review_gate_active` re-checks all of this at merge time; `auto` /
-`not_before` refuse until it passes, and `manual` stays available with an
-explicit unprotected-repo warning.
+This ruleset is what makes **manual merge safe with minimal scope**: the owner's
+review + these rules enforced by GitHub at merge are the whole gate. Autonomous
+merge additionally *pre-verifies* this configuration via the verifier identity
+(step 6) before enabling auto-merge; `manual` stays available with an explicit
+unprotected-repo warning if the pre-verify can't run.
 
 ## 5. Owner user token (for review submission)
 
@@ -94,6 +116,16 @@ The owner's chat **approval** is submitted as a GitHub review using the owner's
 consumes it via `StaticTokenProvider(purpose=user_review)`). Obtain it through
 the App's user-authorization (OAuth) flow when the owner connects their account.
 Minimum scope: `Pull requests: write` on the target repo.
+
+## 6. (AUTONOMOUS ONLY) Owner ruleset-read verifier token
+
+**Skip this for the default (manual) mode.** For `auto` / `not_before`, wire a
+**ruleset-read verifier identity** — the owner's token (or a fine-grained PAT)
+that has **ruleset read/write on the repo** so GitHub returns `bypass_actors`.
+E4 consumes it via `github_http.verifier_client(token)` /
+`StaticTokenProvider(purpose=ruleset_verify)` and uses it ONLY for the gate
+read, never for merging. This is the disclosed extra grant that autonomous merge
+costs; the App's merge identity stays minimal.
 
 ## Credential placement summary
 
@@ -104,6 +136,7 @@ Minimum scope: `Pull requests: write` on the target repo.
 | Installation ID | no | vault metadata (mints 1h installation token) |
 | App integration/actor id | no | config for the `app_actor_id` bypass check |
 | Owner user access token | **YES** | vault (8h token + refresh); E4 consumes via `user_review` purpose |
+| Owner ruleset-read verifier token (AUTONOMOUS ONLY) | **YES** | vault; E4 consumes via `ruleset_verify` purpose — gate reads only, never merges |
 
 ## Verify it works (read-only)
 

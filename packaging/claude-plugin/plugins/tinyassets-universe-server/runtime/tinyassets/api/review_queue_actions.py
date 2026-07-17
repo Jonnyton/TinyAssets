@@ -147,20 +147,28 @@ def _not_projected(action: str, destination: str, pr_number: int) -> str:
     })
 
 
-def _continue_run(universe_dir, resume: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Drive the runtime resume: if the owner's decision resumed a suspended run,
-    move the canonical interrupted run to a terminal status (Codex r12 #1). The
-    decision + directive are already durably recorded by ``decide_and_resume``;
-    this is the runtime consumer that unpauses the actual run."""
-    if not resume or not resume.get("run_id"):
+def _continue_run(universe_dir, pending: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Drive the runtime continuation: if the owner's decision put a run in the
+    durable ``decided`` (resume-pending) state, EXECUTE its directive and move
+    the canonical interrupted run to a terminal status (Codex r13 #2). The
+    decision + directive are already durably recorded by ``decide_and_resume``,
+    so a failure here is safe — the suspension stays ``decided`` and startup
+    replay re-drives it (Codex r13 #1).
+
+    ``github_api`` is None on the MCP path today (the daemon injects a live E4
+    client where credentials exist); without it the recorded GitHub review/merge
+    calls are marked pending, never silently executed."""
+    if not pending or not pending.get("run_id"):
         return None
     try:
         from tinyassets.runs import continue_reviewed_run
 
         return continue_reviewed_run(
-            universe_dir, run_id=resume["run_id"], decision=resume.get("decision") or "",
+            universe_dir, run_id=pending["run_id"],
+            decision=pending.get("decision") or "",
+            directive=pending.get("directive"),
         )
-    except Exception:  # noqa: BLE001 — the decision is already durable; report only
+    except Exception:  # noqa: BLE001 — the decision is durable; replay recovers it
         logger.exception("continue_reviewed_run failed")
         return {"applied": False, "reason": "continue_error"}
 
@@ -250,12 +258,12 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_approve", destination, pr_number)
-    run_continued = _continue_run(_universe_dir_for(target_universe), result["resume"])
+    run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
     return json.dumps({
         "status": "approved",
         "projection": result["projection"],
         "github_call": call.to_dict(),
-        "resume": result["resume"],
+        "pending": result["pending"],
         "run_continued": run_continued,
         "note": _PHASE2_NOTE,
     })
@@ -292,33 +300,38 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             INTENT_RESHAPE,
             WORKFLOW_RESHAPED,
             decide_and_resume,
-            enqueue_reshape,
             get_projection,
         )
 
         universe_dir = _universe_dir_for(target_universe)
         # Read the resume identity to build route_back; decide_and_resume
-        # re-checks the head atomically under the write lock.
+        # inserts the outbox row + records the decision + moves the suspension to
+        # DECIDED in ONE head-bound transaction (Codex r13 #4 — no orphan outbox).
         existing = get_projection(
             universe_dir, destination=destination, pr_number=pr_number
         )
         if existing is None:
             return _not_projected("review_queue_reshape", destination, pr_number)
-        outbox = enqueue_reshape(
-            universe_dir,
-            destination=destination, pr_number=pr_number,
-            universe_id=existing.get("universe_id") or "",
-            branch_def_id=existing.get("branch_def_id") or "",
-            run_id=existing.get("run_id") or "",
-            owner_notes=notes, recorded_call=call.to_dict(),
-        )
+        route_back = {
+            "target_node": "draft_patch",
+            "universe_id": existing.get("universe_id") or "",
+            "branch_def_id": existing.get("branch_def_id") or "",
+            "run_id": existing.get("run_id") or "",
+            "owner_notes": notes,
+        }
         result = decide_and_resume(
             universe_dir,
             destination=destination, pr_number=pr_number,
             intent=INTENT_RESHAPE, workflow_outcome=WORKFLOW_RESHAPED,
             decided_by=_current_actor(), expected_head_sha=head,
-            directive={"action": "draft_patch", "route_back": outbox["route_back"]},
+            directive={"action": "draft_patch", "route_back": route_back},
             recorded_call=call.to_dict(), notes=notes,
+            reshape={
+                "universe_id": existing.get("universe_id") or "",
+                "branch_def_id": existing.get("branch_def_id") or "",
+                "run_id": existing.get("run_id") or "",
+                "owner_notes": notes, "recorded_call": call.to_dict(),
+            },
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
@@ -331,13 +344,13 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_reshape", destination, pr_number)
-    run_continued = _continue_run(universe_dir, result["resume"])
+    run_continued = _continue_run(universe_dir, result["pending"])
     return json.dumps({
         "status": "reshaped",
         "projection": result["projection"],
-        "route_back": outbox["route_back"],
+        "route_back": route_back,
         "github_call": call.to_dict(),
-        "resume": result["resume"],
+        "pending": result["pending"],
         "run_continued": run_continued,
         "note": (
             "Reshape recorded a REQUEST_CHANGES review call + a durable "
@@ -390,12 +403,12 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_reject", destination, pr_number)
-    run_continued = _continue_run(_universe_dir_for(target_universe), result["resume"])
+    run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
     return json.dumps({
         "status": "rejected",
         "projection": result["projection"],
         "github_call": call.to_dict(),
-        "resume": result["resume"],
+        "pending": result["pending"],
         "run_continued": run_continued,
         "note": (
             "Reject recorded a REQUEST_CHANGES review + a terminal workflow "

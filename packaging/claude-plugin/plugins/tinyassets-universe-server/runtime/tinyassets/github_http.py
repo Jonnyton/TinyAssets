@@ -39,6 +39,7 @@ from typing import Any, Callable
 
 from tinyassets.github_auth import (
     PURPOSE_INSTALLATION,
+    PURPOSE_RULESET_VERIFY,
     PURPOSE_USER_REVIEW,
     TokenProvider,
 )
@@ -150,6 +151,7 @@ class HttpGitHubApi:
         max_retries: int = _MAX_RETRIES,
         request_fn: Callable[..., tuple[int, Any]] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
+        read_purpose: str = PURPOSE_INSTALLATION,
     ) -> None:
         self._tp = token_provider
         self._api = api_base.rstrip("/")
@@ -158,6 +160,11 @@ class HttpGitHubApi:
         self._max_retries = max(1, int(max_retries))
         self._request = request_fn or _default_request
         self._sleep = sleep_fn or time.sleep
+        # Reads use PURPOSE_INSTALLATION by default. A dedicated VERIFIER client
+        # (Codex r13 #3) sets read_purpose=PURPOSE_RULESET_VERIFY so the
+        # ruleset/bypass reads use the owner's elevated ruleset-read token —
+        # only autonomous merge needs this; manual never constructs a verifier.
+        self._read_purpose = read_purpose
 
     # ── low-level with retry-on-5xx-only ─────────────────────────────────────
 
@@ -186,8 +193,11 @@ class HttpGitHubApi:
             detail=json.dumps(last_parsed)[:500] if last_parsed is not None else "",
         )
 
-    def _get(self, path: str, *, purpose: str = PURPOSE_INSTALLATION) -> tuple[int, Any]:
-        return self._call_http(method="GET", url=f"{self._api}{path}", purpose=purpose)
+    def _get(self, path: str, *, purpose: str | None = None) -> tuple[int, Any]:
+        return self._call_http(
+            method="GET", url=f"{self._api}{path}",
+            purpose=purpose or self._read_purpose,
+        )
 
     # ── read API (implements tinyassets.github_native.GitHubApi) ─────────────
 
@@ -415,8 +425,20 @@ def installation_token_exchange(
     return _exchange
 
 
+def verifier_client(ruleset_verify_token: str, **kwargs: Any) -> HttpGitHubApi:
+    """Build a VERIFIER GitHub client (Codex r13 #3) whose reads use the owner's
+    elevated ruleset-read token — the identity that can positively see
+    ``bypass_actors``. Used ONLY for autonomous-merge gate verification; manual
+    merge never needs one."""
+    from tinyassets.github_auth import StaticTokenProvider
+
+    tp = StaticTokenProvider(ruleset_verify_token, purposes={PURPOSE_RULESET_VERIFY})
+    return HttpGitHubApi(tp, read_purpose=PURPOSE_RULESET_VERIFY, **kwargs)
+
+
 __all__ = [
     "GitHubHttpError",
     "HttpGitHubApi",
     "installation_token_exchange",
+    "verifier_client",
 ]

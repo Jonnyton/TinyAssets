@@ -1569,6 +1569,16 @@ def run_github_pr_effector(
                     evidence["review_queue_run_suspended"] = (
                         suspension.get("status") == _rq.SUSPENSION_SUSPENDED
                     )
+                    # Codex r13 #5: cancel the canonical runs of any suspension
+                    # this one superseded, so an older run isn't stranded at
+                    # INTERRUPTED forever.
+                    stranded = suspension.get("superseded_run_ids") or []
+                    if stranded:
+                        from tinyassets.runs import supersede_stranded_review_runs
+
+                        evidence["review_queue_superseded_runs"] = (
+                            supersede_stranded_review_runs(universe_dir, stranded)
+                        )
         except Exception as exc:  # noqa: BLE001 — never fail a landed PR open
             evidence["review_queue_enqueue_error"] = str(exc)
 

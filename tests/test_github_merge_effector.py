@@ -38,6 +38,10 @@ def _run(tmp_path, **kw):
     # tests override (e.g. drop the api to assert fail-closed).
     kw.setdefault("app_actor_id", 4242)
     kw.setdefault("expected_owner", "owner")
+    # Autonomous merge reads the gate via a SEPARATE verifier identity (Codex r13
+    # #3). In tests the same fake serves both roles unless a test overrides.
+    if kw.get("github_api") is not None and "verifier_api" not in kw:
+        kw["verifier_api"] = kw["github_api"]
     return github_merge.run_github_merge_effector(
         node_id="merge", output_keys=["merge_packet"], run_state=_packet(),
         base_path=str(tmp_path), run_id="run-1",
@@ -70,6 +74,18 @@ def test_auto_without_api_fails_closed(tmp_path):
     _bind(tmp_path, "auto")
     out = _run(tmp_path)  # no api wired
     assert out["error_kind"] == "review_gate_unverifiable"
+    assert "manual" in out["error"]
+
+
+def test_auto_without_verifier_identity_refuses(tmp_path):
+    """Codex r13 #3: autonomous merge needs the OPT-IN ruleset-read verifier
+    identity; the App's minimal merge client alone can't see bypass_actors, so
+    the effector refuses (manual stays available)."""
+    _bind(tmp_path, "auto")
+    api = InMemoryGitHubApi()
+    # github_api present but NO verifier_api → refuse.
+    out = _run(tmp_path, github_api=api, verifier_api=None)
+    assert out["error_kind"] == "autonomous_requires_verifier"
     assert "manual" in out["error"]
 
 

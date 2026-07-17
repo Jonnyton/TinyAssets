@@ -35,7 +35,19 @@ PURPOSE_INSTALLATION = "installation"
 #: self-approve).
 PURPOSE_USER_REVIEW = "user_review"
 
-VALID_PURPOSES = frozenset({PURPOSE_INSTALLATION, PURPOSE_USER_REVIEW})
+#: The ELEVATED ruleset-read identity used ONLY to verify the review gate for
+#: AUTONOMOUS merge (Codex r13 #3). GitHub returns ``bypass_actors`` only to a
+#: caller with ruleset WRITE access, which the App's minimal merge identity
+#: deliberately lacks — so autonomous (auto/not_before) is an OPT-IN that
+#: discloses this separate, narrowly-scoped grant (the owner's token, which has
+#: ruleset access). MANUAL merge never needs it: the owner's own GitHub review +
+#: GitHub's native ruleset enforcement AT MERGE is the gate, with the owner in
+#: the loop each time.
+PURPOSE_RULESET_VERIFY = "ruleset_verify"
+
+VALID_PURPOSES = frozenset(
+    {PURPOSE_INSTALLATION, PURPOSE_USER_REVIEW, PURPOSE_RULESET_VERIFY}
+)
 
 #: Max App-JWT lifetime GitHub accepts is 10 minutes; we mint ≤9 min with a
 #: 60s backdated iat for clock skew.
@@ -150,10 +162,12 @@ class CompositeTokenProvider:
     review submission via ``user_review``. Missing route → fail closed."""
 
     def __init__(
-        self, *, installation: TokenProvider, user_review: TokenProvider | None = None
+        self, *, installation: TokenProvider, user_review: TokenProvider | None = None,
+        ruleset_verify: TokenProvider | None = None,
     ) -> None:
         self._installation = installation
         self._user_review = user_review
+        self._ruleset_verify = ruleset_verify
 
     def get_token(self, *, purpose: str) -> str:
         if purpose == PURPOSE_USER_REVIEW:
@@ -162,13 +176,21 @@ class CompositeTokenProvider:
                     "no owner user-token provider wired for review submission"
                 )
             return self._user_review.get_token(purpose=purpose)
+        if purpose == PURPOSE_RULESET_VERIFY:
+            if self._ruleset_verify is None:
+                raise TokenUnavailable(
+                    "no ruleset-read verifier identity wired; autonomous merge "
+                    "requires the opt-in ruleset-read grant (manual does not)"
+                )
+            return self._ruleset_verify.get_token(purpose=purpose)
         if purpose == PURPOSE_INSTALLATION:
             return self._installation.get_token(purpose=purpose)
         raise TokenUnavailable(f"unknown token purpose {purpose!r}")
 
     def __repr__(self) -> str:
-        return "CompositeTokenProvider(installation=…, user_review=%s)" % (
-            "set" if self._user_review is not None else "none"
+        return "CompositeTokenProvider(installation=…, user_review=%s, ruleset_verify=%s)" % (
+            "set" if self._user_review is not None else "none",
+            "set" if self._ruleset_verify is not None else "none",
         )
 
 
@@ -182,6 +204,7 @@ def _assert_no_token_in(text: str, *tokens: str) -> None:
 __all__: list[str] = [
     "PURPOSE_INSTALLATION",
     "PURPOSE_USER_REVIEW",
+    "PURPOSE_RULESET_VERIFY",
     "VALID_PURPOSES",
     "TokenUnavailable",
     "TokenProvider",

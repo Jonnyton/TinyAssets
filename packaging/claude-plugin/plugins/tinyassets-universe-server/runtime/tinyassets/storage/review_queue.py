@@ -226,6 +226,14 @@ CREATE INDEX IF NOT EXISTS idx_review_suspensions_pr
 """
 
 SUSPENSION_SUSPENDED = "suspended"
+#: Owner has DECIDED (decision + directive durably recorded) but the canonical
+#: run continuation has NOT yet been acknowledged. This is the durable
+#: resume-pending outbox marker (Codex r13 #1): a crash between the decision and
+#: the canonical-run transition leaves the suspension here, and idempotent
+#: startup replay (:func:`list_pending_continuations`) re-drives it — a decided
+#: run is never orphaned. Acked to ``resumed`` only AFTER the run transition
+#: succeeds.
+SUSPENSION_DECIDED = "decided"
 SUSPENSION_RESUMED = "resumed"
 #: A prior suspension displaced because a newer run suspended on the same PR, or
 #: a re-push created a new generation. Terminal — never reopened by a retry.
@@ -882,9 +890,20 @@ def suspend_run_for_review(
     ts = _now(now)
     dest = (destination or "").strip()
     head = (head_sha or "").strip()
+    superseded_run_ids: list[str] = []
     with _connect(universe_dir) as conn:
         with _write(conn):
             # Supersede any OTHER run still suspended on this PR (one active max).
+            # Collect their run_ids so the caller can cancel the stranded
+            # canonical runs too (Codex r13 #5) — not just the review-store row.
+            superseded_run_ids = [
+                r["run_id"] for r in conn.execute(
+                    "SELECT run_id FROM review_suspensions "
+                    "WHERE destination = ? AND pr_number = ? AND status = ? "
+                    "AND run_id != ?",
+                    (dest, pr_number, SUSPENSION_SUSPENDED, rid),
+                ).fetchall()
+            ]
             conn.execute(
                 "UPDATE review_suspensions SET status = ? "
                 "WHERE destination = ? AND pr_number = ? AND status = ? "
@@ -920,7 +939,9 @@ def suspend_run_for_review(
             row = conn.execute(
                 "SELECT * FROM review_suspensions WHERE run_id = ?", (rid,)
             ).fetchone()
-    return _suspension_to_dict(row)
+    result = _suspension_to_dict(row)
+    result["superseded_run_ids"] = superseded_run_ids
+    return result
 
 
 def get_suspension(universe_dir: str | Path, *, run_id: str) -> dict[str, Any] | None:
@@ -1009,20 +1030,27 @@ def decide_and_resume(
     directive: dict[str, Any],
     recorded_call: dict[str, Any] | None = None,
     notes: str = "",
+    reshape: dict[str, Any] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """ATOMICALLY record the owner's decision on the projection AND resolve the
-    suspended run for the PR — in ONE transaction (Codex r12 #3), so the terminal
-    projection outcome and the resumed directive can never disagree (the
-    approve-then-reject split-brain window is closed).
+    """ATOMICALLY record the owner's decision on the projection, optionally write
+    the reshape outbox row, AND move the suspended run to the durable
+    ``decided`` (resume-pending) state — ALL in ONE transaction.
+
+    - Codex r12 #3: the projection outcome + the recorded directive can never
+      disagree (single txn under the write lock).
+    - Codex r13 #4: the reshape outbox row is inserted in the SAME txn as the
+      head-bound decision, so a stale-head rejection can't leave an orphan
+      outbox row against an ``open`` projection.
+    - Codex r13 #1: the suspension goes to ``decided`` (NOT ``resumed``) — the
+      durable resume-pending marker. It is acked to ``resumed`` only after the
+      canonical run transition succeeds (:func:`ack_continuation`); a crash in
+      between is recovered by :func:`list_pending_continuations` replay.
 
     Head-bound: ``expected_head_sha`` must match the projection's current head or
     :class:`ReviewHeadChanged` is raised and NOTHING changes. Returns
-    ``{"projection": <dict|None>, "resume": <dict|None>}`` — ``projection`` is
-    None when the PR isn't projected; ``resume`` is None when no run is suspended
-    on it (fire-and-forget). Concurrency-safe: the whole decision runs under the
-    store's ``BEGIN IMMEDIATE`` write lock, so two decisions serialize and the
-    second sees the first's terminal projection.
+    ``{"projection": <dict|None>, "pending": <dict|None>, "reshape": <dict|None>}``
+    — ``pending`` is None when no run is suspended on the PR (fire-and-forget).
     """
     if workflow_outcome not in VALID_WORKFLOW_OUTCOMES:
         raise ValueError(f"invalid workflow_outcome {workflow_outcome!r}")
@@ -1030,6 +1058,7 @@ def decide_and_resume(
     ts = _now(now)
     dest = (destination or "").strip()
     want_head = (expected_head_sha or "").strip()
+    reshape_row: dict[str, Any] | None = None
     with _connect(universe_dir) as conn:
         with _write(conn):
             proj = conn.execute(
@@ -1037,7 +1066,7 @@ def decide_and_resume(
                 (dest, pr_number),
             ).fetchone()
             if proj is None:
-                return {"projection": None, "resume": None}
+                return {"projection": None, "pending": None, "reshape": None}
             current_head = (proj["head_sha"] or "").strip()
             if want_head != current_head:
                 raise ReviewHeadChanged(
@@ -1061,29 +1090,101 @@ def decide_and_resume(
                 "SELECT * FROM pr_projection WHERE destination = ? AND pr_number = ?",
                 (dest, pr_number),
             ).fetchone()
-            # Resolve the single active suspension on this PR IN THE SAME TXN.
+            # Reshape outbox row — SAME txn as the head-bound decision (r13 #4).
+            if reshape is not None:
+                outbox_id = f"rsh-{uuid.uuid4().hex[:16]}"
+                conn.execute(
+                    """
+                    INSERT INTO reshape_outbox (
+                        outbox_id, destination, pr_number, target_node,
+                        universe_id, branch_def_id, run_id, owner_notes,
+                        recorded_call, created_at
+                    ) VALUES (?, ?, ?, 'draft_patch', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        outbox_id, dest, pr_number,
+                        reshape.get("universe_id") or "",
+                        reshape.get("branch_def_id") or "",
+                        reshape.get("run_id") or "",
+                        reshape.get("owner_notes") or "",
+                        json.dumps(reshape.get("recorded_call"))
+                        if reshape.get("recorded_call") else "",
+                        ts,
+                    ),
+                )
+                reshape_row = {
+                    "outbox_id": outbox_id,
+                    "route_back": {
+                        "target_node": "draft_patch",
+                        "universe_id": reshape.get("universe_id") or "",
+                        "branch_def_id": reshape.get("branch_def_id") or "",
+                        "run_id": reshape.get("run_id") or "",
+                        "owner_notes": reshape.get("owner_notes") or "",
+                    },
+                }
+            # Move the single active suspension to DECIDED (resume-pending).
             susp = conn.execute(
                 "SELECT run_id FROM review_suspensions "
                 "WHERE destination = ? AND pr_number = ? AND status = ? "
                 "ORDER BY suspended_at DESC LIMIT 1",
                 (dest, pr_number, SUSPENSION_SUSPENDED),
             ).fetchone()
-            resume: dict[str, Any] | None = None
+            pending: dict[str, Any] | None = None
             if susp is not None:
                 conn.execute(
                     "UPDATE review_suspensions SET status = ?, resume_decision = ?, "
-                    "resume_directive = ?, resumed_at = ? WHERE run_id = ?",
+                    "resume_directive = ? WHERE run_id = ?",
                     (
-                        SUSPENSION_RESUMED, intent,
-                        json.dumps(directive) if directive else "", ts,
+                        SUSPENSION_DECIDED, intent,
+                        json.dumps(directive) if directive else "",
                         susp["run_id"],
                     ),
                 )
-                resume = {
-                    "run_id": susp["run_id"], "status": SUSPENSION_RESUMED,
+                pending = {
+                    "run_id": susp["run_id"], "status": SUSPENSION_DECIDED,
                     "decision": intent, "directive": directive,
                 }
-    return {"projection": _projection_to_dict(updated_proj), "resume": resume}
+    return {
+        "projection": _projection_to_dict(updated_proj),
+        "pending": pending, "reshape": reshape_row,
+    }
+
+
+def ack_continuation(
+    universe_dir: str | Path, *, run_id: str, now: float | None = None
+) -> dict[str, Any] | None:
+    """Acknowledge that the canonical run continuation for a DECIDED suspension
+    SUCCEEDED — transition it ``decided`` → ``resumed`` (Codex r13 #1). Only a
+    ``decided`` row transitions (idempotent); returns the row or None."""
+    rid = (run_id or "").strip()
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "UPDATE review_suspensions SET status = ?, resumed_at = ? "
+                "WHERE run_id = ? AND status = ?",
+                (SUSPENSION_RESUMED, ts, rid, SUSPENSION_DECIDED),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM review_suspensions WHERE run_id = ?", (rid,)
+            ).fetchone()
+    return _suspension_to_dict(row)
+
+
+def list_pending_continuations(universe_dir: str | Path) -> list[dict[str, Any]]:
+    """DECIDED-but-not-yet-acked suspensions — the durable resume-pending outbox
+    a daemon replays on startup (Codex r13 #1) so a decided-but-not-continued
+    run is re-driven, never orphaned."""
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT * FROM review_suspensions WHERE status = ? ORDER BY suspended_at",
+            (SUSPENSION_DECIDED,),
+        ).fetchall()
+    return [_suspension_to_dict(r) for r in rows]
 
 
 __all__ = [
@@ -1091,6 +1192,7 @@ __all__ = [
     "VERIFY_FAIL",
     "VERIFY_UNKNOWN",
     "SUSPENSION_SUSPENDED",
+    "SUSPENSION_DECIDED",
     "SUSPENSION_RESUMED",
     "SUSPENSION_SUPERSEDED",
     "WORKFLOW_OPEN",
@@ -1126,4 +1228,6 @@ __all__ = [
     "suspension_for_pr",
     "resume_review_run",
     "decide_and_resume",
+    "ack_continuation",
+    "list_pending_continuations",
 ]

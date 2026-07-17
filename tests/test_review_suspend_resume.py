@@ -80,11 +80,16 @@ def test_approve_resumes_run_to_merge(owner_env):
         expected_head_sha=_HEAD,
     )
     assert out["status"] == "approved"
-    assert out["resume"]["status"] == "resumed"
-    assert out["resume"]["decision"] == "approve"
-    assert out["resume"]["directive"]["action"] == "merge"
-    assert out["resume"]["directive"]["github_call"]["kind"] == "submit_review_approve"
-    # No longer awaiting review.
+    # The owner's decision moves the suspension to the durable DECIDED
+    # (resume-pending) state with the directive; the run continuation itself is
+    # proven in test_run_review_suspension_e2e (this storage-level test has no
+    # canonical run row, so run_continued is a no-op).
+    assert out["pending"]["status"] == "decided"
+    assert out["pending"]["decision"] == "approve"
+    assert out["pending"]["directive"]["action"] == "merge"
+    assert out["pending"]["directive"]["github_call"]["kind"] == "submit_review_approve"
+    assert rq.get_suspension(owner_env, run_id=_RUN)["status"] == "decided"
+    # No longer AWAITING review (it's decided, pending continuation).
     assert rq.list_suspended_runs(owner_env) == []
 
 
@@ -98,11 +103,13 @@ def test_reshape_resumes_run_to_draft_patch(owner_env):
         expected_head_sha=_HEAD, notes="cover the empty case",
     )
     assert out["status"] == "reshaped"
-    directive = out["resume"]["directive"]
+    directive = out["pending"]["directive"]
     assert directive["action"] == "draft_patch"
     assert directive["route_back"]["target_node"] == "draft_patch"
     assert directive["route_back"]["run_id"] == _RUN
     assert directive["route_back"]["owner_notes"] == "cover the empty case"
+    # The reshape outbox row was written atomically with the head-bound decision.
+    assert len(rq.list_pending_reshapes(owner_env)) == 1
 
 
 # ── resume to reject (terminal) ──────────────────────────────────────────────
@@ -115,8 +122,8 @@ def test_reject_resumes_run_to_terminal(owner_env):
         expected_head_sha=_HEAD,
     )
     assert out["status"] == "rejected"
-    assert out["resume"]["directive"]["action"] == "terminal_reject"
-    assert rq.get_suspension(owner_env, run_id=_RUN)["status"] == "resumed"
+    assert out["pending"]["directive"]["action"] == "terminal_reject"
+    assert rq.get_suspension(owner_env, run_id=_RUN)["status"] == "decided"
 
 
 # ── durability across a restart ──────────────────────────────────────────────
@@ -168,25 +175,22 @@ def test_decision_and_resume_are_atomic_no_split_brain(owner_env):
         expected_head_sha=_HEAD,
     )
     # A second decision (reject) on the same PR. The suspension is already
-    # resumed, so this reject updates the projection but finds no active
-    # suspension — the earlier resume directive (merge) stays coupled to the
-    # approve that produced it; it can't be left pointing at merge under a
-    # rejected projection because the resume was written WITH the approve.
+    # DECIDED (approve), so this reject updates the projection but finds no
+    # ACTIVE (suspended) suspension — the earlier directive (merge) stays coupled
+    # to the approve that produced it. There is no window where the SAME accepted
+    # decision has projection + directive disagree (they were written together).
     reject = _call(
         "review_queue_reject", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
     proj = rq.get_projection(owner_env, destination=_DEST, pr_number=_PR)
     assert proj["workflow_outcome"] == "rejected"
-    # The resumed suspension's directive matches the decision that resumed it
-    # (approve→merge), NOT a mismatch of rejected-projection + merge-resume for
-    # the SAME accepted decision.
     susp = rq.get_suspension(owner_env, run_id=_RUN)
-    assert susp["status"] == "resumed"
+    assert susp["status"] == "decided"
     assert susp["resume_decision"] == "approve"
     assert susp["resume_directive"]["action"] == "merge"
-    # The reject found no active suspension to resume (already consumed).
-    assert reject["resume"] is None
+    # The reject found no active suspension to consume (already decided).
+    assert reject["pending"] is None
 
 
 def test_retry_never_reopens_a_resumed_decision(owner_env):
@@ -240,9 +244,9 @@ def test_one_active_suspension_per_pr(owner_env):
     assert [s["run_id"] for s in waiting] == ["run-new"]
 
 
-def test_owner_verb_without_suspension_reports_no_resume(owner_env):
+def test_owner_verb_without_suspension_reports_no_pending(owner_env):
     """A projected PR with no suspended run (fire-and-forget) still decides — the
-    resume field is simply None."""
+    pending field is simply None."""
     rq.project_pr(
         owner_env, destination=_DEST, pr_number=_PR, head_sha=_HEAD,
         branch_def_id="bd", universe_id="u1",
@@ -252,4 +256,4 @@ def test_owner_verb_without_suspension_reports_no_resume(owner_env):
         expected_head_sha=_HEAD,
     )
     assert out["status"] == "approved"
-    assert out["resume"] is None
+    assert out["pending"] is None

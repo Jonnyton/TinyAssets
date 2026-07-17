@@ -104,6 +104,7 @@ def run_github_merge_effector(
     dry_run: bool = True,
     authoritative_branch_def_id: str = "",
     github_api: Any = None,
+    verifier_api: Any = None,
     app_actor_id: Any = None,
     expected_owner: str = "",
     now: float | None = None,
@@ -265,6 +266,24 @@ def run_github_merge_effector(
             ),
             **common,
         )
+    # Codex r13 #3: the gate must read bypass_actors, which GitHub returns ONLY
+    # to a ruleset-WRITE (elevated) caller. The App's minimal merge identity
+    # can't see it, so autonomous merge REQUIRES a separate opt-in VERIFIER
+    # identity (the owner's ruleset-read token). Manual never reaches here — it
+    # relies on the owner's own review + native ruleset enforcement at merge.
+    gate_api = verifier_api if verifier_api is not None else None
+    if gate_api is None:
+        return _error(
+            "autonomous_requires_verifier",
+            (
+                f"'{preference}' is an OPT-IN autonomous preference: it needs the "
+                "ruleset-read verifier identity (the owner's token) to positively "
+                "confirm the gate + bypass config, which the App's minimal merge "
+                "scope deliberately lacks. Grant the ruleset-read verifier or use "
+                "'manual' (owner-reviewed each time, minimal scope)."
+            ),
+            **common,
+        )
 
     # Read the PR's ACTUAL base branch + node id + head from GitHub — never trust
     # the packet's base_ref for the gate (Codex r11 #1).
@@ -280,7 +299,7 @@ def run_github_merge_effector(
     pr_node_id = (pull.get("node_id") or "").strip()
 
     gated, setup = github_native.verify_review_gate_active(
-        github_api, destination=destination, branch=real_base,
+        gate_api, destination=destination, branch=real_base,
         app_actor_id=app_actor_id, expected_owner=expected_owner,
     )
     if not gated:
