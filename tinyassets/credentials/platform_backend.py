@@ -37,7 +37,7 @@ from . import crypto, leases, record
 from .attestation import AttestationResult, attest_store
 from .crypto import Envelope, KeyProvider
 from .errors import CredentialUnavailable, VaultErrorCode
-from .leases import RefreshLease, RefreshLeaseManager
+from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import platform_vault_db_path
 from .secret_bytes import SecretBytes, SecretLease
 from .types import (
@@ -109,12 +109,19 @@ class PlatformVaultBackend:
     # connection + schema
     # ------------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._db_path), timeout=30.0, isolation_level=None)
+        try:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(self._db_path), timeout=30.0, isolation_level=None)
+        except OSError:
+            # Backend I/O unavailable — never leak the path in a traceback.
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")
-        conn.execute("PRAGMA synchronous = NORMAL")
+        # FULL (not NORMAL): a refresh claim / vault row must survive power loss.
+        # WAL + NORMAL can roll back the last commit on power loss, which would
+        # lose a claim + keep the old token = a second one-time redemption.
+        conn.execute("PRAGMA synchronous = FULL")
         return conn
 
     def initialize(self) -> None:
@@ -127,6 +134,27 @@ class PlatformVaultBackend:
         finally:
             conn.close()
         self._initialized = True
+
+    def durability_info(self) -> dict[str, str]:
+        """Report the durability posture (for ops verification / the DR gate).
+
+        ``synchronous`` MUST be ``FULL`` for power-loss durability of claims. The
+        production image MUST pin a SQLite build outside the documented WAL-reset
+        affected range — this reports the linked version so a deploy check can
+        assert it; the library cannot prove the image's build by itself.
+        """
+        self.initialize()
+        conn = self._connect()
+        try:
+            sync = int(conn.execute("PRAGMA synchronous").fetchone()[0])
+            journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            conn.close()
+        return {
+            "sqlite_version": sqlite3.sqlite_version,
+            "synchronous": {0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}.get(sync, str(sync)),
+            "journal_mode": str(journal),
+        }
 
     # ------------------------------------------------------------------
     # attestation gate
@@ -170,6 +198,7 @@ class PlatformVaultBackend:
         fence: RefreshLease | None = None,
     ) -> SecretDescriptor:
         self._require_platform_store(store)
+        leases.require_cas_pairing(replace, expected_version)
         self._ensure_attested()
         return self._put(
             store, scope, kind, value, replace, expected_version, expires_at, fence
@@ -219,7 +248,11 @@ class PlatformVaultBackend:
         plaintext columns; the version comes from the plaintext hint but a
         tampered version makes the AAD wrong and the decrypt fail closed.
         """
-        version = int(row["version"])
+        try:
+            version = int(row["version"])
+        except (TypeError, ValueError):
+            # Tampered non-integer version hint → typed error, never raw ValueError.
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from None
         aad = _aad(scope, ref, kind.value, version, store)
         payload = crypto.open_envelope(self._keys, self._envelope_from_row(row), aad, ref)
         record_json, value = crypto.unframe_record(payload)
@@ -406,27 +439,67 @@ class PlatformVaultBackend:
 
         The lease reduces thundering-herd contention, but it is NOT the
         exactly-once guarantee — a TTL overrun can still overlap holders. The
-        real gate is :meth:`claim_refresh`, which must be called (and must return
-        True) BEFORE the provider redemption. Recommended flow::
+        real gate is :meth:`begin_refresh`, which atomically authenticates the
+        current record and claims its redemption right. Recommended flow::
 
             with be.refresh_lease(ref, holder):
                 current = be.get(binding, scope).version
-                if current == stale and be.claim_refresh(ref, current, holder):
-                    new = provider_refresh(...)          # the ONE redemption
-                    be.put(replace=ref, expected_version=current, value=new)
+                if current == stale:
+                    ticket = be.begin_refresh(binding, scope, holder, at_version=current)
+                    if ticket is not None:
+                        new = provider_refresh(...)      # the ONE redemption
+                        be.put(replace=ref, expected_version=ticket.version, value=new)
         """
         self.initialize()
         return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
 
-    def claim_refresh(self, ref: str, version: int, holder: str) -> bool:
-        """Atomically claim the exclusive right to redeem ``(ref, version)``.
+    def begin_refresh(
+        self, binding: SecretBinding, expected: SecretScope, holder: str, at_version: int
+    ) -> RefreshTicket | None:
+        """Atomic consume-before-mint gate for a refresh (the ONE broker refresh op).
 
-        Call BEFORE the provider refresh exchange: only if this returns True may
-        the caller contact the provider (consume-before-mint). False → the
-        version is already claimed; do NOT call the provider.
+        In a single transaction: authenticate the CURRENT record, enforce it is
+        active + unexpired, confirm its version equals ``at_version`` (the version
+        the caller observed), then claim the exclusive redemption right for THAT
+        version. Returns a :class:`RefreshTicket` only to the sole winner; ``None``
+        if the version already moved or is already claimed.
+
+        Because the claimed version is the authenticated current version, a claim
+        for a non-existent version (``at_version=99``) inserts NOTHING and can
+        never permanently block it. Complete with
+        ``put(replace=binding.ref, expected_version=ticket.version, ...)``.
         """
+        self._require_platform_store(binding.store)
+        self._ensure_attested()
+        if binding.scope != expected:
+            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        if not is_secret_ref(binding.ref):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
         self.initialize()
-        return self._leases.claim_refresh(ref, version, holder)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM vault_secrets WHERE ref = ?", (binding.ref,)
+            ).fetchone()
+            if row is None:
+                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            rec, _value = self._decrypt_row(
+                row, ref=binding.ref, kind=binding.kind, scope=expected, store=binding.store
+            )
+            record.check_lifecycle(rec, binding.ref)
+            version = int(rec["version"])
+            won = version == int(at_version) and leases.claim_refresh(
+                conn, binding.ref, version, holder, time.time()
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return RefreshTicket(ref=binding.ref, version=version, holder=holder) if won else None
 
     # ------------------------------------------------------------------
     # KEK rotation (verified)

@@ -45,7 +45,7 @@ from typing import Any
 from . import crypto, leases, record
 from .crypto import identity_aad
 from .errors import CredentialUnavailable, VaultErrorCode
-from .leases import RefreshLease, RefreshLeaseManager
+from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import local_store_dir
 from .secret_bytes import SecretBytes, SecretLease
 from .types import (
@@ -144,6 +144,89 @@ else:  # non-Windows: keep imports working, fail loud on use
         raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE)
 
 
+_SYSTEM_SID_STR = "S-1-5-18"
+
+
+def _current_user_sid() -> Any:
+    import win32api
+    import win32con
+    import win32security
+
+    token = win32security.OpenProcessToken(
+        win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+    )
+    return win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+
+
+def set_restrictive_dacl(path: Path) -> None:
+    """Set the file's DACL to current-user + SYSTEM ONLY, inheritance disabled.
+
+    Best-effort on failure (attestation independently verifies the result). The
+    owner of a file in their own profile may set its DACL without elevation.
+    No-op off Windows.
+    """
+    if not IS_WINDOWS:
+        return
+    try:
+        import ntsecuritycon
+        import win32security
+
+        user_sid = _current_user_sid()
+        system_sid = win32security.ConvertStringSidToSid(_SYSTEM_SID_STR)
+        dacl = win32security.ACL()
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, user_sid
+        )
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, system_sid
+        )
+        # PROTECTED_DACL removes inherited ACEs so ONLY these two remain.
+        win32security.SetNamedSecurityInfo(
+            str(path),
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION
+            | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+            None, None, dacl, None,
+        )
+    except Exception:  # noqa: BLE001 — best effort; verifier is the gate
+        pass
+
+
+def dacl_is_current_user_and_system_only(path: Path) -> bool:
+    """True iff the file's DACL grants ONLY the current user + SYSTEM (Windows).
+
+    This is the HONEST local-custody isolation proof — DPAPI proves current-user
+    encryption, this proves the file is not readable by Everyone/Users/Admins.
+    Returns False off Windows or on any inspection failure (fail closed).
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        import win32security
+
+        sd = win32security.GetFileSecurity(
+            str(path), win32security.DACL_SECURITY_INFORMATION
+        )
+        dacl = sd.GetSecurityDescriptorDacl()
+        if dacl is None:  # a NULL DACL grants everyone — never acceptable
+            return False
+        allowed = {
+            win32security.ConvertSidToStringSid(_current_user_sid()),
+            _SYSTEM_SID_STR,
+        }
+        count = dacl.GetAceCount()
+        if count == 0:
+            return False
+        for i in range(count):
+            ace = dacl.GetAce(i)
+            sid = ace[-1]
+            if win32security.ConvertSidToStringSid(sid) not in allowed:
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _ref_filename(ref: str) -> str:
     if not is_secret_ref(ref):
         raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
@@ -193,11 +276,16 @@ class DpapiVaultBackend:
     # control DB (mutation lock + fenced leases)
     # ------------------------------------------------------------------
     def _control_connect(self) -> sqlite3.Connection:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._control_db), timeout=30.0, isolation_level=None)
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(self._control_db), timeout=30.0, isolation_level=None)
+        except OSError:
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")
+        # FULL: refresh claims must survive power loss (see platform backend note).
+        conn.execute("PRAGMA synchronous = FULL")
         return conn
 
     def _require_available(self) -> None:
@@ -252,6 +340,7 @@ class DpapiVaultBackend:
     ) -> SecretDescriptor:
         self._require_available()
         self._require_local_store(store)
+        leases.require_cas_pairing(replace, expected_version)
         self._ensure_attested()
         return self._put(store, scope, kind, value, replace, expected_version, expires_at, fence)
 
@@ -281,18 +370,25 @@ class DpapiVaultBackend:
             return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
-        except (OSError, json.JSONDecodeError) as exc:
-            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from exc
+        except json.JSONDecodeError:
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from None
+        except OSError:
+            # I/O fault — never leak the backend path via a chained cause.
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
 
     def _write_sidecar(self, ref: str, record_dict: dict[str, Any]) -> None:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        _chmod_best_effort(self._dir, 0o700)
         path = self._blob_path(ref)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(record_dict, sort_keys=True), encoding="utf-8")
-        _chmod_best_effort(tmp, 0o600)
-        os.replace(tmp, path)  # atomic same-directory replace
-        _chmod_best_effort(path, 0o600)
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            _chmod_best_effort(self._dir, 0o700)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(record_dict, sort_keys=True), encoding="utf-8")
+            _chmod_best_effort(tmp, 0o600)
+            os.replace(tmp, path)  # atomic same-directory replace
+            _chmod_best_effort(path, 0o600)
+        except OSError:
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
+        set_restrictive_dacl(path)  # narrow to current-user + SYSTEM (Windows)
 
     def _seal_sidecar(
         self,
@@ -461,9 +557,37 @@ class DpapiVaultBackend:
     ) -> Iterator[RefreshLease]:
         return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
 
-    def claim_refresh(self, ref: str, version: int, holder: str) -> bool:
-        """Atomic consume-before-mint claim of the redemption right for a version."""
-        return self._leases.claim_refresh(ref, version, holder)
+    def begin_refresh(
+        self, binding: SecretBinding, expected: SecretScope, holder: str, at_version: int
+    ) -> RefreshTicket | None:
+        """Atomic consume-before-mint gate for a local refresh (see platform docs).
+
+        Under the exclusive mutation lock: authenticate the current record,
+        enforce active/unexpired, confirm the version equals ``at_version``, then
+        claim its redemption right. Winner gets a :class:`RefreshTicket`; ``None``
+        otherwise. A non-existent version claims nothing (no permanent block).
+        """
+        self._require_available()
+        self._require_local_store(binding.store)
+        self._ensure_attested()
+        if binding.scope != expected:
+            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        if not is_secret_ref(binding.ref):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+        with self._leases.mutation_lock() as conn:
+            sidecar = self._read_sidecar(binding.ref)
+            if sidecar is None:
+                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            rec, _v = self._decrypt_sidecar(
+                sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
+                store=binding.store,
+            )
+            record.check_lifecycle(rec, binding.ref)
+            version = int(rec["version"])
+            won = version == int(at_version) and leases.claim_refresh(
+                conn, binding.ref, version, holder, time.time()
+            )
+        return RefreshTicket(ref=binding.ref, version=version, holder=holder) if won else None
 
     # ------------------------------------------------------------------
     # Attestation-support hooks
@@ -484,17 +608,20 @@ class DpapiVaultBackend:
     def inspect_persisted(self, ref: str, probe_value: bytes) -> dict[str, object]:
         """Evidence for attestation.
 
-        Proves **current-user DPAPI encryption + integrity** (the blob unprotects
-        under the current user and carries the probe value; no plaintext on disk).
-        It does NOT claim the required narrow DACL (daemon SID + SYSTEM only) —
-        that gate can only be proven by deployment integration (installer sets the
-        ACL; a Windows-security-API verifier lands with it). ``dacl_gate`` is a
-        deferred marker, never treated as proof.
+        Proves BOTH (a) current-user DPAPI encryption + integrity (the blob
+        unprotects under the current user, carries the probe value, no plaintext
+        on disk) AND (b) the file DACL is narrowed to current-user + SYSTEM only
+        (verified via the Windows security API, not an icacls heuristic). Both are
+        required for a passing local attestation.
         """
         sidecar = self._read_sidecar(ref)
         if sidecar is None:
             return {"present": False}
-        raw_file = self._blob_path(ref).read_bytes()
+        blob_path = self._blob_path(ref)
+        try:
+            raw_file = blob_path.read_bytes()
+        except OSError:
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
         hint = sidecar.get("hint") or {}
         current_user_bound = False
         try:
@@ -517,6 +644,6 @@ class DpapiVaultBackend:
             "has_blob": len(sidecar.get("dpapi_blob_b64", "")) > 0,
             "protection_current_user": sidecar.get("protection") == _PROTECTION,
             "current_user_bound": current_user_bound,
-            "dacl_gate": "deferred-to-deployment",
+            "dacl_current_user_only": dacl_is_current_user_and_system_only(blob_path),
             "plaintext_absent": probe_value not in raw_file,
         }

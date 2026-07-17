@@ -39,7 +39,7 @@ from .crypto import (
     identity_aad,
 )
 from .errors import CredentialUnavailable, VaultErrorCode
-from .leases import RefreshLease
+from .leases import RefreshLease, RefreshTicket
 from .local_backend import DpapiVaultBackend
 from .platform_backend import PlatformVaultBackend
 from .secret_bytes import SecretBytes, SecretLease
@@ -88,6 +88,7 @@ __all__ = [
     "PlatformVaultBackend",
     "DpapiVaultBackend",
     "RefreshLease",
+    "RefreshTicket",
     # crypto
     "KeyProvider",
     "InMemoryKeyProvider",

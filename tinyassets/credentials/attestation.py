@@ -86,6 +86,9 @@ def _evidence_ok(custody: Custody, evidence: dict[str, Any]) -> tuple[bool, dict
         checks["protection_current_user"] = bool(evidence.get("protection_current_user"))
         checks["current_user_bound"] = bool(evidence.get("current_user_bound"))
         checks["has_blob"] = bool(evidence.get("has_blob"))
+        # HONEST custody proof: the file DACL must be current-user + SYSTEM only.
+        # DPAPI proves encryption; this proves ACL isolation. Required, not deferred.
+        checks["dacl_current_user_only"] = bool(evidence.get("dacl_current_user_only"))
     return all(checks.values()), checks
 
 
