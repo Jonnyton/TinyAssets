@@ -29,7 +29,14 @@ runs post-graph, but the inline owner_gate currently decides BEFORE that write),
 the inline ``owner_gate -> merge`` edge into that pause/resume flow. Do NOT
 restructure the graph or build the resume engine here — that is Phase 2. On S1
 the repo-touching nodes (investigate/verify/draft_patch) are sandbox-required
-and FAIL CLOSED until the S3 sandbox runner ships in the same bundled deploy.
+and honestly FAIL CLOSED: the compiled node REFUSES to execute at invoke time
+(before any provider dispatch) while a real sandbox RUNNER is unavailable
+(``graph_compiler._sandbox_enforcement_available`` feature-detects
+``tinyassets.sandbox_policy.coding_nodes_runnable`` — False on S1 AND on S1+S3,
+because S3 is ENFORCEMENT-only; the per-job runner that actually confines +
+executes such a node is a separate host-approved Phase-2 slice). NOT bypassable
+by an env var (Codex r14 #1). So S1 alone SEEDS the reference as a
+discoverable/remixable TEMPLATE, but it cannot RUN unconfined (Codex r13 #1).
 """
 
 from __future__ import annotations
@@ -61,13 +68,23 @@ REFERENCE_TAG = "reference-design"
 # invisible to the seeder.
 RESERVED_SEED_AUTHOR = "reference-designs"
 
-# Required-artifact manifest (Codex r10 #4): the design_ids that MUST ship. An
-# empty designs dir, a missing required artifact, or a package that dropped one
-# would otherwise make ``load_design_artifacts`` return [] and the seed report
-# all-empty (seeded/present/failed) — a BROKEN package looking healthy. The seed
-# fails loud (``failed:[<missing-required-artifact:...>]``, reflected in
-# ``last_seed_result()``) when any required id is absent.
-REQUIRED_DESIGN_IDS = frozenset({"patch_loop_reference"})
+# Packaged-design manifest (Codex r10 #4): the design_ids the package MUST ship
+# and that SHOULD seed healthy. An empty designs dir / a dropped artifact would
+# otherwise make ``load_design_artifacts`` return [] and the seed report all-empty
+# — a BROKEN package looking healthy. This is a PACKAGING + HEALTH invariant: the
+# seed marks a missing packaged design loudly
+# (``failed:[<missing-packaged-design:...>]``, reflected in ``last_seed_result()``
+# + get_status), and CI validates it. It is NOT a boot-readiness gate.
+PACKAGED_DESIGN_IDS = frozenset({"patch_loop_reference"})
+
+# Boot-REQUIRED fixtures (PLAN "required seeded fixtures refuse startup"). The
+# reference patch loop is a COMMONS FEATURE, not boot-critical — the Forever Rule
+# (24/7 uptime) + Hard Rule 4 mean a feature-seed failure must NOT refuse startup
+# (Codex r13 #3, reclassified per r15 #4). So this set is EMPTY: nothing here
+# fails startup readiness. Feature-seed health is reported LOUDLY (get_status +
+# last_seed_result) and gated in CI, without process death. PLAN's refuse-startup
+# rule still stands for any genuinely boot-critical fixture added here later.
+REQUIRED_DESIGN_IDS: frozenset[str] = frozenset()
 
 _REQUIRED_ENVELOPE_KEYS = ("design_format", "design_id", "design_version", "spec")
 # Top-level envelope keys the artifact loader accepts. Anything else is a typo
@@ -436,16 +453,17 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
         results["failed"].append("<load-design-artifacts-failed>")
         return results
 
-    # Required-artifact manifest (#4): a missing required design (or an empty
-    # package dir) must FAIL LOUD, not look healthy. Record each absent required
-    # id in ``failed`` so ``last_seed_result()`` / get_status surface it.
+    # Packaged-design manifest (#4, reclassified r15 #4): a PACKAGED design that's
+    # missing (or an empty package dir) must FAIL LOUD, not look healthy — record
+    # each absent packaged id in ``failed`` so ``last_seed_result()`` / get_status
+    # surface it. This is a packaging/health signal, NOT a boot-readiness gate.
     present_ids = {a.get("design_id") for a in artifacts}
-    for required_id in sorted(REQUIRED_DESIGN_IDS - present_ids):
+    for packaged_id in sorted(PACKAGED_DESIGN_IDS - present_ids):
         logger.error(
-            "reference design seeding: REQUIRED artifact %r is missing from the "
-            "package (present=%s)", required_id, sorted(present_ids),
+            "reference design seeding: PACKAGED artifact %r is missing from the "
+            "package (present=%s)", packaged_id, sorted(present_ids),
         )
-        results["failed"].append(f"<missing-required-artifact:{required_id}>")
+        results["failed"].append(f"<missing-packaged-design:{packaged_id}>")
 
     for artifact in artifacts:
         tag = design_tag(artifact["design_id"], artifact["design_version"])
@@ -548,22 +566,83 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
     return results
 
 
-def missing_required_designs(results: dict[str, list[str]]) -> list[str]:
-    """Return the REQUIRED design_ids that did NOT seed healthy in ``results``.
+def unhealthy_packaged_designs(results: dict[str, list[str]]) -> list[str]:
+    """Return the PACKAGED design_ids that did NOT seed healthy in ``results``.
 
-    PLAN (Providers module principle, PLAN.md): required on-disk seeded fixtures
-    must be probed at startup and fail loud if absent — "refuse to start", not
-    log-and-continue. A required design is healthy only if its tag landed in
-    ``seeded`` or ``present``; a total artifact-load failure fails every required
-    id. OPTIONAL designs are excluded here (they stay best-effort). Callers use
-    this to fail startup READINESS (Codex r12 #3).
+    A packaged design is healthy only if its tag landed in ``seeded`` or
+    ``present``; a total artifact-load failure fails every packaged id. This is a
+    packaging/health signal for loud reporting (get_status + logs), NOT a
+    startup-readiness gate — the reference seed is a commons FEATURE, so a failure
+    is reported, never fatal (Codex r15 #4 reclassification; Forever Rule).
     """
     if "<load-design-artifacts-failed>" in results.get("failed", []):
-        return sorted(REQUIRED_DESIGN_IDS)
+        return sorted(PACKAGED_DESIGN_IDS)
     healthy_tags = set(results.get("seeded", [])) | set(results.get("present", []))
     unhealthy: list[str] = []
-    for design_id in sorted(REQUIRED_DESIGN_IDS):
+    for design_id in sorted(PACKAGED_DESIGN_IDS):
         prefix = f"design:{design_id}@v"
         if not any(t.startswith(prefix) for t in healthy_tags):
             unhealthy.append(design_id)
     return unhealthy
+
+
+def reference_designs_live_health(base_path: str | Path) -> dict[str, Any]:
+    """Recompute CURRENT reference-design health at READ time — NOT boot-cached
+    (Codex r14 #3). ``last_seed_result()`` is boot history; a row deleted after a
+    healthy seed would still report healthy from that cache. This checks the LIVE
+    registry: for each packaged design, stage the artifact IN MEMORY (no registry
+    writes), derive the authoritative fingerprint + version hash, and verify the
+    reserved fixed-id row exists with the reserved author AND has an ACTIVE
+    version matching the authoritative hash (``_reference_row_is_healthy``).
+
+    Returns ``{"healthy": bool, "unhealthy": [ids], "per_design": {id: bool}}``
+    over the PACKAGED designs (the reference is OPTIONAL for startup but its
+    health is still reported loudly — r15 #4). Best-effort — never raises; a
+    compute failure marks a design unhealthy rather than lying healthy.
+    """
+    from tinyassets.branch_versions import _canonical_snapshot, compute_content_hash
+
+    per_design: dict[str, bool] = {}
+    try:
+        artifacts = load_design_artifacts()
+    except Exception:  # noqa: BLE001 — a broken package is unhealthy, not fatal
+        return {
+            "healthy": False,
+            "unhealthy": sorted(PACKAGED_DESIGN_IDS),
+            "per_design": {},
+        }
+
+    for artifact in artifacts:
+        design_id = artifact.get("design_id", "")
+        try:
+            from tinyassets.api.branches import _staged_branch_from_spec
+
+            fixed_id = _reference_branch_id(design_id, artifact["design_version"])
+            staged, errors = _staged_branch_from_spec(dict(artifact["spec"]))
+            if errors:
+                per_design[design_id] = False
+                continue
+            staged.branch_def_id = fixed_id
+            staged_dict = staged.to_dict()
+            expected_fp = _content_fingerprint(staged_dict)
+            auth_hash = compute_content_hash(_canonical_snapshot(staged_dict))
+            row = _get_branch_or_none(base_path, fixed_id)
+            per_design[design_id] = bool(
+                row is not None
+                and (row.get("author") or "") == RESERVED_SEED_AUTHOR
+                and _reference_row_is_healthy(
+                    base_path, expected_fp, fixed_id, auth_hash,
+                )
+            )
+        except Exception:  # noqa: BLE001 — a compute failure is unhealthy
+            logger.exception("live reference-design health check failed for %s", design_id)
+            per_design[design_id] = False
+
+    unhealthy = sorted(
+        d for d in PACKAGED_DESIGN_IDS if not per_design.get(d, False)
+    )
+    return {
+        "healthy": not unhealthy,
+        "unhealthy": unhealthy,
+        "per_design": per_design,
+    }

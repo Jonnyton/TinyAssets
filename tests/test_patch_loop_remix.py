@@ -927,21 +927,17 @@ def test_unbound_design_run_refused_for_everyone(data_dir, monkeypatch):
         assert "inert" in refused["error"].lower()
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "S1 is adding is_binding markers to the reference's binding slots "
-        "(target_repo / merge_policy). Until S1 marks them and S2 re-syncs the "
-        "reference JSON verbatim, the shipped artifact declares no is_binding "
-        "slot so the guard cannot fire — S2 does NOT mark the fields itself "
-        "(Codex r13)."
-    ),
-)
 def test_seeded_reference_binding_slots_are_inert(data_dir, monkeypatch):
     # Codex r13: the inert guard was only exercised against SYNTHETIC is_binding
-    # branches; the REAL seeded reference bypassed it because the shipped JSON
-    # does not (yet) mark target_repo / merge_policy is_binding. Pin the actual
-    # artifact so the guard is proven against what ships — not only a stand-in.
+    # branches; the REAL seeded reference must be pinned too, so the guard is
+    # proven against what ships — not only a stand-in. S1 (head 8c34d27a) marks
+    # target_repo + merge_policy `is_binding` and the marker round-trips through
+    # the seed path (_apply_state_field_spec preserves it), so this now asserts
+    # the shipped artifact is detected as binding-bearing AND refused at the run
+    # guard. Keyed on the is_binding marker (via branch_has_bound_fields), NOT a
+    # literal credential_ref name — S1 deliberately carries NO credential handle
+    # in state (credentials resolve BY DESTINATION in the vault, never a handle
+    # in a shared artifact; r10 F4a, host-confirmed).
     from tinyassets.api.runs import _action_run_branch
     from tinyassets.branch_versions import branch_has_bound_fields
 
@@ -949,12 +945,14 @@ def test_seeded_reference_binding_slots_are_inert(data_dir, monkeypatch):
     bid = _reference_bid(data_dir)
     ref = _load(data_dir, bid)
 
-    # The reference is a REPO-BLIND design: it must declare binding slots, or it
-    # would run unbound against an arbitrary repo. (Fails until S1 marks them.)
+    # The reference is a REPO-BLIND design: it declares binding slots (target_repo
+    # / merge_policy), or it would run unbound against an arbitrary repo.
     assert branch_has_bound_fields(ref.state_schema), (
         "seeded reference declares no is_binding slots — a repo-blind design "
         "would run unbound; S1 must mark target_repo / merge_policy is_binding"
     )
+    bound = {f["name"] for f in ref.state_schema if f.get("is_binding")}
+    assert {"target_repo", "merge_policy"} <= bound, bound
 
     _actor(monkeypatch, "alice")
     refused = json.loads(_action_run_branch({
