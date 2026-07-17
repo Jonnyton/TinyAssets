@@ -422,3 +422,45 @@ def test_node_from_yaml_passes_proper_lists():
     node = node_from_yaml_payload(payload)
     assert node.input_keys == ["a", "b"]
     assert node.output_keys == ["c"]
+
+
+def test_every_node_field_is_classified():
+    # Codex r21 #4: serialization uses an EXHAUSTIVE portable/trust-local ALLOWLIST
+    # (fails closed), NOT a trust-field blacklist (fails open — a future field
+    # would become portable by default). Every NodeDefinition field must be in
+    # exactly ONE set; a new unclassified field trips this test so it can't
+    # silently become portable.
+    import dataclasses
+
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.catalog.serializer import (
+        _NODE_PORTABLE_FIELDS,
+        _NODE_TRUST_LOCAL_FIELDS,
+    )
+
+    all_fields = {f.name for f in dataclasses.fields(NodeDefinition)}
+    classified = _NODE_PORTABLE_FIELDS | _NODE_TRUST_LOCAL_FIELDS
+    assert _NODE_PORTABLE_FIELDS.isdisjoint(_NODE_TRUST_LOCAL_FIELDS)
+    unclassified = all_fields - classified
+    assert not unclassified, (
+        f"NodeDefinition field(s) {sorted(unclassified)} are UNCLASSIFIED — add "
+        "each to _NODE_PORTABLE_FIELDS or _NODE_TRUST_LOCAL_FIELDS in "
+        "tinyassets/catalog/serializer.py. A new field must be a DELIBERATE "
+        "choice, never portable-by-default."
+    )
+    assert not (classified - all_fields), "classified a non-existent field"
+
+
+def test_node_from_yaml_rejects_unknown_field():
+    # Codex r21 #4: an UNKNOWN artifact field must be REJECTED, not silently
+    # ignored — silent-ignore is how a future credential/trust field would slip in.
+    from tinyassets.catalog.serializer import NodeArtifactFieldError
+
+    payload = {
+        "id": "x", "display_name": "X",
+        "prompt_template": "hi",
+        "secret_credential": "sk-forged",   # unrecognized field
+    }
+    with pytest.raises(NodeArtifactFieldError) as exc_info:
+        node_from_yaml_payload(payload)
+    assert "secret_credential" in str(exc_info.value)

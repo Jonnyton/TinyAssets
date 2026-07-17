@@ -291,6 +291,79 @@ def test_file_bug_transient_registry_is_retryable_not_terminal(tmp_path, monkeyp
     assert inv["status"] not in ("failed", "skipped"), inv
 
 
+def test_retry_consumer_reattempts_pending_trigger_when_registry_recovers(
+    tmp_path, monkeypatch,
+):
+    # Codex r21 #1c: a pending/unavailable trigger must ACTUALLY get retried, not
+    # sit forever (re-filing dedups). The retry consumer re-resolves the handler
+    # and, once the registry has recovered, enqueues the investigation + marks the
+    # receipt queued.
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)   # DATA_DIR=tmp_path + registers
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+
+    # A trigger LEFT PENDING (its handler was transiently unavailable at file time).
+    _tr.create_pending(
+        request_id="BUG-RETRY", request_kind="bug",
+        request_page="pages/bugs/bug-retry.md",
+        branch_def_id="branch-canonical-abc", universe_id=tmp_path.name,
+    )
+    assert any(
+        r.request_id == "BUG-RETRY" for r in _tr.pending_attempts(universe_id=None)
+    )
+    assert read_queue(tmp_path) == []
+
+    # Registry is healthy now -> the retry consumer drains it.
+    summary = retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+    assert "BUG-RETRY" in summary["queued"], summary
+    q = read_queue(tmp_path)
+    assert any(
+        t.request_type == "bug_investigation"
+        and t.branch_def_id == "branch-canonical-abc"
+        for t in q
+    ), q
+    # The receipt is no longer pending — it queued (not stranded).
+    assert not any(
+        r.request_id == "BUG-RETRY" for r in _tr.pending_attempts(universe_id=None)
+    )
+
+
+def test_retry_consumer_fails_pending_trigger_when_handler_definitively_gone(
+    tmp_path, monkeypatch,
+):
+    # Complement (Codex r21 #1b/#1c): if the handler is DEFINITIVELY missing
+    # (KeyError — registry initialized, id absent) at retry, the pending trigger
+    # becomes terminal FAILED, not retried forever.
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.daemon_server import delete_branch_definition
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    # Registry is initialized but the handler is GONE -> KeyError -> definitive miss.
+    delete_branch_definition(tmp_path, branch_def_id="branch-canonical-abc")
+
+    _tr.create_pending(
+        request_id="BUG-DEAD", request_kind="bug",
+        request_page="pages/bugs/bug-dead.md",
+        branch_def_id="branch-canonical-abc", universe_id=tmp_path.name,
+    )
+    summary = retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+    assert "BUG-DEAD" in summary["failed"], summary
+    assert not any(
+        r.request_id == "BUG-DEAD" for r in _tr.pending_attempts(universe_id=None)
+    )
+
+
 def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
     # Codex r14 #4 (G4 deletion race): a handler deleted between the upstream
     # existence check and the durable enqueue must NOT queue a dead reference —

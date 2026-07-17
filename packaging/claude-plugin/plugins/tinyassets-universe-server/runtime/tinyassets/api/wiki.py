@@ -2215,6 +2215,9 @@ def _wiki_file_bug(
                 request_kind=effective_kind,
                 request_page=rel_path,
                 branch_def_id=canonical_branch_def_id,
+                # Codex r21 #1c: record the universe so the retry consumer
+                # re-enqueues a recovered trigger into the right queue.
+                universe_id=target_universe_id or None,
             )
         except Exception as _rcpt_exc:  # noqa: BLE001 - filing must survive receipt-store outage.
             _logger_wiki.warning(

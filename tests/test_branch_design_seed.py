@@ -759,6 +759,45 @@ def test_reserved_seed_guard_is_parse_independent_fail_closed(data_dir, monkeypa
         )
 
 
+def test_broken_seed_package_does_not_block_ordinary_branch_writes(tmp_path, monkeypatch):
+    # Codex r21 #2: an optional / broken reference-seed PACKAGE must NOT take
+    # ordinary branch authoring offline (Forever Rule). The write guard now imports
+    # the TINY dependency-free reference_seed_core, NOT the heavy branch_designs
+    # package (which parses artifact JSON on import). Simulate a broken
+    # branch_designs import: ordinary (non-reserved) writes STILL SUCCEED; reserved
+    # id writes STILL REFUSED (fail-closed for reserved ids specifically).
+    import sys
+
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        ReservedSeedMutationError,
+        get_branch_definition,
+        initialize_author_server,
+        save_branch_definition,
+    )
+    from tinyassets.reference_seed_core import reference_branch_id
+
+    initialize_author_server(tmp_path)
+    # Break the heavy package's importability entirely.
+    monkeypatch.setitem(sys.modules, "tinyassets.branch_designs", None)
+
+    # Ordinary user branch write SUCCEEDS despite the broken seed package.
+    save_branch_definition(
+        tmp_path,
+        branch_def=BranchDefinition(branch_def_id="user-xyz", name="ok").to_dict(),
+    )
+    assert get_branch_definition(tmp_path, branch_def_id="user-xyz")
+
+    # Reserved-id write is STILL refused (the guard resolves reserved ids via the
+    # import-light core, which does not depend on the broken package).
+    reserved = reference_branch_id("patch_loop_reference", 1)
+    with pytest.raises(ReservedSeedMutationError):
+        save_branch_definition(
+            tmp_path,
+            branch_def=BranchDefinition(branch_def_id=reserved, name="forge").to_dict(),
+        )
+
+
 def test_publish_failure_after_overwrite_leaves_no_duplicate(data_dir, monkeypatch):
     # Codex S1 round-6 Finding 2: if _publish_reference raises AFTER
     # _overwrite_reference_content during repair, the temp authoritative build
@@ -1312,6 +1351,36 @@ def test_empty_package_fails_loud_on_packaged_design(data_dir, tmp_path, monkeyp
     assert "<missing-packaged-design:patch_loop_reference>" in results["failed"], results
 
 
+def test_packaged_version_mismatch_fails_health(data_dir, tmp_path, monkeypatch):
+    # Codex r21 #4: health must compare EXACT (design_id, version) tuples. A
+    # packaged design present at the WRONG version (not the manifest's) seeds a
+    # reserved id absent from the manifest, so it must read UNHEALTHY — a bare
+    # design_id check would wave it through.
+    import tinyassets.branch_designs as bd
+
+    # The real artifact, but bumped to design_version=2 (manifest expects v1).
+    real = dict(
+        next(a for a in bd.load_design_artifacts() if a["design_id"] == "patch_loop_reference")
+    )
+    real["design_version"] = 2
+    designs = tmp_path / "designs_v2"
+    designs.mkdir()
+    (designs / "patch_loop_reference.json").write_text(
+        json.dumps(real), encoding="utf-8",
+    )
+    monkeypatch.setattr(bd, "DESIGNS_DIR", designs)
+
+    results = bd.seed_reference_designs(data_dir)
+    # The manifest's (id, v1) is missing at its exact version -> version mismatch.
+    assert "<packaged-version-mismatch:patch_loop_reference@v1>" in results["failed"], results
+    # And both health surfaces flag it, not just "some version of the id exists".
+    assert "patch_loop_reference" in bd.unhealthy_packaged_designs(results), results
+    assert (
+        "patch_loop_reference"
+        in bd.reference_designs_live_health(data_dir)["unhealthy"]
+    )
+
+
 def test_missing_packaged_design_stays_up_reports_unhealthy(data_dir, tmp_path, monkeypatch):
     # Codex r13 #3 + r15 #4: a PACKAGED design missing from the package must NOT
     # take down the server — the startup seam stays UP (no raise) and reports
@@ -1444,7 +1513,12 @@ def test_resolver_refuses_dead_handler_ref(data_dir, monkeypatch):
         _resolve_investigation_handler,
         resolve_investigation_handler_detail,
     )
+    from tinyassets.daemon_server import initialize_author_server
 
+    # r21 #1b: only a KeyError (registry present, id absent) is a DEFINITIVE miss.
+    # Initialize the registry so a nonexistent id raises KeyError -> handler_not_found
+    # (an UNINITIALIZED registry now reads UNAVAILABLE/retryable, not missing).
+    initialize_author_server(data_dir)
     monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "deadbeef0000",
@@ -1470,6 +1544,87 @@ def test_resolver_accepts_existing_handler(data_dir, monkeypatch):
     resolved, reason = resolve_investigation_handler_detail(data_dir)
     assert resolved == bdid
     assert reason == "ok"
+
+
+def test_goal_canonical_crash_does_not_fall_through_to_env(data_dir, monkeypatch):
+    # Codex r21 #1a: a CRASH in goal-canonical resolution is TRANSIENT — it must
+    # NOT silently fall back to the env handler (running a DIFFERENT branch on a
+    # retryable error). It must surface RETRYABLE (handler_unavailable), not env.
+    from unittest.mock import patch
+
+    from tinyassets.bug_investigation import resolve_investigation_handler_detail
+    from tinyassets.daemon_server import initialize_author_server, save_goal
+
+    initialize_author_server(data_dir)
+    save_goal(data_dir, goal=dict(
+        goal_id="g-crash", name="inv", description="",
+        author="host", tags=[], visibility="public",
+    ))
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g-crash")
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "live-env-fallback"
+    )
+    with patch(
+        "tinyassets.api.canonical_dispatch.resolve_canonical_for_run",
+        side_effect=OSError("disk blip"),
+    ):
+        bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""                                   # NOT the env fallback
+    assert reason.startswith("handler_unavailable:")    # retryable, not env / dead
+    assert "live-env-fallback" not in reason
+
+
+def test_goal_canonical_transient_kind_does_not_fall_through_to_env(data_dir, monkeypatch):
+    # Codex r21 #1a: a TRANSIENT ok=False (goal_load_failed) also must NOT fall to
+    # env — only a DEFINITIVE "no canonical" does.
+    from unittest.mock import patch
+
+    from tinyassets.bug_investigation import resolve_investigation_handler_detail
+    from tinyassets.daemon_server import initialize_author_server, save_goal
+
+    initialize_author_server(data_dir)
+    save_goal(data_dir, goal=dict(
+        goal_id="g-load", name="inv", description="",
+        author="host", tags=[], visibility="public",
+    ))
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g-load")
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "live-env-fallback"
+    )
+    with patch(
+        "tinyassets.api.canonical_dispatch.resolve_canonical_for_run",
+        return_value={"ok": False, "error_kind": "goal_load_failed"},
+    ):
+        bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""
+    assert reason.startswith("handler_unavailable:")
+
+
+def test_permission_error_at_handler_check_is_retryable_not_dead(data_dir, monkeypatch):
+    # Codex r21 #1b: only KeyError proves deletion. A PermissionError / I/O error
+    # reading the registry stays UNAVAILABLE (retryable), never terminal dead_ref.
+    import tinyassets.daemon_server as ds
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.bug_investigation import resolve_investigation_handler_detail
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(data_dir)
+    save_branch_definition(
+        data_dir, branch_def=BranchDefinition(branch_def_id="h1", name="h1").to_dict(),
+    )
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "h1")
+
+    def _perm(*a, **k):
+        raise PermissionError("locked out")
+
+    monkeypatch.setattr(ds, "get_branch_definition", _perm)
+    bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""
+    assert reason.startswith("handler_unavailable:")    # NOT handler_not_found
 
 
 def test_dead_goal_canonical_does_not_fall_through_to_env(data_dir, monkeypatch):
@@ -1522,7 +1677,12 @@ def test_file_bug_dead_handler_fails_trigger_keeps_filing(data_dir, monkeypatch)
     # failed trigger, enqueues NOTHING, and the filing itself persists.
     from tinyassets.api.wiki import _wiki_file_bug
     from tinyassets.branch_tasks import read_queue
+    from tinyassets.daemon_server import initialize_author_server
 
+    # r21 #1b: initialize the registry so the nonexistent handler raises KeyError
+    # -> DEFINITIVE handler_not_found (an uninitialized registry now reads
+    # UNAVAILABLE/retryable, which is a DIFFERENT, non-terminal outcome).
+    initialize_author_server(data_dir)
     monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "deadbeef0000",

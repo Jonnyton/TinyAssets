@@ -229,22 +229,55 @@ _NODE_FIELD_DEFAULTS: dict[str, Any] = {
     or f.default_factory is not dataclasses.MISSING  # type: ignore[misc]
 }
 
-# TRUST-ASSERTION fields (Codex r19 #1): source-code APPROVAL provenance. A
-# portable YAML artifact must NEVER carry these as trusted — an artifact author
-# can compute sha256(their_source), so approved=true + a matching
-# approved_source_hash in hand-crafted YAML would otherwise compile as approved
-# (a plain content hash is authorship, NOT authentication). These are HOST-LOCAL
-# only: never serialized into the artifact, and STRIPPED on every (untrusted)
-# import so imported/remixed source_code must be RE-APPROVED by the host. This is
-# distinct from the node-DESCRIPTION fields (requires_sandbox, effects, node_kind,
-# fallback, is_binding, input/output_keys) which DO round-trip by construction.
-_NODE_TRUST_ASSERTION_FIELDS = frozenset({
+class NodeArtifactFieldError(ValueError):
+    """An imported node artifact carried an UNKNOWN field (Codex r21 #4). Reject
+    it loudly rather than silently ignore — silently ignoring unknown keys is how
+    a future credential / trust field would slip in unnoticed."""
+
+    def __init__(self, unknown: list[str]) -> None:
+        self.unknown = unknown
+        super().__init__(
+            "node artifact has unrecognized field(s): "
+            + ", ".join(unknown)
+            + ". Every field must be a known portable or trust-local "
+            "NodeDefinition field; reject unknown keys (allowlist, not blacklist)."
+        )
+
+
+# EXHAUSTIVE classification of EVERY NodeDefinition field (Codex r21 #4). A
+# BLACKLIST ("everything portable EXCEPT these trust fields") fails OPEN: a future
+# credential / host-local / authority field becomes portable BY DEFAULT. This
+# ALLOWLIST fails CLOSED — a new field is in NEITHER set, so
+# ``test_every_node_field_is_classified`` trips until it is deliberately
+# classified as portable or trust-local.
+#
+# TRUST-LOCAL: host-local provenance / authority (source-code APPROVAL, Codex r19
+# #1). NEVER serialized into the portable artifact, and STRIPPED on import — a
+# plain content hash is authorship, not authentication, so imported source_code
+# must be RE-APPROVED by the host (the runtime gate _validate_source_code refuses
+# it until then).
+_NODE_TRUST_LOCAL_FIELDS = frozenset({
     "approved",
     "approved_by",
     "approved_source_hash",
     "approved_at",
     "approval_reason",
 })
+
+# PORTABLE: safe to carry in the artifact — describes the node's behavior
+# (execution / security / routing / attribution). Serialized and round-tripped.
+_NODE_PORTABLE_FIELDS = frozenset({
+    "node_id", "display_name", "description", "phase",
+    "input_keys", "output_keys", "strict_input_isolation",
+    "source_code", "prompt_template", "model_hint", "reasoning_effort",
+    "tools_allowed", "dependencies", "timeout_seconds", "retry_policy",
+    "llm_policy", "requires_sandbox", "checkpoints", "evaluation_criteria",
+    "invoke_branch_spec", "invoke_branch_version_spec", "await_run_spec",
+    "effects", "author", "registered_at", "enabled",
+})
+
+# The YAML shape uses ``id`` for ``node_id``; accepted on import as an alias.
+_NODE_IMPORT_ALIASES = frozenset({"id"})
 
 # Fields ALWAYS written even at their default: their intent must be explicit in
 # the file and a future default-flip must never silently change execution or
@@ -259,49 +292,54 @@ _NODE_ALWAYS_SERIALIZE = frozenset({
 
 
 def node_to_yaml_payload(node: NodeDefinition) -> dict[str, Any]:
-    """Serialize a NodeDefinition round-trip-COMPLETE for DESCRIPTION fields but
-    compact — and NEVER carry trusted approval provenance.
+    """Serialize a NodeDefinition — round-trip-complete for PORTABLE fields,
+    compact, and NEVER carrying trust-local approval provenance.
 
-    Drives off the dataclass fields so no execution/security/routing DESCRIPTION
-    field can silently drop (Codex r17 #1). Omits fields equal to their dataclass
-    default to keep files small, EXCEPT ``_NODE_ALWAYS_SERIALIZE`` which stay
-    explicit. The ``_NODE_TRUST_ASSERTION_FIELDS`` (approval provenance) are
-    NEVER written (Codex r19 #1): approval is host-local, not a forgeable
-    artifact field. ``id`` is the YAML key for ``node_id``.
+    Emits ONLY ``_NODE_PORTABLE_FIELDS`` (an ALLOWLIST, Codex r21 #4): a
+    trust-local field, or a future unclassified field, is never written. Omits
+    values equal to the dataclass default to keep files small, EXCEPT
+    ``_NODE_ALWAYS_SERIALIZE``. ``id`` is the YAML key for ``node_id``.
     """
-    full = node.to_dict()  # asdict — every current + future field
+    full = node.to_dict()  # asdict — every field
     payload: dict[str, Any] = {
-        "id": full.pop("node_id", node.node_id),
-        "display_name": full.pop("display_name", ""),
-        "phase": full.pop("phase", "custom"),
+        "id": full.get("node_id", node.node_id),
+        "display_name": full.get("display_name", ""),
+        "phase": full.get("phase", "custom"),
     }
-    for key, value in full.items():
-        if key in _NODE_TRUST_ASSERTION_FIELDS:
-            continue  # approval is host-local; never portable in the artifact
+    for f in dataclasses.fields(NodeDefinition):
+        key = f.name
+        if key in ("node_id", "display_name", "phase"):
+            continue  # already emitted above (node_id under the ``id`` key)
+        if key not in _NODE_PORTABLE_FIELDS:
+            continue  # trust-local (or, impossibly, unclassified) — never emitted
+        value = full.get(key)
         if key in _NODE_ALWAYS_SERIALIZE or value != _NODE_FIELD_DEFAULTS.get(key):
             payload[key] = value
     return payload
 
 
 def node_from_yaml_payload(payload: dict[str, Any]) -> NodeDefinition:
-    """Round-trip counterpart. Maps ``id`` -> ``node_id`` and defers to
-    ``NodeDefinition.from_dict`` (field-filtered) so every DESCRIPTION field the
-    payload carries is restored and unknown keys are ignored. A ``null`` value
-    means "use the dataclass default" (dropped before construction). input_keys /
-    output_keys are NOT wrapped in ``list(...)``: a bare string like
-    ``input_keys: framed_question`` reaches ``__post_init__`` and is rejected by
-    ``NodeDefinitionValidationError`` instead of char-iterating (Task #12).
+    """Round-trip counterpart. Maps ``id`` -> ``node_id``, REJECTS unknown fields,
+    STRIPS trust-local provenance, then builds via ``NodeDefinition.from_dict``.
 
-    SECURITY (Codex r19 #1): the ``_NODE_TRUST_ASSERTION_FIELDS`` (source-code
-    approval provenance) are STRIPPED from the untrusted payload — a plain
-    content hash is not authentication, so imported/remixed source_code is NEVER
-    carried as approved and the host must RE-APPROVE it host-locally. The
-    runtime gate (``graph_compiler._validate_source_code``) then refuses the
-    unapproved source until then.
+    - REJECT unknown keys (Codex r21 #4): a key that is neither a known portable
+      field, a known trust-local field, nor the ``id`` alias is unrecognized —
+      fail LOUD (``NodeArtifactFieldError``) rather than silently ignore it, so a
+      future/forged field can never slip in unnoticed (allowlist, not blacklist).
+    - STRIP trust-local approval provenance (Codex r19 #1): imported/remixed
+      source_code is NEVER carried as approved — the host must RE-APPROVE it
+      host-locally (a content hash is authorship, not authentication).
+    - input_keys / output_keys pass through un-wrapped so a bare string reaches
+      ``__post_init__`` and is rejected by ``NodeDefinitionValidationError``
+      instead of char-iterating (Task #12). A ``null`` means "use the default".
     """
+    known = _NODE_PORTABLE_FIELDS | _NODE_TRUST_LOCAL_FIELDS | _NODE_IMPORT_ALIASES
+    unknown = sorted(set(payload) - known)
+    if unknown:
+        raise NodeArtifactFieldError(unknown)
     data = {k: v for k, v in payload.items() if v is not None}
     data["node_id"] = data.pop("id", "") or data.get("node_id", "")
-    for field_name in _NODE_TRUST_ASSERTION_FIELDS:
+    for field_name in _NODE_TRUST_LOCAL_FIELDS:
         data.pop(field_name, None)
     return NodeDefinition.from_dict(data)
 

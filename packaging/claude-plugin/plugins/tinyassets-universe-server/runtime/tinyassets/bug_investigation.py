@@ -401,14 +401,18 @@ def _handler_branch_status(base_path: "Path | str", branch_def_id: str) -> str:
     """TRI-STATE existence of a handler branch in the registry (Codex r19 #2):
 
     - ``"exists"`` — the branch definition is present.
-    - ``"missing"`` — DEFINITIVE: the registry read succeeded and the id is
-      not there (a truly deleted handler). This is a terminal condition.
-    - ``"unavailable"`` — TRANSIENT: the registry read itself FAILED (e.g. a
-      SQLite ``database is locked``). This is NOT proof the handler is gone, so
+    - ``"missing"`` — DEFINITIVE: a KeyError, i.e. the registry read SUCCEEDED
+      and the id is genuinely not there (a truly deleted handler). Terminal.
+    - ``"unavailable"`` — the registry read itself FAILED for ANY other reason
+      (SQLite locked/busy, PermissionError, I/O OSError, an uninitialized
+      "no such table" registry, …). This is NOT proof the handler is gone, so
       the caller must treat it as RETRYABLE, never permanently discard the task.
 
-    Conflating the last two (the pre-r19 bug) turned a momentary lock into a
-    permanent ``dead_ref``, silently dropping investigation tasks.
+    Codex r21 #1b: ONLY a KeyError proves deletion. The r20 version classified
+    every non-lock error as "missing", so a PermissionError or I/O OSError could
+    terminally dead_ref a VALID task — too aggressive. Fail toward RETRY, not
+    permanent discard. (Conflating the two the OTHER way — the pre-r19 bug —
+    turned a momentary lock into a permanent dead_ref.)
     """
     if not branch_def_id:
         return "missing"
@@ -425,40 +429,20 @@ def _handler_branch_status(base_path: "Path | str", branch_def_id: str) -> str:
         get_branch_definition(_base_path(), branch_def_id=branch_def_id)
         return "exists"
     except KeyError:
+        # DEFINITIVE deletion: the read succeeded, the id is not in the registry.
         return "missing"
     except Exception as exc:  # noqa: BLE001
-        # Only genuine TRANSIENT contention (SQLite database is locked / busy) is
-        # retryable (Codex r19 #2 / r20 #2). Everything else — an absent/
-        # uninitialized registry ("no such table"), a schema error, etc. — means
-        # the handler cannot be resolved and is DEFINITIVELY missing (matches the
-        # pre-tri-state fail-closed default; a real deployment always has the
-        # registry initialized, so a live nonexistent id raises KeyError above).
-        if _is_transient_registry_error(exc):
-            _logger.warning(
-                "_handler_branch_status | registry TRANSIENTLY unavailable for "
-                "%s (%s) — retryable, NOT a definitive miss", branch_def_id, exc,
-            )
-            return "unavailable"
-        _logger.exception(
-            "_handler_branch_status | registry read failed for %s; treating as "
-            "definitively MISSING (not transient contention)", branch_def_id,
+        # EVERY other read failure stays RETRYABLE (Codex r21 #1b): a
+        # PermissionError, I/O OSError, uninitialized registry, SQLite
+        # contention, etc. are NOT proof of deletion. A real deployment always
+        # has the registry initialized, so a live nonexistent handler raises
+        # KeyError above; here we refuse to permanently discard a valid task on
+        # an environmental/transient failure.
+        _logger.warning(
+            "_handler_branch_status | registry read failed for %s (%s) — "
+            "UNAVAILABLE/retryable, NOT a definitive miss", branch_def_id, exc,
         )
-        return "missing"
-
-
-def _is_transient_registry_error(exc: BaseException) -> bool:
-    """True when a registry read error is TRANSIENT (retryable) — SQLite
-    contention (``database is locked`` / ``busy``) — rather than a definitive
-    miss. Prefers the 3.11+ ``sqlite_errorcode`` (SQLITE_BUSY=5 / SQLITE_LOCKED=6),
-    falling back to the message text."""
-    import sqlite3
-
-    if isinstance(exc, sqlite3.OperationalError):
-        if getattr(exc, "sqlite_errorcode", None) in (5, 6):
-            return True
-        msg = str(exc).lower()
-        return "locked" in msg or "busy" in msg
-    return False
+        return "unavailable"
 
 
 def _handler_branch_exists(base_path: "Path | str", branch_def_id: str) -> bool:
@@ -496,7 +480,18 @@ def resolve_investigation_handler_detail(
     # would silently run the wrong investigation branch (Codex S1 review; G4).
     # The env fallback is only reached when the goal path yields no candidate at
     # all (not when its canonical resolves to a dead ref).
-    primary = next(_iter_handler_candidates(base_path), None)
+    try:
+        primary = next(_iter_handler_candidates(base_path), None)
+    except _CanonicalResolutionUnavailable as exc:
+        # Codex r21 #1a: goal-canonical resolution failed TRANSIENTLY — do NOT
+        # fall back to the env handler and do NOT dead_ref. Surface a RETRYABLE
+        # outcome so file_bug leaves a retryable trigger.
+        _logger.warning(
+            "resolve_investigation_handler | canonical resolution UNAVAILABLE "
+            "for goal %s (%s) — retryable, NOT env fallback / dead ref",
+            exc.goal_id, exc.cause,
+        )
+        return "", f"handler_unavailable:goal:{exc.goal_id}"
     if primary is None:
         return "", "not_configured"
     # Tri-state (Codex r20 #2): thread transient-unavailable through the FULL
@@ -549,6 +544,107 @@ def _resolve_investigation_handler(base_path: "Path | str") -> str:
     return branch_def_id
 
 
+def retry_pending_investigation_triggers(
+    base_path: "Path | str", *, universe_id: str = "",
+) -> dict:
+    """RE-ATTEMPT pending investigation triggers — the REAL retry consumer for the
+    retryable outcome (Codex r21 #1c).
+
+    The r19/r20/r21 retryable path (handler transiently unavailable) leaves a
+    trigger RECEIPT pending; without a consumer that receipt sits forever
+    (re-filing dedups to ``similar_found``, so "later re-file" is NOT operational).
+    This drains them: re-resolve the handler ONCE for this universe's config, then
+    for each pending receipt —
+      - resolves now (registry recovered) -> enqueue the investigation + mark the
+        receipt QUEUED,
+      - DEFINITIVELY missing now -> mark the receipt FAILED (terminal),
+      - still transiently unavailable / not configured -> leave PENDING for the
+        next sweep.
+    Wired into the dispatcher poll (``select_next_task``) so every daemon tick
+    drains recoverable triggers. Never raises — best-effort; returns a summary."""
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    summary: dict[str, list[str]] = {"queued": [], "failed": [], "still_pending": []}
+    uid = universe_id or None
+    try:
+        pending = _tr.pending_attempts(universe_id=uid)
+    except Exception:  # noqa: BLE001 — best-effort, never break the dispatcher
+        _logger.exception("retry_pending_investigation_triggers | list failed")
+        return summary
+    if not pending:
+        return summary
+
+    # Resolve ONCE — all pending receipts share the current goal/env config.
+    resolved, reason = resolve_investigation_handler_detail(base_path)
+    for receipt in pending:
+        request_id = receipt.request_id
+        if not request_id:
+            continue
+        if resolved:
+            try:
+                req = enqueue_investigation_request(
+                    bug_ref={"bug_id": request_id},
+                    canonical_branch_def_id=resolved,
+                    base_path=base_path,
+                    universe_id=universe_id,
+                )
+                _tr.mark_queued(receipt, dispatcher_request_id=req)
+                summary["queued"].append(request_id)
+                _logger.info(
+                    "retry | pending trigger %s RECOVERED -> queued %s",
+                    request_id, req,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "retry | enqueue failed for %s (%s) — still pending",
+                    request_id, exc,
+                )
+                summary["still_pending"].append(request_id)
+        elif reason.startswith("handler_not_found:"):
+            try:
+                _tr.mark_failed(
+                    receipt, error_class="handler_not_found", error_message=reason,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            summary["failed"].append(request_id)
+            _logger.warning(
+                "retry | pending trigger %s handler DEFINITIVELY missing -> failed",
+                request_id,
+            )
+        else:
+            # handler_unavailable / not_configured -> still retryable next sweep.
+            summary["still_pending"].append(request_id)
+    return summary
+
+
+class _CanonicalResolutionUnavailable(Exception):
+    """Goal-canonical resolution failed TRANSIENTLY (a crash, or a transient
+    ``goal_load_failed`` result) — NOT a definitive "no canonical configured".
+
+    Codex r21 #1a: the env fallback must be reached ONLY after a SUCCESSFUL,
+    DEFINITIVE "no canonical" result — never on an exception/error. Silently
+    falling back to the env handler on a transient goal-resolution failure runs a
+    DIFFERENT branch on what should be a retry (a forced OSError produced
+    ``('env-fallback', 'ok')``). This signals the caller to leave a retryable
+    trigger instead."""
+
+    def __init__(self, goal_id: str, cause: object) -> None:
+        self.goal_id = goal_id
+        self.cause = cause
+        super().__init__(
+            f"canonical resolution unavailable for goal {goal_id}: {cause}"
+        )
+
+
+# error_kinds from ``resolve_canonical_for_run`` that are TRANSIENT (retryable),
+# NOT a definitive "no canonical configured". ``goal_load_failed`` = the goal row
+# read itself failed (e.g. a locked / broken store). The DEFINITIVE kinds
+# (no_goal / no_canonical_handler / no_published_version_for_candidate) legitimately
+# mean "no canonical" and MAY fall back to the env handler.
+_TRANSIENT_CANONICAL_ERROR_KINDS = frozenset({"goal_load_failed"})
+
+
 def _iter_handler_candidates(base_path: "Path | str"):
     """Yield handler branch ids in resolution order (goal canonical, then env).
 
@@ -558,6 +654,11 @@ def _iter_handler_candidates(base_path: "Path | str"):
     (that path is only for enqueueing into the target universe), so canonical
     resolution reads ``_base_path()`` — otherwise a valid root goal canonical is
     missed on the real file_bug path (Codex S1 review).
+
+    Raises ``_CanonicalResolutionUnavailable`` when goal-canonical resolution
+    fails TRANSIENTLY, so the caller does NOT silently fall back to the env
+    handler on a retryable error (Codex r21 #1a). The env fallback is reached
+    only after a DEFINITIVE "no canonical configured" result (or no goal set).
     """
     from tinyassets.api.helpers import _base_path
 
@@ -580,13 +681,15 @@ def _iter_handler_candidates(base_path: "Path | str"):
                 # canonical.
                 viewer="",
             )
-        except Exception:  # pragma: no cover — defensive
+        except Exception as exc:  # noqa: BLE001
+            # resolve_canonical_for_run is documented never-raise, but defend:
+            # a CRASH is TRANSIENT — signal unavailable, do NOT fall to env.
             _logger.exception(
-                "_iter_handler_candidates | canonical resolution "
-                "crashed for goal %s; falling back to env",
+                "_iter_handler_candidates | canonical resolution CRASHED for "
+                "goal %s — UNAVAILABLE (retryable), NOT falling back to env",
                 goal_id,
             )
-            resolution = {"ok": False}
+            raise _CanonicalResolutionUnavailable(goal_id, exc) from exc
         if resolution.get("ok"):
             bdid = (resolution.get("branch_def_id") or "").strip()
             if bdid:
@@ -598,11 +701,25 @@ def _iter_handler_candidates(base_path: "Path | str"):
                     resolution.get("source"),
                 )
                 yield bdid
+                return  # goal is authoritative; do NOT also offer the env handler
         else:
+            error_kind = resolution.get("error_kind") or "unknown"
+            if error_kind in _TRANSIENT_CANONICAL_ERROR_KINDS or error_kind == "unknown":
+                # TRANSIENT / unexpected canonical-resolution failure — do NOT
+                # fall back to a DIFFERENT handler on a retryable error.
+                _logger.warning(
+                    "_iter_handler_candidates | goal=%s canonical resolution "
+                    "TRANSIENTLY unavailable (%s) — retryable, NOT env fallback",
+                    goal_id, error_kind,
+                )
+                raise _CanonicalResolutionUnavailable(goal_id, error_kind)
+            # DEFINITIVE "no canonical configured" (no_goal / no_canonical_handler
+            # / no_published_version_for_candidate) — env fallback is intended
+            # graceful degradation.
             _logger.info(
                 "_iter_handler_candidates | goal=%s no canonical "
-                "available (%s); falling back to env",
-                goal_id, resolution.get("error_kind") or "unknown",
+                "configured (%s); falling back to env",
+                goal_id, error_kind,
             )
 
     # Cheat-loop fallback.

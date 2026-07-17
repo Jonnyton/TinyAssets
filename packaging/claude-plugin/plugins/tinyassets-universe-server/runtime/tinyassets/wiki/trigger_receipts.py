@@ -75,6 +75,10 @@ class TriggerReceipt:
     attempted_at: str  # ISO-8601 UTC
     goal_id: str | None = None
     branch_def_id: str | None = None
+    # Which universe this filing belongs to — Codex r21 #1c: the retry consumer
+    # re-enqueues a recovered trigger into the RIGHT universe queue (a global
+    # pending sweep must not misroute a universe-A filing into universe B).
+    universe_id: str | None = None
     queued_at: str | None = None
     run_id: str | None = None
     dispatcher_request_id: str | None = None
@@ -122,6 +126,7 @@ CREATE TABLE IF NOT EXISTS wiki_trigger_attempts (
     attempted_at          TEXT NOT NULL,
     goal_id               TEXT,
     branch_def_id         TEXT,
+    universe_id           TEXT,
     queued_at             TEXT,
     run_id                TEXT,
     dispatcher_request_id TEXT,
@@ -172,6 +177,11 @@ def _conn(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(str(p))
     try:
         conn.execute(_TABLE_DDL)
+        # Migration (Codex r21 #1c): add universe_id to an older DB that predates
+        # the retry consumer. SQLite has no ADD COLUMN IF NOT EXISTS, so probe.
+        _cols = {r[1] for r in conn.execute("PRAGMA table_info(wiki_trigger_attempts)")}
+        if "universe_id" not in _cols:
+            conn.execute("ALTER TABLE wiki_trigger_attempts ADD COLUMN universe_id TEXT")
         for ddl in _INDEX_DDL:
             conn.execute(ddl)
         conn.row_factory = sqlite3.Row
@@ -193,6 +203,7 @@ def create_pending(
     request_page: str,
     goal_id: str | None = None,
     branch_def_id: str | None = None,
+    universe_id: str | None = None,
     db_path: Path | None = None,
 ) -> TriggerReceipt:
     """Insert a new pending receipt and return it.
@@ -201,6 +212,9 @@ def create_pending(
     if the helper crashes before reporting. The returned object carries
     the freshly-minted ``trigger_attempt_id`` which the caller threads
     into ``mark_queued`` / ``mark_failed`` / ``mark_skipped``.
+
+    ``universe_id`` records which universe the filing belongs to so the retry
+    consumer (Codex r21 #1c) re-enqueues a recovered trigger into the right queue.
     """
     receipt = TriggerReceipt(
         trigger_attempt_id=str(uuid.uuid4()),
@@ -211,18 +225,19 @@ def create_pending(
         attempted_at=_utc_now_iso(),
         goal_id=goal_id,
         branch_def_id=branch_def_id,
+        universe_id=universe_id,
     )
     with _conn(db_path) as c:
         c.execute(
             """INSERT INTO wiki_trigger_attempts (
                 trigger_attempt_id, request_id, request_kind, request_page,
-                status, attempted_at, goal_id, branch_def_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                status, attempted_at, goal_id, branch_def_id, universe_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 receipt.trigger_attempt_id, receipt.request_id,
                 receipt.request_kind, receipt.request_page,
                 receipt.status, receipt.attempted_at,
-                receipt.goal_id, receipt.branch_def_id,
+                receipt.goal_id, receipt.branch_def_id, receipt.universe_id,
             ),
         )
     logger.info(
@@ -405,6 +420,37 @@ def orphan_attempts(
             "ORDER BY attempted_at",
             (STATUS_PENDING, STATUS_QUEUED, cutoff),
         ).fetchall()
+    return [TriggerReceipt(**dict(r)) for r in rows]
+
+
+def pending_attempts(
+    *,
+    universe_id: str | None = None,
+    limit: int = 500,
+    db_path: Path | None = None,
+) -> list[TriggerReceipt]:
+    """All non-terminal PENDING receipts, oldest first — the RETRY QUEUE (Codex
+    r21 #1c). A receipt is PENDING when its enqueue did not complete (the handler
+    was transiently unavailable, or the trigger helper never finalized it). The
+    retry consumer re-attempts each until it resolves to queued (handler
+    recovered) or failed (definitively missing). When ``universe_id`` is given,
+    only that universe's pending receipts are returned (plus legacy rows with a
+    NULL universe_id, which predate the column) so a per-universe sweep does not
+    misroute another universe's filing."""
+    with _conn(db_path) as c:
+        if universe_id is None:
+            rows = c.execute(
+                "SELECT * FROM wiki_trigger_attempts WHERE status = ? "
+                "ORDER BY attempted_at LIMIT ?",
+                (STATUS_PENDING, max(1, int(limit))),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM wiki_trigger_attempts WHERE status = ? "
+                "AND (universe_id = ? OR universe_id IS NULL) "
+                "ORDER BY attempted_at LIMIT ?",
+                (STATUS_PENDING, universe_id, max(1, int(limit))),
+            ).fetchall()
     return [TriggerReceipt(**dict(r)) for r in rows]
 
 

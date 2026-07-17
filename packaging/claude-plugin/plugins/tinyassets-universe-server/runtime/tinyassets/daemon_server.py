@@ -2161,21 +2161,17 @@ def _guard_reserved_seed_write(
     forkable/runnable; any other update, a full save, or a delete is refused."""
     if internal_seed_write:
         return
-    try:
-        from tinyassets.branch_designs import is_reserved_seed_id
-    except Exception as exc:  # noqa: BLE001
-        # FAIL CLOSED (Codex r18 #2): if we cannot even load the protected-id
-        # predicate, we cannot prove this write is safe, so REFUSE it rather than
-        # fall open. The predicate is a pure hash over a STATIC manifest (no
-        # artifact parsing), so this path is essentially unreachable — a failure
-        # here means branch_designs itself is broken, i.e. a broken system where
-        # refusing a public branch write is the correct posture. The internal
-        # seeder is already exempt above, so recovery is unaffected.
-        raise ReservedSeedMutationError(
-            f"reserved-seed write guard could not load its protected-id "
-            f"predicate ({exc}); refusing branch write to '{branch_def_id}' "
-            "fail-closed."
-        ) from exc
+    # Import the TINY dependency-free core (Codex r21 #2), NOT the heavy
+    # branch_designs package. That package parses on-disk artifact JSON on
+    # import; importing it on every branch write meant a broken/optional seed
+    # package raised on import and the guard fail-closed-refused EVERY id —
+    # taking ordinary create/update/delete/fork/import offline (a Forever Rule
+    # violation: an optional-seed failure must not disable unrelated uptime
+    # surfaces). reference_seed_core is a pure hash over a STATIC manifest; it
+    # cannot fail to import because of a broken artifact, so ordinary
+    # (non-reserved) writes always proceed while reserved ids stay fail-closed.
+    from tinyassets.reference_seed_core import is_reserved_seed_id
+
     if not is_reserved_seed_id(branch_def_id):
         return
     if updates is not None and set(updates) <= _RESERVED_SEED_BENIGN_UPDATE_KEYS:
