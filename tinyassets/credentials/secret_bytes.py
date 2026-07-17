@@ -131,10 +131,9 @@ class SecretLease:
         self.zero()
 
     def __repr__(self) -> str:
-        return (
-            f"SecretLease(ref={self.ref!r}, kind={self.kind!r}, "
-            f"version={self.version}, value={_REDACTED})"
-        )
+        # Allowlist only: ref + kind (both log-safe). No version (internal
+        # lifecycle counter) and never the value.
+        return f"SecretLease(ref={self.ref!r}, kind={self.kind!r}, value={_REDACTED})"
 
     __str__ = __repr__
 

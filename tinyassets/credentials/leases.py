@@ -88,6 +88,19 @@ def claim_refresh(
         return False
     return True
 
+def claim_held(conn: sqlite3.Connection, ref: str, version: int, holder: str) -> bool:
+    """True iff ``holder`` holds the durable claim for ``(ref, version)``.
+
+    Used to bind a refresh COMPLETION to the ticket: a CAS that completes a
+    refresh must present a ticket whose claim is on record — no bypass.
+    """
+    row = conn.execute(
+        "SELECT holder FROM vault_refresh_claims WHERE ref = ? AND version = ?",
+        (ref, int(version)),
+    ).fetchone()
+    return row is not None and row["holder"] == holder
+
+
 # NOTE: claims are NEVER pruned on advance. Deleting a consumed claim reopens a
 # window where a slow straggler that still holds version N as "current" could
 # re-claim (ref, N) and redeem T_N a SECOND time — exactly the token-reuse CVE.

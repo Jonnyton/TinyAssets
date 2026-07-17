@@ -103,12 +103,15 @@ class SecretScope:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class VaultStore:
     """Discriminated custody selector.
 
     The binding's ``store`` selects exactly one backend. Cross-store lookup is
     forbidden — the backend re-derives store identity from protected contents.
+
+    ``repr`` is redacted: ``store_id``/``custody``/``daemon_id`` are backend
+    internals the design forbids in logs.
     """
 
     custody: Custody
@@ -124,13 +127,17 @@ class VaultStore:
             # authentication breaks. Forbid the invalid shape at construction.
             raise ValueError("platform_encrypted store must not carry a daemon_id")
 
+    def __repr__(self) -> str:
+        return "VaultStore(<redacted-custody-internals>)"
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, repr=False)
 class SecretBinding:
     """Non-secret control-plane binding: opaque ref + custody metadata.
 
     This is the ONLY thing that may live in universe/branch control-plane rows.
-    It contains no value and no refresh material.
+    It contains no value and no refresh material. ``repr`` shows only the
+    log-safe allowlist (ref/kind/scope); the ``store`` internals are redacted.
     """
 
     ref: str
@@ -138,10 +145,17 @@ class SecretBinding:
     scope: SecretScope
     store: VaultStore
 
+    def __repr__(self) -> str:
+        return f"SecretBinding(ref={self.ref!r}, kind={self.kind.value!r}, scope={self.scope!r})"
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, repr=False)
 class SecretDescriptor:
-    """Non-secret lifecycle metadata for one stored secret version."""
+    """Non-secret lifecycle metadata for one stored secret version.
+
+    ``repr`` shows only the public allowlist (ref/kind/scope/timestamps) — never
+    ``version``/``state`` (internal counters) or any custody internal.
+    """
 
     binding: SecretBinding
     version: int
@@ -149,6 +163,9 @@ class SecretDescriptor:
     updated_at: float
     state: DescriptorState = DescriptorState.ACTIVE
     expires_at: float | None = None
+
+    def __repr__(self) -> str:
+        return f"SecretDescriptor({self.public_projection()!r})"
 
     def public_projection(self) -> dict[str, object]:
         """The explicit allowlist safe to surface in status/list/receipts.
@@ -173,13 +190,14 @@ class SecretDescriptor:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class EncryptedRow:
     """Platform backend persisted shape (SQLite row).
 
     ``ciphertext`` is the AEAD-sealed framed payload; ``wrapped_dek`` is the DEK
     sealed under the active KEK. ``key_id`` identifies the KEK for rotation.
-    No plaintext value is present.
+    No plaintext value is present. ``repr`` is fully redacted — ciphertext,
+    wrapped DEKs, nonces, and key ids must never reach a log.
     """
 
     descriptor: SecretDescriptor
@@ -190,19 +208,26 @@ class EncryptedRow:
     data_nonce: bytes
     ciphertext: bytes
 
+    def __repr__(self) -> str:
+        return "EncryptedRow(<redacted-ciphertext-and-keys>)"
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, repr=False)
 class DpapiBlob:
     """Local (Windows) backend persisted shape.
 
     ``blob_path`` points at the immutable per-ref DPAPI blob;
     ``protection`` is always ``dpapi-current-user`` (never LOCAL_MACHINE).
+    ``repr`` is redacted — the backend path must never reach a log.
     """
 
     descriptor: SecretDescriptor
     blob_path: str
     protection: str = "dpapi-current-user"
     blob_version: int = 1
+
+    def __repr__(self) -> str:
+        return "DpapiBlob(<redacted-backend-path>)"
 
 
 # Algorithm tag persisted with every platform row.

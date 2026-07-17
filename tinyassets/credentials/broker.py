@@ -7,8 +7,13 @@ Vault/KMS later is a backend change, not a rewrite (review adaptation #2). The
 overall connector shape is the open-source Nango model, sized down.
 
 Contract highlights:
-  * ``put`` with ``replace=`` + ``expected_version=`` is atomic compare-and-swap.
+  * ``put`` with ``replace=`` + ``expected_version=`` is atomic compare-and-swap
+    (both must be supplied together; a bare ``replace`` is rejected).
   * ``get`` returns a :class:`SecretLease` — never raw bytes upward.
+  * **refresh is a first-class broker operation**: ``begin_refresh`` +
+    ``complete_refresh`` are the sanctioned consume-before-mint pair. Integrations
+    (S4/S5) MUST refresh one-time tokens through them — a plain CAS cannot advance
+    a refresh without the durable ticket, so bypass is structurally prevented.
   * every failure is :class:`CredentialUnavailable`; ``""``/``None``/ambient
     fallbacks are forbidden.
   * the binding's discriminated ``store`` selects exactly ONE backend; the
@@ -19,6 +24,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from .leases import RefreshTicket
 from .secret_bytes import SecretBytes, SecretLease
 from .types import (
     SecretBinding,
@@ -51,3 +57,24 @@ class VaultBroker(Protocol):
 
     def delete(self, binding: SecretBinding, expected: SecretScope) -> None:
         """Tombstone the binding and remove protected bytes. Absence is NOT_FOUND."""
+
+    def begin_refresh(
+        self, binding: SecretBinding, expected: SecretScope, holder: str, at_version: int
+    ) -> RefreshTicket | None:
+        """Atomically claim the exclusive right to redeem the current token.
+
+        Returns a :class:`RefreshTicket` to the sole winner (who alone may call
+        the provider), else ``None``. The claimed version is the authenticated
+        current version, so a non-existent version cannot be permanently blocked.
+        """
+
+    def complete_refresh(
+        self,
+        binding: SecretBinding,
+        expected: SecretScope,
+        ticket: RefreshTicket,
+        value: SecretBytes,
+        *,
+        expires_at: float | None = None,
+    ) -> SecretDescriptor:
+        """Store the refreshed secret, bound to ``ticket``'s durable claim."""
