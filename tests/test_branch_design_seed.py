@@ -1336,6 +1336,26 @@ def test_optional_design_failure_keeps_server_ready(data_dir, tmp_path, monkeypa
     assert "design:optional_broken@v1" in results["failed"], results
 
 
+def test_seed_best_effort_survives_feature_import_failure(tmp_path, monkeypatch):
+    # Codex r19 #3: the startup seam must NEVER raise, even when a FEATURE IMPORT
+    # fails (a missing/broken package). The pre-r19 code imported
+    # unhealthy_packaged_designs BEFORE the try, so a broken package raised
+    # ModuleNotFoundError and crashed startup. Every feature import now lives
+    # inside the guarded block, so an unimportable feature symbol degrades to
+    # <seed-crashed> and the server stays UP.
+    import tinyassets.branch_designs as bd
+    from tinyassets import universe_server
+
+    base = tmp_path / "data"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    # Simulate a broken package: a feature symbol the seam imports is missing.
+    monkeypatch.delattr(bd, "unhealthy_packaged_designs", raising=False)
+
+    results = universe_server._seed_reference_designs_best_effort()  # must NOT raise
+    assert "<seed-crashed>" in results["failed"], results
+
+
 def test_artifact_semantic_fields_survive_build(data_dir):
     # Finding 4b: the safety-critical artifact fields must survive the build ->
     # persist -> reload round trip: routing output keys, the sandbox flag, the

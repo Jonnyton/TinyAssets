@@ -229,6 +229,23 @@ _NODE_FIELD_DEFAULTS: dict[str, Any] = {
     or f.default_factory is not dataclasses.MISSING  # type: ignore[misc]
 }
 
+# TRUST-ASSERTION fields (Codex r19 #1): source-code APPROVAL provenance. A
+# portable YAML artifact must NEVER carry these as trusted — an artifact author
+# can compute sha256(their_source), so approved=true + a matching
+# approved_source_hash in hand-crafted YAML would otherwise compile as approved
+# (a plain content hash is authorship, NOT authentication). These are HOST-LOCAL
+# only: never serialized into the artifact, and STRIPPED on every (untrusted)
+# import so imported/remixed source_code must be RE-APPROVED by the host. This is
+# distinct from the node-DESCRIPTION fields (requires_sandbox, effects, node_kind,
+# fallback, is_binding, input/output_keys) which DO round-trip by construction.
+_NODE_TRUST_ASSERTION_FIELDS = frozenset({
+    "approved",
+    "approved_by",
+    "approved_source_hash",
+    "approved_at",
+    "approval_reason",
+})
+
 # Fields ALWAYS written even at their default: their intent must be explicit in
 # the file and a future default-flip must never silently change execution or
 # security behavior. requires_sandbox/effects are the r17 #1 regression fields;
@@ -237,18 +254,20 @@ _NODE_ALWAYS_SERIALIZE = frozenset({
     "timeout_seconds",
     "requires_sandbox",
     "effects",
-    "approved",
     "enabled",
 })
 
 
 def node_to_yaml_payload(node: NodeDefinition) -> dict[str, Any]:
-    """Serialize a NodeDefinition round-trip-COMPLETE but compact.
+    """Serialize a NodeDefinition round-trip-COMPLETE for DESCRIPTION fields but
+    compact — and NEVER carry trusted approval provenance.
 
-    Drives off the dataclass fields so no execution/security/routing field can
-    silently drop (Codex r17 #1). Omits fields equal to their dataclass default
-    to keep files small, EXCEPT ``_NODE_ALWAYS_SERIALIZE`` which stay explicit.
-    ``id`` is the YAML key for ``node_id``.
+    Drives off the dataclass fields so no execution/security/routing DESCRIPTION
+    field can silently drop (Codex r17 #1). Omits fields equal to their dataclass
+    default to keep files small, EXCEPT ``_NODE_ALWAYS_SERIALIZE`` which stay
+    explicit. The ``_NODE_TRUST_ASSERTION_FIELDS`` (approval provenance) are
+    NEVER written (Codex r19 #1): approval is host-local, not a forgeable
+    artifact field. ``id`` is the YAML key for ``node_id``.
     """
     full = node.to_dict()  # asdict — every current + future field
     payload: dict[str, Any] = {
@@ -257,6 +276,8 @@ def node_to_yaml_payload(node: NodeDefinition) -> dict[str, Any]:
         "phase": full.pop("phase", "custom"),
     }
     for key, value in full.items():
+        if key in _NODE_TRUST_ASSERTION_FIELDS:
+            continue  # approval is host-local; never portable in the artifact
         if key in _NODE_ALWAYS_SERIALIZE or value != _NODE_FIELD_DEFAULTS.get(key):
             payload[key] = value
     return payload
@@ -264,15 +285,24 @@ def node_to_yaml_payload(node: NodeDefinition) -> dict[str, Any]:
 
 def node_from_yaml_payload(payload: dict[str, Any]) -> NodeDefinition:
     """Round-trip counterpart. Maps ``id`` -> ``node_id`` and defers to
-    ``NodeDefinition.from_dict`` (field-filtered) so every field the payload
-    carries is restored and unknown keys are ignored. A ``null`` value means
-    "use the dataclass default" (dropped before construction). input_keys /
+    ``NodeDefinition.from_dict`` (field-filtered) so every DESCRIPTION field the
+    payload carries is restored and unknown keys are ignored. A ``null`` value
+    means "use the dataclass default" (dropped before construction). input_keys /
     output_keys are NOT wrapped in ``list(...)``: a bare string like
     ``input_keys: framed_question`` reaches ``__post_init__`` and is rejected by
     ``NodeDefinitionValidationError`` instead of char-iterating (Task #12).
+
+    SECURITY (Codex r19 #1): the ``_NODE_TRUST_ASSERTION_FIELDS`` (source-code
+    approval provenance) are STRIPPED from the untrusted payload — a plain
+    content hash is not authentication, so imported/remixed source_code is NEVER
+    carried as approved and the host must RE-APPROVE it host-locally. The
+    runtime gate (``graph_compiler._validate_source_code``) then refuses the
+    unapproved source until then.
     """
     data = {k: v for k, v in payload.items() if v is not None}
     data["node_id"] = data.pop("id", "") or data.get("node_id", "")
+    for field_name in _NODE_TRUST_ASSERTION_FIELDS:
+        data.pop(field_name, None)
     return NodeDefinition.from_dict(data)
 
 

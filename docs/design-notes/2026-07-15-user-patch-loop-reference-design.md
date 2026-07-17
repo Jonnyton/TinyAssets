@@ -190,8 +190,13 @@ structural envelope test pins this). The S4 bundle test MUST read
 `spec.node_defs` (not top-level `node_defs`) and MUST **FAIL — not silently
 skip** — when the artifact exists but its node contract is unreadable, so a
 contract mismatch can never masquerade as a passing (or skipped) proof. As of
-Codex r18 the S4 reader still checks top-level `node_defs` and the bundle test
-stays skipped; that test-quality fix is S4-owned (routed to S4), not S1.
+Codex r19, current S4 (`d47ee60b`) reads `spec.node_defs` and has the
+fail-not-skip guard — the S4-side test-quality fix has landed. **Combined
+S1/S3/S4 execution nonetheless remains UNVERIFIED**: the fail-closed bundle proof
+only truly runs on the merged integration branch (S1 seed + S3 enforcement + S4
+effector together), which has not yet been assembled/run. Do not read "S4 reads
+spec.node_defs" as "the loop is proven" — the integration acceptance is still
+outstanding.
 
 **Phase-2 execution boundary (Codex r11 #2; host "build execution first").** The
 S1 reference declares the full intended loop with correct effect + gate

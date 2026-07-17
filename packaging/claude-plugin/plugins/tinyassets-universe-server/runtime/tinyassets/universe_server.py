@@ -2288,33 +2288,39 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
     ``<seed-crashed>`` marker in ``failed`` and stashes the result.
     """
     global _LAST_SEED_RESULT
-    from tinyassets.branch_designs import unhealthy_packaged_designs
-
     try:
+        # EVERY feature import lives INSIDE the guard (Codex r19 #3): importing
+        # the feature module BEFORE the try meant a missing/broken package raised
+        # ModuleNotFoundError and crashed startup, breaking the "never raises"
+        # uptime contract. A broken import now degrades to <seed-crashed> like
+        # any other seed failure — the server stays UP.
         from tinyassets.api.helpers import _base_path
-        from tinyassets.branch_designs import seed_reference_designs
+        from tinyassets.branch_designs import (
+            seed_reference_designs,
+            unhealthy_packaged_designs,
+        )
 
         results = seed_reference_designs(_base_path())
         if results["failed"]:
             logger.error("reference design seeding had failures: %s", results)
         else:
             logger.info("reference design seeding: %s", results)
-    except Exception:  # noqa: BLE001 - server must stay UP on a feature failure
+
+        # The reference seed is a COMMONS FEATURE, not a boot-critical fixture
+        # (Codex r15 #4). An unhealthy PACKAGED design is reported LOUDLY (log +
+        # get_status.reference_designs + last_seed_result) — the server STAYS UP
+        # and serves; it NEVER refuses startup (Forever Rule / Hard Rule 4). CI
+        # owns "refuse to SHIP broken".
+        unhealthy = unhealthy_packaged_designs(results)
+        if unhealthy:
+            logger.error(
+                "packaged reference design(s) unhealthy: %s — server stays UP, "
+                "reporting unhealthy via get_status.reference_designs", unhealthy,
+            )
+    except Exception:  # noqa: BLE001 - server must stay UP on ANY feature failure
         logger.exception("reference design seeding crashed")
         results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
     _LAST_SEED_RESULT = results
-
-    # The reference seed is a COMMONS FEATURE, not a boot-critical fixture
-    # (Codex r15 #4). An unhealthy PACKAGED design is reported LOUDLY (log +
-    # get_status.reference_designs + last_seed_result) — the server STAYS UP and
-    # serves; it NEVER refuses startup (Forever Rule / Hard Rule 4). CI owns
-    # "refuse to SHIP broken".
-    unhealthy = unhealthy_packaged_designs(results)
-    if unhealthy:
-        logger.error(
-            "packaged reference design(s) unhealthy: %s — server stays UP, "
-            "reporting unhealthy via get_status.reference_designs", unhealthy,
-        )
     return results
 
 

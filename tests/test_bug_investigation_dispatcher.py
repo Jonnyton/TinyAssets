@@ -23,6 +23,29 @@ from tinyassets.dispatcher import (
 
 
 class TestEnqueueInvestigationRequest:
+    @pytest.fixture(autouse=True)
+    def _register_handlers(self, tmp_path, monkeypatch):
+        # G4 (docs/design-notes/2026-07-15-user-patch-loop-reference-design.md):
+        # the enqueue boundary REFUSES a handler id that isn't in the registry
+        # (never queue against a dead ref). Register the ids these tests enqueue
+        # against — resolved at TINYASSETS_DATA_DIR — so they exercise the enqueue
+        # path, not the dead-ref guard. (The empty-id / priorities tests fail
+        # their own validation before the handler check, so this is a no-op for
+        # them.)
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import (
+            initialize_author_server,
+            save_branch_definition,
+        )
+
+        initialize_author_server(tmp_path)
+        for bid in ("branch-abc", "branch-xyz"):
+            save_branch_definition(
+                tmp_path,
+                branch_def=BranchDefinition(branch_def_id=bid, name=bid).to_dict(),
+            )
+
     def test_creates_dispatcher_entry_with_bug_investigation_type(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         request_id = enqueue_investigation_request(

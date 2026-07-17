@@ -303,20 +303,30 @@ def enqueue_investigation_request(
 
 def revalidate_investigation_handler(
     base_path: "Path | str", branch_def_id: str,
-) -> tuple[bool, str]:
-    """CONSUMPTION-time revalidation of an investigation handler (Codex r15 #5).
+) -> tuple[str, str]:
+    """CONSUMPTION-time revalidation of an investigation handler (Codex r15 #5),
+    now TRI-STATE (Codex r19 #2).
 
     The enqueue-boundary check only narrows the deletion-race window; a delete can
     still land while the task sits queued. So the CONSUMER (claim / run path) must
-    revalidate the handler still exists before running a claimed task, and emit a
-    structured dead-ref outcome if it is gone — never run against a dead
-    reference. Returns ``(ok, reason)``: ``(True, "ok")`` when the handler exists,
-    else ``(False, "handler_deleted:<id>")``. Never raises."""
+    revalidate the handler before running a claimed task — but must distinguish a
+    DEFINITIVE deletion (terminal) from a TRANSIENT storage error (retryable), or
+    a momentary SQLite lock permanently discards the task.
+
+    Returns ``(status, reason)``:
+    - ``("ok", "ok")`` — the handler exists; proceed.
+    - ``("dead", "handler_deleted:<id>")`` — DEFINITIVELY gone; terminal dead_ref.
+    - ``("unavailable", "handler_unavailable:<id>")`` — TRANSIENT registry error;
+      leave the task RETRYABLE (do not claim, do not terminate).
+    Never raises."""
     if not branch_def_id:
-        return False, "handler_missing:empty"
-    if _handler_branch_exists(base_path, branch_def_id):
-        return True, "ok"
-    return False, f"handler_deleted:{branch_def_id}"
+        return "dead", "handler_missing:empty"
+    st = _handler_branch_status(base_path, branch_def_id)
+    if st == "exists":
+        return "ok", "ok"
+    if st == "unavailable":
+        return "unavailable", f"handler_unavailable:{branch_def_id}"
+    return "dead", f"handler_deleted:{branch_def_id}"
 
 
 def _maybe_enqueue_investigation(
@@ -387,16 +397,21 @@ def _maybe_enqueue_investigation(
         return None
 
 
-def _handler_branch_exists(base_path: "Path | str", branch_def_id: str) -> bool:
-    """True when the branch definition exists in the registry.
+def _handler_branch_status(base_path: "Path | str", branch_def_id: str) -> str:
+    """TRI-STATE existence of a handler branch in the registry (Codex r19 #2):
 
-    Fail closed on registry read errors: a handler we cannot confirm exists
-    must not be enqueued against (the 2026-07-13 volume deletion left env/goal
-    pointers at wiped branch ids, and filings queued forever against them —
-    G4 in docs/design-notes/2026-07-15-user-patch-loop-reference-design.md).
+    - ``"exists"`` — the branch definition is present.
+    - ``"missing"`` — DEFINITIVE: the registry read succeeded and the id is
+      not there (a truly deleted handler). This is a terminal condition.
+    - ``"unavailable"`` — TRANSIENT: the registry read itself FAILED (e.g. a
+      SQLite ``database is locked``). This is NOT proof the handler is gone, so
+      the caller must treat it as RETRYABLE, never permanently discard the task.
+
+    Conflating the last two (the pre-r19 bug) turned a momentary lock into a
+    permanent ``dead_ref``, silently dropping investigation tasks.
     """
     if not branch_def_id:
-        return False
+        return "missing"
     try:
         from tinyassets.api.helpers import _base_path
         from tinyassets.daemon_server import get_branch_definition
@@ -408,16 +423,25 @@ def _handler_branch_exists(base_path: "Path | str", branch_def_id: str) -> bool:
         # invariant: path defaults go through the resolver APIs).
         del base_path  # documented: intentionally not the registry root
         get_branch_definition(_base_path(), branch_def_id=branch_def_id)
-        return True
+        return "exists"
     except KeyError:
-        return False
-    except Exception:  # noqa: BLE001 - fail closed, loudly
+        return "missing"
+    except Exception:  # noqa: BLE001 - TRANSIENT storage failure, loudly
         _logger.exception(
-            "_handler_branch_exists | registry read failed for %s; treating "
-            "handler as missing",
+            "_handler_branch_status | registry read FAILED for %s; TRANSIENT "
+            "(retryable) — NOT a definitive miss",
             branch_def_id,
         )
-        return False
+        return "unavailable"
+
+
+def _handler_branch_exists(base_path: "Path | str", branch_def_id: str) -> bool:
+    """True only when the handler DEFINITELY exists. Fail-closed bool wrapper for
+    the ENQUEUE boundary: a handler we cannot confirm (missing OR transiently
+    unavailable) is not enqueued against — the filing persists and can re-file,
+    so nothing is permanently discarded at enqueue. The CONSUMPTION path uses the
+    tri-state directly so a transient error stays retryable (Codex r19 #2)."""
+    return _handler_branch_status(base_path, branch_def_id) == "exists"
 
 
 def resolve_investigation_handler_detail(

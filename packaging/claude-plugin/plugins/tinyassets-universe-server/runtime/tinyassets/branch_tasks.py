@@ -365,19 +365,28 @@ def claim_task(
                     revalidate_investigation_handler,
                 )
 
-                ok, reason = revalidate_investigation_handler(
+                status, reason = revalidate_investigation_handler(
                     universe_path, row.get("branch_def_id", ""),
                 )
-                if not ok:
-                    # dead_ref is a TERMINAL status — stamp terminal_at like
-                    # mark_status does (Codex r16 #4), so get_status's loop-stall
-                    # signal counts this as a real terminal transition (an empty
-                    # terminal_at would make the wedge gate miss it).
+                if status == "dead":
+                    # DEFINITIVE missing handler → TERMINAL dead_ref. Stamp
+                    # terminal_at like mark_status does (Codex r16 #4), so
+                    # get_status's loop-stall signal counts this as a real
+                    # terminal transition (an empty terminal_at would make the
+                    # wedge gate miss it).
                     row["status"] = "dead_ref"
                     row["dead_ref_reason"] = reason
                     row["terminal_at"] = _now_iso()
                     _write_raw(qp, raw)
                     return None
+                if status == "unavailable":
+                    # TRANSIENT registry error (e.g. SQLite 'database is locked')
+                    # — NOT proof the handler is gone (Codex r19 #2). Do NOT claim
+                    # and do NOT terminate: leave the task PENDING so a later
+                    # claim retries once storage recovers. Never permanently
+                    # discard a task on a transient error.
+                    return None
+                # status == "ok" → the handler exists; fall through and claim.
             heartbeat_at, lease_expires_at = _lease_window()
             row["status"] = "running"
             row["claimed_by"] = claimer

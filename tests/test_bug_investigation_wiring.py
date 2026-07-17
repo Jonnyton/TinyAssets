@@ -358,6 +358,47 @@ def test_claim_task_refuses_dead_handler_at_consumption(tmp_path, monkeypatch):
     ), live["warnings"]
 
 
+def test_claim_task_transient_registry_error_stays_retryable(tmp_path, monkeypatch):
+    # Codex r19 #2: a TRANSIENT registry read error (e.g. SQLite 'database is
+    # locked') must NOT become a permanent dead_ref. Consumption-time
+    # revalidation distinguishes definitive-missing (terminal) from
+    # transient-unavailable (retryable): the task stays PENDING for a later claim
+    # once storage recovers — never permanently discarded on a momentary lock.
+    import json as _json
+    import sqlite3
+
+    import tinyassets.daemon_server as ds
+    from tinyassets.branch_tasks import claim_task, queue_path
+    from tinyassets.bug_investigation import enqueue_investigation_request
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+
+    request_id = enqueue_investigation_request(
+        bug_ref={"bug_id": "BUG-LOCK"},
+        canonical_branch_def_id="branch-canonical-abc",
+        base_path=tmp_path,
+    )
+    assert request_id   # enqueued while storage was healthy
+
+    # Simulate a TRANSIENT storage failure at claim-time revalidation (AFTER
+    # enqueue, so only the revalidation read sees it).
+    def _locked(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ds, "get_branch_definition", _locked)
+
+    claimed = claim_task(tmp_path, request_id, claimer="daemon-1")
+    assert claimed is None   # not claimed while storage is unavailable
+
+    raw = _json.loads(queue_path(tmp_path).read_text(encoding="utf-8"))
+    row = next(r for r in raw if r["branch_task_id"] == request_id)
+    # RETRYABLE: still pending, NOT terminal dead_ref, no dead_ref stamp.
+    assert row["status"] == "pending", row
+    assert not row.get("terminal_at"), row
+    assert not row.get("dead_ref_reason"), row
+
+
 # ── Integration: _wiki_file_bug call site ─────────────────────────────────────
 
 

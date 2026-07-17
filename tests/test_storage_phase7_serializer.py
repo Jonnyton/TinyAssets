@@ -99,6 +99,25 @@ def _make_branch() -> BranchDefinition:
 # ─────────────────────────────────────────────────────────────────────
 
 
+_NODE_TRUST_FIELDS = (
+    "approved", "approved_by", "approved_source_hash",
+    "approved_at", "approval_reason",
+)
+
+
+def _without_node_trust(branch_dict: dict) -> dict:
+    # Codex r19 #1: node approval provenance is NOT carried by the portable
+    # artifact (a content hash isn't authentication), so a branch round-trip
+    # clears it. Compare the DESCRIPTION fields; approval is re-established
+    # host-locally after import.
+    out = dict(branch_dict)
+    out["node_defs"] = [
+        {k: v for k, v in n.items() if k not in _NODE_TRUST_FIELDS}
+        for n in branch_dict.get("node_defs", [])
+    ]
+    return out
+
+
 def test_branch_round_trip_is_identity_with_externalized_nodes():
     original = _make_branch()
     payload, node_payloads = branch_to_yaml_payload(
@@ -107,7 +126,11 @@ def test_branch_round_trip_is_identity_with_externalized_nodes():
     node_lookup = {n["id"]: n for n in node_payloads}
     reconstituted = branch_from_yaml_payload(payload, node_lookup)
 
-    assert reconstituted.to_dict() == original.to_dict()
+    assert _without_node_trust(reconstituted.to_dict()) == _without_node_trust(
+        original.to_dict()
+    )
+    # And approval provenance was actually stripped on import.
+    assert all(not n.approved for n in reconstituted.node_defs)
 
 
 def test_branch_round_trip_is_identity_with_inline_nodes():
@@ -123,7 +146,9 @@ def test_branch_round_trip_is_identity_with_inline_nodes():
         assert "inline" in entry
         assert "path" not in entry
     reconstituted = branch_from_yaml_payload(payload)
-    assert reconstituted.to_dict() == original.to_dict()
+    assert _without_node_trust(reconstituted.to_dict()) == _without_node_trust(
+        original.to_dict()
+    )
 
 
 def test_branch_payload_surfaces_editable_fields_before_mechanical():
@@ -229,7 +254,21 @@ def test_node_round_trip_is_identity_for_prompt_template():
     )
     payload = node_to_yaml_payload(original)
     reconstituted = node_from_yaml_payload(payload)
-    assert reconstituted.to_dict() == original.to_dict()
+    # Codex r19 #1: DESCRIPTION fields round-trip identically, but the
+    # TRUST-ASSERTION (approval provenance) fields are NEVER carried by the
+    # portable artifact — a plain content hash is not authentication, so
+    # imported source is never trusted-approved (the host re-approves
+    # host-locally). So approval is CLEARED on import even though it was set.
+    assert reconstituted.approved is False
+    assert reconstituted.approved_source_hash == ""
+    r, o = reconstituted.to_dict(), original.to_dict()
+    for _f in (
+        "approved", "approved_by", "approved_source_hash",
+        "approved_at", "approval_reason",
+    ):
+        r.pop(_f, None)
+        o.pop(_f, None)
+    assert r == o
 
 
 def test_node_payload_omits_defaults_for_small_files():
