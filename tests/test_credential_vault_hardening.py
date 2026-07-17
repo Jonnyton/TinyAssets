@@ -82,6 +82,17 @@ def store():
     return VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default")
 
 
+def _authorize_run(platform, run_id: str, scope: SecretScope) -> None:
+    """Install the broker-side authoritative run lookup used by grant tests."""
+    from tinyassets.credentials import JobContext
+
+    platform._run_context_lookup = lambda candidate: (
+        JobContext(run_id=run_id, universe_id=scope.universe_id, founder_id=scope.founder_id)
+        if candidate == run_id
+        else None
+    )
+
+
 # ===========================================================================
 # Finding 1 — lifecycle + custody metadata must be authenticated, not trusted
 # ===========================================================================
@@ -628,6 +639,8 @@ def test_full_local_directory_rollback_forces_reauth(tmp_path):
 
 
 def test_job_grant_resolves_and_fails_closed(platform, store):
+    import inspect
+
     from tinyassets.credentials import JobContext, JobGrant
 
     universe_scope = SecretScope(
@@ -635,7 +648,13 @@ def test_job_grant_resolves_and_fails_closed(platform, store):
         destination="octo/repo", purpose="external_write",
     )
     d = platform.put(store, universe_scope, SecretKind.GITHUB_PAT, SecretBytes(b"ghp_worker"))
+    _authorize_run(platform, "run-1", universe_scope)
     grant = platform.mint_job_grant(d.binding, universe_scope, run_id="run-1", ttl=3600)
+
+    signature = inspect.signature(PlatformVaultBackend.resolve_job_grant)
+    assert list(signature.parameters) == ["self", "grant", "verify_context"]
+    assert signature.parameters["verify_context"].default is None
+    assert signature.parameters["verify_context"].kind is inspect.Parameter.KEYWORD_ONLY
 
     # Opaque + non-observable: the grant exposes NO run_id/universe_id (nothing to
     # replay) and the capability cannot be extracted.
@@ -645,9 +664,11 @@ def test_job_grant_resolves_and_fails_closed(platform, store):
         import dataclasses
         dataclasses.asdict(grant)
 
-    # Resolves against the grant's OWN authoritative context — no caller-supplied ids.
-    with platform.resolve_job_grant(grant) as lease:
-        assert lease.reveal() == b"ghp_worker"
+    # The live executor check is mandatory-in-effect while the callable signature
+    # remains stable: omitting it fails closed.
+    with pytest.raises(CredentialUnavailable) as exc_missing_verifier:
+        platform.resolve_job_grant(grant)
+    assert exc_missing_verifier.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
 
     # The broker hands the AUTHORITATIVE context (from the stored row, not caller
     # input) to verify_context so S3 can bind to the live executor identity.
@@ -677,14 +698,32 @@ def test_job_grant_resolves_and_fails_closed(platform, store):
     # Forged capability → fail closed.
     forged = JobGrant(grant_id=grant.grant_id, secret=b"\x00" * 32)
     with pytest.raises(CredentialUnavailable) as exc3:
-        platform.resolve_job_grant(forged)
+        platform.resolve_job_grant(forged, verify_context=lambda _ctx: True)
     assert exc3.value.code == VaultErrorCode.LEASE_LOST
+
+
+def test_mint_job_grant_requires_authoritative_run_lookup(platform, store):
+    """The caller's raw run_id/scope assertion is never mint authority."""
+    from tinyassets.credentials import JobContext
+
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    with pytest.raises(CredentialUnavailable) as missing:
+        platform.mint_job_grant(d.binding, SCOPE, run_id="run-1")
+    assert missing.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+
+    platform._run_context_lookup = lambda _run_id: JobContext(
+        run_id="run-1", universe_id="other-universe", founder_id=SCOPE.founder_id
+    )
+    with pytest.raises(CredentialUnavailable) as mismatch:
+        platform.mint_job_grant(d.binding, SCOPE, run_id="run-1")
+    assert mismatch.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
 
 
 def test_job_grant_rejects_malformed_grant_object(platform, store):
     """r10 #4: a non-JobGrant object is a TYPED INVALID_ARGUMENT, never a raw
     AttributeError leaking from ``grant.grant_id``."""
     d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    _authorize_run(platform, "run-x", SCOPE)
     platform.mint_job_grant(d.binding, SCOPE, run_id="run-x")
     for bad in (None, "grant:v1:deadbeef", object(), 42, {"grant_id": "x"}):
         with pytest.raises(CredentialUnavailable) as exc:
@@ -698,18 +737,20 @@ def test_job_grant_rejects_non_finite_and_unbounded_ttl(platform, store):
     from tinyassets.credentials.grants import MAX_JOB_GRANT_TTL
 
     d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    _authorize_run(platform, "run-1", SCOPE)
     for bad in (float("inf"), float("nan"), float("-inf"), 0.0, -1.0, MAX_JOB_GRANT_TTL + 1):
         with pytest.raises(CredentialUnavailable) as exc:
             platform.mint_job_grant(d.binding, SCOPE, run_id="run-1", ttl=bad)
         assert exc.value.code == VaultErrorCode.INVALID_ARGUMENT
     grant = platform.mint_job_grant(d.binding, SCOPE, run_id="run-1", ttl=60.0)
-    with platform.resolve_job_grant(grant) as lease:
+    with platform.resolve_job_grant(grant, verify_context=lambda _ctx: True) as lease:
         assert lease.reveal() == b"tok"
 
 
 def test_job_grant_expired_fails_closed(platform, store, tmp_path):
     """An expired grant resolves to a typed EXPIRED, never a stale credential."""
     d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    _authorize_run(platform, "run-1", SCOPE)
     grant = platform.mint_job_grant(d.binding, SCOPE, run_id="run-1", ttl=60.0)
     conn = sqlite3.connect(str(tmp_path / "vault.db"))
     conn.execute(
@@ -718,8 +759,40 @@ def test_job_grant_expired_fails_closed(platform, store, tmp_path):
     conn.commit()
     conn.close()
     with pytest.raises(CredentialUnavailable) as exc:
-        platform.resolve_job_grant(grant)
+        platform.resolve_job_grant(grant, verify_context=lambda _ctx: True)
     assert exc.value.code == VaultErrorCode.EXPIRED
+
+
+@pytest.mark.parametrize(
+    ("column", "bad_value"),
+    [
+        ("capability_hash", "bad"),
+        ("ref", "not-a-secret-ref"),
+        ("founder_id", ""),
+        ("universe_id", ""),
+        ("provider", ""),
+        ("destination", ""),
+        ("purpose", ""),
+        ("kind", "not-a-kind"),
+        ("run_id", ""),
+        ("expires_at", "nan"),
+    ],
+)
+def test_corrupt_grant_rows_are_typed(platform, store, tmp_path, column, bad_value):
+    """Every persisted grant field is normalized before capability/context use."""
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"tok"))
+    _authorize_run(platform, "run-1", SCOPE)
+    grant = platform.mint_job_grant(d.binding, SCOPE, run_id="run-1", ttl=60.0)
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    conn.execute(
+        f"UPDATE vault_job_grants SET {column} = ? WHERE grant_id = ?",
+        (bad_value, grant.grant_id),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.resolve_job_grant(grant, verify_context=lambda _ctx: True)
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
 
 
 # ===========================================================================
@@ -1149,6 +1222,34 @@ def test_complete_refresh_requires_valid_ticket(platform, store):
     with pytest.raises(CredentialUnavailable) as exc:
         platform.complete_refresh(d2.binding, SCOPE, bogus, SecretBytes(b"evil"))
     assert exc.value.code == VaultErrorCode.LEASE_LOST
+    for malformed in (None, object(), "ticket"):
+        with pytest.raises(CredentialUnavailable) as malformed_exc:
+            platform.complete_refresh(d2.binding, SCOPE, malformed, SecretBytes(b"evil"))
+        assert malformed_exc.value.code == VaultErrorCode.INVALID_ARGUMENT
+
+
+@WINDOWS_ONLY
+def test_local_complete_refresh_rejects_malformed_ticket(tmp_path):
+    local = DpapiVaultBackend(
+        daemon_id="daemon-ticket", store_id="daemon:default", base=tmp_path / "local"
+    )
+    local.attest()
+    local_store = VaultStore(
+        custody=Custody.DAEMON_LOCAL,
+        store_id="daemon:default",
+        daemon_id="daemon-ticket",
+    )
+    descriptor = local.put(
+        local_store,
+        SCOPE,
+        SecretKind.GITHUB_APP_USER_TOKEN,
+        SecretBytes(b"token"),
+    )
+    with pytest.raises(CredentialUnavailable) as exc:
+        local.complete_refresh(
+            descriptor.binding, SCOPE, object(), SecretBytes(b"replacement")
+        )
+    assert exc.value.code == VaultErrorCode.INVALID_ARGUMENT
 
 
 # ===========================================================================
@@ -1254,8 +1355,6 @@ def test_bump_for_restore_forces_reauth(tmp_path):
     """``backup-restore.sh`` explicitly advances the guard so a restore ALWAYS
     forces reauthorization — belt-and-suspenders even if the guard were co-located
     and carried by a restore."""
-    from tinyassets.credentials.rollback import EpochGuard
-
     guard = tmp_path / "guard"
     kp = _kp("k1")
     be = PlatformVaultBackend(
@@ -1266,7 +1365,7 @@ def test_bump_for_restore_forces_reauth(tmp_path):
     d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v"))
     with be.get(d.binding, SCOPE) as lease:
         assert lease.reveal() == b"v"  # fine before the restore signal
-    EpochGuard("platform:default", guard_dir=guard).bump_for_restore()
+    be._epoch.bump_for_restore()
     with pytest.raises(CredentialUnavailable) as exc:
         be.get(d.binding, SCOPE)
     assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
@@ -1330,13 +1429,94 @@ def test_rollback_guard_unavailable_fails_closed(platform, store, monkeypatch):
 
     d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v"))
 
-    def _boom(self, db_epoch):
+    def _boom(self):
         raise GuardUnavailable("guard volume offline")
 
-    monkeypatch.setattr(EpochGuard, "is_rolled_back", _boom)
+    monkeypatch.setattr(EpochGuard, "read", _boom)
     with pytest.raises(CredentialUnavailable) as exc:
         platform.get(d.binding, SCOPE)
     assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+
+# ===========================================================================
+# Review r11 findings 1-4 — reserve-before-commit, guard identity, stable reads
+# ===========================================================================
+
+
+def test_guard_reservation_failure_aborts_delete(platform, store, monkeypatch):
+    """A vault commit can never outrun a failed external epoch reservation."""
+    from tinyassets.credentials.rollback import EpochGuard, GuardUnavailable
+
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"must-survive"))
+
+    def _fail_reservation(self, expected_epoch):
+        raise GuardUnavailable("injected guard write failure")
+
+    monkeypatch.setattr(EpochGuard, "reserve", _fail_reservation, raising=False)
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.delete(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+    with platform.get(d.binding, SCOPE) as lease:
+        assert lease.reveal() == b"must-survive"
+
+
+def test_missing_guard_after_mutation_forces_reauthorization(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"must-not-recover"))
+    guard_dir = tmp_path / "_vault_guard"
+    shutil.rmtree(guard_dir)
+    guard_dir.mkdir()  # recreated but empty recovery domain
+    fresh = PlatformVaultBackend(
+        platform._keys, store_id="platform:default", db_path=tmp_path / "vault.db"
+    )
+    with pytest.raises(CredentialUnavailable) as exc:
+        fresh.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+def test_mismatched_guard_identity_forces_reauthorization(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"must-not-recover"))
+    guard_db = tmp_path / "_vault_guard" / "rollback_guard.db"
+    conn = sqlite3.connect(str(guard_db))
+    conn.execute("UPDATE guard_epoch SET store_id = 'different-store-generation'")
+    conn.commit()
+    conn.close()
+    fresh = PlatformVaultBackend(
+        platform._keys, store_id="platform:default", db_path=tmp_path / "vault.db"
+    )
+    with pytest.raises(CredentialUnavailable) as exc:
+        fresh.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+def test_corrupt_guard_fails_closed(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"must-not-recover"))
+    guard_db = tmp_path / "_vault_guard" / "rollback_guard.db"
+    guard_db.write_bytes(b"not a sqlite database")
+    fresh = PlatformVaultBackend(
+        platform._keys, store_id="platform:default", db_path=tmp_path / "vault.db"
+    )
+    with pytest.raises(CredentialUnavailable) as exc:
+        fresh.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+
+@WINDOWS_ONLY
+def test_independent_local_daemons_do_not_share_guard_identity(tmp_path):
+    first = DpapiVaultBackend(daemon_id="daemon-a", store_id="daemon:default", base=tmp_path / "a")
+    second = DpapiVaultBackend(daemon_id="daemon-b", store_id="daemon:default", base=tmp_path / "b")
+    first.attest()
+    second.attest()
+    store_a = VaultStore(
+        custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="daemon-a"
+    )
+    store_b = VaultStore(
+        custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="daemon-b"
+    )
+    a = first.put(store_a, SCOPE, SecretKind.API_KEY, SecretBytes(b"a"))
+    b = second.put(store_b, SCOPE, SecretKind.API_KEY, SecretBytes(b"b"))
+    with first.get(a.binding, SCOPE) as lease_a, second.get(b.binding, SCOPE) as lease_b:
+        assert lease_a.reveal() == b"a"
+        assert lease_b.reveal() == b"b"
 
 
 # ===========================================================================

@@ -157,6 +157,15 @@ def bump_epoch(conn: sqlite3.Connection) -> int:
     return new
 
 
+def set_epoch(conn: sqlite3.Connection, epoch: int) -> None:
+    """Commit an epoch already durably reserved in the external guard."""
+    conn.execute(
+        "INSERT INTO vault_meta(id, epoch) VALUES(1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch",
+        (int(epoch),),
+    )
+
+
 def get_live_version(conn: sqlite3.Connection, ref: str) -> int | None:
     row = conn.execute(
         "SELECT live_version FROM vault_local_live WHERE ref = ?", (ref,)

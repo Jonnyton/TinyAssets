@@ -22,8 +22,11 @@ and fail-closed (read/write errors raise, never silently return zero).
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import os
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 _GUARD_DB = "rollback_guard.db"
@@ -50,6 +53,40 @@ class GuardUnavailable(Exception):
     """The guard could not be read/written — callers must FAIL CLOSED."""
 
 
+class GuardMismatch(Exception):
+    """The guard identity/epoch does not match the locked vault store."""
+
+
+def store_guard_identity(
+    *, custody: str, store_id: str, daemon_id: str | None,
+    recovery_domain: str | Path,
+) -> str:
+    """Return an opaque key for one immutable custody/store generation."""
+    domain = os.path.normcase(str(Path(recovery_domain).resolve(strict=False)))
+    encoded = json.dumps(
+        [custody, store_id, daemon_id, domain], separators=(",", ":")
+    ).encode("utf-8")
+    return "store:v1:" + hashlib.sha256(encoded).hexdigest()
+
+
+def require_current(guard: "EpochGuard", read_db_epoch: Callable[[], int]) -> int:
+    """Return the locked DB epoch only when its guard snapshot is stable/current."""
+    before = guard.read()  # guard-first ordering prevents stale-DB false alarms
+    db_epoch = read_db_epoch()
+    after = guard.read()
+    if before != after:
+        # The vault lock excludes normal reservations; a concurrent guard change
+        # is an explicit restore signal and must fail closed.
+        raise GuardMismatch
+    if after is None:
+        if db_epoch != 0:
+            raise GuardMismatch
+        after = guard.initialize()
+    if after != db_epoch:
+        raise GuardMismatch
+    return db_epoch
+
+
 class EpochGuard:
     """Durable, concurrency-safe high-water epoch for one store, outside /data."""
 
@@ -70,14 +107,67 @@ class EpochGuard:
             raise GuardUnavailable(str(exc)) from None
         return conn
 
-    def read(self) -> int:
+    def read(self) -> int | None:
         conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT epoch FROM guard_epoch WHERE store_id = ?", (self._store_id,)
             ).fetchone()
-            return 0 if row is None else int(row[0])
-        except sqlite3.Error as exc:
+            return None if row is None else int(row[0])
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            raise GuardUnavailable(str(exc)) from None
+        finally:
+            conn.close()
+
+    def initialize(self) -> int:
+        """Create the epoch-zero identity iff it has never existed."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO guard_epoch(store_id, epoch) VALUES(?, 0) "
+                "ON CONFLICT(store_id) DO NOTHING",
+                (self._store_id,),
+            )
+            row = conn.execute(
+                "SELECT epoch FROM guard_epoch WHERE store_id = ?", (self._store_id,)
+            ).fetchone()
+            if row is None:
+                raise sqlite3.DatabaseError("guard initialization lost its row")
+            current = int(row[0])
+            conn.execute("COMMIT")
+            return current
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise GuardUnavailable(str(exc)) from None
+        finally:
+            conn.close()
+
+    def reserve(self, expected_epoch: int) -> int:
+        """Durably reserve exactly the next epoch before the vault commits."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT epoch FROM guard_epoch WHERE store_id = ?", (self._store_id,)
+            ).fetchone()
+            if row is None or int(row[0]) != int(expected_epoch):
+                raise GuardMismatch
+            reserved = int(expected_epoch) + 1
+            conn.execute(
+                "UPDATE guard_epoch SET epoch = ? WHERE store_id = ?",
+                (reserved, self._store_id),
+            )
+            conn.execute("COMMIT")
+            return reserved
+        except GuardMismatch:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
             raise GuardUnavailable(str(exc)) from None
         finally:
             conn.close()
@@ -106,8 +196,14 @@ class EpochGuard:
             conn.close()
 
     def is_rolled_back(self, db_epoch: int) -> bool:
-        return int(db_epoch) < self.read()
+        current = self.read()
+        return current is None and int(db_epoch) != 0 or (
+            current is not None and int(db_epoch) != current
+        )
 
     def bump_for_restore(self) -> None:
         """Force a rollback signal (``backup-restore.sh`` calls this on restore)."""
-        self.advance(self.read() + 1)
+        current = self.read()
+        if current is None:
+            raise GuardMismatch
+        self.advance(current + 1)

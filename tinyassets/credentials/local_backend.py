@@ -47,7 +47,13 @@ from .crypto import identity_aad
 from .errors import CredentialUnavailable, VaultErrorCode
 from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import local_store_dir
-from .rollback import EpochGuard, GuardUnavailable
+from .rollback import (
+    EpochGuard,
+    GuardMismatch,
+    GuardUnavailable,
+    require_current,
+    store_guard_identity,
+)
 from .secret_bytes import SecretBytes, SecretLease, require_nonempty_bounded
 from .types import (
     ROTATING_TOKEN_KINDS,
@@ -311,7 +317,15 @@ class DpapiVaultBackend:
         self._leases = RefreshLeaseManager(self._control_connect)
         # Anti-rollback epoch guard in an INDEPENDENT recovery domain OUTSIDE the
         # store directory (so a full-directory restore does not carry it).
-        self._epoch = EpochGuard(store_id, guard_dir=guard_dir)
+        self._epoch = EpochGuard(
+            store_guard_identity(
+                custody=Custody.DAEMON_LOCAL.value,
+                store_id=store_id,
+                daemon_id=daemon_id,
+                recovery_domain=self._control_db,
+            ),
+            guard_dir=guard_dir,
+        )
 
     def _all_version_paths(self, ref: str) -> list[Path]:
         """Every on-disk versioned sidecar for a ref (for durable GC)."""
@@ -385,21 +399,45 @@ class DpapiVaultBackend:
 
     def _require_no_rollback(self, conn: sqlite3.Connection | None = None) -> None:
         if conn is not None:
-            db_epoch = leases.read_epoch(conn)
-        else:
-            self._leases.ensure_schema()
-            c = self._control_connect()
-            try:
-                db_epoch = leases.read_epoch(c)
-            finally:
-                with contextlib.suppress(sqlite3.Error):
-                    c.close()
+            self._check_no_rollback_locked(conn)
+            return
+        self._leases.ensure_schema()
+        c = self._control_connect()
         try:
-            rolled = self._epoch.is_rolled_back(db_epoch)
+            c.execute("BEGIN IMMEDIATE")
+            self._check_no_rollback_locked(c)
+            c.execute("COMMIT")
+        except CredentialUnavailable:
+            with contextlib.suppress(sqlite3.Error):
+                c.execute("ROLLBACK")
+            raise
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                c.execute("ROLLBACK")
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                c.close()
+
+    def _check_no_rollback_locked(self, conn: sqlite3.Connection) -> None:
+        try:
+            require_current(self._epoch, lambda: leases.read_epoch(conn))
+        except GuardMismatch:
+            raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED) from None
         except GuardUnavailable:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
-        if rolled:
-            raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED)
+
+    def _reserve_epoch(self, conn: sqlite3.Connection) -> int:
+        try:
+            db_epoch = require_current(self._epoch, lambda: leases.read_epoch(conn))
+            reserved = self._epoch.reserve(db_epoch)
+        except GuardMismatch:
+            raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED) from None
+        except GuardUnavailable:
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        leases.set_epoch(conn, reserved)
+        return reserved
 
     @property
     def store_id(self) -> str:
@@ -660,7 +698,6 @@ class DpapiVaultBackend:
         ticket: RefreshTicket | None = None,
         bump: bool = True,
     ) -> SecretDescriptor:
-        new_epoch: int | None = None
         try:
             # Whole mutation under an exclusive control-DB lock. The versioned
             # sidecar write is SUBORDINATE; the control-DB commit (which advances
@@ -714,7 +751,7 @@ class DpapiVaultBackend:
                 self._write_sidecar(ref, version, sidecar)  # inert until commit
                 leases.set_live_version(conn, ref, version)  # atomic commit point
                 if bump:
-                    new_epoch = leases.bump_epoch(conn)  # anti-rollback (skip on probe)
+                    self._reserve_epoch(conn)  # reserve externally before control-DB commit
         except CredentialUnavailable:
             raise
         except sqlite3.Error:
@@ -722,9 +759,6 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
 
         # Commit succeeded — the new version is authoritative.
-        if new_epoch is not None:
-            with contextlib.suppress(GuardUnavailable):
-                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
         # Durable GC: record EVERY non-live versioned sidecar as pending FIRST
         # (durable), then sweep. A locked/leftover old blob is retried on a later
         # op's sweep instead of silently surviving the rotation.
@@ -792,7 +826,6 @@ class DpapiVaultBackend:
         # pointer + optional tombstone) FIRST, then remove the sidecar files. A
         # crash between leaves the ref not-live (control DB authoritative) and,
         # with the tombstone, never re-claimable.
-        new_epoch: int | None = None
         did_delete = False
         try:
             with self._leases.mutation_lock() as conn:
@@ -810,7 +843,7 @@ class DpapiVaultBackend:
                 )
                 if tombstone:
                     leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
-                    new_epoch = leases.bump_epoch(conn)
+                    self._reserve_epoch(conn)
                 leases.clear_live_version(conn, binding.ref)
                 # Record EVERY on-disk version as DURABLE pending GC in the SAME
                 # committed transaction as the tombstone — so a crash/lock after
@@ -825,9 +858,6 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         # control-DB state committed durably — now GC EVERY versioned sidecar for
         # the ref (durable, not just the live one), so no old encrypted blob stays.
-        if new_epoch is not None:
-            with contextlib.suppress(GuardUnavailable):
-                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
         if did_delete:
             self._sweep_pending_gc()  # remove the just-recorded pending blobs
             if self._versions_on_disk(binding.ref):
@@ -882,7 +912,6 @@ class DpapiVaultBackend:
             at_version = int(at_version)
         except (TypeError, ValueError):
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, binding.ref) from None
-        new_epoch: int | None = None
         try:
             with self._leases.mutation_lock() as conn:
                 self._require_no_rollback(conn)  # restored store → forced reauth
@@ -917,15 +946,12 @@ class DpapiVaultBackend:
                     leases.capability_hash(secret),
                 )
                 if won:
-                    new_epoch = leases.bump_epoch(conn)
+                    self._reserve_epoch(conn)
         except CredentialUnavailable:
             raise
         except sqlite3.Error:
             self._attested = None
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
-        if new_epoch is not None:
-            with contextlib.suppress(GuardUnavailable):
-                self._epoch.advance(new_epoch)  # best-effort; guard self-heals next op
         if not won:
             return None
         return RefreshTicket(
@@ -952,6 +978,8 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        if not isinstance(ticket, RefreshTicket):
+            raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT, binding.ref)
         if ticket.ref != binding.ref:
             raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, binding.ref)
         return self._put(

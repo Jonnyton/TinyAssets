@@ -14,11 +14,11 @@ repr/asdict/pickle leak), exactly like the refresh capability. The grant object
 deliberately exposes NO ``run_id``/``universe_id`` — those live only in the
 broker-side row, so there is nothing for a bearer to replay.
 
-An optional ``verify_context`` callback lets S3 bind resolution to the LIVE
-authenticated executor identity: the broker hands it the grant's authoritative
-:class:`JobContext` and requires ``True``, failing closed on any falsey/raising
-result. The TTL is validated finite, positive, and bounded at mint time so a
-grant can never be non-expiring.
+The public resolver keeps ``verify_context=None`` in its signature for consumer
+compatibility, but verification is mandatory in effect: omission, a falsey
+result, or a raised callback fails closed. The broker hands the verifier the
+grant's authoritative :class:`JobContext`. The TTL is validated finite,
+positive, and bounded at mint time so a grant can never be non-expiring.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from typing import NoReturn
 
 from .errors import CredentialUnavailable, VaultErrorCode
 from .secret_bytes import SecretBytes
+from .types import SecretKind, is_secret_ref
 
 # A job grant is short-lived by construction: it exists only for the lifetime of
 # one isolated worker job. Reject a TTL beyond this upper bound (and any
@@ -62,13 +63,28 @@ class JobContext:
 
     Broker-trusted: reconstructed from the stored grant row (which the daemon
     wrote from the run record at mint time), NEVER from caller input. Handed to
-    an optional ``verify_context`` callback so S3 can confirm the LIVE executor
-    identity matches the grant. Carries only non-secret identifiers.
+    a mandatory-in-effect ``verify_context`` callback so S3 confirms the LIVE
+    executor identity matches the grant. Carries only non-secret identifiers.
     """
 
     run_id: str
     universe_id: str
     founder_id: str
+
+
+@dataclass(frozen=True)
+class ParsedGrant:
+    grant_id: str
+    capability_hash: str
+    ref: str
+    founder_id: str
+    universe_id: str
+    provider: str
+    destination: str
+    purpose: str
+    kind: SecretKind
+    run_id: str
+    expires_at: float
 
 
 GRANTS_SCHEMA = """
@@ -189,6 +205,53 @@ def read_grant(conn: sqlite3.Connection, grant_id: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM vault_job_grants WHERE grant_id = ?", (grant_id,)
     ).fetchone()
+
+
+def parse_grant(row: sqlite3.Row) -> ParsedGrant:
+    """Normalize every persisted field before capability or context use."""
+    try:
+        grant_id = row["grant_id"]
+        capability = row["capability_hash"]
+        ref = row["ref"]
+        text = {
+            name: row[name]
+            for name in (
+                "founder_id", "universe_id", "provider", "destination",
+                "purpose", "run_id",
+            )
+        }
+        kind = SecretKind(row["kind"])
+        expires_at = float(row["expires_at"])
+        if not is_grant_id(grant_id) or not is_secret_ref(ref):
+            raise ValueError
+        if not isinstance(capability, str) or len(capability) != 64:
+            raise ValueError
+        int(capability, 16)
+        if any(
+            not isinstance(value, str)
+            or not value
+            or len(value) > 4096
+            or any(ch in value for ch in ("\x00", "\r", "\n"))
+            for value in text.values()
+        ):
+            raise ValueError
+        if not math.isfinite(expires_at):
+            raise ValueError
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
+    return ParsedGrant(
+        grant_id=grant_id,
+        capability_hash=capability,
+        ref=ref,
+        founder_id=text["founder_id"],
+        universe_id=text["universe_id"],
+        provider=text["provider"],
+        destination=text["destination"],
+        purpose=text["purpose"],
+        kind=kind,
+        run_id=text["run_id"],
+        expires_at=expires_at,
+    )
 
 
 def revoke_grant(conn: sqlite3.Connection, grant_id: str) -> None:
