@@ -169,22 +169,20 @@ def _refresh_worker(args: tuple[str, str, str, str, str, int]) -> str:
         ref=ref, kind=SecretKind.GITHUB_APP_USER_TOKEN, scope=SCOPE, store=_store()
     )
     try:
-        with be.refresh_lease(ref, f"worker-{n}", wait=60.0) as lease:
-            if not lease.still_held():
-                return "aborted-stale"
+        with be.refresh_lease(ref, f"worker-{n}", wait=60.0):
             # re-check the stored version INSIDE the lock
             with be.get(binding, SCOPE) as got:
                 current = got.version
-            if current == 1:
-                # one-time refresh exchange, committed under the fence
-                Path(marker_dir, f"refresh-{n}.marker").write_text("1", encoding="utf-8")
-                be.put(
-                    _store(), SCOPE, SecretKind.GITHUB_APP_USER_TOKEN,
-                    SecretBytes(f"refreshed-by-{n}".encode()),
-                    replace=ref, expected_version=current, fence=lease,
-                )
-                return "refreshed"
-            return "skipped"
+            if current != 1:
+                return "skipped"
+            ticket = be.begin_refresh(binding, SCOPE, f"worker-{n}", at_version=current)
+            if ticket is None:
+                return "skipped"
+            Path(marker_dir, f"refresh-{n}.marker").write_text("1", encoding="utf-8")
+            be.complete_refresh(
+                binding, SCOPE, ticket, SecretBytes(f"refreshed-by-{n}".encode())
+            )
+            return "refreshed"
     except Exception as exc:  # noqa: BLE001
         return f"error:{type(exc).__name__}:{exc}"
 
@@ -361,7 +359,7 @@ def test_refresh_claim_survives_hard_crash(tmp_path):
 def test_vault_db_durability_posture(tmp_path):
     be = _build(str(tmp_path / "v.db"), sodium.randombytes(32).hex(), "k1")
     info = be.durability_info()
-    assert info["synchronous"] == "FULL"  # power-loss durable
+    assert info["synchronous"] == "EXTRA"  # ACID power-loss setting (not FULL)
     # NOT WAL — avoids the SQLite WAL-reset concurrent-writer corruption bug.
     assert info["journal_mode"].upper() in {"TRUNCATE", "DELETE"}
     assert info["journal_mode"].upper() != "WAL"

@@ -204,9 +204,9 @@ def test_forged_binding_cannot_delete_local(tmp_path):
 def test_fenced_lease_evicts_stalled_holder(platform, store):
     """A holder whose lease expired (stall/crash) is fenced out: it cannot commit
     its refresh, and the holder that stole the lease commits exactly once."""
-    d = platform.put(
-        store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok")
-    )
+    # Non-rotating kind: exercises the fence primitive directly (rotating-token
+    # kinds must go through begin/complete_refresh, tested separately).
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"tok"))
     ref = d.binding.ref
 
     cm_a = platform.refresh_lease(ref, "A", ttl=0.05, wait=2.0)
@@ -221,14 +221,14 @@ def test_fenced_lease_evicts_stalled_holder(platform, store):
         # Stalled holder A cannot commit — the write CAS-checks the fence.
         with pytest.raises(CredentialUnavailable) as exc:
             platform.put(
-                store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"ghost"),
+                store, SCOPE, SecretKind.API_KEY, SecretBytes(b"ghost"),
                 replace=ref, expected_version=1, fence=lease_a,
             )
         assert exc.value.code == VaultErrorCode.LEASE_LOST
 
         # The current holder B commits exactly one refresh.
         d2 = platform.put(
-            store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"fresh"),
+            store, SCOPE, SecretKind.API_KEY, SecretBytes(b"fresh"),
             replace=ref, expected_version=1, fence=lease_b,
         )
         assert d2.version == 2
@@ -368,11 +368,8 @@ def test_begin_refresh_is_exclusive_and_dos_safe(platform, store):
     # a claim for a NON-EXISTENT version inserts nothing and cannot block it
     assert platform.begin_refresh(b, SCOPE, "X", at_version=99) is None
 
-    # complete A's refresh: v1 -> v2
-    platform.put(
-        store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t2"),
-        replace=b.ref, expected_version=t_a.version,
-    )
+    # complete A's refresh: v1 -> v2 (via the sanctioned capability-bound path)
+    platform.complete_refresh(b, SCOPE, t_a, SecretBytes(b"t2"))
     # a straggler still holding the old view (v1) is refused — cannot re-redeem
     assert platform.begin_refresh(b, SCOPE, "C", at_version=1) is None
     # the NEW current version is independently redeemable exactly once
@@ -549,6 +546,103 @@ def test_broker_protocol_includes_refresh(platform):
     assert hasattr(VaultBroker, "complete_refresh")
 
 
+def test_put_replace_refused_for_rotating_kind(platform, store):
+    """A rotating one-time-token kind cannot be advanced by a bare CAS — only
+    complete_refresh (with a minted capability) may."""
+    for kind in (SecretKind.GITHUB_APP_USER_TOKEN, SecretKind.OAUTH2_GENERIC):
+        d = platform.put(store, SCOPE, kind, SecretBytes(b"v1"))
+        with pytest.raises(CredentialUnavailable) as exc:
+            platform.put(
+                store, SCOPE, kind, SecretBytes(b"v2"), replace=d.binding.ref, expected_version=1
+            )
+        assert exc.value.code == VaultErrorCode.LEASE_LOST
+    # non-rotating kinds still CAS-replace freely
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"a1"))
+    d2 = platform.put(
+        store, SCOPE, SecretKind.API_KEY, SecretBytes(b"a2"),
+        replace=d.binding.ref, expected_version=1,
+    )
+    assert d2.version == 2
+
+
+def test_claim_table_bounded_and_retired_on_delete(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t1"))
+    b = d.binding
+    for i in range(3):  # three refresh cycles
+        tk = platform.begin_refresh(b, SCOPE, "A", at_version=i + 1)
+        platform.complete_refresh(b, SCOPE, tk, SecretBytes(f"t{i + 2}".encode()))
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM vault_refresh_claims WHERE ref = ?", (b.ref,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 1  # high-water: one row per ref, never unbounded
+    # delete retires the claim
+    platform.delete(b, SCOPE)
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    try:
+        n2 = conn.execute(
+            "SELECT COUNT(*) FROM vault_refresh_claims WHERE ref = ?", (b.ref,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n2 == 0
+
+
+def test_attestation_fails_when_wrong_scope_returns_wrong_code(tmp_path):
+    """Wrong-scope probe must fail with SCOPE_MISMATCH — a fake backend returning
+    NOT_FOUND is NOT accepted as scope-isolation proof."""
+
+    class WrongScopeNotFound(PlatformVaultBackend):
+        def _probe_get(self, binding, expected):
+            if expected.destination == "__wrong_destination__":
+                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)  # wrong code
+            return super()._probe_get(binding, expected)
+
+    be = WrongScopeNotFound(_kp("k1"), store_id="platform:default", db_path=tmp_path / "v.db")
+    result = be.attest()
+    assert result.ok is False
+    assert result.checks.get("wrong_scope_fails") is False
+
+
+@WINDOWS_ONLY
+def test_dacl_failure_on_write_preserves_old_credential(tmp_path, monkeypatch):
+    """A failed CAS (DACL can't be applied) must leave the OLD credential intact —
+    never destroy the existing blob."""
+    from tinyassets.credentials import local_backend as lb
+
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"original"))
+
+    def _boom(_path):
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE)
+
+    monkeypatch.setattr(lb, "set_restrictive_dacl", _boom)
+    with pytest.raises(CredentialUnavailable):
+        be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"replacement"),
+               replace=d.binding.ref, expected_version=1)
+    monkeypatch.undo()
+    with be.get(d.binding, SCOPE) as lease:
+        assert lease.reveal() == b"original"  # OLD credential survived
+
+
+@WINDOWS_ONLY
+def test_local_sidecar_non_object_is_typed(tmp_path):
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    # overwrite with valid JSON that is NOT an object → must not leak AttributeError
+    be._blob_path(d.binding.ref).write_text("[]", encoding="utf-8")
+    with pytest.raises(CredentialUnavailable) as exc:
+        be.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+
+
 def test_complete_refresh_requires_valid_ticket(platform, store):
     d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t1"))
     ticket = platform.begin_refresh(d.binding, SCOPE, "A", at_version=1)
@@ -556,8 +650,9 @@ def test_complete_refresh_requires_valid_ticket(platform, store):
     assert d2.version == 2
     with platform.get(d2.binding, SCOPE) as lease:
         assert lease.reveal() == b"t2"
-    # a forged ticket whose claim is NOT on record cannot complete a refresh
-    bogus = RefreshTicket(ref=d.binding.ref, version=2, holder="attacker")
+    # a forged ticket whose minted capability does not match cannot complete a
+    # refresh even with the correct ref/version/holder fields
+    bogus = RefreshTicket(ref=d.binding.ref, version=2, holder="A", secret=b"\x00" * 32)
     with pytest.raises(CredentialUnavailable) as exc:
         platform.complete_refresh(d2.binding, SCOPE, bogus, SecretBytes(b"evil"))
     assert exc.value.code == VaultErrorCode.LEASE_LOST

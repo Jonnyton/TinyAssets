@@ -215,6 +215,32 @@ def test_reprs_hide_internal_metadata(tmp_path):
             assert token not in surface, f"internal metadata {token!r} leaked in {surface[:60]!r}"
 
 
+def test_refresh_and_attestation_reprs_are_redacted(tmp_path):
+    """AttestationResult / RefreshTicket / RefreshLease reprs must not leak
+    store/custody/boot/holder/version/fence or the minted capability."""
+    kek = sodium.randombytes(32)
+    be = PlatformVaultBackend(
+        InMemoryKeyProvider({"KEK-CANARY": kek}, "KEK-CANARY"),
+        store_id="STOREID-CANARY", db_path=tmp_path / "vault.db",
+    )
+    store = VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="STOREID-CANARY")
+    d = be.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    result = be.attest()
+    ticket = be.begin_refresh(d.binding, SCOPE, "HOLDER-CANARY", at_version=1)
+
+    with be.refresh_lease(d.binding.ref, "HOLDER-CANARY", ttl=5.0) as lease:
+        surfaces = [
+            repr(result), str(result), repr(ticket), str(ticket),
+            repr(lease), str(lease),
+        ]
+        forbidden = ["STOREID-CANARY", "HOLDER-CANARY", result.boot_id, result.custody]
+        cap_hex = ticket.secret.hex()
+        for surface in surfaces:
+            for token in forbidden:
+                assert token not in surface, f"leaked {token!r} in {surface!r}"
+            assert cap_hex not in surface  # minted capability never in a repr
+
+
 def test_public_projection_is_allowlist_only(tmp_path):
     kek = sodium.randombytes(32)
     be = PlatformVaultBackend(
