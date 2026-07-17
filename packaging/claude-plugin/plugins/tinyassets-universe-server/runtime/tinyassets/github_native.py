@@ -224,6 +224,18 @@ class GitHubApi(Protocol):
         #1)."""
         ...
 
+    def list_pull_reviews(
+        self, *, destination: str, pr_number: int
+    ) -> list[dict[str, Any]]:
+        """ALL reviews GitHub holds for a PR, paginated. Each normalized row:
+        ``{"id": int, "commit_id": str, "state": str, "user_login": str}``
+        (``user_login`` is the reviewer's GitHub login, lower-cased). Used for
+        crash reconciliation (was THIS review already submitted at THIS commit by
+        the CONNECTED OWNER?) and to resolve the exact ``review_id`` a dismissal
+        needs. GitHub's review objects expose id, commit_id, state, and
+        user.login — https://docs.github.com/en/rest/pulls/reviews."""
+        ...
+
 
 # ── Fail-closed setup verification ──────────────────────────────────────────
 

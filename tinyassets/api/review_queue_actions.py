@@ -113,17 +113,15 @@ def _current_actor() -> str:
 
 
 def _server_side_founder_handle(target_universe: str) -> str:
-    """Resolve the founder's GitHub handle SERVER-SIDE from the authenticated
-    GitHub identity (Codex r15 #5) — NEVER from caller-supplied text. Returns ""
-    when no GitHub identity is connected, in which case autonomous merge stays
-    fail-closed (the honest default). The live daemon wires the owner's connected
-    GitHub login here; tests monkeypatch it."""
-    try:
-        from tinyassets.api.permissions import current_github_handle
+    """Resolve the founder's GitHub handle SERVER-SIDE from the connected GitHub
+    identity in the per-universe credential vault (Codex r15 #5) — NEVER from
+    caller-supplied text. Returns "" when no GitHub identity is connected, in
+    which case autonomous merge stays fail-closed (the honest default). This is a
+    REAL vault-backed lookup (:func:`permissions.current_github_handle`), not a
+    stub the tests monkeypatch."""
+    from tinyassets.api.permissions import current_github_handle
 
-        return (current_github_handle(target_universe) or "").strip().lstrip("@")
-    except Exception:  # noqa: BLE001 — no identity wired ⇒ empty ⇒ fail closed
-        return ""
+    return (current_github_handle(target_universe) or "").strip().lstrip("@")
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -515,61 +513,27 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
     if err is not None:
         return json.dumps(err)
     try:
-        from tinyassets.storage.review_queue import (
-            WORKFLOW_APPROVED,
-            cancel_timers_for_branch,
-            enqueue_revocation,
-            list_projections,
-            set_merge_preference_binding,
-        )
+        from tinyassets.storage.review_queue import tighten_merge_preference
 
         universe_dir = _universe_dir_for(target_universe)
-        binding = set_merge_preference_binding(
+        # Tightening (Codex r11 #2 + r15 #2 + r15 #6): re-binding revokes prior
+        # scheduled / standing merge authority. The binding revision bump, the
+        # pending-timer cancellation, and the durable GitHub revocation enqueue
+        # (disable auto-merge; dismiss a prior approval) commit in ONE transaction
+        # — a crash after rebinding can never leave already-enabled auto-merge
+        # without a durable revocation. The CODEOWNERS owner is resolved
+        # SERVER-SIDE from the connected GitHub identity, never caller text
+        # (Codex r15 #5).
+        tightened = tighten_merge_preference(
             universe_dir,
             branch_def_id=branch_def_id, merge_preference=preference,
             not_before_delay_s=not_before_delay_s, review_required=review_required,
-            # Codex r15 #5: the CODEOWNERS owner is resolved SERVER-SIDE from the
-            # authenticated GitHub identity, never caller text.
             founder_github_handle=_server_side_founder_handle(target_universe),
             bound_by=_current_actor(),
         )
-        # Tightening (Codex r11 #2 + r15 #2): re-binding revokes prior scheduled /
-        # standing merge authority. Cancel every pending timer this branch
-        # authorized, AND durably ENQUEUE the GitHub revocations (disable
-        # auto-merge; dismiss a prior approval) so a worker EXECUTES them with the
-        # client — descriptions alone don't disable an already-live auto-merge.
-        cancelled = cancel_timers_for_branch(universe_dir, branch_def_id=branch_def_id)
-        queued = 0
-        seen_prs: set[tuple[str, int]] = set()
-        open_projs = [
-            p for p in list_projections(universe_dir)
-            if (p.get("branch_def_id") or "") == branch_def_id
-            and p.get("workflow_outcome") not in ("merged", "rejected")
-        ]
-        for proj in open_projs:
-            dest = proj.get("destination") or ""
-            pr = proj.get("pr_number")
-            if not dest or not isinstance(pr, int):
-                continue
-            seen_prs.add((dest, pr))
-            queued += int(enqueue_revocation(
-                universe_dir, destination=dest, pr_number=pr,
-                kind="disable_auto_merge", branch_def_id=branch_def_id,
-            ))
-            if proj.get("workflow_outcome") == WORKFLOW_APPROVED:
-                queued += int(enqueue_revocation(
-                    universe_dir, destination=dest, pr_number=pr,
-                    kind="dismiss_prior_approval", branch_def_id=branch_def_id,
-                ))
-        # A cancelled timer whose PR isn't in the projection list still needs a
-        # disable_auto_merge enqueued (belt-and-suspenders).
-        for t in cancelled:
-            key = (t.get("destination") or "", t.get("pr_number"))
-            if key not in seen_prs and isinstance(key[1], int):
-                queued += int(enqueue_revocation(
-                    universe_dir, destination=key[0], pr_number=key[1],
-                    kind="disable_auto_merge", branch_def_id=branch_def_id,
-                ))
+        binding = tightened["binding"]
+        cancelled = tightened["cancelled_timers"]
+        queued = tightened["revocations_queued"]
     except ValueError as exc:
         return json.dumps({
             "error": str(exc),
@@ -605,13 +569,17 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
 
 
 def _action_review_queue_merge(kwargs: dict[str, Any]) -> str:
-    """HEAD-BOUND MANUAL merge (Codex r15 #1b) — the DEFAULT flow. After the owner
-    approves (a real GitHub review), the owner triggers the merge here: the verb
-    submits the head-bound merge and reports pending→merged ONLY after re-reading
-    GitHub confirms it. Owner-gated; requires the PR be approved first.
+    """HEAD-BOUND MANUAL merge (Codex r15 #1b / REJECT #1) — the DEFAULT flow.
+    After the owner approves (a real GitHub review), the owner triggers the merge
+    here: the verb durably ENQUEUES the head-bound merge onto the manual-merge
+    OUTBOX, and the daemon worker (:func:`runs.execute_pending_manual_merges`)
+    drains it with the credentialed client and reports merged ONLY after
+    re-reading GitHub confirms the merge at the reviewed head. Owner-gated;
+    requires the PR be approved first.
 
-    The live daemon injects the credentialed client; the MCP path alone has none,
-    so it reports ``pending`` (the merge call to run) — never a false 'merged'."""
+    The MCP path has no client, so it must PERSIST the intent (never return an
+    ephemeral call that is silently dropped). It reports ``pending`` — never a
+    false 'merged'."""
     universe_id = (kwargs.get("universe_id") or "").strip()
     destination, pr_number, head, head_err = _require_pr_and_head(
         "review_queue_merge", kwargs
@@ -622,8 +590,11 @@ def _action_review_queue_merge(kwargs: dict[str, Any]) -> str:
     if err is not None:
         return json.dumps(err)
     try:
-        from tinyassets.runs import execute_manual_merge
-        from tinyassets.storage.review_queue import WORKFLOW_APPROVED, get_projection
+        from tinyassets.storage.review_queue import (
+            WORKFLOW_APPROVED,
+            enqueue_manual_merge,
+            get_projection,
+        )
 
         universe_dir = _universe_dir_for(target_universe)
         proj = get_projection(universe_dir, destination=destination, pr_number=pr_number)
@@ -638,11 +609,22 @@ def _action_review_queue_merge(kwargs: dict[str, Any]) -> str:
                 "failure_class": "not_approved",
                 "actionable_by": "chatbot",
             })
-        # MCP path has no client → pending; the daemon worker/verb with a wired
-        # client confirms merged.
-        result = execute_manual_merge(
+        # Head-bound: the owner must merge the head they reviewed.
+        current_head = (proj.get("head_sha") or "").strip()
+        if current_head and head != current_head:
+            return json.dumps({
+                "error": (
+                    f"reviewed head {head[:8]} != current PR head "
+                    f"{current_head[:8]} on {destination}#{pr_number}"
+                ),
+                "failure_class": "head_changed",
+                "actionable_by": "chatbot",
+            })
+        # Durably ENQUEUE the head-bound merge; the daemon worker drains + confirms.
+        enq = enqueue_manual_merge(
             universe_dir, destination=destination, pr_number=pr_number,
-            expected_head_sha=head, github_api=None,
+            expected_head_sha=head, branch_def_id=proj.get("branch_def_id") or "",
+            decided_by=_current_actor(),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("review_queue_merge failed")
@@ -651,19 +633,20 @@ def _action_review_queue_merge(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
-    confirmed = bool(result.get("confirmed"))
     return json.dumps({
         # HONEST: never 'merged' until GitHub confirms (Codex r15 #1a).
-        "status": "merged" if confirmed else "pending",
-        "github_effect": "confirmed" if confirmed else "pending",
-        "merge_state": result.get("state"),
-        "github_call": result.get("github_call"),
+        "status": "pending",
+        "github_effect": "pending",
+        "merge_enqueued": enq["enqueued"],
+        "merge_id": enq["merge_id"],
         "note": (
-            "manual merge submitted + confirmed via GitHub re-read"
-            if confirmed else
-            "manual merge is PENDING — recorded head-bound; the daemon executes "
-            "it with the credentialed client and reports merged only after GitHub "
-            "confirms the merge (never before)."
+            "manual merge is PENDING — durably enqueued head-bound on the "
+            "manual-merge outbox; the daemon worker executes it with the "
+            "credentialed client and reports merged only after GitHub confirms "
+            "the merge at the reviewed head (never before)."
+            if enq["enqueued"] else
+            "manual merge already pending for this head — the daemon worker will "
+            "execute + confirm it (no duplicate enqueued)."
         ),
     })
 

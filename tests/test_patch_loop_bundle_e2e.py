@@ -98,11 +98,55 @@ class _FakeClient:
         return {"ok": True, "kind": call.kind, "status": 200, "result": {}}
 
 
+def _isolated_executor_available() -> bool:
+    """Is a REAL per-job sandbox RUNNER (isolated executor) wired for the
+    repo-touching nodes (investigate/verify/draft_patch)? That confiner is a
+    separate host-approved Phase-2 slice — absent here, so the runner-enabled
+    continuation case skips rather than pretending a mock executor is real.
+    Opt-in via the explicit env flag the live wiring sets."""
+    import os
+
+    return os.environ.get("TINYASSETS_S4_ISOLATED_EXECUTOR", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 @pytest.mark.skipif(_STATUS != "ready", reason="S1 reference seed absent (S4-alone)")
-def test_present_to_owner_resume_e2e_real_path(monkeypatch, tmp_path):
-    """The REAL path: compile + invoke the reference through the run executor →
-    the present effect projects + SUSPENDS the run → owner approves → the
-    continuation resumes the run to a real terminal state."""
+def test_pre_runner_execution_refuses_at_investigate(tmp_path):
+    """(a) PRE-RUNNER REFUSAL (S1 reference design, fail-closed): with NO provider
+    and NO sandbox runner, the repo-touching sandbox-required nodes
+    (investigate/verify/draft_patch, node_kind repo_read/repo_exec/coding) REFUSE
+    at invoke time — the loop cannot run unconfined on S1/S1+S3. Execution must
+    NOT reach `present` and must NOT open a PR, and the run must NOT complete."""
+    branch = _load_reference_branch()
+    rq.set_merge_preference_binding(
+        tmp_path, branch_def_id=branch.branch_def_id, merge_preference="manual",
+        review_required=True, bound_by="owner",
+    )
+    run_id = runs._prepare_run(
+        tmp_path, branch=branch, inputs={}, run_name="", actor="owner",
+    )
+    outcome = runs._invoke_graph(
+        tmp_path, run_id=run_id, branch=branch, inputs={}, provider_call=None,
+    )
+    # Fail-closed BEFORE `present`: no PR was projected and the run did not
+    # complete (it refused at a sandbox-required node, never reached present).
+    assert rq.get_projection(tmp_path, destination="Owner/Repo", pr_number=7) is None
+    assert outcome.status != runs.RUN_STATUS_COMPLETED
+
+
+@pytest.mark.skipif(
+    _STATUS != "ready" or not _isolated_executor_available(),
+    reason=(
+        "S1 reference seed absent, or no real isolated executor wired "
+        "(the per-job sandbox runner is a separate host-approved slice)"
+    ),
+)
+def test_runner_enabled_present_to_owner_resume(monkeypatch, tmp_path):
+    """(b) RUNNER-ENABLED CONTINUATION: ONLY when a real isolated executor is
+    present may the sandbox-required nodes execute → the present effect projects +
+    SUSPENDS the run → owner approves → the continuation resumes to a terminal
+    state. Skipped unless a real runner is wired (never a mock standing in)."""
     # Open the github_pr gates so the present node "opens" a PR (no live network).
     monkeypatch.setattr(github_pr, "resolve_soul_effect_authority", lambda *a, **k: "")
     monkeypatch.setattr(github_pr, "_read_capability", lambda *a, **k: "tok")
@@ -122,20 +166,16 @@ def test_present_to_owner_resume_e2e_real_path(monkeypatch, tmp_path):
         tmp_path, branch_def_id=branch.branch_def_id, merge_preference="manual",
         review_required=True, bound_by="owner",
     )
-    # INVOKE through the real run executor (compile + graph invoke + effect
-    # dispatch), NOT a fabricated packet.
     run_id = runs._prepare_run(
         tmp_path, branch=branch, inputs={}, run_name="", actor="owner",
     )
     outcome = runs._invoke_graph(
         tmp_path, run_id=run_id, branch=branch, inputs={}, provider_call=None,
     )
-    # The present effect projected the PR and SUSPENDED the run.
     assert outcome.status == runs.RUN_STATUS_INTERRUPTED
     proj = rq.get_projection(tmp_path, destination="Owner/Repo", pr_number=7)
     assert proj is not None and proj["workflow_outcome"] == "open"
 
-    # Owner approves → the continuation submits the review + completes the run.
     rq.decide_and_resume(
         tmp_path, destination="Owner/Repo", pr_number=7, intent="approve",
         workflow_outcome=rq.WORKFLOW_APPROVED, decided_by="owner",

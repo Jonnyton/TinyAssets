@@ -305,15 +305,62 @@ class HttpGitHubApi:
             "node_id": pr.get("node_id") or "",
         }
 
+    def list_pull_reviews(
+        self, *, destination: str, pr_number: int
+    ) -> list[dict[str, Any]]:
+        """ALL reviews for a PR, paginated (GitHub caps ``per_page`` at 100), each
+        normalized to ``{"id", "commit_id", "state", "user_login"}`` with the
+        reviewer login lower-cased. Follows pages until GitHub returns a short
+        (or empty) page. A non-2xx / non-list page raises :class:`GitHubHttpError`
+        (never a silent partial list that could hide an attacker's review).
+
+        Ref: https://docs.github.com/en/rest/pulls/reviews"""
+        per_page = 100
+        reviews: list[dict[str, Any]] = []
+        for page in range(1, 51):  # hard page cap (5000 reviews) — never unbounded
+            status, payload = self._get(
+                f"/repos/{destination}/pulls/{pr_number}/reviews"
+                f"?per_page={per_page}&page={page}"
+            )
+            if status == 404:
+                return reviews
+            if status >= 400 or not isinstance(payload, list):
+                raise GitHubHttpError(
+                    f"could not list reviews for {destination}#{pr_number}",
+                    status=status, error_class="reviews_read_failed",
+                    detail=json.dumps(payload)[:500],
+                )
+            for rv in payload:
+                if not isinstance(rv, dict):
+                    continue
+                user = rv.get("user")
+                login = ""
+                if isinstance(user, dict):
+                    login = str(user.get("login") or "")
+                reviews.append({
+                    "id": rv.get("id"),
+                    "commit_id": str(rv.get("commit_id") or ""),
+                    "state": str(rv.get("state") or "").upper(),
+                    "user_login": login.strip().lstrip("@").lower(),
+                })
+            if len(payload) < per_page:
+                break
+        return reviews
+
     # ── write side: execute a GitHubCall ─────────────────────────────────────
 
     def run_call(self, call: GitHubCall) -> dict[str, Any]:
         """Execute a :class:`GitHubCall`. Selects the owner USER token for review
-        submission and the App INSTALLATION token for everything else. Returns
-        ``{"ok": True, "kind", "status", "result"}`` or raises
-        :class:`GitHubHttpError`."""
-        review_kinds = {"submit_review_approve", "submit_review_request_changes"}
-        purpose = PURPOSE_USER_REVIEW if call.kind in review_kinds else PURPOSE_INSTALLATION
+        submission AND review dismissal (the owner is the authorized dismisser —
+        the App's minimal installation scope cannot dismiss on a protected
+        branch, Codex r15 #4), and the App INSTALLATION token for everything else
+        (merge / auto-merge / reads). Returns ``{"ok": True, "kind", "status",
+        "result"}`` or raises :class:`GitHubHttpError`."""
+        user_token_kinds = {
+            "submit_review_approve", "submit_review_request_changes",
+            "dismiss_review",
+        }
+        purpose = PURPOSE_USER_REVIEW if call.kind in user_token_kinds else PURPOSE_INSTALLATION
 
         if call.transport == "graphql":
             return self._run_graphql(call)
@@ -427,6 +474,44 @@ def installation_token_exchange(
     return _exchange
 
 
+def github_client_from_vault(
+    universe_dir: Any, destination: str, **kwargs: Any
+) -> HttpGitHubApi | None:
+    """Build the LIVE review/merge client for ``destination`` from the
+    per-universe credential vault — the production wiring the daemon recovery
+    workers use. Resolves the App INSTALLATION token (merge / auto-merge / reads
+    / disable-auto-merge) and, when present, the owner USER token (review submit
+    + dismissal) BY DESTINATION from the vault. Returns ``None`` (fail closed —
+    the workers leave their queues intact) when no installation token is
+    connected for the destination, so a universe with no GitHub connection never
+    silently no-ops as if merged.
+
+    This is the ONE place a live ``HttpGitHubApi`` is constructed for the S4
+    recovery loop; the fake is a test-only drop-in for the same
+    :class:`tinyassets.github_native.GitHubApi` shape."""
+    from tinyassets.credential_vault import resolve_github_token
+
+    dest = (destination or "").strip()
+    if not dest:
+        return None
+    installation = resolve_github_token(universe_dir, dest, purpose="write")
+    if not installation:
+        return None
+    user_review = resolve_github_token(universe_dir, dest, purpose="user_review")
+    from tinyassets.github_auth import CompositeTokenProvider, StaticTokenProvider
+
+    tp = CompositeTokenProvider(
+        installation=StaticTokenProvider(
+            installation, purposes={PURPOSE_INSTALLATION}
+        ),
+        user_review=(
+            StaticTokenProvider(user_review, purposes={PURPOSE_USER_REVIEW})
+            if user_review else None
+        ),
+    )
+    return HttpGitHubApi(tp, **kwargs)
+
+
 def verifier_client(ruleset_verify_token: str, **kwargs: Any) -> HttpGitHubApi:
     """Build a VERIFIER GitHub client (Codex r13 #3) whose reads use the owner's
     elevated ruleset-read token — the identity that can positively see
@@ -442,5 +527,6 @@ __all__ = [
     "GitHubHttpError",
     "HttpGitHubApi",
     "installation_token_exchange",
+    "github_client_from_vault",
     "verifier_client",
 ]

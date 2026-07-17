@@ -151,6 +151,33 @@ def branch_run_actor(universe_id: str) -> str:
     return current_actor_id()
 
 
+def current_github_handle(universe_id: str) -> str:
+    """Resolve the universe's CONNECTED GitHub login SERVER-SIDE (Codex r15 #5) —
+    from the authoritative per-universe credential vault, never caller text.
+
+    This is the founder identity the autonomous-merge CODEOWNERS gate + the
+    crash-reconciliation review matcher require. Returns ``""`` when no GitHub
+    identity is connected (or it is ambiguous), which keeps autonomous merge
+    fail-closed (``expected_owner_unknown``) — a real lookup, not a stub that the
+    tests monkeypatch away. Universe-scoped (no destination): the founder's
+    connected GitHub account is one login across their universe's vcs records."""
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ""
+    try:
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.credential_vault import resolve_github_login
+
+        return resolve_github_login(_universe_dir(uid))
+    except Exception:  # noqa: BLE001 — no vault / unreadable ⇒ fail closed (empty)
+        logger.warning(
+            "current_github_handle: github-login lookup failed for universe %r",
+            uid,
+            exc_info=True,
+        )
+        return ""
+
+
 def current_actor_is_universe_owner(universe_id: str) -> bool:
     """Return True iff the authenticated actor OWNS the universe — the founder
     whose home is this universe, or an explicit ``admin`` (owner-level) ACL

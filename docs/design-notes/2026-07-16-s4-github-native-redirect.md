@@ -139,3 +139,56 @@ status flip — the owner decision moves the suspension to a durable `decided`
 the GitHub review + drive the merge path / re-enter draft_patch / terminal
 reject) and only then completes the run + acks the suspension; idempotent startup
 replay recovers a decision made just before a crash.
+
+## Addendum (2026-07-16, Codex r16 REJECT rework): real adapter, not the fake
+
+Codex r16 returned **REJECT**: the layer was built + tested against a *permissive
+fake* GitHub client and did not work against the real one. The rework closes that
+gap end-to-end. Root-cause fix first: a **shared contract** — the fake and the
+live `HttpGitHubApi` implement the SAME `github_native.GitHubApi` read surface AND
+the SAME `run_call` executor, and `tests/test_github_api_contract.py` runs the
+SAME behavioural assertions against BOTH (the real client driven by a recorded
+HTTP transport that exercises real request construction, pagination, id
+resolution, and head binding). No production path may depend on behaviour only
+the fake provides, and production wires the real client (`github_client_from_vault`
++ the daemon caller below).
+
+Per-finding resolutions:
+
+1. **Manual merge is durably queued + drained (was neither).** The chat verb now
+   ENQUEUES a head-bound row on a `manual_merge_outbox`; a real daemon worker
+   (`runs.execute_pending_manual_merges`) drains it with the credentialed client
+   and confirms merged only after a GitHub re-read. **Live daemon caller:**
+   `runs.run_review_recovery_for_universe` builds a per-destination client from
+   the vault and is invoked each cycle from `fantasy_daemon.__main__._dispatcher_startup`.
+2. **Server-side founder handle is a real vault lookup.** `permissions.current_github_handle`
+   resolves the connected owner login from the per-universe credential vault
+   (`credential_vault.resolve_github_login`, reading the GitHub `vcs` record's
+   `account_login`), fail-closed to `""` when unconnected/ambiguous. No monkeypatch
+   in its integration test.
+3. **Crash reconciliation is owner-bound + real.** `HttpGitHubApi.list_pull_reviews`
+   is implemented (paginated); `_review_already_on_github` now requires the
+   reviewer `user_login` to equal the RESOLVED connected owner (an empty owner
+   never reconciles) plus the commit + state — an attacker's approval at the same
+   commit is rejected.
+4. **Revocation resolves the EXACT review id (was `/reviews/0/`).** The dismiss
+   worker resolves the owner's approval id via `list_pull_reviews` (owner login +
+   reviewed head) before dismissing; no standing approval → the goal is already
+   met (marked done). **Dismissal authority (chosen path):** the dismissal runs
+   under the **owner USER token** (an authorized dismisser on a protected branch),
+   NOT the App's minimal installation scope — so it can actually succeed without
+   an `Administration` grant. `github_http.run_call` routes `dismiss_review` to
+   `PURPOSE_USER_REVIEW`.
+5. **Merge confirmation is head-bound.** `execute_manual_merge` refuses to confirm
+   a merged PR whose live/post-merge head != the reviewed head (`head_replaced_merge`),
+   and the idempotency receipt identity includes the head (`manual_merge:{pr}:{head}`),
+   so head B merging can't ride head A's confirmation.
+6. **Preference tightening is atomic.** `review_queue.tighten_merge_preference`
+   commits the binding revision bump, the pending-timer cancellation, and the
+   GitHub revocation enqueue in ONE transaction — a crash after rebinding can no
+   longer leave already-enabled auto-merge without a durable revocation.
+
+Bundle e2e: the integration test is split into a pre-runner REFUSAL case
+(provider/runner absent → the sandbox-required nodes refuse at `investigate`,
+fail-closed) and a runner-enabled continuation case (only exercised when a real
+isolated executor is present). Production stays fail-closed.

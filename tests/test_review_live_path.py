@@ -73,14 +73,17 @@ def _approved_pr(tmp_path):
 
 
 def test_manual_merge_verb_pending_without_client(owner_env):
-    """The default (manual) flow: the merge verb reports PENDING (never merged)
-    when no client is wired — honest."""
+    """The default (manual) flow: the merge verb durably ENQUEUES the head-bound
+    merge (REJECT #1) and reports PENDING (never merged) — never an ephemeral
+    call that is silently dropped. The daemon worker drains it later."""
     _approved_pr(owner_env)
     out = _call("review_queue_merge", universe_id="u1", pr_number=_PR,
                 destination=_DEST, expected_head_sha=_HEAD)
     assert out["status"] == "pending"
     assert out["github_effect"] == "pending"
-    assert out["github_call"]["kind"] == "merge_pr"
+    assert out["merge_enqueued"] is True
+    pending = rq.list_pending_manual_merges(owner_env)
+    assert len(pending) == 1 and pending[0]["expected_head_sha"] == _HEAD
 
 
 def test_manual_merge_requires_approval_first(owner_env):
@@ -122,9 +125,11 @@ def test_manual_merge_reconciles_already_merged(owner_env):
 
 
 def test_review_not_resubmitted_when_already_on_github(owner_env):
-    """Codex r15 #3: the crash window — remote review succeeded, receipt NOT yet
-    written. Reconciliation sees the review already on GitHub (by commit_id) and
-    does NOT re-submit; it records the receipt + confirms."""
+    """Codex r15 #3 + REJECT #3: the crash window — the OWNER's review succeeded,
+    receipt NOT yet written. Reconciliation sees the OWNER's review already on
+    GitHub (by commit_id + owner login) and does NOT re-submit; it records the
+    receipt + confirms. A different actor's review at the same commit would NOT
+    satisfy it."""
     rq.project_pr(owner_env, destination=_DEST, pr_number=_PR, head_sha=_HEAD,
                   branch_def_id="bd", universe_id="u1", run_id="run-x")
     rq.suspend_run_for_review(owner_env, run_id="run-x", destination=_DEST,
@@ -135,11 +140,14 @@ def test_review_not_resubmitted_when_already_on_github(owner_env):
     call = {"kind": "submit_review_approve", "transport": "rest", "method": "POST",
             "path": f"/repos/{_DEST}/pulls/{_PR}/reviews",
             "params": {"event": "APPROVE", "commit_id": _HEAD}, "summary": "ok"}
-    # GitHub ALREADY has our APPROVE review at this commit (the crash window).
-    client = FakeClient(reviews=[{"commit_id": _HEAD, "state": "APPROVED"}])
+    # GitHub ALREADY has the OWNER's APPROVE review at this commit (crash window).
+    client = FakeClient(reviews=[
+        {"commit_id": _HEAD, "state": "APPROVED", "user_login": "owner"},
+    ])
     ok = runs._submit_github_review(
         owner_env, run_id="run-x", call_dict=call,
         effect_kind="submit_review_approve", github_api=client, effects=effects,
+        expected_owner="owner",
     )
     assert ok is True
     assert effects["submit_review_approve"] == "already_submitted"
@@ -191,7 +199,10 @@ def test_register_review_workers_entrypoint(owner_env):
     recovery loop (proven here without the live daemon)."""
     client = FakeClient()
     workers = runs.register_review_workers(base_path=owner_env, github_api=client)
-    assert set(workers) == {"replay_continuations", "execute_revocations", "fire_timers"}
+    assert set(workers) == {
+        "replay_continuations", "drain_manual_merges", "execute_revocations",
+        "fire_timers",
+    }
     # Each is callable and returns a list (drives its store queue).
     for name, fn in workers.items():
         assert isinstance(fn(), list), name

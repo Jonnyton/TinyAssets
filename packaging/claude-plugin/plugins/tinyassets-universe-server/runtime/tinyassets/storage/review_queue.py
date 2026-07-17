@@ -262,12 +262,38 @@ CREATE TABLE IF NOT EXISTS revocation_outbox (
     pr_number     INTEGER NOT NULL DEFAULT 0,
     kind          TEXT NOT NULL DEFAULT '',
     branch_def_id TEXT NOT NULL DEFAULT '',
+    -- Codex r15 #4: a dismiss_prior_approval revocation carries the head it must
+    -- dismiss the approval OF + the founder login whose review it is, so the
+    -- executor resolves the EXACT owner review_id (never the hardcoded 0) via
+    -- list_pull_reviews at execution time.
+    expected_head_sha TEXT NOT NULL DEFAULT '',
+    founder_handle    TEXT NOT NULL DEFAULT '',
     created_at    REAL NOT NULL,
     executed_at   REAL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_revocation_pending
     ON revocation_outbox(destination, pr_number, kind) WHERE executed_at IS NULL;
+
+-- Durable head-bound MANUAL-MERGE outbox (Codex r15 #1): the owner's manual
+-- merge is ENQUEUED here (head-bound) and a daemon worker DRAINS it with the
+-- credentialed client — the chat verb has no client, so it must persist the
+-- intent, never return an ephemeral call that is silently dropped. A partial-
+-- unique index keeps one pending merge per (destination, pr_number, head).
+CREATE TABLE IF NOT EXISTS manual_merge_outbox (
+    merge_id          TEXT PRIMARY KEY,
+    destination       TEXT NOT NULL DEFAULT '',
+    pr_number         INTEGER NOT NULL DEFAULT 0,
+    expected_head_sha TEXT NOT NULL DEFAULT '',
+    branch_def_id     TEXT NOT NULL DEFAULT '',
+    decided_by        TEXT NOT NULL DEFAULT '',
+    created_at        REAL NOT NULL,
+    executed_at       REAL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_merge_pending
+    ON manual_merge_outbox(destination, pr_number, expected_head_sha)
+    WHERE executed_at IS NULL;
 """
 
 SUSPENSION_SUSPENDED = "suspended"
@@ -1308,26 +1334,48 @@ def record_effect_receipt(
             return cur.rowcount > 0
 
 
+def _enqueue_revocation_row(
+    conn: sqlite3.Connection, *, destination: str, pr_number: int, kind: str,
+    branch_def_id: str, expected_head_sha: str, founder_handle: str, ts: float,
+) -> int:
+    """Insert one revocation row on an OPEN write transaction. Returns rowcount
+    (0 if a pending duplicate already exists). Shared by the standalone enqueue
+    and the atomic tighten so both write the identical shape."""
+    rid = f"rev-{uuid.uuid4().hex[:16]}"
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO revocation_outbox "
+        "(revocation_id, destination, pr_number, kind, branch_def_id, "
+        "expected_head_sha, founder_handle, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            rid, (destination or "").strip(), pr_number, kind, branch_def_id,
+            (expected_head_sha or "").strip(),
+            (founder_handle or "").strip().lstrip("@").lower(), ts,
+        ),
+    )
+    return cur.rowcount
+
+
 def enqueue_revocation(
     universe_dir: str | Path, *, destination: str, pr_number: int, kind: str,
-    branch_def_id: str = "", now: float | None = None,
+    branch_def_id: str = "", expected_head_sha: str = "", founder_handle: str = "",
+    now: float | None = None,
 ) -> bool:
     """Enqueue a durable revocation (``disable_auto_merge`` / ``dismiss_review``)
     for a worker to EXECUTE with the client (Codex r15 #2). Idempotent: at most
-    one pending revocation per (destination, pr_number, kind). Returns True if
-    newly enqueued."""
+    one pending revocation per (destination, pr_number, kind). A
+    ``dismiss_prior_approval`` carries the head + founder login so the worker can
+    resolve the EXACT owner review_id (Codex r15 #4). Returns True if newly
+    enqueued."""
     initialize_review_queue_db(universe_dir)
     ts = _now(now)
-    rid = f"rev-{uuid.uuid4().hex[:16]}"
     with _connect(universe_dir) as conn:
         with _write(conn):
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO revocation_outbox "
-                "(revocation_id, destination, pr_number, kind, branch_def_id, "
-                "created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (rid, (destination or "").strip(), pr_number, kind, branch_def_id, ts),
-            )
-            return cur.rowcount > 0
+            return _enqueue_revocation_row(
+                conn, destination=destination, pr_number=pr_number, kind=kind,
+                branch_def_id=branch_def_id, expected_head_sha=expected_head_sha,
+                founder_handle=founder_handle, ts=ts,
+            ) > 0
 
 
 def list_pending_revocations(universe_dir: str | Path) -> list[dict[str, Any]]:
@@ -1351,6 +1399,187 @@ def mark_revocation_executed(
                 "UPDATE revocation_outbox SET executed_at = ? "
                 "WHERE revocation_id = ? AND executed_at IS NULL",
                 (ts, (revocation_id or "").strip()),
+            )
+            return cur.rowcount > 0
+
+
+def tighten_merge_preference(
+    universe_dir: str | Path,
+    *,
+    branch_def_id: str,
+    merge_preference: str = "manual",
+    not_before_delay_s: float = 0.0,
+    review_required: bool = True,
+    founder_github_handle: str = "",
+    bound_by: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """ATOMIC preference (re)binding (Codex r15 #6). Commits, in ONE transaction:
+    the binding revision bump, the cancellation of every pending ``not_before``
+    timer the branch authorized, AND the GitHub revocation outbox rows (disable
+    auto-merge for every open PR; dismiss the prior approval for every approved
+    PR). A crash after rebinding can no longer leave an already-enabled
+    auto-merge without a durable revocation — binding, timer cancel, and
+    revocation enqueue can never partially apply.
+
+    Returns ``{"binding", "cancelled_timers": [...], "revocations_queued": int}``.
+    """
+    bdid = (branch_def_id or "").strip()
+    if not bdid:
+        raise ValueError("tighten_merge_preference requires non-empty branch_def_id")
+    bound_by = (bound_by or "").strip()
+    if not bound_by:
+        raise ValueError("tighten_merge_preference requires non-empty bound_by")
+    pref = (merge_preference or "manual").strip().lower() or "manual"
+    try:
+        delay = float(not_before_delay_s if not_before_delay_s is not None else 0.0)
+    except (TypeError, ValueError):
+        raise ValueError("not_before_delay_s must be a finite non-negative number") from None
+    if delay != delay or delay in (float("inf"), float("-inf")) or delay < 0:
+        raise ValueError("not_before_delay_s must be finite and non-negative")
+    handle = (founder_github_handle or "").strip().lstrip("@")
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            conn.execute(
+                """
+                INSERT INTO merge_preference_bindings (
+                    branch_def_id, merge_preference, not_before_delay_s,
+                    review_required, revision, founder_github_handle,
+                    bound_by, bound_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(branch_def_id) DO UPDATE SET
+                    merge_preference = excluded.merge_preference,
+                    not_before_delay_s = excluded.not_before_delay_s,
+                    review_required = excluded.review_required,
+                    revision = merge_preference_bindings.revision + 1,
+                    founder_github_handle = excluded.founder_github_handle,
+                    bound_by = excluded.bound_by,
+                    bound_at = excluded.bound_at
+                """,
+                (bdid, pref, delay, 1 if review_required else 0, handle, bound_by, ts),
+            )
+            binding_row = conn.execute(
+                "SELECT * FROM merge_preference_bindings WHERE branch_def_id = ?",
+                (bdid,),
+            ).fetchone()
+            # Cancel pending timers this branch authorized (collect for the caller).
+            cancelled = [
+                dict(r) for r in conn.execute(
+                    "SELECT * FROM not_before_timers "
+                    "WHERE branch_def_id = ? AND fired_at IS NULL",
+                    (bdid,),
+                ).fetchall()
+            ]
+            conn.execute(
+                "DELETE FROM not_before_timers "
+                "WHERE branch_def_id = ? AND fired_at IS NULL",
+                (bdid,),
+            )
+            # Enqueue GitHub revocations for every open PR under this branch.
+            queued = 0
+            seen_prs: set[tuple[str, int]] = set()
+            open_projs = conn.execute(
+                "SELECT destination, pr_number, head_sha, workflow_outcome "
+                "FROM pr_projection WHERE branch_def_id = ? "
+                "AND workflow_outcome NOT IN ('merged', 'rejected')",
+                (bdid,),
+            ).fetchall()
+            for proj in open_projs:
+                dest = (proj["destination"] or "").strip()
+                pr = proj["pr_number"]
+                if not dest or not isinstance(pr, int):
+                    continue
+                seen_prs.add((dest, pr))
+                queued += 1 if _enqueue_revocation_row(
+                    conn, destination=dest, pr_number=pr, kind="disable_auto_merge",
+                    branch_def_id=bdid, expected_head_sha="", founder_handle="", ts=ts,
+                ) else 0
+                if proj["workflow_outcome"] == WORKFLOW_APPROVED:
+                    queued += 1 if _enqueue_revocation_row(
+                        conn, destination=dest, pr_number=pr,
+                        kind="dismiss_prior_approval", branch_def_id=bdid,
+                        expected_head_sha=(proj["head_sha"] or "").strip(),
+                        founder_handle=handle, ts=ts,
+                    ) else 0
+            # A cancelled timer whose PR isn't projected still needs a disable.
+            for t in cancelled:
+                key = ((t.get("destination") or "").strip(), t.get("pr_number"))
+                if key not in seen_prs and isinstance(key[1], int) and key[0]:
+                    queued += 1 if _enqueue_revocation_row(
+                        conn, destination=key[0], pr_number=key[1],
+                        kind="disable_auto_merge", branch_def_id=bdid,
+                        expected_head_sha="", founder_handle="", ts=ts,
+                    ) else 0
+    binding = {
+        "branch_def_id": binding_row["branch_def_id"],
+        "merge_preference": binding_row["merge_preference"],
+        "not_before_delay_s": binding_row["not_before_delay_s"],
+        "review_required": bool(binding_row["review_required"]),
+        "revision": binding_row["revision"],
+        "founder_github_handle": binding_row["founder_github_handle"],
+        "bound": True,
+        "bound_by": binding_row["bound_by"],
+        "bound_at": binding_row["bound_at"],
+    }
+    return {
+        "binding": binding, "cancelled_timers": cancelled,
+        "revocations_queued": queued,
+    }
+
+
+# ── manual-merge outbox (head-bound; drained by a daemon worker) ─────────────
+
+
+def enqueue_manual_merge(
+    universe_dir: str | Path, *, destination: str, pr_number: int,
+    expected_head_sha: str, branch_def_id: str = "", decided_by: str = "",
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Durably enqueue a HEAD-BOUND manual merge (Codex r15 #1) for the daemon
+    worker to execute with the credentialed client. Idempotent: at most one
+    pending merge per (destination, pr_number, head). Returns
+    ``{"merge_id"|None, "enqueued": bool}`` — ``enqueued`` is False when an
+    identical pending merge already exists (never a duplicate)."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    mid = f"mm-{uuid.uuid4().hex[:16]}"
+    dest = (destination or "").strip()
+    head = (expected_head_sha or "").strip()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO manual_merge_outbox "
+                "(merge_id, destination, pr_number, expected_head_sha, "
+                "branch_def_id, decided_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (mid, dest, pr_number, head, branch_def_id, decided_by, ts),
+            )
+            enqueued = cur.rowcount > 0
+    return {"merge_id": mid if enqueued else None, "enqueued": enqueued}
+
+
+def list_pending_manual_merges(universe_dir: str | Path) -> list[dict[str, Any]]:
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT * FROM manual_merge_outbox WHERE executed_at IS NULL "
+            "ORDER BY created_at",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_manual_merge_executed(
+    universe_dir: str | Path, *, merge_id: str, now: float | None = None
+) -> bool:
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "UPDATE manual_merge_outbox SET executed_at = ? "
+                "WHERE merge_id = ? AND executed_at IS NULL",
+                (ts, (merge_id or "").strip()),
             )
             return cur.rowcount > 0
 
@@ -1425,4 +1654,8 @@ __all__ = [
     "enqueue_revocation",
     "list_pending_revocations",
     "mark_revocation_executed",
+    "tighten_merge_preference",
+    "enqueue_manual_merge",
+    "list_pending_manual_merges",
+    "mark_manual_merge_executed",
 ]

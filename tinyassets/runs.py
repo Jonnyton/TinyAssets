@@ -2775,18 +2775,30 @@ def _review_gate_disposition(
 _GH_CALL_KEYS = ("kind", "transport", "method", "path", "params", "summary")
 
 
-def _review_already_on_github(github_api: Any, call_dict: dict[str, Any]) -> bool:
-    """Codex r15 #3: reconcile against GitHub's ACTUAL state before re-submitting
-    — was a review with THIS commit_id (stable effect identity) already
-    submitted? Closes the crash-after-remote-before-receipt double-submit window.
-    Tolerant of a client without ``list_pull_reviews`` (returns False → submit)."""
+_REVIEW_EVENT_STATE = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}
+
+
+def _review_already_on_github(
+    github_api: Any, call_dict: dict[str, Any], *, expected_owner: str = "",
+) -> bool:
+    """Codex r15 #3 + REJECT #3: reconcile against GitHub's ACTUAL state before
+    re-submitting — was a review with THIS commit_id, by the CONNECTED OWNER, in
+    the matching state already submitted? Closes the crash-after-remote-before-
+    receipt double-submit window WITHOUT accepting a DIFFERENT actor's review at
+    the same commit (the security hole the REJECT reproduced).
+
+    ``expected_owner`` is the resolved connected-owner login; an EMPTY owner
+    NEVER reconciles (fail safe → re-submit with the owner's own token rather
+    than trust an unattributed review). Tolerant of a client without
+    ``list_pull_reviews`` (returns False → submit)."""
     params = call_dict.get("params") or {}
     commit_id = (params.get("commit_id") or "").strip()
     want_event = (params.get("event") or "").strip().upper()
+    owner = (expected_owner or "").strip().lstrip("@").lower()
     path = call_dict.get("path") or ""
     # path is /repos/{owner}/{repo}/pulls/{n}/reviews
     m = re.search(r"/repos/([^/]+/[^/]+)/pulls/(\d+)/reviews", path)
-    if not commit_id or m is None:
+    if not commit_id or not owner or m is None:
         return False
     destination, pr_number = m.group(1), int(m.group(2))
     try:
@@ -2795,10 +2807,13 @@ def _review_already_on_github(github_api: Any, call_dict: dict[str, Any]) -> boo
         )
     except Exception:  # noqa: BLE001 — no reconcile method / error ⇒ submit
         return False
+    want_state = _REVIEW_EVENT_STATE.get(want_event, want_event)
     for rv in reviews or []:
-        if (rv.get("commit_id") or "").strip() == commit_id and (
-            rv.get("state") or ""
-        ).upper() in (want_event, "APPROVED" if want_event == "APPROVE" else "CHANGES_REQUESTED"):
+        if (
+            (rv.get("commit_id") or "").strip() == commit_id
+            and (rv.get("user_login") or "").strip().lstrip("@").lower() == owner
+            and (rv.get("state") or "").strip().upper() == want_state
+        ):
             return True
     return False
 
@@ -2806,12 +2821,13 @@ def _review_already_on_github(github_api: Any, call_dict: dict[str, Any]) -> boo
 def _submit_github_review(
     base_path: str | Path, *, run_id: str, call_dict: dict[str, Any] | None,
     effect_kind: str, github_api: Any, effects: dict[str, Any],
+    expected_owner: str = "",
 ) -> bool:
     """Submit a HEAD-BOUND GitHub review (APPROVE / REQUEST_CHANGES), idempotent
-    via a receipt AND GitHub-state reconciliation (Codex r15 #3). Returns True
-    only when the review is CONFIRMED submitted (or a prior receipt / GitHub state
-    proves it). Without a client → False (the run stays interrupted — no false
-    success)."""
+    via a receipt AND GitHub-state reconciliation bound to the CONNECTED OWNER
+    (Codex r15 #3 + REJECT #3). Returns True only when the review is CONFIRMED
+    submitted (or a prior receipt / GitHub state by the owner proves it). Without
+    a client → False (the run stays interrupted — no false success)."""
     from tinyassets.github_native import GitHubCall
     from tinyassets.storage import review_queue as _rq
 
@@ -2820,9 +2836,10 @@ def _submit_github_review(
         return True
     if github_api is None or not call_dict:
         return False
-    # Reconcile FIRST: if GitHub already has this review (crash between remote
-    # success and receipt write), record the receipt + do NOT re-submit.
-    if _review_already_on_github(github_api, call_dict):
+    # Reconcile FIRST: if GitHub already has the OWNER's review at this commit
+    # (crash between remote success and receipt write), record the receipt + do
+    # NOT re-submit. A different actor's review at the same commit does NOT match.
+    if _review_already_on_github(github_api, call_dict, expected_owner=expected_owner):
         _rq.record_effect_receipt(
             base_path, run_id=run_id, effect_kind=effect_kind,
             detail={"reconciled": True},
@@ -2873,6 +2890,7 @@ def _execute_review_directive(
         if not _submit_github_review(
             base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
             effect_kind="submit_review_approve", github_api=github_api, effects=effects,
+            expected_owner=expected_owner,
         ):
             return {"confirmed": False, "state": "approve_awaiting_execution",
                     "effects": effects, "reason": "review_not_submitted"}
@@ -2909,7 +2927,7 @@ def _execute_review_directive(
         if not _submit_github_review(
             base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
             effect_kind="submit_review_request_changes", github_api=github_api,
-            effects=effects,
+            effects=effects, expected_owner=expected_owner,
         ):
             return {"confirmed": False, "state": "reshape_awaiting_execution",
                     "effects": effects, "reason": "request_changes_not_submitted"}
@@ -2937,7 +2955,7 @@ def _execute_review_directive(
         if not _submit_github_review(
             base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
             effect_kind="submit_review_request_changes", github_api=github_api,
-            effects=effects,
+            effects=effects, expected_owner=expected_owner,
         ):
             return {"confirmed": False, "state": "reject_awaiting_execution",
                     "effects": effects, "reason": "request_changes_not_submitted"}
@@ -3085,7 +3103,14 @@ def execute_manual_merge(
     from tinyassets.storage import review_queue as _rq
 
     want = (expected_head_sha or "").strip()
-    receipt_kind = f"manual_merge:{pr_number}"
+    if not want:
+        # Head-bound by contract (Codex REJECT #5): without the reviewed head we
+        # cannot prove the head that merges is the head the owner approved.
+        return {"confirmed": False, "state": "missing_expected_head",
+                "reason": "manual merge requires the reviewed expected_head_sha"}
+    # HEAD-BOUND receipt (Codex REJECT #5): a receipt only vouches for THIS head,
+    # so a later head can't ride a prior head's confirmation.
+    receipt_kind = f"manual_merge:{pr_number}:{want[:12]}"
     if _rq.has_effect_receipt(base_path, run_id=destination, effect_kind=receipt_kind):
         return {"confirmed": True, "state": "merged", "detail": "receipt"}
     if github_api is None:
@@ -3093,88 +3118,235 @@ def execute_manual_merge(
                 "github_call": _gn.merge_pr(
                     destination=destination, pr_number=pr_number,
                     expected_head_sha=want).to_dict()}
-    # Reconcile: already merged at this sha?
+    # Reconcile: is the PR ALREADY merged AT THE REVIEWED HEAD? A merged PR whose
+    # live head != the reviewed head means head A was replaced and head B merged
+    # (a real security hole the REJECT reproduced) — refuse, never confirm.
     try:
         pull = github_api.get_pull(destination=destination, pr_number=pr_number)
     except Exception as exc:  # noqa: BLE001 — can't confirm ⇒ pending
         return {"confirmed": False, "state": "pull_unreadable", "reason": str(exc)}
-    if pull.get("merged") and (
-        not want or (pull.get("merge_commit_sha") or pull.get("head_sha")) is not None
-    ):
+    live_head = (pull.get("head_sha") or "").strip()
+    if pull.get("merged"):
+        if live_head and live_head != want:
+            return {"confirmed": False, "state": "head_replaced_merge",
+                    "reason": (f"PR merged at head {live_head[:8]} != reviewed head "
+                               f"{want[:8]}; a replaced head merged")}
         _rq.record_effect_receipt(
             base_path, run_id=destination, effect_kind=receipt_kind,
-            detail={"reconciled": True},
+            detail={"reconciled": True, "head_sha": want,
+                    "merge_commit_sha": pull.get("merge_commit_sha")},
         )
-        return {"confirmed": True, "state": "merged", "detail": "reconciled"}
-    live_head = (pull.get("head_sha") or "").strip()
-    if want and live_head and want != live_head:
+        return {"confirmed": True, "state": "merged", "detail": "reconciled",
+                "head_sha": want, "merge_commit_sha": pull.get("merge_commit_sha")}
+    if live_head and want != live_head:
         return {"confirmed": False, "state": "head_moved",
                 "reason": f"reviewed head {want[:8]} != live {live_head[:8]}"}
     from tinyassets.github_native import GitHubCall
+    # The merge call carries sha=want, so GitHub ALSO rejects a moved head (409).
     call = _gn.merge_pr(destination=destination, pr_number=pr_number,
                         expected_head_sha=want)
     cd = call.to_dict()
     res = github_api.run_call(GitHubCall(**{k: cd[k] for k in _GH_CALL_KEYS if k in cd}))
     if not res.get("ok"):
         return {"confirmed": False, "state": "merge_failed", "reason": "merge_call_failed"}
-    # Re-read GitHub to CONFIRM the merge actually happened before reporting merged.
+    # Re-read GitHub to CONFIRM the merge happened AT THE REVIEWED HEAD before
+    # reporting merged (head-bound receipt identity — Codex REJECT #5).
     confirm = github_api.get_pull(destination=destination, pr_number=pr_number)
+    confirm_head = (confirm.get("head_sha") or "").strip()
     if not confirm.get("merged"):
         return {"confirmed": False, "state": "merge_unconfirmed"}
+    if confirm_head and confirm_head != want:
+        return {"confirmed": False, "state": "head_replaced_merge",
+                "reason": (f"post-merge head {confirm_head[:8]} != reviewed head "
+                           f"{want[:8]}")}
     _rq.record_effect_receipt(
         base_path, run_id=destination, effect_kind=receipt_kind,
-        detail={"merge_commit_sha": confirm.get("merge_commit_sha")},
+        detail={"head_sha": want, "merge_commit_sha": confirm.get("merge_commit_sha")},
     )
-    return {"confirmed": True, "state": "merged",
+    return {"confirmed": True, "state": "merged", "head_sha": want,
             "merge_commit_sha": confirm.get("merge_commit_sha")}
 
 
+def _resolve_worker_client(
+    github_api: Any, client_factory: Any, destination: str
+) -> Any:
+    """Resolve the credentialed client a recovery worker uses for ``destination``:
+    the directly-injected ``github_api`` (tests / single-repo), else
+    ``client_factory(destination)`` which the daemon builds from the per-universe
+    vault BY DESTINATION. Returns None when neither yields a client (fail closed —
+    the row stays queued)."""
+    if github_api is not None:
+        return github_api
+    if client_factory is None:
+        return None
+    return client_factory(destination)
+
+
+def execute_pending_manual_merges(
+    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — drain the head-bound MANUAL-MERGE outbox (Codex REJECT
+    #1). For each queued merge it resolves the credentialed client (injected, or
+    built from the vault BY DESTINATION via ``client_factory``), runs the
+    head-bound :func:`execute_manual_merge`, and marks the outbox row executed
+    ONLY when GitHub confirms the merge at the reviewed head. On confirmation it
+    reconciles the PR projection to ``merged``. Without a client the row stays
+    queued (honest — never falsely drained). This is the REAL daemon path the
+    chat verb's ``pending`` merge depends on, not a returned-call stub."""
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    for row in _rq.list_pending_manual_merges(base_path):
+        merge_id = row["merge_id"]
+        dest = (row.get("destination") or "").strip()
+        pr = row.get("pr_number")
+        head = (row.get("expected_head_sha") or "").strip()
+        try:
+            client = _resolve_worker_client(github_api, client_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": f"client_error:{exc}"})
+            continue
+        if client is None:
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": "no_client"})
+            continue
+        try:
+            outcome = execute_manual_merge(
+                base_path, destination=dest, pr_number=pr,
+                expected_head_sha=head, github_api=client,
+            )
+        except Exception as exc:  # noqa: BLE001 — leave queued for retry
+            logger.exception("manual merge drain failed for %s#%s", dest, pr)
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": f"error:{exc}"})
+            continue
+        if outcome.get("confirmed"):
+            _rq.mark_manual_merge_executed(base_path, merge_id=merge_id)
+            try:
+                _rq.reconcile_projection(
+                    base_path, destination=dest, pr_number=pr,
+                    github_state="merged",
+                    merge_commit_sha=outcome.get("merge_commit_sha") or "",
+                    head_sha=head,
+                )
+            except Exception:  # noqa: BLE001 — merge is durable; cache is advisory
+                logger.exception("projection reconcile after merge failed")
+            results.append({"merge_id": merge_id, "confirmed": True, "pr_number": pr,
+                            "merge_commit_sha": outcome.get("merge_commit_sha")})
+        else:
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "state": outcome.get("state"),
+                            "reason": outcome.get("reason")})
+    return results
+
+
+def _resolve_owner_approval_id(
+    reviews: list[dict[str, Any]] | None, *, owner: str, head: str
+) -> int | None:
+    """The review_id of the CONNECTED OWNER's APPROVED review at ``head`` (Codex
+    REJECT #4) — the EXACT id a dismissal needs, never the hardcoded 0. Matches on
+    the reviewer login AND (when known) the reviewed commit, returning the most
+    recent match. None when no such standing owner approval exists."""
+    want_owner = (owner or "").strip().lstrip("@").lower()
+    want_head = (head or "").strip()
+    if not want_owner:
+        return None
+    resolved: int | None = None
+    for rv in reviews or []:
+        if (rv.get("user_login") or "").strip().lstrip("@").lower() != want_owner:
+            continue
+        if (rv.get("state") or "").strip().upper() != "APPROVED":
+            continue
+        if want_head and (rv.get("commit_id") or "").strip() != want_head:
+            continue
+        rid = rv.get("id")
+        if isinstance(rid, int):
+            resolved = rid  # most recent matching approval wins
+    return resolved
+
+
 def execute_pending_revocations(
-    base_path: str | Path, *, github_api: Any = None,
+    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
 ) -> list[dict[str, Any]]:
     """RECOVERY WORKER — execute queued preference-tightening revocations (Codex
     r15 #2): actually DISABLE auto-merge / DISMISS the prior approval via the
-    client and confirm, then mark the revocation executed. Without a client the
-    revocations stay queued (honest — nothing is falsely marked done). Daemon-loop
-    registration is the integration seam."""
+    client and confirm, then mark the revocation executed. The client is the
+    injected ``github_api`` or ``client_factory(destination)`` (vault-built by
+    destination). Without a client the revocations stay queued (honest — nothing
+    is falsely marked done). Daemon-loop registration is the integration seam.
+
+    Dismissal (Codex REJECT #4): the EXACT owner review_id is resolved from
+    GitHub via ``list_pull_reviews`` (owner login + reviewed head) — never the
+    old hardcoded ``review_id=0`` that the permissive fake accepted. The dismiss
+    call runs under the owner USER token (the authorized dismisser on a protected
+    branch), not the App's minimal installation scope. When no standing owner
+    approval exists (already dismissed / head auto-dismissed), the revocation
+    goal is already met and the row is marked done."""
     from tinyassets import github_native as _gn
+    from tinyassets.github_native import GitHubCall
     from tinyassets.storage import review_queue as _rq
 
     results: list[dict[str, Any]] = []
     for rev in _rq.list_pending_revocations(base_path):
+        rev_id = rev["revocation_id"]
         dest, pr, kind = rev.get("destination") or "", rev.get("pr_number"), rev.get("kind")
-        if github_api is None:
-            results.append({"revocation_id": rev["revocation_id"], "executed": False,
+        try:
+            github_api_dest = _resolve_worker_client(github_api, client_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
+            results.append({"revocation_id": rev_id, "executed": False,
+                            "reason": f"client_error:{exc}"})
+            continue
+        if github_api_dest is None:
+            results.append({"revocation_id": rev_id, "executed": False,
                             "reason": "no_client"})
             continue
         try:
             if kind == "disable_auto_merge":
                 call = _gn.disable_auto_merge(destination=dest, pr_number=pr)
             elif kind == "dismiss_prior_approval":
-                # A dismissal needs the prior review id — resolve it from GitHub.
+                # Resolve the EXACT owner review_id from GitHub (never 0).
+                try:
+                    reviews = github_api_dest.list_pull_reviews(
+                        destination=dest, pr_number=pr
+                    )
+                except Exception as exc:  # noqa: BLE001 — unreadable ⇒ retry later
+                    results.append({"revocation_id": rev_id, "executed": False,
+                                    "reason": f"reviews_unreadable:{exc}"})
+                    continue
+                review_id = _resolve_owner_approval_id(
+                    reviews, owner=rev.get("founder_handle") or "",
+                    head=rev.get("expected_head_sha") or "",
+                )
+                if review_id is None:
+                    # No standing owner approval to dismiss → goal already met.
+                    _rq.mark_revocation_executed(base_path, revocation_id=rev_id)
+                    results.append({"revocation_id": rev_id, "executed": True,
+                                    "kind": kind, "pr_number": pr,
+                                    "detail": "no_standing_owner_approval"})
+                    continue
                 call = _gn.dismiss_review(
-                    destination=dest, pr_number=pr, review_id=0,
+                    destination=dest, pr_number=pr, review_id=review_id,
                     message="merge preference changed; renewed owner consent required",
                 )
             else:
-                results.append({"revocation_id": rev["revocation_id"],
-                                "executed": False, "reason": f"unknown_kind:{kind}"})
+                results.append({"revocation_id": rev_id, "executed": False,
+                                "reason": f"unknown_kind:{kind}"})
                 continue
-            from tinyassets.github_native import GitHubCall
             cd = call.to_dict()
-            res = github_api.run_call(GitHubCall(**{
+            res = github_api_dest.run_call(GitHubCall(**{
                 k: cd[k] for k in _GH_CALL_KEYS if k in cd
             }))
             if not res.get("ok"):
-                results.append({"revocation_id": rev["revocation_id"],
-                                "executed": False, "reason": "call_failed"})
+                results.append({"revocation_id": rev_id, "executed": False,
+                                "reason": "call_failed"})
                 continue
-            _rq.mark_revocation_executed(base_path, revocation_id=rev["revocation_id"])
-            results.append({"revocation_id": rev["revocation_id"], "executed": True,
+            _rq.mark_revocation_executed(base_path, revocation_id=rev_id)
+            results.append({"revocation_id": rev_id, "executed": True,
                             "kind": kind, "pr_number": pr})
         except Exception as exc:  # noqa: BLE001 — leave queued for retry
             logger.exception("revocation execution failed")
-            results.append({"revocation_id": rev["revocation_id"], "executed": False,
+            results.append({"revocation_id": rev_id, "executed": False,
                             "reason": f"error:{exc}"})
     return results
 
@@ -3241,30 +3413,101 @@ def fire_due_not_before_timers(
 def register_review_workers(
     *, base_path: str | Path, github_api: Any = None, verifier_api: Any = None,
     run_starter: Callable[[dict[str, Any]], str] | None = None,
-    app_actor_id: Any = None, expected_owner: str = "",
+    app_actor_id: Any = None, expected_owner: str = "", client_factory: Any = None,
 ) -> dict[str, Callable[[], list[dict[str, Any]]]]:
     """THE single daemon-registration ENTRYPOINT (Codex r15 #1c) for the S4
     review-recovery workers. Returns a dict of ``name -> zero-arg callable`` the
-    daemon loop invokes on each tick (continuation replay, revocation executor,
-    not_before timer-watcher), each bound to the credentialed client.
+    daemon loop invokes on each tick: continuation replay, the MANUAL-MERGE drain
+    (Codex REJECT #1), the revocation executor, and the not_before timer-watcher —
+    each bound to the credentialed client (``github_api`` directly, or
+    ``client_factory(destination)`` built from the vault per destination).
 
-    INTEGRATION SEAM (the ONLY deferred piece): the live daemon does exactly two
-    things — (1) build the credentialed clients (the vault provides the App
-    installation token + the owner verifier/user tokens) and (2) call this
-    ``register()`` once, then invoke the returned callables on its loop. Proven
-    here by a driven harness with an injected client; no live network."""
+    Live wiring: :func:`run_review_recovery_for_universe` builds ``client_factory``
+    from the per-universe vault and the daemon loop calls it each cycle
+    (:func:`fantasy_daemon.__main__._dispatcher_startup`)."""
     return {
         "replay_continuations": lambda: replay_pending_continuations(
             base_path, github_api=github_api, verifier_api=verifier_api,
             run_starter=run_starter, app_actor_id=app_actor_id,
             expected_owner=expected_owner,
         ),
+        "drain_manual_merges": lambda: execute_pending_manual_merges(
+            base_path, github_api=github_api, client_factory=client_factory,
+        ),
         "execute_revocations": lambda: execute_pending_revocations(
-            base_path, github_api=github_api,
+            base_path, github_api=github_api, client_factory=client_factory,
         ),
         "fire_timers": lambda: fire_due_not_before_timers(
             base_path, github_api=github_api, verifier_api=verifier_api,
             app_actor_id=app_actor_id, expected_owner=expected_owner,
+        ),
+    }
+
+
+def run_review_recovery_for_universe(
+    universe_dir: str | Path, *, request_fn: Any = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """LIVE DAEMON CALLER (Codex REJECT #1) — drive the S4 review-recovery workers
+    for ONE universe with the REAL vault-built client. Builds a per-destination
+    ``client_factory`` from the universe's credential vault
+    (:func:`github_http.github_client_from_vault`) and drains the manual-merge
+    outbox + the revocation outbox. Fail-closed: a destination with no connected
+    GitHub credential yields no client, so its rows stay queued rather than being
+    falsely marked done. Called each cycle from the daemon's per-universe startup
+    recovery; safe to call repeatedly (every worker is idempotent + receipt- /
+    outbox-guarded).
+
+    The MANUAL flow is driven fully live: the owner's APPROVE review is submitted
+    (the continuation), then the head-bound merge is drained. AUTONOMOUS decisions
+    (auto/not_before) need the opt-in ruleset-verify identity (a separate grant),
+    so they stay fail-closed (pending) here rather than merging without the gate.
+    Returns per-worker result lists for observability."""
+    from tinyassets.github_http import github_client_from_vault
+    from tinyassets.storage import review_queue as _rq
+
+    _client_cache: dict[str, Any] = {}
+
+    def client_factory(destination: str) -> Any:
+        dest = (destination or "").strip()
+        if dest not in _client_cache:
+            try:
+                _client_cache[dest] = github_client_from_vault(
+                    universe_dir, dest, request_fn=request_fn,
+                )
+            except Exception:  # noqa: BLE001 — no/invalid credential ⇒ fail closed
+                logger.exception("building github client for %s failed", dest)
+                _client_cache[dest] = None
+        return _client_cache[dest]
+
+    # Drive pending continuations for the MANUAL flow: submit the owner's review
+    # (manual merge needs no verifier). The connected owner is resolved SERVER-SIDE
+    # from the branch binding so crash-window reconciliation is owner-bound; no
+    # verifier is passed, so an autonomous decision fails closed (stays pending).
+    continuations: list[dict[str, Any]] = []
+    for susp in _rq.list_pending_continuations(universe_dir):
+        dest = (susp.get("destination") or "").strip()
+        client = client_factory(dest)
+        if client is None:
+            continuations.append({"run_id": susp.get("run_id"), "applied": False,
+                                  "reason": "no_client"})
+            continue
+        binding = _rq.resolve_merge_preference_binding(
+            universe_dir, branch_def_id=susp.get("branch_def_id") or "",
+        )
+        continuations.append(continue_reviewed_run(
+            universe_dir, run_id=susp["run_id"],
+            decision=susp.get("resume_decision") or "",
+            directive=susp.get("resume_directive") or {},
+            github_api=client, expected_owner=binding.get("founder_github_handle") or "",
+        ))
+
+    return {
+        "replay_continuations": continuations,
+        "drain_manual_merges": execute_pending_manual_merges(
+            universe_dir, client_factory=client_factory,
+        ),
+        "execute_revocations": execute_pending_revocations(
+            universe_dir, client_factory=client_factory,
         ),
     }
 

@@ -16,6 +16,7 @@ import pytest
 from tinyassets.api import helpers as helpers_mod
 from tinyassets.api import permissions as permissions_mod
 from tinyassets.api.review_queue_actions import _REVIEW_QUEUE_ACTIONS
+from tinyassets.credential_vault import write_credential_vault
 from tinyassets.storage import review_queue as rq
 
 _DEST = "Jonnyton/TinyAssets"
@@ -238,6 +239,37 @@ def test_set_preference_tightening_is_atomic(owner_env):
     assert out["revocations_queued"] >= 1
     # The timer is gone — it cannot fire after the tighten.
     assert rq.due_not_before_timers(owner_env, now=1000.0) == []
+
+
+def test_set_preference_resolves_founder_handle_from_vault(owner_env):
+    """REJECT #2 (no monkeypatch): the CODEOWNERS owner is resolved SERVER-SIDE
+    from the connected GitHub identity in the per-universe credential vault — a
+    REAL lookup, not a stubbed-away one. The autonomous gate then knows the owner
+    the CODEOWNERS catch-all must name."""
+    write_credential_vault(owner_env, [{
+        "credential_type": "vcs", "service": "github", "destination": _DEST,
+        "token": "ghs_installtoken", "purpose": "write",
+        "account_login": "TheFounder",
+    }])
+    out = _call(
+        "review_queue_set_preference", universe_id="u1", branch_def_id="bd",
+        merge_preference="auto",
+    )
+    assert out["status"] == "bound"
+    assert out["binding"]["founder_github_handle"] == "thefounder"
+    resolved = rq.resolve_merge_preference_binding(owner_env, branch_def_id="bd")
+    assert resolved["founder_github_handle"] == "thefounder"
+
+
+def test_set_preference_no_github_identity_is_fail_closed(owner_env):
+    """No connected GitHub identity → the founder handle is empty (fail-closed),
+    NOT a guess. Autonomous merge then refuses expected_owner_unknown."""
+    out = _call(
+        "review_queue_set_preference", universe_id="u1", branch_def_id="bd",
+        merge_preference="auto",
+    )
+    assert out["status"] == "bound"
+    assert out["binding"]["founder_github_handle"] == ""
 
 
 def test_set_preference_dismisses_prior_approval(owner_env):

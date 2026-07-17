@@ -214,6 +214,52 @@ def resolve_github_token(
     return ""
 
 
+def resolve_github_login(
+    universe_dir: str | Path | None,
+    *,
+    destination: str = "",
+) -> str:
+    """Resolve the CONNECTED owner's GitHub login from the AUTHORITATIVE vault
+    credential record (Codex r15 #5) — the server-side identity, never
+    caller-supplied text.
+
+    A GitHub ``vcs`` credential record carries the login of the account that
+    connected/authorized it (``account_login`` / ``login``). When
+    ``destination`` is given, the login is read from the record BOUND to that
+    ``owner/repo``; otherwise the universe's connected GitHub login is returned
+    when it is UNAMBIGUOUS (exactly one distinct login across the universe's
+    github vcs records). Returns ``""`` when no GitHub identity is connected or
+    the identity is ambiguous — the fail-closed default (autonomous merge then
+    refuses ``expected_owner_unknown`` rather than trusting a guess)."""
+    if universe_dir is None:
+        return ""
+    wanted = (destination or "").strip()
+    logins: set[str] = set()
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "vcs" or _service(record) != "github":
+            continue
+        # Plain-string login only — NEVER the _secret_value base64 fallback (which
+        # would decode the token itself as a login on a missing field).
+        login = ""
+        for key in ("account_login", "login", "owner_login"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                login = value.strip().lstrip("@").lower()
+                break
+        if not login:
+            continue
+        rec_dest = str(record.get("destination") or "").strip()
+        if wanted:
+            if rec_dest == wanted:
+                return login
+        else:
+            logins.add(login)
+    if wanted:
+        return ""
+    # Universe-scoped: return the login only when it is unambiguous.
+    return next(iter(logins)) if len(logins) == 1 else ""
+
+
 def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str, Any]]:
     if universe_dir is None:
         return []
