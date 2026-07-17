@@ -3,11 +3,11 @@ credential records (round-16 #2; packaged for deployability round-17 #2).
 
 Founder subscription custody is a retired, blocked lane (2026-07-02 custody
 research). After the S5 reshape, a universe whose vault still holds an
-``llm_subscription`` record fails EVERY provider spawn
-(``RetiredSubscriptionLaneError``). Re-declaring an engine only edits
-``config.yaml`` — it cannot remove the vault record — so those universes are
-stranded until the record is migrated out. This is the runnable, IDEMPOTENT,
-crash-safe remediation the deploy pipeline runs as a pre-start step.
+``llm_subscription`` record fails EVERY provider spawn CLOSED
+(``RetiredSubscriptionLaneError``) — it must never run on the host's ambient
+credentials. This tool STRIPS the raw record (the platform must not custody
+subscription tokens) and leaves a NON-SECRET retired marker so the universe stays
+fail-closed even after removal, until it is re-bound. Runnable, IDEMPOTENT, crash-safe.
 
 Round-17 #2: this lives INSIDE the ``tinyassets`` package (not ``scripts/``) so it
 is importable + runnable wherever the package is installed. The documented command
@@ -17,28 +17,30 @@ is therefore::
     python -m tinyassets.migrations.retired_subscription_records --migrate
 
 In the production image the ``tinyassets`` package is on ``PYTHONPATH=/app`` and
-pip-installed into the venv, so ``python -m tinyassets.migrations.retired_subscription_records``
-runs with no ``ModuleNotFoundError: tinyassets`` (the round-17 #2 blocker on the
-old ``scripts/`` path). The deploy workflow runs ``--inventory`` then ``--migrate``
-in a one-shot container from the NEW image against the mounted data volume BEFORE
-restarting the daemon onto that image, and ABORTS the deploy on a non-zero exit.
+pip-installed into the venv, so ``python -m ...retired_subscription_records`` runs with
+no ``ModuleNotFoundError: tinyassets`` (the round-17 #2 blocker on the old ``scripts/``
+path).
 
-SAFE-FORWARD (round-19): this migration is FORWARD-ONLY — there is NO ``--rollback``
-of credentials. Once the retired ``llm_subscription`` record is quarantined AWAY, the
-universe reads as "no record", which EVERY image tolerates (it falls back to ambient
-/ idle — the default state of every fresh universe; absence never raises). So a deploy
-failure needs only an IMAGE rollback; the quarantined creds never need restoring. The
-``.credential-vault-quarantine.json`` archive is retained as an audit trail + manual-
-recovery source (the quarantine step preserves any prior/corrupt archive rather than
-destroying it), not an automated undo. This eliminates the whole class of
-credential-rollback bugs (archive destruction, cross-deployment reactivation,
-restart-failure bypass) at the root.
+HOST-GATED, NOT AUTO-DEPLOYED (round-20 #1): the deploy pipeline does NOT auto-run this
+migration. Current origin/main overlays subscription records into the host's
+CODEX_HOME / CLAUDE_CONFIG_DIR / OAuth env, so removing a record makes an affected
+universe fall back to the HOST's identity (a cross-identity leak) on the new image OR
+on an image-only rollback. The fail-closed CODE ships first (a retired universe refuses
+to execute — :func:`credential_vault.is_retired_universe` +
+``provider_auth_env_overrides``); the host runs THIS record-removal only once that
+release is the stable baseline. Removal is safe because the persistent non-secret
+marker keeps the universe fail-closed after the raw record is gone.
+
+NO RAW TOKEN CUSTODY (round-20 #2): the archive keeps ONLY non-secret marker metadata
+per retired credential — ``service`` + a one-way ``token_sha256`` + ``retired_at`` —
+NEVER the raw OAuth/subscription token. The raw record is DELETED, not moved to another
+file. FORWARD-ONLY: there is NO ``--rollback`` (restoring a retired credential would
+need legal approval + separate encrypted custody — NOT built).
 
 Modes (exactly one):
   --inventory   List affected universes + record counts. Read-only. Run FIRST.
-  --migrate     Quarantine + remove the llm_subscription records (idempotent,
-                crash-safe, forward-only). Archives them to
-                ``.credential-vault-quarantine.json`` per universe.
+  --migrate     Strip the raw llm_subscription records + write the non-secret retired
+                marker (idempotent, crash-safe, forward-only).
 
 Scope: scans every universe directory under ``TINYASSETS_DATA_DIR`` (each child
 dir holding a ``.credential-vault.json``). ``--data-dir`` overrides the root.

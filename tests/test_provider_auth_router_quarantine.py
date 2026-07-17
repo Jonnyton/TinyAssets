@@ -1238,3 +1238,59 @@ def test_r18_3_retired_lane_error_is_terminal_no_fallback(isolated_universe_conf
     assert providers["claude-code"].call_count == 1  # first provider was tried
     assert providers["codex"].call_count == 0  # TERMINAL — no ambient-Codex fallback
     assert providers["ollama-local"].call_count == 0
+
+
+class _RetiredLaneProvider(_FakeProvider):
+    """A provider whose env resolution hit a retired-lane record — always raises."""
+
+    async def complete(self, prompt, system, config, *, universe_dir=None):
+        from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
+        self.call_count += 1
+        raise RetiredSubscriptionLaneError("claude", "/u/legacy")
+
+
+def test_r20_3_retired_lane_terminal_in_call_with_policy(isolated_universe_config):
+    """Round-20 #3: call_with_policy must treat RetiredSubscriptionLaneError as TERMINAL
+    (like call()) — it must NOT fall through to the next policy provider (which would
+    run on ambient host creds — a cross-identity leak). Zero later-provider calls."""
+    from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
+    providers = {
+        "claude-code": _RetiredLaneProvider("claude-code"),
+        "codex": _FakeProvider("codex"),
+        "ollama-local": _FakeProvider("ollama-local"),
+    }
+    router = ProviderRouter(
+        providers=providers, quota=QuotaTracker(), auth_health=_auth_probe(set()),
+    )
+    policy = {
+        "preferred": {"provider": "claude-code"},
+        "fallback_chain": [{"provider": "codex"}, {"provider": "ollama-local"}],
+    }
+    with pytest.raises(RetiredSubscriptionLaneError):
+        _run(router.call_with_policy("writer", "p", "s", policy))
+    assert providers["claude-code"].call_count == 1  # preferred provider tried
+    assert providers["codex"].call_count == 0  # TERMINAL — no policy fallback
+    assert providers["ollama-local"].call_count == 0
+
+
+def test_r20_3_retired_lane_terminal_in_call_judge_ensemble(isolated_universe_config):
+    """Round-20 #3: call_judge_ensemble must treat RetiredSubscriptionLaneError as
+    TERMINAL — a retired universe fails the WHOLE ensemble, never returning results
+    from other judges (which would run on ambient host creds). It must RAISE, not
+    swallow the error and return a partial ensemble (the r20 LEAKED_FALLBACK)."""
+    from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
+    # Both are judge-ensemble members (_JUDGE_PROVIDERS): codex raises retired-lane,
+    # ollama-local would succeed. The ensemble must not return ollama's result.
+    providers = {
+        "codex": _RetiredLaneProvider("codex"),
+        "ollama-local": _FakeProvider("ollama-local", text="LEAKED_FALLBACK"),
+    }
+    router = ProviderRouter(
+        providers=providers, quota=QuotaTracker(), auth_health=_auth_probe(set()),
+    )
+    with pytest.raises(RetiredSubscriptionLaneError):
+        _run(router.call_judge_ensemble("p", "s"))
+    assert providers["codex"].call_count == 1

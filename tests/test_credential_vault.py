@@ -188,42 +188,128 @@ def test_quarantine_is_forward_only_and_idempotent(tmp_path):
     assert len(_json_load(qpath)["quarantined"]) == 1
 
 
-def test_safe_forward_absence_is_tolerated_no_rollback_needed(tmp_path, monkeypatch):
-    """Round-19 (the load-bearing safe-forward claim): once the retired record is
-    quarantined AWAY, the universe reads as "no record", which every image tolerates —
-    it never raises and resolves to idle/ambient. So a deploy failure needs only an
-    IMAGE rollback; the quarantined creds never need restoring.
+def test_r20_1_retired_universe_fails_closed_never_ambient(tmp_path, monkeypatch):
+    """Round-20 #1 (IDENTITY ISOLATION — the corrected claim): a retired universe must
+    NEVER execute on the host's ambient credentials. Removing the raw record does NOT
+    make ambient fallback safe — the daemon overlays subscription auth into the host's
+    CODEX_HOME/CLAUDE_CONFIG_DIR/OAuth env, so ambient = the HOST'S identity (a
+    cross-identity leak). A persistent non-secret MARKER keeps the universe fail-closed
+    even after the record is stripped, until it is re-bound.
 
-    Before quarantine: needs_migration + every spawn's env resolution RAISES
-    RetiredSubscriptionLaneError. After: no needs_migration, and env resolution does
-    NOT raise (the record's absence is the default, tolerated state)."""
+    Proves: BEFORE migration (present record) → fail closed. AFTER migration (record
+    gone, marker present) → STILL fail closed (no ambient host creds). A FRESH universe
+    (never had a subscription) → ambient is legitimately allowed."""
     from tinyassets.credential_vault import (
         RetiredSubscriptionLaneError,
+        is_retired_universe,
         provider_auth_env_overrides,
         quarantine_legacy_subscription_records,
     )
     from tinyassets.engine_binding import resolve_engine_binding
 
     monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    # Host ambient credentials that MUST NOT be inherited by a retired universe.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "host-ambient-oauth")
     write_credential_vault(tmp_path, [
         {"credential_type": "llm_subscription", "service": "claude",
-         "oauth_token": "legacy"},
+         "oauth_token": "legacy-token"},
     ])
-    # BEFORE: the retired record is present → needs_migration + spawn resolution raises.
+    # BEFORE: present record → retired, needs_migration, spawn fails closed.
+    assert is_retired_universe(tmp_path) is True
     assert resolve_engine_binding(tmp_path).needs_migration is True
     with pytest.raises(RetiredSubscriptionLaneError):
         provider_auth_env_overrides(tmp_path, "claude-code")
+    with pytest.raises(RetiredSubscriptionLaneError):
+        provider_auth_env_overrides(tmp_path, "codex")
 
     quarantine_legacy_subscription_records(tmp_path)
 
-    # AFTER (record quarantined-away = absent): tolerated by every image — no crash,
-    # no needs_migration, resolves to idle/ambient. This is why image-only rollback
-    # suffices and no credential rollback is needed.
+    # AFTER (record stripped, MARKER remains): STILL retired → STILL fails closed. This
+    # is the corrected r20 behavior: the universe can NEVER run on ambient host creds.
+    assert is_retired_universe(tmp_path) is True
     binding = resolve_engine_binding(tmp_path)  # must not raise
-    assert binding.needs_migration is False
     assert binding.bound is False
-    # Env resolution no longer raises the retired-lane error (absence is fine).
-    provider_auth_env_overrides(tmp_path, "claude-code")
+    assert binding.needs_migration is True
+    assert "retired" in binding.reason.lower()
+    # IDENTITY ISOLATION: env resolution refuses (fail closed) for EVERY provider —
+    # it never returns an env that would run the affected universe on host creds.
+    for provider in ("claude-code", "codex"):
+        with pytest.raises(RetiredSubscriptionLaneError):
+            provider_auth_env_overrides(tmp_path, provider)
+
+
+def test_r20_2_quarantine_keeps_no_raw_token_only_non_secret_marker(tmp_path):
+    """Round-20 #2: the quarantine archive must NOT custody the raw subscription token.
+    It retains ONLY non-secret marker metadata — service + a one-way token_sha256 +
+    retired_at — and the raw token is DELETED (not moved to another file). "Moving a
+    secret to another file still custodies it" is exactly what this forbids."""
+    import tinyassets.credential_vault as cv
+
+    raw_token = "sk-ant-oat-SUPER-SECRET-oauth-token-value-123456"
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": raw_token},
+    ])
+    cv.quarantine_legacy_subscription_records(tmp_path)
+
+    qpath = tmp_path / cv.QUARANTINE_FILENAME
+    archive_text = qpath.read_text(encoding="utf-8")
+    # The raw token must appear NOWHERE in the archive.
+    assert raw_token not in archive_text, "raw OAuth token leaked into the archive"
+    entry = _json_load(qpath)["quarantined"][0]
+    # Only the non-secret marker fields; no raw secret-bearing field.
+    assert entry["credential_type"] == "llm_subscription"
+    assert entry["service"] == "claude"
+    assert entry["token_sha256"] == cv.hashlib.sha256(raw_token.encode()).hexdigest()
+    assert "retired_at" in entry
+    for secret_field in ("oauth_token", "token", "access_token", "refresh_token",
+                         "auth_json_b64", "secret", "secret_b64", "token_b64"):
+        assert secret_field not in entry, f"{secret_field} must be stripped"
+    # And the raw record is GONE from the vault (deleted, not just moved).
+    assert cv.has_legacy_subscription_records(tmp_path) is False
+
+
+def test_r20_2_archive_never_carries_raw_token_across_reruns(tmp_path):
+    """Round-20 #2: even across a crash-retry (the record is still in the vault while
+    the archive already exists), the archive stays non-secret — the sanitizer strips
+    any raw token from BOTH the prior archive entries and the newly-retired records."""
+    import tinyassets.credential_vault as cv
+
+    raw_token = "oauth-secret-should-never-persist-raw"
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "codex",
+         "oauth_token": raw_token},
+    ])
+    cv.quarantine_legacy_subscription_records(tmp_path)
+    # Re-inject the record (simulate a crash-then-retry: vault has it, archive exists).
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "codex",
+         "oauth_token": raw_token},
+    ])
+    cv.quarantine_legacy_subscription_records(tmp_path)
+
+    qpath = tmp_path / cv.QUARANTINE_FILENAME
+    archive_text = qpath.read_text(encoding="utf-8")
+    assert raw_token not in archive_text
+    # Deduped by (service, token_sha256) → exactly one marker, not two.
+    assert len(_json_load(qpath)["quarantined"]) == 1
+
+
+def test_r20_1_fresh_universe_ambient_is_legitimate(tmp_path, monkeypatch):
+    """Round-20 #1: a FRESH universe (NEVER had a subscription — no record, no marker)
+    legitimately runs ambient (the single-tenant host default). The fail-closed gate
+    must NOT over-block a fresh universe."""
+    from tinyassets.credential_vault import (
+        is_retired_universe,
+        provider_auth_env_overrides,
+    )
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+    assert is_retired_universe(tmp_path) is False
+    # Ambient is allowed: no override injected, no raise.
+    assert provider_auth_env_overrides(tmp_path, "claude-code") == {}
+    assert provider_auth_env_overrides(tmp_path, "codex") == {}
 
 
 def test_migration_module_inventory_then_migrate_forward_only(tmp_path, monkeypatch):

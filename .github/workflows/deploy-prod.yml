@@ -674,36 +674,25 @@ jobs:
             echo "- API-key providers forced off when the Codex subscription bundle is synced."
             echo "- TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          # Pull the new image, run the retired-subscription migration FROM that
-          # image against the shared data volume BEFORE starting the daemon on it,
-          # then restart via the systemd unit (docker compose down + up with the new
-          # env). Round-17 #2: the migration is a packaged module
-          # (tinyassets.migrations.retired_subscription_records), runnable via
-          # `python -m`, and crash-idempotent (round-17 #3). `--entrypoint python`
-          # bypasses the auth-seeding shim (the migration only rewrites vault files).
-          # `--inventory` (read-only) logs what will change; `--migrate` quarantines
-          # the retired llm_subscription records.
+          # Pull + restart via the systemd unit (docker compose down + up with the new
+          # env).
           #
-          # Round-19 (SAFE-FORWARD): the migration is FORWARD-ONLY — there is NO
-          # credential rollback. Once a retired llm_subscription record is quarantined
-          # AWAY, the universe reads as "no record", which EVERY image tolerates (it
-          # falls back to ambient / idle — absence is the default state of every fresh
-          # universe and never raises). So a deploy failure needs only an IMAGE
-          # rollback (the "Rollback on failure" step); the quarantined creds never need
-          # restoring. `set -e` makes ANY non-zero migration exit ABORT BEFORE the
-          # restart, so the OLD image keeps serving (safe against both the migrated-away
-          # and still-present states) and the new image never starts on a volume where
-          # migration did not fully complete.
-          MIGRATE_CMD="sudo docker run --rm --entrypoint python -e TINYASSETS_DATA_DIR=/data -v tinyassets-data:/data '${NEW_IMAGE}' -m tinyassets.migrations.retired_subscription_records"
+          # Round-20 #1 (DEPLOY ORDERING — the destructive migration is NOT auto-run):
+          # this deploy does NOT run the retired-subscription record removal. Current
+          # origin/main OVERLAYS subscription records into CODEX_HOME / CLAUDE_CONFIG_DIR
+          # / OAuth env, so REMOVING those records here would make either the new image
+          # OR an image-only rollback fall back to the HOST's ambient credentials for an
+          # affected universe — a cross-identity leak. This release ships the FAIL-CLOSED
+          # CODE instead: a retired universe (present record OR persistent non-secret
+          # marker) refuses to execute, never ambient (credential_vault
+          # is_retired_universe + provider_auth_env_overrides). The raw-record removal is
+          # deferred to a later HOST-GATED step once this fail-closed release is the
+          # stable baseline — the host runs the packaged migration module manually then
+          # (see tinyassets/migrations/retired_subscription_records.py; it writes only a
+          # NON-SECRET marker, never raw token custody).
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; \
-               sudo docker pull '${NEW_IMAGE}'; \
-               echo '[deploy] retired-subscription migration: inventory (read-only)'; \
-               ${MIGRATE_CMD} --inventory; \
-               echo '[deploy] retired-subscription migration: migrate (forward-only, safe)'; \
-               ${MIGRATE_CMD} --migrate; \
-               sudo systemctl restart tinyassets-daemon"
+              "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
 
       # Independent of the helper's in-call readability assert: re-verify
       # after the systemd restart has settled. Steady-state canary that

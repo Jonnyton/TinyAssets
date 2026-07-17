@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -269,11 +270,62 @@ def has_legacy_subscription_records(universe_dir: str | Path | None) -> bool:
         return False
 
 
-#: Where quarantined legacy subscription records are archived on migration.
+#: NON-SECRET retired-subscription marker archive (round-20 #1/#2). Its PRESENCE
+#: means this universe HAD a subscription lane that was retired — the fail-closed
+#: signal that survives the raw record's removal. Contents are non-secret metadata
+#: only (service + token hash + retired_at); NEVER the raw token.
 QUARANTINE_FILENAME = ".credential-vault-quarantine.json"
 
 #: Sidecar lock serializing the quarantine/rollback migration for one universe.
 VAULT_LOCK_FILENAME = ".credential-vault.lock"
+
+
+def _has_retired_subscription_marker(universe_dir: str | Path | None) -> bool:
+    """Return True iff a NON-SECRET retired-subscription marker archive is present
+    (round-20 #1). Its presence means this universe HAD a subscription lane that was
+    retired, so any spawn that would otherwise run on AMBIENT host creds must FAIL
+    CLOSED (never leak the host's identity) until the universe is re-bound. A missing
+    file → False (never retired). An EXISTING-but-unreadable file → True (it was
+    retired; fail closed rather than risk leaking). The marker survives the raw
+    record's removal, which is exactly why it, not the record, gates fail-closed."""
+    if universe_dir is None:
+        return False
+    qpath = Path(universe_dir) / QUARANTINE_FILENAME
+    if not qpath.is_file():
+        return False
+    try:
+        return bool(_read_quarantine_archive(qpath))
+    except (ValueError, OSError):
+        # Present but unreadable → the universe WAS retired; fail closed (never leak).
+        return True
+
+
+def is_retired_universe(universe_dir: str | Path | None) -> bool:
+    """Return True iff the universe is RETIRED — it had a subscription lane, shown by
+    EITHER a present raw ``llm_subscription`` record OR a persistent non-secret retired
+    marker (round-20 #1). A retired universe must FAIL CLOSED — it must never execute
+    on ambient host credentials (a cross-identity leak) — until it is re-bound to a
+    sanctioned engine. This is DISTINCT from a FRESH universe (never had a
+    subscription), for which ambient is the legitimate single-tenant host default."""
+    return (
+        has_legacy_subscription_records(universe_dir)
+        or _has_retired_subscription_marker(universe_dir)
+    )
+
+
+def _retired_marker_service(universe_dir: str | Path | None) -> str:
+    """Best-effort service name from the retired marker, for the fail-closed error
+    message. Returns ``"retired-subscription"`` when it can't be resolved (never
+    raises — the fail-closed decision has already been made by the caller)."""
+    if universe_dir is None:
+        return "retired-subscription"
+    try:
+        markers = _read_quarantine_archive(Path(universe_dir) / QUARANTINE_FILENAME)
+    except (ValueError, OSError):
+        return "retired-subscription"
+    if markers and isinstance(markers[0], dict):
+        return str(markers[0].get("service") or "retired-subscription")
+    return "retired-subscription"
 
 
 @contextlib.contextmanager
@@ -282,10 +334,10 @@ def _vault_lock(universe_dir: Path) -> Iterator[None]:
     universe (round-17 #3).
 
     Mirrors :func:`tinyassets.soul_edit._soul_lock` (msvcrt on Windows, fcntl on
-    POSIX). Held across the whole read→write-quarantine→rewrite-vault section so two
+    POSIX). Held across the whole read→write-marker→rewrite-vault section so two
     concurrent migrations cannot interleave their read-modify-write on the vault +
-    quarantine files. Combined with content-ID dedup (:func:`_dedup_records`), this
-    makes the migration crash-idempotent at EVERY write boundary.
+    marker files. Combined with marker dedup (:func:`_dedup_markers`), this makes the
+    migration crash-idempotent at EVERY write boundary.
     """
     universe_dir = Path(universe_dir)
     universe_dir.mkdir(parents=True, exist_ok=True)
@@ -325,31 +377,6 @@ def _vault_lock(universe_dir: Path) -> Iterator[None]:
                     pass
     finally:
         os.close(fd)
-
-
-def _record_id(record: dict[str, Any]) -> str:
-    """Stable content ID for a credential record — sha256 of its canonical JSON.
-
-    Two records with the same content share an ID. Used to DEDUPLICATE the
-    quarantine archive so a crash-then-retry at ANY write boundary converges to
-    exactly one copy (round-17 #3). ``sort_keys`` makes key order irrelevant;
-    ``default=str`` tolerates any stray non-JSON scalar.
-    """
-    canonical = json.dumps(record, sort_keys=True, ensure_ascii=True, default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return *records* with content-duplicate entries removed, order preserved."""
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
-    for record in records:
-        rid = _record_id(record)
-        if rid in seen:
-            continue
-        seen.add(rid)
-        out.append(record)
-    return out
 
 
 def _read_quarantine_archive(qpath: Path) -> list[dict[str, Any]]:
@@ -392,33 +419,90 @@ def _read_quarantine_archive(qpath: Path) -> list[dict[str, Any]]:
     return records
 
 
+#: Secret-bearing fields a legacy ``llm_subscription`` record may carry. Used ONLY
+#: to compute a one-way audit hash (round-20 #2) — never persisted raw.
+_SUBSCRIPTION_SECRET_FIELDS: tuple[str, ...] = (
+    "oauth_token", "token", "access_token", "refresh_token",
+    "auth_json_b64", "credentials_json_b64", "secret", "secret_b64", "token_b64",
+)
+
+
+def _subscription_token_sha256(source: dict[str, Any]) -> str:
+    """Return a sha256 of a subscription record's raw token, for AUDIT only (round-20
+    #2), or ''. The quarantine archive keeps ONLY this hash — never the raw token — so
+    the platform proves WHICH credential was retired without custodying it. Checks the
+    known secret-bearing fields in order."""
+    for key in _SUBSCRIPTION_SECRET_FIELDS:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return hashlib.sha256(value.strip().encode("utf-8")).hexdigest()
+    return ""
+
+
+def _to_retired_marker(source: dict[str, Any], default_retired_at: str) -> dict[str, Any]:
+    """Reduce a source (a raw legacy record OR a prior archive entry) to a NON-SECRET
+    retired marker (round-20 #2): ``{credential_type, service, token_sha256,
+    retired_at}`` and NOTHING ELSE. A raw secret field on the source is HASHED (for the
+    audit trail) then DROPPED — it never survives into the archive. A pre-existing
+    ``token_sha256`` / ``retired_at`` on a prior marker entry is preserved (so the
+    earliest retired_at is kept across crash-retries)."""
+    token_hash = str(source.get("token_sha256") or "").strip() or _subscription_token_sha256(source)
+    service = str(source.get("service") or source.get("provider") or "").strip().lower()
+    return {
+        "credential_type": "llm_subscription",
+        "service": service or "unknown",
+        "token_sha256": token_hash,
+        "retired_at": str(source.get("retired_at") or "").strip() or default_retired_at,
+    }
+
+
+def _dedup_markers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Dedup retired-marker entries by ``(service, token_sha256)``, keeping the FIRST
+    (earliest retired_at). This stable identity ignores the volatile ``retired_at``, so
+    a crash-then-retry converges to exactly one marker per retired credential (round-17
+    #3 crash-idempotency, adapted to the non-secret marker shape)."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        key = (str(entry.get("service") or ""), str(entry.get("token_sha256") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
+
 def quarantine_legacy_subscription_records(
     universe_dir: str | Path,
 ) -> dict[str, Any]:
-    """Migrate a universe OFF the retired subscription lane (round-14 #3).
+    """RETIRE a universe's legacy ``llm_subscription`` lane (round-14 #3 / round-20).
 
-    Removes EVERY legacy ``llm_subscription`` record from the vault, archiving them
-    to :data:`QUARANTINE_FILENAME` (audit trail) and rewriting the vault WITHOUT
-    them — so the universe stops raising :class:`RetiredSubscriptionLaneError` on
-    every spawn and surfaces as migrated. This is the explicit remediation for the
-    "re-declaring an engine only edits config.yaml, it can't remove the vault
-    record → stranded forever" bug. Raises ``ValueError`` on a malformed vault or a
-    malformed existing archive (fail loud — never silently rewrite unreadable state).
-    Returns a non-secret summary.
+    DELETES every raw ``llm_subscription`` record from the vault (the platform must
+    never custody subscription tokens — 2026-07-02 custody research §0/§4) and writes a
+    NON-SECRET retired MARKER to :data:`QUARANTINE_FILENAME`. Raises ``ValueError`` on a
+    malformed vault or a malformed existing archive (fail loud — never silently rewrite
+    unreadable state). Returns a non-secret summary.
 
-    SAFE-FORWARD (round-19): this is a FORWARD-ONLY migration — there is NO credential
-    rollback. Once the retired record is quarantined AWAY, the universe reads as
-    "no record", which EVERY image tolerates (it falls back to ambient / idle — the
-    default state of every fresh universe). So a deploy failure needs only an IMAGE
-    rollback; the quarantined creds never need restoring. The archive is retained as
-    an audit trail + manual-recovery source, not an automated undo.
+    ROUND-20 #2 — NO RAW TOKEN CUSTODY: the archive keeps ONLY non-secret audit metadata
+    per retired credential (``service`` + a one-way ``token_sha256`` + ``retired_at``) —
+    NEVER the raw OAuth/subscription token. "Moving a secret to another file still
+    custodies it" is exactly what this avoids: the raw token is hashed for audit, then
+    the whole raw record is dropped from the vault. (Provider-side revocation of the
+    retired token is IDEAL but out of scope here; a recovery copy of raw tokens would
+    need legal approval + separate encrypted custody + auditing + bounded retention —
+    NOT built.)
 
-    CRASH-IDEMPOTENT (round-17 #3): serialized under :func:`_vault_lock`, and the
-    quarantine archive is a content-ID-DEDUPed union of prior + newly-removed records
-    (read through the strict :func:`_read_quarantine_archive`). The quarantine is
-    written BEFORE the vault is rewritten so a crash between the two writes never
-    LOSES the credential (it stays in both places); dedup makes a retry idempotent, so
-    any boundary yields exactly one quarantined copy. An already-clean vault is a
+    ROUND-20 #1 — the marker is the FAIL-CLOSED signal that SURVIVES record removal: a
+    universe with this marker reads as :func:`is_retired_universe`, so its spawns FAIL
+    CLOSED (never ambient host creds) until re-bound — see
+    :func:`provider_auth_env_overrides`. This is why removing the record is safe ONLY
+    together with the fail-closed marker code (never as a standalone deploy step).
+
+    CRASH-IDEMPOTENT (round-17 #3): serialized under :func:`_vault_lock`; the marker is
+    written BEFORE the vault is rewritten (so a crash between never loses the
+    fail-closed signal); the marker set is deduped by ``(service, token_sha256)`` so a
+    retry converges to exactly one entry per retired credential. Reads the prior archive
+    through the strict :func:`_read_quarantine_archive`. An already-clean vault is a
     no-op.
     """
     universe = Path(universe_dir)
@@ -436,27 +520,35 @@ def quarantine_legacy_subscription_records(
         ]
         qpath = universe / QUARANTINE_FILENAME
         # Round-19 #1: read the prior archive through THE strict shared parser, which
-        # validates every record and fails loud (preserving the file) on any malformed
+        # validates every entry and fails loud (preserving the file) on any malformed
         # input — so a bad archive can never be silently propagated or dropped.
         prior = _read_quarantine_archive(qpath)
-        # Round-17 #3: content-ID-DEDUPed union. A crash-then-retry re-reads the
-        # still-present vault legacy AND the already-archived quarantine; the naive
-        # ``prior + legacy`` append made TWO copies. Dedup collapses them to one.
-        merged = _dedup_records(prior + legacy)
+        retired_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        # Round-20 #2: sanitize BOTH prior entries and the newly-retired records into
+        # NON-SECRET markers (any raw token is hashed then dropped — even if a prior
+        # archive somehow carried one). Dedup by (service, token_sha256) — round-17 #3
+        # crash-idempotency on the non-secret shape.
+        merged = _dedup_markers(
+            [_to_retired_marker(e, retired_at) for e in prior]
+            + [_to_retired_marker(r, retired_at) for r in legacy]
+        )
         tmp = qpath.with_name(f"{qpath.name}.tmp")
         tmp.write_text(
-            json.dumps({"schema_version": 1, "quarantined": merged}, indent=2)
+            json.dumps({"schema_version": 2, "quarantined": merged}, indent=2)
             + "\n",
             encoding="utf-8",
         )
         _chmod_best_effort(tmp, 0o600)
         tmp.replace(qpath)
         _chmod_best_effort(qpath, 0o600)
-        write_credential_vault(universe, kept)  # rewrite vault WITHOUT the legacy rows
+        write_credential_vault(universe, kept)  # DELETE the raw subscription tokens
         return {
             "migrated": len(legacy),
             "remaining": len(kept),
             "quarantine_path": str(qpath),
+            "retired_at": retired_at,
         }
 
 
@@ -694,14 +786,28 @@ def provider_auth_env_overrides(
     ):
         api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
         if api_key:
+            # Per-universe BYO key = the universe's OWN identity. Safe even for a
+            # retired universe (it is re-bound to a sanctioned engine), so return
+            # BEFORE the retired-marker fail-closed gate below.
             overrides: dict[str, str] = {"ANTHROPIC_API_KEY": api_key}
             iso = _byo_isolated_config_dir(universe_dir)
             if iso is not None:
                 overrides["CLAUDE_CONFIG_DIR"] = str(iso)
             return overrides
-    # No sanctioned per-universe lane selected (or the universe switched AWAY from
-    # BYO — round-13 #2): the host's process-global first-party auth (inherited
-    # env) stands. Codex + all non-BYO paths inject nothing here.
+    # Round-20 #1 — FAIL CLOSED for a RETIRED universe, NEVER ambient. Reaching here
+    # means NO per-universe credential will be injected, so this spawn would run on
+    # the host's AMBIENT credentials (CODEX_HOME / CLAUDE_CONFIG_DIR / OAuth env). For
+    # a universe that HAD a subscription lane (a persistent retired marker survives the
+    # raw record's removal), that is a CROSS-IDENTITY LEAK — it would execute with the
+    # host's identity. Refuse (fail closed) until it is re-bound to a sanctioned engine.
+    # A FRESH universe (never had a subscription, no marker) legitimately runs ambient
+    # (the single-tenant host default).
+    if _has_retired_subscription_marker(universe_dir):
+        raise RetiredSubscriptionLaneError(
+            _retired_marker_service(universe_dir), str(universe_dir),
+        )
+    # A FRESH universe: the host's process-global first-party auth (inherited env)
+    # stands. Codex + all non-BYO paths inject nothing here.
     return {}
 
 

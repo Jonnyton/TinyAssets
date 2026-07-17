@@ -918,6 +918,11 @@ class ProviderRouter:
             )
         attempt_order = auth_alive_order
 
+        # Round-18 #3 / round-20 #3: retired-lane errors are TERMINAL in EVERY router
+        # entry point, not just call(). Imported here (lazy) to match the router's
+        # credential_vault import style.
+        from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
         # Try policy-derived providers
         tried = 0
         for provider_name in attempt_order:
@@ -941,6 +946,16 @@ class ProviderRouter:
                 )
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
+            except RetiredSubscriptionLaneError:
+                # Round-20 #3: TERMINAL — the universe holds a retired-lane credential.
+                # Do NOT fall through to the next policy provider (which would run on
+                # ambient host creds — a cross-identity leak). Fail the whole routing
+                # operation closed. Rethrow BEFORE the generic handler below.
+                logger.error(
+                    "Retired-lane credential while routing policy role=%s via %s — "
+                    "TERMINAL (no fallback).", role, provider_name,
+                )
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -1146,6 +1161,10 @@ class ProviderRouter:
             logger.warning("No judge providers available")
             return []
 
+        # Round-18 #3 / round-20 #3: retired-lane errors are TERMINAL in EVERY router
+        # entry point. Lazy import matches the router's credential_vault import style.
+        from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
         # Fan out in parallel
         async def _call_one(
             name: str, provider: BaseProvider,
@@ -1156,6 +1175,16 @@ class ProviderRouter:
                 )
                 self._quota.record_success(name)
                 return resp
+            except RetiredSubscriptionLaneError:
+                # Round-20 #3: TERMINAL — a retired universe must FAIL the whole
+                # ensemble, never let other judges return results computed on ambient
+                # host creds (a cross-identity leak). Rethrow BEFORE the generic
+                # handler; asyncio.gather propagates it out of call_judge_ensemble.
+                logger.error(
+                    "Retired-lane credential while routing judge ensemble via %s — "
+                    "TERMINAL (no fallback).", name,
+                )
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(name, COOLDOWN_UNAVAILABLE)
             except ProviderTimeoutError:

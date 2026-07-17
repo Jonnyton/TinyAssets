@@ -575,12 +575,15 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             f"{sorted(_KNOWN_ENGINE_SOURCES)}",
         )
 
-    # Round-14 #3: a legacy llm_subscription record (retired lane) makes EVERY
-    # spawn raise RetiredSubscriptionLaneError, and re-declaring an engine only
-    # edits config.yaml — it can't remove the record. Surface the universe as
-    # needs-migration (with remediation) here so get_status reports it clearly
-    # instead of the founder hitting an opaque spawn crash forever.
-    from tinyassets.credential_vault import has_legacy_subscription_records
+    # Round-14 #3: a PRESENT raw llm_subscription record makes EVERY spawn fail closed
+    # (RetiredSubscriptionLaneError at the top of provider_auth_env_overrides), so
+    # surface needs_migration here — even a valid BYO key can't be used until the raw
+    # record is stripped (the spawn's top-of-function reject fires before BYO). This is
+    # the strongest fail-closed state; report it early.
+    from tinyassets.credential_vault import (
+        _has_retired_subscription_marker,
+        has_legacy_subscription_records,
+    )
 
     if has_legacy_subscription_records(udir):
         return EngineBinding(
@@ -590,10 +593,10 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             reason=(
                 "needs_migration: this universe's vault holds a legacy subscription "
                 "credential (a RETIRED lane — the platform never custodies "
-                "subscription tokens). Every engine spawn will fail until it is "
-                "removed. Run the subscription-record migration "
-                "(credential_vault.quarantine_legacy_subscription_records) to "
-                "quarantine it, then re-bind a sanctioned engine via "
+                "subscription tokens). Every engine spawn will fail closed until it is "
+                "removed. Run the host-gated subscription-record migration "
+                "(credential_vault.quarantine_legacy_subscription_records) to strip it "
+                "(non-secret marker retained), then re-bind a sanctioned engine via "
                 "write_graph target=engine."
             ),
             needs_migration=True,
@@ -721,6 +724,26 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
         raise EngineMisconfiguredError(
             universe_id, declared_source,
             "no usable BYO API key in the per-universe vault",
+        )
+
+    # Round-20 #1: a RETIRED-MARKED universe (its raw subscription record was removed,
+    # a non-secret marker remains) with NO usable per-universe engine reaches here.
+    # It must NOT read as idle-ambient (which would run on the HOST's identity — a
+    # cross-identity leak). Report it as fail-closed retired until re-bound. Checked
+    # AFTER the BYO binding block, so a retired universe RE-BOUND with a healthy
+    # sanctioned BYO key still binds to its OWN identity above (not blocked here).
+    if _has_retired_subscription_marker(udir):
+        return EngineBinding(
+            bound=False,
+            engine_source=declared_source,
+            capacity_kinds=(),
+            reason=(
+                "retired: this universe's subscription lane was retired (a non-secret "
+                "marker remains; the raw token was removed). Its spawns FAIL CLOSED — "
+                "they will never run on the host's identity — until it is re-bound to "
+                "a sanctioned engine via write_graph target=engine."
+            ),
+            needs_migration=True,
         )
 
     if declared_source == "subscription":

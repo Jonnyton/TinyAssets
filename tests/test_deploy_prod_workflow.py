@@ -242,8 +242,9 @@ def test_rollback_conditioned_on_failure():
 
 
 # ---------------------------------------------------------------------------
-# Round-19 — retired-subscription migration is FORWARD-ONLY (safe-forward);
-# recovery is IMAGE-ONLY rollback. State-machine assertions, not just strings.
+# Round-20 — the destructive subscription-record migration is NOT auto-run in
+# deploy; the release ships FAIL-CLOSED code + a NON-SECRET marker. Recovery is
+# IMAGE-ONLY rollback. State-machine assertions, not just strings.
 # ---------------------------------------------------------------------------
 
 
@@ -263,37 +264,13 @@ def _rollback_step(wf: dict) -> dict:
     return step
 
 
-def test_migration_runs_from_new_image_before_daemon_restart():
-    """The migration runs as a one-shot container from the NEW image against the
-    shared data volume, BEFORE the daemon restarts onto that image (round-17 #2)."""
-    wf = _load()
-    run_script = _deploy_step(wf).get("run", "") or ""
-    # The migration command is DRY'd into a MIGRATE_CMD shell var; flags are appended.
-    assert "-m tinyassets.migrations.retired_subscription_records" in run_script, (
-        "deploy must run the packaged migration module"
-    )
-    assert "${MIGRATE_CMD} --migrate" in run_script
-    assert "${MIGRATE_CMD} --inventory" in run_script
-    assert "--entrypoint python" in run_script, (
-        "migration must bypass the auth-seeding entrypoint shim (it only rewrites "
-        "vault files)"
-    )
-    assert "-v tinyassets-data:/data" in run_script, (
-        "migration must mount the shared credential data volume"
-    )
-    m_idx = run_script.find("${MIGRATE_CMD} --migrate")
-    r_idx = run_script.rfind("systemctl restart tinyassets-daemon")
-    assert m_idx != -1 and r_idx != -1 and m_idx < r_idx, (
-        "the migration must run BEFORE the daemon restart, so a migration failure "
-        "leaves the old image serving"
-    )
-
-
-def test_migration_is_forward_only_no_credential_rollback_anywhere():
-    """Round-19 (safe-forward): the credential-rollback machinery is REMOVED at the
-    root. Neither the deploy step nor the image-rollback step may invoke a credential
-    `--rollback`. This structurally eliminates the r19 criticals (archive destruction,
-    cross-deployment reactivation, restart-failure bypass)."""
+def test_r20_deploy_does_not_auto_run_the_record_removal_migration():
+    """Round-20 #1 (DEPLOY ORDERING): the deploy must NOT auto-run the destructive
+    retired-subscription record REMOVAL. Current origin/main overlays subscription
+    records into the host's CODEX_HOME/CLAUDE_CONFIG_DIR/OAuth env, so removing them in
+    deploy would make the new image OR an image-only rollback fall back to AMBIENT host
+    creds for an affected universe (a cross-identity leak). This release ships the
+    fail-closed CODE; the removal is deferred to a later host-gated step."""
     wf = _load()
     deploy_script = _deploy_step(wf).get("run", "") or ""
     rollback_script = _rollback_step(wf).get("run", "") or ""
@@ -302,36 +279,32 @@ def test_migration_is_forward_only_no_credential_rollback_anywhere():
         (deploy_script, "Deploy new image"),
         (rollback_script, "Rollback on failure"),
     ):
-        assert "--rollback" not in script, (
-            f"{where} step must NOT invoke a credential --rollback (forward-only "
-            "migration; the archive is a manual-recovery audit trail, not an undo)"
+        # No auto-run of the migration module (neither --migrate nor --inventory nor
+        # the module invocation) and no credential rollback anywhere.
+        assert "-m tinyassets.migrations.retired_subscription_records" not in script, (
+            f"{where} must NOT auto-run the record-removal migration (round-20 #1 "
+            "deploy ordering — it is a later host-gated step)"
         )
+        assert "--migrate" not in script
+        assert "--rollback" not in script
         assert "restore_quarantined" not in script
 
 
-def test_migrate_failure_aborts_before_restart_via_set_e():
-    """Round-19 state machine: the migration + restart run under `set -e` with the
-    migrate BEFORE the restart, so ANY non-zero migration exit ABORTS the ssh command
-    before `systemctl restart` — the new image never starts on a partially-migrated
-    volume, and the old image keeps serving (which tolerates both states)."""
+def test_r20_deploy_still_pulls_and_restarts():
+    """The deploy step still pulls the new image + restarts under `set -e` (a pull/
+    restart failure aborts before the daemon flips) — just without the migration."""
     wf = _load()
     run_script = _deploy_step(wf).get("run", "") or ""
-    # The migration block runs under set -e (no `if !` swallow) so a failure aborts.
-    assert "set -e;" in run_script
-    assert "if ! ${MIGRATE_CMD}" not in run_script, (
-        "migrate must not be wrapped in `if !` (that was the credential-rollback "
-        "path); under set -e a bare failure aborts before restart"
-    )
-    migrate_idx = run_script.find("${MIGRATE_CMD} --migrate")
-    restart_idx = run_script.find("systemctl restart tinyassets-daemon", migrate_idx)
-    assert migrate_idx != -1 and restart_idx != -1 and migrate_idx < restart_idx
+    assert (
+        "set -e; sudo docker pull '${NEW_IMAGE}'; "
+        "sudo systemctl restart tinyassets-daemon"
+    ) in run_script
 
 
 def test_rollback_step_is_image_only():
-    """Round-19: the 'Rollback on failure' step restores ONLY the image (safe-forward
-    — quarantined-away creds are tolerated by both images, so no credential rollback).
-    It must still restore the previous image tag + restart, and must NOT reference the
-    migration module."""
+    """Round-20: the 'Rollback on failure' step restores ONLY the image. There is no
+    credential migration/rollback (the retired-universe fail-closed CODE — not a
+    credential mutation — is what prevents the ambient-leak on rollback)."""
     wf = _load()
     step = _rollback_step(wf)
     run_script = step.get("run", "") or ""
@@ -341,9 +314,7 @@ def test_rollback_step_is_image_only():
     assert "PREV_IMAGE" in (step.get("env") or {})
     # ...but no credential migration/rollback.
     assert "retired_subscription_records" not in run_script
-    assert "NEW_IMAGE_REF" not in (step.get("env") or {}), (
-        "the image-only rollback no longer needs the new image ref for a migration"
-    )
+    assert "NEW_IMAGE_REF" not in (step.get("env") or {})
 
 
 # ---------------------------------------------------------------------------
