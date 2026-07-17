@@ -55,19 +55,21 @@ Anthropic's current Consumer Terms + Usage Policy (re-verify at the §0.1 links)
 
 **OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** The
 "individual use only / no credential sharing / no **using ChatGPT to power
-third-party services**" restriction is stated in OpenAI's **ChatGPT / consumer
-Help Center** (help.openai.com — a specific ChatGPT-subscription acceptable-use /
-sharing Help article), **not** in the Terms of Use / Business Terms (round-21 #5
-provenance correction: an earlier draft attributed "power third-party services" to
-the Terms/Business Terms; the phrase is a Help-Center statement — re-verify the exact
-article before acting). Separately, OpenAI's own **Codex CI/CD auth guide** says
-plainly: **"The right way to authenticate automation is with an API key,"** and
-does discuss ChatGPT-subscription-auth-in-CI as an advanced workflow for **trusted
-private automation**. (Round-21 #5 quote correction: the current Codex CI/CD auth
-guide does **not** contain the verbatim strings "personal account automation only"
-or "single machine or serialized job streams per token" that an earlier draft
-quoted — do not treat those as verbatim; the guide's own framing is
-private/trusted-automation-oriented and it discourages public/OSS use.)
+third-party services**" restriction is stated in OpenAI's **ChatGPT Pro Help Center
+article** (<https://help.openai.com/en/articles/9793128/>), **not** in the Terms of
+Use / Business Terms (round-22 #5 provenance correction: an earlier draft attributed
+"power third-party services" to the Terms/Business Terms; it is a Help-Center
+statement — cite the exact article above). Separately, OpenAI's own **Codex CI/CD
+auth guide** (<https://learn.chatgpt.com/docs/auth/ci-cd-auth>) says plainly: **"The
+right way to authenticate automation is with an API key,"** and discusses
+ChatGPT-subscription-auth-in-CI as an advanced workflow for **trusted private
+automation**. (Round-22 #5 correction: the guide DOES explicitly require **one
+machine — or a serialized job stream — per ``auth.json`` copy** (concurrent runners
+sharing one ``auth.json`` race the single-use refresh-token rotation and trip
+``refresh_token_reused``); an earlier draft obscured this because its quotation was
+not word-for-word. Paraphrase accurately: the guide's framing is
+private/trusted-automation-oriented, one-machine/serialized-per-auth.json, and it
+discourages public/OSS use.)
 **(round-14 #6 INFERENCE, not a verbatim quote):** from "personal/private only" +
 "no public/OSS" we *infer* it is also not sanctioned for **a platform running
 automation on behalf of other users** — the guide does not say that phrase
@@ -119,16 +121,16 @@ whole, but treat it as an inference and get counsel before productionizing any
 subscription-adjacent lane.) Exact current sources:
 
 - **OpenAI — Codex CI/CD auth guide** (the `CODEX_API_KEY` per-run path for headless
-  `codex exec`; the "API key is the right way to authenticate automation" +
-  trusted-private-automation language quoted above): <https://learn.chatgpt.com/docs/auth/ci-cd-auth>.
+  `codex exec`; "API key is the right way to authenticate automation"; and the
+  requirement of **one machine / a serialized job stream per `auth.json` copy** —
+  round-22 #5): <https://learn.chatgpt.com/docs/auth/ci-cd-auth>.
 - **OpenAI — Codex Enterprise access tokens** (`CODEX_ACCESS_TOKEN`, org-level,
   DISTINCT from a personal ChatGPT subscription AND from an API key):
   <https://learn.chatgpt.com/docs/enterprise/access-tokens>.
-- **OpenAI — ChatGPT / consumer Help Center** (the "individual use only / no
-  credential sharing / no powering third-party services" restriction — this phrase is
-  a Help-Center statement, NOT a Terms/Business-Terms clause; round-21 #5 correction —
-  re-verify the exact ChatGPT-subscription acceptable-use / sharing article):
-  <https://help.openai.com/>.
+- **OpenAI — ChatGPT Pro Help Center article** (the "individual use only / no
+  credential sharing / no powering third-party services" restriction — a Help-Center
+  statement, NOT a Terms/Business-Terms clause; round-22 #5, exact article):
+  <https://help.openai.com/en/articles/9793128/>.
 - **OpenAI — Terms of Use / Business terms** (individual-use + no-credential-sharing
   framing; note the specific "power third-party services" phrase is a Help-Center
   statement above, not a Terms/Business-Terms clause — round-21 #5):

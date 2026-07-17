@@ -70,6 +70,12 @@ def test_r21_3_endpoint_validator_unit_matrix():
         "https://engine.example/sk-openai-abc123",
         "https://engine.example/xai-DEADBEEFdeadbeef1234567890",
         "https://engine.example/path/Ab3Xy9Zk7Qw2Er5Ty8Ui0Op1As4Df6Gh",  # 32+ mixed
+        # Round-22 #4: percent-encoded secret (single + double encoded) must be caught.
+        "https://engine.example/v1/%73k-ant-api03-SECRETSECRETSECRETSECRET",
+        "https://engine.example/v1/%2573k-ant-api03-SECRETSECRETSECRETSECRET",
+        # Round-22 #4: a malformed percent-escape is a bypass vector → rejected.
+        "https://engine.example/v1/%zz-secret",
+        "https://engine.example/v1/%",
     ):
         assert _validate_engine_endpoint(bad) is not None, bad
     # Allowed: base paths, route segments, and a lowercase UUID model id.

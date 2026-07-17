@@ -85,22 +85,17 @@ logger = logging.getLogger(__name__)
 
 
 def _universe_is_retired_and_not_rebound(universe: "Path") -> bool:
-    """Round-21 #1: True iff *universe* is RETIRED (present raw ``llm_subscription``
-    record OR a persistent non-secret retired marker) AND NOT re-bound to a sanctioned
-    engine. Such a universe must NOT be worked on ambient host creds — regardless of the
-    non-ambient flag. Fails CLOSED (returns True → skip work) on any resolution error, so
-    an unresolvable retired universe is never leaked onto host identity."""
-    from tinyassets.credential_vault import is_retired_universe
+    """Round-21 #1 / round-22 #2: True iff *universe* must NOT be worked on ambient host
+    creds — its credential state is RETIRED (present raw ``llm_subscription`` record OR a
+    persistent non-secret marker) OR UNREADABLE, AND it is not re-bound to a sanctioned
+    engine. Regardless of the non-ambient flag. Uses the SAME strict fail-closed gate as
+    the graph-execution + router chokepoints (a malformed vault BLOCKS, never reads as
+    fresh); any evaluation error also fails closed (skip work)."""
+    from tinyassets.engine_binding import execution_blocked_reason
 
     try:
-        if not is_retired_universe(universe):
-            return False
-    except Exception:  # noqa: BLE001 — cannot classify → treat as safe (fresh) default
-        return False
-    # Retired: workable ONLY on a sanctioned re-bind (its OWN engine identity).
-    try:
-        return not resolve_engine_binding(universe).bound
-    except Exception:  # noqa: BLE001 — cannot confirm a clean re-bind → fail closed.
+        return execution_blocked_reason(universe) is not None
+    except Exception:  # noqa: BLE001 — cannot evaluate the gate → fail closed (skip).
         return True
 
 # Defaults tuned for a droplet-scale workload.

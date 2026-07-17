@@ -306,11 +306,46 @@ def is_retired_universe(universe_dir: str | Path | None) -> bool:
     marker (round-20 #1). A retired universe must FAIL CLOSED — it must never execute
     on ambient host credentials (a cross-identity leak) — until it is re-bound to a
     sanctioned engine. This is DISTINCT from a FRESH universe (never had a
-    subscription), for which ambient is the legitimate single-tenant host default."""
+    subscription), for which ambient is the legitimate single-tenant host default.
+
+    NOTE: this is the QUIET status predicate — a malformed vault reads as not-retired
+    (``has_legacy_subscription_records`` swallows the error). The SECURITY gate must
+    use :func:`credential_state_blocks_ambient_execution`, which FAILS CLOSED on an
+    unreadable vault (round-22 #2)."""
     return (
         has_legacy_subscription_records(universe_dir)
         or _has_retired_subscription_marker(universe_dir)
     )
+
+
+def credential_state_blocks_ambient_execution(
+    universe_dir: str | Path | None,
+) -> bool:
+    """STRICT security classifier (round-22 #2): return True iff this universe's
+    credential state means it must NOT execute on ambient host credentials.
+
+    Unlike :func:`is_retired_universe` (a quiet status probe), this FAILS CLOSED on an
+    UNREADABLE vault — a malformed/corrupt/unreadable credential file must BLOCK all
+    providers (regardless of feature flags), never be silently classified as "fresh"
+    and allowed to run on the host's identity. Blocks on ANY of:
+
+    * an unreadable / malformed credential vault (can't prove it's clean),
+    * a present raw ``llm_subscription`` record (retired lane),
+    * a persistent non-secret retired marker (record already removed).
+
+    Only a cleanly-readable, non-retired universe returns False (execution may proceed
+    on ambient auth for a FRESH single-tenant universe). ``None`` → False (no
+    per-universe credential state — the host-global path)."""
+    if universe_dir is None:
+        return False
+    try:
+        records = load_credential_vault(universe_dir)  # raises on malformed vault
+    except (ValueError, OSError):
+        # Unreadable credential state → FAIL CLOSED. Never classify as fresh.
+        return True
+    if any(r.get("credential_type") == "llm_subscription" for r in records):
+        return True
+    return _has_retired_subscription_marker(universe_dir)
 
 
 def _retired_marker_service(universe_dir: str | Path | None) -> str:

@@ -168,41 +168,35 @@ def _enforce_writer_binding(
 
 
 def _preflight_retired_universe(universe_dir: "Path | None") -> None:
-    """Round-21 #1: a RETIRED universe must NEVER execute on ambient host credentials —
-    through ANY provider, including LOCAL / in-process ones (ollama-local) that never
-    raise a retired-lane error at spawn.
+    """Round-21 #1 / round-22 #1-#2: a RETIRED or UNREADABLE-credential universe must
+    NEVER execute on ambient host credentials — through ANY provider, including LOCAL /
+    in-process ones (ollama-local) that never raise a retired-lane error at spawn.
 
-    PREFLIGHT the retirement state on EVERY router path/fan-out (call, call_with_policy,
+    Defense-in-depth mirror of the primary graph-execution chokepoint
+    (:func:`tinyassets.runs._invoke_graph`). Enforces the SAME fail-closed invariant
+    (:func:`tinyassets.engine_binding.execution_blocked_reason`, strict — a malformed
+    vault fails CLOSED) on EVERY router path/fan-out (call, call_with_policy,
     call_judge_ensemble), INDEPENDENT of ``TINYASSETS_NON_AMBIENT_WORK`` and of whether
-    ``byo_execution_enabled`` is dark. Do NOT depend on a provider raising. A retired
-    universe (present raw ``llm_subscription`` record OR a persistent non-secret marker)
-    is allowed to execute ONLY after the resolver confirms a SANCTIONED RE-BIND
-    (``resolve_engine_binding(...).bound``, i.e. its OWN identity). Otherwise raise
-    :class:`RetiredSubscriptionLaneError` — the router treats it as a TERMINAL routing
-    failure (fail closed, never a leaked ambient execution). Resolves the universe from
-    the explicit dir ELSE the process-global ``TINYASSETS_UNIVERSE`` env.
+    a provider raises. Resolves the universe from the explicit dir ELSE the pinned
+    execution universe (set at the run boundary) ELSE ``TINYASSETS_UNIVERSE``. On a
+    block, raises :class:`RetiredSubscriptionLaneError` — a TERMINAL routing failure.
     """
     from tinyassets.credential_vault import (
         RetiredSubscriptionLaneError,
-        is_retired_universe,
         resolve_universe_from_env,
     )
+    from tinyassets.engine_binding import execution_blocked_reason
+    from tinyassets.execution_context import get_execution_universe
 
-    resolved = universe_dir if universe_dir is not None else resolve_universe_from_env()
+    resolved = universe_dir
+    if resolved is None:
+        resolved = get_execution_universe()
+    if resolved is None:
+        resolved = resolve_universe_from_env()
     if resolved is None:
         return
-    if not is_retired_universe(resolved):
-        return  # fresh universe — ambient is the legitimate single-tenant default.
-    # Retired: allow ONLY a sanctioned re-bind (the universe's OWN engine identity).
-    from tinyassets.engine_binding import resolve_engine_binding
-
-    try:
-        rebound = resolve_engine_binding(resolved).bound
-    except Exception:  # noqa: BLE001 — cannot confirm a clean re-bind → fail closed.
-        rebound = False
-    if rebound:
-        return
-    raise RetiredSubscriptionLaneError("retired-subscription", str(resolved))
+    if execution_blocked_reason(resolved) is not None:
+        raise RetiredSubscriptionLaneError("retired-subscription", str(resolved))
 
 
 def _resolve_universe_config(

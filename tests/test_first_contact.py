@@ -605,3 +605,33 @@ def test_r21_2_failed_create_cleans_up_only_its_own_dir(data_dir, monkeypatch):
         uni._action_create_universe(universe_id="u-own-partial")
     # Its OWN partial dir was removed (not left as a broken home).
     assert not (data_dir / "u-own-partial").exists()
+
+
+def test_r22_3_create_failure_after_acl_grant_rolls_back_all_state(
+    data_dir, monkeypatch,
+):
+    """Round-22 #3: a create that fails AFTER registration + the ACL grant (a LATE
+    set_founder_home failure) must leave NO orphaned persistent state — the directory,
+    the registry row, AND the ACL row are ALL rolled back (compensating, atomic across
+    state). Pre-r22 the handler removed only the directory, orphaning registry + ACL."""
+    import tinyassets.daemon_server as ds
+    from tinyassets.api.universe import _action_create_universe
+
+    _login("founder-late")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("set_founder_home failed AFTER the ACL grant")
+
+    # set_founder_home runs AFTER ensure_universe_registered + grant_universe_access.
+    monkeypatch.setattr(ds, "set_founder_home", _boom)
+
+    with pytest.raises(RuntimeError):
+        _action_create_universe(universe_id="u-late-fail")
+
+    # Directory rolled back.
+    assert not (data_dir / "u-late-fail").exists()
+    # Registry row rolled back (no orphan) — get_universe raises KeyError when absent.
+    with pytest.raises(KeyError):
+        ds.get_universe(data_dir, universe_id="u-late-fail")
+    # ACL grant rolled back (no orphan row).
+    assert ds.list_universe_acl(data_dir, universe_id="u-late-fail") == []

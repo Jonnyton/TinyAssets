@@ -196,6 +196,45 @@ class EngineBinding:
         }
 
 
+def execution_blocked_reason(universe_dir: str | Path | None) -> str | None:
+    """THE single fail-closed security gate (round-22 #1/#2): return a block reason if
+    *universe_dir* must NOT execute on ambient host credentials, else ``None``.
+
+    This is the invariant enforced at EVERY execution chokepoint — the graph-execution
+    entry (:func:`tinyassets.runs._invoke_graph` / ``_invoke_graph_resume``) and the
+    provider router (:func:`tinyassets.providers.router._preflight_retired_universe`) —
+    so no caller can reach a provider for a blocked universe regardless of feature
+    flags, thread hops, or whether a node threaded context.
+
+    Blocks (fail closed) when the universe's credential state is RETIRED or UNREADABLE
+    (:func:`credential_vault.credential_state_blocks_ambient_execution`, strict) AND it
+    is not re-bound to a sanctioned engine. A retired universe RE-BOUND with a
+    sanctioned engine (``resolve_engine_binding().bound``) runs on its OWN identity and
+    is allowed. Any error confirming a clean re-bind keeps the universe BLOCKED. A
+    ``None`` universe / a clean fresh universe returns ``None`` (may run — the
+    single-tenant host-global default)."""
+    if universe_dir is None:
+        return None
+    from tinyassets.credential_vault import (
+        credential_state_blocks_ambient_execution,
+    )
+
+    if not credential_state_blocks_ambient_execution(universe_dir):
+        return None
+    # Blocked credential state — allow ONLY a clean, sanctioned re-bind (own identity).
+    try:
+        if resolve_engine_binding(universe_dir).bound:
+            return None
+    except Exception:  # noqa: BLE001 — cannot confirm a clean re-bind → stay BLOCKED.
+        pass
+    return (
+        "retired-or-unreadable credential state: this universe's subscription lane was "
+        "retired (or its credential vault is unreadable) and it is not re-bound to a "
+        "sanctioned engine — refusing to execute on the host's ambient identity. "
+        "Re-bind a sanctioned engine via write_graph target=engine."
+    )
+
+
 def non_ambient_work_enabled() -> bool:
     """Return whether the non-ambient work gate is armed. DEFAULT OFF.
 

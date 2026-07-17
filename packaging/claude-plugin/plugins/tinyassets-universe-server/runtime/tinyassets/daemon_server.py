@@ -4232,6 +4232,57 @@ def revoke_universe_access(
     return cursor.rowcount > 0
 
 
+def remove_universe_persistent_state(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    founder_sub: str = "",
+) -> None:
+    """Compensating rollback (round-22 #3): best-effort delete ALL persistent state for
+    a universe — the registry row, rules, branches (+ heads), ACL grants, and the
+    founder-home binding (ONLY when it points at THIS universe). Used to undo a FAILED
+    create so a partial create never leaves orphaned rows (``directory_exists=False``
+    but ``registry_row_exists=True`` + an orphaned ACL/home row when a LATE step such as
+    ``set_founder_home`` fails after registration + the ACL grant). Each delete is
+    independently guarded so a missing table/row never aborts the rest; never raises."""
+    uid = (universe_id or "").strip()
+    if not uid:
+        return
+    founder = (founder_sub or "").strip()
+    try:
+        initialize_author_server(base_path)
+    except Exception:  # noqa: BLE001
+        pass
+    statements: list[tuple[str, tuple[Any, ...]]] = []
+    if founder and founder != "anonymous":
+        # Only unbind the home if it still points at THIS universe (never clobber a
+        # founder's pre-existing home).
+        statements.append((
+            "DELETE FROM founder_home WHERE founder_sub = ? AND universe_id = ?",
+            (founder, uid),
+        ))
+    statements += [
+        ("DELETE FROM universe_acl WHERE universe_id = ?", (uid,)),
+        (
+            "DELETE FROM branch_heads WHERE branch_id IN "
+            "(SELECT branch_id FROM branches WHERE universe_id = ?)",
+            (uid,),
+        ),
+        ("DELETE FROM branches WHERE universe_id = ?", (uid,)),
+        ("DELETE FROM universe_rules WHERE universe_id = ?", (uid,)),
+        ("DELETE FROM universes WHERE universe_id = ?", (uid,)),
+    ]
+    try:
+        with _connect(base_path) as conn:
+            for stmt, params in statements:
+                try:
+                    conn.execute(stmt, params)
+                except Exception:  # noqa: BLE001 — table absent / best-effort undo.
+                    pass
+    except Exception:  # noqa: BLE001 — never let compensating cleanup raise.
+        pass
+
+
 def list_universe_acl(
     base_path: str | Path,
     *,

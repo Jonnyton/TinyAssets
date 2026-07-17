@@ -2101,6 +2101,47 @@ def _prepare_run(
 DEFAULT_RECURSION_LIMIT = 100
 
 
+def _resolve_execution_universe(base_path: str | Path) -> Path | None:
+    """Resolve the universe a run executes FOR — the daemon's ACTIVE universe (round-22
+    #1). The runtime singletons bind a process to exactly one universe, so a run in this
+    process is for that universe: ``TINYASSETS_UNIVERSE`` env → the ``.active_universe``
+    marker under *base_path* → ``None`` (no per-universe context: the host-global path).
+    Best-effort; never raises."""
+    try:
+        from tinyassets.credential_vault import resolve_universe_from_env
+
+        env_u = resolve_universe_from_env()
+        if env_u is not None:
+            return env_u
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from tinyassets.storage import active_universe_id
+
+        uid = active_universe_id(Path(base_path))
+        if uid:
+            cand = Path(base_path) / uid
+            if cand.is_dir():
+                return cand
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _execution_blocked_reason(universe_dir: Path | None) -> str | None:
+    """Thin wrapper over :func:`tinyassets.engine_binding.execution_blocked_reason` —
+    THE single fail-closed gate. Any resolution error keeps the run BLOCKED (round-22
+    #2: never fail open on unreadable credential state)."""
+    if universe_dir is None:
+        return None
+    try:
+        from tinyassets.engine_binding import execution_blocked_reason
+
+        return execution_blocked_reason(universe_dir)
+    except Exception as exc:  # noqa: BLE001 — cannot evaluate the gate → fail closed.
+        return f"credential-state gate could not be evaluated ({exc}) — fail closed."
+
+
 def _invoke_graph(
     base_path: str | Path,
     *,
@@ -2119,6 +2160,32 @@ def _invoke_graph(
     Blocks until the graph finishes or is cancelled. Updates run status
     to RUNNING on entry, COMPLETED / FAILED / CANCELLED on exit.
     """
+    # Round-22 #1/#2 — THE fail-closed execution chokepoint. Every run/resume/
+    # sub-branch reaches a provider only through _invoke_graph(_resume), and the
+    # provider call may hop thread pools (timeout executor) where ContextVars don't
+    # propagate — so the reliable place to enforce "a retired/unreadable universe must
+    # never execute on ambient host creds" is HERE, BEFORE any node/provider is
+    # reached. Resolve the run's universe (the daemon's active universe) and, if its
+    # credential state blocks ambient execution (retired OR unreadable, not re-bound),
+    # FAIL the run closed immediately. Also pin it (execution_context) so a same-thread
+    # router call resolves it at the router preflight (defense in depth).
+    _run_universe = _resolve_execution_universe(base_path)
+    _block_reason = _execution_blocked_reason(_run_universe)
+    if _block_reason is not None:
+        logger.error(
+            "run %s BLOCKED — refusing to execute a retired/unreadable universe on "
+            "ambient host credentials: %s", run_id, _block_reason,
+        )
+        update_run_status(
+            base_path, run_id, status=RUN_STATUS_FAILED,
+            error=_block_reason, finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_FAILED, output={}, error=_block_reason,
+        )
+    from tinyassets.execution_context import set_execution_universe
+    set_execution_universe(_run_universe)
+
     thread_id = run_id
     execution_cursor = {"step": 0}
     # Telemetry accumulator: "last" feeds runs.provider_used (legacy
@@ -3345,6 +3412,25 @@ def _invoke_graph_resume(
     provider_call: Callable[..., str] | None,
 ) -> RunOutcome:
     """Compile branch + invoke with None inputs to resume from checkpoint."""
+    # Round-22 #1/#2 — same fail-closed chokepoint as _invoke_graph: a retired /
+    # unreadable-credential universe must never RESUME onto ambient host creds either.
+    _run_universe = _resolve_execution_universe(base_path)
+    _block_reason = _execution_blocked_reason(_run_universe)
+    if _block_reason is not None:
+        logger.error(
+            "resume %s BLOCKED — refusing to resume a retired/unreadable universe on "
+            "ambient host credentials: %s", run_id, _block_reason,
+        )
+        update_run_status(
+            base_path, run_id, status=RUN_STATUS_FAILED,
+            error=_block_reason, finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_FAILED, output={}, error=_block_reason,
+        )
+    from tinyassets.execution_context import set_execution_universe
+    set_execution_universe(_run_universe)
+
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
     provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
 

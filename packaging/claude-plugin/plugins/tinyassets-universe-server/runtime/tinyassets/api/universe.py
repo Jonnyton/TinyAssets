@@ -4808,11 +4808,33 @@ def _action_create_universe(
         # get_status would announce a broken universe (Codex 2026-07-15).
         # Round-21 #2: clean up ONLY the dir THIS invocation created (``created_here``)
         # — NEVER a concurrent request's directory (the FileExistsError loser already
-        # returned above without setting the flag). Preserve prior behavior: OSError →
-        # error envelope, anything else re-raises (after the partial dir is cleaned up).
+        # returned above without setting the flag).
+        # Round-22 #3: the rollback must be ATOMIC ACROSS PERSISTENT STATE, not just the
+        # directory. A LATE failure (e.g. set_founder_home) after registration + the ACL
+        # grant would otherwise leave an orphaned registry row + ACL row (dir gone). Run
+        # the compensating delete across registry/rules/branches/ACL/home for THIS uid.
+        # Preserve prior behavior: OSError → error envelope, else re-raise (after undo).
         import shutil
 
         if created_here:
+            try:
+                _founder_for_rollback = permissions.current_actor_id()
+            except Exception:  # noqa: BLE001
+                _founder_for_rollback = ""
+            try:
+                from tinyassets.daemon_server import (
+                    remove_universe_persistent_state,
+                )
+
+                remove_universe_persistent_state(
+                    _base_path(), universe_id=uid,
+                    founder_sub=_founder_for_rollback,
+                )
+            except Exception:  # noqa: BLE001 — compensating cleanup is best-effort.
+                logger.warning(
+                    "compensating universe-state rollback failed for %s", uid,
+                    exc_info=True,
+                )
             try:
                 if udir.is_dir():
                     shutil.rmtree(udir)
@@ -5002,13 +5024,32 @@ _ENDPOINT_CREDENTIAL_PREFIXES: tuple[str, ...] = (
 )
 
 
-def _path_carries_credential(path: str) -> bool:
-    """True iff any path segment looks like an embedded API key / token (round-21 #3).
+def _decode_path_repeatedly(path: str, *, rounds: int = 5) -> str:
+    """Fully percent-decode *path* to its canonical form for secret scanning (round-22
+    #4). A single decode is not enough — a doubly-encoded secret ``%2573k-ant-`` decodes
+    to ``%73k-ant-`` then ``sk-ant-``. Bounded rounds; converges when a decode is a
+    no-op."""
+    from urllib.parse import unquote
 
-    Rejects known provider key prefixes AND a conservative high-entropy heuristic (a
+    current = path
+    for _ in range(rounds):
+        nxt = unquote(current)
+        if nxt == current:
+            break
+        current = nxt
+    return current
+
+
+def _path_carries_credential(path: str) -> bool:
+    """True iff any path segment looks like an embedded API key / token (round-21 #3 /
+    round-22 #4).
+
+    Scans the FULLY PERCENT-DECODED path (so a reversibly-encoded secret can't bypass)
+    against known provider key prefixes AND a conservative high-entropy heuristic (a
     long single segment mixing upper+lower+digits with no separators — almost never a
     route path). Ordinary route segments (``v1``), model ids, and lowercase UUIDs pass.
     """
+    path = _decode_path_repeatedly(path)
     for raw in path.split("/"):
         seg = raw.strip()
         if not seg:
@@ -5054,12 +5095,21 @@ def _validate_engine_endpoint(endpoint: str) -> str | None:
             "URL needs none, and they are a credential-smuggling vector "
             "(e.g. ?api_key=…)."
         )
-    if parsed.path and _path_carries_credential(parsed.path):
-        return (
-            "endpoint path appears to embed an API key / credential — an engine base "
-            "URL must not carry secrets in its path (they would be stored plaintext). "
-            "Remove the credential from the path (declare only the base URL)."
-        )
+    if parsed.path:
+        # Round-22 #4: reject a MALFORMED percent-encoding (a stray '%' not part of a
+        # valid %XX) — it is a decode-bypass vector — then scan the fully decoded path.
+        if re.search(r"%(?![0-9A-Fa-f]{2})", parsed.path):
+            return (
+                "endpoint path has a malformed percent-encoding — rejected (a "
+                "malformed escape is a credential-smuggling bypass vector)."
+            )
+        if _path_carries_credential(parsed.path):
+            return (
+                "endpoint path appears to embed an API key / credential — an engine "
+                "base URL must not carry secrets in its path (they would be stored "
+                "plaintext). Remove the credential from the path (declare only the "
+                "base URL)."
+            )
     host = parsed.hostname.strip("[]").lower()
     if host in ("169.254.169.254", "fd00:ec2::254", "metadata.google.internal"):
         return "endpoint points at a cloud-metadata address (SSRF) — rejected."
