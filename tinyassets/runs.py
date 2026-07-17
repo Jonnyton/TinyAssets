@@ -34,7 +34,10 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
 
 from tinyassets.branches import BranchDefinition
 from tinyassets.graph_compiler import (
@@ -249,6 +252,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         thread_id      TEXT NOT NULL,
         status         TEXT NOT NULL DEFAULT 'queued',
         actor          TEXT NOT NULL DEFAULT 'anonymous',
+        universe_id    TEXT NOT NULL DEFAULT '',
         owner_user_id  TEXT NOT NULL DEFAULT '',
         inputs_json    TEXT NOT NULL DEFAULT '{}',
         output_json    TEXT NOT NULL DEFAULT '{}',
@@ -428,6 +432,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             ("model",         "TEXT"),
             ("token_count",   "INTEGER"),
             ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
+            ("universe_id", "TEXT NOT NULL DEFAULT ''"),
             ("daemon_id",     "TEXT"),
             ("runtime_instance_id", "TEXT"),
             ("worker_id",     "TEXT"),
@@ -486,6 +491,7 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "thread_id": row["thread_id"],
         "status": row["status"],
         "actor": row["actor"],
+        "universe_id": row["universe_id"] if "universe_id" in col_names else "",
         "owner_user_id": (
             row["owner_user_id"] if "owner_user_id" in col_names else ""
         ),
@@ -746,6 +752,7 @@ def create_run(
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "anonymous",
+    universe_id: str = "",
     branch_version_id: str | None = None,
     owner_user_id: str | None = None,
     daemon_id: str | None = None,
@@ -764,14 +771,15 @@ def create_run(
             """
             INSERT INTO runs (
                 run_id, branch_def_id, run_name, thread_id,
-                status, actor, owner_user_id, inputs_json, started_at,
+                status, actor, universe_id, owner_user_id, inputs_json, started_at,
                 branch_version_id, daemon_id, runtime_instance_id,
                 worker_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, branch_def_id, run_name, thread_id,
-                RUN_STATUS_QUEUED, actor, resolved_owner_user_id,
+                RUN_STATUS_QUEUED, actor, (universe_id or "").strip(),
+                resolved_owner_user_id,
                 json.dumps(inputs, default=str), _now(),
                 branch_version_id,
                 daemon_id,
@@ -2011,6 +2019,7 @@ def _prepare_run(
     inputs: dict[str, Any],
     run_name: str,
     actor: str,
+    universe_id: str = "",
     branch_version_id: str | None = None,
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
@@ -2032,6 +2041,7 @@ def _prepare_run(
         inputs=inputs,
         run_name=run_name,
         actor=actor,
+        universe_id=universe_id,
         branch_version_id=branch_version_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
@@ -2101,6 +2111,117 @@ def _prepare_run(
 DEFAULT_RECURSION_LIMIT = 100
 
 
+def _execution_blocked_reason(universe_dir: Path | None) -> str | None:
+    """Thin wrapper over :func:`tinyassets.engine_binding.execution_blocked_reason` —
+    THE single fail-closed gate. Any resolution error keeps the run BLOCKED (round-22
+    #2: never fail open on unreadable credential state)."""
+    if universe_dir is None:
+        return None
+    try:
+        from tinyassets.engine_binding import execution_blocked_reason
+
+        return execution_blocked_reason(universe_dir)
+    except Exception as exc:  # noqa: BLE001 — cannot evaluate the gate → fail closed.
+        return f"credential-state gate could not be evaluated ({exc}) — fail closed."
+
+
+def _default_execution_scope(
+    base_path: str | Path,
+    universe_id: str,
+) -> "ExecutionScope":
+    """Resolve an explicit universe id to the shared S3/S5 scope contract."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ExecutionScope.legacy_unbound()
+    root = Path(base_path).resolve()
+    try:
+        universe_dir = (root / uid).resolve()
+        if not universe_dir.is_relative_to(root) or not universe_dir.is_dir():
+            return ExecutionScope.unknown()
+    except (OSError, RuntimeError, ValueError):
+        return ExecutionScope.unknown()
+    return ExecutionScope.bound(universe_dir)
+
+
+def _execution_scope_for_run(
+    base_path: str | Path,
+    run_id: str,
+) -> "ExecutionScope":
+    """Load the persisted scope; actor parsing is only a migration bridge."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    run = get_run(base_path, run_id)
+    if run is None:
+        return ExecutionScope.unknown()
+    universe_id = str(run.get("universe_id") or "").strip()
+    if not universe_id:
+        actor = str(run.get("actor") or "")
+        if actor.startswith("universe:"):
+            universe_id = actor.removeprefix("universe:").strip()
+    return _default_execution_scope(base_path, universe_id)
+
+
+def _scope_universe_dir(
+    base_path: str | Path,
+    scope: "ExecutionScope | None",
+) -> tuple[Path | None, str | None]:
+    """Validate *scope* and return its context pin plus any block reason."""
+    from tinyassets.sandbox_policy import ExecutionScope, ScopeKind
+
+    resolved = ExecutionScope.coerce(scope)
+    if resolved.is_unknown:
+        return None, "execution universe is unknown — fail closed."
+    if resolved.kind is ScopeKind.LEGACY_UNBOUND:
+        return None, None
+
+    root = Path(base_path).resolve()
+    try:
+        universe_dir = Path(resolved.universe_dir or "").resolve()
+        if not universe_dir.is_relative_to(root) or not universe_dir.is_dir():
+            return None, "execution universe could not be resolved — fail closed."
+    except (OSError, RuntimeError, ValueError):
+        return None, "execution universe could not be resolved — fail closed."
+    return universe_dir, _execution_blocked_reason(universe_dir)
+
+
+def _universe_id_for_scope(scope: "ExecutionScope | None") -> str:
+    """Return the bound universe directory name for persistence."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    resolved = ExecutionScope.coerce(scope)
+    if not resolved.is_bound or not resolved.universe_dir:
+        return ""
+    return Path(resolved.universe_dir).name
+
+
+def _coherent_execution_scope(
+    base_path: str | Path,
+    universe_id: str,
+    scope: "ExecutionScope | None",
+) -> "ExecutionScope":
+    """Resolve scope and fail closed when explicit id and path disagree."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uid = (universe_id or "").strip()
+    resolved = (
+        ExecutionScope.coerce(scope)
+        if scope is not None
+        else _default_execution_scope(base_path, uid)
+    )
+    if not uid:
+        return resolved
+    expected = _default_execution_scope(base_path, uid)
+    if not expected.is_bound or not resolved.is_bound:
+        return ExecutionScope.unknown()
+    if Path(expected.universe_dir or "").resolve() != Path(
+        resolved.universe_dir or ""
+    ).resolve():
+        return ExecutionScope.unknown()
+    return resolved
+
+
 def _invoke_graph(
     base_path: str | Path,
     *,
@@ -2113,6 +2234,62 @@ def _invoke_graph(
     on_node_status: Callable[[str, str], None] | None = None,
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
+) -> RunOutcome:
+    """Authorize and pin a prepared run under its immutable tenant scope."""
+    scope = execution_scope or _execution_scope_for_run(base_path, run_id)
+    universe_dir, block_reason = _scope_universe_dir(base_path, scope)
+    if block_reason is not None:
+        logger.error(
+            "run %s BLOCKED — refusing ambient credential execution: %s",
+            run_id,
+            block_reason,
+        )
+        update_run_status(
+            base_path,
+            run_id,
+            status=RUN_STATUS_FAILED,
+            error=block_reason,
+            finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=block_reason,
+        )
+
+    from tinyassets.execution_context import pin_execution_universe
+
+    with pin_execution_universe(universe_dir):
+        return _invoke_graph_inner(
+            base_path,
+            run_id=run_id,
+            branch=branch,
+            inputs=inputs,
+            provider_call=provider_call,
+            recursion_limit=recursion_limit,
+            concurrency_budget_override=concurrency_budget_override,
+            on_node_status=on_node_status,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
+            execution_scope=scope,
+        )
+
+
+def _invoke_graph_inner(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    branch: BranchDefinition,
+    inputs: dict[str, Any],
+    provider_call: Callable[..., str] | None,
+    recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    concurrency_budget_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
@@ -2297,6 +2474,7 @@ def _invoke_graph(
             parent_run_id=run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            execution_scope=execution_scope,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -2790,6 +2968,7 @@ def execute_branch(
     _enqueue_universe_id: str = "",
     _parent_branch_task_id: str = "",
     _origin_branch_task_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Synchronous end-to-end execution.
 
@@ -2806,10 +2985,20 @@ def execute_branch(
         (default), uses :data:`DEFAULT_RECURSION_LIMIT` (100). Branches
         with deep conditional loops (Tier-1 Step 6) bump this.
     """
+    execution_scope = _coherent_execution_scope(
+        base_path,
+        _enqueue_universe_id,
+        execution_scope,
+    )
+    persisted_universe_id = (
+        (_enqueue_universe_id or "").strip()
+        or _universe_id_for_scope(execution_scope)
+    )
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
+        universe_id=persisted_universe_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
@@ -2829,6 +3018,7 @@ def execute_branch(
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
         enqueue_context=enqueue_context,
+        execution_scope=execution_scope,
     )
 
 
@@ -2974,6 +3164,8 @@ def _execute_branch_core(
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -2992,10 +3184,20 @@ def _execute_branch_core(
     inside an ``invoke_branch_spec`` / ``invoke_branch_version_spec``
     node body.
     """
+    execution_scope = _coherent_execution_scope(
+        base_path,
+        _enqueue_universe_id,
+        execution_scope,
+    )
+    persisted_universe_id = (
+        (_enqueue_universe_id or "").strip()
+        or _universe_id_for_scope(execution_scope)
+    )
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
+        universe_id=persisted_universe_id,
         branch_version_id=branch_version_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
@@ -3015,6 +3217,7 @@ def _execute_branch_core(
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
                 invocation_depth=_invocation_depth,
+                execution_scope=execution_scope,
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -3053,6 +3256,8 @@ def execute_branch_async(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
     in the background. Returns within a few ms with ``status=queued``.
@@ -3088,6 +3293,8 @@ def execute_branch_async(
         on_node_status=on_node_status,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
+        _enqueue_universe_id=_enqueue_universe_id,
+        execution_scope=execution_scope,
     )
 
 
@@ -3119,6 +3326,8 @@ def execute_branch_version_async(
     recursion_limit_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -3177,6 +3386,8 @@ def execute_branch_version_async(
         on_node_status=on_node_status,
         branch_version_id=branch_version_id,
         _invocation_depth=_invocation_depth,
+        _enqueue_universe_id=_enqueue_universe_id,
+        execution_scope=execution_scope,
     )
 
 
@@ -3222,6 +3433,7 @@ def resume_run(
     actor: str,
     branch_lookup: Callable[[str, int], BranchDefinition | None],
     provider_call: Callable[..., str] | None = None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Resume an INTERRUPTED run from its SqliteSaver checkpoint.
 
@@ -3247,6 +3459,8 @@ def resume_run(
         raise ResumeError(
             f"Run '{run_id}' not found.", reason="not_found",
         )
+    if execution_scope is None:
+        execution_scope = _execution_scope_for_run(base_path, run_id)
 
     # Auth gate: caller must own the run.
     if run["actor"] != actor:
@@ -3325,6 +3539,7 @@ def resume_run(
             branch=branch,
             thread_id=thread_id,
             provider_call=provider_call,
+            execution_scope=execution_scope,
         )
 
     future = executor.submit(_resume_worker)
@@ -3343,6 +3558,52 @@ def _invoke_graph_resume(
     branch: BranchDefinition,
     thread_id: str,
     provider_call: Callable[..., str] | None,
+    execution_scope: "ExecutionScope | None" = None,
+) -> RunOutcome:
+    """Authorize and pin a resumed run under its persisted tenant scope."""
+    scope = execution_scope or _execution_scope_for_run(base_path, run_id)
+    universe_dir, block_reason = _scope_universe_dir(base_path, scope)
+    if block_reason is not None:
+        logger.error(
+            "resume %s BLOCKED — refusing ambient credential execution: %s",
+            run_id,
+            block_reason,
+        )
+        update_run_status(
+            base_path,
+            run_id,
+            status=RUN_STATUS_FAILED,
+            error=block_reason,
+            finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=block_reason,
+        )
+
+    from tinyassets.execution_context import pin_execution_universe
+
+    with pin_execution_universe(universe_dir):
+        return _invoke_graph_resume_inner(
+            base_path,
+            run_id=run_id,
+            branch=branch,
+            thread_id=thread_id,
+            provider_call=provider_call,
+            execution_scope=scope,
+        )
+
+
+def _invoke_graph_resume_inner(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    branch: BranchDefinition,
+    thread_id: str,
+    provider_call: Callable[..., str] | None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Compile branch + invoke with None inputs to resume from checkpoint."""
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
@@ -3409,6 +3670,7 @@ def _invoke_graph_resume(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
+            execution_scope=execution_scope,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(

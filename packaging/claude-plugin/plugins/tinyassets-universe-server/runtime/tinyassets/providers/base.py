@@ -158,7 +158,6 @@ def subprocess_env_for_provider(
     When *universe_dir* is given it takes precedence over the process-global
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
-
     Engine credentials come from the platform vault via
     :mod:`tinyassets.credential_broker`. A universe with no engine deposits
     gets no overrides (the host_daemon default engine). Fail-closed states —
@@ -171,29 +170,92 @@ def subprocess_env_for_provider(
         provider_auth_env_overrides,
         resolve_universe_from_env,
     )
+    from tinyassets.engine_binding import (
+        RetiredCredentialStateError,
+        byo_credential_digest,
+        byo_execution_enabled,
+        get_pinned_byo_snapshot,
+        resolve_engine_binding,
+    )
+    from tinyassets.exceptions import ProviderUnavailableError
 
     resolved_universe = (
-        universe_dir if universe_dir is not None else resolve_universe_from_env(host_env)
+        Path(universe_dir)
+        if universe_dir is not None
+        else resolve_universe_from_env(host_env)
     )
     if resolved_universe is None:
         return host_env
 
     from tinyassets.config import load_universe_config
 
-    engine_source = load_universe_config(resolved_universe).engine_source.strip().lower()
+    engine_source = (
+        load_universe_config(resolved_universe).engine_source.strip().lower()
+    )
     if engine_source == "host_daemon":
         return host_env
+
+    binding = resolve_engine_binding(resolved_universe)
+    if binding.needs_migration:
+        raise RetiredCredentialStateError(
+            "retired credential state cannot use ambient provider auth"
+        )
+
+    provider = provider_name.strip()
+    byo_bound = binding.is_eligible_for(provider)
+    if engine_source == "byo_api_key":
+        if not byo_execution_enabled(resolved_universe):
+            raise ProviderUnavailableError(
+                "BYO execution is not fully attested; refusing ambient provider auth."
+            )
+        if not binding.bound or not byo_bound:
+            raise ProviderUnavailableError(
+                f"BYO provider {provider!r} is not an eligible executable binding; "
+                "refusing ambient provider auth."
+            )
+
+    snapshot = get_pinned_byo_snapshot()
+    routing_binding = (
+        snapshot
+        if snapshot is not None
+        and snapshot.enabled
+        and snapshot.credential_digest is not None
+        and snapshot.universe_dir == str(resolved_universe)
+        else None
+    )
+    if routing_binding is not None:
+        fresh_digest = byo_credential_digest(resolved_universe)
+        if fresh_digest != routing_binding.credential_digest:
+            raise ProviderUnavailableError(
+                "BYO credential changed or disappeared between routing and spawn; "
+                "refusing ambient provider auth."
+            )
 
     env = os.environ.copy()
     for name in HOST_AUTH_ENV_VARS:
         env.pop(name, None)
-    env.update(
+    # A retained credential is not authority to use it after the universe
+    # switches to another engine lane. Only an executable, attested BYO
+    # binding may materialize broker-held auth into a child process.
+    overrides = (
         provider_auth_env_overrides(
-            provider_name,
+            provider,
             resolved_universe,
-            require_binding=engine_source == "byo_api_key",
+            require_binding=True,
         )
+        if byo_bound
+        else {}
     )
+    env.update(overrides)
+    if routing_binding is not None:
+        fresh_digest = byo_credential_digest(resolved_universe)
+        if fresh_digest != routing_binding.credential_digest:
+            raise ProviderUnavailableError(
+                "BYO credential changed during spawn materialization; refusing "
+                "ambient provider auth."
+            )
+    if byo_bound and provider == "claude-code":
+        env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
     return env
 
 

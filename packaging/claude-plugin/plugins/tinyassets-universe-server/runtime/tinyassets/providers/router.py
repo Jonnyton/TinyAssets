@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import os
 from collections.abc import Callable
@@ -41,9 +42,127 @@ from tinyassets.providers.quota import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from tinyassets.config import UniverseConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _universe_provides_provider_auth(
+    provider_name: str, universe_dir: "Path | None",
+) -> bool:
+    """True iff the broker-backed engine binding serves *provider*."""
+    try:
+        from tinyassets.credential_broker import resolve_universe_from_env
+        from tinyassets.engine_binding import resolve_engine_binding
+
+        resolved = (
+            universe_dir if universe_dir is not None else resolve_universe_from_env()
+        )
+        if resolved is None:
+            return False
+        return resolve_engine_binding(resolved).serves_via_vault(provider_name)
+    except Exception:  # noqa: BLE001 — health filtering never breaks routing
+        return False
+
+
+def _enforce_writer_binding(
+    chain: list[str],
+    *,
+    role: str,
+    is_pinned_writer: bool,
+    pin_writer: str,
+    universe_dir: "Path | None",
+) -> list[str]:
+    """C1: a BYO-BOUND universe's WRITER never falls through to a platform-auth
+    provider. The ONE helper applied on EVERY writer route (normal, pinned,
+    policy).
+
+    Covers BOTH identity paths — an explicit ``universe_dir`` AND the
+    process-global ``TINYASSETS_UNIVERSE`` env fallback (mirrors how the
+    auth-health KEEP bypass resolves) — so a cloud-worker child with only
+    ``TINYASSETS_UNIVERSE`` set is still constrained. **FAILS CLOSED:** any
+    binding/resolution error raises ``AllProvidersExhaustedError`` (never
+    swallowed → never leaks to a platform-auth provider).
+
+    Inert unless executable BYO is enabled (DARK by default), because only then
+    can a universe be bound. The non-ambient guarantee is writer-role only (see
+    the custody design note §0.2) — BUT a WRITER route is not just ``role ==
+    "writer"``: ``FALLBACK_CHAINS.get(role, writer)`` gives any UNKNOWN role the
+    writer chain, and ``model_hint`` is user-authored free-form that becomes the
+    role verbatim. So an unknown role is a writer route and MUST be enforced too
+    (F1a — else ``model_hint:"novelist"`` silently escapes the constraint).
+    """
+    is_writer_route = role == "writer" or role not in FALLBACK_CHAINS
+    if not is_writer_route:
+        return chain
+    from tinyassets.credential_broker import resolve_universe_from_env
+    from tinyassets.engine_binding import resolve_engine_binding
+
+    resolved = universe_dir if universe_dir is not None else resolve_universe_from_env()
+    if resolved is None:
+        return chain  # no bound-universe context.
+    try:
+        binding = resolve_engine_binding(resolved)
+    except AllProvidersExhaustedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — FAIL CLOSED, never fall through.
+        raise AllProvidersExhaustedError(
+            "writer routing refused: could not resolve the universe's engine "
+            f"binding ({exc}); refusing to fall through to platform auth."
+        ) from exc
+    if not binding.bound:
+        return chain  # unbound → normal (ambient) routing.
+    eligible = set(binding.eligible_providers)
+    if is_pinned_writer and pin_writer not in eligible:
+        raise AllProvidersExhaustedError(
+            f"Pinned writer {pin_writer!r} is not in the BYO-bound universe's "
+            f"eligible providers {sorted(eligible)!r}. A bound universe never "
+            "borrows platform auth; re-bind or clear the pin."
+        )
+    constrained = [p for p in chain if p in eligible]
+    if not constrained:
+        raise AllProvidersExhaustedError(
+            "BYO-bound universe has no eligible writer provider "
+            f"(eligible={sorted(eligible)!r}); no fallback to platform auth."
+        )
+    return constrained
+
+
+def _preflight_retired_universe(universe_dir: "Path | None") -> None:
+    """Round-21 #1 / round-22 #1-#2: a RETIRED or UNREADABLE-credential universe must
+    NEVER execute on ambient host credentials — through ANY provider, including LOCAL /
+    in-process ones (ollama-local) that never raise a retired-lane error at spawn.
+
+    Defense-in-depth mirror of the primary graph-execution chokepoint
+    (:func:`tinyassets.runs._invoke_graph`). Enforces the SAME fail-closed invariant
+    (:func:`tinyassets.engine_binding.execution_blocked_reason`, strict — a malformed
+    vault fails CLOSED) on EVERY router path/fan-out (call, call_with_policy,
+    call_judge_ensemble), INDEPENDENT of ``TINYASSETS_NON_AMBIENT_WORK`` and of whether
+    a provider raises. Resolves the universe from the explicit dir ELSE the pinned
+    execution universe (set at the run boundary) ELSE ``TINYASSETS_UNIVERSE``. On a
+    block, raises :class:`RetiredCredentialStateError` — a TERMINAL routing failure.
+    """
+    from tinyassets.credential_broker import resolve_universe_from_env
+    from tinyassets.engine_binding import (
+        RetiredCredentialStateError,
+        execution_blocked_reason,
+    )
+    from tinyassets.execution_context import get_execution_universe
+
+    resolved = universe_dir
+    if resolved is None:
+        resolved = get_execution_universe()
+    if resolved is None:
+        resolved = resolve_universe_from_env()
+    if resolved is None:
+        return
+    if execution_blocked_reason(resolved) is not None:
+        raise RetiredCredentialStateError(
+            f"retired credential state for {resolved}; no ambient fallback"
+        )
+
 
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
@@ -114,6 +233,34 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 # Keep it above 1 so an unrelated slow provider call does not serialize all
 # other sync callers behind one shared worker.
 _SYNC_CALL_MAX_WORKERS: int = 8
+
+
+def _pin_byo_snapshot(method):
+    """Round-12 #3: pin ONE immutable ``byo_execution_enabled()`` snapshot for the
+    whole routing operation. Route selection (``_enforce_writer_binding``) and the
+    awaited subprocess spawn (``provider.complete`` → ``subprocess_env_for_provider``)
+    both run inside this ``with``, so a mid-call attestation flip can never let
+    routing constrain to the BYO writer while the spawn restores platform auth. The
+    contextvar is set for the entire awaited coroutine (same task context) and any
+    fan-out sub-tasks copy it at creation.
+
+    Round-15 #2: the snapshot carries this call's per-record context — the routing
+    universe from ``universe_context`` (else the process-global ``TINYASSETS_UNIVERSE``)
+    — so the per-record attestation is not context-free inside the pin."""
+
+    @functools.wraps(method)
+    async def _wrapper(self, *args, **kwargs):
+        from tinyassets.credential_broker import resolve_universe_from_env
+        from tinyassets.engine_binding import pin_byo_execution_snapshot
+
+        uctx = kwargs.get("universe_context")
+        udir = getattr(uctx, "universe_dir", None) if uctx is not None else None
+        if udir is None:
+            udir = resolve_universe_from_env()
+        with pin_byo_execution_snapshot(udir):
+            return await method(self, *args, **kwargs)
+
+    return _wrapper
 
 
 class ProviderRouter:
@@ -245,7 +392,9 @@ class ProviderRouter:
             return chain
         return [p for p in chain if p not in _API_KEY_PROVIDERS]
 
-    def _apply_auth_health_policy(self, chain: list[str]) -> list[str]:
+    def _apply_auth_health_policy(
+        self, chain: list[str], *, universe_dir: Path | None = None,
+    ) -> list[str]:
         """Drop subscription-backed providers whose login is definitively dead.
 
         Mirrors the worker-level self-quarantine (2026-06-25 loop-wedge): a
@@ -260,6 +409,16 @@ class ProviderRouter:
         ``unknown`` (api-key / local providers the probe cannot assess) and
         ``ok`` are always kept, and a probe that raises is treated as "keep",
         so a probe false-negative can never strand a healthy provider.
+
+        Universe-aware (S5 round 5): the probe reports process-GLOBAL
+        subscription health, but a provider whose GLOBAL login is dead is still
+        runnable when the call's universe vault supplies usable per-universe auth
+        (a BYO key / materialized auth home), which the router applies to the CLI
+        subprocess at call time. So a ``not_logged_in`` provider is KEPT when the
+        universe vault authenticates it — otherwise the gate would starve bound
+        BYO-key capacity that the non-ambient gate just let spawn. Only the
+        subscription-health rejection is bypassed; quota/cooldown and hard
+        provider errors keep their semantics elsewhere.
         """
         if self._auth_health is None:
             return chain
@@ -272,8 +431,23 @@ class ProviderRouter:
                 status = None
             if status != "not_logged_in":
                 alive.append(provider_name)
+            elif _universe_provides_provider_auth(provider_name, universe_dir):
+                # This bypass is gated behind the vault-encryption prerequisite
+                # (byo_execution_enabled, F3) — DARK by default in this deploy.
+                # Within that gate it is NOT further gated on the non-ambient flag:
+                # a universe holding a validated BYO key for a globally-dead
+                # provider is not starved (latent-bug fix; BYO is the sanctioned
+                # lane). The child materializes the vault env at call time.
+                logger.info(
+                    "Provider %s global login is not_logged_in but the universe "
+                    "vault authenticates it — keeping (per-universe auth applied "
+                    "at call time).",
+                    provider_name,
+                )
+                alive.append(provider_name)
         return alive
 
+    @_pin_byo_snapshot
     async def call(
         self,
         role: str,
@@ -295,6 +469,10 @@ class ProviderRouter:
         """
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
+        # Round-21 #1: fail closed BEFORE any provider is tried if the universe is
+        # retired and not re-bound — a retired universe must never execute on ambient
+        # host creds, even through a local/in-process provider that would not raise.
+        _preflight_retired_universe(universe_dir)
         cfg = config or _default_config(resolved_config)
         chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
 
@@ -316,6 +494,18 @@ class ProviderRouter:
                         chain = self._apply_preference(chain, ucfg.preferred_judge)
             except Exception:
                 pass
+
+        # C1: a BYO-BOUND universe's WRITER must NEVER fall through to a
+        # platform-auth provider. Centralized in ONE helper applied on EVERY
+        # writer route (normal, pinned, policy) — see call_with_policy too. It
+        # resolves the universe from the explicit dir ELSE TINYASSETS_UNIVERSE,
+        # and FAILS CLOSED on any binding/resolution error. Inert in this deploy:
+        # bound universes require executable BYO (byo_execution_enabled), DARK by
+        # default, so the writer chain is unchanged.
+        chain = _enforce_writer_binding(
+            chain, role=role, is_pinned_writer=is_pinned_writer,
+            pin_writer=pin_writer, universe_dir=universe_dir,
+        )
 
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces
@@ -372,10 +562,13 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: a pinned writer with dead subscription login
         # must fail loud (hard rule #8), not silently route to a different
         # provider. (chain == [pin_writer] here; an empty filter means dead.)
-        if is_pinned_writer and not self._apply_auth_health_policy(chain):
+        if is_pinned_writer and not self._apply_auth_health_policy(
+            chain, universe_dir=universe_dir,
+        ):
             raise AllProvidersExhaustedError(
                 f"Pinned writer provider {pin_writer!r} has no subscription "
-                "login (auth probe: not_logged_in). Re-seed its credentials, "
+                "login (auth probe: not_logged_in) and no per-universe vault "
+                "auth. Re-seed its credentials, bind a BYO key to the universe, "
                 "or clear TINYASSETS_PIN_WRITER to use the fallback chain."
             )
 
@@ -399,7 +592,10 @@ class ProviderRouter:
             # 2026-06-25 loop-wedge: drop registered providers whose
             # subscription login is definitively dead so fallback routes
             # straight to a healthy provider. No-op without an injected probe.
-            auth_alive = self._apply_auth_health_policy(chain)
+            # Universe-aware: a provider the universe vault authenticates is kept.
+            auth_alive = self._apply_auth_health_policy(
+                chain, universe_dir=universe_dir,
+            )
             dead_auth = [p for p in chain if p not in auth_alive]
             if dead_auth:
                 logger.warning(
@@ -418,6 +614,12 @@ class ProviderRouter:
                     for p in dead_auth
                 )
                 chain = auth_alive
+
+        # Round-18 #3: retired-lane / credential-integrity errors are TERMINAL — a
+        # universe holding a retired-lane credential must FAIL the whole routing op,
+        # never fall through to another provider on ambient auth. Imported here (lazy)
+        # imported lazily to keep provider routing startup lightweight.
+        from tinyassets.engine_binding import RetiredCredentialStateError
 
         for provider_name in chain:
             provider = self._providers.get(provider_name)
@@ -446,6 +648,19 @@ class ProviderRouter:
                     prompt, system, cfg, universe_dir=universe_dir,
                 )
                 self._quota.record_success(provider_name)
+            except RetiredCredentialStateError:
+                # Round-18 #3: TERMINAL. The universe's vault holds a credential from a
+                # RETIRED lane the platform must never consume. Do NOT treat this as an
+                # ordinary provider failure and continue to the next provider (which
+                # would silently route, e.g., a legacy Claude record through ambient
+                # Codex). FAIL the whole routing operation closed (Hard Rule #8) — no
+                # later provider is tried. Re-raise so the caller surfaces it loudly.
+                logger.error(
+                    "Retired-lane credential encountered while routing role=%s via "
+                    "%s — TERMINAL routing failure (no fallback).",
+                    role, provider_name,
+                )
+                raise
             except ProviderUnavailableError as exc:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -583,6 +798,7 @@ class ProviderRouter:
             "attempts": attempts,
         }
 
+    @_pin_byo_snapshot
     async def call_with_policy(
         self,
         role: str,
@@ -617,6 +833,8 @@ class ProviderRouter:
         """
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
+        # Round-21 #1: retired-universe fail-closed preflight on the policy path too.
+        _preflight_retired_universe(universe_dir)
         cfg = config or _default_config(resolved_config)
 
         if not policy:
@@ -671,6 +889,15 @@ class ProviderRouter:
                 )
             attempt_order = filtered_order
 
+        # C1: apply the SAME centralized writer-binding enforcement to the policy
+        # attempt-order — a BYO-bound universe's policy must not name a
+        # platform-auth provider (e.g. a policy naming codex in a BYO-claude
+        # universe is refused, never routed to platform codex). Fails closed.
+        attempt_order = _enforce_writer_binding(
+            attempt_order, role=role, is_pinned_writer=False, pin_writer="",
+            universe_dir=universe_dir,
+        )
+
         auth_filtered_order = self._apply_api_key_provider_policy(attempt_order)
         if attempt_order and not auth_filtered_order:
             logger.warning(
@@ -683,7 +910,9 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: drop dead-login subscription providers; if
         # that empties the policy order the method falls through to the role
         # chain below, which re-applies the gate and hard-fails as needed.
-        auth_alive_order = self._apply_auth_health_policy(attempt_order)
+        auth_alive_order = self._apply_auth_health_policy(
+            attempt_order, universe_dir=universe_dir,
+        )
         if attempt_order and not auth_alive_order:
             logger.warning(
                 "All policy providers have dead subscription login (%s) for "
@@ -691,6 +920,11 @@ class ProviderRouter:
                 attempt_order, role,
             )
         attempt_order = auth_alive_order
+
+        # Round-18 #3 / round-20 #3: retired-lane errors are TERMINAL in EVERY router
+        # entry point, not just call(). Imported here (lazy) to match the router's
+        # engine-binding import style.
+        from tinyassets.engine_binding import RetiredCredentialStateError
 
         # Try policy-derived providers
         tried = 0
@@ -715,6 +949,16 @@ class ProviderRouter:
                 )
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
+            except RetiredCredentialStateError:
+                # Round-20 #3: TERMINAL — the universe holds a retired-lane credential.
+                # Do NOT fall through to the next policy provider (which would run on
+                # ambient host creds — a cross-identity leak). Fail the whole routing
+                # operation closed. Rethrow BEFORE the generic handler below.
+                logger.error(
+                    "Retired-lane credential while routing policy role=%s via %s — "
+                    "TERMINAL (no fallback).", role, provider_name,
+                )
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -851,6 +1095,7 @@ class ProviderRouter:
     # Judge ensemble (model family diversity)
     # ------------------------------------------------------------------
 
+    @_pin_byo_snapshot
     async def call_judge_ensemble(
         self,
         prompt: str,
@@ -867,6 +1112,9 @@ class ProviderRouter:
         """
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
+        # Round-21 #1: retired-universe fail-closed preflight BEFORE the judge fan-out —
+        # a retired universe must never run ANY judge on ambient host creds.
+        _preflight_retired_universe(universe_dir)
         cfg = config or _default_config(resolved_config)
 
         # Q6.3 — filter judge ensemble by per-universe allowlist (privacy
@@ -893,7 +1141,9 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: drop judge providers with dead subscription
         # login (codex is the only subscription judge; the rest probe unknown
         # and are kept). Empty ensemble returns [] per the contract below.
-        auth_alive_ensemble = self._apply_auth_health_policy(ensemble)
+        auth_alive_ensemble = self._apply_auth_health_policy(
+            ensemble, universe_dir=universe_dir,
+        )
         if ensemble and not auth_alive_ensemble:
             logger.warning(
                 "All judge providers have dead subscription login (%s); no "
@@ -917,6 +1167,10 @@ class ProviderRouter:
             logger.warning("No judge providers available")
             return []
 
+        # Round-18 #3 / round-20 #3: retired-lane errors are TERMINAL in EVERY router
+        # entry point. Lazy import matches the router's credential_vault import style.
+        from tinyassets.engine_binding import RetiredCredentialStateError
+
         # Fan out in parallel
         async def _call_one(
             name: str, provider: BaseProvider,
@@ -927,6 +1181,16 @@ class ProviderRouter:
                 )
                 self._quota.record_success(name)
                 return resp
+            except RetiredCredentialStateError:
+                # Round-20 #3: TERMINAL — a retired universe must FAIL the whole
+                # ensemble, never let other judges return results computed on ambient
+                # host creds (a cross-identity leak). Rethrow BEFORE the generic
+                # handler; asyncio.gather propagates it out of call_judge_ensemble.
+                logger.error(
+                    "Retired-lane credential while routing judge ensemble via %s — "
+                    "TERMINAL (no fallback).", name,
+                )
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(name, COOLDOWN_UNAVAILABLE)
             except ProviderTimeoutError:

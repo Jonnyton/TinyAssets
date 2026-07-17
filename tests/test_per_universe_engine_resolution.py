@@ -1,21 +1,4 @@
-"""Per-universe engine resolution via an EXPLICIT ``universe_context`` argument.
-
-This is the router/provider/vault-layer proof for option (b): a single daemon
-process serving interleaved calls for two different universes must resolve each
-call's engine preference (``preferred_writer``) AND credential-vault auth
-(``CODEX_HOME`` / ``CLAUDE_CODE_OAUTH_TOKEN``) from the ``universe_context``
-threaded
-on the call stack — NOT from the process-global ``runtime.universe_config`` /
-``TINYASSETS_UNIVERSE``.
-
-The globals are deliberately pinned to universe A for the whole test. Before the
-change the router has no ``universe_context`` parameter and every call bleeds to
-A's global (A's preferred writer + A's vault auth). After the change, B-context
-calls must be served by B's preferred writer with B's vault auth, even while the
-globals still point at A and even though the sync wrappers hop through a
-ThreadPoolExecutor (the context must survive the pool hop via explicit
-capture, never a ContextVar).
-"""
+"""Explicit per-universe provider routing and broker-auth resolution."""
 
 from __future__ import annotations
 
@@ -26,8 +9,8 @@ import pytest
 
 from tinyassets import runtime_singletons as runtime
 from tinyassets.config import load_universe_config
-from tinyassets.credential_broker import deposit_credential
-from tinyassets.credentials import SecretKind
+from tinyassets.credential_broker import deposit_engine_api_key
+from tinyassets.engine_binding import RetiredCredentialStateError
 from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
@@ -37,23 +20,14 @@ from tinyassets.providers.base import (
 )
 from tinyassets.providers.router import ProviderRouter
 
+_KEY_A = "sk-ant-api03-" + "A" * 40
+_KEY_B = "sk-ant-api03-" + "B" * 40
+
 
 class _RecordingProvider(BaseProvider):
-    """Fake provider that resolves auth via the REAL vault-backed env helper.
-
-    ``complete`` calls the real ``subprocess_env_for_provider(self.name,
-    universe_dir=universe_dir)`` and packs what it observed into the response so
-    each call can be correlated with the universe it was routed for:
-
-    - ``text``   = the ``universe_dir`` it saw (or ``None``)
-    - ``model``  = the resolved auth env var (``CODEX_HOME`` /
-      ``CLAUDE_CONFIG_DIR``) the vault produced for that universe_dir
-    """
-
-    def __init__(self, name: str, family: str, auth_env_key: str) -> None:
+    def __init__(self, name: str, family: str) -> None:
         self.name = name
         self.family = family
-        self._auth_env_key = auth_env_key
 
     async def complete(
         self,
@@ -63,169 +37,112 @@ class _RecordingProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
-        env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
         return ProviderResponse(
             text=str(universe_dir),
             provider=self.name,
-            model=env.get(self._auth_env_key, ""),
+            model="test",
             family=self.family,
             latency_ms=1.0,
         )
 
 
-def _write_codex_universe(root: Path) -> tuple[Path, str]:
-    """Universe A: preferred_writer=codex + a vaulted codex auth bundle.
-
-    The broker materializes the bundle to ``<universe>/.engine-auth/codex``
-    at env-overlay time, so CODEX_HOME is per-universe by construction.
-    """
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "config.yaml").write_text("preferred_writer: codex\n", encoding="utf-8")
-    deposit_credential(
-        universe_id=root.name, founder_id="founder-a", provider="codex",
-        destination="cli_subprocess", purpose="engine_auth",
-        kind=SecretKind.OAUTH2_GENERIC, value=b"{}",
-    )
-    codex_home = str(root / ".engine-auth" / "codex")
-    return root, codex_home
-
-
-def _write_claude_universe(root: Path) -> tuple[Path, str]:
-    """Universe B: preferred_writer=claude-code + a vaulted OAuth token."""
-    root.mkdir(parents=True, exist_ok=True)
+def _write_byo_universe(root: Path, key: str, founder: str) -> Path:
+    root.mkdir(parents=True)
     (root / "config.yaml").write_text(
-        "preferred_writer: claude-code\n", encoding="utf-8"
+        "preferred_writer: claude-code\nengine_source: byo_api_key\n",
+        encoding="utf-8",
     )
-    deposit_credential(
-        universe_id=root.name, founder_id="founder-b", provider="claude",
-        destination="cli_subprocess", purpose="engine_auth",
-        kind=SecretKind.OAUTH2_GENERIC, value=b"tok-universe-b",
+    deposit_engine_api_key(
+        universe_id=root.name,
+        founder_id=founder,
+        service="anthropic",
+        api_key=key,
     )
-    return root, "tok-universe-b"
+    return root
 
 
 @pytest.fixture
-def _pinned_to_universe_a(platform_vault_env, tmp_path, monkeypatch):
-    """Build two universes and pin ALL process globals to universe A."""
-    universe_a, codex_home = _write_codex_universe(tmp_path / "universe_a")
-    universe_b, claude_cfg = _write_claude_universe(tmp_path / "universe_b")
+def executable_byo(monkeypatch):
+    import tinyassets.engine_binding as engine_binding
 
-    # Neither a hard writer pin nor api-key opt-in should interfere.
-    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
-    monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
-
-    # Pin the process globals to universe A — this is the whole point: the
-    # per-call universe_context must override these, not read from them.
-    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe_a))
-    saved_config = runtime.universe_config
-    runtime.universe_config = load_universe_config(universe_a)
-    try:
-        yield {
-            "a": universe_a,
-            "b": universe_b,
-            "codex_home": codex_home,
-            "claude_cfg": claude_cfg,
-        }
-    finally:
-        runtime.universe_config = saved_config
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    monkeypatch.setattr(engine_binding, "_sandbox_execution_attested", lambda: True)
 
 
-def test_call_sync_resolves_engine_and_auth_per_universe_context(
-    _pinned_to_universe_a,
+def test_subprocess_env_resolves_broker_key_per_explicit_universe(
+    platform_vault_env, monkeypatch, executable_byo
 ):
-    fixt = _pinned_to_universe_a
-    universe_a = fixt["a"]
-    universe_b = fixt["b"]
-    codex_home = fixt["codex_home"]
-    claude_cfg = fixt["claude_cfg"]
-
-    router = ProviderRouter()
-    router.register(_RecordingProvider("codex", "openai", "CODEX_HOME"))
-    router.register(_RecordingProvider("claude-code", "anthropic", "CLAUDE_CODE_OAUTH_TOKEN"))
-
-    ctx_a = UniverseContext(
-        universe_dir=universe_a, config=load_universe_config(universe_a)
+    universe_a = _write_byo_universe(
+        platform_vault_env / "universe_a", _KEY_A, "founder-a"
     )
-    ctx_b = UniverseContext(
-        universe_dir=universe_b, config=load_universe_config(universe_b)
+    universe_b = _write_byo_universe(
+        platform_vault_env / "universe_b", _KEY_B, "founder-b"
     )
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe_a))
+    plan = [universe_a if index % 2 == 0 else universe_b for index in range(24)]
 
-    # 24 interleaved calls: even index -> A, odd index -> B.
-    plan = [("a", ctx_a) if i % 2 == 0 else ("b", ctx_b) for i in range(24)]
-
-    def _worker(item):
-        label, ctx = item
-        resp = router.call_sync(
-            role="writer",
-            prompt=f"prompt-{label}",
-            system="system",
-            universe_context=ctx,
-        )
-        return label, resp
+    def resolve(universe: Path) -> tuple[Path, str | None]:
+        env = subprocess_env_for_provider("claude-code", universe_dir=universe)
+        return universe, env.get("ANTHROPIC_API_KEY")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(_worker, plan))
+        results = list(pool.map(resolve, plan))
 
-    a_count = 0
-    b_count = 0
-    for label, resp in results:
-        if label == "a":
-            a_count += 1
-            assert resp.provider == "codex", (
-                f"A-context call must be served by codex, got {resp.provider!r}"
-            )
-            assert resp.text == str(universe_a), (
-                f"codex must see universe_dir==A, saw {resp.text!r}"
-            )
-            assert resp.model == str(codex_home), (
-                f"codex must resolve A's CODEX_HOME, got {resp.model!r}"
-            )
-        else:
-            b_count += 1
-            assert resp.provider == "claude-code", (
-                f"B-context call must be served by claude-code, got {resp.provider!r}"
-            )
-            assert resp.text == str(universe_b), (
-                f"claude-code must see universe_dir==B, saw {resp.text!r}"
-            )
-            assert resp.model == str(claude_cfg), (
-                f"claude-code must resolve B's vaulted OAuth token, got {resp.model!r}"
-            )
-
-    assert a_count == 12
-    assert b_count == 12
+    for universe, key in results:
+        assert key == (_KEY_A if universe == universe_a else _KEY_B)
 
 
-def test_call_provider_forwards_universe_context(_pinned_to_universe_a, monkeypatch):
-    """The call.py bridge threads universe_context through to call_sync."""
-    from tinyassets.providers import call as call_module
-
-    fixt = _pinned_to_universe_a
-    ctx_b = UniverseContext(
-        universe_dir=fixt["b"], config=load_universe_config(fixt["b"])
+def test_call_sync_routes_preferred_writer_per_universe_context(
+    tmp_path, monkeypatch
+):
+    universe_a = tmp_path / "pref_a"
+    universe_b = tmp_path / "pref_b"
+    universe_a.mkdir()
+    universe_b.mkdir()
+    (universe_a / "config.yaml").write_text(
+        "preferred_writer: codex\n", encoding="utf-8"
     )
-
-    router = ProviderRouter()
-    router.register(_RecordingProvider("codex", "openai", "CODEX_HOME"))
-    router.register(_RecordingProvider("claude-code", "anthropic", "CLAUDE_CODE_OAUTH_TOKEN"))
-
-    # conftest force-mocks call_provider globally; disable it so the real
-    # router path (which threads universe_context) runs for this test.
-    saved_mock = call_module.is_force_mock()
-    saved = call_module.get_provider_router()
-    call_module.set_force_mock(False)
-    call_module.set_provider_router(router)
+    (universe_b / "config.yaml").write_text(
+        "preferred_writer: claude-code\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe_a))
+    previous = runtime.universe_config
+    runtime.universe_config = load_universe_config(universe_a)
     try:
-        text = call_module.call_provider(
-            "prompt-b",
-            "system",
-            role="writer",
-            universe_context=ctx_b,
-        )
-    finally:
-        call_module.set_provider_router(saved)
-        call_module.set_force_mock(saved_mock)
+        router = ProviderRouter()
+        router.register(_RecordingProvider("codex", "openai"))
+        router.register(_RecordingProvider("claude-code", "anthropic"))
+        contexts = [
+            ("a", UniverseContext(universe_a, load_universe_config(universe_a))),
+            ("b", UniverseContext(universe_b, load_universe_config(universe_b))),
+        ] * 8
 
-    # B-context routed to claude-code, which saw universe_dir==B.
-    assert text == str(fixt["b"])
-    assert call_module.get_last_provider() == "claude-code"
+        def call(item):
+            label, context = item
+            return label, router.call_sync(
+                role="writer",
+                prompt=label,
+                system="system",
+                universe_context=context,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(call, contexts))
+        for label, response in results:
+            expected_provider = "codex" if label == "a" else "claude-code"
+            expected_universe = universe_a if label == "a" else universe_b
+            assert response.provider == expected_provider
+            assert response.text == str(expected_universe)
+    finally:
+        runtime.universe_config = previous
+
+
+def test_legacy_plaintext_state_is_terminal(platform_vault_env):
+    universe = platform_vault_env / "legacy"
+    universe.mkdir()
+    (universe / ".credential-vault.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RetiredCredentialStateError):
+        subprocess_env_for_provider("claude-code", universe_dir=universe)

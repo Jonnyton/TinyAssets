@@ -191,6 +191,12 @@ RUN chmod 0755 /usr/local/bin/codex && \
 WORKDIR /app
 
 # Copy the populated venv + source from the builder.
+# NOTE (round-17 #2): the deployable predeployment migration lives INSIDE the
+# tinyassets package (tinyassets/migrations/retired_subscription_records.py), so it
+# ships with this /app/tinyassets copy — no separate scripts/ COPY (scripts/ is not
+# in the image, which is exactly why the old scripts/ migration path was
+# undeployable). The deploy pipeline runs it via
+# `python -m tinyassets.migrations.retired_subscription_records`.
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/domains /app/domains
@@ -216,6 +222,14 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
+
+# Round-17 #2: fail the build if the deployable predeployment migration is not
+# importable in the RUNTIME image (PYTHONPATH=/app is now set). The deploy pipeline
+# runs `python -m tinyassets.migrations.retired_subscription_records` in a one-shot
+# container from this image BEFORE starting the daemon; if it can't import here it
+# would fail on the droplet too (the round-17 #2 `ModuleNotFoundError: tinyassets`
+# regression). Verifying at build time makes the migration provably deployable.
+RUN python -c "import tinyassets.migrations.retired_subscription_records as m; assert callable(m.main)"
 
 # Data directory — Row B will wire TINYASSETS_DATA_DIR through all
 # on-disk state. For now, /data is the expected bind-mount target;

@@ -42,6 +42,9 @@ dependencies = [
     # Credential vault platform backend: libsodium XChaCha20-Poly1305-IETF AEAD
     "pynacl>=1.5",
 
+    # Cross-process lock for read-modify-write of per-universe config.yaml
+    "filelock>=3.12",
+
     # MCP/server entry points and Tier-3 structural smoke imports
     "fastmcp>=3.0",
     "uvicorn[standard]>=0.30",

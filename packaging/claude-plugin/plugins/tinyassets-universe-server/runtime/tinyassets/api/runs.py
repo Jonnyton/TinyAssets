@@ -108,15 +108,23 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
 
 
 def _run_universe_id(record: dict[str, Any]) -> str:
-    """The universe a run is bound to, derived from its actor.
+    """The universe a run is bound to, preferring the persisted scope id.
 
-    Branch runs are executed by a universe (actor ``universe:<uid>``), so the
-    actor carries the owning universe. A run with any other actor is not
-    universe-brain data.
+    Actor parsing remains solely for rows written before ``runs.universe_id``.
     """
+    persisted = str((record or {}).get("universe_id") or "").strip()
+    if persisted:
+        return persisted
     actor = str((record or {}).get("actor") or "")
     prefix = "universe:"
     return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
+
+
+def _default_run_execution_scope(base_path: Any, universe_id: str) -> Any:
+    """Build the authoritative S3/S5 scope without consulting globals."""
+    from tinyassets.runs import _default_execution_scope
+
+    return _default_execution_scope(base_path, universe_id)
 
 
 def _run_read_allowed(record: dict[str, Any]) -> bool:
@@ -666,14 +674,18 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         recursion_limit_override = _rl_val
 
     try:
+        base_path = _base_path()
+        universe_id = str(kwargs.get("universe_id") or "").strip()
         outcome = execute_branch_async(
-            _base_path(),
+            base_path,
             branch=branch,
             inputs=inputs,
             run_name=kwargs.get("run_name", ""),
             actor=actor,
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            _enqueue_universe_id=universe_id,
+            execution_scope=_default_run_execution_scope(base_path, universe_id),
         )
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)
@@ -1247,6 +1259,14 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
             actor=actor,
             branch_lookup=_branch_lookup,
             provider_call=provider_call,
+            execution_scope=(
+                _default_run_execution_scope(
+                    _base_path(),
+                    _run_universe_id(_resume_record),
+                )
+                if _resume_record is not None
+                else None
+            ),
         )
     except ResumeError as exc:
         return json.dumps({
@@ -1716,14 +1736,18 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
         recursion_limit_override = _rl_val
 
     try:
+        base_path = _base_path()
+        universe_id = str(kwargs.get("universe_id") or "").strip()
         outcome = execute_branch_version_async(
-            _base_path(),
+            base_path,
             branch_version_id=bvid,
             inputs=inputs,
             run_name=kwargs.get("run_name", ""),
             actor=_run_actor_for_kwargs(kwargs),
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            _enqueue_universe_id=universe_id,
+            execution_scope=_default_run_execution_scope(base_path, universe_id),
         )
     except KeyError as exc:
         return json.dumps({"error": str(exc).strip("'\"")})

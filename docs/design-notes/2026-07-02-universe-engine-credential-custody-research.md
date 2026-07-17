@@ -1,17 +1,36 @@
 # Universe Engine Credential Custody — Research + Options
 
-- **Status:** Research / options note — **no build authority.** Resolves the open
-  research lane in `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md`
-  §11 item #2 (host: "research and think about it"). Recommendation only; a host
-  decision + Codex opposite-provider review gate any implementation.
+- **Status:** Design note — the patch-loop-s5 branch builds the engine-onboarding
+  + non-ambient-gate core to this design. It is **STILL UNDER the Codex
+  opposite-provider CODE-review gate** (iterating — round-17 verdict = adapt); do
+  **not** read this note as having cleared that gate. (Round-17 #6 correction: an
+  earlier draft circularly claimed the S5 build had already "passed the Codex
+  opposite-provider review gate" — it has not; the gate is the ongoing r1–r17
+  review of this very branch.) This is DISTINCT from the 2026-07-02 review of the
+  research *finding* (the ToS conclusion) at the end of this note, which is a
+  separate, completed artifact. Resolves the open research lane in
+  `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md`
+  §11 item #2 (host: "research and think about it"). The source conclusions stand:
+  OpenAI prohibits API-key transfer (raw-key custody NOT-offered pending a
+  provider-approved delegated path); both providers document sanctioned
+  private-automation paths.
 - **Author:** Navigator (Claude), 2026-07-02, from host directive same day.
 - **Reads (context, not restated):** the relay-architecture note §11; PLAN
   *Daemon Platform* + *Providers* modules; `AGENTS.md` Hard Rule #3 +
   Configuration section.
-- **Load-bearing finding up front (§0):** the "founder brings their **subscription**
-  and we host it 24/7" assumption is **ToS-blocked** on both Anthropic and OpenAI.
-  The clean device-independent paths are **API key** and **self-hosted endpoint**.
+- **Load-bearing finding up front (§0):** the "founder brings their **personal
+  subscription** and we host it 24/7 server-side" assumption is **ToS-blocked** on
+  both Anthropic and OpenAI *as a general server-side custody model*. The clean
+  device-independent paths are **API key** and **self-hosted endpoint**.
   This reshapes the recommendation — read §0 first.
+- **Emerging lane (2026 update — NOT built here, flag prominently):** Anthropic
+  now documents **subscription-backed unattended "routines"** driven by
+  **scoped trigger tokens** (a Claude Code routines/automation API) — a
+  provider-sanctioned automation path that is *narrower and different* from
+  "custody the founder's OAuth login." If it matures, it **may reopen a
+  founder-subscription model** under scoped tokens (not raw login custody). Treat
+  it as **future research**, gated by its own ToS review; do not assume "only two
+  lawful 24/7 lanes" is permanent. See §0.1 for the durable link.
 
 ---
 
@@ -21,26 +40,42 @@ The host floated three engine sources with "none privileged." Provider terms do
 privilege them, and the split is sharp:
 
 **Anthropic (Claude Pro/Max/Team subscription) — server-side custody is prohibited.**
-As of the **2026-04-04 enforcement** ("OpenClaw ban"), Anthropic's Consumer Terms:
-- Bar accessing the service "through automated or non-human means … except … using
-  an Anthropic **API Key**."
-- State "**OAuth authentication is intended exclusively for Claude Code and
-  Claude.ai. Using OAuth tokens in any other product, tool, or service is not
-  permitted**" and is a Consumer-Terms violation.
-- Bar sharing "Account login information, Anthropic API key, or Account credentials
-  with anyone else."
-- Explicitly name the sanctioned server path: subscription OAuth on servers is
-  prohibited; **an API key is the appropriate path for server-side access.**
-  (freshness: sources fetched 2026-07-02.)
+Anthropic's current Consumer Terms + Usage Policy (re-verify at the §0.1 links):
+- Bar accessing the service through automated / non-human means EXCEPT via an
+  Anthropic **API Key** (the terms carve out the API key as the sanctioned
+  automated-access path).
+- Bar **sharing** account login information / credentials with anyone else — so
+  the platform holding + driving a founder's *personal* login is prohibited.
+- Net: **an API key is the appropriate path for server-side / automated access.**
+  (C7 correction: an earlier draft quoted a specific "OAuth-tokens-are-for-
+  Claude-Code/Claude.ai-only" sentence verbatim; that exact wording could not be
+  re-verified on the current Consumer Terms page, so it is paraphrased here — the
+  API-key-exception + no-credential-sharing conclusion still holds. Freshness:
+  re-check before acting.)
 
-**OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** ChatGPT subscriptions
-are "individual use only"; no credential sharing; no programmatic/automated
-extraction; **no "using ChatGPT to power third-party services."** OpenAI's own Codex
-CI/CD auth guide says plainly: **"The right way to authenticate automation is with
-an API key,"** and characterizes ChatGPT-subscription-auth-in-CI as an *"advanced
-workflow for … trusted **private** automation," "personal account automation only,"
-"single machine or serialized job streams per token,"* explicitly **not for public
-repos or platforms running automation on behalf of other users.**
+**OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** The
+"individual use only / no credential sharing / no **using ChatGPT to power
+third-party services**" restriction is stated in OpenAI's **ChatGPT Pro Help Center
+article** (<https://help.openai.com/en/articles/9793128/>), **not** in the Terms of
+Use / Business Terms (round-22 #5 provenance correction: an earlier draft attributed
+"power third-party services" to the Terms/Business Terms; it is a Help-Center
+statement — cite the exact article above). Separately, OpenAI's own **Codex CI/CD
+auth guide** (<https://learn.chatgpt.com/docs/auth/ci-cd-auth>) says plainly: **"The
+right way to authenticate automation is with an API key,"** and discusses
+ChatGPT-subscription-auth-in-CI as an advanced workflow for **trusted private
+automation**. (Round-22 #5 correction: the guide DOES explicitly require **one
+machine — or a serialized job stream — per ``auth.json`` copy** (concurrent runners
+sharing one ``auth.json`` race the single-use refresh-token rotation and trip
+``refresh_token_reused``); an earlier draft obscured this because its quotation was
+not word-for-word. Paraphrase accurately: the guide's framing is
+private/trusted-automation-oriented, one-machine/serialized-per-auth.json, and it
+discourages public/OSS use.)
+**(round-14 #6 INFERENCE, not a verbatim quote):** from "personal/private only" +
+"no public/OSS" we *infer* it is also not sanctioned for **a platform running
+automation on behalf of other users** — the guide does not say that phrase
+literally. Either way, Codex sanctions trusted *private* account-auth, so
+the blanket "no ChatGPT automation" reading is too strong (see the Enterprise
+access-token narrowing below).
 
 > **Narrowing (Codex review 2026-07-02):** the blanket "no ChatGPT automation" is
 > too broad — OpenAI *does* document **Business/Enterprise Codex access tokens for
@@ -55,9 +90,20 @@ repos or platforms running automation on behalf of other users.**
 custodied by the platform and driven 24/7 server-side on their behalf — it is
 simultaneously (a) account-credential sharing, (b) OAuth-token-in-a-third-party-
 service, and (c) using a personal subscription to power a third-party service. This
-holds for both providers. So among the three host-floated sources, **only two are
-lawful device-independent 24/7 engines: API key and self-hosted OSS endpoint.** The
-subscription-CLI path survives **only** as the *platform's own* first-party engine
+holds for both providers. Among the original three host-floated sources, the
+device-independent 24/7 engines are the API-key lane and the self-hosted OSS
+endpoint. Anthropic Routines now adds a separate **provider-hosted,
+subscription-backed cloud lane**: it can run while the founder's device is off,
+is currently a research preview subject to subscription usage caps, and exposes
+an API trigger protected by a per-routine scoped bearer token. That token invokes
+Anthropic's routine; it does **not** authorize TinyAssets to custody the founder's
+Claude login or subscription credential. The **API-key lane's lawfulness remains
+PROVIDER-SPECIFIC** (round-15
+#1): OpenAI's Services Agreement bars transferring a key to a third party, so
+raw-OpenAI-key custody is NOT offered pending a provider-approved delegated path;
+Anthropic is conditional. See the per-provider verdict in §4.2b — do not read "API
+key" as a blanket sanctioned lane. The subscription-CLI path survives **only** as
+the *platform's own* first-party engine
 (host Jonathan's own account, on the host's own trusted infra, serialized — the
 current droplet model), never resold/shared per founder.
 
@@ -70,6 +116,102 @@ on his own infra (the one ToS-clean subscription case — your own sub on your o
 infra), serving whatever universe(s) he creates, never a per-founder default. The
 **zero-engine path is the chatbot's own LLM in-session** (interactive-only via
 subagents), not a platform engine.
+
+### 0.1 Durable first-party sources (re-verify before acting; providers revise terms)
+
+The §0 conclusion is a **policy/legal INFERENCE** from the providers' own terms +
+auth docs — NOT a verbatim provider quote. (C7: an earlier draft quoted specific
+sentences that could not be re-verified on the current pages; the API-key-
+exception + no-credential-sharing conclusion still follows from the terms as a
+whole, but treat it as an inference and get counsel before productionizing any
+subscription-adjacent lane.) Exact current sources:
+
+- **OpenAI — Codex CI/CD auth guide** (the `CODEX_API_KEY` per-run path for headless
+  `codex exec`; "API key is the right way to authenticate automation"; and the
+  requirement of **one machine / a serialized job stream per `auth.json` copy** —
+  round-22 #5): <https://learn.chatgpt.com/docs/auth/ci-cd-auth>.
+- **OpenAI — Codex Enterprise access tokens** (`CODEX_ACCESS_TOKEN`, org-level,
+  DISTINCT from a personal ChatGPT subscription AND from an API key):
+  <https://learn.chatgpt.com/docs/enterprise/access-tokens>.
+- **OpenAI — ChatGPT Pro Help Center article** (the "individual use only / no
+  credential sharing / no powering third-party services" restriction — a Help-Center
+  statement, NOT a Terms/Business-Terms clause; round-22 #5, exact article):
+  <https://help.openai.com/en/articles/9793128/>.
+- **OpenAI — Terms of Use / Business terms** (individual-use + no-credential-sharing
+  framing; note the specific "power third-party services" phrase is a Help-Center
+  statement above, not a Terms/Business-Terms clause — round-21 #5):
+  <https://openai.com/policies/terms-of-use/> and
+  <https://openai.com/policies/business-terms/>.
+- **Anthropic — Claude routines** (the emerging subscription-backed unattended-
+  automation / scoped-trigger-token lane; re-verify current shape + ToS):
+  <https://code.claude.com/docs/en/routines>.
+- **Anthropic — Consumer Terms of Service** (governs the SUBSCRIPTION / login lane —
+  the automated-access / credential-sharing terms §0 infers the no-subscription-
+  custody conclusion from): <https://www.anthropic.com/legal/consumer-terms>.
+- **Anthropic — Commercial Terms of Service** (governs the **API-key** lane, per
+  Anthropic — NOT the Consumer Terms; permits customers to build products/services
+  on the API for their own users. The instrument for the §2b Anthropic verdict):
+  <https://www.anthropic.com/legal/commercial-terms>.
+  API keys are issued/managed at <https://console.anthropic.com/>.
+
+**Two DISTINCT credential classes — do not conflate (F5b correction):**
+1. A **BYO API key** (Anthropic `ANTHROPIC_API_KEY`, OpenAI `OPENAI_API_KEY` /
+   headless-codex `CODEX_API_KEY`) — a per-founder key that flows through the
+   **BYO-API-key vault lane**.
+2. An **org-level OpenAI Codex ACCESS TOKEN** — a *different* credential
+   (`CODEX_ACCESS_TOKEN`, NOT `CODEX_API_KEY`) minted for a Business/Enterprise
+   org for non-interactive Codex. It is **not** the same as a personal ChatGPT
+   subscription (that stays blocked) **and it does NOT flow through the API-key
+   lane** — it would need its own access-token credential type + auth plumbing.
+   Enterprise founders / market hosts may legitimately bring one, but it is
+   separate future work, not the BYO-API-key path implemented in S5.
+
+**Resolved self-contradiction (F5c):** there is **NO founder-facing platform
+default engine** — a founder brings their own (BYO key / endpoint / market /
+own-device daemon). The *only* platform-held subscription is the **host's own
+droplet subscription**, which serves **only the host's own universe(s)** on the
+host's own infra (Option E, process-global) — it is never a per-founder default
+and never flows through the founder vault.
+
+### 0.2 Phase-1 vs Phase-2, and the enforcement scope
+
+**Phase split (host: "build execution first").** Phase-1 S5 ships only the
+**non-ambient GATE + honest declaration + no-fake-capability + no-plaintext-
+through-chat**. The REAL executable onboarding lane — an out-of-chat,
+founder-authenticated secret deposit returning an opaque credential *reference*,
+a real KMS-encrypted per-tenant vault, and a real executor — is **Phase 2**. In
+Phase 1 the executable BYO path is DARK end-to-end: `set_engine` refuses a raw
+key through the chatbot, `resolve_engine_binding` never binds a BYO key, and the
+env overlay injects nothing. The `TINYASSETS_BYO_VAULT_ENCRYPTED` flag is gated
+behind a **code-backed encryption-capability attestation** that returns False
+until Phase-2 lands, so no flag flip can unlock plaintext-key deposit+execution.
+
+**⚠ The non-ambient gate is Phase-1 SCAFFOLDING — it does NOT yet fully prevent
+ambient execution at every boundary. `TINYASSETS_NON_AMBIENT_WORK` MUST stay OFF;
+flipping it ON is unsafe until Phase 2 closes the execution-boundary gate.** The
+gate today lives only in the cloud-worker supervisor (`cloud_worker.py`), and the
+provider router still permits ambient execution whenever BYO is dark / no
+universe context is threaded / the universe is unbound / the role is non-writer.
+The COMPLETE guarantee requires (a) **S3's universe-context threading** so
+`run_branch` / `converse` / version / resume carry authoritative universe
+identity to the router, plus (b) an **all-roles router gate that fails closed
+when a FOUNDER universe is unbound** (the host's OWN universes legitimately use
+the droplet subscription, so the gate must distinguish founder-vs-host). Both are
+**Phase 2**; S3's context threading is not on this branch, so the full
+router-execution gate is deliberately NOT built here.
+
+**Enforcement scope — writer-role only (Phase-1 tightening applied).** What IS
+enforced today: a BYO-bound universe's **writer** never borrows platform provider
+auth (the writer-binding constraint, centralized + fail-closed). A "writer route"
+is `role == "writer"` OR any role NOT in `FALLBACK_CHAINS` (an unknown role aliases
+to the writer chain — `model_hint` is user free-form — so it must be enforced too.
+**(round-14 #6 correction:** an earlier draft said `model_hint` is *whitelisted* at
+the write surface; it is NOT — r11 #5 deliberately RESTORED free-form stored
+`model_hint`, and the security invariant lives at the shared ROUTER boundary, which
+classifies any unknown role as a writer route.) Judge/extract calls may
+still use platform capacity — the judge/extract fallback chains have no claude-code
+entry, so a claude-only BYO universe would have an EMPTY judge chain and could not
+evaluate at all. Per-universe judge/extract routing is Phase-2 work.
 
 ---
 
@@ -210,10 +352,10 @@ what a droplet compromise exposes.
 | Engine source | Where creds live | 24/7 no-device | Multi-tenant isolation | Blast radius (droplet pwned) | ToS / legal | Impl cost |
 |---|---|---|---|---|---|---|
 | **A. Founder subscription (Claude/ChatGPT CLI)** | would need per-universe `CODEX_HOME`/`CLAUDE_CONFIG_DIR` + OAuth tokens | **Yes technically** | per-universe auth home (exists) | one auth home per founder, cleartext OAuth | **BLOCKED** — §0 (account-sharing + OAuth-in-3rd-party + power-3rd-party-service, both providers) | n/a — don't build |
-| **B. Founder API key (Anthropic/OpenAI/etc.)** | per-universe vault, **KMS-wrapped** | **Yes** | per-tenant DEK + encryption context | one founder's key **iff** per-tenant key; all keys iff shared/base64 (today) | **CLEAN** — API key is the *sanctioned* server path | Med — add write surface + envelope encryption; router already resolves per-universe |
+| **B. Founder API key** — verdict is PROVIDER-SPECIFIC (round-15 #1), not one blanket "sanctioned" claim | per-universe vault, **KMS-wrapped** | **Yes** | per-tenant DEK + encryption context | one founder's key **iff** per-tenant key; all keys iff shared/base64 (today) | **OpenAI: NOT-OFFERED.** The OpenAI **Services Agreement prohibits transferring API keys to/from third parties**; the project-key article (5008148) covers *intra-org* collaboration, NOT handing a key to TinyAssets. Consent+encryption+spend-limits do NOT cure this — it needs a **provider-approved delegated/service path** (an OpenAI-sanctioned OAuth/service-account flow) or explicit legal approval first. **Anthropic: CONDITIONAL** — a raw key grants account access (support 9767949); requires dedicated key + consent + spend limits + legal review (see §4.2b). Template = the GitHub App path (delegated, provider-sanctioned). | Med — Anthropic conditional lane; OpenAI raw-key deferred pending a delegated path |
 | **C. Self-hosted OSS endpoint (Ollama/vLLM/`ANTHROPIC_BASE_URL`)** | vault holds **endpoint URL + bearer token**, not model creds | **Depends on founder's host** being up | endpoint+token per universe | one endpoint token (low-value; founder's infra) | **CLEAN** — no provider account shared; provider-agnostic base-url already in PLAN | Low — endpoint+token is a thin vault record; router needs base-url binding per universe |
 | **D. BYO-cloud / Workload Identity Federation** | **no stored secret** — OIDC federation to founder's cloud LLM | **Yes** | per-founder OIDC trust | **nothing** — no long-lived secret at rest | **CLEANEST** — no key custody at all | High — federation plumbing; forward-looking, not MVP |
-| **E. Platform default (host's own subscription)** | droplet `/data/.codex` + `/data/.claude` (exists) | **Yes** | shared — it's the platform's, not per-founder | platform's own account only | **OK** — first-party, host's own account/infra (§0) | Zero — already live |
+| **E. Host's-own subscription (NOT a founder default)** | droplet `/data/.codex` + `/data/.claude` (exists) | **Yes** | host's own account, serving ONLY the host's own universe(s) — never a per-founder default | host's own account only | **OK** — first-party, host's own account/infra (§0) | Zero — already live |
 
 ---
 
@@ -239,12 +381,58 @@ provided default engine for founders (host correction 2026-07-02).**
    engine legally and gets paid. The platform never custodies the founder's creds —
    the clean sidestep to the whole ToS problem.
 
-2. **BYO-hosted lane — Option B (API key), the primary sanctioned 24/7 path.** Founder
-   deposits an **API key** (Anthropic/OpenAI/Gemini/Groq/xAI). Store it in the
-   per-universe vault **under envelope encryption** (§5), resolved per-request off the
-   universe's `credential_ref`. This is the lawful way to "host their engine 24/7
-   without their device." **Requires relaxing `TINYASSETS_ALLOW_API_KEY_PROVIDERS`
-   per-universe** — flagged in §6.
+2. **BYO-hosted lane — Option B (API key). The verdict is PROVIDER-SPECIFIC — there is
+   NO blanket "sanctioned" claim (round-15 #1 critical correction).** A founder-supplied
+   key would be stored in the per-universe vault **under envelope encryption** (§5),
+   resolved per-request off the universe's `credential_ref`, and **requires relaxing
+   `TINYASSETS_ALLOW_API_KEY_PROVIDERS` per-universe** (§6). But whether it is LAWFUL to
+   custody at all depends on the provider's own transfer terms — decide per provider,
+   below.
+
+2b. **Per-provider custody verdict (round-15 #1 rewrite — provider-by-provider, not one
+   blanket claim). The clean, provider-sanctioned template is the DELEGATED path
+   (GitHub App: the provider issues a scoped, revocable token to the platform — the
+   founder never hands over a raw key). Measure each provider against that.**
+   - **OpenAI — raw API-key custody is NOT OFFERED (pending a delegated/service path).**
+     The [OpenAI Services Agreement](https://openai.com/policies/services-agreement/)
+     **prohibits transferring API keys to or from third parties**. The project-key
+     article (help.openai.com/en/articles/5008148) covers **intra-organization**
+     collaboration — sharing a key *within* your own org — NOT handing a key to
+     TinyAssets, a third party. So consent + encryption + spend-limits do **not** cure
+     it: raw-OpenAI-key custody needs a **provider-approved delegated/service path**
+     (an OpenAI-sanctioned OAuth / service-account flow, the GitHub-App analogue) OR
+     explicit legal approval. **Mark it NOT-OFFERED until such a path exists; do not
+     build the raw-key lane for OpenAI.** (The personal-*subscription* prohibition in
+     §0 is unchanged; the Business/Enterprise **Codex access-token** path in §0.1 is a
+     separate, provider-sanctioned org flow — that IS a delegated-style path.)
+   - **Anthropic — CONDITIONAL (re-evaluated via COMMERCIAL Terms, round-17 #6).**
+     Anthropic states that **API keys are governed by its Commercial Terms of
+     Service** ([Anthropic Commercial Terms](https://www.anthropic.com/legal/commercial-terms)),
+     **not** the Consumer Terms that govern the subscription/login lane (§0). This
+     matters: the Consumer-Terms framing an earlier draft leaned on is the WRONG
+     instrument for the API-key lane. The Commercial Terms permit a **customer to
+     build products and services that use the API to serve THEIR OWN users** — so a
+     platform custodying a founder's API key to power that founder's universe may be
+     **MORE viable** under Commercial Terms than the Consumer-Terms framing implied.
+     This is **not** a green light. Anthropic still warns an uploaded API key
+     **grants account access** ([API-key best practices](https://support.anthropic.com/en/articles/9767949-api-key-best-practices-keeping-your-keys-safe-and-secure)),
+     and the load-bearing open question is the **contracting-party / agent
+     relationship**: is TinyAssets the Anthropic *customer* (contracting in its own
+     name, serving founders as its users) or the founder's *agent* (the founder is
+     the customer)? That must be **resolved by legal counsel before this becomes
+     implementation authority** — it is not settled by this note. Before
+     productionizing it still requires: **(a)** a dedicated key (never a personal
+     all-scopes key), **(b)** explicit founder **consent** at deposit, **(c)** per-key
+     **spend limits**, and **(d) legal review** of the contracting-party
+     question above. Label any "sanctioned" reading an INFERENCE, not a provider
+     endorsement. (Custody remains DEFAULT-DENY in code — `credential_vault.
+     sanctioned_custody_services()` is empty until this legal question resolves.)
+   - **Others (Gemini / Groq / xAI)** — state each per its own current terms before
+     offering; do not assume the Anthropic verdict transfers. (Not researched here.)
+   This converges with the credential vault's provider-generic model: the vault offers
+   only credential KINDS that are legal per provider, and each provider's registry entry
+   declares its own sanctioned custody path — raw-key where the provider permits it,
+   delegated-token where it doesn't.
 
 3. **BYO-endpoint lane — Option C, for OSS / privacy / cost.** Founder points the
    universe at their own `OLLAMA_HOST` / `ANTHROPIC_BASE_URL` + a bearer token. The
@@ -253,11 +441,14 @@ provided default engine for founders (host correction 2026-07-02).**
    explicitly the founder's responsibility (their host up = engine up); the platform
    surfaces "engine unreachable" honestly (Hard Rule #8, never fake success).
 
-4. **Do NOT build Option A (founder subscription custody).** It is ToS-blocked on both
-   providers. If a founder wants their *personal subscription* to power their universe,
-   the only lawful shape is the **local-app / on-device relay** (their machine runs the
-   engine when on) — which by definition is **not** 24/7-without-device and therefore
-   does not satisfy the hard requirement. Say this plainly to founders at engine-
+4. **Do NOT build Option A (founder subscription custody).** It remains ToS-blocked on
+   both providers. A founder may use a **local-app / on-device relay**, or—where
+   Anthropic Routines is available—configure a provider-hosted routine and delegate
+   only its per-routine scoped bearer trigger token. Routines are a research preview,
+   consume the founder's subscription allowance and are subject to plan caps; they are
+   device-independent because Anthropic executes them in its cloud. This is a distinct
+   delegated execution lane, **not permission for TinyAssets to store or drive the
+   founder's Claude login/OAuth credential**. Say that boundary plainly at engine-
    assignment time rather than silently degrading.
 
 5. **Put Option D (Workload Identity Federation) on the roadmap, not the MVP.** It is
@@ -265,9 +456,11 @@ provided default engine for founders (host correction 2026-07-02).**
    Track it as the eventual replacement for stored API keys, especially for the
    platform's own engine.
 
-**One-line version:** *founders bring an **API key** or an **endpoint**; the platform
-brings the **default subscription**; nobody's personal subscription gets custodied
-server-side.*
+**One-line version (F5 corrected):** *founders bring an **API key** or an
+**endpoint** (or run the daemon on their own device); there is **NO founder-facing
+platform default engine** — the host's own droplet subscription serves **only the
+host's own universe(s)**, never a per-founder default; and nobody's personal
+subscription gets custodied server-side.*
 
 ---
 
@@ -383,8 +576,13 @@ Dispatched per the AGENTS.md research-finding gate (Claude-made finding →
 Codex review before it gates build). Verdict **ADAPT** — the load-bearing ToS
 conclusion is **confirmed**, with one narrowing.
 
-- **CONFIRMED (Anthropic):** don't route third-party requests through Free/Pro/Max
-  credentials; Consumer Terms bar credential sharing + most non-API automation.
+- **CONFIRMED (Anthropic, SUBSCRIPTION lane):** don't route third-party requests
+  through Free/Pro/Max credentials; **Consumer Terms** bar credential sharing + most
+  non-API automation. NOTE (round-17 #6): this Consumer-Terms conclusion is about the
+  *subscription/login* lane only. The separate **API-key** lane is governed by
+  Anthropic's **Commercial Terms** (§2b) — do not extend the Consumer-Terms bar to
+  the API-key custody question, which is CONDITIONAL pending the contracting-party
+  legal review, not barred.
 - **ADAPT (OpenAI):** the note overstated the OpenAI side. OpenAI recommends API
   keys for programmatic Codex and forbids account sharing / programmatic
   extraction, **but also documents Business/Enterprise Codex access tokens for

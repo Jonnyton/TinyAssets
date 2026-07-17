@@ -430,14 +430,19 @@ def test_engine_codex_bundle_materializes_engine_auth_home(platform_vault_env):
     require_no_legacy_vault(udir)
 
 
-def test_subprocess_env_for_provider_end_to_end(platform_vault_env):
+def test_subprocess_env_for_provider_end_to_end(platform_vault_env, monkeypatch):
+    import tinyassets.engine_binding as engine_binding
+    from tinyassets.config import write_universe_config_fields
     from tinyassets.providers.base import subprocess_env_for_provider
 
     udir = _universe(platform_vault_env, "u-subproc")
+    write_universe_config_fields(udir, engine_source="byo_api_key")
     deposit_engine_api_key(
         universe_id="u-subproc", founder_id=FOUNDER,
         service="anthropic", api_key="sk-ant-e2e",
     )
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    monkeypatch.setattr(engine_binding, "_sandbox_execution_attested", lambda: True)
     env = subprocess_env_for_provider("claude-code", universe_dir=udir)
     assert env.get("ANTHROPIC_API_KEY") == "sk-ant-e2e"
 

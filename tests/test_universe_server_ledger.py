@@ -95,6 +95,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         "subscribe_goal", "unsubscribe_goal", "post_to_goal_pool",
         "submit_node_bid",  # Phase G
         "set_tier_config",  # Phase H
+        "set_engine",  # S5 founder engine-assignment (offer_engine removed, round-16 #3)
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
         "daemon_create", "daemon_summon", "daemon_banish",
         "daemon_pause", "daemon_resume", "daemon_restart",

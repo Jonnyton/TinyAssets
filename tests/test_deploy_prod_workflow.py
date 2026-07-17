@@ -242,6 +242,82 @@ def test_rollback_conditioned_on_failure():
 
 
 # ---------------------------------------------------------------------------
+# Round-20 — the destructive subscription-record migration is NOT auto-run in
+# deploy; the release ships FAIL-CLOSED code + a NON-SECRET marker. Recovery is
+# IMAGE-ONLY rollback. State-machine assertions, not just strings.
+# ---------------------------------------------------------------------------
+
+
+def _deploy_step(wf: dict) -> dict:
+    step = next((s for s in _steps(wf) if s.get("id") == "deploy"), None)
+    assert step is not None, "deploy job must have a step with id: deploy"
+    return step
+
+
+def _rollback_step(wf: dict) -> dict:
+    step = next(
+        (s for s in _steps(wf)
+         if "rollback on failure" in (s.get("name") or "").lower()),
+        None,
+    )
+    assert step is not None, "deploy job must have a 'Rollback on failure' step"
+    return step
+
+
+def test_r20_deploy_does_not_auto_run_the_record_removal_migration():
+    """Round-20 #1 (DEPLOY ORDERING): the deploy must NOT auto-run the destructive
+    retired-subscription record REMOVAL. Current origin/main overlays subscription
+    records into the host's CODEX_HOME/CLAUDE_CONFIG_DIR/OAuth env, so removing them in
+    deploy would make the new image OR an image-only rollback fall back to AMBIENT host
+    creds for an affected universe (a cross-identity leak). This release ships the
+    fail-closed CODE; the removal is deferred to a later host-gated step."""
+    wf = _load()
+    deploy_script = _deploy_step(wf).get("run", "") or ""
+    rollback_script = _rollback_step(wf).get("run", "") or ""
+
+    for script, where in (
+        (deploy_script, "Deploy new image"),
+        (rollback_script, "Rollback on failure"),
+    ):
+        # No auto-run of the migration module (neither --migrate nor --inventory nor
+        # the module invocation) and no credential rollback anywhere.
+        assert "-m tinyassets.migrations.retired_subscription_records" not in script, (
+            f"{where} must NOT auto-run the record-removal migration (round-20 #1 "
+            "deploy ordering — it is a later host-gated step)"
+        )
+        assert "--migrate" not in script
+        assert "--rollback" not in script
+        assert "restore_quarantined" not in script
+
+
+def test_r20_deploy_still_pulls_and_restarts():
+    """The deploy step still pulls the new image + restarts under `set -e` (a pull/
+    restart failure aborts before the daemon flips) — just without the migration."""
+    wf = _load()
+    run_script = _deploy_step(wf).get("run", "") or ""
+    assert (
+        "set -e; sudo docker pull '${NEW_IMAGE}'; "
+        "sudo systemctl restart tinyassets-daemon"
+    ) in run_script
+
+
+def test_rollback_step_is_image_only():
+    """Round-20: the 'Rollback on failure' step restores ONLY the image. There is no
+    credential migration/rollback (the retired-universe fail-closed CODE — not a
+    credential mutation — is what prevents the ambient-leak on rollback)."""
+    wf = _load()
+    step = _rollback_step(wf)
+    run_script = step.get("run", "") or ""
+    # Image rollback machinery is present...
+    assert "install-tinyassets-env.sh set TINYASSETS_IMAGE" in run_script
+    assert "systemctl restart tinyassets-daemon" in run_script
+    assert "PREV_IMAGE" in (step.get("env") or {})
+    # ...but no credential migration/rollback.
+    assert "retired_subscription_records" not in run_script
+    assert "NEW_IMAGE_REF" not in (step.get("env") or {})
+
+
+# ---------------------------------------------------------------------------
 # (i) Codex subscription auth sync
 # ---------------------------------------------------------------------------
 

@@ -168,3 +168,51 @@ class TestRuntimeConfigIntegration:
         runtime.universe_config = UniverseConfig(temperature=0.1)
         runtime.reset()
         assert runtime.universe_config.temperature == 0.7
+
+
+class TestWriteUniverseConfigFieldsDataSafety:
+    """Round-14 #5: the config writer must not lose data — fail loud on malformed
+    existing state (never rewrite-fresh), and serialize concurrent writers."""
+
+    def test_malformed_existing_config_fails_loud_no_data_loss(self, tmp_path):
+        import pytest
+
+        from tinyassets.config import write_universe_config_fields
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "preferred_judge: codex\ntemperature: 0.5\n: : : broken [",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="unreadable/malformed"):
+            write_universe_config_fields(tmp_path, engine_source="host_daemon")
+        # The original (unreadable) file is untouched — never silently rewritten.
+        assert "preferred_judge" in cfg.read_text(encoding="utf-8")
+
+    def test_non_mapping_existing_config_fails_loud(self, tmp_path):
+        import pytest
+
+        from tinyassets.config import write_universe_config_fields
+
+        (tmp_path / "config.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="not a mapping"):
+            write_universe_config_fields(tmp_path, engine_source="host_daemon")
+
+    def test_concurrent_writers_do_not_lose_fields(self, tmp_path):
+        """Interleaved declarations under the cross-process lock all land (no
+        lost-update clobber). Each writer adds its own key; all must survive."""
+        import concurrent.futures
+
+        import yaml
+
+        from tinyassets.config import write_universe_config_fields
+
+        def _writer(i):
+            write_universe_config_fields(tmp_path, **{f"field_{i}": i})
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_writer, range(24)))
+
+        data = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        for i in range(24):
+            assert data.get(f"field_{i}") == i, f"lost field_{i} under concurrency"
