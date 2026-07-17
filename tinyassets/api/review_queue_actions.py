@@ -147,33 +147,22 @@ def _not_projected(action: str, destination: str, pr_number: int) -> str:
     })
 
 
-def _resume_suspended_run(
-    universe_dir, *, destination: str, pr_number: int, decision: str,
-    directive: dict[str, Any],
-) -> dict[str, Any] | None:
-    """E3: resolve the run the present node SUSPENDED for this PR — mark it
-    resumed with the owner's decision + the directive the loop follows next
-    (merge / draft_patch resume / terminal reject). Returns a compact resume
-    summary, or None when no run is suspended (a fire-and-forget projection)."""
-    from tinyassets.storage.review_queue import resume_review_run, suspension_for_pr
+def _continue_run(universe_dir, resume: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Drive the runtime resume: if the owner's decision resumed a suspended run,
+    move the canonical interrupted run to a terminal status (Codex r12 #1). The
+    decision + directive are already durably recorded by ``decide_and_resume``;
+    this is the runtime consumer that unpauses the actual run."""
+    if not resume or not resume.get("run_id"):
+        return None
+    try:
+        from tinyassets.runs import continue_reviewed_run
 
-    suspension = suspension_for_pr(
-        universe_dir, destination=destination, pr_number=pr_number
-    )
-    if suspension is None:
-        return None
-    resumed = resume_review_run(
-        universe_dir, run_id=suspension["run_id"], decision=decision,
-        directive=directive,
-    )
-    if resumed is None:
-        return None
-    return {
-        "run_id": resumed["run_id"],
-        "status": resumed["status"],
-        "decision": resumed["resume_decision"],
-        "directive": resumed["resume_directive"],
-    }
+        return continue_reviewed_run(
+            universe_dir, run_id=resume["run_id"], decision=resume.get("decision") or "",
+        )
+    except Exception:  # noqa: BLE001 — the decision is already durable; report only
+        logger.exception("continue_reviewed_run failed")
+        return {"applied": False, "reason": "continue_error"}
 
 
 # ── list ────────────────────────────────────────────────────────────────────
@@ -239,14 +228,15 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         from tinyassets.storage.review_queue import (
             INTENT_APPROVE,
             WORKFLOW_APPROVED,
-            record_owner_intent,
+            decide_and_resume,
         )
 
-        projection = record_owner_intent(
+        result = decide_and_resume(
             _universe_dir_for(target_universe),
             destination=destination, pr_number=pr_number,
             intent=INTENT_APPROVE, workflow_outcome=WORKFLOW_APPROVED,
             decided_by=_current_actor(), expected_head_sha=head,
+            directive={"action": "merge", "github_call": call.to_dict()},
             recorded_call=call.to_dict(), notes=kwargs.get("notes") or "",
         )
     except ReviewHeadChanged as exc:
@@ -258,18 +248,15 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
-    if projection is None:
+    if result["projection"] is None:
         return _not_projected("review_queue_approve", destination, pr_number)
-    resume = _resume_suspended_run(
-        _universe_dir_for(target_universe), destination=destination,
-        pr_number=pr_number, decision="approve",
-        directive={"action": "merge", "github_call": call.to_dict()},
-    )
+    run_continued = _continue_run(_universe_dir_for(target_universe), result["resume"])
     return json.dumps({
         "status": "approved",
-        "projection": projection,
+        "projection": result["projection"],
         "github_call": call.to_dict(),
-        "resume": resume,
+        "resume": result["resume"],
+        "run_continued": run_continued,
         "note": _PHASE2_NOTE,
     })
 
@@ -304,27 +291,34 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
         from tinyassets.storage.review_queue import (
             INTENT_RESHAPE,
             WORKFLOW_RESHAPED,
+            decide_and_resume,
             enqueue_reshape,
-            record_owner_intent,
+            get_projection,
         )
 
         universe_dir = _universe_dir_for(target_universe)
-        projection = record_owner_intent(
-            universe_dir,
-            destination=destination, pr_number=pr_number,
-            intent=INTENT_RESHAPE, workflow_outcome=WORKFLOW_RESHAPED,
-            decided_by=_current_actor(), expected_head_sha=head,
-            recorded_call=call.to_dict(), notes=notes,
+        # Read the resume identity to build route_back; decide_and_resume
+        # re-checks the head atomically under the write lock.
+        existing = get_projection(
+            universe_dir, destination=destination, pr_number=pr_number
         )
-        if projection is None:
+        if existing is None:
             return _not_projected("review_queue_reshape", destination, pr_number)
         outbox = enqueue_reshape(
             universe_dir,
             destination=destination, pr_number=pr_number,
-            universe_id=projection.get("universe_id") or "",
-            branch_def_id=projection.get("branch_def_id") or "",
-            run_id=projection.get("run_id") or "",
+            universe_id=existing.get("universe_id") or "",
+            branch_def_id=existing.get("branch_def_id") or "",
+            run_id=existing.get("run_id") or "",
             owner_notes=notes, recorded_call=call.to_dict(),
+        )
+        result = decide_and_resume(
+            universe_dir,
+            destination=destination, pr_number=pr_number,
+            intent=INTENT_RESHAPE, workflow_outcome=WORKFLOW_RESHAPED,
+            decided_by=_current_actor(), expected_head_sha=head,
+            directive={"action": "draft_patch", "route_back": outbox["route_back"]},
+            recorded_call=call.to_dict(), notes=notes,
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
@@ -335,17 +329,16 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
-    resume = _resume_suspended_run(
-        universe_dir, destination=destination, pr_number=pr_number,
-        decision="reshape",
-        directive={"action": "draft_patch", "route_back": outbox["route_back"]},
-    )
+    if result["projection"] is None:
+        return _not_projected("review_queue_reshape", destination, pr_number)
+    run_continued = _continue_run(universe_dir, result["resume"])
     return json.dumps({
         "status": "reshaped",
-        "projection": projection,
+        "projection": result["projection"],
         "route_back": outbox["route_back"],
         "github_call": call.to_dict(),
-        "resume": resume,
+        "resume": result["resume"],
+        "run_continued": run_continued,
         "note": (
             "Reshape recorded a REQUEST_CHANGES review call + a durable "
             "draft_patch resume row; the suspended run resumes into draft_patch "
@@ -375,14 +368,15 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
         from tinyassets.storage.review_queue import (
             INTENT_REJECT,
             WORKFLOW_REJECTED,
-            record_owner_intent,
+            decide_and_resume,
         )
 
-        projection = record_owner_intent(
+        result = decide_and_resume(
             _universe_dir_for(target_universe),
             destination=destination, pr_number=pr_number,
             intent=INTENT_REJECT, workflow_outcome=WORKFLOW_REJECTED,
             decided_by=_current_actor(), expected_head_sha=head,
+            directive={"action": "terminal_reject"},
             recorded_call=call.to_dict(), notes=notes,
         )
     except ReviewHeadChanged as exc:
@@ -394,18 +388,15 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             "failure_class": "storage_error",
             "actionable_by": "host",
         })
-    if projection is None:
+    if result["projection"] is None:
         return _not_projected("review_queue_reject", destination, pr_number)
-    resume = _resume_suspended_run(
-        _universe_dir_for(target_universe), destination=destination,
-        pr_number=pr_number, decision="reject",
-        directive={"action": "terminal_reject"},
-    )
+    run_continued = _continue_run(_universe_dir_for(target_universe), result["resume"])
     return json.dumps({
         "status": "rejected",
-        "projection": projection,
+        "projection": result["projection"],
         "github_call": call.to_dict(),
-        "resume": resume,
+        "resume": result["resume"],
+        "run_continued": run_continued,
         "note": (
             "Reject recorded a REQUEST_CHANGES review + a terminal workflow "
             "outcome; the suspended run resumes to a terminal reject. GitHub has "

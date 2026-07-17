@@ -2595,6 +2595,41 @@ def _invoke_graph(
         if errors:
             output["external_write_errors"] = errors
 
+    # S4 / E3 (Codex r12 #1 + #5): a present node that opened + projected a PR
+    # for owner review installs a durable review CHECKPOINT and the run must NOT
+    # sail past it. The disposition of that checkpoint decides the run's status:
+    #   - failed:    a REQUIRED review checkpoint could not be persisted →
+    #                fail VISIBLY (Hard Rule 8); never complete past an
+    #                un-checkpointed gate.
+    #   - suspended: the checkpoint persisted → the canonical run stays
+    #                INTERRUPTED (awaiting the owner's decision), NOT completed;
+    #                the owner verb resumes it via ``continue_reviewed_run``.
+    #   - complete:  no review checkpoint → normal completion.
+    disposition, detail = _review_gate_disposition(external_write_evidence)
+    if disposition == "failed":
+        msg = (
+            "review checkpoint could not be persisted; refusing to complete a "
+            f"run past an un-checkpointed required review gate: {detail}"
+        )
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_FAILED, output=output, error=msg, finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_FAILED, output=output, error=msg,
+        )
+    if disposition == "suspended":
+        output["awaiting_owner_review"] = detail
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_INTERRUPTED, output=output, finished_at=_now(),
+            provider_used=provider_tracker["last"], model=provider_tracker["model"],
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_INTERRUPTED, output=output,
+            error="awaiting_owner_review",
+        )
+
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -2701,6 +2736,67 @@ def _collect_external_write_errors(
                     "error_kind": ev.get("error_kind") or "unknown",
                 })
     return errors
+
+
+def _review_gate_disposition(
+    evidence_map: dict[str, Any],
+) -> tuple[str, Any]:
+    """Decide how a run's review checkpoint disposes the run status (Codex r12
+    #1 / #5). Returns ``(disposition, detail)`` where disposition is one of
+    ``"complete"`` / ``"suspended"`` / ``"failed"``.
+
+    Reads the present node's github_pull_request evidence:
+    - ``review_queue_enqueue_error`` present ⇒ ``failed`` (a required review
+      checkpoint could not be persisted — the run must not complete past it).
+    - ``review_queue_run_suspended`` truthy ⇒ ``suspended`` (the run pauses
+      awaiting the owner's decision).
+    - otherwise ⇒ ``complete``.
+    """
+    suspended_detail: dict[str, Any] | None = None
+    for node_id, per_node in (evidence_map or {}).items():
+        if not isinstance(per_node, dict):
+            continue
+        for _sink, ev in per_node.items():
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("review_queue_enqueue_error"):
+                return "failed", ev.get("review_queue_enqueue_error")
+            if ev.get("review_queue_run_suspended"):
+                suspended_detail = {
+                    "node_id": node_id,
+                    "pr_number": ev.get("review_queue_pr_number"),
+                    "destination": ev.get("destination"),
+                }
+    if suspended_detail is not None:
+        return "suspended", suspended_detail
+    return "complete", None
+
+
+def continue_reviewed_run(
+    base_path: str | Path, *, run_id: str, decision: str,
+) -> dict[str, Any]:
+    """Runtime consumer that RESUMES an interrupted run once the owner has
+    decided (Codex r12 #1). The MCP owner verb calls this after
+    ``decide_and_resume`` records the decision + directive: it moves the
+    canonical run off its INTERRUPTED (awaiting-review) status to a real terminal
+    status driven by the decision — approve/reshape-scheduled → completed,
+    reject → completed-rejected. Only an INTERRUPTED run awaiting review
+    transitions; anything else is a no-op (returns ``applied=False``)."""
+    run = get_run(base_path, run_id)
+    if run is None:
+        return {"applied": False, "reason": "run_not_found"}
+    if run.get("status") != RUN_STATUS_INTERRUPTED:
+        return {"applied": False, "reason": f"run_not_awaiting_review:{run.get('status')}"}
+    output = dict(run.get("output") or {})
+    if "awaiting_owner_review" not in output:
+        return {"applied": False, "reason": "not_a_review_suspension"}
+    output["review_decision"] = decision
+    output.pop("awaiting_owner_review", None)
+    update_run_status(
+        base_path, run_id,
+        status=RUN_STATUS_COMPLETED, output=output, finished_at=_now(),
+    )
+    return {"applied": True, "run_id": run_id, "decision": decision}
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:

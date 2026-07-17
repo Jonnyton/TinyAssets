@@ -227,6 +227,9 @@ CREATE INDEX IF NOT EXISTS idx_review_suspensions_pr
 
 SUSPENSION_SUSPENDED = "suspended"
 SUSPENSION_RESUMED = "resumed"
+#: A prior suspension displaced because a newer run suspended on the same PR, or
+#: a re-push created a new generation. Terminal — never reopened by a retry.
+SUSPENSION_SUPERSEDED = "superseded"
 
 
 def initialize_review_queue_db(universe_dir: str | Path) -> Path:
@@ -859,16 +862,35 @@ def suspend_run_for_review(
     now: float | None = None,
 ) -> dict[str, Any]:
     """Record that ``run_id`` is SUSPENDED at the present node awaiting the
-    owner's review of ``destination#pr_number``. Idempotent per run: re-calling
-    (e.g. a re-push re-projects) refreshes the head + re-suspends. Raises on an
-    empty ``run_id``."""
+    owner's review of ``destination#pr_number``.
+
+    Idempotency + generation semantics (Codex r12 #4):
+
+    - A retry of the SAME run + SAME head NEVER reopens a RESUMED (terminal)
+      decision — the ``ON CONFLICT`` re-suspends only when the row is not yet
+      resumed OR the head genuinely changed (a re-push = a new generation).
+    - At most ONE active (``suspended``) suspension exists per PR: suspending a
+      new run on a PR SUPERSEDES any other run still suspended on it, so
+      resolving the PR can't strand an older suspended run.
+
+    Raises on an empty ``run_id``.
+    """
     rid = (run_id or "").strip()
     if not rid:
         raise ValueError("suspend_run_for_review requires a non-empty run_id")
     initialize_review_queue_db(universe_dir)
     ts = _now(now)
+    dest = (destination or "").strip()
+    head = (head_sha or "").strip()
     with _connect(universe_dir) as conn:
         with _write(conn):
+            # Supersede any OTHER run still suspended on this PR (one active max).
+            conn.execute(
+                "UPDATE review_suspensions SET status = ? "
+                "WHERE destination = ? AND pr_number = ? AND status = ? "
+                "AND run_id != ?",
+                (SUSPENSION_SUPERSEDED, dest, pr_number, SUSPENSION_SUSPENDED, rid),
+            )
             conn.execute(
                 """
                 INSERT INTO review_suspensions (
@@ -887,10 +909,12 @@ def suspend_run_for_review(
                     resume_directive = '',
                     suspended_at = excluded.suspended_at,
                     resumed_at = NULL
+                WHERE review_suspensions.status != 'resumed'
+                   OR review_suspensions.head_sha != excluded.head_sha
                 """,
                 (
-                    rid, universe_id, (destination or "").strip(), pr_number,
-                    branch_def_id, (head_sha or "").strip(), SUSPENSION_SUSPENDED, ts,
+                    rid, universe_id, dest, pr_number, branch_def_id, head,
+                    SUSPENSION_SUSPENDED, ts,
                 ),
             )
             row = conn.execute(
@@ -973,12 +997,102 @@ def resume_review_run(
     return _suspension_to_dict(row)
 
 
+def decide_and_resume(
+    universe_dir: str | Path,
+    *,
+    destination: str,
+    pr_number: int,
+    intent: str,
+    workflow_outcome: str,
+    decided_by: str,
+    expected_head_sha: str,
+    directive: dict[str, Any],
+    recorded_call: dict[str, Any] | None = None,
+    notes: str = "",
+    now: float | None = None,
+) -> dict[str, Any]:
+    """ATOMICALLY record the owner's decision on the projection AND resolve the
+    suspended run for the PR — in ONE transaction (Codex r12 #3), so the terminal
+    projection outcome and the resumed directive can never disagree (the
+    approve-then-reject split-brain window is closed).
+
+    Head-bound: ``expected_head_sha`` must match the projection's current head or
+    :class:`ReviewHeadChanged` is raised and NOTHING changes. Returns
+    ``{"projection": <dict|None>, "resume": <dict|None>}`` — ``projection`` is
+    None when the PR isn't projected; ``resume`` is None when no run is suspended
+    on it (fire-and-forget). Concurrency-safe: the whole decision runs under the
+    store's ``BEGIN IMMEDIATE`` write lock, so two decisions serialize and the
+    second sees the first's terminal projection.
+    """
+    if workflow_outcome not in VALID_WORKFLOW_OUTCOMES:
+        raise ValueError(f"invalid workflow_outcome {workflow_outcome!r}")
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    dest = (destination or "").strip()
+    want_head = (expected_head_sha or "").strip()
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            proj = conn.execute(
+                "SELECT * FROM pr_projection WHERE destination = ? AND pr_number = ?",
+                (dest, pr_number),
+            ).fetchone()
+            if proj is None:
+                return {"projection": None, "resume": None}
+            current_head = (proj["head_sha"] or "").strip()
+            if want_head != current_head:
+                raise ReviewHeadChanged(
+                    f"decision head {want_head[:8] or '(none)'} != current PR head "
+                    f"{current_head[:8] or '(none)'} on {dest}#{pr_number}"
+                )
+            conn.execute(
+                """
+                UPDATE pr_projection SET
+                    owner_intent = ?, workflow_outcome = ?, recorded_call = ?,
+                    notes = ?, decided_by = ?, decided_at = ?, updated_at = ?
+                WHERE destination = ? AND pr_number = ?
+                """,
+                (
+                    intent, workflow_outcome,
+                    json.dumps(recorded_call) if recorded_call else "",
+                    notes, decided_by, ts, ts, dest, pr_number,
+                ),
+            )
+            updated_proj = conn.execute(
+                "SELECT * FROM pr_projection WHERE destination = ? AND pr_number = ?",
+                (dest, pr_number),
+            ).fetchone()
+            # Resolve the single active suspension on this PR IN THE SAME TXN.
+            susp = conn.execute(
+                "SELECT run_id FROM review_suspensions "
+                "WHERE destination = ? AND pr_number = ? AND status = ? "
+                "ORDER BY suspended_at DESC LIMIT 1",
+                (dest, pr_number, SUSPENSION_SUSPENDED),
+            ).fetchone()
+            resume: dict[str, Any] | None = None
+            if susp is not None:
+                conn.execute(
+                    "UPDATE review_suspensions SET status = ?, resume_decision = ?, "
+                    "resume_directive = ?, resumed_at = ? WHERE run_id = ?",
+                    (
+                        SUSPENSION_RESUMED, intent,
+                        json.dumps(directive) if directive else "", ts,
+                        susp["run_id"],
+                    ),
+                )
+                resume = {
+                    "run_id": susp["run_id"], "status": SUSPENSION_RESUMED,
+                    "decision": intent, "directive": directive,
+                }
+    return {"projection": _projection_to_dict(updated_proj), "resume": resume}
+
+
 __all__ = [
     "VERIFY_PASS",
     "VERIFY_FAIL",
     "VERIFY_UNKNOWN",
     "SUSPENSION_SUSPENDED",
     "SUSPENSION_RESUMED",
+    "SUSPENSION_SUPERSEDED",
     "WORKFLOW_OPEN",
     "WORKFLOW_APPROVED",
     "WORKFLOW_RESHAPED",
@@ -1011,4 +1125,5 @@ __all__ = [
     "list_suspended_runs",
     "suspension_for_pr",
     "resume_review_run",
+    "decide_and_resume",
 ]

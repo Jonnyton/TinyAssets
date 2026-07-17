@@ -225,14 +225,28 @@ class HttpGitHubApi:
         assembled: list[dict[str, Any]] = []
         for rid, slot in by_ruleset.items():
             enforcement = "active"
-            bypass_actors: list[dict[str, Any]] = []
+            # Codex r12 #2: NEVER default bypass_actors to []. GitHub omits the
+            # field unless the caller has ruleset-WRITE, so "not visible" must
+            # not read as "confirmed empty". We only set slot['bypass_actors']
+            # when the ruleset-detail response ACTUALLY carries it (and is a
+            # list); otherwise the key is absent and verify_review_gate_active
+            # fails closed on "bypass_actors_visible". A 403/failed/malformed
+            # detail response also leaves the key absent.
             if rid is not None:
-                rs_status, ruleset = self._get(f"/repos/{destination}/rulesets/{rid}")
+                try:
+                    rs_status, ruleset = self._get(
+                        f"/repos/{destination}/rulesets/{rid}"
+                    )
+                except GitHubHttpError:
+                    # A failed detail GET (e.g. 5xx exhausted) ⇒ bypass config is
+                    # NOT verifiable ⇒ leave the key absent (fail closed).
+                    rs_status, ruleset = 599, {}
                 if rs_status < 400 and isinstance(ruleset, dict):
                     enforcement = ruleset.get("enforcement", "active")
-                    bypass_actors = ruleset.get("bypass_actors") or []
+                    raw = ruleset.get("bypass_actors")
+                    if isinstance(raw, list):
+                        slot["bypass_actors"] = raw
             slot["enforcement"] = enforcement
-            slot["bypass_actors"] = bypass_actors
             assembled.append(slot)
         return assembled
 

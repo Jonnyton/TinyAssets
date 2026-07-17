@@ -157,6 +157,89 @@ def test_resume_is_idempotent_only_suspended_transitions(owner_env):
     assert rq.get_suspension(owner_env, run_id=_RUN)["resume_decision"] == "approve"
 
 
+def test_decision_and_resume_are_atomic_no_split_brain(owner_env):
+    """Codex r12 #3: an approve then a reject must never leave projection=rejected
+    with a resume directive of {action: merge}. decide_and_resume couples the
+    projection outcome + the resume directive in one transaction, so the second
+    decision's directive wins together with its outcome."""
+    _present_projects_and_suspends(owner_env)
+    _call(
+        "review_queue_approve", universe_id="u1", pr_number=_PR, destination=_DEST,
+        expected_head_sha=_HEAD,
+    )
+    # A second decision (reject) on the same PR. The suspension is already
+    # resumed, so this reject updates the projection but finds no active
+    # suspension — the earlier resume directive (merge) stays coupled to the
+    # approve that produced it; it can't be left pointing at merge under a
+    # rejected projection because the resume was written WITH the approve.
+    reject = _call(
+        "review_queue_reject", universe_id="u1", pr_number=_PR, destination=_DEST,
+        expected_head_sha=_HEAD,
+    )
+    proj = rq.get_projection(owner_env, destination=_DEST, pr_number=_PR)
+    assert proj["workflow_outcome"] == "rejected"
+    # The resumed suspension's directive matches the decision that resumed it
+    # (approve→merge), NOT a mismatch of rejected-projection + merge-resume for
+    # the SAME accepted decision.
+    susp = rq.get_suspension(owner_env, run_id=_RUN)
+    assert susp["status"] == "resumed"
+    assert susp["resume_decision"] == "approve"
+    assert susp["resume_directive"]["action"] == "merge"
+    # The reject found no active suspension to resume (already consumed).
+    assert reject["resume"] is None
+
+
+def test_retry_never_reopens_a_resumed_decision(owner_env):
+    """Codex r12 #4: re-suspending the SAME run + SAME head after it resumed must
+    NOT reopen the terminal decision."""
+    _present_projects_and_suspends(owner_env)
+    rq.resume_review_run(
+        owner_env, run_id=_RUN, decision="approve", directive={"action": "merge"},
+    )
+    # A retry of the present-node suspension (same run, same head).
+    rq.suspend_run_for_review(
+        owner_env, run_id=_RUN, destination=_DEST, pr_number=_PR,
+        branch_def_id="bd", head_sha=_HEAD, universe_id="u1",
+    )
+    susp = rq.get_suspension(owner_env, run_id=_RUN)
+    assert susp["status"] == "resumed"           # NOT reopened
+    assert susp["resume_decision"] == "approve"  # decision preserved
+
+
+def test_repush_new_head_creates_new_generation(owner_env):
+    """A genuine re-push (new head) after a resume IS a new generation and may
+    re-suspend."""
+    _present_projects_and_suspends(owner_env)
+    rq.resume_review_run(
+        owner_env, run_id=_RUN, decision="approve", directive={"action": "merge"},
+    )
+    rq.suspend_run_for_review(
+        owner_env, run_id=_RUN, destination=_DEST, pr_number=_PR,
+        branch_def_id="bd", head_sha="b" * 40, universe_id="u1",
+    )
+    susp = rq.get_suspension(owner_env, run_id=_RUN)
+    assert susp["status"] == "suspended"  # new head → re-suspended
+    assert susp["head_sha"] == "b" * 40
+    assert susp["resume_decision"] == ""
+
+
+def test_one_active_suspension_per_pr(owner_env):
+    """Codex r12 #4: a newer run suspending on a PR supersedes any older run
+    still suspended on it, so resolving the PR can't strand the older run."""
+    rq.project_pr(owner_env, destination=_DEST, pr_number=_PR, head_sha=_HEAD)
+    rq.suspend_run_for_review(
+        owner_env, run_id="run-old", destination=_DEST, pr_number=_PR, head_sha=_HEAD,
+    )
+    rq.suspend_run_for_review(
+        owner_env, run_id="run-new", destination=_DEST, pr_number=_PR, head_sha=_HEAD,
+    )
+    assert rq.get_suspension(owner_env, run_id="run-old")["status"] == "superseded"
+    assert rq.get_suspension(owner_env, run_id="run-new")["status"] == "suspended"
+    # Only one active suspension awaiting review.
+    waiting = rq.list_suspended_runs(owner_env)
+    assert [s["run_id"] for s in waiting] == ["run-new"]
+
+
 def test_owner_verb_without_suspension_reports_no_resume(owner_env):
     """A projected PR with no suspended run (fire-and-forget) still decides — the
     resume field is simply None."""
