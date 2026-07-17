@@ -1,0 +1,206 @@
+"""Multiprocess concurrency + single-refresh-race proofs for the platform vault.
+
+This closes the known concurrent-refresh CVE class (Better Auth CVE-2026-53517;
+rotating-refresh providers revoke the whole token family on replay). Two proofs:
+
+* **50+ concurrent put/get/delete** across real OS processes against one WAL DB —
+  proves the store survives simultaneous writers with no corruption or lost
+  fail-closed semantics.
+* **single-refresh race** — many workers race to refresh ONE ref; the DB-backed
+  exclusive per-ref lease + re-check-inside-lock means exactly ONE refresh runs
+  and the losers skip gracefully (no error, no double token-burn).
+
+Workers are module-level so they pickle under Windows spawn.
+"""
+
+from __future__ import annotations
+
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+
+import nacl.bindings as sodium
+
+from tinyassets.credentials import (
+    CredentialUnavailable,
+    Custody,
+    InMemoryKeyProvider,
+    PlatformVaultBackend,
+    SecretBinding,
+    SecretBytes,
+    SecretKind,
+    SecretScope,
+    VaultErrorCode,
+    VaultStore,
+)
+
+SCOPE = SecretScope(
+    founder_id="founder:cc",
+    universe_id="u-conc",
+    provider="github",
+    destination="octo/repo",
+    purpose="external_write",
+)
+STORE_ID = "platform:default"
+
+
+def _build(db_path: str, kek_hex: str, key_id: str) -> PlatformVaultBackend:
+    kp = InMemoryKeyProvider({key_id: bytes.fromhex(kek_hex)}, key_id)
+    return PlatformVaultBackend(kp, store_id=STORE_ID, db_path=db_path)
+
+
+def _store() -> VaultStore:
+    return VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id=STORE_ID)
+
+
+# ---------------------------------------------------------------------------
+# Worker 1: full put/get/delete lifecycle (own ref, no logical conflict)
+# ---------------------------------------------------------------------------
+
+
+def _lifecycle_worker(args: tuple[str, str, str, int]) -> str:
+    db_path, kek_hex, key_id, n = args
+    try:
+        be = _build(db_path, kek_hex, key_id)
+        secret = f"secret-{n}-{os.getpid()}".encode()
+        d = be.put(_store(), SCOPE, SecretKind.API_KEY, SecretBytes(secret))
+        with be.get(d.binding, SCOPE) as lease:
+            if lease.reveal() != secret:
+                return f"mismatch:{n}"
+        be.delete(d.binding, SCOPE)
+        try:
+            be.get(d.binding, SCOPE)
+        except CredentialUnavailable as exc:
+            if exc.code != VaultErrorCode.NOT_FOUND:
+                return f"bad-code:{exc.code}"
+        else:
+            return f"not-deleted:{n}"
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"error:{type(exc).__name__}:{exc}"
+
+
+def test_50plus_concurrent_put_get_delete(tmp_path):
+    db_path = str(tmp_path / "vault.db")
+    key_id = "k1"
+    kek_hex = sodium.randombytes(32).hex()
+    # Bootstrap schema + attestation once in the parent to avoid a first-op race
+    # that is separately tested; here we stress steady-state concurrency.
+    _build(db_path, kek_hex, key_id).attest()
+
+    tasks = 64  # > 50 concurrent operations
+    workers = min(16, (os.cpu_count() or 4) * 2)
+    args = [(db_path, kek_hex, key_id, i) for i in range(tasks)]
+    results: list[str] = []
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_lifecycle_worker, a) for a in args]
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    assert results.count("ok") == tasks, f"failures: {[r for r in results if r != 'ok']}"
+
+
+# ---------------------------------------------------------------------------
+# Worker 2: concurrent bare CAS — exactly one writer wins version 1 -> 2
+# ---------------------------------------------------------------------------
+
+
+def _cas_worker(args: tuple[str, str, str, str, int]) -> str:
+    db_path, kek_hex, key_id, ref, n = args
+    be = _build(db_path, kek_hex, key_id)
+    try:
+        be.put(
+            _store(), SCOPE, SecretKind.API_KEY, SecretBytes(f"cas-{n}".encode()),
+            replace=ref, expected_version=1,
+        )
+        return "won"
+    except CredentialUnavailable as exc:
+        return f"conflict:{exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return f"error:{type(exc).__name__}"
+
+
+def test_concurrent_cas_exactly_one_winner(tmp_path):
+    db_path = str(tmp_path / "vault.db")
+    key_id = "k1"
+    kek_hex = sodium.randombytes(32).hex()
+    be = _build(db_path, kek_hex, key_id)
+    be.attest()
+    d = be.put(_store(), SCOPE, SecretKind.API_KEY, SecretBytes(b"initial"))
+    ref = d.binding.ref
+
+    racers = 12
+    args = [(db_path, kek_hex, key_id, ref, i) for i in range(racers)]
+    results: list[str] = []
+    with ProcessPoolExecutor(max_workers=racers) as pool:
+        for fut in as_completed([pool.submit(_cas_worker, a) for a in args]):
+            results.append(fut.result())
+
+    assert results.count("won") == 1, f"results: {results}"
+    assert all(r.startswith("conflict:") for r in results if r != "won"), results
+    # final state is version 2 (exactly one CAS applied)
+    with be.get(d.binding, SCOPE) as lease:
+        assert lease.version == 2
+
+
+# ---------------------------------------------------------------------------
+# Worker 3: single-refresh race — lease + re-check means exactly ONE refresh
+# ---------------------------------------------------------------------------
+
+
+def _refresh_worker(args: tuple[str, str, str, str, str, int]) -> str:
+    db_path, kek_hex, key_id, ref, marker_dir, n = args
+    be = _build(db_path, kek_hex, key_id)
+    binding = SecretBinding(
+        ref=ref, kind=SecretKind.GITHUB_APP_USER_TOKEN, scope=SCOPE, store=_store()
+    )
+    try:
+        with be.refresh_lease(ref, f"worker-{n}", wait=60.0):
+            # re-check the stored version INSIDE the lock
+            with be.get(binding, SCOPE) as lease:
+                current = lease.version
+            if current == 1:
+                # this is the one-time refresh exchange
+                be.put(
+                    _store(), SCOPE, SecretKind.GITHUB_APP_USER_TOKEN,
+                    SecretBytes(f"refreshed-by-{n}".encode()),
+                    replace=ref, expected_version=current,
+                )
+                Path(marker_dir, f"refresh-{n}.marker").write_text("1", encoding="utf-8")
+                return "refreshed"
+            return "skipped"
+    except Exception as exc:  # noqa: BLE001
+        return f"error:{type(exc).__name__}:{exc}"
+
+
+def test_single_refresh_race_runs_exactly_once(tmp_path):
+    db_path = str(tmp_path / "vault.db")
+    key_id = "k1"
+    kek_hex = sodium.randombytes(32).hex()
+    marker_dir = tmp_path / "markers"
+    marker_dir.mkdir()
+
+    be = _build(db_path, kek_hex, key_id)
+    be.attest()
+    d = be.put(
+        _store(), SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"initial-token")
+    )
+    ref = d.binding.ref
+
+    racers = 8
+    args = [(db_path, kek_hex, key_id, ref, str(marker_dir), i) for i in range(racers)]
+    results: list[str] = []
+    with ProcessPoolExecutor(max_workers=racers) as pool:
+        for fut in as_completed([pool.submit(_refresh_worker, a) for a in args]):
+            results.append(fut.result())
+
+    errors = [r for r in results if r.startswith("error:")]
+    assert not errors, f"refresh workers errored: {errors}"
+    # exactly ONE refresh ran; the rest skipped gracefully (no VERSION_CONFLICT)
+    assert results.count("refreshed") == 1, f"results: {results}"
+    assert results.count("skipped") == racers - 1, f"results: {results}"
+    assert len(list(marker_dir.glob("*.marker"))) == 1
+    # the refreshed value is at version 2 — no double burn
+    with be.get(d.binding, SCOPE) as lease:
+        assert lease.version == 2
+        assert lease.reveal().startswith(b"refreshed-by-")
