@@ -530,7 +530,12 @@ def test_content_drift_is_repaired_not_present(data_dir):
         get_branch_definition(data_dir, branch_def_id=bdid)
     )
     branch.node_defs[0].prompt_template = "CORRUPTED SAME-SIZED REFERENCE"
-    save_branch_definition(data_dir, branch_def=branch.to_dict())
+    # Post-r17 the public API can't write the reserved id; simulate the drift
+    # via the internal seeder path (an interrupted/buggy overwrite) so we're
+    # testing the REPAIR, not the write guard (covered separately).
+    save_branch_definition(
+        data_dir, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
 
     results = seed_reference_designs(data_dir)
     assert tag in results["seeded"]              # repaired
@@ -543,6 +548,109 @@ def test_content_drift_is_repaired_not_present(data_dir):
     assert len(rows) == 1                        # repaired in place, no duplicate
     listed = json.loads(_ext_branch_list({"scope": "published"}))
     assert bdid in {b["branch_def_id"] for b in listed["branches"]}
+
+
+def test_reserved_seed_central_guard_refuses_every_public_writer(data_dir):
+    # Codex r17 #3 (CLASS fix): the reserved-seed guard is CENTRALIZED at the
+    # storage choke point (save/update/delete_branch_definition), so EVERY public
+    # writer — current and future — is refused BY CONSTRUCTION, not by a
+    # per-handler guard. update_branch_definition is exactly the funnel market
+    # goal-bind used to bypass the old MCP-layer guard.
+    from tinyassets.branch_designs import RESERVED_SEED_AUTHOR, _reference_branch_id
+    from tinyassets.daemon_server import (
+        ReservedSeedMutationError,
+        delete_branch_definition,
+        get_branch_definition,
+        save_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    seed_row = get_branch_definition(data_dir, branch_def_id=fixed_id)
+
+    # goal-bind (the market.py reproduction) funnels through here — REFUSED.
+    with pytest.raises(ReservedSeedMutationError):
+        update_branch_definition(
+            data_dir, branch_def_id=fixed_id, updates={"goal_id": "goal_x"},
+        )
+    # any protected-field mutation — REFUSED.
+    with pytest.raises(ReservedSeedMutationError):
+        update_branch_definition(
+            data_dir, branch_def_id=fixed_id, updates={"author": "attacker"},
+        )
+    # a full overwrite / forgery of the reserved id — REFUSED.
+    with pytest.raises(ReservedSeedMutationError):
+        save_branch_definition(data_dir, branch_def=dict(seed_row, author="x"))
+    # delete — REFUSED (undeletable).
+    with pytest.raises(ReservedSeedMutationError):
+        delete_branch_definition(data_dir, branch_def_id=fixed_id)
+
+    # The seed is untouched: still reserved author, still no goal binding.
+    after = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert (after.get("author") or "") == RESERVED_SEED_AUTHOR
+    assert not (after.get("goal_id") or "")
+
+
+def test_reserved_seed_metadata_drift_reads_unhealthy_and_self_heals(data_dir):
+    # Codex r17 #3: health must detect forbidden METADATA drift — a reserved seed
+    # bound to a Goal (or with an altered author) — not only a content-hash
+    # mismatch. Simulate a goal binding that slipped in via a direct/internal
+    # path, then assert live health flags it UNHEALTHY and the reconcile repairs
+    # it (clears the goal).
+    from tinyassets.branch_designs import (
+        _reference_branch_id,
+        reference_designs_live_health,
+    )
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    assert reference_designs_live_health(data_dir)["healthy"]
+
+    # Force a goal binding via the internal path (public writers are refused).
+    update_branch_definition(
+        data_dir, branch_def_id=fixed_id, updates={"goal_id": "sneaky"},
+        internal_seed_write=True,
+    )
+    row = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert (row.get("goal_id") or "") == "sneaky"
+
+    # Content unchanged, yet health must read UNHEALTHY on the metadata drift.
+    health = reference_designs_live_health(data_dir)
+    assert not health["healthy"], health
+    assert "patch_loop_reference" in health["unhealthy"], health
+
+    # Reconcile REPAIRS it — clears the goal, health green again.
+    seed_reference_designs(data_dir)
+    healed = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert not (healed.get("goal_id") or ""), healed
+    assert reference_designs_live_health(data_dir)["healthy"]
+
+
+def test_reserved_seed_stats_bumps_still_allowed(data_dir):
+    # The reference is MEANT to be forked/run; a stats-only update (fork_count /
+    # run_count bump — a legitimate side effect of USING it) must NOT be refused
+    # by the central guard.
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    row = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    stats = dict(row.get("stats") or {})
+    stats["fork_count"] = stats.get("fork_count", 0) + 1
+    update_branch_definition(
+        data_dir, branch_def_id=fixed_id, updates={"stats": stats},
+    )
+    after = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert (after.get("stats") or {}).get("fork_count") == stats["fork_count"]
 
 
 def test_publish_failure_after_overwrite_leaves_no_duplicate(data_dir, monkeypatch):
@@ -568,7 +676,9 @@ def test_publish_failure_after_overwrite_leaves_no_duplicate(data_dir, monkeypat
         get_branch_definition(data_dir, branch_def_id=bdid)
     )
     branch.node_defs[0].prompt_template = "CORRUPTED SAME-SIZED REFERENCE"
-    save_branch_definition(data_dir, branch_def=branch.to_dict())
+    save_branch_definition(
+        data_dir, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
 
     # Make publish blow up AFTER the in-place overwrite step.
     def _boom(*a, **k):

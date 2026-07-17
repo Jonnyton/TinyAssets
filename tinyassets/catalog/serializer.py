@@ -52,6 +52,7 @@ companion Branch payload keeps the ordered graph metadata
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 from tinyassets.branches import (
@@ -206,86 +207,73 @@ def branch_from_yaml_payload(
     return branch
 
 
+# Codex r17 #1 (CLASS fix): the node YAML round-trip must NOT silently drop any
+# execution/security/routing field. The old hand-maintained allow-list dropped
+# ``requires_sandbox`` + ``effects`` (a round-trip disarmed every sandboxed repo
+# node and removed both GitHub effect declarations) — the same class as the r16
+# dropped-``fallback`` bug. These functions now drive off the NodeDefinition
+# dataclass itself, so EVERY current AND future field round-trips by
+# construction. ``test_node_yaml_round_trip_is_field_for_field_identical`` +
+# ``test_reference_artifact_survives_full_yaml_round_trip`` close the class.
+
+# Node dataclass defaults, by field name — a value equal to its default is
+# omitted from the YAML to keep files small (from_dict restores it).
+_NODE_FIELD_DEFAULTS: dict[str, Any] = {
+    f.name: (
+        f.default
+        if f.default is not dataclasses.MISSING
+        else f.default_factory()  # type: ignore[misc]
+    )
+    for f in dataclasses.fields(NodeDefinition)
+    if f.default is not dataclasses.MISSING
+    or f.default_factory is not dataclasses.MISSING  # type: ignore[misc]
+}
+
+# Fields ALWAYS written even at their default: their intent must be explicit in
+# the file and a future default-flip must never silently change execution or
+# security behavior. requires_sandbox/effects are the r17 #1 regression fields;
+# timeout_seconds is the #61 documented-intent contract (test-asserted).
+_NODE_ALWAYS_SERIALIZE = frozenset({
+    "timeout_seconds",
+    "requires_sandbox",
+    "effects",
+    "approved",
+    "enabled",
+})
+
+
 def node_to_yaml_payload(node: NodeDefinition) -> dict[str, Any]:
-    """Serialize a NodeDefinition. Omits defaults to keep files small."""
+    """Serialize a NodeDefinition round-trip-COMPLETE but compact.
+
+    Drives off the dataclass fields so no execution/security/routing field can
+    silently drop (Codex r17 #1). Omits fields equal to their dataclass default
+    to keep files small, EXCEPT ``_NODE_ALWAYS_SERIALIZE`` which stay explicit.
+    ``id`` is the YAML key for ``node_id``.
+    """
+    full = node.to_dict()  # asdict — every current + future field
     payload: dict[str, Any] = {
-        "id": node.node_id,
-        "display_name": node.display_name,
-        "phase": node.phase,
+        "id": full.pop("node_id", node.node_id),
+        "display_name": full.pop("display_name", ""),
+        "phase": full.pop("phase", "custom"),
     }
-    if node.description:
-        payload["description"] = node.description
-    if node.prompt_template:
-        payload["prompt_template"] = node.prompt_template
-    if node.source_code:
-        payload["source_code"] = node.source_code
-    if node.model_hint:
-        payload["model_hint"] = node.model_hint
-    if node.input_keys:
-        payload["input_keys"] = list(node.input_keys)
-    if node.output_keys:
-        payload["output_keys"] = list(node.output_keys)
-    if node.strict_input_isolation is False:
-        payload["strict_input_isolation"] = False
-    if node.tools_allowed:
-        payload["tools_allowed"] = list(node.tools_allowed)
-    if node.dependencies:
-        payload["dependencies"] = list(node.dependencies)
-    # timeout_seconds always written — #61 raised the default, so an
-    # explicit value in the YAML documents intent.
-    payload["timeout_seconds"] = node.timeout_seconds
-    if node.retry_policy != {"max_retries": 0, "backoff_seconds": 1.0}:
-        payload["retry_policy"] = dict(node.retry_policy)
-    if node.evaluation_criteria:
-        payload["evaluation_criteria"] = list(node.evaluation_criteria)
-    payload["approved"] = node.approved
-    payload["enabled"] = node.enabled
-    if node.author and node.author != "anonymous":
-        payload["author"] = node.author
-    if node.registered_at:
-        payload["registered_at"] = node.registered_at
+    for key, value in full.items():
+        if key in _NODE_ALWAYS_SERIALIZE or value != _NODE_FIELD_DEFAULTS.get(key):
+            payload[key] = value
     return payload
 
 
 def node_from_yaml_payload(payload: dict[str, Any]) -> NodeDefinition:
-    # Note: input_keys/output_keys are passed through as-is (with a
-    # None→[] guard) rather than wrapped in `list(...)`. A bare-string
-    # value like `input_keys: framed_question` would char-iterate under
-    # `list(...)` into ['f','r','a',...] — silent corruption that
-    # bypasses NodeDefinition's read-side validator (Task #12). With
-    # pass-through, the str reaches `__post_init__` and gets rejected
-    # by `NodeDefinitionValidationError`.
-    return NodeDefinition(
-        node_id=payload.get("id", ""),
-        display_name=payload.get("display_name", ""),
-        description=payload.get("description", ""),
-        phase=payload.get("phase", "custom"),
-        input_keys=payload.get("input_keys") or [],
-        output_keys=payload.get("output_keys") or [],
-        source_code=payload.get("source_code", ""),
-        prompt_template=payload.get("prompt_template", ""),
-        strict_input_isolation=bool(
-            payload.get("strict_input_isolation", True)
-        ),
-        model_hint=payload.get("model_hint", ""),
-        tools_allowed=list(payload.get("tools_allowed", []) or []),
-        dependencies=list(payload.get("dependencies", []) or []),
-        timeout_seconds=float(
-            payload.get("timeout_seconds", 300.0) or 300.0
-        ),
-        retry_policy=dict(
-            payload.get("retry_policy") or {
-                "max_retries": 0, "backoff_seconds": 1.0,
-            }
-        ),
-        evaluation_criteria=list(
-            payload.get("evaluation_criteria", []) or []
-        ),
-        author=payload.get("author", "anonymous"),
-        registered_at=payload.get("registered_at", ""),
-        enabled=bool(payload.get("enabled", True)),
-        approved=bool(payload.get("approved", False)),
-    )
+    """Round-trip counterpart. Maps ``id`` -> ``node_id`` and defers to
+    ``NodeDefinition.from_dict`` (field-filtered) so every field the payload
+    carries is restored and unknown keys are ignored. A ``null`` value means
+    "use the dataclass default" (dropped before construction). input_keys /
+    output_keys are NOT wrapped in ``list(...)``: a bare string like
+    ``input_keys: framed_question`` reaches ``__post_init__`` and is rejected by
+    ``NodeDefinitionValidationError`` instead of char-iterating (Task #12).
+    """
+    data = {k: v for k, v in payload.items() if v is not None}
+    data["node_id"] = data.pop("id", "") or data.get("node_id", "")
+    return NodeDefinition.from_dict(data)
 
 
 def goal_to_yaml_payload(goal: dict[str, Any]) -> dict[str, Any]:

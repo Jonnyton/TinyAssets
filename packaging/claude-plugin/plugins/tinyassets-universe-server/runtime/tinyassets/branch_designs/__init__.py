@@ -135,6 +135,40 @@ def _sanitize_reserved_author(author: str | None) -> str:
     return "" if author.strip() == RESERVED_SEED_AUTHOR else author
 
 
+_RESERVED_SEED_IDS_CACHE: set[str] | None = None
+
+
+def reserved_seed_ids() -> set[str]:
+    """The deterministic reserved branch_def_ids of ALL packaged reference
+    designs. Content-independent + forgery-immune (``_reference_branch_id`` is
+    server-assigned), so it identifies the genuine seeds regardless of stored
+    author/tags. Cached — the packaged designs don't change at runtime; a load
+    failure returns an empty set WITHOUT caching so a later call retries (a
+    broken package must not permanently disable the write guard)."""
+    global _RESERVED_SEED_IDS_CACHE
+    if _RESERVED_SEED_IDS_CACHE is not None:
+        return _RESERVED_SEED_IDS_CACHE
+    try:
+        artifacts = load_design_artifacts()
+    except Exception:  # noqa: BLE001 — broken package; retry next call
+        logger.exception("reserved_seed_ids: load_design_artifacts failed")
+        return set()
+    ids = {
+        _reference_branch_id(a.get("design_id", ""), int(a.get("design_version", 1) or 1))
+        for a in artifacts
+        if a.get("design_id")
+    }
+    _RESERVED_SEED_IDS_CACHE = ids
+    return ids
+
+
+def is_reserved_seed_id(branch_def_id: str) -> bool:
+    """True if ``branch_def_id`` is the reserved id of a packaged reference
+    design. The single source of truth the storage-layer write guard uses to
+    protect the seed against EVERY public writer by construction (Codex r17 #3)."""
+    return bool(branch_def_id) and branch_def_id in reserved_seed_ids()
+
+
 @contextmanager
 def _pinned_data_dir(base_path: str | Path) -> Iterator[None]:
     """Pin ``TINYASSETS_DATA_DIR`` to ``base_path`` for the duration of the block.
@@ -238,7 +272,10 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
         get_branch_definition(base_path, branch_def_id=branch_def_id)
     )
     branch.published = True
-    saved = save_branch_definition(base_path, branch_def=branch.to_dict())
+    # Seeder-owned write to the reserved id (Codex r17 #3 central guard).
+    saved = save_branch_definition(
+        base_path, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
     version = publish_branch_version(
         base_path, saved, publisher="reference-designs",
         notes=f"reference design seed {tag}",
@@ -378,6 +415,14 @@ def _reference_row_is_healthy(
         return False
     if not full.get("published"):
         return False
+    # Forbidden METADATA drift (Codex r17 #3): the reserved reference is a
+    # goal-AGNOSTIC commons Branch owned by the reserved author. A goal binding
+    # (the market goal-bind reproduction) or a changed author is drift even when
+    # the node CONTENT still matches the authoritative fingerprint. Read
+    # UNHEALTHY so live-health surfaces it AND the reconcile repairs it
+    # (re-overwrites with an empty goal + reserved author).
+    if (full.get("goal_id") or "") or (full.get("author") or "") != RESERVED_SEED_AUTHOR:
+        return False
     versions = list_branch_versions(base_path, branch_def_id, limit=200)
     return any(
         (v.status or "active") == "active" and v.content_hash == authoritative_hash
@@ -400,7 +445,12 @@ def _overwrite_reference_content(
     branch.branch_def_id = target_id
     branch.author = RESERVED_SEED_AUTHOR
     branch.published = True
-    save_branch_definition(base_path, branch_def=branch.to_dict())
+    # The seeder is the ONLY sanctioned writer of the reserved id; the storage
+    # choke-point guard (_guard_reserved_seed_write) refuses every public writer
+    # (Codex r17 #3). internal_seed_write=True is the admin recovery route.
+    save_branch_definition(
+        base_path, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
 
 
 def _get_branch_or_none(base_path: str | Path, branch_def_id: str) -> dict | None:

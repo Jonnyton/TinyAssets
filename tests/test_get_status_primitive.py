@@ -76,9 +76,11 @@ def test_get_status_reference_designs_health_is_live_not_boot_cached(tmp_path, m
     assert rd["unhealthy"] == []
     assert rd["last_seed"]["seeded"] == ["design:patch_loop_reference@v1"]
 
-    # Delete the authoritative row — the boot cache is now STALE.
+    # Delete the authoritative row — the boot cache is now STALE. Post-r17 the
+    # public API can't delete a reserved seed; internal_seed_write=True simulates
+    # an out-of-band loss (direct SQL / admin) that live health must still catch.
     fixed_id = _reference_branch_id("patch_loop_reference", 1)
-    delete_branch_definition(base, branch_def_id=fixed_id)
+    delete_branch_definition(base, branch_def_id=fixed_id, internal_seed_write=True)
 
     rd2 = json.loads(get_status())["reference_designs"]
     assert rd2["healthy"] is False, rd2                    # LIVE, not cached

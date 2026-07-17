@@ -231,6 +231,47 @@ def test_conditional_fallback_survives_yaml_round_trip_and_routes_safe():
     assert "merge" not in visited, visited
 
 
+def test_reference_artifact_survives_full_yaml_round_trip():
+    # Codex r17 #1 (CLASS fix): the YAML round-trip must preserve the FULL node
+    # spec — every execution/security/routing field — not a hand-picked subset.
+    # The old allow-list dropped requires_sandbox + effects, so a round-trip
+    # DISARMED every sandboxed repo node and REMOVED both GitHub effect
+    # declarations. Serialize the real reference -> deserialize -> assert
+    # FIELD-FOR-FIELD identical. This closes the whole class: a future
+    # NodeDefinition field round-trips by construction (asdict/from_dict) and
+    # this test trips if anyone re-introduces a lossy allow-list.
+    from tinyassets.catalog.serializer import (
+        branch_from_yaml_payload,
+        branch_to_yaml_payload,
+    )
+
+    original = _reference_branch()
+    payload, _nodes = branch_to_yaml_payload(
+        original, branch_slug="patch-loop-ref", externalize_nodes=False,
+    )
+    reloaded = branch_from_yaml_payload(payload)
+
+    # Every node, every field.
+    orig_nodes = {n.node_id: n.to_dict() for n in original.node_defs}
+    reloaded_nodes = {n.node_id: n.to_dict() for n in reloaded.node_defs}
+    assert reloaded_nodes == orig_nodes
+
+    # Belt-and-suspenders on the exact fields r17 caught dropping — the sandbox
+    # gate and the effect declarations are load-bearing security/effect state.
+    rs = {n.node_id: n.requires_sandbox for n in reloaded.node_defs}
+    assert rs["investigate"] is True
+    assert rs["draft_patch"] is True
+    assert rs["verify"] is True
+    eff = {n.node_id: list(n.effects) for n in reloaded.node_defs}
+    assert eff["present"] == ["github_pull_request"], eff
+    assert eff["merge"] == ["github_merge"], eff
+
+    # state_schema (incl. r15 is_binding markers) and edge fallbacks survive too.
+    assert original.state_schema == reloaded.state_schema
+    fb = {c.from_node: c.fallback for c in reloaded.conditional_edges}
+    assert fb["verify"] == "send_back" and fb["owner_gate"] == "reject", fb
+
+
 def test_sandbox_enforcement_composition_boundary_is_documented():
     # Codex r16 #1 (INTEGRATION-GATED marker, not a duplicate guard): S1's
     # requires_sandbox fail-closed refusal lives in the PROMPT-TEMPLATE adapter
