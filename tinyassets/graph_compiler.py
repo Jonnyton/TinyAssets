@@ -2657,30 +2657,114 @@ def _build_await_branch_run_node(
     return _node_fn
 
 
-def _build_isolated_executor_dispatch_node(
+def build_executor_execution_request(
+    node: NodeDefinition,
+    inputs: "dict[str, Any]",
+    executor_class: str,
+    *,
+    domain_id: str = "",
+    base_path: str | Path | None = None,
+    parent_run_id: str = "",
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
+) -> "dict[str, Any]":
+    """Build the SERIALIZABLE execution REQUEST (Codex S3 r17 #2) an isolated
+    executor consumes: pure DATA — node spec, inputs, capability class, domain,
+    and the run's serializable context (data-dir ref, lineage, enqueue context) —
+    NO callable. The isolated worker (Phase-2 runner) COMPILES + EXECUTES this
+    inside itself; the daemon holds no code that runs the adapter. This is the
+    runner's input contract.
+
+    Note: ``base_path`` here is the run's data-dir reference the worker resolves;
+    a real Phase-2 worker maps it to its OWN prepared/isolated workspace rather
+    than the daemon's host path.
+    """
+    import dataclasses as _dc
+
+    return {
+        "kind": "isolated_execution_request",
+        "capability_class": executor_class,
+        "domain_id": domain_id,
+        "node_spec": node.to_dict(),
+        "inputs": dict(inputs) if inputs else {},
+        "base_path": str(base_path) if base_path is not None else "",
+        "parent_run_id": parent_run_id,
+        "invocation_depth": int(invocation_depth),
+        "enqueue_context": (
+            _dc.asdict(enqueue_context) if enqueue_context is not None else None
+        ),
+    }
+
+
+def _build_executor_request_dispatch_node(
     node: NodeDefinition,
     executor: Any,
     executor_class: str,
     *,
-    in_worker_node_builder: Callable[[], Callable[[dict[str, Any]], dict[str, Any]]],
+    domain_id: str,
+    base_path: str | Path | None,
+    parent_run_id: str,
+    invocation_depth: int,
+    enqueue_context: "NodeEnqueueContext | None",
     event_sink: Callable[..., None] | None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """Phase-2 seam (Codex S3 r16 #1): DISPATCH a sandbox-required adapter to the
-    isolated executor (subprocess/container) — the adapter runs INSIDE the worker,
-    NEVER as ``fn(state)`` in the daemon. ``in_worker_node_builder`` builds the
-    adapter node that the worker would run; the daemon must NOT call it here (that
-    would be in-process execution). Unreachable in Phase 1
-    (:func:`resolve_isolated_executor` returns ``None``); implemented FAIL-LOUD so
-    that wiring an executor handle without a real subprocess/container dispatch can
-    never silently fall through to in-process execution. (Tests may monkeypatch
-    this to run the builder, explicitly simulating the isolated worker in-process.)
+    """DISPATCH a sandbox-required adapter to the isolated executor (Codex S3 r16
+    #1 + r17 #2) — DATA, NOT CODE. Returns a node fn that, at run time, builds a
+    SERIALIZABLE execution request (:func:`build_executor_execution_request`) and
+    hands it to ``executor.dispatch(request)``; the worker compiles + executes it
+    INSIDE the isolated environment and returns the result. The daemon possesses
+    NO callable that runs the adapter and NO gate that skips the executor. Only
+    reachable when a TYPED, healthy executor exists (Phase 2) — in Phase 1
+    ``resolve_isolated_executor`` returns ``None`` so the choke point refuses
+    before ever calling this.
     """
-    raise CompilerError(
-        f"Node '{node.node_id}': an isolated '{executor_class}' executor was "
-        "supplied but isolated-executor DISPATCH is not implemented (Phase-2 "
-        "seam). Refusing to run the adapter in the daemon process (fail loud) — "
-        "implement the subprocess/container dispatch before enabling the executor."
-    )
+    _nid = node.node_id
+    # DAEMON-side authorization (data check, NOT execution): a source_code node's
+    # host-approval provenance is validated here at COMPILE time so an unapproved
+    # source is refused before any dispatch — the daemon never trusts the worker
+    # to gate approval. (Inspecting the source hash is a data check; it does NOT
+    # run the adapter.)
+    if (node.source_code or "").strip():
+        _validate_source_code(node)
+
+    def _dispatch_fn(state: dict[str, Any]) -> dict[str, Any]:
+        request = build_executor_execution_request(
+            node, state, executor_class,
+            domain_id=domain_id, base_path=base_path,
+            parent_run_id=parent_run_id, invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
+        )
+        if event_sink is not None:
+            try:
+                event_sink(
+                    node_id=_nid, phase="starting",
+                    isolated_executor=executor_class,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception("event_sink raised in %s (starting)", _nid)
+        result = executor.dispatch(request)
+        if not isinstance(result, dict):
+            raise CompilerError(
+                f"Node '{_nid}': isolated executor '{executor_class}' returned "
+                f"{type(result).__name__}, expected a dict of state updates."
+            )
+        # Emit the terminal 'ran' event (matching every adapter) so the runner's
+        # node-status callback flips the node to 'ran'.
+        if event_sink is not None:
+            try:
+                event_sink(
+                    node_id=_nid, phase="ran",
+                    isolated_executor=executor_class, output=result,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception("event_sink raised in %s (ran)", _nid)
+        return result
+
+    return _dispatch_fn
 
 
 def _build_node(
@@ -2697,7 +2781,6 @@ def _build_node(
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     trusted: bool = False,
-    _skip_executor_gate: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2748,6 +2831,9 @@ def _build_node(
         effective_node_capability as _eff_cap,
     )
     from tinyassets.sandbox_policy import (
+        executor_satisfies as _executor_satisfies,
+    )
+    from tinyassets.sandbox_policy import (
         resolve_isolated_executor as _resolve_executor,
     )
     _node_eff_cap = _eff_cap(node, domain_id)
@@ -2770,55 +2856,35 @@ def _build_node(
                 "capability class; refusing an unclassified host-code adapter "
                 "(fail closed)"
             )
-        elif _skip_executor_gate:
-            # Re-entry FROM the isolated-executor dispatch (the worker context):
-            # the executor already vouched, so build the adapter here. The daemon
-            # NEVER reaches this branch on its own — only the dispatch node's
-            # in-worker builder sets it.
-            _refuse = False
         else:
-            # SECURITY (Codex S3 r16 #1): a sandbox-required adapter (source_exec /
-            # coding / repo_exec / repo_read) must be DISPATCHED to an ISOLATED
-            # EXECUTOR (subprocess/container) — NEVER invoked as fn(state) in the
-            # daemon. A readiness BOOLEAN is not a boundary: the gate requires a
-            # concrete executor HANDLE. In Phase 1 no executor exists, so this
-            # ALWAYS refuses (never falls through to the in-process adapter). Phase
-            # 2 returns a real handle and we route to it instead.
+            # SECURITY (Codex S3 r16 #1 + r17 #1/#2): a sandbox-required adapter
+            # (source_exec / coding / repo_exec / repo_read) must be DISPATCHED to
+            # an ISOLATED EXECUTOR as a SERIALIZABLE REQUEST (data — node spec +
+            # inputs + class; NO callable) that the worker compiles+executes INSIDE
+            # itself — NEVER invoked as fn(state) in the daemon. The gate requires a
+            # TYPED, healthy executor (executor_satisfies), not "a handle is
+            # non-None". In Phase 1 none exists → ALWAYS refuse (no in-process
+            # fall-through, and the daemon holds no callable that runs the adapter).
             _exec_class = _EXEC_SRC if _node_eff_cap == _SOURCE_EXEC else _EXEC_REPO
             _executor = _resolve_executor(_exec_class)
-            if _executor is not None:
-                # Phase 2: dispatch to the isolated worker (subprocess/container) —
-                # NEVER in-process. The adapter the worker runs is passed as a
-                # closure so the dispatch controls WHERE it runs; the daemon never
-                # invokes it. Guarded so wiring an executor without the dispatch
-                # node fails LOUD instead of silently running in-process.
-                def _in_worker_node_builder() -> Callable[[dict[str, Any]], dict[str, Any]]:
-                    return _build_node(
-                        node,
-                        provider_call=provider_call,
-                        event_sink=event_sink,
-                        domain_id=domain_id,
-                        state_schema=state_schema,
-                        llm_policy=llm_policy,
-                        concurrency_tracker=concurrency_tracker,
-                        base_path=base_path,
-                        parent_run_id=parent_run_id,
-                        invocation_depth=invocation_depth,
-                        enqueue_context=enqueue_context,
-                        trusted=trusted,
-                        _skip_executor_gate=True,
-                    )
-                return _build_isolated_executor_dispatch_node(
+            if _executor_satisfies(_executor, _exec_class):
+                # Phase 2: emit a serializable execution REQUEST + dispatch it to
+                # the isolated worker. The daemon builds NO adapter callable here;
+                # checkpoints are evaluated against the returned delta (a data op).
+                _dispatch = _build_executor_request_dispatch_node(
                     node, _executor, _exec_class,
-                    in_worker_node_builder=_in_worker_node_builder,
-                    event_sink=event_sink,
+                    domain_id=domain_id, base_path=base_path,
+                    parent_run_id=parent_run_id, invocation_depth=invocation_depth,
+                    enqueue_context=enqueue_context, event_sink=event_sink,
                 )
+                return _wrap_with_checkpoints(_dispatch, node, event_sink)
             _refuse = True
             _runner_reason = (
-                f"it requires an isolated {_exec_class} executor "
-                f"(subprocess/container) to run — a readiness flag is not a "
-                f"boundary; NO isolated executor is available, so the adapter is "
-                f"refused (never invoked in the daemon process, fail closed)"
+                f"it requires a TYPED, healthy isolated {_exec_class} executor "
+                f"(subprocess/container) it can be DISPATCHED to as a serializable "
+                f"request — a readiness flag / bare handle is not a boundary; NO "
+                f"such executor is available, so the adapter is refused (never "
+                f"invoked in the daemon process, fail closed)"
             )
         if _refuse:
             try:

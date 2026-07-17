@@ -25,7 +25,7 @@ credentials + egress/resource limits) is a separate, host-approved slice.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -296,39 +296,93 @@ EXECUTOR_CLASS_REPO = "repo"          # per-job checkout runner (coding/repo_exe
 EXECUTOR_CLASS_SOURCE_EXEC = "source_exec"  # in-process-code OS-isolation worker
 
 
-def resolve_isolated_executor(executor_class: str) -> "Any | None":
-    """Return the ISOLATED EXECUTOR HANDLE (a subprocess/container dispatcher) that
-    a sandbox-required adapter of *executor_class* MUST be routed through — or
-    ``None`` when no such executor exists (Codex S3 r16 #1).
+@runtime_checkable
+class IsolatedExecutor(Protocol):
+    """The TYPED contract a sandbox-required adapter is DISPATCHED to (Codex S3
+    r17 #1). Readiness is NOT "a handle is non-None" — it is "a TYPED, HEALTHY,
+    dispatch-available executor for this class exists," covering the COMPLETE
+    executable path. A ``True`` / sentinel / wrong-class / unhealthy handle does
+    NOT satisfy it.
+
+    Phase 2's runner implements this: it takes a SERIALIZABLE execution request
+    (data — node spec + inputs + capability class; NO callable) and compiles +
+    executes it INSIDE the isolated worker.
+    """
+
+    #: the executor's capability class — must equal EXECUTOR_CLASS_{REPO,SOURCE_EXEC}.
+    executor_class: str
+
+    def is_healthy(self) -> bool:
+        """True when the executor is attested/healthy and ready to dispatch."""
+        ...
+
+    def dispatch(self, request: "dict[str, Any]") -> "dict[str, Any]":
+        """Run a serializable execution REQUEST inside the isolated worker and
+        return the result dict. The daemon holds NO callable that runs the
+        adapter — it emits the request; the worker turns it into execution."""
+        ...
+
+
+def executor_satisfies(executor: Any, executor_class: str) -> bool:
+    """True iff *executor* is a TYPED, HEALTHY, dispatch-available
+    :class:`IsolatedExecutor` for *executor_class* (Codex S3 r17 #1). A bare
+    ``True`` / sentinel / callable / wrong-class / unhealthy handle → False.
+
+    Duck-typed explicitly (not on ``isinstance`` alone) so the check covers the
+    complete executable path: right class, health/attestation, AND a callable
+    ``dispatch``. Any error in the health probe fails CLOSED."""
+    if executor is None or isinstance(executor, bool):
+        return False
+    if not isinstance(executor, IsolatedExecutor):
+        return False
+    if getattr(executor, "executor_class", None) != executor_class:
+        return False
+    _dispatch = getattr(executor, "dispatch", None)
+    if not callable(_dispatch):
+        return False
+    _health = getattr(executor, "is_healthy", None)
+    if not callable(_health):
+        return False
+    try:
+        return bool(_health())
+    except Exception:  # noqa: BLE001 — a failing health probe ⇒ not ready
+        return False
+
+
+def resolve_isolated_executor(executor_class: str) -> "IsolatedExecutor | None":
+    """Return the registered ISOLATED EXECUTOR for *executor_class* — or ``None``
+    when none exists (Codex S3 r16 #1 + r17 #1).
 
     THE STRUCTURAL INVARIANT: a readiness BOOLEAN is NOT an execution boundary.
-    With a boolean flipped true but no executor, a repo/source adapter would still
-    run IN-PROCESS in the daemon (reading host credentials, touching the host FS) —
-    the exact vulnerability. So the runtime gate requires a concrete executor
-    HANDLE, and the adapter is DISPATCHED to it (never called as ``fn(state)``
-    here). Phase 1 has NO isolated-executor subsystem, so this ALWAYS returns
-    ``None`` → every sandbox-required adapter is REFUSED. It cannot be defeated by
-    monkeypatching a readiness flag, because there is no executor object to route
-    through. Phase 2 builds the real subprocess/container executor and returns its
-    handle here; only then does a repo/coding/source_exec adapter run — inside the
-    isolated worker, never in the daemon process.
+    The runtime gate requires a concrete, TYPED, healthy executor (verified via
+    :func:`executor_satisfies`), and the adapter is DISPATCHED to it as a
+    serializable request (never called as ``fn(state)`` in the daemon). Phase 1
+    has NO isolated-executor subsystem, so this ALWAYS returns ``None`` → every
+    sandbox-required adapter is REFUSED. It cannot be defeated by monkeypatching a
+    readiness flag or returning ``True``: the caller verifies the TYPED contract,
+    so only a real Phase-2 executor object satisfies it.
     """
     return None
 
 
-def coding_nodes_runnable() -> "tuple[bool, str]":
-    """Repo-runner READINESS (observability). True iff an isolated REPO executor
-    is available (Codex S3 r16: derives from :func:`resolve_isolated_executor`, so
-    readiness can never disagree with the runtime gate).
+def isolated_executor_available(executor_class: str) -> bool:
+    """Readiness = a TYPED, healthy, dispatch-available executor for
+    *executor_class* exists (Codex S3 r17 #1). The single truth `coding_nodes_runnable`
+    / `source_exec_runnable` / the choke point / validate all derive from."""
+    return executor_satisfies(resolve_isolated_executor(executor_class), executor_class)
 
-    S3 honest state: **False** — no isolated repo executor exists. A CLI on PATH
-    or bwrap/attestation does NOT make a repo node runnable: readiness means "an
-    isolated executor is available AND the adapter routes through it," not "a
-    boolean is true." validate + get_status + the node runtime all agree because
-    they all trace back to the executor handle.
+
+def coding_nodes_runnable() -> "tuple[bool, str]":
+    """Repo-runner READINESS (observability). True iff a TYPED, healthy, isolated
+    REPO executor is available (Codex S3 r16/r17: derives from
+    :func:`isolated_executor_available`, so readiness can never disagree with the
+    runtime gate — and a bare ``True`` handle never counts).
+
+    S3 honest state: **False** — no isolated repo executor exists. Readiness means
+    "a typed, healthy executor is available AND the adapter routes through it," not
+    "a boolean is true."
     """
-    ok = resolve_isolated_executor(EXECUTOR_CLASS_REPO) is not None
-    if ok:
+    if isolated_executor_available(EXECUTOR_CLASS_REPO):
         return True, ""
     return False, (
         "repo-touching nodes (coding / repo-exec / repo-read) must be DISPATCHED "
@@ -341,8 +395,9 @@ def coding_nodes_runnable() -> "tuple[bool, str]":
 
 
 def source_exec_runnable() -> "tuple[bool, str]":
-    """In-process-code (``source_exec``) READINESS (observability). True iff an
-    isolated SOURCE-EXEC executor is available (Codex S3 r15 #1 split + r16 derive).
+    """In-process-code (``source_exec``) READINESS (observability). True iff a
+    TYPED, healthy, isolated SOURCE-EXEC executor is available (Codex S3 r15 #1
+    split + r16/r17 derive).
 
     S3 honest state: **False** — a ``source_code`` node runs arbitrary Python
     IN-PROCESS with full builtins; the per-job REPO runner does NOT sandbox
@@ -351,8 +406,7 @@ def source_exec_runnable() -> "tuple[bool, str]":
     readiness — a future ``coding_nodes_runnable``==True can never re-open the
     in-process ``exec`` surface.
     """
-    ok = resolve_isolated_executor(EXECUTOR_CLASS_SOURCE_EXEC) is not None
-    if ok:
+    if isolated_executor_available(EXECUTOR_CLASS_SOURCE_EXEC):
         return True, ""
     return False, (
         "source_code runs arbitrary Python IN-PROCESS with full builtins; it must "
@@ -551,7 +605,10 @@ __all__ = [
     "node_requires_sandbox",
     "EXECUTOR_CLASS_REPO",
     "EXECUTOR_CLASS_SOURCE_EXEC",
+    "IsolatedExecutor",
+    "executor_satisfies",
     "resolve_isolated_executor",
+    "isolated_executor_available",
     "coding_nodes_runnable",
     "source_exec_runnable",
     "branch_sandbox_status",

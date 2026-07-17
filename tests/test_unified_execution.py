@@ -34,21 +34,14 @@ def _sandbox_runner_present(monkeypatch):
     ``tests/test_patch_loop_sandbox_enforcement.py`` and the r11 regression tests
     in ``tests/test_patch_loop_sandbox_authoring.py``; the production default here
     is unchanged (still fail-closed)."""
-    import tinyassets.graph_compiler as _gc
-    import tinyassets.sandbox_policy as _sp
-    # Codex S3 r16 #1: a readiness boolean is NOT a boundary — the daemon
-    # requires a concrete isolated-executor HANDLE and routes the adapter to
-    # it. These mechanics tests provide that handle + a dispatch that runs the
-    # adapter as the isolated worker would (in a test the worker is in-process).
-    # The SECURITY invariant (the daemon REFUSES with no executor / never runs
-    # the adapter itself) is covered by test_patch_loop_sandbox_enforcement.
-    _executor = object()
-    monkeypatch.setattr(_sp, "resolve_isolated_executor", lambda _cls: _executor)
-    monkeypatch.setattr(
-        _gc, "_build_isolated_executor_dispatch_node",
-        lambda node, executor, executor_class, *, in_worker_node_builder,
-        event_sink: in_worker_node_builder(),
-    )
+    # Codex S3 r17 #1/#2: install a TYPED isolated executor whose dispatch runs
+    # the SERIALIZABLE request as the Phase-2 worker would (in a test the worker
+    # is in-process). This exercises the real data-not-code dispatch contract —
+    # it does NOT patch out the gate. The daemon's fail-closed default (no typed
+    # executor) + no-in-process-callable invariant are covered by
+    # test_patch_loop_sandbox_enforcement.
+    from tests._executor_sim import install_worker_sim
+    install_worker_sim(monkeypatch)
 
 
 # ───────────────────────────────────────────────────────────────────────

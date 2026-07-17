@@ -1774,13 +1774,25 @@ def test_update_partial_container_validates_untouched_container(
         })
 
 
-def test_update_concurrent_writers_serialize_no_host_only_pair(
+def test_update_concurrent_cross_field_race_is_serialized(
     _opaque_registry, tmp_path,
 ):
-    """Two synchronized writers each trying to install a host-only node must be
-    serialized (BEGIN IMMEDIATE) and BOTH refused — no host-only pair slips
-    through, and the persisted node set is unchanged."""
+    """Codex S3 r17 #3 — NON-VACUOUS: two INDIVIDUALLY-VALID updates whose
+    COMBINATION is host-only. "danger" is host-only ONLY under "fantasy_author".
+    Start at domain="workflow" + node_defs=[n] (benign). Writer A sets node_defs=
+    [danger] (valid under workflow); Writer B sets domain="fantasy_author" (valid
+    under [n]). Their combination (fantasy_author + danger) is host-only.
+
+    Self-proving: the SAME barrier'd scenario is run twice —
+      (a) against a NON-ATOMIC reference (read-all-upfront + a widened window +
+          _trusted write) → both read stale, both validate their own change as
+          fine, both commit → a host-only pair persists (proves the race is real);
+      (b) against the real atomic ``update_branch_definition`` (BEGIN IMMEDIATE) →
+          the second writer sees the first's committed change and is REFUSED, so
+          exactly ONE succeeds and the final row is NEVER the host-only pair.
+    """
     import threading
+    import time
 
     from tinyassets.daemon_server import (
         get_branch_definition,
@@ -1788,40 +1800,94 @@ def test_update_concurrent_writers_serialize_no_host_only_pair(
         save_branch_definition,
         update_branch_definition,
     )
+    from tinyassets.sandbox_policy import user_branch_capability_rejections
 
     _opaque_registry.register_domain_callable(
-        "workflow", "danger", lambda s: {"ran": True}, host_only=True,
+        "fantasy_author", "danger", lambda s: {"ran": True}, host_only=True,
     )
     base = tmp_path / "out"
     base.mkdir()
     initialize_author_server(base)
-    save_branch_definition(base, branch_def={
-        "branch_def_id": "b4", "name": "w", "domain_id": "workflow",
-        "entry_point": "n",
-        "node_defs": [{"node_id": "n", "display_name": "N", "prompt_template": "hi"}],
-        "edges": [],
-    })
-    errors: list[int] = []
-    barrier = threading.Barrier(2)
 
-    def _writer(which: int) -> None:
-        barrier.wait()
-        try:
-            update_branch_definition(base, branch_def_id="b4", updates={
-                "domain_id": "workflow",
-                "node_defs": [{"node_id": "danger", "display_name": "D"}],
-            })
-        except ValueError:
-            errors.append(which)
+    def _seed() -> None:
+        save_branch_definition(base, branch_def={
+            "branch_def_id": "b4", "name": "w", "domain_id": "workflow",
+            "entry_point": "n",
+            "node_defs": [
+                {"node_id": "n", "display_name": "N", "prompt_template": "hi"},
+            ],
+            "edges": [],
+        }, _trusted=True)
 
-    threads = [threading.Thread(target=_writer, args=(i,)) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert len(errors) == 2, "both concurrent writers must be refused"
-    final = get_branch_definition(base, branch_def_id="b4")
-    assert [n["node_id"] for n in final["node_defs"]] == ["n"]
+    def _non_atomic_update(updates: dict) -> None:
+        # r15-shape: read upfront, validate, WIDEN the window, then write (via a
+        # _trusted write that skips the re-validation). This is the vulnerable
+        # non-atomic path — used ONLY to prove the race exists.
+        existing = get_branch_definition(base, branch_def_id="b4")
+        merged_domain = (
+            (updates.get("domain_id") if "domain_id" in updates
+             else existing.get("domain_id")) or "workflow"
+        )
+        merged_nodes = (
+            updates.get("node_defs") if "node_defs" in updates
+            else existing.get("node_defs", [])
+        )
+        if user_branch_capability_rejections(merged_nodes, merged_domain):
+            raise ValueError("refused")
+        time.sleep(0.05)  # widen read→write window so both threads read stale
+        update_branch_definition(base, branch_def_id="b4", updates=updates, _trusted=True)
+
+    def _run_race(update_fn) -> list[int]:
+        errors: list[int] = []
+        barrier = threading.Barrier(2)
+
+        def _writer(which: int) -> None:
+            barrier.wait()
+            upd = (
+                {"node_defs": [{"node_id": "danger", "display_name": "D"}]}
+                if which == 0 else {"domain_id": "fantasy_author"}
+            )
+            try:
+                update_fn(upd)
+            except ValueError:
+                errors.append(which)
+
+        threads = [threading.Thread(target=_writer, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return errors
+
+    def _host_only_pair() -> bool:
+        row = get_branch_definition(base, branch_def_id="b4")
+        return row.get("domain_id") == "fantasy_author" and any(
+            n["node_id"] == "danger" for n in row["node_defs"]
+        )
+
+    # (a) NON-ATOMIC reference → the race is real: a host-only pair persists.
+    _seed()
+    _non_atomic_errors = _run_race(_non_atomic_update)
+    assert _non_atomic_errors == [], (
+        "non-atomic reference should let BOTH stale writers through "
+        f"(got refusals {_non_atomic_errors})"
+    )
+    assert _host_only_pair(), (
+        "non-atomic reference should PRODUCE the host-only pair (proves the race)"
+    )
+
+    # (b) ATOMIC update_branch_definition → serialized: exactly ONE refusal, and
+    # the final row is NEVER the host-only pair.
+    _seed()
+
+    def _atomic_update(upd: dict) -> None:
+        update_branch_definition(base, branch_def_id="b4", updates=upd)
+
+    _atomic_errors = _run_race(_atomic_update)
+    assert len(_atomic_errors) == 1, (
+        f"atomic path must refuse exactly one writer, got {_atomic_errors}"
+    )
+    assert not _host_only_pair(), "atomic path must NOT persist the host-only pair"
 
 
 # --------------------------------------------------------------------------- #
@@ -1841,3 +1907,85 @@ def test_get_status_exposes_both_readiness_states(tmp_path, monkeypatch):
     assert sb.get("coding_nodes_runnable") is False   # repo-runner readiness
     assert sb.get("source_exec_runnable") is False     # in-process-code readiness
     assert "isolated" in sb.get("sandbox_readiness_model", "").lower()
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r17 #1 — readiness requires a TYPED, healthy, dispatch-available
+# executor. A True / sentinel / wrong-class / unhealthy handle must NOT satisfy.
+# --------------------------------------------------------------------------- #
+
+
+def test_bogus_executor_handle_does_not_satisfy_readiness(_opaque_registry, monkeypatch):
+    import tinyassets.sandbox_policy as sp
+    from tests._executor_sim import WorkerSimExecutor
+    from tinyassets.graph_compiler import _build_node
+
+    repo = sp.EXECUTOR_CLASS_REPO
+    # Every bogus "handle" fails the typed check.
+    assert sp.executor_satisfies(True, repo) is False
+    assert sp.executor_satisfies(object(), repo) is False
+    assert sp.executor_satisfies(lambda r: r, repo) is False
+    assert sp.executor_satisfies(WorkerSimExecutor("source_exec"), repo) is False  # wrong class
+
+    class _Unhealthy(WorkerSimExecutor):
+        def is_healthy(self):
+            return False
+
+    assert sp.executor_satisfies(_Unhealthy("repo"), repo) is False
+    # A valid TYPED, healthy executor DOES satisfy.
+    assert sp.executor_satisfies(WorkerSimExecutor("repo"), repo) is True
+
+    # A True handle → readiness False → adapter refused (never dispatched).
+    monkeypatch.setattr(sp, "resolve_isolated_executor", lambda cls: True)
+    assert sp.coding_nodes_runnable()[0] is False
+    _opaque_registry.register_domain_callable(
+        "rd", "rr", lambda s: {"ok": 1}, capability="repo_read",
+    )
+    node = NodeDefinition(node_id="rr", display_name="R", output_keys=["ok"])
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="rd")
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r17 #2 — the dispatch is DATA, not CODE: a serializable execution
+# request; the daemon holds no bypass-capable callable / gate.
+# --------------------------------------------------------------------------- #
+
+
+def test_execution_request_is_serializable_data_not_code():
+    import json
+
+    from tinyassets.graph_compiler import (
+        NodeEnqueueContext,
+        build_executor_execution_request,
+    )
+    from tinyassets.sandbox_policy import EXECUTOR_CLASS_SOURCE_EXEC
+
+    node = NodeDefinition(
+        node_id="s", display_name="S",
+        source_code="def run(state):\n    return {}\n", approved=True,
+    )
+    node.mark_approved()
+    req = build_executor_execution_request(
+        node, {"x": 1}, EXECUTOR_CLASS_SOURCE_EXEC,
+        domain_id="d", base_path="/tmp/x", parent_run_id="r1",
+        invocation_depth=2, enqueue_context=NodeEnqueueContext(universe_id="u", actor="a"),
+    )
+    # Pure DATA — JSON round-trippable, no callable anywhere.
+    restored = json.loads(json.dumps(req))
+    assert restored["capability_class"] == EXECUTOR_CLASS_SOURCE_EXEC
+    assert restored["node_spec"]["node_id"] == "s"
+    assert restored["inputs"] == {"x": 1}
+    assert restored["enqueue_context"]["universe_id"] == "u"
+    assert restored["base_path"] == "/tmp/x"
+    assert restored["invocation_depth"] == 2
+
+
+def test_build_node_has_no_executor_skip_gate():
+    """The daemon must hold NO gate that skips the executor (Codex S3 r17 #2)."""
+    import inspect
+
+    from tinyassets.graph_compiler import _build_node
+
+    assert "_skip_executor_gate" not in inspect.signature(_build_node).parameters

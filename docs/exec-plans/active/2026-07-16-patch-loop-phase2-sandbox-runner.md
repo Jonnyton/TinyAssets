@@ -28,12 +28,29 @@ against a user-bound repo without endangering the capacity host.
 
 ## Phase-1 (S3a) end state — what is already TRUE
 
-- `tinyassets/sandbox_policy.py::coding_nodes_runnable()` returns a hard-coded
-  `(False, reason)`. It is the SINGLE readiness truth read by validate
-  (`_ext_branch_validate` → `branch_sandbox_status`), `get_status`, the
-  `run_branch` / `resume_run` / `run_branch_version` enqueue refusal
-  (`_sandbox_enqueue_refusal`), and the graph runtime choke point
-  (`_build_node`). Readiness can never drift from runtime.
+- **Readiness = a TYPED isolated executor per class, not a boolean (Codex S3
+  r16/r17).** The runtime gate is
+  `tinyassets/sandbox_policy.py::resolve_isolated_executor(executor_class)`,
+  verified via `executor_satisfies` (an `IsolatedExecutor` Protocol: right
+  `executor_class`, `is_healthy()`, callable `dispatch`). There are TWO resolver-
+  derived classes — `EXECUTOR_CLASS_REPO` (coding / repo_exec / repo_read) and
+  `EXECUTOR_CLASS_SOURCE_EXEC` (in-process `source_code`). In Phase 1
+  `resolve_isolated_executor` returns `None` for BOTH, so `coding_nodes_runnable()`
+  and `source_exec_runnable()` (which DERIVE from it) are `(False, reason)`. A
+  bare `True` / sentinel / wrong-class / unhealthy handle does NOT satisfy
+  readiness. The same truth is read by validate (`branch_sandbox_status`),
+  `get_status` (both classes exposed), the enqueue refusal, and the runtime choke
+  point (`_build_node`) — readiness can never drift from runtime.
+- **A sandbox-required adapter is DISPATCHED as a SERIALIZABLE REQUEST, never run
+  in the daemon (Codex S3 r16/r17).** The choke point emits
+  `build_executor_execution_request()` — pure data (node spec + inputs +
+  capability class + serializable context; NO callable) — and hands it to
+  `executor.dispatch(request)`; the isolated worker COMPILES + EXECUTES it inside
+  itself. The daemon holds NO callable that runs the adapter and NO gate that
+  skips the executor (`_skip_executor_gate` was removed). Host-approval of a
+  `source_code` node is validated at the daemon (a data check on the source hash)
+  BEFORE dispatch. In Phase 1 no executor exists → every sandbox-required adapter
+  is refused before dispatch.
 - Every repo-touching node fails closed deterministically at the FIRST gate in
   `_build_node`, before any `ModelConfig` / provider / scratch / env code runs,
   and emits a terminal `phase="failed"` node event. Capability is classified by:
@@ -52,8 +69,15 @@ against a user-bound repo without endangering the capacity host.
 - The only node that RUNS is a plain TEXT (`prompt_template`) node under a CLOSED
   tool surface (`text_node_model_config` → claude `--tools ""`).
 
-## Phase-2 scope — what the runner MUST provide before `coding_nodes_runnable()`
-can return True
+## Phase-2 scope — the runner is a TYPED executor consuming a serializable request
+
+The runner is not "flip a boolean". It is an `IsolatedExecutor` (Codex S3 r17):
+a TYPED, healthy, dispatch-available executor object that
+`resolve_isolated_executor(class)` returns and `executor_satisfies` verifies. Its
+`dispatch(request)` consumes the SERIALIZABLE execution request
+(`build_executor_execution_request` — node spec + inputs + capability class +
+serializable context) and COMPILES + EXECUTES it INSIDE the isolated worker. There
+are TWO such executors (repo class + source_exec class). Each must provide:
 
 - **Prepared per-job checkout** — an isolated working copy of the user-bound
   repo, created per job, destroyed after.
@@ -94,34 +118,37 @@ can return True
   OWN OS-isolation worker (a source-execution attestation), which is a distinct
   deliverable from the repo runner.
 
-## Delivery gate — an executor HANDLE, not a boolean (Codex S3 r16 #1)
+## Delivery gate — a TYPED executor + serializable request, not a boolean (Codex S3 r16/r17)
 
-**A readiness BOOLEAN is not an execution boundary.** The runtime gate is
-`sandbox_policy.resolve_isolated_executor(class)` — it must return a concrete
-ISOLATED EXECUTOR handle (subprocess/container dispatcher), and the adapter is
-DISPATCHED to it (runs INSIDE the worker), NEVER invoked as `fn(state)` in the
-daemon. In Phase 1 it returns `None`, so `coding_nodes_runnable()` /
-`source_exec_runnable()` (which DERIVE from it) are `False` and every
-sandbox-required adapter is refused. Phase 2 delivers the executor by:
+**A readiness BOOLEAN is not an execution boundary.** The runtime gate is a TYPED
+`IsolatedExecutor` returned by `sandbox_policy.resolve_isolated_executor(class)`
+and verified by `executor_satisfies` (right class + `is_healthy()` + callable
+`dispatch`). The adapter is DISPATCHED to it as a SERIALIZABLE REQUEST
+(`graph_compiler.build_executor_execution_request`) and runs INSIDE the worker,
+NEVER as `fn(state)` in the daemon. In Phase 1 `resolve_isolated_executor` returns
+`None`, so `coding_nodes_runnable()` / `source_exec_runnable()` (which DERIVE from
+it) are `False` and every sandbox-required adapter is refused. Phase 2 delivers by:
 
-1. Building the subprocess/container executor + its dispatch (the
-   `graph_compiler._build_isolated_executor_dispatch_node` seam — currently
-   fail-loud) so a repo/source adapter runs INSIDE the isolated worker, with the
-   env/config/credential/egress/resource guarantees above.
-2. Returning that executor handle from `resolve_isolated_executor` (repo class
-   and source_exec class are SEPARATE handles — the in-process `exec` worker is
+1. Building the subprocess/container executor: a concrete `IsolatedExecutor` whose
+   `dispatch(request)` compiles + executes the request INSIDE the isolated worker,
+   with the env/config/credential/egress/resource guarantees above. (The daemon
+   holds NO adapter callable — the worker is the only thing that turns the request
+   into execution.)
+2. Returning that TYPED executor from `resolve_isolated_executor` (repo class and
+   source_exec class are SEPARATE executors — the in-process `exec` worker is
    distinct from the repo-checkout runner).
 
-Only when the handle + dispatch exist — and after opposite-provider security
-review + live proof — does an adapter run. Flipping a readiness flag alone does
-NOTHING (the runtime requires the handle). Until then, fail-closed is correct.
+Only when a TYPED, healthy executor exists — and after opposite-provider security
+review + live proof — does an adapter run. Returning a bare `True`/handle does
+NOTHING (`executor_satisfies` rejects it). Until then, fail-closed is correct.
 
 ## Do NOT
 
 - Do NOT "enable" repo/source nodes by flipping `coding_nodes_runnable()` /
-  `source_exec_runnable()` or monkeypatching readiness — a boolean is not a
-  boundary; without an executor handle + dispatch the adapter is refused. Wire
-  the real isolated executor (subprocess/container) and route through it.
+  `source_exec_runnable()` or by returning a bare `True`/sentinel from
+  `resolve_isolated_executor` — a boolean/handle is not a boundary; without a
+  TYPED, healthy executor + serializable-request dispatch the adapter is refused.
+  Wire the real isolated executor (subprocess/container) and route through it.
 - Do NOT let `resolve_isolated_executor("repo")` vouch for `source_exec` — the
   repo runner does not sandbox in-process `exec`; source_exec needs its OWN
   executor handle (`resolve_isolated_executor("source_exec")`).
