@@ -53,16 +53,21 @@ Anthropic's current Consumer Terms + Usage Policy (re-verify at the §0.1 links)
   API-key-exception + no-credential-sharing conclusion still holds. Freshness:
   re-check before acting.)
 
-**OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** The "individual use
-only / no credential sharing / no **using ChatGPT to power third-party services**"
-restrictions are stated in OpenAI's **usage policies + Help Center** (help.openai.com)
-and Terms of Use — NOT in the Codex CI/CD guide (F6 provenance correction: the earlier
-draft mis-attributed the "power third-party services" phrase to the Codex auth guide).
-Separately, OpenAI's own **Codex CI/CD auth guide** says plainly: **"The right way to
-authenticate automation is with an API key,"** and, notably, DOES permit ChatGPT-
-subscription-auth-in-CI as an *"advanced workflow for … trusted **private**
-automation," "personal account automation only," "single machine or serialized job
-streams per token."* The guide explicitly forbids **public / open-source** use.
+**OpenAI (ChatGPT Plus/Pro subscription) — same conclusion.** The
+"individual use only / no credential sharing / no **using ChatGPT to power
+third-party services**" restriction is stated in OpenAI's **ChatGPT / consumer
+Help Center** (help.openai.com — a specific ChatGPT-subscription acceptable-use /
+sharing Help article), **not** in the Terms of Use / Business Terms (round-21 #5
+provenance correction: an earlier draft attributed "power third-party services" to
+the Terms/Business Terms; the phrase is a Help-Center statement — re-verify the exact
+article before acting). Separately, OpenAI's own **Codex CI/CD auth guide** says
+plainly: **"The right way to authenticate automation is with an API key,"** and
+does discuss ChatGPT-subscription-auth-in-CI as an advanced workflow for **trusted
+private automation**. (Round-21 #5 quote correction: the current Codex CI/CD auth
+guide does **not** contain the verbatim strings "personal account automation only"
+or "single machine or serialized job streams per token" that an earlier draft
+quoted — do not treat those as verbatim; the guide's own framing is
+private/trusted-automation-oriented and it discourages public/OSS use.)
 **(round-14 #6 INFERENCE, not a verbatim quote):** from "personal/private only" +
 "no public/OSS" we *infer* it is also not sanctioned for **a platform running
 automation on behalf of other users** — the guide does not say that phrase
@@ -119,11 +124,14 @@ subscription-adjacent lane.) Exact current sources:
 - **OpenAI — Codex Enterprise access tokens** (`CODEX_ACCESS_TOKEN`, org-level,
   DISTINCT from a personal ChatGPT subscription AND from an API key):
   <https://learn.chatgpt.com/docs/enterprise/access-tokens>.
-- **OpenAI — usage policies / Help Center** (the "individual use only / no credential
-  sharing / no powering third-party services" restrictions): <https://help.openai.com/>
-  and the Terms of Use link below.
-- **OpenAI — Terms of Use / Business terms** (individual-use, no credential
-  sharing, no powering third-party services on a personal plan):
+- **OpenAI — ChatGPT / consumer Help Center** (the "individual use only / no
+  credential sharing / no powering third-party services" restriction — this phrase is
+  a Help-Center statement, NOT a Terms/Business-Terms clause; round-21 #5 correction —
+  re-verify the exact ChatGPT-subscription acceptable-use / sharing article):
+  <https://help.openai.com/>.
+- **OpenAI — Terms of Use / Business terms** (individual-use + no-credential-sharing
+  framing; note the specific "power third-party services" phrase is a Help-Center
+  statement above, not a Terms/Business-Terms clause — round-21 #5):
   <https://openai.com/policies/terms-of-use/> and
   <https://openai.com/policies/business-terms/>.
 - **Anthropic — Claude routines** (the emerging subscription-backed unattended-

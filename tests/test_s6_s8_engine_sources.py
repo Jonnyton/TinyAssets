@@ -45,6 +45,43 @@ def test_self_hosted_endpoint_persists(tmp_path, monkeypatch):
     assert cfg.engine_endpoint == "http://localhost:11434"
 
 
+def test_r21_3_endpoint_with_credential_in_path_is_rejected(tmp_path, monkeypatch):
+    """Round-21 #3: an endpoint with an API key smuggled into the PATH must be
+    REJECTED (it would be stored plaintext in config.yaml). Nothing is persisted."""
+    uni, udir = _setup(tmp_path, monkeypatch)
+    out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
+        "engine_source": "self_hosted_endpoint",
+        "endpoint": "https://engine.example/v1/sk-ant-api03-" + "A" * 40,
+        "preferred_writer": "ollama-local"})))
+    assert "error" in out
+    assert "credential" in out["error"].lower() or "path" in out["error"].lower()
+    # The secret-carrying endpoint is NOT persisted (no plaintext custody).
+    assert load_universe_config(udir).engine_source != "self_hosted_endpoint"
+
+
+def test_r21_3_endpoint_validator_unit_matrix():
+    """Round-21 #3 unit matrix: the validator rejects credential-shaped path content
+    while allowing legitimate base paths, route segments, and lowercase UUIDs."""
+    from tinyassets.api.universe import _validate_engine_endpoint
+
+    # Rejected: known key prefixes + high-entropy secret segment anywhere in the path.
+    for bad in (
+        "https://engine.example/v1/sk-ant-api03-SECRETSECRETSECRETSECRET",
+        "https://engine.example/sk-openai-abc123",
+        "https://engine.example/xai-DEADBEEFdeadbeef1234567890",
+        "https://engine.example/path/Ab3Xy9Zk7Qw2Er5Ty8Ui0Op1As4Df6Gh",  # 32+ mixed
+    ):
+        assert _validate_engine_endpoint(bad) is not None, bad
+    # Allowed: base paths, route segments, and a lowercase UUID model id.
+    for ok in (
+        "http://localhost:11434",
+        "https://engine.example/v1",
+        "https://engine.example/v1/chat/completions",
+        "https://engine.example/v1/models/550e8400-e29b-41d4-a716-446655440000",
+    ):
+        assert _validate_engine_endpoint(ok) is None, ok
+
+
 def test_market_rented_persists_rate_and_cap(tmp_path, monkeypatch):
     uni, udir = _setup(tmp_path, monkeypatch)
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps({

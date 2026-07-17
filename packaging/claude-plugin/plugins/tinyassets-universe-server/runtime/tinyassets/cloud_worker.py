@@ -83,6 +83,26 @@ from tinyassets.engine_binding import (
 
 logger = logging.getLogger(__name__)
 
+
+def _universe_is_retired_and_not_rebound(universe: "Path") -> bool:
+    """Round-21 #1: True iff *universe* is RETIRED (present raw ``llm_subscription``
+    record OR a persistent non-secret retired marker) AND NOT re-bound to a sanctioned
+    engine. Such a universe must NOT be worked on ambient host creds — regardless of the
+    non-ambient flag. Fails CLOSED (returns True → skip work) on any resolution error, so
+    an unresolvable retired universe is never leaked onto host identity."""
+    from tinyassets.credential_vault import is_retired_universe
+
+    try:
+        if not is_retired_universe(universe):
+            return False
+    except Exception:  # noqa: BLE001 — cannot classify → treat as safe (fresh) default
+        return False
+    # Retired: workable ONLY on a sanctioned re-bind (its OWN engine identity).
+    try:
+        return not resolve_engine_binding(universe).bound
+    except Exception:  # noqa: BLE001 — cannot confirm a clean re-bind → fail closed.
+        return True
+
 # Defaults tuned for a droplet-scale workload.
 DEFAULT_IDLE_BACKOFF_S = 10.0     # Seconds to sleep after a clean exit.
 DEFAULT_CRASH_BACKOFF_S = 5.0     # Initial backoff on non-zero exit.
@@ -209,7 +229,10 @@ def _worker_model_for_provider(provider_name: str) -> str:
     if explicit:
         return explicit
     if provider_name == "codex":
-        return os.environ.get("TINYASSETS_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
+        return (
+            os.environ.get("TINYASSETS_CODEX_MODEL", "").strip()
+            or DEFAULT_WORKER_MODELS["codex"]
+        )
     if provider_name == "claude-code":
         return (
             os.environ.get("TINYASSETS_CLAUDE_MODEL", "").strip()
@@ -513,6 +536,10 @@ class SupervisorState:
         # times a DECLARED-but-broken binding failed the gate loudly.
         self.idle_until_bound_count = 0
         self.engine_misconfigured_count = 0
+        # Round-21 #1: times a spawn was skipped because the universe is RETIRED
+        # (subscription lane retired, not re-bound) — fail closed regardless of the
+        # non-ambient flag, so it never runs on ambient host creds.
+        self.retired_fail_closed_count = 0
         self.started_at = _utcnow_iso()
         self.last_spawn_at = ""
         self.last_exit_rc: int | None = None
@@ -582,6 +609,7 @@ def write_supervisor_heartbeat(
         "consec_crashes": state.crash_count,
         "idle_until_bound_count": state.idle_until_bound_count,
         "engine_misconfigured_count": state.engine_misconfigured_count,
+        "retired_fail_closed_count": state.retired_fail_closed_count,
         "subprocess_pid": subprocess_pid,
         "subprocess_alive": subprocess_alive,
         "planned_sleep_s": planned_sleep_s,
@@ -772,6 +800,29 @@ def run_supervisor(
             or os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
         )
         binding = None
+
+        # Round-21 #1: RETIRED-universe fail-closed PREFLIGHT — runs REGARDLESS of the
+        # non-ambient flag. A universe whose subscription lane was retired (present raw
+        # record OR a persistent non-secret marker) must NEVER be worked on ambient host
+        # credentials (a cross-identity leak), even in the flag-off default. It may be
+        # worked ONLY after a sanctioned RE-BIND (resolve_engine_binding().bound). Fails
+        # closed on any resolution error. Independent of, and BEFORE, the non-ambient
+        # gate below.
+        if _universe_is_retired_and_not_rebound(universe):
+            state.retired_fail_closed_count += 1
+            logger.warning(
+                "cloud_worker: universe %s is RETIRED (subscription lane retired, not "
+                "re-bound) — NOT working it on ambient host creds. Re-bind a sanctioned "
+                "engine via write_graph target=engine.",
+                universe,
+            )
+            write_supervisor_heartbeat(
+                universe, state, iteration=iteration,
+                phase="retired_needs_rebind",
+                planned_sleep_s=idle_backoff,
+            )
+            sleep_fn(idle_backoff)
+            continue
 
         # Non-ambient work gate (design note 2026-07-15 gap G7). FLAG-GATED and
         # DEFAULT OFF: with TINYASSETS_NON_AMBIENT_WORK unset this whole block is

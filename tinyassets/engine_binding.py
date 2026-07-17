@@ -150,11 +150,23 @@ class EngineBinding:
     reason: str
     eligible_providers: frozenset[str] = frozenset()
     vault_providers: frozenset[str] = frozenset()
-    #: Round-14 #3: True when the universe holds a legacy ``llm_subscription``
-    #: record (retired lane). The universe is MISCONFIGURED — every spawn would
-    #: raise until the record is migrated out — so get_status surfaces it as
-    #: needs-migration with remediation rather than an opaque spawn crash.
-    needs_migration: bool = False
+    #: Round-21 #4: TWO distinct retired states with DIFFERENT remediations —
+    #: conflating them told operators to re-run an already-completed migration.
+    #: * ``needs_record_migration`` — a RAW ``llm_subscription`` record is still
+    #:   present; the host must run the record-removal migration to strip it.
+    #: * ``retired_needs_rebind`` — the raw record was already removed (a non-secret
+    #:   marker remains); the migration is DONE, the founder must RE-BIND a sanctioned
+    #:   engine. Both fail closed (never ambient host creds); ``needs_migration`` is the
+    #:   umbrella "retired / not workable" derived from either.
+    needs_record_migration: bool = False
+    retired_needs_rebind: bool = False
+
+    @property
+    def needs_migration(self) -> bool:
+        """Umbrella "retired / not workable" — True for EITHER retired state. Kept for
+        the workable computation + backward compatibility; the specific remediation
+        reads the two distinct fields above (round-21 #4)."""
+        return self.needs_record_migration or self.retired_needs_rebind
 
     def is_eligible_for(self, provider_name: str) -> bool:
         """Return True iff bound capacity can serve *provider_name*."""
@@ -179,6 +191,8 @@ class EngineBinding:
             "eligible_providers": sorted(self.eligible_providers),
             "vault_providers": sorted(self.vault_providers),
             "needs_migration": self.needs_migration,
+            "needs_record_migration": self.needs_record_migration,
+            "retired_needs_rebind": self.retired_needs_rebind,
         }
 
 
@@ -591,15 +605,15 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             engine_source=declared_source,
             capacity_kinds=(),
             reason=(
-                "needs_migration: this universe's vault holds a legacy subscription "
-                "credential (a RETIRED lane — the platform never custodies "
+                "needs_record_migration: this universe's vault holds a RAW legacy "
+                "subscription credential (a RETIRED lane — the platform never custodies "
                 "subscription tokens). Every engine spawn will fail closed until it is "
                 "removed. Run the host-gated subscription-record migration "
                 "(credential_vault.quarantine_legacy_subscription_records) to strip it "
                 "(non-secret marker retained), then re-bind a sanctioned engine via "
                 "write_graph target=engine."
             ),
-            needs_migration=True,
+            needs_record_migration=True,
         )
 
     try:
@@ -738,12 +752,13 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             engine_source=declared_source,
             capacity_kinds=(),
             reason=(
-                "retired: this universe's subscription lane was retired (a non-secret "
-                "marker remains; the raw token was removed). Its spawns FAIL CLOSED — "
-                "they will never run on the host's identity — until it is re-bound to "
-                "a sanctioned engine via write_graph target=engine."
+                "retired_needs_rebind: this universe's subscription lane was retired "
+                "(the raw token was already removed; a non-secret marker remains). The "
+                "migration is DONE — do NOT re-run it. Its spawns FAIL CLOSED (they "
+                "will never run on the host's identity) until it is RE-BOUND to a "
+                "sanctioned engine via write_graph target=engine."
             ),
-            needs_migration=True,
+            retired_needs_rebind=True,
         )
 
     if declared_source == "subscription":

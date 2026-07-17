@@ -538,3 +538,70 @@ def test_write_graph_unknown_target_lists_universe(data_dir):
     out = json.loads(write_graph(target="nope"))
     assert out["error"] == "unknown_target"
     assert "universe" in out["allowed_targets"]
+
+
+# ---- Round-21 #2: concurrent universe creation must not delete another
+# request's completed universe. ------------------------------------------------
+
+
+def test_r21_2_colliding_create_preserves_existing_universe(data_dir):
+    """A create for a universe id that ALREADY exists returns already-exists and
+    NEVER touches the existing (winner's) directory or its contents."""
+    from tinyassets.api.universe import _action_create_universe
+
+    _login("founder-A")
+    winner = data_dir / "u-race"
+    winner.mkdir()
+    (winner / "soul.md").write_text("winner-soul", encoding="utf-8")
+
+    out = json.loads(_action_create_universe(universe_id="u-race"))
+    assert "error" in out and "already exists" in out["error"].lower()
+    assert winner.is_dir()
+    assert (winner / "soul.md").read_text(encoding="utf-8") == "winner-soul"
+
+
+def test_r21_2_lost_mkdir_race_returns_exists_without_deleting(data_dir, monkeypatch):
+    """The atomic mkdir(exist_ok=False) claim: when a create passes the (racy)
+    exists() fast-path but the dir was created by a concurrent request before mkdir,
+    the loser gets FileExistsError → already-exists, and NEVER deletes the winner's
+    completed dir. Simulate the interleave by hiding the dir from exists() only."""
+    import tinyassets.api.universe as uni
+
+    _login("founder-A")
+    winner = data_dir / "u-mkrace"
+    winner.mkdir()
+    (winner / "soul.md").write_text("winner", encoding="utf-8")
+
+    real_exists = Path.exists
+
+    def _exists(self):
+        if self == winner:
+            return False  # simulate: winner not yet visible to the loser's fast-path
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", _exists)
+
+    out = json.loads(uni._action_create_universe(universe_id="u-mkrace"))
+    assert "error" in out and "already exists" in out["error"].lower()
+    # The winner's dir + sentinel survive — the loser never deleted them.
+    assert winner.is_dir()
+    assert (winner / "soul.md").read_text(encoding="utf-8") == "winner"
+
+
+def test_r21_2_failed_create_cleans_up_only_its_own_dir(data_dir, monkeypatch):
+    """A failure AFTER this invocation's own mkdir cleans up ITS OWN partial dir
+    (created_here=True) — so it never leaves a broken 'living' home. The cleanup is
+    scoped to what THIS invocation created (a lost-race loser never reaches it)."""
+    import tinyassets.api.universe as uni
+
+    _login("founder-B")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("seed failed mid-bundle")
+
+    monkeypatch.setattr(uni, "seed_okf_bundle", _boom)
+
+    with pytest.raises(RuntimeError):
+        uni._action_create_universe(universe_id="u-own-partial")
+    # Its OWN partial dir was removed (not left as a broken home).
+    assert not (data_dir / "u-own-partial").exists()

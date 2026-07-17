@@ -118,6 +118,51 @@ def test_engine_binding_is_in_status_contract(tmp_path, monkeypatch):
     assert isinstance(payload["engine_binding"], dict)
 
 
+def test_r21_4_status_pre_migration_says_run_the_migration(tmp_path, monkeypatch):
+    """Round-21 #4: a universe with a RAW llm_subscription record present →
+    needs_record_migration; get_status tells the operator to RUN the migration."""
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    udir = _make_universe(tmp_path, monkeypatch, "u-pre-mig")
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription", "service": "claude",
+        "oauth_token": "legacy",
+    }])
+    payload = json.loads(get_status(universe_id="u-pre-mig"))
+    eb = payload["engine_binding"]
+    assert eb["needs_record_migration"] is True
+    assert eb["retired_needs_rebind"] is False
+    assert eb["needs_migration"] is True  # umbrella still true (not workable)
+    steps = " ".join(payload["actionable_next_steps"]).lower()
+    assert "run" in steps and "migration" in steps  # remediation = run the migration
+
+
+def test_r21_4_status_post_migration_says_rebind_not_rerun(tmp_path, monkeypatch):
+    """Round-21 #4: a MARKER-ONLY universe (migration already done, raw record
+    removed) → retired_needs_rebind; get_status tells the operator to RE-BIND and must
+    NOT tell them to re-run the already-completed migration (the pre-r21 bug)."""
+    from tinyassets.credential_vault import quarantine_legacy_subscription_records
+
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    udir = _make_universe(tmp_path, monkeypatch, "u-post-mig")
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription", "service": "claude",
+        "oauth_token": "legacy",
+    }])
+    quarantine_legacy_subscription_records(udir)  # raw record → non-secret marker
+
+    payload = json.loads(get_status(universe_id="u-post-mig"))
+    eb = payload["engine_binding"]
+    assert eb["retired_needs_rebind"] is True
+    assert eb["needs_record_migration"] is False
+    assert eb["needs_migration"] is True  # umbrella still true (fail closed)
+    assert eb["bound"] is False
+    steps = " ".join(payload["actionable_next_steps"]).lower()
+    caveats = " ".join(payload["caveats"]).lower()
+    # Remediation = RE-BIND, and explicitly NOT "re-run the migration".
+    assert "re-bind" in steps or "rebind" in steps or "write_graph target=engine" in steps
+    assert "do not re-run" in steps or "do not re-run" in caveats or "already" in caveats
+
+
 def test_get_status_reports_host_daemon_choice_as_idle(tmp_path, monkeypatch):
     """A host_daemon declaration reads as idle (declared choice, not executable in
     S5) — get_status surfaces it as unbound, not misconfigured, not crashing."""

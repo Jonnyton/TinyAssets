@@ -167,6 +167,44 @@ def _enforce_writer_binding(
     return constrained
 
 
+def _preflight_retired_universe(universe_dir: "Path | None") -> None:
+    """Round-21 #1: a RETIRED universe must NEVER execute on ambient host credentials —
+    through ANY provider, including LOCAL / in-process ones (ollama-local) that never
+    raise a retired-lane error at spawn.
+
+    PREFLIGHT the retirement state on EVERY router path/fan-out (call, call_with_policy,
+    call_judge_ensemble), INDEPENDENT of ``TINYASSETS_NON_AMBIENT_WORK`` and of whether
+    ``byo_execution_enabled`` is dark. Do NOT depend on a provider raising. A retired
+    universe (present raw ``llm_subscription`` record OR a persistent non-secret marker)
+    is allowed to execute ONLY after the resolver confirms a SANCTIONED RE-BIND
+    (``resolve_engine_binding(...).bound``, i.e. its OWN identity). Otherwise raise
+    :class:`RetiredSubscriptionLaneError` — the router treats it as a TERMINAL routing
+    failure (fail closed, never a leaked ambient execution). Resolves the universe from
+    the explicit dir ELSE the process-global ``TINYASSETS_UNIVERSE`` env.
+    """
+    from tinyassets.credential_vault import (
+        RetiredSubscriptionLaneError,
+        is_retired_universe,
+        resolve_universe_from_env,
+    )
+
+    resolved = universe_dir if universe_dir is not None else resolve_universe_from_env()
+    if resolved is None:
+        return
+    if not is_retired_universe(resolved):
+        return  # fresh universe — ambient is the legitimate single-tenant default.
+    # Retired: allow ONLY a sanctioned re-bind (the universe's OWN engine identity).
+    from tinyassets.engine_binding import resolve_engine_binding
+
+    try:
+        rebound = resolve_engine_binding(resolved).bound
+    except Exception:  # noqa: BLE001 — cannot confirm a clean re-bind → fail closed.
+        rebound = False
+    if rebound:
+        return
+    raise RetiredSubscriptionLaneError("retired-subscription", str(resolved))
+
+
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
 ) -> "UniverseConfig | None":
@@ -472,6 +510,10 @@ class ProviderRouter:
         """
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
+        # Round-21 #1: fail closed BEFORE any provider is tried if the universe is
+        # retired and not re-bound — a retired universe must never execute on ambient
+        # host creds, even through a local/in-process provider that would not raise.
+        _preflight_retired_universe(universe_dir)
         cfg = config or _default_config(resolved_config)
         chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
 
@@ -832,6 +874,8 @@ class ProviderRouter:
         """
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
+        # Round-21 #1: retired-universe fail-closed preflight on the policy path too.
+        _preflight_retired_universe(universe_dir)
         cfg = config or _default_config(resolved_config)
 
         if not policy:
@@ -1109,6 +1153,9 @@ class ProviderRouter:
         """
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
+        # Round-21 #1: retired-universe fail-closed preflight BEFORE the judge fan-out —
+        # a retired universe must never run ANY judge on ambient host creds.
+        _preflight_retired_universe(universe_dir)
         cfg = config or _default_config(resolved_config)
 
         # Q6.3 — filter judge ensemble by per-universe allowlist (privacy

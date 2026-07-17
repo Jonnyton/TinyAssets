@@ -4694,8 +4694,23 @@ def _action_create_universe(
     if udir.exists():
         return json.dumps({"error": f"Universe '{uid}' already exists."})
 
+    # Round-21 #2: claim the directory ATOMICALLY. ``exist_ok=False`` makes mkdir the
+    # single source of truth for "who created this dir" — a concurrent create that
+    # loses the race raises FileExistsError here (returned as already-exists), so it
+    # never proceeds to seed/clean up ANOTHER request's directory. The prior
+    # ``exists()`` check + ``exist_ok=True`` was racy: two requests could both pass the
+    # check, both mkdir (one a no-op), and the loser's failure-cleanup ``rmtree`` would
+    # delete the WINNER's completed universe. ``created_here`` scopes the failure
+    # cleanup to ONLY the dir THIS invocation created.
+    created_here = False
     try:
-        udir.mkdir(parents=True, exist_ok=True)
+        try:
+            udir.mkdir(parents=True, exist_ok=False)
+            created_here = True
+        except FileExistsError:
+            # Lost a concurrent create race — the dir now exists (another request's).
+            # Never touch it.
+            return json.dumps({"error": f"Universe '{uid}' already exists."})
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
         # universe-creation D4/D5: seed the linked OKF soul bundle. Creation
@@ -4790,17 +4805,19 @@ def _action_create_universe(
         # Atomic create: a failure AFTER mkdir (e.g. seed_okf_bundle raising
         # mid-bundle, or a grant/bind error) must NOT leave a bare/partial
         # universe dir — it would read as a "living" home (.is_dir()) and
-        # get_status would announce a broken universe (Codex 2026-07-15). We only
-        # reach mkdir when the dir did not pre-exist (guarded above), so the dir
-        # is ours to remove. Preserve prior behavior: OSError → error envelope,
-        # anything else re-raises (after the partial dir is cleaned up).
+        # get_status would announce a broken universe (Codex 2026-07-15).
+        # Round-21 #2: clean up ONLY the dir THIS invocation created (``created_here``)
+        # — NEVER a concurrent request's directory (the FileExistsError loser already
+        # returned above without setting the flag). Preserve prior behavior: OSError →
+        # error envelope, anything else re-raises (after the partial dir is cleaned up).
         import shutil
 
-        try:
-            if udir.is_dir():
-                shutil.rmtree(udir)
-        except OSError:
-            pass
+        if created_here:
+            try:
+                if udir.is_dir():
+                    shutil.rmtree(udir)
+            except OSError:
+                pass
         if isinstance(exc, OSError):
             return json.dumps({"error": f"Failed to create universe: {exc}"})
         raise
@@ -4975,13 +4992,50 @@ def _reject_secret_or_unknown_fields(data: dict, allowed: frozenset[str]) -> str
     return None
 
 
+# Round-21 #3: API-key / token shapes that must never appear in an endpoint PATH. A
+# credential smuggled into the path (``.../v1/sk-ant-api03-SECRET``) is stored verbatim
+# in config.yaml → plaintext custody of a secret, the exact class S5 forbids. Known
+# provider key prefixes; matched case-insensitively at a path-segment start.
+_ENDPOINT_CREDENTIAL_PREFIXES: tuple[str, ...] = (
+    "sk-ant-", "sk-", "sk_live_", "sk_test_", "pk-", "pk_live_", "pk_test_",
+    "xai-", "gsk_", "ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "aiza",
+)
+
+
+def _path_carries_credential(path: str) -> bool:
+    """True iff any path segment looks like an embedded API key / token (round-21 #3).
+
+    Rejects known provider key prefixes AND a conservative high-entropy heuristic (a
+    long single segment mixing upper+lower+digits with no separators — almost never a
+    route path). Ordinary route segments (``v1``), model ids, and lowercase UUIDs pass.
+    """
+    for raw in path.split("/"):
+        seg = raw.strip()
+        if not seg:
+            continue
+        low = seg.lower()
+        if any(low.startswith(prefix) for prefix in _ENDPOINT_CREDENTIAL_PREFIXES):
+            return True
+        if (
+            len(seg) >= 32
+            and re.fullmatch(r"[A-Za-z0-9._~-]+", seg)
+            and any(c.isdigit() for c in seg)
+            and any(c.islower() for c in seg)
+            and any(c.isupper() for c in seg)
+        ):
+            return True
+    return False
+
+
 def _validate_engine_endpoint(endpoint: str) -> str | None:
     """Return an error string for an invalid self-hosted endpoint, else None.
 
     Policy (#3/F6): ``http(s)`` URL with a host, NO embedded credentials
     (userinfo), NO query/fragment (an engine base URL needs none, and they are
-    the ``?api_key=…`` credential-smuggling vector), and not the cloud-metadata
-    SSRF address. Deeper egress policy lands with the Phase-2 executor."""
+    the ``?api_key=…`` credential-smuggling vector), NO credential-shaped path
+    content (round-21 #3 — a key smuggled into the PATH would be stored plaintext),
+    and not the cloud-metadata SSRF address. Deeper egress policy lands with the
+    Phase-2 executor."""
     from urllib.parse import urlparse
 
     try:
@@ -4999,6 +5053,12 @@ def _validate_engine_endpoint(endpoint: str) -> str | None:
             "endpoint must not carry a query string or fragment — an engine base "
             "URL needs none, and they are a credential-smuggling vector "
             "(e.g. ?api_key=…)."
+        )
+    if parsed.path and _path_carries_credential(parsed.path):
+        return (
+            "endpoint path appears to embed an API key / credential — an engine base "
+            "URL must not carry secrets in its path (they would be stored plaintext). "
+            "Remove the credential from the path (declare only the base URL)."
         )
     host = parsed.hostname.strip("[]").lower()
     if host in ("169.254.169.254", "fd00:ec2::254", "metadata.google.internal"):

@@ -1308,23 +1308,46 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
             engine_binding["workable"] = (
                 binding.bound or (not gate_on and not binding.needs_migration)
             )
-            if binding.needs_migration:
+            if binding.needs_record_migration:
+                # A RAW subscription record is still present → run the migration.
                 engine_binding["status"] = "misconfigured"
                 engine_binding["note"] = (
-                    "MISCONFIGURED — a legacy subscription credential in this "
+                    "MISCONFIGURED — a RAW legacy subscription credential in this "
                     "universe's vault blocks every engine spawn. Migrate it out "
                     "(quarantine the subscription record), then re-bind a "
                     "sanctioned engine. Until then this universe cannot run."
                 )
                 caveats.append(
-                    "engine_binding.needs_migration is true — a legacy subscription "
-                    "record must be quarantined before this universe can run."
+                    "engine_binding.needs_record_migration is true — a raw legacy "
+                    "subscription record must be stripped before this universe can run."
                 )
                 actionable_next_steps.append(
                     "Migrate this universe off the retired subscription lane: run "
                     "the subscription-record quarantine migration "
                     "(credential_vault.quarantine_legacy_subscription_records), "
                     "then re-bind a sanctioned engine via write_graph target=engine."
+                )
+            elif binding.retired_needs_rebind:
+                # Round-21 #4: the migration is ALREADY DONE (raw token removed, a
+                # non-secret marker remains) — do NOT tell the operator to re-run it.
+                # The correct remediation is to RE-BIND a sanctioned engine.
+                engine_binding["status"] = "retired_needs_rebind"
+                engine_binding["note"] = (
+                    "RETIRED — this universe's subscription lane was retired (the raw "
+                    "credential was already removed). It FAILS CLOSED (never runs on "
+                    "the host's identity) until you RE-BIND a sanctioned engine. The "
+                    "subscription-record migration is already complete — do not re-run "
+                    "it."
+                )
+                caveats.append(
+                    "engine_binding.retired_needs_rebind is true — the retired "
+                    "subscription record was already removed; re-bind a sanctioned "
+                    "engine to run (the migration is complete, do not re-run it)."
+                )
+                actionable_next_steps.append(
+                    "Re-bind a sanctioned engine via write_graph target=engine (BYO "
+                    "API key / self-hosted endpoint / market / your own device). The "
+                    "record-removal migration is already done — do NOT re-run it."
                 )
             elif not binding.bound:
                 engine_binding["note"] = (

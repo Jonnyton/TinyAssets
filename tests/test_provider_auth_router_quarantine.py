@@ -339,9 +339,15 @@ def test_no_vault_behavior_unchanged_for_default_router(isolated_universe_config
 def test_legacy_subscription_only_universe_is_still_dropped(
     isolated_universe_config, tmp_path, monkeypatch,
 ):
-    """A universe with ONLY a legacy llm_subscription row (the blocked custody
-    lane) must NOT bypass the health gate — the bypass is BYO-API-key-only."""
-    from tinyassets.credential_vault import write_credential_vault
+    """A universe with ONLY a legacy llm_subscription row (the blocked custody lane)
+    must NOT bypass the health gate — the bypass is BYO-API-key-only. Round-21 #1: the
+    retired-universe PREFLIGHT now fails it CLOSED with RetiredSubscriptionLaneError
+    BEFORE any provider is tried (never a leaked ambient execution) — strictly stronger
+    than the prior AllProvidersExhausted (zero provider calls is preserved)."""
+    from tinyassets.credential_vault import (
+        RetiredSubscriptionLaneError,
+        write_credential_vault,
+    )
     from tinyassets.providers.base import UniverseContext
 
     _enable_byo(monkeypatch)
@@ -355,7 +361,7 @@ def test_legacy_subscription_only_universe_is_still_dropped(
     os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
     router, providers = _router(dead={"claude-code"})
 
-    with pytest.raises(AllProvidersExhaustedError):
+    with pytest.raises(RetiredSubscriptionLaneError):
         _run(router.call(
             "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
         ))
@@ -1212,18 +1218,62 @@ def test_r18_1_attested_unsanctioned_key_never_injected(tmp_path, monkeypatch):
     assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "platform-oauth"
 
 
+def test_r21_1_real_retired_universe_never_executes_via_local_provider(
+    isolated_universe_config, tmp_path,
+):
+    """Round-21 #1 (the reproduced leak, real vault — NOT an injected exception): a
+    REAL retired-marker universe routed through a chain whose only alive provider is
+    LOCAL (ollama-local) must FAIL CLOSED at the PREFLIGHT — never execute on ambient.
+    ollama-local never raises a retired-lane error at spawn, so the pre-r21 code routed
+    successfully through it (retired=True, response=LEAKED_AMBIENT_EXECUTION, calls=1).
+    The preflight now refuses BEFORE any provider is tried: ZERO provider calls."""
+    from tinyassets.credential_vault import (
+        RetiredSubscriptionLaneError,
+        quarantine_legacy_subscription_records,
+        write_credential_vault,
+    )
+    from tinyassets.providers.base import UniverseContext
+
+    # A REAL retired-marker universe: write a subscription record, then quarantine it
+    # (raw token stripped, non-secret marker remains) — no injected exception.
+    udir = tmp_path / "u-retired-real"
+    udir.mkdir()
+    write_credential_vault(udir, [{
+        "credential_type": "llm_subscription", "service": "claude",
+        "oauth_token": "legacy-oauth",
+    }])
+    quarantine_legacy_subscription_records(udir)  # → marker-only (record removed)
+
+    # Chain where the subscription writers are dead → only ollama-local (LOCAL, never
+    # raises a retired-lane error) would run. Pre-r21 this leaked ambient execution.
+    providers = {
+        "claude-code": _FakeProvider("claude-code"),
+        "codex": _FakeProvider("codex"),
+        "ollama-local": _FakeProvider("ollama-local", text="LEAKED_AMBIENT_EXECUTION"),
+    }
+    router = ProviderRouter(
+        providers=providers, quota=QuotaTracker(),
+        auth_health=_auth_probe({"claude-code", "codex"}),  # subscription writers dead
+    )
+    with pytest.raises(RetiredSubscriptionLaneError):
+        _run(router.call(
+            "writer", "p", "s", universe_context=UniverseContext(universe_dir=udir),
+        ))
+    # ZERO provider calls — the preflight refused before any (esp. the local one).
+    for name, provider in providers.items():
+        assert provider.call_count == 0, f"{name} executed for a retired universe"
+
+
 def test_r18_3_retired_lane_error_is_terminal_no_fallback(isolated_universe_config):
     """Round-18 #3: a RetiredSubscriptionLaneError raised by the first provider (its
     env resolution hit a retired-lane vault record) is TERMINAL — the router FAILS the
     whole routing operation and does NOT fall through to the next provider on ambient
     auth (which would silently route, e.g., a legacy Claude record through ambient
-    Codex). No subsequent provider is invoked (the whole point of retiring the lane)."""
-    from tinyassets.credential_vault import RetiredSubscriptionLaneError
+    Codex). No subsequent provider is invoked (the whole point of retiring the lane).
 
-    class _RetiredLaneProvider(_FakeProvider):
-        async def complete(self, prompt, system, config, *, universe_dir=None):
-            self.call_count += 1
-            raise RetiredSubscriptionLaneError("claude", "/u/legacy")
+    This complements the real-vault preflight test above: it proves the TERMINAL
+    HANDLER (when a provider raises mid-call) still does not fall through."""
+    from tinyassets.credential_vault import RetiredSubscriptionLaneError
 
     providers = {
         "claude-code": _RetiredLaneProvider("claude-code"),
