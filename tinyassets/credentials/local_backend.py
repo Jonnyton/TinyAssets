@@ -461,6 +461,10 @@ class DpapiVaultBackend:
     ) -> Iterator[RefreshLease]:
         return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
 
+    def claim_refresh(self, ref: str, version: int, holder: str) -> bool:
+        """Atomic consume-before-mint claim of the redemption right for a version."""
+        return self._leases.claim_refresh(ref, version, holder)
+
     # ------------------------------------------------------------------
     # Attestation-support hooks
     # ------------------------------------------------------------------
@@ -478,14 +482,21 @@ class DpapiVaultBackend:
         self._delete(binding, expected)
 
     def inspect_persisted(self, ref: str, probe_value: bytes) -> dict[str, object]:
+        """Evidence for attestation.
+
+        Proves **current-user DPAPI encryption + integrity** (the blob unprotects
+        under the current user and carries the probe value; no plaintext on disk).
+        It does NOT claim the required narrow DACL (daemon SID + SYSTEM only) —
+        that gate can only be proven by deployment integration (installer sets the
+        ACL; a Windows-security-API verifier lands with it). ``dacl_gate`` is a
+        deferred marker, never treated as proof.
+        """
         sidecar = self._read_sidecar(ref)
         if sidecar is None:
             return {"present": False}
         raw_file = self._blob_path(ref).read_bytes()
         hint = sidecar.get("hint") or {}
-        # Prove current-user DPAPI custody by actually unprotecting the blob.
         current_user_bound = False
-        dacl_current_user_only = self._dacl_current_user_only(self._blob_path(ref))
         try:
             store = VaultStore(
                 custody=Custody(hint["custody"]), store_id=hint["store_id"],
@@ -506,32 +517,6 @@ class DpapiVaultBackend:
             "has_blob": len(sidecar.get("dpapi_blob_b64", "")) > 0,
             "protection_current_user": sidecar.get("protection") == _PROTECTION,
             "current_user_bound": current_user_bound,
-            "dacl_current_user_only": dacl_current_user_only,
+            "dacl_gate": "deferred-to-deployment",
             "plaintext_absent": probe_value not in raw_file,
         }
-
-    @staticmethod
-    def _dacl_current_user_only(path: Path) -> bool | None:
-        """Best-effort DACL inspection: True iff no world/Everyone/Users ACE.
-
-        Returns None off Windows or when ACL inspection is unavailable. Used as
-        attestation evidence, not a hard gate — the installer sets the narrow
-        DACL; this only flags an obviously world-readable blob.
-        """
-        if not IS_WINDOWS:
-            return None
-        try:
-            import subprocess
-
-            out = subprocess.run(
-                ["icacls", str(path)], capture_output=True, text=True, timeout=10,
-            )
-            if out.returncode != 0:
-                return None
-            text = out.stdout
-            for token in ("Everyone:", "\\Users:", "BUILTIN\\Users", "Authenticated Users"):
-                if token in text:
-                    return False
-            return True
-        except Exception:  # noqa: BLE001
-            return None

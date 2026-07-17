@@ -402,15 +402,31 @@ class PlatformVaultBackend:
         wait: float = 30.0,
         poll: float = 0.02,
     ) -> Iterator[RefreshLease]:
-        """Acquire a fenced exclusive refresh lease for ``ref``.
+        """Acquire a fenced exclusive refresh lease for ``ref`` (COARSE coordination).
 
-        Yields a :class:`RefreshLease`; pass it as ``put(..., fence=lease)`` so
-        the commit CAS-checks the fence and a lease that was stolen after a TTL
-        overrun cannot commit. Call ``lease.still_held()`` before the provider
-        exchange to skip a doomed refresh.
+        The lease reduces thundering-herd contention, but it is NOT the
+        exactly-once guarantee — a TTL overrun can still overlap holders. The
+        real gate is :meth:`claim_refresh`, which must be called (and must return
+        True) BEFORE the provider redemption. Recommended flow::
+
+            with be.refresh_lease(ref, holder):
+                current = be.get(binding, scope).version
+                if current == stale and be.claim_refresh(ref, current, holder):
+                    new = provider_refresh(...)          # the ONE redemption
+                    be.put(replace=ref, expected_version=current, value=new)
         """
         self.initialize()
         return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
+
+    def claim_refresh(self, ref: str, version: int, holder: str) -> bool:
+        """Atomically claim the exclusive right to redeem ``(ref, version)``.
+
+        Call BEFORE the provider refresh exchange: only if this returns True may
+        the caller contact the provider (consume-before-mint). False → the
+        version is already claimed; do NOT call the provider.
+        """
+        self.initialize()
+        return self._leases.claim_refresh(ref, version, holder)
 
     # ------------------------------------------------------------------
     # KEK rotation (verified)
@@ -418,11 +434,18 @@ class PlatformVaultBackend:
     def rotate_kek(self, new_key_id: str) -> int:
         """Rewrap every record's DEK under ``new_key_id``; payloads unchanged.
 
-        Every row is decrypted + its full record authenticated INSIDE the
-        transaction before rewrap; any corruption aborts the whole rotation
-        (no half-rotated or unreadable rows). Attestation gates entry + exit.
+        Requires ``new_key_id`` to be the ACTIVE write key (else future writes
+        would keep using the old key while rows moved — a false success). Every
+        row is decrypted + its full record authenticated INSIDE the transaction
+        before rewrap; after rewrap no row may remain on any other key. Any
+        corruption aborts the whole rotation. Attestation gates entry + exit.
         """
         self.initialize()
+        if self._keys.active_key_id() != new_key_id:
+            raise ValueError(
+                "rotate_kek requires new_key_id to be the active write key; "
+                "mark it active before rotating"
+            )
         gate = self.attest()
         if not gate.ok:
             raise CredentialUnavailable(VaultErrorCode.ATTESTATION_FAILED)
@@ -462,6 +485,12 @@ class PlatformVaultBackend:
                     (new_env.key_id, new_env.wrap_nonce, new_env.wrapped_dek, row["ref"]),
                 )
                 rewrapped += 1
+            # No live row may remain on any key other than the new one.
+            stragglers = conn.execute(
+                "SELECT COUNT(*) AS n FROM vault_secrets WHERE key_id != ?", (new_key_id,)
+            ).fetchone()["n"]
+            if stragglers:
+                raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
             conn.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):

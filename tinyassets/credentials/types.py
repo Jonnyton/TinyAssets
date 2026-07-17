@@ -148,15 +148,15 @@ class SecretDescriptor:
     def public_projection(self) -> dict[str, object]:
         """The explicit allowlist safe to surface in status/list/receipts.
 
-        Never exposes custody internals, backend paths/ids, ciphertext, wrapped
-        DEKs, key ids, versions of the KEK, or the value.
+        Design allowlist = ref / kind / scope / timestamps ONLY. Internal
+        lifecycle counters (``version``, ``state``) and all custody internals,
+        backend paths/ids, ciphertext, wrapped DEKs, key ids, and the value are
+        deliberately excluded.
         """
         return {
             "ref": self.binding.ref,
             "kind": self.binding.kind.value,
             "scope": self.binding.scope.as_dict(),
-            "version": self.version,
-            "state": self.state.value,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "expires_at": self.expires_at,

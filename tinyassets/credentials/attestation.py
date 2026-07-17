@@ -50,10 +50,12 @@ class AttestationResult:
     failure: str | None = None
 
     def public_projection(self) -> dict[str, Any]:
-        """Safe status projection — names the store's health, never its internals."""
+        """Safe status projection — health + timestamp only.
+
+        Deliberately omits ``store_id`` and ``custody``: the design allowlist for
+        public surfaces is health/timestamps, never backend internals.
+        """
         return {
-            "store_id": self.store_id,
-            "custody": self.custody,
             "ok": self.ok,
             "tested_at": self.tested_at,
         }
@@ -108,6 +110,8 @@ def attest_store(backend: Any) -> AttestationResult:
         result.failure = f"put:{_class(exc)}"
         return result
 
+    ev_ok = False
+    probe_error: str | None = None
     try:
         # 1. exact read returns the probe bytes
         read_back = backend._probe_get(binding, scope)
@@ -118,7 +122,7 @@ def attest_store(backend: Any) -> AttestationResult:
         ev_ok, ev_checks = _evidence_ok(custody, evidence)
         result.checks.update(ev_checks)
 
-        # 3. a wrong-scope read MUST fail
+        # 3. a wrong-scope read MUST fail with the EXPECTED typed error
         wrong = _wrong_scope(scope)
         wrong_binding = SecretBinding(
             ref=binding.ref, kind=binding.kind, scope=wrong, store=binding.store
@@ -126,6 +130,10 @@ def attest_store(backend: Any) -> AttestationResult:
         result.checks["wrong_scope_fails"] = _must_fail(
             backend._probe_get, wrong_binding, wrong
         )
+    except CredentialUnavailable as exc:
+        probe_error = f"probe:{exc.code}"
+    except Exception as exc:  # noqa: BLE001 — unexpected → fail closed, never leak
+        probe_error = f"probe:{_class(exc)}"
     finally:
         # 4. delete (always attempt cleanup even if a check raised)
         deleted = _safe_delete(backend, binding, scope)
@@ -133,6 +141,11 @@ def attest_store(backend: Any) -> AttestationResult:
 
     # 5. a subsequent read is NOT_FOUND
     result.checks["not_found_after_delete"] = _is_not_found(backend, binding, scope)
+
+    if probe_error is not None:
+        result.ok = False
+        result.failure = probe_error
+        return result
 
     result.ok = bool(result.checks.get("exact_read")) and ev_ok and all(
         result.checks.get(k, False)
@@ -149,13 +162,18 @@ def _class(exc: BaseException) -> str:
 
 
 def _must_fail(fn: Any, *args: Any) -> bool:
-    """True iff ``fn(*args)`` raises CredentialUnavailable (fail-closed)."""
+    """True ONLY iff ``fn(*args)`` raises the EXPECTED typed CredentialUnavailable.
+
+    An unexpected exception type is NOT accepted as proof of scope isolation —
+    it returns False so attestation fails (a fail-closed test must assert the
+    specific expected failure, not "any exception counts").
+    """
     try:
         fn(*args)
     except CredentialUnavailable:
         return True
-    except Exception:  # noqa: BLE001 — any failure is still "did not disclose"
-        return True
+    except Exception:  # noqa: BLE001 — wrong failure mode → not proven fail-closed
+        return False
     return False
 
 
