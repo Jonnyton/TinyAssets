@@ -544,6 +544,23 @@ def test_sandbox_availability_unpacks_s3_tuple_contract(monkeypatch):
     fake.coding_nodes_runnable = lambda: True
     assert _REAL_SANDBOX_AVAILABLE() is True
 
+    # Codex r18 #3: a drifted/malformed shape must FAIL CLOSED, never bool()-
+    # coerce a truthy non-bool into "runnable". The exploit shape is a tuple
+    # whose flag is a truthy STRING.
+    fake.coding_nodes_runnable = lambda: ("false", "malformed")  # bool("false")=True
+    assert _REAL_SANDBOX_AVAILABLE() is False
+    fake.coding_nodes_runnable = lambda: ("true", "malformed")
+    assert _REAL_SANDBOX_AVAILABLE() is False
+    # Wrong tuple length, non-bool flag, and non-tuple non-bool all fail closed.
+    fake.coding_nodes_runnable = lambda: (True,)
+    assert _REAL_SANDBOX_AVAILABLE() is False
+    fake.coding_nodes_runnable = lambda: (1, "reason")
+    assert _REAL_SANDBOX_AVAILABLE() is False
+    fake.coding_nodes_runnable = lambda: [True, "reason"]
+    assert _REAL_SANDBOX_AVAILABLE() is False
+    fake.coding_nodes_runnable = lambda: "runnable"
+    assert _REAL_SANDBOX_AVAILABLE() is False
+
 
 def test_requires_sandbox_node_runs_when_runner_available(monkeypatch):
     # With the runner capability available (simulating the Phase-2 runner via the

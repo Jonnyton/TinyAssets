@@ -653,6 +653,60 @@ def test_reserved_seed_stats_bumps_still_allowed(data_dir):
     assert (after.get("stats") or {}).get("fork_count") == stats["fork_count"]
 
 
+def test_packaged_manifest_matches_on_disk_artifacts():
+    # Codex r18 #2: the reserved-seed guard derives protected ids from the STATIC
+    # PACKAGED_DESIGN_MANIFEST (via hashlib), NEVER by parsing the artifact JSON.
+    # Drift guard: the manifest must exactly match the (design_id, version) set of
+    # the on-disk packaged artifacts, so a version bump that forgets the manifest
+    # — which would leave the new reserved id UNPROTECTED — trips here.
+    from tinyassets.branch_designs import (
+        PACKAGED_DESIGN_MANIFEST,
+        load_design_artifacts,
+    )
+
+    on_disk = {
+        (a["design_id"], int(a["design_version"]))
+        for a in load_design_artifacts()
+    }
+    assert set(PACKAGED_DESIGN_MANIFEST) == on_disk, (PACKAGED_DESIGN_MANIFEST, on_disk)
+
+
+def test_reserved_seed_guard_is_parse_independent_fail_closed(data_dir, monkeypatch):
+    # Codex r18 #2 (fail-OPEN fix): a guard must NEVER depend on parsing the thing
+    # it protects. Even if load_design_artifacts BLOWS UP (malformed packaged
+    # JSON), the protected-id set is computed from the STATIC manifest via
+    # hashlib, so is_reserved_seed_id stays correct and a public write to the
+    # reserved id is STILL refused (the old artifact-parsing version returned an
+    # empty set here => fail-open, and a write to d5e4d07ed1f8 succeeded).
+    import tinyassets.branch_designs as bd
+    from tinyassets.branch_designs import (
+        _reference_branch_id,
+        is_reserved_seed_id,
+        reserved_seed_ids,
+    )
+    from tinyassets.daemon_server import (
+        ReservedSeedMutationError,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+
+    def _boom():
+        raise ValueError("malformed packaged JSON")
+
+    monkeypatch.setattr(bd, "load_design_artifacts", _boom)
+
+    # Protected-id set is STILL populated (no artifact parse) — never fails open.
+    assert fixed_id in reserved_seed_ids()
+    assert is_reserved_seed_id(fixed_id)
+    # And a public write to the reserved id is STILL refused.
+    with pytest.raises(ReservedSeedMutationError):
+        update_branch_definition(
+            data_dir, branch_def_id=fixed_id, updates={"goal_id": "x"},
+        )
+
+
 def test_publish_failure_after_overwrite_leaves_no_duplicate(data_dir, monkeypatch):
     # Codex S1 round-6 Finding 2: if _publish_reference raises AFTER
     # _overwrite_reference_content during repair, the temp authoritative build

@@ -179,10 +179,19 @@ run time (`github_merge` lands with S4). So the seeded reference is never live
 without its runner — S1 in isolation SEEDS a discoverable/remixable template that
 cannot RUN unconfined (Codex r13 #1 / r14 #1-#2: it now provably refuses, and the
 gate is NOT bypassable by an env var — availability comes only from the real
-runner capability). **Merged-stack proof:** the S1→S3→S4 integration test is
-S4's bundle e2e (`tests/test_patch_loop_bundle_e2e.py`, which already covers
-enqueue-on-present); it runs on the integration branch after the bundle merges —
-not duplicated in S1.
+runner capability). **Merged-stack proof (integration-activated, NOT yet
+passing).** The S1→S3→S4 fail-closed proof activates ONLY at INTEGRATION — it
+requires all three together (S1's seeded reference + S3's sandbox enforcement +
+S4's effector) and is NOT provable on S1 alone (repo-touching nodes fail closed
+until S3's runner). The proof lives in S4's bundle e2e
+(`tests/test_patch_loop_bundle_e2e.py`). S1's only obligation is to keep the
+artifact contract stable: reference nodes live under **`spec.node_defs`** (the
+structural envelope test pins this). The S4 bundle test MUST read
+`spec.node_defs` (not top-level `node_defs`) and MUST **FAIL — not silently
+skip** — when the artifact exists but its node contract is unreadable, so a
+contract mismatch can never masquerade as a passing (or skipped) proof. As of
+Codex r18 the S4 reader still checks top-level `node_defs` and the bundle test
+stays skipped; that test-quality fix is S4-owned (routed to S4), not S1.
 
 **Phase-2 execution boundary (Codex r11 #2; host "build execution first").** The
 S1 reference declares the full intended loop with correct effect + gate

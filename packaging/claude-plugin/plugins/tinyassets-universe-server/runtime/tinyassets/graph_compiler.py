@@ -922,11 +922,22 @@ def _sandbox_enforcement_available() -> bool:
         result = coding_nodes_runnable()
     except Exception:  # noqa: BLE001 — absent (S1) / broken => not runnable
         return False
-    # S3's CURRENT contract: (runnable: bool, reason: str). Unpack the runnable
-    # flag explicitly; tolerate a bare bool for forward/backward compat.
-    if isinstance(result, (tuple, list)):
-        return bool(result[0]) if result else False
-    return bool(result)
+    # Accept ONLY a REAL boolean signal (Codex r18 #3). S3's documented contract
+    # is EXACTLY (runnable: bool, reason: str); a bare bool is also honored for
+    # forward/backward compat. Never ``bool()``-coerce the flag — a drifted
+    # policy returning ("false", "malformed") would coerce truthy and enable
+    # execution UNCONFINED. So require result[0] to BE a bool and the tuple to be
+    # exactly length 2. ANY other shape (wrong length, non-bool flag, a list, a
+    # non-bool non-tuple) is a broken/drifted policy module => FAIL CLOSED.
+    if isinstance(result, bool):
+        return result
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], bool)
+    ):
+        return result[0]
+    return False
 
 
 def _build_prompt_template_node(

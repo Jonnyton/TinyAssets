@@ -82,7 +82,19 @@ RESERVED_SEED_AUTHOR = "reference-designs"
 # seed marks a missing packaged design loudly
 # (``failed:[<missing-packaged-design:...>]``, reflected in ``last_seed_result()``
 # + get_status), and CI validates it. It is NOT a boot-readiness gate.
-PACKAGED_DESIGN_IDS = frozenset({"patch_loop_reference"})
+# STATIC manifest of packaged reference designs as (design_id, design_version).
+# This is the artifact-parse-INDEPENDENT source of truth for the reserved-seed
+# WRITE GUARD (Codex r18 #2): the guard derives protected reserved ids from THIS
+# constant via hashlib, NEVER by parsing the artifact JSON. A guard must not
+# depend on parsing the thing it protects — malformed packaged JSON previously
+# made reserved_seed_ids() empty (fail-OPEN). Keep in sync with the on-disk
+# artifacts; ``test_packaged_manifest_matches_on_disk_artifacts`` cross-checks
+# the two so a version bump that forgets this manifest trips a test.
+PACKAGED_DESIGN_MANIFEST: frozenset[tuple[str, int]] = frozenset({
+    ("patch_loop_reference", 1),
+})
+
+PACKAGED_DESIGN_IDS = frozenset(design_id for design_id, _v in PACKAGED_DESIGN_MANIFEST)
 
 # Boot-REQUIRED fixtures (PLAN "required seeded fixtures refuse startup"). The
 # reference patch loop is a COMMONS FEATURE, not boot-critical — the Forever Rule
@@ -135,37 +147,25 @@ def _sanitize_reserved_author(author: str | None) -> str:
     return "" if author.strip() == RESERVED_SEED_AUTHOR else author
 
 
-_RESERVED_SEED_IDS_CACHE: set[str] | None = None
-
-
-def reserved_seed_ids() -> set[str]:
+def reserved_seed_ids() -> frozenset[str]:
     """The deterministic reserved branch_def_ids of ALL packaged reference
-    designs. Content-independent + forgery-immune (``_reference_branch_id`` is
-    server-assigned), so it identifies the genuine seeds regardless of stored
-    author/tags. Cached — the packaged designs don't change at runtime; a load
-    failure returns an empty set WITHOUT caching so a later call retries (a
-    broken package must not permanently disable the write guard)."""
-    global _RESERVED_SEED_IDS_CACHE
-    if _RESERVED_SEED_IDS_CACHE is not None:
-        return _RESERVED_SEED_IDS_CACHE
-    try:
-        artifacts = load_design_artifacts()
-    except Exception:  # noqa: BLE001 — broken package; retry next call
-        logger.exception("reserved_seed_ids: load_design_artifacts failed")
-        return set()
-    ids = {
-        _reference_branch_id(a.get("design_id", ""), int(a.get("design_version", 1) or 1))
-        for a in artifacts
-        if a.get("design_id")
-    }
-    _RESERVED_SEED_IDS_CACHE = ids
-    return ids
+    designs, computed from the STATIC ``PACKAGED_DESIGN_MANIFEST`` via hashlib —
+    NEVER by parsing the artifact JSON (Codex r18 #2 fail-open fix). A pure
+    hash over a static frozenset cannot fail or return empty, so the write guard
+    always has a real protected-id set even when the packaged artifact is
+    malformed/unloadable. Forgery-immune: ``_reference_branch_id`` is
+    server-assigned, so a user can never occupy one of these ids."""
+    return frozenset(
+        _reference_branch_id(design_id, version)
+        for design_id, version in PACKAGED_DESIGN_MANIFEST
+    )
 
 
 def is_reserved_seed_id(branch_def_id: str) -> bool:
     """True if ``branch_def_id`` is the reserved id of a packaged reference
     design. The single source of truth the storage-layer write guard uses to
-    protect the seed against EVERY public writer by construction (Codex r17 #3)."""
+    protect the seed against EVERY public writer by construction (Codex r17 #3);
+    parse-independent + fail-closed-friendly (Codex r18 #2)."""
     return bool(branch_def_id) and branch_def_id in reserved_seed_ids()
 
 
