@@ -11,6 +11,16 @@ type Dir = "up" | "left" | "right";
 type Spot = { x: number; y: number; w: number; h: number; dir: Dir };
 type Mode = "reading" | "awake" | "asleep" | "error";
 type RunPose = "run" | "skid" | "pant";
+type SpriteState =
+  | "idle"
+  | "run-right"
+  | "run-left"
+  | "wave"
+  | "jump"
+  | "failure"
+  | "waiting"
+  | "active-work"
+  | "review";
 
 type TinyBotView = {
   vitals: Vitals | null;
@@ -21,10 +31,10 @@ type TinyBotView = {
   bubble: string | null;
   bubblePos: { left: number; top: number; above: boolean };
   waving: boolean;
+  jumping: boolean;
   factIdx: number;
   spot: Spot | null;
   shyState: "hidden" | "peek" | "deep";
-  pupils: { x: number; y: number };
   runner: { x: number; y: number } | null;
   runPose: RunPose;
   facing: number;
@@ -68,12 +78,12 @@ type TinyBotWork = {
   lastContextKey: string;
 };
 
-const BOT_W = 74;
-const BOT_H = 86;
+const BOT_W = 88;
+const BOT_H = 95;
 const SIZE: Record<Dir, { w: number; h: number }> = {
-  up: { w: 104, h: 90 },
-  left: { w: 90, h: 102 },
-  right: { w: 90, h: 102 },
+  up: { w: 118, h: 100 },
+  left: { w: 104, h: 112 },
+  right: { w: 104, h: 112 },
 };
 const SPEAK_COOLDOWN = 5_200;
 const STARTLE_DIST = 110;
@@ -81,6 +91,7 @@ const RUN_SPEED = 350; // px/s — slow enough to visibly fail to keep up
 const SPRINT_SPEED = 560;
 const DWELL_MS = 520;
 const CONTEXT_COOLDOWN = 4_200;
+const TINY_PET_URL = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/tiny-pet.png`;
 
 // Anything with a shape is fair cover — cards, tables, words, pictures.
 const HIDEABLE =
@@ -109,10 +120,10 @@ const initialView: TinyBotView = {
   bubble: null,
   bubblePos: { left: 0, top: 0, above: true },
   waving: false,
+  jumping: false,
   factIdx: 0,
   spot: null,
   shyState: "hidden",
-  pupils: { x: 0, y: 0 },
   runner: null,
   runPose: "run",
   facing: 1,
@@ -123,8 +134,36 @@ function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }
 
+function BotSprite({ state }: { state: SpriteState }) {
+  return (
+    <span className={styles["sprite-frame"]} aria-hidden="true">
+      <span
+        className={cx(styles["tiny-sprite"], styles[`sprite--${state}`])}
+        style={{ backgroundImage: `url("${TINY_PET_URL}")` }}
+      ></span>
+    </span>
+  );
+}
+
 function modeFromVitals(vitals: Vitals | null): Mode {
   return !vitals ? "reading" : !vitals.reachable ? "error" : vitals.loopAwake ? "awake" : "asleep";
+}
+
+function restingSpriteFromView(view: TinyBotView): SpriteState {
+  const mode = modeFromVitals(view.vitals);
+  if (mode === "error") return "failure";
+  if (mode === "asleep" || mode === "reading") return "waiting";
+  if (view.vitals?.activeRun) return "active-work";
+  if (view.jumping) return "jump";
+  if (view.waving) return "wave";
+  if (view.bubble) return "review";
+  return "idle";
+}
+
+function runnerSpriteFromView(view: TinyBotView): SpriteState {
+  if (view.runPose === "skid") return "failure";
+  if (view.runPose === "pant") return "waiting";
+  return view.facing === 1 ? "run-right" : "run-left";
 }
 
 function isShyModeFromView(view: TinyBotView): boolean {
@@ -649,7 +688,6 @@ export function TinyBot() {
       applyViewPatch({
         runner: nextRunner,
         facing: dx >= 0 ? 1 : -1,
-        pupils: { x: 2.0 * (dx >= 0 ? 1 : -1), y: 0.6 },
       });
       // Try (and fail) to keep up: if you've moved on to another block, re-aim.
       if (t - work.lastRetargetT > 450 && work.retargetCount < 3) {
@@ -752,6 +790,8 @@ export function TinyBot() {
   }
 
   function poke() {
+    setViewField("waving", true);
+    after(1200, () => setViewField("waving", false));
     if (getShyMode()) {
       const f = facts();
       setViewField("shyState", "deep");
@@ -760,8 +800,6 @@ export function TinyBot() {
       workRef.current.lastSpoke = performance.now();
       return;
     }
-    setViewField("waving", true);
-    window.setTimeout(() => setViewField("waving", false), 1200);
     const f = facts();
     say(f[viewRef.current.factIdx % f.length], 7000);
     setViewField("factIdx", (idx) => idx + 1);
@@ -803,15 +841,6 @@ export function TinyBot() {
     const work = workRef.current;
     work.cursor = { x: e.clientX, y: e.clientY };
     work.lastHover = e.target instanceof Element ? e.target : null;
-    // Eyes track the cursor from wherever he's hiding (mid-run he watches the road).
-    if (!viewRef.current.runner) {
-      const state = viewRef.current;
-      const c = state.spot && getShyMode() ? spotCenter(state.spot) : { x: window.innerWidth - 70, y: window.innerHeight - 90 };
-      setViewField("pupils", {
-        x: Math.max(-2.2, Math.min(2.2, (e.clientX - c.x) / 200)),
-        y: Math.max(-1.6, Math.min(1.6, (e.clientY - c.y) / 240)),
-      });
-    }
     handleDwell(work.lastHover);
 
     if (!getShyMode() || viewRef.current.hidden) {
@@ -930,7 +959,8 @@ export function TinyBot() {
   }
 
   function show() {
-    setViewField("hidden", false);
+    applyViewPatch({ hidden: false, jumping: true });
+    after(1200, () => setViewField("jumping", false));
     try {
       localStorage.removeItem("tinybot:hidden");
     } catch {}
@@ -982,8 +1012,8 @@ export function TinyBot() {
 
   const runnerTransform = React.useMemo(() => {
     const tilt = view.runPose === "run" ? 9 : view.runPose === "skid" ? -14 : 0;
-    return `scaleX(${view.facing}) rotate(${tilt}deg)`;
-  }, [view.facing, view.runPose]);
+    return `rotate(${tilt}deg)`;
+  }, [view.runPose]);
 
   const shyTransform = React.useMemo(() => {
     if (!view.spot) return "translateY(120%)";
@@ -1048,102 +1078,21 @@ export function TinyBot() {
     };
   }, []);
 
-  function BotSvg() {
-    const mode = modeFromVitals(view.vitals);
-    const pupils = view.pupils;
-
-    return (
-      <svg className={styles["bot__svg"]} viewBox="0 0 120 140" width={BOT_W} height={BOT_H} aria-hidden="true">
-        <g className={styles["bot__body-group"]}>
-          {/* antenna */}
-          <g className={styles.antenna}>
-            <path d="M60 26 C 60 18, 64 14, 64 9" fill="none" stroke="var(--ink-text-900)" strokeWidth="2.4" strokeLinecap="round" />
-            <circle className={styles["antenna__tip"]} cx="64" cy="8" r="4.6" fill="var(--ember-600)" />
-          </g>
-          {/* head */}
-          <g className={styles.head}>
-            <rect x="30" y="24" width="60" height="44" rx="14" fill="var(--paper-50)" stroke="var(--ink-text-900)" strokeWidth="2.6" />
-            {mode === "asleep" ? (
-              <>
-                <path d="M44 46 q 5 4 10 0" fill="none" stroke="var(--ink-text-900)" strokeWidth="2.4" strokeLinecap="round" />
-                <path d="M66 46 q 5 4 10 0" fill="none" stroke="var(--ink-text-900)" strokeWidth="2.4" strokeLinecap="round" />
-              </>
-            ) : mode === "error" ? (
-              <>
-                <path d="M45 42 l8 8 m0 -8 l-8 8" stroke="var(--ink-text-900)" strokeWidth="2.2" strokeLinecap="round" />
-                <path d="M67 42 l8 8 m0 -8 l-8 8" stroke="var(--ink-text-900)" strokeWidth="2.2" strokeLinecap="round" />
-              </>
-            ) : (
-              <>
-                <g className={styles["eye-l"]}>
-                  <circle cx="49" cy="46" r="6.5" fill="#fff" stroke="var(--ink-text-900)" strokeWidth="2" />
-                  <circle cx={49 + pupils.x} cy={46 + pupils.y} r="2.6" fill="var(--ink-text-900)" />
-                </g>
-                <g className={styles["eye-r"]}>
-                  <circle cx="71" cy="46" r="6.5" fill="#fff" stroke="var(--ink-text-900)" strokeWidth="2" />
-                  <circle cx={71 + pupils.x} cy={46 + pupils.y} r="2.6" fill="var(--ink-text-900)" />
-                </g>
-              </>
-            )}
-            {mode === "awake" ? (
-              <path d="M54 58 q 6 4 12 0" fill="none" stroke="var(--ink-text-900)" strokeWidth="2.2" strokeLinecap="round" />
-            ) : mode === "asleep" ? (
-              <circle cx="60" cy="59" r="2.4" fill="none" stroke="var(--ink-text-900)" strokeWidth="1.8" />
-            ) : (
-              <line x1="55" y1="58" x2="65" y2="58" stroke="var(--ink-text-900)" strokeWidth="2.2" strokeLinecap="round" />
-            )}
-          </g>
-          {/* body */}
-          <g className={styles.torso}>
-            <rect x="38" y="72" width="44" height="36" rx="11" fill="var(--paper-100)" stroke="var(--ink-text-900)" strokeWidth="2.6" />
-            {/* chest LED = the loop, honestly */}
-            <circle
-              className={styles.led}
-              cx="60"
-              cy="86"
-              r="4.4"
-              fill={mode === "awake" ? "var(--live-600)" : mode === "asleep" ? "var(--signal-idle)" : mode === "error" ? "var(--signal-error)" : "var(--ink-text-300)"}
-            />
-            <line x1="46" y1="98" x2="74" y2="98" stroke="var(--border-2)" strokeWidth="1.6" />
-          </g>
-          {/* arms */}
-          <g className={cx(styles.arm, styles["arm--l"])}>
-            <path d="M38 80 C 28 84, 26 92, 28 97" fill="none" stroke="var(--ink-text-900)" strokeWidth="2.6" strokeLinecap="round" />
-          </g>
-          <g className={cx(styles.arm, styles["arm--r"])}>
-            <path d="M82 80 C 92 84, 94 92, 92 97" fill="none" stroke="var(--ink-text-900)" strokeWidth="2.6" strokeLinecap="round" />
-          </g>
-          {/* legs */}
-          <g className={cx(styles.leg, styles["leg--l"])}>
-            <rect x="46" y="108" width="10" height="14" rx="4.5" fill="var(--paper-50)" stroke="var(--ink-text-900)" strokeWidth="2.4" />
-          </g>
-          <g className={cx(styles.leg, styles["leg--r"])}>
-            <rect x="64" y="108" width="10" height="14" rx="4.5" fill="var(--paper-50)" stroke="var(--ink-text-900)" strokeWidth="2.4" />
-          </g>
-        </g>
-        {mode === "asleep" && (
-          <g className={styles.zz} fill="none" stroke="var(--signal-idle)" strokeWidth="1.8" strokeLinecap="round">
-            <path className={cx(styles.z, styles.z1)} d="M88 30 h8 l-8 8 h8" />
-            <path className={cx(styles.z, styles.z2)} d="M99 16 h6 l-6 6 h6" />
-          </g>
-        )}
-      </svg>
-    );
-  }
-
   const mode = modeFromVitals(view.vitals);
   const shyMode = isShyModeFromView(view);
+  const restingSprite = restingSpriteFromView(view);
+  const runnerSprite = runnerSpriteFromView(view);
 
   if (!view.mounted) return null;
 
   if (view.hidden) {
     return (
       <button className={styles.peek} onClick={show} aria-label="Bring Tiny back">
-        <svg viewBox="0 0 24 30" width="16" height="20" aria-hidden="true">
-          <line x1="12" y1="10" x2="12" y2="3" stroke="currentColor" strokeWidth="1.8" />
-          <circle cx="12" cy="3" r="2.4" fill="var(--ember-600)" stroke="none" />
-          <rect x="4" y="10" width="16" height="14" rx="5" fill="var(--paper-50)" stroke="currentColor" strokeWidth="1.8" />
-        </svg>
+        <span
+          className={styles["peek__core"]}
+          style={{ backgroundImage: `url("${TINY_PET_URL}")` }}
+          aria-hidden="true"
+        ></span>
       </button>
     );
   }
@@ -1168,7 +1117,7 @@ export function TinyBot() {
           >
             <div className={styles["runner-bob"]}>
               <div className={styles["runner-inner"]} style={{ transform: runnerTransform }}>
-                <BotSvg />
+                <BotSprite state={runnerSprite} />
               </div>
             </div>
             {view.runPose === "skid" && <div className={styles.dust}></div>}
@@ -1184,10 +1133,10 @@ export function TinyBot() {
               data-dir={view.spot.dir}
               style={{ transform: shyTransform }}
               onClick={poke}
-              aria-label="Tiny the robot, peeking out — click to hear a live fact"
+              aria-label="Tiny, the living platform, peeking out — click to hear a live fact"
               title="Tiny"
             >
-              <BotSvg />
+              <BotSprite state={restingSprite} />
             </button>
             <button className={styles["bot__close"]} onClick={dismiss} aria-label="Dismiss Tiny">
               ×
@@ -1199,18 +1148,18 @@ export function TinyBot() {
   }
 
   return (
-    <div className={cx(styles["bot-wrap"], mode === "asleep" && styles.asleep)}>
+    <div className={styles["bot-wrap"]}>
       {view.bubble && (
         <div className={styles.bubble} role="status">
           <span className={styles["bubble__text"]}>{view.bubble}</span>
         </div>
       )}
-      <div className={cx(styles.bot, view.waving && styles.waving)}>
+      <div className={styles.bot}>
         <button className={cx(styles["bot__close"], styles["bot__close--corner"])} onClick={dismiss} aria-label="Dismiss Tiny">
           ×
         </button>
-        <button className={styles["bot__hit"]} onClick={poke} aria-label="Tiny the robot — click to hear a live fact" title="Tiny">
-          <BotSvg />
+        <button className={styles["bot__hit"]} onClick={poke} aria-label="Tiny, the living platform — click to hear a live fact" title="Tiny">
+          <BotSprite state={restingSprite} />
         </button>
       </div>
     </div>

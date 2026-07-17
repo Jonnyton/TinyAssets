@@ -1,22 +1,91 @@
-/* Structural SVG classes kept as module exports so the JSX keeps the source's class structure. */
-.antenna {}
-.head {}
-.torso {}
-.arm {}
-.arm--l {}
-.arm--r {}
-.leg {}
-.leg--l {}
-.leg--r {}
-.zz {}
-.z1 {}
-.z2 {}
-.above {}
-.asleep {}
-.is-hiding {}
-.pant {}
-.skid {}
-.waving {}
+/* The approved Work-pet atlas: 8 columns × 9 state rows, 192 × 208 per cell. */
+.sprite-frame {
+  --sprite-scale: 0.458333;
+  display: block;
+  width: 88px;
+  height: 95px;
+  overflow: visible;
+}
+
+.tiny-sprite {
+  display: block;
+  width: 192px;
+  height: 208px;
+  background-repeat: no-repeat;
+  background-size: 1536px 1872px;
+  transform: scale(var(--sprite-scale));
+  transform-origin: top left;
+  will-change: background-position;
+}
+
+.sprite--idle {
+  background-position-y: 0;
+  animation: sprite-6 1.1s steps(6) infinite;
+}
+
+.sprite--run-right {
+  background-position-y: -208px;
+  animation: sprite-8 0.68s steps(8) infinite;
+}
+
+.sprite--run-left {
+  background-position-y: -416px;
+  animation: sprite-8 0.68s steps(8) infinite;
+}
+
+.sprite--wave {
+  background-position-y: -624px;
+  animation: sprite-4 0.8s steps(4) infinite;
+}
+
+.sprite--jump {
+  background-position-y: -832px;
+  animation: sprite-5 0.72s steps(5) infinite;
+}
+
+.sprite--failure {
+  background-position-y: -1040px;
+  animation: sprite-8 1s steps(8) infinite;
+}
+
+.sprite--waiting {
+  background-position-y: -1248px;
+  animation: sprite-6 1.35s steps(6) infinite;
+}
+
+.sprite--active-work {
+  background-position-y: -1456px;
+  animation: sprite-6 0.9s steps(6) infinite;
+}
+
+.sprite--review {
+  background-position-y: -1664px;
+  animation: sprite-6 1.2s steps(6) infinite;
+}
+
+@keyframes sprite-4 {
+  to {
+    background-position-x: -768px;
+  }
+}
+
+@keyframes sprite-5 {
+  to {
+    background-position-x: -960px;
+  }
+}
+
+@keyframes sprite-6 {
+  to {
+    background-position-x: -1152px;
+  }
+}
+
+@keyframes sprite-8 {
+  to {
+    background-position-x: -1536px;
+  }
+}
 
 /* ---------- shy mode: the hiding-spot window ---------- */
 .tiny-shy {
@@ -66,8 +135,8 @@
   position: fixed;
   z-index: 40;
   pointer-events: none;
-  width: 74px;
-  height: 86px;
+  width: 88px;
+  height: 95px;
 }
 
 .runner-bob {
@@ -108,67 +177,6 @@
   }
 }
 
-.tiny-runner .leg--l {
-  animation: runcycle 0.22s linear infinite;
-  transform-origin: 51px 108px;
-}
-
-.tiny-runner .leg--r {
-  animation: runcycle 0.22s linear infinite;
-  animation-delay: -0.11s;
-  transform-origin: 69px 108px;
-}
-
-@keyframes runcycle {
-  0%,
-  100% {
-    transform: rotate(38deg);
-  }
-  50% {
-    transform: rotate(-38deg);
-  }
-}
-
-.tiny-runner .arm--l {
-  animation: armswing 0.22s linear infinite;
-  animation-delay: -0.11s;
-  transform-origin: 38px 80px;
-}
-
-.tiny-runner .arm--r {
-  animation: armswing 0.22s linear infinite;
-  transform-origin: 82px 80px;
-}
-
-@keyframes armswing {
-  0%,
-  100% {
-    transform: rotate(22deg);
-  }
-  50% {
-    transform: rotate(-22deg);
-  }
-}
-
-/* Skid: legs lock forward, dust kicks up where his feet were. */
-.tiny-runner.skid .leg--l,
-.tiny-runner.skid .leg--r {
-  animation: none;
-  transform: rotate(32deg);
-}
-
-.tiny-runner.skid .arm--l,
-.tiny-runner.skid .arm--r {
-  animation: none;
-  transform: rotate(-18deg);
-}
-
-.tiny-runner.pant .leg--l,
-.tiny-runner.pant .leg--r,
-.tiny-runner.pant .arm--l,
-.tiny-runner.pant .arm--r {
-  animation: none;
-}
 
 .dust {
   position: absolute;
@@ -268,133 +276,6 @@
   line-height: 0;
 }
 
-.bot__svg {
-  overflow: visible;
-}
-
-.bot__body-group {
-  transform-origin: 60px 120px;
-}
-
-.bot-wrap:not(.asleep) .bot__body-group {
-  animation: bob 4.5s ease-in-out infinite;
-}
-
-.asleep .bot__body-group {
-  animation: none;
-  transform: rotate(-4deg) translateY(3px);
-}
-
-@keyframes bob {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-3px);
-  }
-}
-
-.antenna__tip {
-  animation: glowpulse 3.2s ease-in-out infinite;
-  transform-origin: 64px 8px;
-}
-
-@keyframes glowpulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.55;
-  }
-}
-
-.eye-l,
-.eye-r {
-  animation: blink 5.2s infinite;
-  transform-origin: center 46px;
-}
-
-.eye-r {
-  animation-delay: 0.08s;
-}
-
-@keyframes blink {
-  0%,
-  94%,
-  100% {
-    transform: scaleY(1);
-  }
-  96%,
-  98% {
-    transform: scaleY(0.12);
-  }
-}
-
-.led {
-  animation: ledpulse 2.4s ease-in-out infinite;
-}
-
-@keyframes ledpulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
-.arm--r {
-  transform-origin: 82px 80px;
-}
-
-.waving .arm--r {
-  animation: wave 1.1s ease-in-out;
-}
-
-@keyframes wave {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  25% {
-    transform: rotate(-58deg);
-  }
-  50% {
-    transform: rotate(-20deg);
-  }
-  75% {
-    transform: rotate(-52deg);
-  }
-}
-
-.z {
-  opacity: 0;
-  animation: zfloat 3.4s ease-in-out infinite;
-}
-
-.z2 {
-  animation-delay: 1.1s;
-}
-
-@keyframes zfloat {
-  0% {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  35% {
-    opacity: 0.9;
-  }
-  80% {
-    opacity: 0;
-    transform: translateY(-7px);
-  }
-  100% {
-    opacity: 0;
-  }
-}
 
 .bot__close {
   position: absolute;
@@ -452,13 +333,17 @@
   background: var(--paper-200);
 }
 
+.peek__core {
+  display: block;
+  width: 32px;
+  height: 35px;
+  background-position: 0 0;
+  background-size: 256px 312px;
+  background-repeat: no-repeat;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .bot__body-group,
-  .antenna__tip,
-  .eye-l,
-  .eye-r,
-  .led,
-  .z {
+  .tiny-sprite {
     animation: none !important;
   }
   .bubble,
@@ -474,10 +359,6 @@
   .bot-wrap {
     right: 10px;
     bottom: 10px;
-  }
-  .bot__svg {
-    width: 64px;
-    height: 75px;
   }
   .bubble {
     max-width: 200px;

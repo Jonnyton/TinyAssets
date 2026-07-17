@@ -7,6 +7,7 @@ const basePath = process.env.PAGES_BASE_PATH || "";
 const nextConfig = {
   trailingSlash: true,
   images: { unoptimized: true },
+  env: { NEXT_PUBLIC_BASE_PATH: basePath },
   // The design system ships ESM dist; let Next transpile it.
   transpilePackages: ["@tiny/design-system"],
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),

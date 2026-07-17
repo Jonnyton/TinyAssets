@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'WebSite/site-react/**'
+      - 'WebSite/site/tests/tinybot-sprite.test.mjs'
       - 'WebSite/design-system/**'
       - '.github/workflows/preview-worker.yml'
 
@@ -42,6 +43,7 @@ jobs:
           NEXT_PUBLIC_MCP_PATH: '/mcp'
         run: |
           npm ci
+          npm run test:unit
           npm run build
           rm -f out/CNAME
 

@@ -1,7 +1,7 @@
 <!--
   TinyBot — Tiny himself, living on (and behind) the site.
 
-  A small ink-line robot who is genuinely shy. He hides behind whatever
+  A small living goal-engine who is genuinely shy. He hides behind whatever
   your mouse is on — cards, tables, paragraphs, headings, anything with a
   shape — and peeks out a random side of it. Move to the next block and he
   runs behind that one instead (little legs, skids on direction changes,
@@ -28,12 +28,23 @@
   type Dir = 'up' | 'left' | 'right';
   type Spot = { x: number; y: number; w: number; h: number; dir: Dir };
 
-  const BOT_W = 74;
-  const BOT_H = 86;
+  type SpriteState =
+    | 'idle'
+    | 'run-right'
+    | 'run-left'
+    | 'wave'
+    | 'jump'
+    | 'failure'
+    | 'waiting'
+    | 'active-work'
+    | 'review';
+
+  const BOT_W = 88;
+  const BOT_H = 95;
   const SIZE: Record<Dir, { w: number; h: number }> = {
-    up: { w: 104, h: 90 },
-    left: { w: 90, h: 102 },
-    right: { w: 90, h: 102 }
+    up: { w: 118, h: 100 },
+    left: { w: 104, h: 112 },
+    right: { w: 104, h: 112 }
   };
   const SPEAK_COOLDOWN = 5_200;
   const STARTLE_DIST = 110;
@@ -57,11 +68,11 @@
   let bubble = $state<string | null>(null);
   let bubblePos = $state({ left: 0, top: 0, above: true });
   let waving = $state(false);
+  let jumping = $state(false);
   let factIdx = $state(0);
 
   let spot = $state<Spot | null>(null);
   let shyState = $state<'hidden' | 'peek' | 'deep'>('hidden');
-  let pupils = $state({ x: 0, y: 0 });
 
   // The runner — him out in the open, trying his best.
   let runner = $state<{ x: number; y: number } | null>(null);
@@ -113,6 +124,30 @@
   );
   // Shy following only while he's actually up. Asleep/error = stationary, honestly.
   const shyMode = $derived(shyCapable && (mode === 'awake' || mode === 'reading'));
+  const restingSprite = $derived<SpriteState>(
+    mode === 'error'
+      ? 'failure'
+      : mode === 'asleep' || mode === 'reading'
+        ? 'waiting'
+        : vitals?.activeRun
+          ? 'active-work'
+          : jumping
+            ? 'jump'
+            : waving
+              ? 'wave'
+              : bubble
+                ? 'review'
+                : 'idle'
+  );
+  const runnerSprite = $derived<SpriteState>(
+    runPose === 'skid'
+      ? 'failure'
+      : runPose === 'pant'
+        ? 'waiting'
+        : facing === 1
+          ? 'run-right'
+          : 'run-left'
+  );
 
   /* ---------- what he can say ---------- */
 
@@ -519,7 +554,6 @@
       runner = { x: runner.x + (dx / d) * step, y: runner.y + (dy / d) * step };
       runDist += step;
       facing = dx >= 0 ? 1 : -1;
-      pupils = { x: 2.0 * facing, y: 0.6 };
       // Try (and fail) to keep up: if you've moved on to another block, re-aim.
       if (t - lastRetargetT > 450 && retargetCount < 3) {
         lastRetargetT = t;
@@ -618,6 +652,8 @@
   }
 
   function poke() {
+    waving = true;
+    window.setTimeout(() => (waving = false), 1200);
     if (shyMode) {
       const f = facts();
       shyState = 'deep';
@@ -626,8 +662,6 @@
       lastSpoke = performance.now();
       return;
     }
-    waving = true;
-    window.setTimeout(() => (waving = false), 1200);
     const f = facts();
     say(f[factIdx % f.length], 7000);
     factIdx += 1;
@@ -668,14 +702,6 @@
   function onPointerMove(e: PointerEvent) {
     cursor = { x: e.clientX, y: e.clientY };
     lastHover = e.target instanceof Element ? e.target : null;
-    // Eyes track the cursor from wherever he's hiding (mid-run he watches the road).
-    if (!runner) {
-      const c = spot && shyMode ? spotCenter(spot) : { x: window.innerWidth - 70, y: window.innerHeight - 90 };
-      pupils = {
-        x: Math.max(-2.2, Math.min(2.2, (e.clientX - c.x) / 200)),
-        y: Math.max(-1.6, Math.min(1.6, (e.clientY - c.y) / 240))
-      };
-    }
     handleDwell(lastHover);
 
     if (!shyMode || hidden) {
@@ -792,6 +818,8 @@
   }
   function show() {
     hidden = false;
+    jumping = true;
+    after(1200, () => (jumping = false));
     try {
       localStorage.removeItem('tinybot:hidden');
     } catch {}
@@ -837,7 +865,7 @@
 
   const runnerTransform = $derived.by(() => {
     const tilt = runPose === 'run' ? 9 : runPose === 'skid' ? -14 : 0;
-    return `scaleX(${facing}) rotate(${tilt}deg)`;
+    return `rotate(${tilt}deg)`;
   });
 
   const shyTransform = $derived.by(() => {
@@ -903,86 +931,16 @@
   });
 </script>
 
-{#snippet botSvg()}
-  <svg class="bot__svg" viewBox="0 0 120 140" width={BOT_W} height={BOT_H} aria-hidden="true">
-    <g class="bot__body-group">
-      <!-- antenna -->
-      <g class="antenna">
-        <path d="M60 26 C 60 18, 64 14, 64 9" fill="none" stroke="var(--ink-text-900)" stroke-width="2.4" stroke-linecap="round" />
-        <circle class="antenna__tip" cx="64" cy="8" r="4.6" fill="var(--ember-600)" />
-      </g>
-      <!-- head -->
-      <g class="head">
-        <rect x="30" y="24" width="60" height="44" rx="14" fill="var(--paper-50)" stroke="var(--ink-text-900)" stroke-width="2.6" />
-        {#if mode === 'asleep'}
-          <path d="M44 46 q 5 4 10 0" fill="none" stroke="var(--ink-text-900)" stroke-width="2.4" stroke-linecap="round" />
-          <path d="M66 46 q 5 4 10 0" fill="none" stroke="var(--ink-text-900)" stroke-width="2.4" stroke-linecap="round" />
-        {:else if mode === 'error'}
-          <path d="M45 42 l8 8 m0 -8 l-8 8" stroke="var(--ink-text-900)" stroke-width="2.2" stroke-linecap="round" />
-          <path d="M67 42 l8 8 m0 -8 l-8 8" stroke="var(--ink-text-900)" stroke-width="2.2" stroke-linecap="round" />
-        {:else}
-          <g class="eye-l">
-            <circle cx="49" cy="46" r="6.5" fill="#fff" stroke="var(--ink-text-900)" stroke-width="2" />
-            <circle cx={49 + pupils.x} cy={46 + pupils.y} r="2.6" fill="var(--ink-text-900)" />
-          </g>
-          <g class="eye-r">
-            <circle cx="71" cy="46" r="6.5" fill="#fff" stroke="var(--ink-text-900)" stroke-width="2" />
-            <circle cx={71 + pupils.x} cy={46 + pupils.y} r="2.6" fill="var(--ink-text-900)" />
-          </g>
-        {/if}
-        {#if mode === 'awake'}
-          <path d="M54 58 q 6 4 12 0" fill="none" stroke="var(--ink-text-900)" stroke-width="2.2" stroke-linecap="round" />
-        {:else if mode === 'asleep'}
-          <circle cx="60" cy="59" r="2.4" fill="none" stroke="var(--ink-text-900)" stroke-width="1.8" />
-        {:else}
-          <line x1="55" y1="58" x2="65" y2="58" stroke="var(--ink-text-900)" stroke-width="2.2" stroke-linecap="round" />
-        {/if}
-      </g>
-      <!-- body -->
-      <g class="torso">
-        <rect x="38" y="72" width="44" height="36" rx="11" fill="var(--paper-100)" stroke="var(--ink-text-900)" stroke-width="2.6" />
-        <!-- chest LED = the loop, honestly -->
-        <circle
-          class="led"
-          cx="60"
-          cy="86"
-          r="4.4"
-          fill={mode === 'awake' ? 'var(--live-600)' : mode === 'asleep' ? 'var(--signal-idle)' : mode === 'error' ? 'var(--signal-error)' : 'var(--ink-text-300)'}
-        />
-        <line x1="46" y1="98" x2="74" y2="98" stroke="var(--border-2)" stroke-width="1.6" />
-      </g>
-      <!-- arms -->
-      <g class="arm arm--l">
-        <path d="M38 80 C 28 84, 26 92, 28 97" fill="none" stroke="var(--ink-text-900)" stroke-width="2.6" stroke-linecap="round" />
-      </g>
-      <g class="arm arm--r">
-        <path d="M82 80 C 92 84, 94 92, 92 97" fill="none" stroke="var(--ink-text-900)" stroke-width="2.6" stroke-linecap="round" />
-      </g>
-      <!-- legs -->
-      <g class="leg leg--l">
-        <rect x="46" y="108" width="10" height="14" rx="4.5" fill="var(--paper-50)" stroke="var(--ink-text-900)" stroke-width="2.4" />
-      </g>
-      <g class="leg leg--r">
-        <rect x="64" y="108" width="10" height="14" rx="4.5" fill="var(--paper-50)" stroke="var(--ink-text-900)" stroke-width="2.4" />
-      </g>
-    </g>
-    {#if mode === 'asleep'}
-      <g class="zz" fill="none" stroke="var(--signal-idle)" stroke-width="1.8" stroke-linecap="round">
-        <path class="z z1" d="M88 30 h8 l-8 8 h8" />
-        <path class="z z2" d="M99 16 h6 l-6 6 h6" />
-      </g>
-    {/if}
-  </svg>
+{#snippet botSprite(state: SpriteState)}
+  <span class="sprite-frame" aria-hidden="true">
+    <span class="tiny-sprite sprite--{state}"></span>
+  </span>
 {/snippet}
 
 {#if mounted}
   {#if hidden}
     <button class="peek" onclick={show} aria-label="Bring Tiny back">
-      <svg viewBox="0 0 24 30" width="16" height="20" aria-hidden="true">
-        <line x1="12" y1="10" x2="12" y2="3" stroke="currentColor" stroke-width="1.8" />
-        <circle cx="12" cy="3" r="2.4" fill="var(--ember-600)" stroke="none" />
-        <rect x="4" y="10" width="16" height="14" rx="5" fill="var(--paper-50)" stroke="currentColor" stroke-width="1.8" />
-      </svg>
+      <span class="peek__core" aria-hidden="true"></span>
     </button>
   {:else if shyMode}
     {#if bubble}
@@ -1005,7 +963,7 @@
       >
         <div class="runner-bob">
           <div class="runner-inner" style="transform: {runnerTransform};">
-            {@render botSvg()}
+            {@render botSprite(runnerSprite)}
           </div>
         </div>
         {#if runPose === 'skid'}<div class="dust"></div>{/if}
@@ -1022,25 +980,25 @@
           data-dir={spot.dir}
           style="transform: {shyTransform};"
           onclick={poke}
-          aria-label="Tiny the robot, peeking out — click to hear a live fact"
+          aria-label="Tiny, the living platform, peeking out — click to hear a live fact"
           title="Tiny"
         >
-          {@render botSvg()}
+          {@render botSprite(restingSprite)}
         </button>
         <button class="bot__close" onclick={dismiss} aria-label="Dismiss Tiny">×</button>
       </div>
     {/if}
   {:else}
-    <div class="bot-wrap" class:asleep={mode === 'asleep'}>
+    <div class="bot-wrap">
       {#if bubble}
         <div class="bubble" role="status">
           <span class="bubble__text">{bubble}</span>
         </div>
       {/if}
-      <div class="bot" class:waving>
+      <div class="bot">
         <button class="bot__close bot__close--corner" onclick={dismiss} aria-label="Dismiss Tiny">×</button>
-        <button class="bot__hit" onclick={poke} aria-label="Tiny the robot — click to hear a live fact" title="Tiny">
-          {@render botSvg()}
+        <button class="bot__hit" onclick={poke} aria-label="Tiny, the living platform — click to hear a live fact" title="Tiny">
+          {@render botSprite(restingSprite)}
         </button>
       </div>
     </div>
@@ -1048,6 +1006,82 @@
 {/if}
 
 <style>
+  /* The approved Work-pet atlas: 8 columns × 9 state rows, 192 × 208 per cell. */
+  .sprite-frame {
+    --sprite-scale: 0.458333;
+    display: block;
+    width: 88px;
+    height: 95px;
+    overflow: visible;
+  }
+  .tiny-sprite {
+    display: block;
+    width: 192px;
+    height: 208px;
+    background-image: url('/tiny-pet.png');
+    background-repeat: no-repeat;
+    background-size: 1536px 1872px;
+    transform: scale(var(--sprite-scale));
+    transform-origin: top left;
+    will-change: background-position;
+  }
+  .sprite--idle {
+    background-position-y: 0;
+    animation: sprite-6 1.1s steps(6) infinite;
+  }
+  .sprite--run-right {
+    background-position-y: -208px;
+    animation: sprite-8 0.68s steps(8) infinite;
+  }
+  .sprite--run-left {
+    background-position-y: -416px;
+    animation: sprite-8 0.68s steps(8) infinite;
+  }
+  .sprite--wave {
+    background-position-y: -624px;
+    animation: sprite-4 0.8s steps(4) infinite;
+  }
+  .sprite--jump {
+    background-position-y: -832px;
+    animation: sprite-5 0.72s steps(5) infinite;
+  }
+  .sprite--failure {
+    background-position-y: -1040px;
+    animation: sprite-8 1s steps(8) infinite;
+  }
+  .sprite--waiting {
+    background-position-y: -1248px;
+    animation: sprite-6 1.35s steps(6) infinite;
+  }
+  .sprite--active-work {
+    background-position-y: -1456px;
+    animation: sprite-6 0.9s steps(6) infinite;
+  }
+  .sprite--review {
+    background-position-y: -1664px;
+    animation: sprite-6 1.2s steps(6) infinite;
+  }
+  @keyframes sprite-4 {
+    to {
+      background-position-x: -768px;
+    }
+  }
+  @keyframes sprite-5 {
+    to {
+      background-position-x: -960px;
+    }
+  }
+  @keyframes sprite-6 {
+    to {
+      background-position-x: -1152px;
+    }
+  }
+  @keyframes sprite-8 {
+    to {
+      background-position-x: -1536px;
+    }
+  }
+
   /* ---------- shy mode: the hiding-spot window ---------- */
   .tiny-shy {
     position: fixed;
@@ -1091,8 +1125,8 @@
     position: fixed;
     z-index: 40;
     pointer-events: none;
-    width: 74px;
-    height: 86px;
+    width: 88px;
+    height: 95px;
   }
   .runner-bob {
     animation: runbob 0.3s ease-in-out infinite;
@@ -1125,59 +1159,6 @@
     50% {
       transform: translateY(2px) scale(1.05, 0.93);
     }
-  }
-  .tiny-runner .leg--l {
-    animation: runcycle 0.22s linear infinite;
-    transform-origin: 51px 108px;
-  }
-  .tiny-runner .leg--r {
-    animation: runcycle 0.22s linear infinite;
-    animation-delay: -0.11s;
-    transform-origin: 69px 108px;
-  }
-  @keyframes runcycle {
-    0%,
-    100% {
-      transform: rotate(38deg);
-    }
-    50% {
-      transform: rotate(-38deg);
-    }
-  }
-  .tiny-runner .arm--l {
-    animation: armswing 0.22s linear infinite;
-    animation-delay: -0.11s;
-    transform-origin: 38px 80px;
-  }
-  .tiny-runner .arm--r {
-    animation: armswing 0.22s linear infinite;
-    transform-origin: 82px 80px;
-  }
-  @keyframes armswing {
-    0%,
-    100% {
-      transform: rotate(22deg);
-    }
-    50% {
-      transform: rotate(-22deg);
-    }
-  }
-  /* Skid: legs lock forward, dust kicks up where his feet were. */
-  .tiny-runner.skid .leg--l,
-  .tiny-runner.skid .leg--r {
-    animation: none;
-    transform: rotate(32deg);
-  }
-  .tiny-runner.skid .arm--l,
-  .tiny-runner.skid .arm--r {
-    animation: none;
-    transform: rotate(-18deg);
-  }
-  .tiny-runner.pant .leg--l,
-  .tiny-runner.pant .leg--r,
-  .tiny-runner.pant .arm--l,
-  .tiny-runner.pant .arm--r {
-    animation: none;
   }
   .dust {
     position: absolute;
@@ -1270,116 +1251,6 @@
     cursor: pointer;
     line-height: 0;
   }
-  .bot__svg {
-    overflow: visible;
-  }
-  .bot__body-group {
-    transform-origin: 60px 120px;
-  }
-  .bot-wrap:not(.asleep) .bot__body-group {
-    animation: bob 4.5s ease-in-out infinite;
-  }
-  .asleep .bot__body-group {
-    animation: none;
-    transform: rotate(-4deg) translateY(3px);
-  }
-  @keyframes bob {
-    0%,
-    100% {
-      transform: translateY(0);
-    }
-    50% {
-      transform: translateY(-3px);
-    }
-  }
-  .antenna__tip {
-    animation: glowpulse 3.2s ease-in-out infinite;
-    transform-origin: 64px 8px;
-  }
-  @keyframes glowpulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.55;
-    }
-  }
-  .eye-l,
-  .eye-r {
-    animation: blink 5.2s infinite;
-    transform-origin: center 46px;
-  }
-  .eye-r {
-    animation-delay: 0.08s;
-  }
-  @keyframes blink {
-    0%,
-    94%,
-    100% {
-      transform: scaleY(1);
-    }
-    96%,
-    98% {
-      transform: scaleY(0.12);
-    }
-  }
-  .led {
-    animation: ledpulse 2.4s ease-in-out infinite;
-  }
-  @keyframes ledpulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-  .arm--r {
-    transform-origin: 82px 80px;
-  }
-  .waving .arm--r {
-    animation: wave 1.1s ease-in-out;
-  }
-  @keyframes wave {
-    0%,
-    100% {
-      transform: rotate(0deg);
-    }
-    25% {
-      transform: rotate(-58deg);
-    }
-    50% {
-      transform: rotate(-20deg);
-    }
-    75% {
-      transform: rotate(-52deg);
-    }
-  }
-  .z {
-    opacity: 0;
-    animation: zfloat 3.4s ease-in-out infinite;
-  }
-  .z2 {
-    animation-delay: 1.1s;
-  }
-  @keyframes zfloat {
-    0% {
-      opacity: 0;
-      transform: translateY(4px);
-    }
-    35% {
-      opacity: 0.9;
-    }
-    80% {
-      opacity: 0;
-      transform: translateY(-7px);
-    }
-    100% {
-      opacity: 0;
-    }
-  }
 
   .bot__close {
     position: absolute;
@@ -1432,14 +1303,15 @@
   .peek:hover {
     background: var(--paper-200);
   }
+  .peek__core {
+    display: block;
+    width: 32px;
+    height: 35px;
+    background: url('/tiny-pet.png') 0 0 / 256px 312px no-repeat;
+  }
 
   @media (prefers-reduced-motion: reduce) {
-    .bot__body-group,
-    .antenna__tip,
-    .eye-l,
-    .eye-r,
-    .led,
-    .z {
+    .tiny-sprite {
       animation: none !important;
     }
     .bubble,
@@ -1454,10 +1326,6 @@
     .bot-wrap {
       right: 10px;
       bottom: 10px;
-    }
-    .bot__svg {
-      width: 64px;
-      height: 75px;
     }
     .bubble {
       max-width: 200px;
