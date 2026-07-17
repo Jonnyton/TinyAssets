@@ -94,19 +94,42 @@ are TWO such executors (repo class + source_exec class). Each must provide:
   existing `enforce_os_sandbox` / `os_sandbox_attested` attestation path, so a
   coding agent's tool surface is confined at the OS boundary, not just by CLI
   flags.
-- **Sanitized CLI env/config — the managed-hooks vector (Codex S3 r15 #2).** An
-  UNTRUSTED CLI turn (`claude -p` / `codex exec`) MUST run inside the isolated
-  worker with a sanitized environment and config. Anthropic's MANAGED policy
-  settings load regardless of `--setting-sources`, and managed settings can
-  define shell-command HOOKS that fire even in `-p` sessions with the normal
-  subprocess env — so a prompt could trigger host-side hook execution. There is
-  no documented user-space flag to disable managed-policy loading; the worker
-  must therefore neutralize it structurally (run under an identity/filesystem
-  view where the host's managed-settings path is absent/empty, e.g. inside the
-  container/VM with no host `ProgramData` / `/etc/claude-code` / managed-settings
-  mount). This is the same conclusion as the converse-sandbox-P0 finding:
-  OS-level isolation is the only COMPLETE boundary; the closed CLI tool surface
-  is defense-in-depth, not the boundary.
+- **Sanitized CLI env/config — the managed-hooks vector (Codex S3 r15 #2,
+  threat model CORRECTED r19 #5).** An UNTRUSTED CLI turn (`claude -p` /
+  `codex exec`) MUST run inside the isolated worker such that host-managed policy
+  can neither be read from the host NOR delivered to it. Managed settings can
+  define shell-command HOOKS that fire even in non-interactive `-p` sessions, and
+  `--setting-sources` controls ONLY the user/project/local sources — it does NOT
+  suppress managed policy. Two facts make "hide the host settings file"
+  INSUFFICIENT:
+    1. **The path was wrong / version-drifting.** Current Claude Code docs place
+       enterprise/managed file policy under `Program Files` (Windows) —
+       `%ProgramData%\ClaudeCode\managed-settings.json` was the older location,
+       and `/etc/claude-code` (Linux) / `/Library/Application Support/ClaudeCode`
+       (macOS) round out the set. Enumerating "the" path is a moving target, so a
+       negative filesystem check cannot be the boundary.
+    2. **Managed settings can arrive REMOTELY at authentication**, not only from a
+       local file. A worker with every local managed-settings path absent can
+       STILL receive server-managed policy (including command hooks) when the CLI
+       authenticates — so removing the on-disk file does not neutralize the
+       vector.
+  Therefore the worker MUST use ONE of:
+    - **(a) A provider invocation path that cannot load managed hooks at all** —
+      e.g. an unauthenticated / policy-free execution mode, or a provider whose
+      turn is driven without a managed-policy-bearing credential, so no
+      server-managed hook can be delivered; OR
+    - **(b) OS-level containment that treats ANY loaded hook as hostile** — bwrap
+      / container / VM confinement where a hook command that DOES fire executes
+      inside the isolated boundary (no host filesystem, no host network beyond the
+      job's scoped egress, no host credentials), so a fired hook can do nothing a
+      confined job couldn't already do.
+  A local-path scrub is at best a defense-in-depth layer on top of (a) or (b),
+  never the boundary itself. This is the same conclusion as the
+  converse-sandbox-P0 finding: OS-level isolation (or a provider path that cannot
+  load the policy) is the only COMPLETE boundary; the closed CLI tool surface and
+  any settings-path scrub are defense-in-depth, not the boundary.
+  Sources: Claude Code settings, server-managed settings, and CLI-usage docs
+  (`code.claude.com/docs/en/{settings,server-managed-settings,cli-usage}`).
 
 - **Separate `source_exec` (in-process code) attestation — NEVER share the repo
   runner's readiness (Codex S3 r15 #1).** A `source_code` node runs arbitrary

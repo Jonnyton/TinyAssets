@@ -350,8 +350,12 @@ def executor_satisfies(executor: Any, executor_class: str) -> bool:
     _dispatch = getattr(executor, "dispatch", None)
     if not callable(_dispatch):
         return False
-    # DECLARED capability support (Codex S3 r18 #1). Prefer supports(); fall back
-    # to the executor_class attribute for a minimal executor.
+    # BOTH exact class identity AND declared support (Codex S3 r19 #2). A
+    # source_exec executor that merely CLAIMS supports("repo") must NOT satisfy the
+    # repo class — the two-separate-executor invariant requires the executor's own
+    # class to match too, so support-claims can never cross the class boundary.
+    if getattr(executor, "executor_class", None) != executor_class:
+        return False
     _supports = getattr(executor, "supports", None)
     if callable(_supports):
         try:
@@ -359,8 +363,6 @@ def executor_satisfies(executor: Any, executor_class: str) -> bool:
                 return False
         except Exception:  # noqa: BLE001 — a failing support probe ⇒ not ready
             return False
-    elif getattr(executor, "executor_class", None) != executor_class:
-        return False
     _health = getattr(executor, "is_healthy", None)
     if not callable(_health):
         return False
@@ -391,6 +393,41 @@ def isolated_executor_available(executor_class: str) -> bool:
     *executor_class* exists (Codex S3 r17 #1). The single truth `coding_nodes_runnable`
     / `source_exec_runnable` / the choke point / validate all derive from."""
     return executor_satisfies(resolve_isolated_executor(executor_class), executor_class)
+
+
+# --------------------------------------------------------------------------- #
+# Opaque workspace reference — host-path invisibility (Codex S3 r19 #3)
+# --------------------------------------------------------------------------- #
+#
+# The serializable execution request must NEVER carry the daemon's absolute host
+# path (a compromised worker must not learn it). The daemon issues an OPAQUE
+# workspace REFERENCE; the isolated worker resolves it to its OWN prepared
+# workspace. Phase 1 default: an opaque token mapped to the path in a daemon-side
+# registry (in-process, so tests + the trusted daemon can resolve). A real runner
+# OVERRIDES ``resolve_workspace_ref`` to point at the isolated workspace (the
+# daemon's registry is not shared with a separate worker process).
+_WORKSPACE_REF_REGISTRY: dict[str, str] = {}
+
+
+def issue_workspace_ref(*, run_id: str, base_path: "str | Any | None") -> str:
+    """Issue an OPAQUE workspace reference for *base_path* (Codex S3 r19 #3) so the
+    request never leaks the host path. Empty when there is no workspace."""
+    if base_path is None or not str(base_path).strip():
+        return ""
+    import secrets
+
+    token = "ws:" + secrets.token_hex(12)
+    _WORKSPACE_REF_REGISTRY[token] = str(base_path)
+    return token
+
+
+def resolve_workspace_ref(workspace_ref: str | None) -> str | None:
+    """Resolve an opaque workspace ref to the worker's workspace path — or ``None``
+    (fail closed) for an unknown ref (Codex S3 r19 #3). A real runner overrides
+    this to its OWN isolated workspace."""
+    if not workspace_ref:
+        return None
+    return _WORKSPACE_REF_REGISTRY.get(workspace_ref)
 
 
 def coding_nodes_runnable() -> "tuple[bool, str]":

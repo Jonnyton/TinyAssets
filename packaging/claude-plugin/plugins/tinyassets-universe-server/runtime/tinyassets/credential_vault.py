@@ -469,3 +469,47 @@ def apply_provider_auth_env(
     except ValueError:
         raise
     return env
+
+
+# --------------------------------------------------------------------------- #
+# Job-scoped credential grant — vault-broker CONSUMPTION seams (Codex S3 r19 #1)
+# --------------------------------------------------------------------------- #
+#
+# The isolated-executor boundary (Codex S3 r16+) must NOT carry a raw, forgeable
+# ``universe_id`` — a compromised worker could forge it to reach another tenant's
+# credentials. Instead the daemon issues an OPAQUE, JOB-SCOPED grant derived from
+# the AUTHORITATIVE run binding, and the isolated worker redeems it to a SCOPED
+# credential context via the vault broker.
+#
+# These are CONSUMPTION SEAMS the credential-vault workstream fills — S3 does NOT
+# implement a parallel grant/credential store here (host directive: "consume the
+# vault broker's primitive, do not invent a parallel one"). Phase 1 / no broker
+# wired → issuance returns ``None`` and redemption returns ``None`` (fail closed):
+# the request carries no grant and the worker cannot resolve ANY tenant's
+# credentials. The vault-broker slice replaces these with real, signed/expiring,
+# cross-universe-safe issuance + redemption.
+
+
+def issue_job_credential_grant(
+    *, run_id: str, universe_dir: str | Path | None,
+) -> Any | None:
+    """Issue an OPAQUE, daemon-issued, JOB-SCOPED credential grant for the run's
+    AUTHORITATIVE universe binding (``universe_dir`` resolved from the run record —
+    NEVER caller-forgeable metadata). Returns an opaque token the isolated worker
+    later redeems via :func:`redeem_job_credential_grant`, or ``None`` when no
+    vault broker is wired (Phase 1) → the request carries no grant → fail closed.
+
+    Vault-broker CONSUMPTION seam (Codex S3 r19 #1): S3 consumes it; the vault
+    workstream implements real issuance (signed, expiring, single-universe-scoped)."""
+    return None
+
+
+def redeem_job_credential_grant(grant: Any) -> Any | None:
+    """Redeem an opaque job-scoped grant to a SCOPED credential context (e.g. a
+    :class:`tinyassets.providers.base.UniverseContext`) the isolated worker binds
+    its provider to. FAIL CLOSED (``None``) for a missing / malformed / expired /
+    cross-universe grant. Phase 1 / no broker wired → ``None``.
+
+    Vault-broker CONSUMPTION seam (Codex S3 r19 #1): S3 consumes it; the vault
+    workstream implements real redemption + scope enforcement."""
+    return None

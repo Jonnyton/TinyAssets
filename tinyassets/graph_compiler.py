@@ -2627,7 +2627,89 @@ def _build_await_branch_run_node(
 # Version of the serializable execution request / dispatch protocol (Codex S3
 # r18 #1). The isolated worker declares which versions it supports; bump on any
 # breaking change to the request shape so the runner build has a stable contract.
-EXECUTION_REQUEST_SCHEMA_VERSION = 1
+# v2 (Codex S3 r19): opaque workspace_ref (no host path) + opaque credential_grant
+# (no forgeable universe_id) + a JSON-validated request/response contract.
+EXECUTION_REQUEST_SCHEMA_VERSION = 2
+
+_REQUEST_KIND = "isolated_execution_request"
+_RESPONSE_KIND = "isolated_execution_response"
+
+
+def validate_execution_request(request: "dict[str, Any]") -> None:
+    """Validate the execution request is a COMPLETE, JSON-COMPATIBLE contract
+    (Codex S3 r19 #3): it must JSON round-trip (so a `Path`/`set`/other non-JSON
+    value in `inputs` is rejected BEFORE dispatch — never at the transport), carry
+    the required fields, and match the current schema version. Fail LOUD."""
+    if not isinstance(request, dict):
+        raise CompilerError("execution request must be a dict")
+    try:
+        json.dumps(request)
+    except (TypeError, ValueError) as exc:
+        raise CompilerError(
+            f"execution request is not JSON-serializable (an input value is not "
+            f"transport-safe): {exc}"
+        ) from exc
+    for key in ("kind", "schema_version", "capability_class", "node_spec", "inputs"):
+        if key not in request:
+            raise CompilerError(f"execution request missing required field '{key}'")
+    if request.get("kind") != _REQUEST_KIND:
+        raise CompilerError(f"execution request has wrong kind {request.get('kind')!r}")
+    if request.get("schema_version") != EXECUTION_REQUEST_SCHEMA_VERSION:
+        raise CompilerError(
+            f"execution request schema v{request.get('schema_version')} != "
+            f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
+        )
+    # A raw host path must NEVER be present (host-path invisibility, r19 #3).
+    if "base_path" in request:
+        raise CompilerError(
+            "execution request must carry an opaque 'workspace_ref', never a raw "
+            "'base_path' (host-path invisibility)."
+        )
+
+
+def make_execution_response(
+    *,
+    status: str,
+    result: "dict[str, Any] | None" = None,
+    error: "dict[str, Any] | None" = None,
+) -> "dict[str, Any]":
+    """Build the typed, JSON-compatible execution RESPONSE envelope (Codex S3 r19
+    #3) an isolated worker returns: ``status`` is ``ok`` | ``error`` | ``cancelled``.
+    The daemon RECONSTRUCTS a remote failure from ``error`` (type + message) — the
+    contract is real cross-process IPC, not just an in-process Python exception."""
+    return {
+        "kind": _RESPONSE_KIND,
+        "schema_version": EXECUTION_REQUEST_SCHEMA_VERSION,
+        "status": status,
+        "result": result,
+        "error": error,
+    }
+
+
+def validate_execution_response(envelope: Any) -> None:
+    """Validate the worker's response envelope is a JSON-compatible typed contract
+    (Codex S3 r19 #3). Fail LOUD on a non-dict, non-JSON, unknown-status, or
+    wrong-schema envelope."""
+    if not isinstance(envelope, dict):
+        raise CompilerError(
+            f"isolated executor returned {type(envelope).__name__}, expected a "
+            "response envelope dict."
+        )
+    try:
+        json.dumps(envelope)
+    except (TypeError, ValueError) as exc:
+        raise CompilerError(
+            f"execution response is not JSON-serializable: {exc}"
+        ) from exc
+    if envelope.get("kind") != _RESPONSE_KIND:
+        raise CompilerError(f"execution response has wrong kind {envelope.get('kind')!r}")
+    if envelope.get("schema_version") != EXECUTION_REQUEST_SCHEMA_VERSION:
+        raise CompilerError(
+            f"execution response schema v{envelope.get('schema_version')} != "
+            f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
+        )
+    if envelope.get("status") not in ("ok", "error", "cancelled"):
+        raise CompilerError(f"execution response has unknown status {envelope.get('status')!r}")
 
 
 def build_executor_execution_request(
@@ -2636,40 +2718,40 @@ def build_executor_execution_request(
     executor_class: str,
     *,
     domain_id: str = "",
-    base_path: str | Path | None = None,
+    workspace_ref: str = "",
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     state_schema: "list[dict[str, Any]] | None" = None,
     effective_llm_policy: "dict[str, Any] | None" = None,
     concurrency_budget: int | None = None,
-    provider_ref: "dict[str, Any] | None" = None,
+    credential_grant: Any = None,
+    credential_scope_required: bool = False,
 ) -> "dict[str, Any]":
-    """Build the SERIALIZABLE execution REQUEST (Codex S3 r17 #2 + r18 #1) an
-    isolated executor consumes: pure DATA — node spec, inputs, capability class,
-    domain, and the COMPLETE effective execution context ``compile_branch``
-    computes (state schema, effective llm_policy, concurrency budget, a
-    serializable provider-bridge reference, run data-dir ref + lineage + enqueue
-    context) — NO callable. The isolated worker (Phase-2 runner) COMPILES +
-    EXECUTES this inside itself; the daemon holds no code that runs the adapter.
-    This is the runner's complete input contract.
+    """Build the SERIALIZABLE, JSON-VALIDATED execution REQUEST (Codex S3
+    r17/r18/r19) an isolated executor consumes: pure DATA — node spec, inputs,
+    capability class, domain, and the COMPLETE effective context ``compile_branch``
+    computes (state schema, effective llm_policy, concurrency budget) — NO callable,
+    NO raw host path, NO forgeable universe_id.
 
-    ``provider_ref`` is a SERIALIZABLE reference to the provider bridge (e.g.
-    ``{"kind": "platform_call_provider", "universe_id": ...}``), NOT the callable —
-    the worker reconstructs its OWN scoped provider from it. ``base_path`` is the
-    run's data-dir reference; a real Phase-2 worker maps it to its OWN prepared /
-    isolated workspace rather than the daemon's host path.
-    """
+    ``workspace_ref`` is an OPAQUE reference (r19 #3) the worker resolves to its OWN
+    workspace — the host path is never in the request. ``credential_grant`` is an
+    OPAQUE, daemon-issued, JOB-SCOPED grant (r19 #1) the worker redeems via the
+    vault broker — never a raw universe id. ``credential_scope_required`` is the
+    daemon's AUTHORITATIVE signal (True ⟺ the run is universe-bound) so the worker
+    FAILS CLOSED for a scoped run whose grant is missing/unredeemable instead of
+    ever falling back to process-global creds. Validated JSON-serializable before it
+    is returned (a non-JSON input value fails loud here, not at the transport)."""
     import dataclasses as _dc
 
-    return {
-        "kind": "isolated_execution_request",
+    request = {
+        "kind": _REQUEST_KIND,
         "schema_version": EXECUTION_REQUEST_SCHEMA_VERSION,
         "capability_class": executor_class,
         "domain_id": domain_id,
         "node_spec": node.to_dict(),
         "inputs": dict(inputs) if inputs else {},
-        "base_path": str(base_path) if base_path is not None else "",
+        "workspace_ref": workspace_ref or "",
         "parent_run_id": parent_run_id,
         "invocation_depth": int(invocation_depth),
         "enqueue_context": (
@@ -2680,8 +2762,35 @@ def build_executor_execution_request(
             dict(effective_llm_policy) if effective_llm_policy else None
         ),
         "concurrency_budget": concurrency_budget,
-        "provider_ref": provider_ref,
+        "credential_grant": credential_grant,
+        "credential_scope_required": bool(credential_scope_required),
     }
+    validate_execution_request(request)
+    return request
+
+
+def _authoritative_universe_dir(provider_call: Any) -> "str | None":
+    """Extract the AUTHORITATIVE universe directory from the run's bound provider
+    bridge (Codex S3 r19 #1). The public run paths bind a ``UniverseContext`` into
+    ``provider_call`` via ``functools.partial(call_provider, universe_context=uctx)``
+    (``api/runs.py::_bind_universe_context``); ``uctx.universe_dir`` is the tenant's
+    real, resolved home. This is the ONLY trustworthy scope source — the forgeable
+    ``enqueue_context.universe_id`` is dropped on the async / resume / version paths
+    (the r19 #1 defect). Returns the dir as ``str``, or ``None`` when no universe is
+    bound (unscoped run) so the grant issuer fails closed.
+    """
+    import functools as _functools
+
+    cur = provider_call
+    for _ in range(8):  # bounded walk of a (possibly nested) partial chain
+        if cur is None:
+            break
+        keywords = getattr(cur, "keywords", None)
+        if isinstance(keywords, dict) and "universe_context" in keywords:
+            udir = getattr(keywords.get("universe_context"), "universe_dir", None)
+            return str(udir) if udir else None
+        cur = cur.func if isinstance(cur, _functools.partial) else None
+    return None
 
 
 def _build_executor_request_dispatch_node(
@@ -2690,14 +2799,15 @@ def _build_executor_request_dispatch_node(
     executor_class: str,
     *,
     domain_id: str,
-    base_path: str | Path | None,
+    workspace_ref: str,
     parent_run_id: str,
     invocation_depth: int,
     enqueue_context: "NodeEnqueueContext | None",
     state_schema: "list[dict[str, Any]] | None",
     effective_llm_policy: "dict[str, Any] | None",
     concurrency_budget: int | None,
-    provider_ref: "dict[str, Any] | None",
+    credential_grant: Any,
+    credential_scope_required: bool,
     event_sink: Callable[..., None] | None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """DISPATCH a sandbox-required adapter to the isolated executor (Codex S3 r16
@@ -2735,13 +2845,16 @@ def _build_executor_request_dispatch_node(
         _validate_source_code(node)
 
     def _dispatch_fn(state: dict[str, Any]) -> dict[str, Any]:
+        # Build + VALIDATE the JSON-safe request (rejects a non-JSON input value
+        # BEFORE dispatch, Codex S3 r19 #3).
         request = build_executor_execution_request(
             node, state, executor_class,
-            domain_id=domain_id, base_path=base_path,
+            domain_id=domain_id, workspace_ref=workspace_ref,
             parent_run_id=parent_run_id, invocation_depth=invocation_depth,
             enqueue_context=enqueue_context, state_schema=state_schema,
             effective_llm_policy=effective_llm_policy,
-            concurrency_budget=concurrency_budget, provider_ref=provider_ref,
+            concurrency_budget=concurrency_budget, credential_grant=credential_grant,
+            credential_scope_required=credential_scope_required,
         )
         if event_sink is not None:
             try:
@@ -2754,25 +2867,50 @@ def _build_executor_request_dispatch_node(
                     raise
                 logger.exception("event_sink raised in %s (starting)", _nid)
         try:
-            result = executor.dispatch(request)
+            envelope = executor.dispatch(request)
         except Exception as exc:
-            # Codex S3 r18 #2 (same class as the r10 sandbox-refusal fix): a worker
-            # failure is a TERMINAL node failure — emit the failed event (wrapped
-            # with node/executor context) before re-raising, so the run records the
-            # failing node + reason, not a node stuck at 'starting'. Cancellation
+            # Codex S3 r18 #2 / r19 #3: a TRANSPORT/IPC failure (the dispatch call
+            # itself raises) is a TERMINAL node failure — emit the failed event
+            # (wrapped with node/executor context) before re-raising. Cancellation
             # propagates untouched.
             if _is_cancel_exception(exc):
                 raise
             wrapped = CompilerError(
                 f"Node '{_nid}': isolated '{executor_class}' executor dispatch "
-                f"failed: {type(exc).__name__}: {exc}"
+                f"failed (transport): {type(exc).__name__}: {exc}"
             )
             _emit_failed_event(event_sink, _nid, wrapped)
             raise wrapped from exc
+        # Codex S3 r19 #3: the worker returns a TYPED response ENVELOPE — the daemon
+        # RECONSTRUCTS a REMOTE failure (real cross-process IPC), not just an
+        # in-process exception. Validate the envelope, then branch on status.
+        try:
+            validate_execution_response(envelope)
+        except CompilerError as exc:
+            _emit_failed_event(event_sink, _nid, exc)
+            raise
+        status = envelope["status"]
+        if status == "cancelled":
+            # Name-matched so ``_is_cancel_exception`` treats it as cancellation
+            # (graph_compiler intentionally does not import runs' RunCancelledError).
+            _Cancelled = type("RunCancelledError", (Exception,), {})
+            raise _Cancelled(
+                f"Node '{_nid}': isolated '{executor_class}' worker reported the "
+                "job was cancelled."
+            )
+        if status == "error":
+            err = envelope.get("error") or {}
+            exc = CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' worker failed: "
+                f"{err.get('type', 'Error')}: {err.get('message', '')}"
+            )
+            _emit_failed_event(event_sink, _nid, exc)
+            raise exc
+        result = envelope.get("result")
         if not isinstance(result, dict):
             exc = CompilerError(
-                f"Node '{_nid}': isolated '{executor_class}' executor returned "
-                f"{type(result).__name__}, expected a dict of state updates."
+                f"Node '{_nid}': isolated '{executor_class}' worker returned "
+                f"status=ok but result is {type(result).__name__}, expected a dict."
             )
             _emit_failed_event(event_sink, _nid, exc)
             raise exc
@@ -2899,22 +3037,37 @@ def _build_node(
                 # checkpoints are evaluated against the returned delta (a data op).
                 # Carry the COMPLETE effective context compile_branch computed
                 # (Codex S3 r18 #1): state schema, effective llm_policy, concurrency
-                # budget, and a SERIALIZABLE provider-bridge reference (never the
-                # callable) so the isolated worker can actually run the node.
-                _provider_ref = None
-                if provider_call is not None:
-                    _uid = getattr(enqueue_context, "universe_id", "") or ""
-                    _provider_ref = {
-                        "kind": "platform_call_provider", "universe_id": _uid,
-                    }
+                # budget. Credential scope + workspace are OPAQUE, daemon-issued
+                # references (Codex S3 r19 #1/#3), NEVER a raw universe_id or host
+                # path — derived from the AUTHORITATIVE provider binding (the run's
+                # UniverseContext bound into provider_call), not the forgeable /
+                # async-lost enqueue_context.
+                from tinyassets.credential_vault import (
+                    issue_job_credential_grant as _issue_grant,
+                )
+                from tinyassets.sandbox_policy import (
+                    issue_workspace_ref as _issue_workspace_ref,
+                )
+                _auth_universe_dir = _authoritative_universe_dir(provider_call)
+                _credential_grant = _issue_grant(
+                    run_id=parent_run_id, universe_dir=_auth_universe_dir,
+                )
+                _workspace_ref = _issue_workspace_ref(
+                    run_id=parent_run_id, base_path=base_path,
+                )
                 _dispatch = _build_executor_request_dispatch_node(
                     node, _executor, _exec_class,
-                    domain_id=domain_id, base_path=base_path,
+                    domain_id=domain_id, workspace_ref=_workspace_ref,
                     parent_run_id=parent_run_id, invocation_depth=invocation_depth,
                     enqueue_context=enqueue_context, state_schema=state_schema,
                     effective_llm_policy=llm_policy,
                     concurrency_budget=getattr(concurrency_tracker, "budget", None),
-                    provider_ref=_provider_ref, event_sink=event_sink,
+                    credential_grant=_credential_grant,
+                    # AUTHORITATIVE: a bound universe ⇒ scope is required ⇒ the
+                    # worker must redeem the grant or FAIL CLOSED (never fall back
+                    # to process-global creds for a scoped run). Codex S3 r19 #1.
+                    credential_scope_required=bool(_auth_universe_dir),
+                    event_sink=event_sink,
                 )
                 return _wrap_with_checkpoints(_dispatch, node, event_sink)
             _refuse = True
