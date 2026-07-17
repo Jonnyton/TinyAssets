@@ -202,6 +202,11 @@ def subprocess_env_for_provider(
                     f"BYO-bound spawn for {provider} did not produce {expected}; "
                     "refusing to run on ambient platform auth."
                 )
+            # Round-13 #1: keep the founder's key out of the CLI's OWN tool/hook
+            # subprocesses (Bash/hooks/MCP), not just this env. Also the signal the
+            # CLI provider reads to force a hardened bare-context launch (--bare +
+            # restricted tools) — one byo-bound decision drives the whole hardening.
+            env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
     except ImportError:
         # credential_vault genuinely unavailable in this import context — no
         # per-universe overlay is possible; the base env stands.

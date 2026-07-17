@@ -705,3 +705,136 @@ def test_r12_4_declared_byo_lane_with_broken_key_fails_closed(
     # No platform provider was borrowed.
     for name, provider in providers.items():
         assert provider.call_count == 0, f"{name} should not have been called"
+
+
+# ---------------------------------------------------------------------------
+# Round-13 review regressions (Codex r13)
+# ---------------------------------------------------------------------------
+
+
+def test_r13_1_byo_child_scrubs_full_oauth_family_and_sets_subprocess_scrub(
+    tmp_path, monkeypatch,
+):
+    """Round-13 #1 (env layer): a BYO claude child scrubs the WHOLE
+    CLAUDE_CODE_OAUTH_* family (not just the exact _TOKEN name — the r12 gap that
+    let CLAUDE_CODE_OAUTH_REFRESH_TOKEN survive) and sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+    so the key never reaches the CLI's own tool subprocesses."""
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    for var in (
+        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+        "CLAUDE_CODE_OAUTH_ACCESS_TOKEN",
+    ):
+        monkeypatch.setenv(var, "host-" + var)
+    udir = _byo_claude_universe(tmp_path)
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+
+    env = subprocess_env_for_provider("claude-code", universe_dir=udir)
+
+    survivors = [k for k in env if k.startswith("CLAUDE_CODE_OAUTH_")]
+    assert not survivors, f"OAuth family survived: {survivors}"
+    assert env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") == "1"
+    assert env["ANTHROPIC_API_KEY"].startswith("sk-ant-")
+
+
+def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
+    """Round-13 #1 (real CLI harness): spawn the hardened `claude -p` through a
+    STUB claude that records its argv + env. Prove the launch is `--bare` with a
+    shell-escape tool floor, the subprocess-env scrub is on, and NEITHER host OAuth
+    NOR host cloud creds reach the child (so Bash/hooks/MCP started by the CLI can
+    read neither the founder key nor host credentials)."""
+    import asyncio as _asyncio
+    import json as _json
+    import sys as _sys
+    import textwrap as _textwrap
+
+    from tinyassets.providers import claude_provider as cp
+    from tinyassets.providers.base import ModelConfig
+
+    dump = tmp_path / "claude_invocation.json"
+    stub = tmp_path / "claude_stub.py"
+    stub.write_text(_textwrap.dedent(f"""
+        import sys, os, json
+        sys.stdin.buffer.read()  # drain the piped prompt
+        json.dump({{"argv": sys.argv[1:], "env": dict(os.environ)}},
+                  open(r"{dump}", "w", encoding="utf-8"))
+        sys.stdout.write("ok")
+    """), encoding="utf-8")
+    # Route the provider at our stub instead of the real claude binary.
+    monkeypatch.setattr(
+        cp, "_resolve_claude_cmd", lambda: ([_sys.executable, str(stub)], False),
+    )
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    # Host credentials in the parent env that must NOT reach the BYO child.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "host-oauth")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "host-refresh")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "host-aws")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "host-auth-token")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "host-claude"))
+    udir = _byo_claude_universe(tmp_path)
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+
+    _asyncio.run(cp.ClaudeProvider().complete(
+        "hello", "", ModelConfig(timeout=30), universe_dir=udir,
+    ))
+    data = _json.loads(dump.read_text(encoding="utf-8"))
+    argv, child_env = data["argv"], data["env"]
+
+    # Clean bare context + explicit shell-escape tool floor.
+    assert "--bare" in argv
+    assert "--disallowedTools" in argv and "Bash" in argv
+    # The CLI keeps the key out of its OWN tool subprocesses.
+    assert child_env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") == "1"
+    # Neither host OAuth nor host cloud creds reached the child.
+    for host_cred in (
+        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+        "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_AUTH_TOKEN",
+    ):
+        assert host_cred not in child_env, f"{host_cred} leaked into the BYO child"
+    # The child's ONLY Anthropic credential is the founder's BYO key + isolated cfg.
+    assert child_env.get("ANTHROPIC_API_KEY", "").startswith("sk-ant-")
+    assert "claude-byo-isolated" in child_env.get("CLAUDE_CONFIG_DIR", "")
+
+
+@pytest.mark.parametrize("lane", ["market_rented", "host_daemon", "self_hosted_endpoint"])
+def test_r13_2_switch_away_from_byo_stops_key_injection(tmp_path, monkeypatch, lane):
+    """Round-13 #2: after switching AWAY from BYO to a runtime-backed lane, the
+    retained vault key is NOT injected at spawn (the field-clear alone was not
+    enough — injection re-reads the key independently of engine_source). No BYO key
+    and no byo-hardening signal reach the child."""
+    import base64
+
+    from tinyassets.credential_vault import provider_auth_env_overrides
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    udir = tmp_path / f"u-switch-{lane}"
+    udir.mkdir()
+    (udir / "config.yaml").write_text(f"engine_source: {lane}\n", encoding="utf-8")
+    from tinyassets.credential_vault import write_credential_vault
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": base64.b64encode(
+            ("sk-ant-api03-" + "A" * 40).encode()).decode("ascii"),
+    }])
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+
+    assert "ANTHROPIC_API_KEY" not in provider_auth_env_overrides(udir, "claude-code")
+    env = subprocess_env_for_provider("claude-code", universe_dir=udir)
+    assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in env  # not byo-bound → not hardened
+
+
+def test_r13_2_byo_lane_still_injects_after_the_guard(tmp_path, monkeypatch):
+    """Guard the guard: an actual byo_api_key lane STILL injects the key (the
+    lane-aware check must not over-block the sanctioned lane)."""
+    from tinyassets.credential_vault import provider_auth_env_overrides
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    udir = _byo_claude_universe(tmp_path)  # engine_source=byo_api_key + valid key
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+    assert "ANTHROPIC_API_KEY" in provider_auth_env_overrides(udir, "claude-code")

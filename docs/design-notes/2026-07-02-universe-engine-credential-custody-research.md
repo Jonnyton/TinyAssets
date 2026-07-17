@@ -350,14 +350,17 @@ provided default engine for founders (host correction 2026-07-02).**
    Founder API-key custody is the *sanctioned* server path, but "clean" overstated it —
    the providers' own terms attach conditions:
    - **OpenAI** documents API-key *sharing* as **unsupported / against its terms** and
-     recommends **project-scoped keys** with their own budgets
-     (help.openai.com/en/articles/5112595 — API-key safety;
-     help.openai.com/en/articles/9793128 — Pro terms summary). The clean personal-
+     recommends **project-scoped keys** with their own budgets. Cite the API-key +
+     project-key guidance DIRECTLY (round-13 #3 provenance fix — article `9793128`
+     is about ChatGPT **Pro subscription** limits, NOT project keys/budgets, so it
+     is dropped here): help.openai.com/en/articles/5112595 (API-key safety) and
+     help.openai.com/en/articles/5008148 (project-scoped keys). The clean personal-
      *subscription* prohibition (§0) is unchanged, and the Business/Enterprise **Codex
      access-token** exception (§0.1) remains a separate, current lawful org path.
    - **Anthropic** warns that uploading an API key **grants the platform account
-     access** (console-managed keys; anthropic.com legal + code.claude.com legal-and-
-     compliance).
+     access** — cite Anthropic's precise API-key-safety support article (round-13 #3,
+     replacing the vague "anthropic.com legal + code.claude.com" attribution):
+     support.anthropic.com/en/articles/9767949-api-key-best-practices-keeping-your-keys-safe-and-secure.
    Therefore Option B must require, before productionizing: **(a)** dedicated
    **project/service** keys (never a personal all-scopes key), **(b)** explicit
    founder **consent** at deposit, **(c)** per-key **spend limits**, and **(d) legal

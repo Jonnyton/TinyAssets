@@ -94,6 +94,29 @@ def _sandbox_cli_args(
     return flags, run_cwd
 
 
+# Round-13 #1: shell-escape / host-access tools denied for a BYO execution turn.
+# The founder's own key runs in a clean, bare context — a Bash subprocess could
+# read host files or exfiltrate the key, so it is the hard floor (on top of
+# --bare, which already skips OAuth/keychain, hooks, plugins, MCP, and ambient
+# instructions). code.claude.com/docs/en/headless.
+_BYO_HARDENED_DENY_TOOLS: tuple[str, ...] = ("Bash", "BashOutput", "KillShell")
+
+
+def _byo_hardening_flags(proc_env: dict[str, str]) -> list[str]:
+    """Return the CLI hardening flags for a BYO-bound claude -p launch, or [].
+
+    Triggered by ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` — the ONE byo-bound signal
+    ``subprocess_env_for_provider`` sets (round-13 #1) after it has scrubbed every
+    host credential from the child env. Forces ``--bare`` (clean context: no host
+    OAuth/keychain/hooks/plugins/MCP/ambient instructions — the founder's key is
+    the ONLY credential) + an explicit shell-escape tool deny floor, so Bash/hooks/
+    MCP inside the subprocess can read NEITHER the founder key nor host creds.
+    """
+    if proc_env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") != "1":
+        return []
+    return ["--bare", "--disallowedTools", *_BYO_HARDENED_DENY_TOOLS]
+
+
 class ClaudeProvider(BaseProvider):
     """Calls Claude via the ``claude -p`` CLI binary."""
 
@@ -119,6 +142,7 @@ class ClaudeProvider(BaseProvider):
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
+        cmd.extend(_byo_hardening_flags(proc_env))  # round-13 #1: --bare + tool floor
 
         win_kw = _no_window_kwargs()
         if use_shell:
@@ -210,6 +234,7 @@ class ClaudeProvider(BaseProvider):
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
+        cmd.extend(_byo_hardening_flags(proc_env))  # round-13 #1: --bare + tool floor
 
         win_kw = _no_window_kwargs()
         if use_shell:

@@ -339,6 +339,34 @@ _RUNTIME_BACKED_SOURCES = frozenset(
 )
 
 
+def byo_lane_selected(universe_dir: str | Path) -> bool:
+    """Return True iff the universe's DECLARED engine lane is the BYO-key lane.
+
+    Round-13 #2: the spawn-time credential overlay must be LANE-AWARE. The r12
+    field-clear on a lane switch was not enough because
+    :func:`tinyassets.credential_vault.provider_auth_env_overrides` re-reads the
+    vault key INDEPENDENTLY of ``engine_source`` — so a universe switched from
+    ``byo_api_key`` to ``market_rented`` (with the old key still in the vault)
+    still got ``ANTHROPIC_API_KEY`` injected. A retained vault key is injectable
+    ONLY when the selected lane is BYO.
+
+    True for an undeclared universe (default lane) or ``engine_source=byo_api_key``;
+    False for a runtime-backed lane (``host_daemon`` / ``market_rented`` /
+    ``self_hosted_endpoint``) or the retired ``subscription`` lane. A config read
+    error FAILS CLOSED (returns False → no injection), matching the "never run a
+    BYO spawn on ambient/misconfigured state" discipline.
+    """
+    udir = Path(universe_dir)
+    try:
+        raw = _raw_config(udir, udir.name or "default-universe")
+    except Exception:  # noqa: BLE001 — a broken config must not enable injection
+        return False
+    declared = str(raw.get("engine_source") or "").strip()
+    if not declared:
+        return True  # undeclared → the default BYO lane
+    return declared not in _RUNTIME_BACKED_SOURCES and declared != "subscription"
+
+
 def _byo_row_usable(record: dict[str, Any], svc: str) -> bool:
     """Return True iff a BYO ``llm_api_key`` row is per-universe-consumable AND
     carries a non-empty, decodable secret.

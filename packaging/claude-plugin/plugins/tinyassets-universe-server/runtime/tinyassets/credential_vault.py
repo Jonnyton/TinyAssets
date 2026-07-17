@@ -328,6 +328,22 @@ def _byo_injection_enabled() -> bool:
         return False
 
 
+def _byo_lane_selected(universe_dir: str | Path | None) -> bool:
+    """True iff the universe's declared engine lane is the BYO-key lane (round-13
+    #2). Gates BOTH the overlay and the byo-bound decision so a universe switched
+    AWAY from BYO (market/host_daemon/self_hosted) never gets its retained vault
+    key injected. Fails CLOSED (no injection) on any resolution error. Lazy import
+    avoids a credential_vault <-> engine_binding cycle."""
+    if universe_dir is None:
+        return False
+    try:
+        from tinyassets.engine_binding import byo_lane_selected
+
+        return byo_lane_selected(universe_dir)
+    except Exception:  # noqa: BLE001 — a resolution problem must not enable BYO
+        return False
+
+
 def _byo_isolated_config_dir(universe_dir: str | Path | None) -> Path | None:
     """Return an EMPTY, per-universe CLAUDE_CONFIG_DIR for a BYO claude-code spawn.
 
@@ -377,7 +393,11 @@ def provider_auth_env_overrides(
     # Round-12 #1: a legacy per-universe subscription record is NEVER consumed —
     # fail loud (quarantine) rather than silently inject or skip it.
     _reject_retired_subscription_records(universe_dir)
-    if provider == "claude-code" and byo_enabled:
+    if (
+        provider == "claude-code"
+        and byo_enabled
+        and _byo_lane_selected(universe_dir)
+    ):
         api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
         if api_key:
             overrides: dict[str, str] = {"ANTHROPIC_API_KEY": api_key}
@@ -385,8 +405,9 @@ def provider_auth_env_overrides(
             if iso is not None:
                 overrides["CLAUDE_CONFIG_DIR"] = str(iso)
             return overrides
-    # No sanctioned per-universe lane: the host's process-global first-party auth
-    # (inherited env) stands. Codex + all non-BYO paths inject nothing here.
+    # No sanctioned per-universe lane selected (or the universe switched AWAY from
+    # BYO — round-13 #2): the host's process-global first-party auth (inherited
+    # env) stands. Codex + all non-BYO paths inject nothing here.
     return {}
 
 
@@ -438,9 +459,14 @@ _BYO_AUTH_SELECTOR_NAMES: frozenset[str] = frozenset({
     "VERTEX_REGION",
 })
 #: Whole namespace families to sweep (every var whose name starts with one of
-#: these is an auth selector for Bedrock/Vertex/AWS/GCP and must not survive).
+#: these is an auth selector for Bedrock/Vertex/AWS/GCP or a Claude OAuth
+#: credential and must not survive). ``CLAUDE_CODE_OAUTH_`` sweeps the WHOLE OAuth
+#: family — round-12 removed only ``CLAUDE_CODE_OAUTH_TOKEN`` by exact name, so
+#: ``CLAUDE_CODE_OAUTH_REFRESH_TOKEN`` (and any future OAuth var) survived into a
+#: BYO child (round-13 #1: don't rely on an exact-name denylist for OAuth creds).
 _BYO_AUTH_SELECTOR_PREFIXES: tuple[str, ...] = (
-    "AWS_", "CLAUDE_CODE_USE_", "GOOGLE_", "GCLOUD_", "VERTEX_",
+    "AWS_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_", "GOOGLE_", "GCLOUD_",
+    "VERTEX_",
 )
 
 
@@ -491,6 +517,11 @@ def provider_is_byo_bound(
         else resolve_universe_from_env(env)
     )
     if resolved is None:
+        return False
+    # Round-13 #2: lane-aware. A universe switched AWAY from BYO (market/host/
+    # self-hosted) is NOT byo-bound even if a stale key lingers in the vault —
+    # otherwise the spawn would scrub+inject/harden for a non-BYO lane.
+    if not _byo_lane_selected(resolved):
         return False
     try:
         return bool(resolve_llm_api_key(resolved, env_var))
