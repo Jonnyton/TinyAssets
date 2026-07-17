@@ -49,6 +49,7 @@ from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import local_store_dir
 from .secret_bytes import SecretBytes, SecretLease
 from .types import (
+    ROTATING_TOKEN_KINDS,
     Custody,
     DescriptorState,
     SecretBinding,
@@ -196,14 +197,37 @@ def set_restrictive_dacl(path: Path) -> None:
 
 
 def _fsync_dir(directory: Path) -> None:
-    """fsync a directory so a rename is durable (POSIX). No-op on Windows."""
-    if os.name != "posix":
-        return
+    """fsync a directory so a rename is durable (POSIX)."""
     dfd = os.open(str(directory), os.O_RDONLY)
     try:
         os.fsync(dfd)
     finally:
         os.close(dfd)
+
+
+def _durable_replace(tmp: Path, path: Path) -> None:
+    """Atomic, disk-flushed replace of ``path`` by ``tmp``.
+
+    Windows: ``MoveFileExW`` with ``MOVEFILE_WRITE_THROUGH`` (documented
+    disk-flushed move). POSIX: ``os.replace`` + ``fsync`` of the directory. Either
+    way a reported-success deposit is durable across power loss.
+    """
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        move_file_replace_existing = 0x1
+        move_file_write_through = 0x8
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.MoveFileExW.restype = wintypes.BOOL
+        k32.MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        if not k32.MoveFileExW(
+            str(tmp), str(path), move_file_replace_existing | move_file_write_through
+        ):
+            raise OSError(ctypes.get_last_error(), "MoveFileEx WRITE_THROUGH failed")
+    else:
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
 
 
 def dacl_is_current_user_and_system_only(path: Path) -> bool:
@@ -302,7 +326,8 @@ class DpapiVaultBackend:
             # bug).
             conn.execute("PRAGMA journal_mode = TRUNCATE")
             conn.execute("PRAGMA busy_timeout = 30000")
-            conn.execute("PRAGMA synchronous = FULL")
+            # EXTRA is the ACID/power-loss setting (see platform backend note).
+            conn.execute("PRAGMA synchronous = EXTRA")
         except sqlite3.DatabaseError:
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
@@ -389,7 +414,7 @@ class DpapiVaultBackend:
     def _read_sidecar(self, ref: str) -> dict[str, Any] | None:
         path = self._blob_path(ref)
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
         except json.JSONDecodeError:
@@ -397,36 +422,41 @@ class DpapiVaultBackend:
         except OSError:
             # I/O fault — never leak the backend path via a chained cause.
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
+        # Schema-validate BEFORE any use: a valid-JSON non-object (e.g. `[]`) must
+        # not leak a raw AttributeError downstream.
+        if not isinstance(raw, dict) or not isinstance(raw.get("hint"), dict):
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
+        if not isinstance(raw.get("dpapi_blob_b64"), str):
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
+        return raw
 
     def _write_sidecar(self, ref: str, record_dict: dict[str, Any]) -> None:
+        """Fail-safe, power-loss-durable write.
+
+        Order matters: write temp -> fsync -> apply+VERIFY the restrictive DACL
+        ON THE TEMP -> only then durable-replace. Any failure (I/O, DACL) removes
+        the temp and leaves the OLD blob completely intact — a failed CAS/deposit
+        must never destroy the existing credential.
+        """
         path = self._blob_path(ref)
         tmp = path.with_name(path.name + ".tmp")
         data = json.dumps(record_dict, sort_keys=True).encode("utf-8")
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
             _chmod_best_effort(self._dir, 0o700)
-            # Durable write: write temp -> fsync(temp) -> atomic replace -> fsync(dir)
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
                 os.write(fd, data)
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            os.replace(tmp, path)  # atomic same-directory replace
-            _fsync_dir(self._dir)
-            _chmod_best_effort(path, 0o600)
-        except OSError:
+            _chmod_best_effort(tmp, 0o600)
+            set_restrictive_dacl(tmp)  # apply + verify BEFORE replace; raises on fail
+            _durable_replace(tmp, path)  # disk-flushed atomic replace
+        except (OSError, CredentialUnavailable):
             with contextlib.suppress(OSError):
-                os.remove(tmp)
+                os.remove(tmp)  # OLD blob untouched
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
-        # Narrow the DACL to current-user + SYSTEM; fail hard + clean up if it
-        # cannot be applied (never leave a world-readable credential blob).
-        try:
-            set_restrictive_dacl(path)
-        except CredentialUnavailable:
-            with contextlib.suppress(OSError):
-                os.remove(path)
-            raise
 
     def _seal_sidecar(
         self,
@@ -524,10 +554,14 @@ class DpapiVaultBackend:
                     raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
                 if fence is not None:
                     self._require_fence(conn, ref, fence, now)
+                if kind in ROTATING_TOKEN_KINDS and ticket is None:
+                    raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
                 if ticket is not None and not (
                     ticket.ref == ref
                     and ticket.version == int(existing["version"])
-                    and leases.claim_held(conn, ref, ticket.version, ticket.holder)
+                    and leases.capability_valid(
+                        conn, ref, ticket.version, ticket.holder, ticket.secret
+                    )
                 ):
                     raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
                 version = int(existing["version"]) + 1
@@ -563,11 +597,11 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref)
 
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
+        if not is_secret_ref(binding.ref):
+            # Validate before use; never echo a malformed ref (injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        if not is_secret_ref(binding.ref):
-            # Do not echo a malformed ref (newline/log injection defense).
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         sidecar = self._read_sidecar(binding.ref)
         if sidecar is None:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
@@ -582,12 +616,12 @@ class DpapiVaultBackend:
         )
 
     def _delete(self, binding: SecretBinding, expected: SecretScope) -> None:
+        if not is_secret_ref(binding.ref):
+            # Validate before use; never echo a malformed ref (injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        if not is_secret_ref(binding.ref):
-            # Do not echo a malformed ref (newline/log injection defense).
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
-        with self._leases.mutation_lock():
+        with self._leases.mutation_lock() as conn:
             sidecar = self._read_sidecar(binding.ref)
             if sidecar is None:
                 raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
@@ -599,6 +633,7 @@ class DpapiVaultBackend:
             )
             with contextlib.suppress(FileNotFoundError):
                 os.remove(self._blob_path(binding.ref))
+            leases.retire_claim(conn, binding.ref)  # a one-time ref is never reused
 
     # ------------------------------------------------------------------
     # Fenced exclusive per-ref refresh lease
@@ -627,11 +662,11 @@ class DpapiVaultBackend:
         self._require_available()
         self._require_local_store(binding.store)
         self._ensure_attested()
+        if not is_secret_ref(binding.ref):
+            # Validate before use; never echo a malformed ref (injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        if not is_secret_ref(binding.ref):
-            # Do not echo a malformed ref (newline/log injection defense).
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         with self._leases.mutation_lock() as conn:
             sidecar = self._read_sidecar(binding.ref)
             if sidecar is None:
@@ -643,10 +678,16 @@ class DpapiVaultBackend:
             )
             record.check_lifecycle(rec, binding.ref)
             version = int(rec["version"])
+            secret = leases.mint_capability()
             won = version == int(at_version) and leases.claim_refresh(
-                conn, binding.ref, version, holder, time.time()
+                conn, binding.ref, version, holder, time.time(),
+                leases.capability_hash(secret),
             )
-        return RefreshTicket(ref=binding.ref, version=version, holder=holder) if won else None
+        if not won:
+            return None
+        return RefreshTicket(
+            ref=binding.ref, version=version, holder=holder, secret=secret
+        )
 
     def complete_refresh(
         self,
@@ -661,6 +702,8 @@ class DpapiVaultBackend:
         self._require_available()
         self._require_local_store(binding.store)
         self._ensure_attested()
+        if not is_secret_ref(binding.ref):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         if ticket.ref != binding.ref:

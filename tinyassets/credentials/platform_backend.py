@@ -41,6 +41,7 @@ from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import platform_vault_db_path
 from .secret_bytes import SecretBytes, SecretLease
 from .types import (
+    ROTATING_TOKEN_KINDS,
     XCHACHA20POLY1305_IETF,
     Custody,
     DescriptorState,
@@ -125,7 +126,11 @@ class PlatformVaultBackend:
             # durability of claims/rows.
             conn.execute("PRAGMA journal_mode = TRUNCATE")
             conn.execute("PRAGMA busy_timeout = 30000")
-            conn.execute("PRAGMA synchronous = FULL")
+            # EXTRA (not FULL): rollback-journal FULL can still lose the LAST
+            # committed transaction after power loss; EXTRA is the ACID setting
+            # that fsyncs the directory after the journal is unlinked. A lost
+            # claim would permit a second one-time redemption, so EXTRA it is.
+            conn.execute("PRAGMA synchronous = EXTRA")
         except sqlite3.DatabaseError:
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
@@ -167,11 +172,12 @@ class PlatformVaultBackend:
     def durability_info(self) -> dict[str, str]:
         """Report the durability posture (for ops verification / the DR gate).
 
-        ``synchronous`` MUST be ``FULL`` and ``journal_mode`` MUST be a
-        rollback-journal (``TRUNCATE``/``DELETE``), NOT ``WAL``: WAL's
-        reset-corruption bug (SQLite ≤3.51.2, this env 3.50.4) hits concurrent
-        writers, which is exactly this workload. Rollback-journal is
-        version-independent and the low-concurrency workload tolerates it.
+        ``synchronous`` MUST be ``EXTRA`` (the ACID/power-loss setting; FULL can
+        still lose the last rollback-journal commit on power loss) and
+        ``journal_mode`` MUST be a rollback-journal (``TRUNCATE``/``DELETE``), NOT
+        ``WAL`` (WAL's reset-corruption bug, SQLite ≤3.51.2 / this env 3.50.4,
+        hits concurrent writers). Full power-cut/VM-reset proof is a deploy
+        validation item; EXTRA is the correct pragma.
         """
         self.initialize()
         conn = self._connect()
@@ -335,13 +341,20 @@ class PlatformVaultBackend:
                     raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
                 if fence is not None:
                     self._require_fence(conn, ref, fence, now)
+                if kind in ROTATING_TOKEN_KINDS and ticket is None:
+                    # A rotating one-time token can only be advanced via
+                    # complete_refresh (with a minted capability) — a bare CAS
+                    # would bypass consume-before-mint.
+                    raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
                 if ticket is not None and not (
                     ticket.ref == ref
                     and ticket.version == int(existing["version"])
-                    and leases.claim_held(conn, ref, ticket.version, ticket.holder)
+                    and leases.capability_valid(
+                        conn, ref, ticket.version, ticket.holder, ticket.secret
+                    )
                 ):
-                    # A refresh completion must present a ticket whose durable
-                    # claim is on record — no bypass of consume-before-mint.
+                    # The completion must present the UNFORGEABLE minted
+                    # capability — a reconstructed ticket cannot pass.
                     raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
                 version = int(existing["version"]) + 1
                 created = float(existing["created_at"])
@@ -412,12 +425,13 @@ class PlatformVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
 
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
-        if binding.scope != expected:
-            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        # Validate the canonical ref BEFORE any lookup or error echo — a malformed
-        # ref (e.g. embedded newline) must never reach a query or a log line.
+        # Validate the canonical ref FIRST — before scope comparison, lookup, or
+        # any error echo — so a malformed ref (e.g. embedded newline) can never
+        # reach a query or be reflected into a SCOPE_MISMATCH log line.
         if not is_secret_ref(binding.ref):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
+        if binding.scope != expected:
+            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         self.initialize()
         row = self._fetch_row(binding.ref)
         if row is None:
@@ -432,11 +446,11 @@ class PlatformVaultBackend:
         )
 
     def _delete(self, binding: SecretBinding, expected: SecretScope) -> None:
+        if not is_secret_ref(binding.ref):
+            # Validate before use; never echo a malformed ref (injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        if not is_secret_ref(binding.ref):
-            # Do not echo a malformed ref (newline/log injection defense).
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         self.initialize()
         conn = self._connect()
         try:
@@ -453,6 +467,7 @@ class PlatformVaultBackend:
                 store=binding.store,
             )
             conn.execute("DELETE FROM vault_secrets WHERE ref = ?", (binding.ref,))
+            leases.retire_claim(conn, binding.ref)  # a one-time ref is never reused
             conn.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -509,11 +524,10 @@ class PlatformVaultBackend:
         """
         self._require_platform_store(binding.store)
         self._ensure_attested()
+        if not is_secret_ref(binding.ref):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        if not is_secret_ref(binding.ref):
-            # Do not echo a malformed ref (newline/log injection defense).
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         self.initialize()
         conn = self._connect()
         try:
@@ -528,8 +542,10 @@ class PlatformVaultBackend:
             )
             record.check_lifecycle(rec, binding.ref)
             version = int(rec["version"])
+            secret = leases.mint_capability()
             won = version == int(at_version) and leases.claim_refresh(
-                conn, binding.ref, version, holder, time.time()
+                conn, binding.ref, version, holder, time.time(),
+                leases.capability_hash(secret),
             )
             conn.execute("COMMIT")
         except BaseException:
@@ -538,7 +554,11 @@ class PlatformVaultBackend:
             raise
         finally:
             conn.close()
-        return RefreshTicket(ref=binding.ref, version=version, holder=holder) if won else None
+        if not won:
+            return None
+        return RefreshTicket(
+            ref=binding.ref, version=version, holder=holder, secret=secret
+        )
 
     def complete_refresh(
         self,
@@ -557,6 +577,8 @@ class PlatformVaultBackend:
         """
         self._require_platform_store(binding.store)
         self._ensure_attested()
+        if not is_secret_ref(binding.ref):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         if ticket.ref != binding.ref:
