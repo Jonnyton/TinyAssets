@@ -331,9 +331,9 @@ def _record_id(record: dict[str, Any]) -> str:
     """Stable content ID for a credential record — sha256 of its canonical JSON.
 
     Two records with the same content share an ID. Used to DEDUPLICATE the
-    quarantine archive and the rollback re-add so a crash-then-retry at ANY write
-    boundary converges to exactly one copy (round-17 #3). ``sort_keys`` makes key
-    order irrelevant; ``default=str`` tolerates any stray non-JSON scalar.
+    quarantine archive so a crash-then-retry at ANY write boundary converges to
+    exactly one copy (round-17 #3). ``sort_keys`` makes key order irrelevant;
+    ``default=str`` tolerates any stray non-JSON scalar.
     """
     canonical = json.dumps(record, sort_keys=True, ensure_ascii=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -352,6 +352,46 @@ def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _read_quarantine_archive(qpath: Path) -> list[dict[str, Any]]:
+    """Strictly read + validate an existing quarantine archive; return its records.
+
+    THE single archive parser (round-19 #1): validates the top-level shape AND every
+    record (each must be a JSON object) BEFORE the caller mutates anything. Raises
+    ``ValueError`` — PRESERVING the file on disk untouched — when the archive is
+    unreadable, has the wrong top-level shape, or contains any non-object element
+    (e.g. ``{"quarantined": [42]}``). Never silently drops or overwrites malformed
+    data (round-18 #4 don't-destroy-on-corruption). Because the migration reads the
+    prior archive through here before writing, a malformed archive can never pass one
+    path and corrupt another — it fails loud at the boundary and stays on disk for
+    manual recovery. Missing file → ``[]`` (nothing to merge)."""
+    if not qpath.is_file():
+        return []
+    try:
+        loaded = json.loads(qpath.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"quarantine archive at {qpath} is unreadable/corrupt; refusing to "
+            "overwrite it (preserved for recovery). Investigate + repair or remove "
+            f"it before re-running the migration: {exc}"
+        ) from exc
+    if not (isinstance(loaded, dict) and isinstance(loaded.get("quarantined"), list)):
+        raise ValueError(
+            f"quarantine archive at {qpath} has an unexpected shape; refusing to "
+            "overwrite it (preserved for recovery). Investigate + repair or remove "
+            "it before re-running the migration."
+        )
+    records = loaded["quarantined"]
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"quarantine archive at {qpath} record #{index} is not a JSON object "
+                f"({type(record).__name__}); refusing to overwrite it (preserved for "
+                "recovery). Investigate + repair or remove it before re-running the "
+                "migration."
+            )
+    return records
+
+
 def quarantine_legacy_subscription_records(
     universe_dir: str | Path,
 ) -> dict[str, Any]:
@@ -362,18 +402,24 @@ def quarantine_legacy_subscription_records(
     them — so the universe stops raising :class:`RetiredSubscriptionLaneError` on
     every spawn and surfaces as migrated. This is the explicit remediation for the
     "re-declaring an engine only edits config.yaml, it can't remove the vault
-    record → stranded forever" bug. Raises ``ValueError`` on a malformed vault (fail
-    loud — never silently rewrite unreadable state). Returns a non-secret summary.
+    record → stranded forever" bug. Raises ``ValueError`` on a malformed vault or a
+    malformed existing archive (fail loud — never silently rewrite unreadable state).
+    Returns a non-secret summary.
+
+    SAFE-FORWARD (round-19): this is a FORWARD-ONLY migration — there is NO credential
+    rollback. Once the retired record is quarantined AWAY, the universe reads as
+    "no record", which EVERY image tolerates (it falls back to ambient / idle — the
+    default state of every fresh universe). So a deploy failure needs only an IMAGE
+    rollback; the quarantined creds never need restoring. The archive is retained as
+    an audit trail + manual-recovery source, not an automated undo.
 
     CRASH-IDEMPOTENT (round-17 #3): serialized under :func:`_vault_lock`, and the
-    quarantine archive is a content-ID-DEDUPed union of prior + newly-removed
-    records. The quarantine is written BEFORE the vault is rewritten so a crash
-    between the two writes never LOSES the credential (it stays in both places).
-    Previously that ordering DUPLICATED it: a retry re-read the still-present vault
-    record, appended it to the already-written quarantine, and produced TWO copies
-    (rollback then restored two active creds). Dedup makes the union idempotent, so
-    a retry at any boundary yields exactly one quarantined copy. An
-    already-clean vault is a no-op.
+    quarantine archive is a content-ID-DEDUPed union of prior + newly-removed records
+    (read through the strict :func:`_read_quarantine_archive`). The quarantine is
+    written BEFORE the vault is rewritten so a crash between the two writes never
+    LOSES the credential (it stays in both places); dedup makes a retry idempotent, so
+    any boundary yields exactly one quarantined copy. An already-clean vault is a
+    no-op.
     """
     universe = Path(universe_dir)
     with _vault_lock(universe):
@@ -389,32 +435,10 @@ def quarantine_legacy_subscription_records(
             r for r in records if r.get("credential_type") != "llm_subscription"
         ]
         qpath = universe / QUARANTINE_FILENAME
-        prior: list[dict[str, Any]] = []
-        if qpath.is_file():
-            # Round-18 #4: FAIL LOUD + PRESERVE a corrupt existing archive. The prior
-            # code converted a read/parse error into ``prior=[]`` and then OVERWROTE
-            # the file — destroying the corrupt bytes (which may still hold recoverable
-            # quarantined creds). Never overwrite unreadable state (same don't-destroy-
-            # on-corruption class as load_credential_vault). Raise so the operator
-            # investigates; the archive is left untouched on disk.
-            try:
-                loaded = json.loads(qpath.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise ValueError(
-                    f"quarantine archive at {qpath} is unreadable/corrupt; refusing "
-                    "to overwrite it (preserved for recovery). Investigate + repair "
-                    f"or remove it before re-running the migration: {exc}"
-                ) from exc
-            if not (
-                isinstance(loaded, dict)
-                and isinstance(loaded.get("quarantined"), list)
-            ):
-                raise ValueError(
-                    f"quarantine archive at {qpath} has an unexpected shape; refusing "
-                    "to overwrite it (preserved for recovery). Investigate + repair "
-                    "or remove it before re-running the migration."
-                )
-            prior = loaded["quarantined"]
+        # Round-19 #1: read the prior archive through THE strict shared parser, which
+        # validates every record and fails loud (preserving the file) on any malformed
+        # input — so a bad archive can never be silently propagated or dropped.
+        prior = _read_quarantine_archive(qpath)
         # Round-17 #3: content-ID-DEDUPed union. A crash-then-retry re-reads the
         # still-present vault legacy AND the already-archived quarantine; the naive
         # ``prior + legacy`` append made TWO copies. Dedup collapses them to one.
@@ -434,50 +458,6 @@ def quarantine_legacy_subscription_records(
             "remaining": len(kept),
             "quarantine_path": str(qpath),
         }
-
-
-def restore_quarantined_subscription_records(
-    universe_dir: str | Path,
-) -> dict[str, Any]:
-    """ROLLBACK the retired-subscription migration (round-16 #2): re-add the
-    quarantined ``llm_subscription`` records back into the vault and clear the
-    quarantine archive. Idempotent — no quarantine file is a no-op. This exists so
-    the predeployment migration is REVERSIBLE. Returns a non-secret summary.
-
-    CRASH-IDEMPOTENT (round-17 #3): serialized under :func:`_vault_lock`, and only
-    records whose content ID is NOT already in the current vault are re-added. The
-    vault is rewritten BEFORE the quarantine is deleted, so a crash between the two
-    never LOSES the credential. Previously that ordering DUPLICATED it on retry (the
-    naive ``current + quarantined`` append re-added an already-restored record);
-    content-ID dedup makes the re-add idempotent, so a retry yields exactly one
-    clean rollback.
-    """
-    universe = Path(universe_dir)
-    with _vault_lock(universe):
-        qpath = universe / QUARANTINE_FILENAME
-        if not qpath.is_file():
-            return {"restored": 0, "quarantine_path": None}
-        try:
-            loaded = json.loads(qpath.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise ValueError(
-                f"quarantine file at {qpath} is unreadable: {exc}"
-            ) from exc
-        quarantined = loaded.get("quarantined") if isinstance(loaded, dict) else None
-        if not isinstance(quarantined, list) or not quarantined:
-            qpath.unlink(missing_ok=True)
-            return {"restored": 0, "quarantine_path": str(qpath)}
-        current = load_credential_vault(universe)  # raises ValueError if malformed
-        # Round-17 #3: only re-add records not already present by content ID. A
-        # crash between the vault rewrite and the quarantine delete leaves the
-        # records already in the vault; the naive ``current + quarantined`` append
-        # would restore a SECOND copy on retry.
-        current_ids = {_record_id(r) for r in current}
-        to_add = [q for q in quarantined if _record_id(q) not in current_ids]
-        if to_add:
-            write_credential_vault(universe, current + to_add)
-        qpath.unlink(missing_ok=True)
-        return {"restored": len(to_add), "quarantine_path": str(qpath)}
 
 
 #: SANCTIONED-CUSTODY registry (round-17 #5, extended to CONSUMPTION round-18 #1).

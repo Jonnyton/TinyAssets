@@ -15,7 +15,6 @@ is therefore::
 
     python -m tinyassets.migrations.retired_subscription_records --inventory
     python -m tinyassets.migrations.retired_subscription_records --migrate
-    python -m tinyassets.migrations.retired_subscription_records --rollback --universe u-01k...
 
 In the production image the ``tinyassets`` package is on ``PYTHONPATH=/app`` and
 pip-installed into the venv, so ``python -m tinyassets.migrations.retired_subscription_records``
@@ -24,12 +23,22 @@ old ``scripts/`` path). The deploy workflow runs ``--inventory`` then ``--migrat
 in a one-shot container from the NEW image against the mounted data volume BEFORE
 restarting the daemon onto that image, and ABORTS the deploy on a non-zero exit.
 
+SAFE-FORWARD (round-19): this migration is FORWARD-ONLY — there is NO ``--rollback``
+of credentials. Once the retired ``llm_subscription`` record is quarantined AWAY, the
+universe reads as "no record", which EVERY image tolerates (it falls back to ambient
+/ idle — the default state of every fresh universe; absence never raises). So a deploy
+failure needs only an IMAGE rollback; the quarantined creds never need restoring. The
+``.credential-vault-quarantine.json`` archive is retained as an audit trail + manual-
+recovery source (the quarantine step preserves any prior/corrupt archive rather than
+destroying it), not an automated undo. This eliminates the whole class of
+credential-rollback bugs (archive destruction, cross-deployment reactivation,
+restart-failure bypass) at the root.
+
 Modes (exactly one):
   --inventory   List affected universes + record counts. Read-only. Run FIRST.
   --migrate     Quarantine + remove the llm_subscription records (idempotent,
-                crash-safe). Archives them to ``.credential-vault-quarantine.json``
-                per universe.
-  --rollback    Restore the quarantined records back into each vault (reversible).
+                crash-safe, forward-only). Archives them to
+                ``.credential-vault-quarantine.json`` per universe.
 
 Scope: scans every universe directory under ``TINYASSETS_DATA_DIR`` (each child
 dir holding a ``.credential-vault.json``). ``--data-dir`` overrides the root.
@@ -47,7 +56,6 @@ from tinyassets.credential_vault import (
     VAULT_FILENAME,
     load_credential_vault,
     quarantine_legacy_subscription_records,
-    restore_quarantined_subscription_records,
 )
 
 
@@ -92,9 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--inventory", action="store_true",
                       help="list affected universes (read-only)")
     mode.add_argument("--migrate", action="store_true",
-                      help="quarantine + remove llm_subscription records (idempotent)")
-    mode.add_argument("--rollback", action="store_true",
-                      help="restore quarantined records back into each vault")
+                      help="quarantine + remove llm_subscription records "
+                           "(idempotent, forward-only — no credential rollback)")
     ap.add_argument("--data-dir", default=None,
                     help="override the universe root (default: TINYASSETS_DATA_DIR)")
     ap.add_argument("--universe", default=None,
@@ -118,16 +125,11 @@ def main(argv: list[str] | None = None) -> int:
                 summary = quarantine_legacy_subscription_records(udir)
                 if summary["migrated"]:
                     results.append({"universe": uid, **summary})
-            elif args.rollback:
-                summary = restore_quarantined_subscription_records(udir)
-                if summary["restored"]:
-                    results.append({"universe": uid, **summary})
         except Exception as exc:  # noqa: BLE001 — report per-universe, don't swallow
             failures += 1
             results.append({"universe": uid, "error": str(exc)})
 
-    verb = ("inventory" if args.inventory
-            else "migrate" if args.migrate else "rollback")
+    verb = "inventory" if args.inventory else "migrate"
     print(json.dumps({
         "mode": verb,
         "data_root": str(root),

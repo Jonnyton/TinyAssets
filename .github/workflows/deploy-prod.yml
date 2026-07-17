@@ -684,13 +684,16 @@ jobs:
           # `--inventory` (read-only) logs what will change; `--migrate` quarantines
           # the retired llm_subscription records.
           #
-          # Round-18 #2 (ROLLBACK-SAFE): if `--migrate` fails (partial mutation of the
-          # live credential volume), immediately run `--rollback` to restore the
-          # quarantined records to the vault BEFORE aborting — so the OLD image (still
-          # serving; not yet restarted) never runs against a half-migrated volume. Then
-          # `exit 1` aborts the deploy without restarting onto the new image. The
-          # migration + rollback are crash-idempotent, so a rollback that itself gets
-          # interrupted converges cleanly on retry.
+          # Round-19 (SAFE-FORWARD): the migration is FORWARD-ONLY — there is NO
+          # credential rollback. Once a retired llm_subscription record is quarantined
+          # AWAY, the universe reads as "no record", which EVERY image tolerates (it
+          # falls back to ambient / idle — absence is the default state of every fresh
+          # universe and never raises). So a deploy failure needs only an IMAGE
+          # rollback (the "Rollback on failure" step); the quarantined creds never need
+          # restoring. `set -e` makes ANY non-zero migration exit ABORT BEFORE the
+          # restart, so the OLD image keeps serving (safe against both the migrated-away
+          # and still-present states) and the new image never starts on a volume where
+          # migration did not fully complete.
           MIGRATE_CMD="sudo docker run --rm --entrypoint python -e TINYASSETS_DATA_DIR=/data -v tinyassets-data:/data '${NEW_IMAGE}' -m tinyassets.migrations.retired_subscription_records"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -698,12 +701,8 @@ jobs:
                sudo docker pull '${NEW_IMAGE}'; \
                echo '[deploy] retired-subscription migration: inventory (read-only)'; \
                ${MIGRATE_CMD} --inventory; \
-               echo '[deploy] retired-subscription migration: migrate (auto-rollback on failure)'; \
-               if ! ${MIGRATE_CMD} --migrate; then \
-                 echo '::error::retired-subscription migration failed; rolling back quarantined credentials before aborting deploy'; \
-                 ${MIGRATE_CMD} --rollback || echo '::error::credential rollback also failed — investigate the data volume before the next deploy'; \
-                 exit 1; \
-               fi; \
+               echo '[deploy] retired-subscription migration: migrate (forward-only, safe)'; \
+               ${MIGRATE_CMD} --migrate; \
                sudo systemctl restart tinyassets-daemon"
 
       # Independent of the helper's in-call readability assert: re-verify
@@ -948,24 +947,18 @@ jobs:
         if: failure() && steps.deploy.outcome == 'success' && steps.prev.outputs.previous != ''
         env:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
-          NEW_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
         run: |
           echo "::warning::Rolling back to ${PREV_IMAGE}"
-          # Round-18 #2 (COUPLED credential + image rollback): the deploy step
-          # succeeded, so the retired-subscription migration already ran and mutated
-          # the shared credential volume. A LATER failure (canary/access-gate) is now
-          # rolling the IMAGE back to the previous tag — which may predate the S5
-          # migration and NOT tolerate the quarantined state. Restore the quarantined
-          # credentials FIRST, using the NEW image's migration module (guaranteed to
-          # exist; the previous image may not ship it), so credentials + image roll
-          # back TOGETHER and the old image boots against its expected pre-migration
-          # state. The rollback is crash-idempotent; `|| true` keeps a best-effort
-          # posture so a rollback hiccup never blocks restoring the previous image.
-          echo "[rollback] restoring quarantined credentials (coupled with image rollback)"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker run --rm --entrypoint python -e TINYASSETS_DATA_DIR=/data -v tinyassets-data:/data '${NEW_IMAGE_REF}' -m tinyassets.migrations.retired_subscription_records --rollback" \
-              || echo "::warning::credential rollback did not complete cleanly — inspect the data volume"
+          # Round-19 (SAFE-FORWARD, IMAGE-ONLY rollback): the retired-subscription
+          # migration is forward-only, so this rollback restores ONLY the image. The
+          # quarantined credentials do NOT need restoring: a universe whose retired
+          # llm_subscription record was quarantined-away reads as "no record", which
+          # BOTH the new and the previous image tolerate (they fall back to ambient /
+          # idle — absence is the default state of every fresh universe). Coupling a
+          # credential rollback here would be the WRONG complexity (it was global, not
+          # deployment-scoped, could destroy archives, and was bypassed on restart
+          # failure — Codex r19 criticals). Image-only rollback closes all three at the
+          # root.
           # Restore previous tag via the atomic helper (same root:tinyassets
           # 640 invariant as the deploy step). The helper is already in
           # /tmp/install-tinyassets-env.sh from the deploy step's scp; if
