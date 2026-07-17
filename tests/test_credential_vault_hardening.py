@@ -10,6 +10,7 @@ Each would FAIL on the pre-review code and PASSES on the fix.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import sys
 import time
@@ -379,12 +380,14 @@ def test_begin_refresh_is_exclusive_and_dos_safe(platform, store):
 
 def test_put_requires_cas_pairing(platform, store):
     d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
-    # replace without expected_version → rejected (would permit lost updates)
-    with pytest.raises(ValueError):
+    # replace without expected_version → typed rejection (would permit lost updates)
+    with pytest.raises(CredentialUnavailable) as exc:
         platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"y"), replace=d.binding.ref)
-    # expected_version without replace → rejected (inverse pairing)
-    with pytest.raises(ValueError):
+    assert exc.value.code == VaultErrorCode.INVALID_ARGUMENT
+    # expected_version without replace → typed rejection (inverse pairing)
+    with pytest.raises(CredentialUnavailable) as exc2:
         platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"y"), expected_version=1)
+    assert exc2.value.code == VaultErrorCode.INVALID_ARGUMENT
 
 
 def test_platform_store_forbids_daemon_id():
@@ -439,9 +442,10 @@ def test_decode_record_rejects_nan_json():
 
 def test_rotate_kek_requires_new_key_to_be_active(platform, store):
     platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
-    # k1 is still the active write key → rotating to k2 must be refused loudly.
-    with pytest.raises(ValueError):
+    # k1 is still the active write key → rotating to k2 must be refused (typed).
+    with pytest.raises(CredentialUnavailable) as exc:
         platform.rotate_kek("k2")
+    assert exc.value.code == VaultErrorCode.INVALID_ARGUMENT
 
 
 def test_rotate_kek_leaves_no_row_on_old_key(platform, store):
@@ -544,6 +548,149 @@ def test_broker_protocol_includes_refresh(platform):
     assert isinstance(platform, VaultBroker)  # begin/complete present + typed
     assert hasattr(VaultBroker, "begin_refresh")
     assert hasattr(VaultBroker, "complete_refresh")
+
+
+# ===========================================================================
+# Review r9 finding 1 — rollback (full-snapshot restore) forces reauthorization
+# ===========================================================================
+
+
+def test_full_db_rollback_forces_reauthorization(platform, store, tmp_path):
+    """Restoring the WHOLE pre-refresh DB rolls back the consumed claim — the
+    external epoch mirror (outside the snapshot) detects it and forces reauth."""
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    db = tmp_path / "vault.db"
+    snap = tmp_path / "vault.db.snap"
+    shutil.copy(db, snap)  # snapshot pre-refresh
+    tk = platform.begin_refresh(d.binding, SCOPE, "A", at_version=1)
+    platform.complete_refresh(d.binding, SCOPE, tk, SecretBytes(b"tok2"))
+    shutil.copy(snap, db)  # restore the WHOLE pre-refresh DB (rollback)
+
+    fresh = PlatformVaultBackend(platform._keys, store_id="platform:default", db_path=db)
+    with pytest.raises(CredentialUnavailable) as exc:
+        fresh.begin_refresh(d.binding, SCOPE, "B", at_version=1)  # would reopen v1
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+    with pytest.raises(CredentialUnavailable) as exc2:
+        fresh.get(d.binding, SCOPE)
+    assert exc2.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+def test_full_db_rollback_after_delete_refuses_restored_value(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"val"))
+    db = tmp_path / "vault.db"
+    snap = tmp_path / "vault.db.snap"
+    shutil.copy(db, snap)  # snapshot pre-delete
+    platform.delete(d.binding, SCOPE)
+    shutil.copy(snap, db)  # restore the pre-delete DB (deleted value reappears)
+    fresh = PlatformVaultBackend(platform._keys, store_id="platform:default", db_path=db)
+    with pytest.raises(CredentialUnavailable) as exc:
+        fresh.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+@WINDOWS_ONLY
+def test_full_local_directory_rollback_forces_reauth(tmp_path):
+    base = tmp_path / "loc"
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=base)
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    store_dir = be._dir
+    snap = tmp_path / "v1-snap"
+    shutil.copytree(store_dir, snap)  # snapshot the WHOLE store directory
+    tk = be.begin_refresh(d.binding, SCOPE, "A", at_version=1)
+    be.complete_refresh(d.binding, SCOPE, tk, SecretBytes(b"tok2"))
+    shutil.rmtree(store_dir)
+    shutil.copytree(snap, store_dir)  # restore the whole dir; mirror is OUTSIDE it
+
+    fresh = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=base)
+    with pytest.raises(CredentialUnavailable) as exc:
+        fresh.begin_refresh(d.binding, SCOPE, "B", at_version=1)
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+    with pytest.raises(CredentialUnavailable) as exc2:
+        fresh.get(d.binding, SCOPE)
+    assert exc2.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+# ===========================================================================
+# S3 cross-slice — opaque job-scoped grant, fail-closed
+# ===========================================================================
+
+
+def test_job_grant_resolves_and_fails_closed(platform, store):
+    from tinyassets.credentials import JobGrant
+
+    universe_scope = SecretScope(
+        founder_id="founder1", universe_id="universe-A", provider="github",
+        destination="octo/repo", purpose="external_write",
+    )
+    d = platform.put(store, universe_scope, SecretKind.GITHUB_PAT, SecretBytes(b"ghp_worker"))
+    grant = platform.mint_job_grant(d.binding, universe_scope, run_id="run-1", ttl=3600)
+    # opaque + non-observable
+    with pytest.raises(TypeError):
+        import dataclasses
+        dataclasses.asdict(grant)
+    # resolves with the correct authoritative run + universe
+    with platform.resolve_job_grant(grant, run_id="run-1", universe_id="universe-A") as lease:
+        assert lease.reveal() == b"ghp_worker"
+    # wrong run → fail closed
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.resolve_job_grant(grant, run_id="run-EVIL", universe_id="universe-A")
+    assert exc.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+    # cross-universe → fail closed
+    with pytest.raises(CredentialUnavailable) as exc2:
+        platform.resolve_job_grant(grant, run_id="run-1", universe_id="universe-EVIL")
+    assert exc2.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+    # forged capability → fail closed
+    forged = JobGrant(grant_id=grant.grant_id, run_id="run-1", universe_id="universe-A",
+                      secret=b"\x00" * 32)
+    with pytest.raises(CredentialUnavailable) as exc3:
+        platform.resolve_job_grant(forged, run_id="run-1", universe_id="universe-A")
+    assert exc3.value.code == VaultErrorCode.LEASE_LOST
+
+
+# ===========================================================================
+# Review r9 finding 2 — durable GC removes every old on-disk version
+# ===========================================================================
+
+
+@WINDOWS_ONLY
+def test_rotation_and_delete_gc_all_versions(tmp_path):
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v1"))
+    be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v2"),
+           replace=d.binding.ref, expected_version=1)
+    be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v3"),
+           replace=d.binding.ref, expected_version=2)
+    tail = d.binding.ref.rsplit(":", 1)[-1]
+    assert len(list(be._dir.glob(f"{tail}.v*.json"))) == 1  # only the live version
+    be.delete(d.binding, SCOPE)
+    assert len(list(be._dir.glob(f"{tail}.v*.json"))) == 0  # every version gone
+
+
+# ===========================================================================
+# Review r9 finding 4 — a tampered record is QUARANTINED, not backend corruption
+# ===========================================================================
+
+
+def test_tampered_record_is_quarantined_not_backend_corruption(platform, store, tmp_path):
+    d1 = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"one"))
+    d2 = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"two"))
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    conn.execute(
+        "UPDATE vault_secrets SET ciphertext = ? WHERE ref = ?", (b"\x00" * 40, d1.binding.ref)
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.get(d1.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+    # a single bad record is QUARANTINED — attestation stays valid, other records work
+    assert platform._attested is True
+    with platform.get(d2.binding, SCOPE) as lease:
+        assert lease.reveal() == b"two"
 
 
 # ===========================================================================
@@ -802,15 +949,17 @@ def test_rotate_kek_typed_on_corrupt_hint(platform, store, tmp_path, column, bad
 
 
 def test_empty_and_oversized_payloads_rejected(platform, store):
-    # empty on a fresh put
-    with pytest.raises(ValueError):
+    # empty on a fresh put → typed INVALID_ARGUMENT
+    with pytest.raises(CredentialUnavailable) as exc:
         platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b""))
+    assert exc.value.code == VaultErrorCode.INVALID_ARGUMENT
     # oversized on a fresh put
-    with pytest.raises(ValueError):
+    with pytest.raises(CredentialUnavailable) as exc2:
         platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x" * (1024 * 1024 + 1)))
+    assert exc2.value.code == VaultErrorCode.INVALID_ARGUMENT
     # a rejected CAS preserves the prior value
     d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"keep"))
-    with pytest.raises(ValueError):
+    with pytest.raises(CredentialUnavailable):
         platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b""),
                      replace=d.binding.ref, expected_version=1)
     with platform.get(d.binding, SCOPE) as lease:
