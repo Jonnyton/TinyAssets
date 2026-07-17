@@ -102,11 +102,10 @@ def install_test_credential_broker(monkeypatch: Any) -> None:
     """Install the test credential broker over the Phase-1 fail-closed seams so a
     valid grant redeems to a scoped context and a bad grant fails closed. Resets
     the redemption spy."""
-    import tinyassets.credential_vault as cv
+    import tinyassets.graph_compiler as gc
 
     _REDEEMED_UNIVERSE_DIRS.clear()
-    monkeypatch.setattr(cv, "issue_job_credential_grant", _test_issue_grant)
-    monkeypatch.setattr(cv, "redeem_job_credential_grant", _test_redeem_grant)
+    monkeypatch.setattr(gc, "issue_executor_credential_grant", _test_issue_grant)
 
 
 class WorkerSimExecutor:
@@ -153,13 +152,13 @@ class WorkerSimExecutor:
         import functools
 
         import tinyassets.graph_compiler as gc
-        from tinyassets import credential_vault, sandbox_policy
+        from tinyassets import sandbox_policy
         from tinyassets.branches import NodeDefinition
 
         # WORKER-SIDE request validation (Codex S3 r20 #4): the worker re-validates
         # the strict-JSON discriminated contract before acting on it — it does not
         # trust the transport to have validated.
-        gc.validate_execution_request(request)
+        request = gc.validate_execution_request(request)
         node = NodeDefinition.from_dict(request["node_spec"])
         inputs = request.get("inputs", {}) or {}
         ec_dict = request.get("enqueue_context")
@@ -193,7 +192,7 @@ class WorkerSimExecutor:
         credential_grant = request.get("credential_grant")
         scope_required = bool(request.get("credential_scope_required"))
         if scope_required or credential_grant is not None:
-            scoped = credential_vault.redeem_job_credential_grant(credential_grant)
+            scoped = _test_redeem_grant(credential_grant)
             if scoped is None:
                 raise PermissionError(
                     "isolated worker could not redeem the job credential grant for a "

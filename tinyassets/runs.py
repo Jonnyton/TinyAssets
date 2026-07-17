@@ -258,6 +258,8 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         universe_id    TEXT NOT NULL DEFAULT '',
         owner_user_id  TEXT NOT NULL DEFAULT '',
         inputs_json    TEXT NOT NULL DEFAULT '{}',
+        invocation_depth INTEGER NOT NULL DEFAULT 0,
+        enqueue_context_json TEXT NOT NULL DEFAULT '{}',
         output_json    TEXT NOT NULL DEFAULT '{}',
         error          TEXT NOT NULL DEFAULT '',
         last_node_id   TEXT NOT NULL DEFAULT '',
@@ -439,6 +441,8 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             ("daemon_id",     "TEXT"),
             ("runtime_instance_id", "TEXT"),
             ("worker_id",     "TEXT"),
+            ("invocation_depth", "INTEGER NOT NULL DEFAULT 0"),
+            ("enqueue_context_json", "TEXT NOT NULL DEFAULT '{}'"),
         ):
             if col not in existing_runs:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
@@ -499,6 +503,13 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
             row["owner_user_id"] if "owner_user_id" in col_names else ""
         ),
         "inputs": json.loads(row["inputs_json"] or "{}"),
+        "invocation_depth": (
+            int(row["invocation_depth"] or 0)
+            if "invocation_depth" in col_names else 0
+        ),
+        "enqueue_context": json.loads(
+            row["enqueue_context_json"] or "{}"
+        ) if "enqueue_context_json" in col_names else {},
         "output": json.loads(row["output_json"] or "{}"),
         "error": row["error"],
         "last_node_id": row["last_node_id"],
@@ -756,6 +767,8 @@ def create_run(
     run_name: str = "",
     actor: str = "anonymous",
     universe_id: str = "",
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
     branch_version_id: str | None = None,
     owner_user_id: str | None = None,
     daemon_id: str | None = None,
@@ -775,15 +788,25 @@ def create_run(
             INSERT INTO runs (
                 run_id, branch_def_id, run_name, thread_id,
                 status, actor, universe_id, owner_user_id, inputs_json, started_at,
+                invocation_depth, enqueue_context_json,
                 branch_version_id, daemon_id, runtime_instance_id,
                 worker_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, branch_def_id, run_name, thread_id,
                 RUN_STATUS_QUEUED, actor, (universe_id or "").strip(),
                 resolved_owner_user_id,
                 json.dumps(inputs, default=str), _now(),
+                int(invocation_depth),
+                json.dumps(
+                    {
+                        "universe_id": enqueue_context.universe_id,
+                        "actor": enqueue_context.actor,
+                        "parent_branch_task_id": enqueue_context.parent_branch_task_id,
+                        "origin_branch_task_id": enqueue_context.origin_branch_task_id,
+                    } if enqueue_context is not None else {}
+                ),
                 branch_version_id,
                 daemon_id,
                 runtime_instance_id,
@@ -2031,6 +2054,8 @@ def _prepare_run(
     run_name: str,
     actor: str,
     universe_id: str = "",
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
     branch_version_id: str | None = None,
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
@@ -2053,6 +2078,8 @@ def _prepare_run(
         run_name=run_name,
         actor=actor,
         universe_id=universe_id,
+        invocation_depth=invocation_depth,
+        enqueue_context=enqueue_context,
         branch_version_id=branch_version_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
@@ -2174,6 +2201,46 @@ def _execution_scope_for_run(
     return _default_execution_scope(base_path, universe_id)
 
 
+def _authoritative_execution_scope(
+    base_path: str | Path,
+    run_id: str,
+    asserted_scope: "ExecutionScope | None",
+) -> "ExecutionScope":
+    """Return the persisted run scope, rejecting a contradictory assertion."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    persisted = _execution_scope_for_run(base_path, run_id)
+    if asserted_scope is None:
+        return persisted
+    asserted = ExecutionScope.coerce(asserted_scope)
+    if asserted.kind is not persisted.kind:
+        return ExecutionScope.unknown()
+    if persisted.is_bound:
+        try:
+            if Path(asserted.universe_dir or "").resolve() != Path(
+                persisted.universe_dir or ""
+            ).resolve():
+                return ExecutionScope.unknown()
+        except (OSError, RuntimeError, ValueError):
+            return ExecutionScope.unknown()
+    return persisted
+
+
+def _persisted_execution_context(
+    run: dict[str, Any] | None,
+) -> tuple[int, NodeEnqueueContext]:
+    """Reconstruct trusted compile context stored with the original run."""
+    record = run or {}
+    raw = record.get("enqueue_context")
+    raw = raw if isinstance(raw, dict) else {}
+    return int(record.get("invocation_depth") or 0), NodeEnqueueContext(
+        universe_id=str(raw.get("universe_id") or ""),
+        actor=str(raw.get("actor") or ""),
+        parent_branch_task_id=str(raw.get("parent_branch_task_id") or ""),
+        origin_branch_task_id=str(raw.get("origin_branch_task_id") or ""),
+    )
+
+
 def _scope_universe_dir(
     base_path: str | Path,
     scope: "ExecutionScope | None",
@@ -2248,7 +2315,7 @@ def _invoke_graph(
     execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Authorize and pin a prepared run under its immutable tenant scope."""
-    scope = execution_scope or _execution_scope_for_run(base_path, run_id)
+    scope = _authoritative_execution_scope(base_path, run_id, execution_scope)
     universe_dir, block_reason = _scope_universe_dir(base_path, scope)
     if block_reason is not None:
         logger.error(
@@ -2965,27 +3032,6 @@ def _node_id_from_timeout_message(message: str) -> str:
     return m.group(1) if m else "(timeout)"
 
 
-def _default_execution_scope(universe_id: str) -> "ExecutionScope":
-    """Derive the default AUTHORITATIVE :class:`ExecutionScope` for a run from its
-    universe id (Codex S3 r20 #2). An empty id → LEGACY_UNBOUND (single-universe
-    legacy, ambient OK). A bound id → BOUND(resolved dir), or UNKNOWN (fail closed)
-    when it cannot be resolved — never silently unscoped. Callers that already hold
-    the resolved scope pass it explicitly instead of relying on this default."""
-    from tinyassets.sandbox_policy import ExecutionScope
-
-    uid = (universe_id or "").strip()
-    if not uid:
-        return ExecutionScope.legacy_unbound()
-    try:
-        from tinyassets.api.helpers import _universe_dir
-        udir = _universe_dir(uid)
-    except Exception:  # noqa: BLE001 — unresolvable bound id ⇒ fail closed
-        return ExecutionScope.unknown()
-    if udir is None or not Path(udir).is_dir():
-        return ExecutionScope.unknown()
-    return ExecutionScope.bound(str(udir))
-
-
 def execute_branch(
     base_path: str | Path,
     *,
@@ -3035,23 +3081,23 @@ def execute_branch(
         (_enqueue_universe_id or "").strip()
         or _universe_id_for_scope(execution_scope)
     )
-    run_id = _prepare_run(
-        base_path,
-        branch=branch, inputs=inputs,
-        run_name=run_name, actor=actor,
-        universe_id=persisted_universe_id,
-        daemon_id=daemon_id,
-        runtime_instance_id=runtime_instance_id,
-        worker_id=worker_id,
-    )
     enqueue_context = NodeEnqueueContext(
         universe_id=_enqueue_universe_id,
         actor=actor,
         parent_branch_task_id=_parent_branch_task_id,
         origin_branch_task_id=_origin_branch_task_id,
     )
-    if execution_scope is None:
-        execution_scope = _default_execution_scope(_enqueue_universe_id)
+    run_id = _prepare_run(
+        base_path,
+        branch=branch, inputs=inputs,
+        run_name=run_name, actor=actor,
+        universe_id=persisted_universe_id,
+        invocation_depth=_invocation_depth,
+        enqueue_context=enqueue_context,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
+    )
     return _invoke_graph(
         base_path,
         run_id=run_id, branch=branch, inputs=inputs,
@@ -3236,11 +3282,17 @@ def _execute_branch_core(
         (_enqueue_universe_id or "").strip()
         or _universe_id_for_scope(execution_scope)
     )
+    enqueue_context = NodeEnqueueContext(
+        universe_id=_enqueue_universe_id,
+        actor=actor,
+    )
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
         universe_id=persisted_universe_id,
+        invocation_depth=_invocation_depth,
+        enqueue_context=enqueue_context,
         branch_version_id=branch_version_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
@@ -3260,6 +3312,7 @@ def _execute_branch_core(
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
                 invocation_depth=_invocation_depth,
+                enqueue_context=enqueue_context,
                 execution_scope=execution_scope,
             )
         except Exception:
@@ -3608,7 +3661,9 @@ def _invoke_graph_resume(
     execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Authorize and pin a resumed run under its persisted tenant scope."""
-    scope = execution_scope or _execution_scope_for_run(base_path, run_id)
+    run = get_run(base_path, run_id)
+    scope = _authoritative_execution_scope(base_path, run_id, execution_scope)
+    invocation_depth, enqueue_context = _persisted_execution_context(run)
     universe_dir, block_reason = _scope_universe_dir(base_path, scope)
     if block_reason is not None:
         logger.error(
@@ -3639,6 +3694,8 @@ def _invoke_graph_resume(
             branch=branch,
             thread_id=thread_id,
             provider_call=provider_call,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
             execution_scope=scope,
         )
 
@@ -3650,6 +3707,8 @@ def _invoke_graph_resume_inner(
     branch: BranchDefinition,
     thread_id: str,
     provider_call: Callable[..., str] | None,
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
     execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Compile branch + invoke with None inputs to resume from checkpoint.
@@ -3720,6 +3779,10 @@ def _invoke_graph_resume_inner(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
+            base_path=base_path,
+            parent_run_id=run_id,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
             execution_scope=execution_scope,
         )
     except (UnapprovedNodeError, CompilerError) as exc:

@@ -530,34 +530,12 @@ def test_text_node_refuses_a_config_less_bridge():
 # --------------------------------------------------------------------------- #
 
 
-def _mock_vault(monkeypatch, *, codex_home="", claude_dir="", oauth=""):
+def test_legacy_vault_overlay_is_retired():
+    """The integration branch must not revive S3's superseded plaintext vault."""
     import tinyassets.credential_vault as cv
 
-    monkeypatch.setattr(cv, "ensure_codex_home_from_vault", lambda ud: codex_home)
-    monkeypatch.setattr(cv, "ensure_claude_config_dir_from_vault", lambda ud: claude_dir)
-    monkeypatch.setattr(cv, "resolve_claude_oauth_token", lambda ud: oauth)
-    monkeypatch.setattr(cv, "resolve_llm_api_key", lambda ud, var: "VAULT-" + var)
-    return cv
-
-
-def test_vault_overlay_gates_api_keys_on_include_flag(monkeypatch):
-    cv = _mock_vault(monkeypatch)
-
-    # include_api_keys=False → subscription auth only, NO vault API key.
-    assert "ANTHROPIC_API_KEY" not in cv.provider_auth_env_overrides(
-        "/u", "claude-code", include_api_keys=False
-    )
-    assert "OPENAI_API_KEY" not in cv.provider_auth_env_overrides(
-        "/u", "codex", include_api_keys=False
-    )
-
-    # include_api_keys=True → ONLY the provider's OWN key, never the other's.
-    c = cv.provider_auth_env_overrides("/u", "claude-code", include_api_keys=True)
-    assert c.get("ANTHROPIC_API_KEY") == "VAULT-ANTHROPIC_API_KEY"
-    assert "OPENAI_API_KEY" not in c
-    x = cv.provider_auth_env_overrides("/u", "codex", include_api_keys=True)
-    assert x.get("OPENAI_API_KEY") == "VAULT-OPENAI_API_KEY"
-    assert "ANTHROPIC_API_KEY" not in x
+    with pytest.raises(cv.LegacyCredentialVaultRetired):
+        cv.provider_auth_env_overrides("/u", "claude-code")
 
 
 # --------------------------------------------------------------------------- #
@@ -2485,15 +2463,14 @@ def test_default_execution_scope_resolution(tmp_path, monkeypatch):
     from tinyassets.runs import _default_execution_scope
     from tinyassets.sandbox_policy import ScopeKind
 
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     (tmp_path / "u-real").mkdir()
 
-    assert _default_execution_scope("").kind is ScopeKind.LEGACY_UNBOUND
-    bound = _default_execution_scope("u-real")
+    assert _default_execution_scope(tmp_path, "").kind is ScopeKind.LEGACY_UNBOUND
+    bound = _default_execution_scope(tmp_path, "u-real")
     assert bound.kind is ScopeKind.BOUND
     assert bound.universe_dir == str((tmp_path / "u-real").resolve())
     # A declared-but-unresolvable universe id → UNKNOWN (fail closed), never ambient.
-    assert _default_execution_scope("does-not-exist").kind is ScopeKind.UNKNOWN
+    assert _default_execution_scope(tmp_path, "does-not-exist").kind is ScopeKind.UNKNOWN
 
 
 def test_soul_loop_caller_passes_authoritative_universe_id():
@@ -2507,6 +2484,114 @@ def test_soul_loop_caller_passes_authoritative_universe_id():
     src = inspect.getsource(fd_main)
     # The soul-loop execute_branch call carries the universe id authoritatively.
     assert "_enqueue_universe_id=universe_id" in src
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "invocation_depth"),
+    (("sync", 0), ("async", 0), ("versioned", 0), ("child", 1)),
+)
+def test_bound_run_rejects_legacy_scope_downgrade(
+    tmp_path, monkeypatch, entrypoint, invocation_depth,
+):
+    """A caller assertion can never downgrade a persisted bound run."""
+    from tinyassets import runs
+    from tinyassets.branches import BranchDefinition
+
+    universe = tmp_path / "tenant-A"
+    universe.mkdir()
+    branch = BranchDefinition(branch_def_id=f"scope-{entrypoint}", name="scope")
+    entered_inner = []
+
+    def _unexpected_inner(*_args, **_kwargs):
+        entered_inner.append(True)
+        return runs.RunOutcome(run_id="unexpected", status="completed", output={})
+
+    monkeypatch.setattr(runs, "_invoke_graph_inner", _unexpected_inner)
+    kwargs = dict(
+        base_path=tmp_path,
+        branch=branch,
+        inputs={},
+        actor="universe:tenant-A",
+        _enqueue_universe_id="tenant-A",
+        execution_scope=ExecutionScope.legacy_unbound(),
+    )
+    if entrypoint == "sync":
+        outcome = runs.execute_branch(**kwargs)
+    else:
+        outcome = runs._execute_branch_core(
+            **kwargs,
+            branch_version_id=("version-1" if entrypoint == "versioned" else None),
+            _invocation_depth=invocation_depth,
+        )
+        runs.wait_for(outcome.run_id, timeout=10)
+        outcome = runs.RunOutcome(
+            run_id=outcome.run_id,
+            status=runs.get_run(tmp_path, outcome.run_id)["status"],
+            output={},
+        )
+    assert outcome.status == runs.RUN_STATUS_FAILED
+    assert entered_inner == []
+
+
+def test_resume_rejects_legacy_scope_downgrade(tmp_path, monkeypatch):
+    """Resume re-derives authority from the persisted run, not its caller."""
+    from tinyassets import runs
+
+    (tmp_path / "tenant-A").mkdir()
+    run_id = runs.create_run(
+        tmp_path,
+        branch_def_id="resume-scope",
+        thread_id="resume-scope",
+        inputs={},
+        actor="universe:tenant-A",
+        universe_id="tenant-A",
+    )
+    entered_inner = []
+    monkeypatch.setattr(
+        runs,
+        "_invoke_graph_resume_inner",
+        lambda *_args, **_kwargs: entered_inner.append(True),
+    )
+    outcome = runs._invoke_graph_resume(
+        tmp_path,
+        run_id=run_id,
+        branch=None,
+        thread_id=run_id,
+        provider_call=None,
+        execution_scope=ExecutionScope.legacy_unbound(),
+    )
+    assert outcome.status == runs.RUN_STATUS_FAILED
+    assert entered_inner == []
+
+
+def test_resume_threads_persisted_compile_context(tmp_path, monkeypatch):
+    """Resume dispatches with the original depth and trusted enqueue context."""
+    from tinyassets import runs
+    from tinyassets.graph_compiler import NodeEnqueueContext
+
+    context = NodeEnqueueContext(
+        universe_id="tenant-A", actor="tester",
+        parent_branch_task_id="parent-task", origin_branch_task_id="origin-task",
+    )
+    run_id = runs.create_run(
+        tmp_path, branch_def_id="resume-context", thread_id="resume-context",
+        inputs={}, actor="tester", invocation_depth=3,
+        enqueue_context=context,
+    )
+    captured = {}
+
+    def _capture(*_args, **kwargs):
+        captured.update(kwargs)
+        return runs.RunOutcome(run_id=run_id, status="completed", output={})
+
+    monkeypatch.setattr(runs, "_invoke_graph_resume_inner", _capture)
+    outcome = runs._invoke_graph_resume(
+        tmp_path, run_id=run_id, branch=None, thread_id=run_id,
+        provider_call=None, execution_scope=ExecutionScope.legacy_unbound(),
+    )
+    assert outcome.status == "completed"
+    assert captured["invocation_depth"] == 3
+    assert captured["enqueue_context"] == context
 
 
 # --------------------------------------------------------------------------- #
@@ -2528,6 +2613,19 @@ def test_workspace_ref_bound_to_run_and_audience():
     sp.release_run_workspace_refs("run-A")
 
 
+def test_workspace_ref_requires_non_empty_run_and_audience():
+    import tinyassets.sandbox_policy as sp
+
+    with pytest.raises(ValueError):
+        sp.issue_workspace_ref(run_id="", base_path="/ws/a", audience="repo")
+    with pytest.raises(ValueError):
+        sp.issue_workspace_ref(run_id="run-A", base_path="/ws/a", audience="")
+    ref = sp.issue_workspace_ref(run_id="run-A", base_path="/ws/a", audience="repo")
+    assert sp.resolve_workspace_ref(ref) is None
+    assert sp.resolve_workspace_ref(ref, run_id="run-A", audience="") is None
+    sp.release_run_workspace_refs("run-A")
+
+
 def test_workspace_ref_replay_after_release_fails_closed():
     import tinyassets.sandbox_policy as sp
 
@@ -2542,25 +2640,54 @@ def test_workspace_ref_replay_after_release_fails_closed():
 def test_workspace_ref_expiry_fails_closed():
     import tinyassets.sandbox_policy as sp
 
-    # An already-expired ref (ttl <= 0) resolves to None.
-    ref = sp.issue_workspace_ref(
-        run_id="run-exp", base_path="/ws/e", audience="repo", ttl_seconds=-1.0,
-    )
-    assert sp.resolve_workspace_ref(ref, run_id="run-exp", audience="repo") is None
+    with pytest.raises(ValueError):
+        sp.issue_workspace_ref(
+            run_id="run-exp", base_path="/ws/e", audience="repo", ttl_seconds=-1.0,
+        )
 
 
 def test_workspace_ref_registry_bounded_under_sustained_load():
     import tinyassets.sandbox_policy as sp
 
-    sp._WORKSPACE_REF_REGISTRY.clear()
-    # Issue many already-expired refs — each issue evicts dead entries, so the
-    # registry never grows unbounded (Codex S3 r20 #3).
-    for i in range(500):
+    sp._reset_workspace_ref_registry_for_tests()
+    # LIVE refs (not already-expired) must hit a hard global cap rather than
+    # growing forever. Issuance fails closed at the cap.
+    refused = 0
+    for i in range(sp._WORKSPACE_REF_GLOBAL_CAP + 100):
+        try:
+            sp.issue_workspace_ref(
+                run_id=f"r{i}", base_path=f"/ws/{i}", audience="repo",
+                ttl_seconds=60.0,
+            )
+        except RuntimeError:
+            refused += 1
+    assert len(sp._WORKSPACE_REF_REGISTRY) == sp._WORKSPACE_REF_GLOBAL_CAP
+    assert refused == 100
+    sp._reset_workspace_ref_registry_for_tests()
+
+
+def test_workspace_ref_per_run_cap_and_expiry_index_are_bounded():
+    import tinyassets.sandbox_policy as sp
+
+    sp._reset_workspace_ref_registry_for_tests()
+    for i in range(sp._WORKSPACE_REF_PER_RUN_CAP):
         sp.issue_workspace_ref(
-            run_id=f"r{i}", base_path=f"/ws/{i}", audience="repo", ttl_seconds=-1.0,
+            run_id="one-run", base_path=f"/ws/{i}", audience="repo",
         )
-    assert len(sp._WORKSPACE_REF_REGISTRY) <= 1
-    sp._WORKSPACE_REF_REGISTRY.clear()
+    with pytest.raises(RuntimeError, match="per-run"):
+        sp.issue_workspace_ref(
+            run_id="one-run", base_path="/ws/overflow", audience="repo",
+        )
+    sp.release_run_workspace_refs("one-run")
+    for i in range(sp._WORKSPACE_REF_GLOBAL_CAP + 1):
+        ref = sp.issue_workspace_ref(
+            run_id=f"churn-{i}", base_path=f"/ws/churn/{i}", audience="repo",
+        )
+        sp.resolve_workspace_ref(
+            ref, run_id=f"churn-{i}", audience="repo", consume=True,
+        )
+    assert len(sp._WORKSPACE_REF_EXPIRY_HEAP) <= sp._WORKSPACE_REF_GLOBAL_CAP
+    sp._reset_workspace_ref_registry_for_tests()
 
 
 def test_unknown_workspace_ref_fails_closed():
@@ -2603,6 +2730,42 @@ def test_execution_request_rejects_nan_strict_json():
         build_executor_execution_request(
             node, {"x": float("nan")}, EXECUTOR_CLASS_SOURCE_EXEC,
         )
+
+
+def test_execution_request_rejects_non_string_keys_and_unknown_fields():
+    from tinyassets.graph_compiler import (
+        CompilerError,
+        build_executor_execution_request,
+        validate_execution_request,
+    )
+    from tinyassets.sandbox_policy import EXECUTOR_CLASS_REPO
+
+    with pytest.raises(CompilerError, match="string keys"):
+        build_executor_execution_request(
+            _coding_node(), {1: "integer", "1": "string"}, EXECUTOR_CLASS_REPO,
+        )
+    valid = build_executor_execution_request(
+        _coding_node(), {}, EXECUTOR_CLASS_REPO,
+    )
+    valid["surprise"] = True
+    with pytest.raises(CompilerError, match="unexpected fields"):
+        validate_execution_request(valid)
+
+
+def test_execution_request_returns_canonical_decoded_transport_object():
+    from tinyassets.graph_compiler import (
+        build_executor_execution_request,
+        validate_execution_request,
+    )
+    from tinyassets.sandbox_policy import EXECUTOR_CLASS_REPO
+
+    inputs = {"items": ["a", "b"]}
+    request = build_executor_execution_request(
+        _coding_node(), inputs, EXECUTOR_CLASS_REPO,
+    )
+    canonical = validate_execution_request(request)
+    assert canonical is not request
+    assert canonical == request
 
 
 def test_execution_response_rejects_string_error_no_get_crash():

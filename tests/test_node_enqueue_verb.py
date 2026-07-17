@@ -133,7 +133,7 @@ def _run(b, *, invocation_depth=0, thread="t", context=None, base_path="/fake/ba
     from tinyassets.sandbox_policy import ExecutionScope
     compiled = compile_branch(
         b, invocation_depth=invocation_depth,
-        base_path=base_path, enqueue_context=context,
+        base_path=base_path, parent_run_id=thread, enqueue_context=context,
         execution_scope=ExecutionScope.legacy_unbound(),
     )
     app = compiled.graph.compile(checkpointer=InMemorySaver())

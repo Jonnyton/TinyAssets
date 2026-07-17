@@ -104,7 +104,7 @@ def _one_run(run_id: int) -> str:
     from tinyassets.sandbox_policy import ExecutionScope
     compiled = compile_branch(
         _branch(), invocation_depth=0,
-        base_path="/fake/base", enqueue_context=ctx,
+        base_path="/fake/base", parent_run_id=f"conc-{run_id}", enqueue_context=ctx,
         execution_scope=ExecutionScope.legacy_unbound(),
     )
     app = compiled.graph.compile(checkpointer=InMemorySaver())

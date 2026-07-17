@@ -31,6 +31,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import operator
 import os
 import re
@@ -2658,12 +2659,58 @@ _MAX_TRANSPORT_BYTES = 4_000_000
 _MAX_ERROR_TYPE_CHARS = 200
 _MAX_ERROR_MESSAGE_CHARS = 4000
 _RESPONSE_STATUSES = ("ok", "error", "cancelled")
+_EXECUTOR_CLASSES = frozenset({"repo", "source_exec"})
+_REQUEST_FIELDS = frozenset({
+    "kind", "schema_version", "capability_class", "domain_id", "node_spec",
+    "inputs", "workspace_ref", "parent_run_id", "invocation_depth",
+    "enqueue_context", "state_schema", "effective_llm_policy",
+    "concurrency_budget", "credential_grant", "credential_scope_required",
+})
+_RESPONSE_FIELDS = frozenset({"kind", "schema_version", "status", "result", "error"})
+
+
+def issue_executor_credential_grant(
+    *, run_id: str, universe_dir: str | None,
+) -> str | None:
+    """Integration seam for a runner-specific broker adapter; fail closed by default.
+
+    The platform broker mints grants for a specific persisted binding. S3 does not
+    know which provider binding a future isolated runner selected, so installing a
+    runner must also install this adapter instead of reviving the retired vault.
+    """
+    if universe_dir is None:
+        return None
+    raise CompilerError(
+        "isolated executor credential-grant adapter is not installed"
+    )
+
+
+def _assert_json_native(value: Any, *, path: str) -> None:
+    """Reject values whose JSON encoding changes their Python data model."""
+    if value is None or type(value) in (bool, int, str):
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise CompilerError(f"{path} contains a non-finite float")
+        return
+    if type(value) is list:
+        for index, item in enumerate(value):
+            _assert_json_native(item, path=f"{path}[{index}]")
+        return
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise CompilerError(f"{path} contains non-string keys")
+            _assert_json_native(item, path=f"{path}.{key}")
+        return
+    raise CompilerError(f"{path} contains non-JSON-native {type(value).__name__}")
 
 
 def _strict_json_roundtrip(obj: Any, *, label: str) -> Any:
     """STRICT-encode (reject NaN/Infinity) then DECODE back, proving the payload
     survives real cross-process transport and is size-bounded (Codex S3 r20 #4).
     Returns the decoded object. Fail LOUD."""
+    _assert_json_native(obj, path=label)
     try:
         encoded = json.dumps(obj, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -2683,7 +2730,7 @@ def _strict_json_roundtrip(obj: Any, *, label: str) -> Any:
         ) from exc
 
 
-def validate_execution_request(request: "dict[str, Any]") -> None:
+def validate_execution_request(request: "dict[str, Any]") -> "dict[str, Any]":
     """Validate the execution request is a COMPLETE, STRICT-JSON, discriminated
     contract (Codex S3 r19 #3 / r20 #4): STRICT-JSON round-trip (so a `Path`/`set`/
     `NaN` value is rejected BEFORE dispatch, never at the transport), size-bounded,
@@ -2691,7 +2738,13 @@ def validate_execution_request(request: "dict[str, Any]") -> None:
     current schema version, and no raw host path. Fail LOUD."""
     if not isinstance(request, dict):
         raise CompilerError("execution request must be a dict")
-    _strict_json_roundtrip(request, label="execution request")
+    request = _strict_json_roundtrip(request, label="execution request")
+    missing = _REQUEST_FIELDS - request.keys()
+    unexpected = request.keys() - _REQUEST_FIELDS
+    if missing:
+        raise CompilerError(f"execution request missing fields {sorted(missing)}")
+    if unexpected:
+        raise CompilerError(f"execution request has unexpected fields {sorted(unexpected)}")
     for key in ("kind", "schema_version", "capability_class", "node_spec", "inputs"):
         if key not in request:
             raise CompilerError(f"execution request missing required field '{key}'")
@@ -2702,6 +2755,8 @@ def validate_execution_request(request: "dict[str, Any]") -> None:
             f"execution request schema v{request.get('schema_version')} != "
             f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
         )
+    if type(request["schema_version"]) is not int:
+        raise CompilerError("execution request 'schema_version' must be an int")
     # Discriminated field types (r20 #4) — exact types, not just presence.
     if not isinstance(request.get("capability_class"), str):
         raise CompilerError("execution request 'capability_class' must be a str")
@@ -2721,6 +2776,38 @@ def validate_execution_request(request: "dict[str, Any]") -> None:
             "execution request must carry an opaque 'workspace_ref', never a raw "
             "'base_path' (host-path invisibility)."
         )
+    if request["capability_class"] not in _EXECUTOR_CLASSES:
+        raise CompilerError("execution request has unknown capability_class")
+    for key in ("domain_id", "parent_run_id"):
+        if type(request[key]) is not str:
+            raise CompilerError(f"execution request '{key}' must be a str")
+    depth = request["invocation_depth"]
+    if type(depth) is not int or not 0 <= depth <= 64:
+        raise CompilerError("execution request 'invocation_depth' must be an int in 0..64")
+    context = request["enqueue_context"]
+    if context is not None:
+        expected_context = {
+            "universe_id", "actor", "parent_branch_task_id", "origin_branch_task_id"
+        }
+        if type(context) is not dict or set(context) != expected_context:
+            raise CompilerError("execution request 'enqueue_context' has invalid fields")
+        if any(type(value) is not str for value in context.values()):
+            raise CompilerError("execution request 'enqueue_context' values must be str")
+    state_schema = request["state_schema"]
+    if type(state_schema) is not list or any(type(item) is not dict for item in state_schema):
+        raise CompilerError("execution request 'state_schema' must be a list of dicts")
+    if request["effective_llm_policy"] is not None and type(
+        request["effective_llm_policy"]
+    ) is not dict:
+        raise CompilerError("execution request 'effective_llm_policy' must be a dict or null")
+    budget = request["concurrency_budget"]
+    if budget is not None and (type(budget) is not int or not 1 <= budget <= 10_000):
+        raise CompilerError("execution request 'concurrency_budget' must be null or a positive int")
+    if request["credential_grant"] is not None and type(
+        request["credential_grant"]
+    ) is not str:
+        raise CompilerError("execution request 'credential_grant' must be a str or null")
+    return request
 
 
 def make_execution_response(
@@ -2755,7 +2842,7 @@ def make_execution_response(
     }
 
 
-def validate_execution_response(envelope: Any) -> None:
+def validate_execution_response(envelope: Any) -> "dict[str, Any]":
     """Validate the worker's response envelope is a STRICT-JSON, discriminated
     contract (Codex S3 r19 #3 / r20 #4). Fail LOUD on a non-dict, non-strict-JSON,
     oversized, unknown-status, or wrong-schema envelope — and specifically require a
@@ -2766,7 +2853,9 @@ def validate_execution_response(envelope: Any) -> None:
             f"isolated executor returned {type(envelope).__name__}, expected a "
             "response envelope dict."
         )
-    _strict_json_roundtrip(envelope, label="execution response")
+    envelope = _strict_json_roundtrip(envelope, label="execution response")
+    if set(envelope) != _RESPONSE_FIELDS:
+        raise CompilerError("execution response has missing or unexpected fields")
     if envelope.get("kind") != _RESPONSE_KIND:
         raise CompilerError(f"execution response has wrong kind {envelope.get('kind')!r}")
     if envelope.get("schema_version") != EXECUTION_REQUEST_SCHEMA_VERSION:
@@ -2774,6 +2863,8 @@ def validate_execution_response(envelope: Any) -> None:
             f"execution response schema v{envelope.get('schema_version')} != "
             f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
         )
+    if type(envelope["schema_version"]) is not int:
+        raise CompilerError("execution response 'schema_version' must be an int")
     status = envelope.get("status")
     if status not in _RESPONSE_STATUSES:
         raise CompilerError(f"execution response has unknown status {status!r}")
@@ -2783,7 +2874,7 @@ def validate_execution_response(envelope: Any) -> None:
         )
     if status == "error":
         err = envelope.get("error")
-        if not isinstance(err, dict):
+        if not isinstance(err, dict) or set(err) != {"type", "message"}:
             raise CompilerError(
                 "execution response status='error' must carry a STRUCTURED error "
                 "dict (type + message), never a bare string."
@@ -2797,6 +2888,11 @@ def validate_execution_response(envelope: Any) -> None:
             or len(err["message"]) > _MAX_ERROR_MESSAGE_CHARS
         ):
             raise CompilerError("execution response error exceeds the bounded size")
+    if status != "error" and envelope["error"] is not None:
+        raise CompilerError("non-error execution response must carry null 'error'")
+    if status != "ok" and envelope["result"] is not None:
+        raise CompilerError("non-ok execution response must carry null 'result'")
+    return envelope
 
 
 def build_executor_execution_request(
@@ -2852,8 +2948,7 @@ def build_executor_execution_request(
         "credential_grant": credential_grant,
         "credential_scope_required": bool(credential_scope_required),
     }
-    validate_execution_request(request)
-    return request
+    return validate_execution_request(request)
 
 
 def _build_executor_request_dispatch_node(
@@ -2948,7 +3043,7 @@ def _build_executor_request_dispatch_node(
         # RECONSTRUCTS a REMOTE failure (real cross-process IPC), not just an
         # in-process exception. Validate the envelope, then branch on status.
         try:
-            validate_execution_response(envelope)
+            envelope = validate_execution_response(envelope)
         except CompilerError as exc:
             _emit_failed_event(event_sink, _nid, exc)
             raise
@@ -3123,15 +3218,12 @@ def _build_node(
                 # path. Scope comes from the EXPLICIT ExecutionScope (r20 #2): a
                 # BOUND scope requires a redeemable grant; LEGACY_UNBOUND has no
                 # bound tenant so ambient is acceptable.
-                from tinyassets.credential_vault import (
-                    issue_job_credential_grant as _issue_grant,
-                )
                 from tinyassets.sandbox_policy import (
                     issue_workspace_ref as _issue_workspace_ref,
                 )
                 _scope_required = _scope.is_bound
                 _credential_grant = (
-                    _issue_grant(
+                    issue_executor_credential_grant(
                         run_id=parent_run_id, universe_dir=_scope.universe_dir,
                     )
                     if _scope_required else None

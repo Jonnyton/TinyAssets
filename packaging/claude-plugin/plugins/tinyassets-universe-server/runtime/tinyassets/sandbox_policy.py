@@ -25,11 +25,12 @@ credentials + egress/resource limits) is a separate, host-approved slice.
 """
 from __future__ import annotations
 
+import heapq as _ws_heapq
+import math as _ws_math
 import secrets as _secrets
 import threading as _ws_threading
 import time as _ws_time
 from dataclasses import dataclass
-from dataclasses import replace as _dc_replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -496,20 +497,60 @@ class _WorkspaceRefEntry:
 
 
 _WORKSPACE_REF_TTL_SECONDS = 3600.0
+_WORKSPACE_REF_GLOBAL_CAP = 4096
+_WORKSPACE_REF_PER_RUN_CAP = 64
 _WORKSPACE_REF_REGISTRY: "dict[str, _WorkspaceRefEntry]" = {}
+_WORKSPACE_REF_EXPIRY_HEAP: "list[tuple[float, str]]" = []
+_WORKSPACE_REF_RUN_TOKENS: "dict[str, set[str]]" = {}
 _WORKSPACE_REF_LOCK = _ws_threading.Lock()
 
 
+def _remove_workspace_ref_locked(token: str) -> None:
+    entry = _WORKSPACE_REF_REGISTRY.pop(token, None)
+    if entry is None:
+        return
+    run_tokens = _WORKSPACE_REF_RUN_TOKENS.get(entry.run_id)
+    if run_tokens is not None:
+        run_tokens.discard(token)
+        if not run_tokens:
+            _WORKSPACE_REF_RUN_TOKENS.pop(entry.run_id, None)
+
+
+def _evict_dead_workspace_refs_locked(now: float) -> None:
+    """Evict expired refs in deadline order without scanning the registry."""
+    while _WORKSPACE_REF_EXPIRY_HEAP and _WORKSPACE_REF_EXPIRY_HEAP[0][0] <= now:
+        expires_at, token = _ws_heapq.heappop(_WORKSPACE_REF_EXPIRY_HEAP)
+        entry = _WORKSPACE_REF_REGISTRY.get(token)
+        if entry is not None and entry.expires_at == expires_at:
+            _remove_workspace_ref_locked(token)
+
+
+def _compact_workspace_ref_heap_locked() -> None:
+    """Discard revoked-token tombstones before the expiry index can grow."""
+    if len(_WORKSPACE_REF_EXPIRY_HEAP) <= max(
+        _WORKSPACE_REF_GLOBAL_CAP, 2 * len(_WORKSPACE_REF_REGISTRY)
+    ):
+        return
+    _WORKSPACE_REF_EXPIRY_HEAP[:] = [
+        (entry.expires_at, token)
+        for token, entry in _WORKSPACE_REF_REGISTRY.items()
+    ]
+    _ws_heapq.heapify(_WORKSPACE_REF_EXPIRY_HEAP)
+
+
 def _evict_dead_workspace_refs(now: float | None = None) -> None:
-    """Drop expired / consumed entries so the registry stays bounded (r20 #3)."""
     now = _ws_time.monotonic() if now is None else now
     with _WORKSPACE_REF_LOCK:
-        dead = [
-            tok for tok, e in _WORKSPACE_REF_REGISTRY.items()
-            if e.consumed or e.expires_at <= now
-        ]
-        for tok in dead:
-            _WORKSPACE_REF_REGISTRY.pop(tok, None)
+        _evict_dead_workspace_refs_locked(now)
+        _compact_workspace_ref_heap_locked()
+
+
+def _reset_workspace_ref_registry_for_tests() -> None:
+    """Reset all registry indexes; intended only for isolated tests."""
+    with _WORKSPACE_REF_LOCK:
+        _WORKSPACE_REF_REGISTRY.clear()
+        _WORKSPACE_REF_EXPIRY_HEAP.clear()
+        _WORKSPACE_REF_RUN_TOKENS.clear()
 
 
 def issue_workspace_ref(
@@ -524,16 +565,40 @@ def issue_workspace_ref(
     Evicts dead entries on each issue so the registry cannot grow unbounded."""
     if base_path is None or not str(base_path).strip():
         return ""
-    _evict_dead_workspace_refs()
+    rid = str(run_id or "").strip()
+    target_audience = str(audience or "").strip()
+    if not rid:
+        raise ValueError("workspace reference requires a non-empty run_id")
+    if not target_audience:
+        raise ValueError("workspace reference requires a non-empty audience")
+    try:
+        ttl = float(ttl_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "workspace reference TTL must be a positive finite number"
+        ) from exc
+    if not _ws_math.isfinite(ttl) or ttl <= 0:
+        raise ValueError("workspace reference TTL must be a positive finite number")
+
+    now = _ws_time.monotonic()
     token = "ws:" + _secrets.token_hex(16)
     entry = _WorkspaceRefEntry(
         base_path=str(base_path),
-        run_id=str(run_id or ""),
-        audience=str(audience or ""),
-        expires_at=_ws_time.monotonic() + float(ttl_seconds),
+        run_id=rid,
+        audience=target_audience,
+        expires_at=now + ttl,
     )
     with _WORKSPACE_REF_LOCK:
+        _evict_dead_workspace_refs_locked(now)
+        _compact_workspace_ref_heap_locked()
+        if len(_WORKSPACE_REF_REGISTRY) >= _WORKSPACE_REF_GLOBAL_CAP:
+            raise RuntimeError("workspace reference registry capacity exhausted")
+        run_tokens = _WORKSPACE_REF_RUN_TOKENS.setdefault(rid, set())
+        if len(run_tokens) >= _WORKSPACE_REF_PER_RUN_CAP:
+            raise RuntimeError("workspace reference per-run capacity exhausted")
         _WORKSPACE_REF_REGISTRY[token] = entry
+        run_tokens.add(token)
+        _ws_heapq.heappush(_WORKSPACE_REF_EXPIRY_HEAP, (entry.expires_at, token))
     return token
 
 
@@ -551,7 +616,9 @@ def resolve_workspace_ref(
     single-shot job); the default leaves it valid until terminal cleanup / expiry so
     a node that legitimately re-executes within a run can re-resolve. A real
     separate-process runner overrides this to its OWN isolated workspace."""
-    if not workspace_ref:
+    rid = str(run_id or "").strip()
+    target_audience = str(audience or "").strip()
+    if not workspace_ref or not rid or not target_audience:
         return None
     now = _ws_time.monotonic()
     with _WORKSPACE_REF_LOCK:
@@ -559,14 +626,15 @@ def resolve_workspace_ref(
         if entry is None:
             return None
         if entry.consumed or entry.expires_at <= now:
-            _WORKSPACE_REF_REGISTRY.pop(workspace_ref, None)  # evict dead
+            _remove_workspace_ref_locked(workspace_ref)
             return None
-        if run_id and entry.run_id and str(run_id) != entry.run_id:
+        if rid != entry.run_id:
             return None  # cross-job replay → fail closed
-        if audience and entry.audience and str(audience) != entry.audience:
+        if target_audience != entry.audience:
             return None  # wrong executor audience → fail closed
         if consume:
-            _WORKSPACE_REF_REGISTRY[workspace_ref] = _dc_replace(entry, consumed=True)
+            _remove_workspace_ref_locked(workspace_ref)
+            _compact_workspace_ref_heap_locked()
         return entry.base_path
 
 
@@ -578,11 +646,10 @@ def release_run_workspace_refs(run_id: str) -> int:
     if not rid:
         return 0
     with _WORKSPACE_REF_LOCK:
-        doomed = [
-            tok for tok, e in _WORKSPACE_REF_REGISTRY.items() if e.run_id == rid
-        ]
+        doomed = list(_WORKSPACE_REF_RUN_TOKENS.get(rid, ()))
         for tok in doomed:
-            _WORKSPACE_REF_REGISTRY.pop(tok, None)
+            _remove_workspace_ref_locked(tok)
+        _compact_workspace_ref_heap_locked()
     return len(doomed)
 
 
