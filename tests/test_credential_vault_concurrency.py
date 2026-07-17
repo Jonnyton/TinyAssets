@@ -19,6 +19,7 @@ Workers are module-level so they pickle under Windows spawn.
 
 from __future__ import annotations
 
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -266,14 +267,17 @@ def _claim_worker(args: tuple[str, str, str, str, str, int, bool]) -> str:
                 current = got.version
             if current != 1:
                 return "skip-fresh"  # already refreshed by someone
-            # ATOMIC consume-before-mint: only the claim winner may call provider
-            if not be.claim_refresh(ref, current, f"w{n}"):
+            # ATOMIC consume-before-mint tied to the observed version: only the
+            # claim winner may call the provider.
+            ticket = be.begin_refresh(binding, SCOPE, f"w{n}", at_version=current)
+            if ticket is None:
                 return "skip-claimed"
             # THE single provider redemption for this refresh event
             Path(marker_dir, f"call-{n}.marker").write_text("1", encoding="utf-8")
             be.put(
                 _store(), SCOPE, SecretKind.GITHUB_APP_USER_TOKEN,
-                SecretBytes(f"fresh-{n}".encode()), replace=ref, expected_version=current,
+                SecretBytes(f"fresh-{n}".encode()), replace=ref,
+                expected_version=ticket.version,
             )
             return "refreshed"
     except CredentialUnavailable as exc:
@@ -309,6 +313,57 @@ def test_refresh_makes_exactly_one_provider_call(tmp_path):
     assert results.count("refreshed") == 1, results
     with be.get(d.binding, SCOPE) as lease:
         assert lease.version == 2
+
+
+# ---------------------------------------------------------------------------
+# Worker 6: refresh claims are power-loss durable — survive a HARD process kill
+# (review r3 crit #1; synchronous=FULL). Real crash via os._exit, not a Python
+# exception.
+# ---------------------------------------------------------------------------
+
+
+def _crash_after_claim(args: tuple[str, str, str, str]) -> None:
+    db_path, kek_hex, key_id, ref = args
+    be = _build(db_path, kek_hex, key_id)
+    binding = SecretBinding(
+        ref=ref, kind=SecretKind.GITHUB_APP_USER_TOKEN, scope=SCOPE, store=_store()
+    )
+    ticket = be.begin_refresh(binding, SCOPE, "crasher", at_version=1)
+    if ticket is None:
+        os._exit(3)  # claim should have won
+    os._exit(0)  # HARD crash immediately after the committed claim — no cleanup
+
+
+def test_refresh_claim_survives_hard_crash(tmp_path):
+    db_path = str(tmp_path / "vault.db")
+    key_id = "k1"
+    kek_hex = sodium.randombytes(32).hex()
+    be = _build(db_path, kek_hex, key_id)
+    be.attest()
+    d = be.put(_store(), SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"v1"))
+    ref = d.binding.ref
+
+    ctx = mp.get_context("spawn")
+    proc = ctx.Process(target=_crash_after_claim, args=((db_path, kek_hex, key_id, ref),))
+    proc.start()
+    proc.join(timeout=60)
+    assert proc.exitcode == 0, f"crash worker exit={proc.exitcode}"
+
+    # The committed claim survived the hard kill → a fresh process cannot re-redeem
+    # version 1's one-time token (durability, not just logic).
+    be2 = _build(db_path, kek_hex, key_id)
+    be2.attest()
+    binding = SecretBinding(
+        ref=ref, kind=SecretKind.GITHUB_APP_USER_TOKEN, scope=SCOPE, store=_store()
+    )
+    assert be2.begin_refresh(binding, SCOPE, "recover", at_version=1) is None
+
+
+def test_vault_db_is_synchronous_full(tmp_path):
+    be = _build(str(tmp_path / "v.db"), sodium.randombytes(32).hex(), "k1")
+    info = be.durability_info()
+    assert info["synchronous"] == "FULL"  # power-loss durable
+    assert info["journal_mode"].upper() == "WAL"
 
 
 @WINDOWS_ONLY

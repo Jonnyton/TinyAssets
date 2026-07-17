@@ -354,24 +354,54 @@ def test_file_key_provider_rejects_group_readable(tmp_path):
 # ===========================================================================
 
 
-def test_claim_refresh_is_exclusive_and_persistent(platform, store):
-    """Only one holder can claim a version's redemption right; the claim persists
-    after the version advances (no window to re-redeem the same token)."""
+def test_begin_refresh_is_exclusive_and_dos_safe(platform, store):
+    """begin_refresh gives exactly one redeemer per version, ties the claim to the
+    authenticated current version (no version-99 DoS), and refuses a stale view."""
     d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t1"))
-    ref = d.binding.ref
-    assert platform.claim_refresh(ref, 1, "A") is True
-    assert platform.claim_refresh(ref, 1, "B") is False  # B must NOT call provider
+    b = d.binding
+    t_a = platform.begin_refresh(b, SCOPE, "A", at_version=1)
+    assert t_a is not None and t_a.version == 1
+    assert platform.begin_refresh(b, SCOPE, "B", at_version=1) is None  # already claimed
 
-    # advance to version 2 (A's redemption completed)
+    # a claim for a NON-EXISTENT version inserts nothing and cannot block it
+    assert platform.begin_refresh(b, SCOPE, "X", at_version=99) is None
+
+    # complete A's refresh: v1 -> v2
     platform.put(
         store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t2"),
-        replace=ref, expected_version=1,
+        replace=b.ref, expected_version=t_a.version,
     )
-    # the consumed claim persists — a straggler cannot re-redeem version 1's token
-    assert platform.claim_refresh(ref, 1, "C") is False
-    # the NEW version is independently claimable exactly once
-    assert platform.claim_refresh(ref, 2, "C") is True
-    assert platform.claim_refresh(ref, 2, "D") is False
+    # a straggler still holding the old view (v1) is refused — cannot re-redeem
+    assert platform.begin_refresh(b, SCOPE, "C", at_version=1) is None
+    # the NEW current version is independently redeemable exactly once
+    assert platform.begin_refresh(b, SCOPE, "C", at_version=2) is not None
+    assert platform.begin_refresh(b, SCOPE, "D", at_version=2) is None
+
+
+def test_put_requires_cas_pairing(platform, store):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    # replace without expected_version → rejected (would permit lost updates)
+    with pytest.raises(ValueError):
+        platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"y"), replace=d.binding.ref)
+    # expected_version without replace → rejected (inverse pairing)
+    with pytest.raises(ValueError):
+        platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"y"), expected_version=1)
+
+
+def test_platform_store_forbids_daemon_id():
+    with pytest.raises(ValueError):
+        VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default", daemon_id="d")
+
+
+def test_tampered_noninteger_version_hint_is_typed(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    conn.execute("UPDATE vault_secrets SET version = 'not-an-int' WHERE ref = ?", (d.binding.ref,))
+    conn.commit()
+    conn.close()
+    with pytest.raises(CredentialUnavailable) as exc:  # never a raw ValueError
+        platform.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
 
 
 # ===========================================================================
@@ -473,16 +503,34 @@ def test_attestation_converts_probe_read_fault_to_failed_result(tmp_path):
 
 
 @WINDOWS_ONLY
-def test_local_attestation_conservative_no_dacl_claim(tmp_path):
-    """Local attestation proves current-user DPAPI encryption but must NOT claim
-    the narrow DACL — that gate is deferred to deployment integration."""
+def test_local_attestation_verifies_dacl_honestly(tmp_path):
+    """Local attestation is HONEST: it passes only when the file DACL is verified
+    to be current-user + SYSTEM only, and fails when the DACL is broadened."""
+    from tinyassets.credentials import local_backend as lb
+
     be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
     result = be.attest()
-    assert result.ok is True  # passes on encryption evidence alone
+    assert result.ok is True
+    assert result.checks["dacl_current_user_only"] is True  # actually verified
+
     store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
     d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"probe"))
+    blob = be._blob_path(d.binding.ref)
+    assert lb.dacl_is_current_user_and_system_only(blob) is True
+
+    # Broaden the DACL (grant Everyone) → the verifier must report False.
+    import ntsecuritycon
+    import win32security
+
+    everyone = win32security.ConvertStringSidToSid("S-1-1-0")
+    sd = win32security.GetFileSecurity(str(blob), win32security.DACL_SECURITY_INFORMATION)
+    dacl = sd.GetSecurityDescriptorDacl()
+    dacl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_GENERIC_READ, everyone)
+    win32security.SetNamedSecurityInfo(
+        str(blob), win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        None, None, dacl, None,
+    )
+    assert lb.dacl_is_current_user_and_system_only(blob) is False
     ev = be.inspect_persisted(d.binding.ref, b"probe")
-    assert ev["current_user_bound"] is True
-    # DACL is NOT claimed as proven — it is an explicit deferred marker.
-    assert ev["dacl_gate"] == "deferred-to-deployment"
-    assert "dacl_current_user_only" not in ev
+    assert ev["dacl_current_user_only"] is False
