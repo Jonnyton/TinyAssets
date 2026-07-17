@@ -1,14 +1,13 @@
-"""S6/S7/S8 — engine-source onboard choices + the market-offer supply side.
+"""S6/S7/S8 — engine-source onboard choices.
 
 set_engine carries engine_source (byo_api_key | self_hosted_endpoint |
-market_rented | host_daemon), all persisted to config.yaml; offer_engine records
-the founder's market supply offers.
+market_rented | host_daemon), all persisted to config.yaml. (The premature
+offer_engine market-supply scaffolding was removed in round-16 #3 — that
+capability belongs to the paid-market domain via the canonical API.)
 """
 from __future__ import annotations
 
 import json
-
-import pytest
 
 from tinyassets.config import load_universe_config
 
@@ -84,89 +83,27 @@ def test_market_required_fields_enforced(tmp_path, monkeypatch):
     assert "error" in out  # market_model required
 
 
-def test_offer_engine_set_list_toggle(tmp_path, monkeypatch):
-    from tinyassets.api import permissions
+def test_offer_engine_removed_r16(tmp_path):
+    """Round-16 #3: the premature offer_engine scaffolding was REMOVED (wrong
+    surface — reachable only via the deprecated hidden `universe` tool — and a
+    parallel founder-offer JSON store, not the paid-market domain). The market
+    supply/offer capability belongs to the paid-market domain
+    (``tinyassets/paid_market/``) via the canonical API, done as a separate lane."""
     from tinyassets.api import universe as uni
+    from tinyassets.auth.provider import _UNIVERSE_ADMIN_ACTIONS
 
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(permissions, "current_actor_id", lambda: "founder-42")
-
-    setres = json.loads(uni._action_offer_engine(inputs_json=json.dumps({
-        "action": "set", "service": "anthropic", "model": "sonnet",
-        "rate": 0.3, "cap": 100.0})))
-    assert setres["status"] == "offer_set"
-    key = setres["offer_key"]
-
-    listed = json.loads(uni._action_offer_engine(
-        inputs_json=json.dumps({"action": "list"})))
-    match = [o for o in listed["offers"] if o["key"] == key]
-    assert match and match[0]["enabled"] is True
-
-    toggled = json.loads(uni._action_offer_engine(
-        inputs_json=json.dumps({"action": "toggle", "key": key})))
-    assert toggled["status"] == "offer_toggled"
-    listed2 = json.loads(uni._action_offer_engine(
-        inputs_json=json.dumps({"action": "list"})))
-    assert [o for o in listed2["offers"] if o["key"] == key][0]["enabled"] is False
-
-
-@pytest.mark.parametrize("field,value", [
-    ("rate", -1.0), ("cap", -0.5),
-    ("rate", float("inf")), ("cap", float("nan")),
-])
-def test_r15_3_offer_engine_rejects_invalid_financials(
-    tmp_path, monkeypatch, field, value,
-):
-    """Round-15 #3: offer_engine must reject non-finite (NaN/Infinity) + negative
-    rate/cap (the same guard the market-rental declaration applies) — never persist
-    them."""
-    from tinyassets.api import permissions
-    from tinyassets.api import universe as uni
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(permissions, "current_actor_id", lambda: "founder-fin")
-    payload = {"action": "set", "service": "anthropic", "model": "m",
-               "rate": 0.5, "cap": 5.0}
-    payload[field] = value
-    out = json.loads(uni._action_offer_engine(inputs_json=json.dumps(payload)))
-    assert "error" in out and out.get("status") != "offer_set"
-    # Nothing persisted.
-    listed = json.loads(uni._action_offer_engine(
-        inputs_json=json.dumps({"action": "list"})))
-    assert listed["offers"] == []
-
-
-def test_r15_3_concurrent_offers_do_not_lose_each_other(tmp_path, monkeypatch):
-    """Round-15 #3: the offer read-modify-write runs under a cross-process lock —
-    interleaved offers for distinct keys all land (no lost-update clobber)."""
-    import concurrent.futures
-
-    from tinyassets.api import permissions
-    from tinyassets.api import universe as uni
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(permissions, "current_actor_id", lambda: "founder-conc")
-
-    def _set(i):
-        uni._action_offer_engine(inputs_json=json.dumps({
-            "action": "set", "service": "anthropic", "model": f"m{i}",
-            "rate": 0.1, "cap": 1.0}))
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(_set, range(16)))
-
-    listed = json.loads(uni._action_offer_engine(
-        inputs_json=json.dumps({"action": "list"})))
-    keys = {o["key"] for o in listed["offers"]}
-    for i in range(16):
-        assert f"anthropic:m{i}" in keys, f"lost offer m{i} under concurrency"
+    assert "offer_engine" not in uni.UNIVERSE_ACTIONS
+    assert "offer_engine" not in uni.WRITE_ACTIONS
+    assert "offer_engine" not in _UNIVERSE_ADMIN_ACTIONS
+    assert not hasattr(uni, "_action_offer_engine")
 
 
 def test_engine_actions_are_founder_admin_scoped():
     from tinyassets.api.universe import UNIVERSE_ACTIONS, WRITE_ACTIONS
     from tinyassets.auth.provider import _UNIVERSE_ADMIN_ACTIONS
 
-    for action in ("set_engine", "offer_engine"):
-        assert action in _UNIVERSE_ADMIN_ACTIONS
-        assert action in WRITE_ACTIONS
-        assert action in UNIVERSE_ACTIONS
+    # set_engine (the S5 engine-onboarding action) stays founder-admin scoped;
+    # offer_engine was removed (round-16 #3, paid-market domain).
+    assert "set_engine" in _UNIVERSE_ADMIN_ACTIONS
+    assert "set_engine" in WRITE_ACTIONS
+    assert "set_engine" in UNIVERSE_ACTIONS

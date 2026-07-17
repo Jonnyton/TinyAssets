@@ -1,9 +1,14 @@
 # Universe Engine Credential Custody — Research + Options
 
-- **Status:** Research / options note — **no build authority.** Resolves the open
-  research lane in `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md`
-  §11 item #2 (host: "research and think about it"). Recommendation only; a host
-  decision + Codex opposite-provider review gate any implementation.
+- **Status:** Design note — **IMPLEMENTED by the patch-loop-s5 branch** (round-16 #6
+  reconciliation: dropped the stale "no build authority" line; the S5 engine-
+  onboarding + non-ambient-gate core built to this design and passed the
+  Codex opposite-provider review gate). Resolves the open research lane in
+  `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md`
+  §11 item #2 (host: "research and think about it"). The source conclusions stand:
+  OpenAI prohibits API-key transfer (raw-key custody NOT-offered pending a
+  provider-approved delegated path); both providers document sanctioned
+  private-automation paths.
 - **Author:** Navigator (Claude), 2026-07-02, from host directive same day.
 - **Reads (context, not restated):** the relay-architecture note §11; PLAN
   *Daemon Platform* + *Providers* modules; `AGENTS.md` Hard Rule #3 +

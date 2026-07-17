@@ -149,3 +149,71 @@ def test_no_vault_records_produce_no_overrides(tmp_path):
 
 def test_missing_vault_loads_as_empty(tmp_path: Path):
     assert load_credential_vault(tmp_path) == []
+
+
+# ── Retired-subscription migration + rollback (round-16 #2) ──────────────────
+
+
+def test_quarantine_then_rollback_round_trips(tmp_path):
+    """The migration quarantines llm_subscription records (vault stops crashing)
+    and rollback restores them — reversible predeployment step (round-16 #2)."""
+    from tinyassets.credential_vault import (
+        has_legacy_subscription_records,
+        quarantine_legacy_subscription_records,
+        restore_quarantined_subscription_records,
+    )
+
+    write_credential_vault(tmp_path, [
+        {"credential_type": "vcs", "service": "github",
+         "destination": "o/r", "token": "t"},
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": "legacy"},
+    ])
+    assert has_legacy_subscription_records(tmp_path) is True
+
+    mig = quarantine_legacy_subscription_records(tmp_path)
+    assert mig["migrated"] == 1 and mig["remaining"] == 1
+    assert has_legacy_subscription_records(tmp_path) is False
+    # Idempotent — a second migrate is a no-op.
+    assert quarantine_legacy_subscription_records(tmp_path)["migrated"] == 0
+
+    back = restore_quarantined_subscription_records(tmp_path)
+    assert back["restored"] == 1
+    assert has_legacy_subscription_records(tmp_path) is True
+    # Idempotent rollback — nothing left to restore.
+    assert restore_quarantined_subscription_records(tmp_path)["restored"] == 0
+
+
+def test_migration_script_inventory_migrate_rollback(tmp_path, monkeypatch):
+    """The runnable predeployment script inventories, migrates (idempotent), and
+    rolls back across universe dirs under the data root (round-16 #2)."""
+    import importlib
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    # Two universes: one with a legacy record, one clean.
+    (tmp_path / "u-legacy").mkdir()
+    write_credential_vault(tmp_path / "u-legacy", [
+        {"credential_type": "llm_subscription", "service": "codex",
+         "auth_json_b64": "e30="},
+    ])
+    (tmp_path / "u-clean").mkdir()
+    write_credential_vault(tmp_path / "u-clean", [
+        {"credential_type": "vcs", "service": "github",
+         "destination": "o/r", "token": "t"},
+    ])
+
+    script = importlib.import_module("scripts.migrate_retired_subscription_records")
+
+    assert script.main(["--inventory"]) == 0
+    # Migrate: only u-legacy is affected; idempotent on re-run.
+    assert script.main(["--migrate"]) == 0
+    assert not [r for r in _load_vault_types(tmp_path / "u-legacy")
+                if r == "llm_subscription"]
+    assert script.main(["--migrate"]) == 0  # idempotent
+    # Rollback restores it.
+    assert script.main(["--rollback"]) == 0
+    assert "llm_subscription" in _load_vault_types(tmp_path / "u-legacy")
+
+
+def _load_vault_types(universe_dir):
+    return [r.get("credential_type") for r in load_credential_vault(universe_dir)]

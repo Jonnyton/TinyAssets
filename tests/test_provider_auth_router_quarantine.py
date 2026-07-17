@@ -798,11 +798,13 @@ def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
 
     # Clean bare context.
     assert "--bare" in argv
-    # DEFAULT-DENY tool floor (round-14 #2): not just Bash — file Read/Edit/Write
-    # are denied too (--bare alone still permits them).
-    assert "--disallowedTools" in argv
-    for denied in ("Bash", "Read", "Edit", "Write", "WebFetch"):
-        assert denied in argv, f"{denied} not in the default-deny tool floor"
+    # DEFAULT-DENY via an ALLOWLIST (round-16 #5), NOT a denylist: --allowedTools
+    # with an EMPTY value denies every built-in (fails closed on new tools), so
+    # there is no --disallowedTools list to keep exhaustive.
+    assert "--allowedTools" in argv
+    ai = argv.index("--allowedTools")
+    assert argv[ai + 1] == "", "the BYO allowlist must be empty (allow nothing)"
+    assert "--disallowedTools" not in argv  # allowlist, not denylist
     # cwd is pinned to an isolated scratch dir (round-14 #2), NOT the daemon cwd.
     assert "claude-byo-scratch" in child_cwd
     assert Path(child_cwd).resolve() != Path.cwd().resolve()
@@ -948,3 +950,95 @@ def test_r15_2_pin_attestation_uses_routing_record_context(tmp_path, monkeypatch
     # Pin opened for a DIFFERENT universe → the target reads False (record-scoped).
     with pin_byo_execution_snapshot(other):
         assert byo_execution_enabled(target) is False
+
+
+# ---------------------------------------------------------------------------
+# Round-16 review regressions (Codex r16)
+# ---------------------------------------------------------------------------
+
+
+def _byo_vault(udir, key: str) -> None:
+    import base64
+
+    from tinyassets.credential_vault import write_credential_vault
+    udir.mkdir(parents=True, exist_ok=True)
+    (udir / "config.yaml").write_text("engine_source: byo_api_key\n", encoding="utf-8")
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": base64.b64encode(key.encode()).decode("ascii"),
+    }])
+
+
+@pytest.mark.parametrize("mutation", ["delete", "replace", "none"])
+def test_r16_1_credential_toctou_across_routing_and_spawn(
+    tmp_path, monkeypatch, mutation,
+):
+    """Round-16 #1: the routing→spawn boundary threads an IMMUTABLE credential
+    binding. If the BYO credential is DELETED or REPLACED between the routing pin
+    and the subprocess spawn, the spawn FAILS CLOSED (never falls back to the
+    ambient platform token). An UNCHANGED credential spawns cleanly with the
+    ambient token scrubbed and the BYO key injected."""
+    import json as _json
+
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.engine_binding import pin_byo_execution_snapshot
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "platform-oauth")  # ambient login
+    udir = tmp_path / "u-toctou"
+    _byo_vault(udir, "sk-ant-api03-" + "A" * 40)
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+    vault = udir / ".credential-vault.json"
+
+    def _mutate():
+        if mutation == "delete":
+            vault.write_text(_json.dumps({"schema_version": 1, "credentials": []}))
+        elif mutation == "replace":
+            write_credential_vault(udir, [{
+                "credential_type": "llm_api_key", "service": "anthropic",
+                "api_key": "sk-ant-api03-" + "B" * 40,
+            }])
+        # "none" → leave the credential unchanged
+
+    # Routing pins the immutable binding; the attacker mutates before the spawn.
+    with pin_byo_execution_snapshot(udir):
+        _mutate()
+        if mutation in ("delete", "replace"):
+            with pytest.raises(ProviderUnavailableError):
+                subprocess_env_for_provider("claude-code", universe_dir=udir)
+        else:
+            env = subprocess_env_for_provider("claude-code", universe_dir=udir)
+            # Unchanged: ambient scrubbed, BYO key injected, hardening on.
+            assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+            assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-" + "A" * 40
+            assert env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") == "1"
+
+
+def test_r16_3_offer_engine_removed():
+    """Round-16 #3: the premature offer_engine scaffolding is gone from every
+    surface (dispatch, ledger, admin scope, module)."""
+    from tinyassets.api import universe as uni
+    from tinyassets.auth.provider import _UNIVERSE_ADMIN_ACTIONS
+
+    assert "offer_engine" not in uni.UNIVERSE_ACTIONS
+    assert "offer_engine" not in uni.WRITE_ACTIONS
+    assert "offer_engine" not in _UNIVERSE_ADMIN_ACTIONS
+    assert not hasattr(uni, "_action_offer_engine")
+    assert not hasattr(uni, "_extract_offer_engine")
+
+
+def test_r16_5_byo_hardening_is_default_deny_allowlist(monkeypatch):
+    """Round-16 #5: BYO CLI hardening uses an ALLOWLIST (default-deny), not a
+    denylist — --bare + an EMPTY --allowedTools, no --disallowedTools."""
+    from tinyassets.providers.claude_provider import _byo_hardening_flags
+
+    # No signal → no hardening flags.
+    assert _byo_hardening_flags({}) == []
+    flags = _byo_hardening_flags({"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"})
+    assert "--bare" in flags
+    assert "--allowedTools" in flags
+    assert flags[flags.index("--allowedTools") + 1] == ""  # empty allowlist
+    assert "--disallowedTools" not in flags

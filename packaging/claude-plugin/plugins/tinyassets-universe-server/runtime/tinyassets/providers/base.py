@@ -157,26 +157,69 @@ def subprocess_env_for_provider(
             RetiredSubscriptionLaneError,
             _byo_injection_enabled,
             apply_provider_auth_env,
+            byo_credential_digest,
             provider_is_byo_bound,
+            resolve_universe_from_env,
             scrub_byo_child_auth,
         )
+        from tinyassets.engine_binding import get_pinned_byo_snapshot
+        from tinyassets.exceptions import ProviderUnavailableError
 
-        # Round-11 #2 / round-12 #3 (attestation TOCTOU): read the ONE authoritative
-        # snapshot. Under the router this resolves to the pinned value
-        # (engine_binding.pin_byo_execution_snapshot), so route-time and spawn-time
-        # agree; bare callers recompute live. Thread it into BOTH the byo-bound
-        # decision and the overlay so they can never disagree.
-        byo_enabled = _byo_injection_enabled(universe_dir)
-        byo_bound = provider_is_byo_bound(
-            provider_name, env=env, universe_dir=universe_dir,
-            byo_enabled=byo_enabled,
-        )
         provider = provider_name.strip()
+        byo_env_var = _PROVIDER_BYO_ENV_VAR.get(provider, "")
+        effective_universe = (
+            Path(universe_dir) if universe_dir is not None
+            else resolve_universe_from_env(env)
+        )
+
+        # Round-16 #1: the IMMUTABLE routing binding. If routing SELECTED a BYO
+        # credential for THIS provider + universe (pinned snapshot with a
+        # credential_digest), the spawn is byo-bound BY THAT DECISION — a fresh
+        # vault reread that finds the credential deleted must NOT silently downgrade
+        # to a non-BYO ambient spawn. Match on provider (BYO-executable) + universe.
+        snap = get_pinned_byo_snapshot()
+        routing_binding = (
+            snap
+            if (
+                snap is not None
+                and snap.enabled
+                and snap.credential_digest is not None
+                and byo_env_var
+                and effective_universe is not None
+                and snap.universe_dir == str(effective_universe)
+            )
+            else None
+        )
+
+        # Round-11 #2 / round-12 #3 (attestation TOCTOU): the ONE authoritative
+        # snapshot. Under the router it resolves to the pinned value; bare callers
+        # recompute live. Threaded into both the byo-bound decision and the overlay.
+        byo_enabled = _byo_injection_enabled(universe_dir)
+        if routing_binding is not None:
+            byo_bound = True  # immutable routing decision — never downgrade to ambient
+        else:
+            byo_bound = provider_is_byo_bound(
+                provider_name, env=env, universe_dir=universe_dir,
+                byo_enabled=byo_enabled,
+            )
+
         if byo_bound:
             # Round-12 #2: positive-allowlist the auth surface BEFORE
-            # materialization, so even if the overlay fails the child can NEVER run
-            # on an ambient higher-precedence credential (Bedrock/Vertex/AWS/OAuth).
+            # materialization, so even if a step below FAILS CLOSED the child can
+            # NEVER inherit an ambient higher-precedence credential.
             scrub_byo_child_auth(env)
+
+        # Round-16 #1: enforce the immutable credential binding. If the SELECTED BYO
+        # credential CHANGED or DISAPPEARED between routing and spawn, fail closed
+        # (the ambient auth is already scrubbed → no platform fallback).
+        if routing_binding is not None:
+            fresh_digest = byo_credential_digest(effective_universe, byo_env_var)
+            if fresh_digest != routing_binding.credential_digest:
+                raise ProviderUnavailableError(
+                    f"BYO credential for {provider} changed or disappeared between "
+                    "routing and spawn; refusing to run on ambient platform auth."
+                )
+
         try:
             apply_provider_auth_env(
                 env, provider_name, universe_dir=universe_dir,
@@ -194,10 +237,8 @@ def subprocess_env_for_provider(
         if byo_bound:
             # FAIL CLOSED: a BYO-bound spawn that did not produce its expected key
             # must NOT dispatch (it would run on the now-scrubbed/absent auth).
-            expected = _PROVIDER_BYO_ENV_VAR.get(provider, "")
+            expected = byo_env_var
             if expected and not env.get(expected):
-                from tinyassets.exceptions import ProviderUnavailableError
-
                 raise ProviderUnavailableError(
                     f"BYO-bound spawn for {provider} did not produce {expected}; "
                     "refusing to run on ambient platform auth."
@@ -205,7 +246,7 @@ def subprocess_env_for_provider(
             # Round-13 #1: keep the founder's key out of the CLI's OWN tool/hook
             # subprocesses (Bash/hooks/MCP), not just this env. Also the signal the
             # CLI provider reads to force a hardened bare-context launch (--bare +
-            # restricted tools) — one byo-bound decision drives the whole hardening.
+            # default-deny tools) — one byo-bound decision drives the whole hardening.
             env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
     except ImportError:
         # credential_vault genuinely unavailable in this import context — no

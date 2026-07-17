@@ -94,19 +94,6 @@ def _sandbox_cli_args(
     return flags, run_cwd
 
 
-# Round-13 #1 / round-14 #2: DEFAULT-DENY every built-in tool for a BYO execution
-# turn. `--bare` still permits file Read/Edit (Codex r14: Claude docs), so denying
-# only Bash left a host-file read/edit path. Until the per-job runner provides real
-# OS isolation (which also gates BYO execution ON via sandbox attestation — the
-# path is dark till then), the interim floor denies the WHOLE known tool surface so
-# a future-enabled BYO process can't read/modify host files or escape the shell.
-_BYO_HARDENED_DENY_TOOLS: tuple[str, ...] = (
-    "Bash", "BashOutput", "KillShell", "Read", "Edit", "MultiEdit", "Write",
-    "NotebookEdit", "Glob", "Grep", "WebFetch", "WebSearch", "Task",
-    "TodoWrite", "SlashCommand", "ExitPlanMode",
-)
-
-
 def _byo_scratch_dir(universe_dir: Path | None) -> str | None:
     """Return an empty per-universe SCRATCH cwd for a hardened BYO launch.
 
@@ -128,14 +115,21 @@ def _byo_hardening_flags(proc_env: dict[str, str]) -> list[str]:
 
     Triggered by ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` — the ONE byo-bound signal
     ``subprocess_env_for_provider`` sets (round-13 #1) after it has scrubbed every
-    host credential from the child env. Forces ``--bare`` (clean context: no host
-    OAuth/keychain/hooks/plugins/MCP/ambient instructions — the founder's key is
-    the ONLY credential) + a DEFAULT-DENY tool floor (round-14 #2), so nothing
-    inside the subprocess can read/modify host files or escape the shell.
+    host credential from the child env.
+
+    Round-16 #5: hardening is an ALLOWLIST (default-deny), NOT a denylist. A denylist
+    fails OPEN on any new built-in / skill (the r13/r14 static deny-list could miss
+    one); an EMPTY allowlist fails CLOSED — nothing is permitted unless explicitly
+    added. ``--bare`` already disables MCP servers, hooks, plugins, keychain/OAuth
+    and ambient instructions; the empty ``--allowedTools`` denies every built-in
+    tool (file Read/Edit/Write, shell, web). Phase-2 explicitly ADDS only the
+    capabilities a real BYO turn needs — pairs with the sandbox runner's OS
+    isolation (execution stays dark until sandbox attestation, so this interim is
+    belt-and-suspenders). Real-binary enforcement is a Phase-2 rollout gate.
     """
     if proc_env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") != "1":
         return []
-    return ["--bare", "--disallowedTools", *_BYO_HARDENED_DENY_TOOLS]
+    return ["--bare", "--allowedTools", ""]
 
 
 class ClaudeProvider(BaseProvider):

@@ -227,16 +227,32 @@ def _sandbox_execution_attested() -> bool:
     return False  # Phase 2: wire to the per-job runner's sandbox-readiness probe.
 
 
-#: Round-12 #3 (attestation TOCTOU). Route selection
-#: (:func:`resolve_engine_binding` / the router's writer-binding enforcement) and
-#: the subprocess spawn (:func:`tinyassets.providers.base.subprocess_env_for_provider`)
-#: BOTH consult :func:`byo_execution_enabled`. Without a shared snapshot, a mid-call
-#: attestation flip (True→False) lets routing constrain to the BYO writer while the
-#: spawn restores platform auth. The router wraps its chain-selection + the awaited
-#: ``provider.complete`` in :func:`pin_byo_execution_snapshot`, so every read inside
-#: that one routing operation resolves to the SAME immutable value. ``None`` = not
-#: pinned (standalone callers recompute live).
-_BYO_EXECUTION_SNAPSHOT: ContextVar[bool | None] = ContextVar(
+@dataclass(frozen=True)
+class ByoExecutionSnapshot:
+    """The IMMUTABLE binding pinned across ONE routing→spawn operation (round-16 #1).
+
+    Route selection (the router's writer-binding enforcement) and the subprocess
+    spawn (:func:`tinyassets.providers.base.subprocess_env_for_provider`) both run
+    inside :func:`pin_byo_execution_snapshot`. The pin captures not just the
+    boolean attestation but the SELECTED credential's identity+version
+    (``credential_digest``) at route time. The spawn recomputes the digest and
+    FAILS CLOSED if it changed or disappeared — closing the routing→spawn TOCTOU
+    where the ambient platform token could survive if the BYO credential was
+    deleted in the interval. ``universe_dir`` is the record locus (round-15 #2).
+    """
+
+    enabled: bool
+    universe_dir: str | None = None
+    credential_digest: str | None = None
+
+
+#: Round-12 #3 / round-16 #1 (attestation + credential TOCTOU). Route selection and
+#: the subprocess spawn BOTH consult the pinned snapshot. The router wraps its
+#: chain-selection + the awaited ``provider.complete`` in
+#: :func:`pin_byo_execution_snapshot`, so every read inside that one routing
+#: operation resolves to the SAME immutable binding. ``None`` = not pinned
+#: (standalone callers recompute live).
+_BYO_EXECUTION_SNAPSHOT: ContextVar[ByoExecutionSnapshot | None] = ContextVar(
     "byo_execution_snapshot", default=None,
 )
 
@@ -252,29 +268,49 @@ def _byo_execution_enabled_uncached(universe_dir: str | Path | None = None) -> b
     return _vault_encryption_capability_attested(universe_dir)
 
 
+def _compute_byo_snapshot(universe_dir: str | Path | None) -> ByoExecutionSnapshot:
+    """Capture the immutable routing-time binding: attestation + the SELECTED BYO
+    credential's identity+version (round-16 #1)."""
+    enabled = _byo_execution_enabled_uncached(universe_dir)
+    udir_str = str(Path(universe_dir)) if universe_dir is not None else None
+    digest: str | None = None
+    if enabled:
+        try:
+            from tinyassets.credential_vault import byo_credential_digest
+
+            digest = byo_credential_digest(universe_dir)
+        except Exception:  # noqa: BLE001 — no resolvable credential ⇒ no binding
+            digest = None
+    return ByoExecutionSnapshot(
+        enabled=enabled, universe_dir=udir_str, credential_digest=digest,
+    )
+
+
 @contextlib.contextmanager
 def pin_byo_execution_snapshot(universe_dir: str | Path | None = None):
-    """Pin ONE immutable ``byo_execution_enabled()`` reading for a routing call.
+    """Pin ONE immutable BYO binding for a routing operation (round-12 #3 +
+    round-15 #2 + round-16 #1).
 
     The router enters this around its chain-selection + the awaited
-    ``provider.complete`` so route-time and spawn-time reads can never disagree
-    across a mid-call attestation flip (round-12 #3). A nested pin reuses the
-    outermost value — the first decision governs the whole operation.
-
-    Round-15 #2: the snapshot is computed WITH the routing universe's record
-    context (``universe_dir``) so the per-record attestation (round-14 #4) is not
-    silently context-free inside the pin. The caller passes the resolved universe;
-    every read inside the pin then resolves to this ONE per-record decision.
+    ``provider.complete`` so route-time and spawn-time reads can never disagree —
+    not on the attestation boolean (round-12), not on the record context
+    (round-15), and not on the credential's identity+version (round-16). A nested
+    pin reuses the outermost binding — the first decision governs the operation.
     """
     current = _BYO_EXECUTION_SNAPSHOT.get()
-    value = (
-        _byo_execution_enabled_uncached(universe_dir) if current is None else current
-    )
-    token = _BYO_EXECUTION_SNAPSHOT.set(value)
+    snapshot = _compute_byo_snapshot(universe_dir) if current is None else current
+    token = _BYO_EXECUTION_SNAPSHOT.set(snapshot)
     try:
-        yield value
+        yield snapshot
     finally:
         _BYO_EXECUTION_SNAPSHOT.reset(token)
+
+
+def get_pinned_byo_snapshot() -> ByoExecutionSnapshot | None:
+    """Return the immutable BYO binding pinned for the current routing operation,
+    or ``None`` when not under a pin (standalone/direct callers). The spawn uses it
+    to enforce the immutable-credential contract (round-16 #1)."""
+    return _BYO_EXECUTION_SNAPSHOT.get()
 
 
 def byo_execution_enabled(universe_dir: str | Path | None = None) -> bool:
@@ -297,7 +333,7 @@ def byo_execution_enabled(universe_dir: str | Path | None = None) -> bool:
     """
     pinned = _BYO_EXECUTION_SNAPSHOT.get()
     if pinned is not None:
-        return pinned
+        return pinned.enabled
     return _byo_execution_enabled_uncached(universe_dir)
 
 

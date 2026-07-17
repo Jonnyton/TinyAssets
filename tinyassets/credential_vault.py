@@ -8,6 +8,7 @@ secret values only to daemon-side effectors/providers that need them.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -315,6 +316,31 @@ def quarantine_legacy_subscription_records(
     }
 
 
+def restore_quarantined_subscription_records(
+    universe_dir: str | Path,
+) -> dict[str, Any]:
+    """ROLLBACK the retired-subscription migration (round-16 #2): re-add the
+    quarantined ``llm_subscription`` records back into the vault and clear the
+    quarantine archive. Idempotent — no quarantine file is a no-op. This exists so
+    the predeployment migration is REVERSIBLE. Returns a non-secret summary."""
+    universe = Path(universe_dir)
+    qpath = universe / QUARANTINE_FILENAME
+    if not qpath.is_file():
+        return {"restored": 0, "quarantine_path": None}
+    try:
+        loaded = json.loads(qpath.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"quarantine file at {qpath} is unreadable: {exc}") from exc
+    quarantined = loaded.get("quarantined") if isinstance(loaded, dict) else None
+    if not isinstance(quarantined, list) or not quarantined:
+        qpath.unlink(missing_ok=True)
+        return {"restored": 0, "quarantine_path": str(qpath)}
+    current = load_credential_vault(universe)  # raises ValueError if malformed
+    write_credential_vault(universe, current + quarantined)
+    qpath.unlink(missing_ok=True)
+    return {"restored": len(quarantined), "quarantine_path": str(qpath)}
+
+
 def supported_llm_api_key_services() -> frozenset[str]:
     """Services a BYO ``llm_api_key`` deposit may target.
 
@@ -369,6 +395,31 @@ def resolve_llm_api_key(
             continue
         return _secret_value(record, "api_key", "key", "token")
     return ""
+
+
+def byo_credential_digest(
+    universe_dir: str | Path | None, env_var: str = "ANTHROPIC_API_KEY",
+) -> str | None:
+    """Return an IMMUTABLE identity+version digest of the SELECTED BYO credential,
+    or ``None`` when there is none / it can't be resolved (round-16 #1).
+
+    A stable content digest (sha256) of the resolved BYO key. The router captures
+    it at ROUTE-selection time and threads it (via the pinned snapshot) to the
+    subprocess spawn; the spawn recomputes and compares. If the credential CHANGED
+    or DISAPPEARED in the interval, the digests differ (or one is ``None``) and the
+    caller FAILS CLOSED — never falling back to ambient platform auth. This is the
+    S5 side of the credential vault's immutable-binding (SecretBinding) contract;
+    at integration it binds to the vault's real record identity + version.
+    """
+    if universe_dir is None:
+        return None
+    try:
+        key = resolve_llm_api_key(universe_dir, env_var)
+    except Exception:  # noqa: BLE001 — an unresolvable credential is "no binding"
+        return None
+    if not key:
+        return None
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def _byo_injection_enabled(universe_dir: str | Path | None = None) -> bool:

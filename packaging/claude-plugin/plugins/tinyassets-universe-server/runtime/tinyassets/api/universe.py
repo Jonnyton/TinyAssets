@@ -647,31 +647,12 @@ def _extract_set_engine(
     )
 
 
-def _extract_offer_engine(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    """Ledger extractor for offer_engine (founder market supply). Never logs the
-    engine credential — offers carry only service/model/rate/cap metadata."""
-    from tinyassets.api.engine_helpers import _truncate
-    return (
-        str(result.get("founder_id", "")),
-        _truncate(f"market offer: {result.get('status', '')} "
-                  f"{result.get('offer_key', '')}"),
-        {
-            "status": result.get("status", ""),
-            "offer_key": str(result.get("offer_key", "")),
-            "offer_count": len(result.get("offers", []) or []),
-        },
-    )
-
-
 WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
     "soul.edit": (_extract_soul_edit, None),
     "set_engine": (_extract_set_engine, None),
-    "offer_engine": (_extract_offer_engine, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -5158,143 +5139,6 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     })
 
 
-def _founder_offers_path(founder_id: str) -> Path:
-    from tinyassets.storage import data_dir
-    safe = "".join(
-        c if c.isalnum() or c in "-_" else "-" for c in (founder_id or "")
-    ) or "anon"
-    d = data_dir() / "founder_offers"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{safe}.json"
-
-
-def _read_founder_offers(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-        offers = loaded.get("offers") if isinstance(loaded, dict) else None
-        return offers if isinstance(offers, list) else []
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def _write_founder_offers(path: Path, offers: list[dict[str, Any]]) -> None:
-    import os
-    import tempfile
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".offers.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"offers": offers}, fh, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _action_offer_engine(
-    universe_id: str = "",
-    inputs_json: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Founder-only: offer an engine to the market (`universe action=offer_engine`).
-
-    Supply side (the inverse of set_engine): records / lists / toggles engines the
-    founder offers to the market for OTHER universes to rent when the founder is
-    not running their own. Founder-scoped (keyed on the authenticated founder),
-    togglable. No credential is stored here — only offer terms (service, model,
-    rate, cap). Founder-only via the universe:admin scope + write ACL.
-
-    ``inputs_json``: ``{"action": "list"|"set"|"toggle", "service": "anthropic",
-    "model": "…", "rate": 0.0, "cap": 0.0, "enabled": true, "key": "…" (toggle)}``.
-    """
-    import math
-
-    from filelock import FileLock, Timeout
-
-    from tinyassets.api.permissions import current_actor_id
-
-    founder_id = current_actor_id()
-    path = _founder_offers_path(founder_id)
-
-    raw = (inputs_json or "").strip()
-    data: dict[str, Any] = {}
-    if raw:
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
-        if not isinstance(data, dict):
-            return json.dumps({"error": "inputs_json must decode to a JSON object."})
-
-    op = str(data.get("action", "list")).strip().lower()
-    if op == "list":
-        return json.dumps({"status": "offers", "founder_id": founder_id,
-                           "offers": _read_founder_offers(path)})
-    if op == "set":
-        service = str(data.get("service", "")).strip().lower()
-        model = str(data.get("model", "")).strip()
-        if not service:
-            return json.dumps({"error": "service is required to set an offer."})
-        try:
-            rate = float(data.get("rate", 0.0) or 0.0)
-            cap = float(data.get("cap", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            return json.dumps({"error": "rate and cap must be numbers."})
-        # Round-15 #3: reject non-finite (NaN/Infinity) + negative — an inf/NaN
-        # cap silently disables the ceiling (same guard the adjacent market-rental
-        # declaration already applies).
-        for name, value in (("rate", rate), ("cap", cap)):
-            if not math.isfinite(value) or value < 0:
-                return json.dumps({
-                    "error": f"{name} must be a finite, non-negative number.",
-                })
-        key = f"{service}:{model}"
-        enabled = bool(data.get("enabled", True))
-        # Round-15 #3: the read-modify-write runs under a cross-process lock so
-        # concurrent offers can't lose each other (lost-update clobber).
-        lock = FileLock(str(path) + ".lock", timeout=30)
-        try:
-            with lock:
-                offers = [o for o in _read_founder_offers(path)
-                          if o.get("key") != key]
-                offers.append({"key": key, "service": service, "model": model,
-                               "rate": rate, "cap": cap, "enabled": enabled})
-                _write_founder_offers(path, offers)
-        except Timeout:
-            return json.dumps({"error": "could not acquire the offers lock (30s)."})
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"error": f"Failed to save offer: {exc}"})
-        return json.dumps({"status": "offer_set", "founder_id": founder_id,
-                           "offer_key": key, "offers": offers})
-    if op == "toggle":
-        key = str(data.get("key", "")).strip()
-        lock = FileLock(str(path) + ".lock", timeout=30)
-        try:
-            with lock:
-                offers = _read_founder_offers(path)
-                found = False
-                for o in offers:
-                    if o.get("key") == key:
-                        o["enabled"] = not o.get("enabled", True)
-                        found = True
-                if not found:
-                    return json.dumps({"error": f"no offer with key {key!r}."})
-                _write_founder_offers(path, offers)
-        except Timeout:
-            return json.dumps({"error": "could not acquire the offers lock (30s)."})
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"error": f"Failed to toggle offer: {exc}"})
-        return json.dumps({"status": "offer_toggled", "founder_id": founder_id,
-                           "offer_key": key, "offers": offers})
-    return json.dumps({
-        "error": f"unknown action {op!r}; expected list | set | toggle.",
-    })
-
-
 def _action_soul_edit(
     universe_id: str = "",
     inputs_json: str = "",
@@ -5384,7 +5228,6 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "set_premise": _action_set_premise,
     "soul.edit": _action_soul_edit,
     "set_engine": _action_set_engine,
-    "offer_engine": _action_offer_engine,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,
