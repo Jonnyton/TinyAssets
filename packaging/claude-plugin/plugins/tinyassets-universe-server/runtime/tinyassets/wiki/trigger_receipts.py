@@ -218,6 +218,7 @@ def create_pending(
     branch_def_id: str | None = None,
     universe_id: str | None = None,
     payload_json: str | None = None,
+    resolution_source: str | None = None,
     db_path: Path | None = None,
 ) -> TriggerReceipt:
     """Insert a new pending receipt and return it.
@@ -231,6 +232,8 @@ def create_pending(
     consumer (Codex r21 #1c) re-enqueues a recovered trigger into the right queue.
     ``payload_json`` persists the normalized filing content (Codex r22 #2) so a
     retried trigger enqueues the SAME content, not a bare {"bug_id": ...}.
+    ``resolution_source`` records explicit provenance before enqueue so a
+    legacy task cannot erase it during crash recovery.
     """
     receipt = TriggerReceipt(
         trigger_attempt_id=str(uuid.uuid4()),
@@ -243,20 +246,21 @@ def create_pending(
         branch_def_id=branch_def_id,
         universe_id=universe_id,
         payload_json=payload_json,
+        resolution_source=resolution_source,
     )
     with _conn(db_path) as c:
         c.execute(
             """INSERT INTO wiki_trigger_attempts (
                 trigger_attempt_id, request_id, request_kind, request_page,
                 status, attempted_at, goal_id, branch_def_id, universe_id,
-                payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                payload_json, resolution_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 receipt.trigger_attempt_id, receipt.request_id,
                 receipt.request_kind, receipt.request_page,
                 receipt.status, receipt.attempted_at,
                 receipt.goal_id, receipt.branch_def_id, receipt.universe_id,
-                receipt.payload_json,
+                receipt.payload_json, receipt.resolution_source,
             ),
         )
     logger.info(

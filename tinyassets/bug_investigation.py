@@ -223,6 +223,7 @@ def _enqueue_investigation_task(
     priority: int = 0,
     request_id: str = "",
     goal_id: str = "",
+    resolution_source: str = "",
 ) -> "BranchTask":
     """Enqueue a bug-investigation dispatcher request and return the ATOMICALLY
     winning ``BranchTask`` (Codex r25 #1).
@@ -243,6 +244,7 @@ def _enqueue_investigation_task(
         priority: priority_weight for the task (higher = claimed sooner).
         request_id: stable branch_task_id (retry) or "" for a fresh uuid4.
         goal_id: the resolution's goal (persisted on the task).
+        resolution_source: explicit source for that resolution.
 
     Raises:
         ValueError: if canonical_branch_def_id is empty.
@@ -289,6 +291,7 @@ def _enqueue_investigation_task(
         # dispatch (which reads task.goal_id) has goal context AND the receipt
         # provenance derived from the persisted task cannot contradict it.
         goal_id=goal_id or "",
+        resolution_source=resolution_source or "",
         inputs=build_run_payload(bug_payload),
         trigger_source="owner_queued",
         priority_weight=float(priority),
@@ -337,6 +340,7 @@ def enqueue_investigation_request(
     priority: int = 0,
     request_id: str = "",
     goal_id: str = "",
+    resolution_source: str = "",
 ) -> str:
     """Public wrapper over ``_enqueue_investigation_task`` returning the winning
     task's ``branch_task_id`` (the dispatcher request id). Callers that need the
@@ -350,6 +354,7 @@ def enqueue_investigation_request(
         priority=priority,
         request_id=request_id,
         goal_id=goal_id,
+        resolution_source=resolution_source,
     ).branch_task_id
 
 
@@ -400,7 +405,8 @@ def _maybe_enqueue_investigation(
     resolved_branch_def_id: str | None = None,
     request_id: str = "",
     goal_id: str = "",
-) -> str | None:
+    resolution_source: str = "",
+) -> "BranchTask | None":
     """Forward-trigger seam for `_wiki_file_bug` post-write.
 
     Resolution order (PR-127 / M6 cutover Step 4):
@@ -418,8 +424,8 @@ def _maybe_enqueue_investigation(
          subsequent slice (Step 5/6) once the canonical handler has
          been observation-window'd.
 
-    Returns request_id when enqueued, None when skipped or recovered
-    from error. Swallows dispatcher-rejection (RuntimeError) and
+    Returns the atomically winning BranchTask when enqueued, None when skipped
+    or recovered from error. Swallows dispatcher-rejection (RuntimeError) and
     bad-input (ValueError) so a filing never breaks because of
     investigation-pipeline misconfiguration.
 
@@ -443,11 +449,10 @@ def _maybe_enqueue_investigation(
 
     bug_ref = dict(frontmatter or {})
     bug_ref["bug_id"] = bug_id
-    # Module-attribute lookup (NOT bare-name) so `patch("tinyassets.bug_investigation
-    # .enqueue_investigation_request", ...)` reliably takes effect across full-suite
-    # ordering. Bare-name lookup races with sibling tests that hold local-name
-    # bindings to the original function.
-    enqueue = getattr(sys.modules[__name__], "enqueue_investigation_request")
+    # Module-attribute lookup (NOT bare-name) so tests can replace the task-level
+    # enqueue reliably across full-suite ordering. Bare-name lookup races with
+    # sibling tests that hold local-name bindings to the original function.
+    enqueue = getattr(sys.modules[__name__], "_enqueue_investigation_task")
     try:
         return enqueue(
             bug_ref=bug_ref,
@@ -460,6 +465,7 @@ def _maybe_enqueue_investigation(
             # Codex r25 #2: persist the resolved goal on the task so the initial
             # enqueue's task carries goal context (soul-guided dispatch + receipt).
             goal_id=goal_id,
+            resolution_source=resolution_source,
         )
     except (RuntimeError, ValueError) as exc:
         _logger.info(
@@ -661,9 +667,9 @@ def retry_pending_investigation_triggers(
 
     # Resolve ONCE (with provenance) — all pending receipts share the current
     # goal/env config; the retry REBINDS every receipt to this current handler.
-    # The receipt's recorded source is inferred from the WINNER's goal below, so
-    # the resolve's own ``source`` is unused here.
-    resolved, reason, _source, goal_id = (
+    # Persist the source explicitly on a new task; legacy winners preserve the
+    # receipt's known source instead of inferring one from goal truthiness.
+    resolved, reason, resolution_source, goal_id = (
         resolve_investigation_handler_with_provenance(base_path)
     )
     for receipt in pending:
@@ -689,13 +695,17 @@ def retry_pending_investigation_triggers(
                     universe_id=universe_id,
                     request_id=stable_id,
                     goal_id=goal_id,
+                    resolution_source=resolution_source,
                 )
-                # Provenance is the WINNER's (Codex r25 #2: goal_id lives on the
-                # task). Source is inferred from the winner's goal — a goal is set
-                # ONLY by goal-canonical resolution; env sets "". Passing the goal
-                # RAW ("" clears a stale goal on env rebind, r23 #3).
-                win_goal = winner.goal_id or ""
-                win_source = "goal_canonical" if win_goal else "env_fallback"
+                # New tasks persist both fields explicitly. A pre-r26 task has no
+                # task-level source; preserve its receipt's known provenance
+                # rather than inventing env_fallback from an empty legacy goal.
+                if winner.resolution_source:
+                    win_goal = winner.goal_id or ""
+                    win_source = winner.resolution_source
+                else:
+                    win_goal = receipt.goal_id
+                    win_source = receipt.resolution_source
                 _tr.mark_queued(
                     receipt,
                     dispatcher_request_id=winner.branch_task_id,

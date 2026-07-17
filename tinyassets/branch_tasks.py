@@ -78,7 +78,7 @@ _VALID_TRANSITIONS = {
 class BranchTask:
     """Durable execution-intent record.
 
-    Reserved fields (bid, goal_id, required_llm_type, evidence_url)
+    Reserved fields (bid, goal_id, resolution_source, required_llm_type, evidence_url)
     are present in v1 with empty defaults so later producers can
     populate them without migration.
     """
@@ -95,6 +95,9 @@ class BranchTask:
     status: str = "pending"
     bid: float = 0.0
     goal_id: str = ""
+    # Explicit trigger provenance. Patch-loop tasks use goal_canonical or
+    # env_fallback; empty means a legacy row whose source was not persisted.
+    resolution_source: str = ""
     required_llm_type: str = ""
     directed_daemon_id: str = ""
     evidence_url: str = ""
@@ -276,19 +279,57 @@ def append_task(universe_path: Path, task: BranchTask) -> None:
         _write_raw(qp, raw)
 
 
-def _valid_runnable_task(row: Any) -> "BranchTask | None":
-    """A queue row that deserializes to a RUNNABLE BranchTask (a real, non-empty
-    ``branch_def_id``), else None (Codex r25 #1). A row carrying only a
-    ``branch_task_id`` — or one that fails deserialization — is NOT a runnable
-    task and must never be treated as a valid dedup winner (that silently
-    consumes a trigger without a task to run)."""
+def _valid_runnable_task(
+    row: Any, *, expected: BranchTask,
+) -> "BranchTask | None":
+    """Return a dispatchable row for the expected idempotent request.
+
+    Presence by id is insufficient: defaults can make a malformed row appear
+    valid while changing its request type, tenant universe, or status. Validate
+    every field the dispatcher consumes and the identity fields that must match
+    this append before accepting a persisted winner.
+    """
     if not isinstance(row, dict):
         return None
     try:
         t = BranchTask.from_dict(row)
     except Exception:  # noqa: BLE001 — a malformed row is not runnable
         return None
-    if not (t.branch_def_id or "").strip():
+    required_text_fields = (
+        t.branch_task_id,
+        t.branch_def_id,
+        t.universe_id,
+        t.trigger_source,
+        t.status,
+        t.request_type,
+        t.queued_at,
+    )
+    optional_text_fields = (
+        t.goal_id,
+        t.resolution_source,
+    )
+    if any(
+        not isinstance(value, str)
+        for value in (*required_text_fields, *optional_text_fields)
+    ):
+        return None
+    if not all(value.strip() for value in required_text_fields):
+        return None
+    numeric_fields = (t.priority_weight, t.pickup_signal_weight)
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in numeric_fields
+    ):
+        return None
+    if not isinstance(t.inputs, dict):
+        return None
+    if t.trigger_source not in VALID_TRIGGER_SOURCES or t.status not in VALID_STATUSES:
+        return None
+    if t.branch_task_id != expected.branch_task_id:
+        return None
+    if t.universe_id != expected.universe_id:
+        return None
+    if t.request_type != expected.request_type:
         return None
     return t
 
@@ -299,12 +340,11 @@ def append_task_if_absent(
     """IDEMPOTENT append keyed on ``branch_task_id`` that ATOMICALLY VALIDATES and
     RETURNS the winning task (Codex r22 #1 + r25 #1). Under the queue file lock:
 
-    - If a VALID, runnable task with this id already exists -> return
-      ``(False, that_task)`` (genuine dedup winner).
-    - If a row with this id exists but is NOT a valid runnable task (corrupt /
-      undeserializable / missing branch_def_id) -> HEAL it: replace with this
-      valid task and return ``(True, task)``. A malformed dedup row must NEVER
-      consume a trigger without leaving a runnable task.
+    - If a VALID, runnable task with this id already exists -> retain one winner,
+      remove every duplicate-id row, and return ``(False, that_task)``.
+    - If duplicate-id rows exist but NONE is valid (corrupt / wrong request type /
+      wrong universe / invalid status or field types) -> HEAL the entire set to
+      one valid task and return ``(True, task)``.
     - Else append and return ``(True, task)``.
 
     The exactly-once primitive for the retry consumer: a STABLE
@@ -321,22 +361,37 @@ def append_task_if_absent(
     qp = queue_path(universe_path)
     with _file_lock(universe_path):
         raw = _read_raw(qp)
-        for i, row in enumerate(raw):
-            if isinstance(row, dict) and row.get("branch_task_id") == task.branch_task_id:
-                existing = _valid_runnable_task(row)
-                if existing is not None:
-                    return False, existing  # genuine dedup winner
-                # Corrupt / non-runnable row with our id — HEAL to a runnable task.
-                logger.warning(
-                    "append_task_if_absent | queue row for id %s is not a runnable "
-                    "task; replacing it with a valid task", task.branch_task_id,
-                )
-                raw[i] = task.to_dict()
-                _write_raw(qp, raw)
-                return True, task
-        raw.append(task.to_dict())
-        _write_raw(qp, raw)
-        return True, task
+        matches = [
+            i for i, row in enumerate(raw)
+            if isinstance(row, dict)
+            and row.get("branch_task_id") == task.branch_task_id
+        ]
+        if not matches:
+            raw.append(task.to_dict())
+            _write_raw(qp, raw)
+            return True, task
+
+        winner = None
+        for i in matches:
+            existing = _valid_runnable_task(raw[i], expected=task)
+            if existing is not None:
+                winner = existing
+                break
+        healed = winner is None
+        winner = winner or task
+        # Reconcile ALL duplicate-id rows under the same lock. Keep the first
+        # matching row's position, replace it with the one valid winner, and
+        # remove every other match so no duplicate can be claimed later.
+        first = matches[0]
+        reconciled = [row for i, row in enumerate(raw) if i not in matches]
+        reconciled.insert(first, winner.to_dict())
+        if reconciled != raw:
+            logger.warning(
+                "append_task_if_absent | reconciling %s queue row(s) for id %s "
+                "to one valid task", len(matches), task.branch_task_id,
+            )
+            _write_raw(qp, reconciled)
+        return healed, winner
 
 
 class QueueCapExceeded(RuntimeError):

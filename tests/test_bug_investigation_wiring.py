@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from tinyassets.branch_tasks import read_queue
 from tinyassets.bug_investigation import (
     REQUEST_TYPE_BUG_INVESTIGATION,
@@ -79,7 +81,7 @@ class TestEnqueuesWhenBound:
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
         )
         monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        request_id = _maybe_enqueue_investigation(
+        winner = _maybe_enqueue_investigation(
             bug_id="BUG-200",
             frontmatter={
                 "title": "crash on load",
@@ -88,13 +90,13 @@ class TestEnqueuesWhenBound:
             },
             base_path=tmp_path,
         )
-        assert request_id is not None
-        assert len(request_id) == 36
+        assert winner is not None
+        assert len(winner.branch_task_id) == 36
 
         queue = read_queue(tmp_path)
         assert len(queue) == 1
         task = queue[0]
-        assert task.branch_task_id == request_id
+        assert task.branch_task_id == winner.branch_task_id
         assert task.request_type == REQUEST_TYPE_BUG_INVESTIGATION
         assert task.branch_def_id == "branch-canonical-abc"
         assert task.inputs["bug_id"] == "BUG-200"
@@ -180,13 +182,13 @@ class TestGracefulFailure:
         assert read_queue(tmp_path) == []
 
     def test_returns_none_on_value_error_from_enqueue(self, tmp_path, monkeypatch):
-        """If `enqueue_investigation_request` raises ValueError, we recover."""
+        """If the task-level enqueue raises ValueError, we recover."""
         monkeypatch.setenv(
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
         )
         monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
         with patch(
-            "tinyassets.bug_investigation.enqueue_investigation_request",
+            "tinyassets.bug_investigation._enqueue_investigation_task",
             side_effect=ValueError("boom"),
         ):
             result = _maybe_enqueue_investigation(
@@ -202,12 +204,12 @@ class TestGracefulFailure:
             "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
         )
         monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        request_id = _maybe_enqueue_investigation(
+        winner = _maybe_enqueue_investigation(
             bug_id="BUG-302",
             frontmatter=None,  # type: ignore[arg-type]
             base_path=tmp_path,
         )
-        assert request_id is not None
+        assert winner is not None
         queue = read_queue(tmp_path)
         assert queue[0].inputs["bug_id"] == "BUG-302"
 
@@ -719,6 +721,66 @@ def test_retry_corrupt_dedup_row_heals_never_queues_without_runnable_task(
     assert rec.branch_def_id == "branch-canonical-abc"
 
 
+@pytest.mark.parametrize(
+    ("bad_field", "bad_value"),
+    (("request_type", "branch_run"), ("status", "not-a-status")),
+)
+def test_retry_reconciles_all_non_dispatchable_duplicate_rows(
+    tmp_path, monkeypatch, bad_field, bad_value,
+):
+    """A stable id is not a dedup winner unless its task is dispatchable.
+
+    Every row carrying the duplicate id is reconciled under the queue lock; a
+    wrong request type or invalid status can never consume the receipt, and
+    duplicate corrupt rows cannot survive to be claimed twice later.
+    """
+    import json as _json
+
+    from tinyassets.branch_tasks import BranchTask, queue_path
+    from tinyassets.bug_investigation import (
+        investigation_task_id,
+        retry_pending_investigation_triggers,
+    )
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    receipt = _tr.create_pending(
+        request_id=f"BUG-MALFORMED-{bad_field}", request_kind="bug",
+        request_page="p", branch_def_id="branch-canonical-abc",
+        universe_id=tmp_path.name,
+        payload_json=_json.dumps({"bug_id": f"BUG-MALFORMED-{bad_field}"}),
+    )
+    stable_id = investigation_task_id(receipt.trigger_attempt_id)
+    row = BranchTask(
+        branch_task_id=stable_id,
+        branch_def_id="branch-canonical-abc",
+        universe_id=tmp_path.name,
+        queued_at="2026-07-17T00:00:00+00:00",
+        request_type="bug_investigation",
+    ).to_dict()
+    row[bad_field] = bad_value
+    other_bad = dict(row)
+    other_bad["universe_id"] = "wrong-universe"
+    bad_type = dict(row)
+    bad_type["inputs"] = []
+    queue_path(tmp_path).write_text(
+        _json.dumps([row, other_bad, bad_type]), encoding="utf-8",
+    )
+
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    raw = _json.loads(queue_path(tmp_path).read_text(encoding="utf-8"))
+    matches = [r for r in raw if r.get("branch_task_id") == stable_id]
+    assert len(matches) == 1
+    assert matches[0]["request_type"] == "bug_investigation"
+    assert matches[0]["status"] == "pending"
+    assert matches[0]["universe_id"] == tmp_path.name
+
+
 def test_retry_same_handler_different_goal_dedup_records_winner_goal(
     tmp_path, monkeypatch,
 ):
@@ -743,6 +805,7 @@ def test_retry_same_handler_different_goal_dedup_records_winner_goal(
     receipt = _tr.create_pending(
         request_id="BUG-SG", request_kind="bug", request_page="p",
         branch_def_id="branch-canonical-abc", goal_id="goal-A",
+        resolution_source="goal_canonical",
         universe_id=tmp_path.name, payload_json='{"bug_id": "BUG-SG"}',
     )
     stable_id = investigation_task_id(receipt.trigger_attempt_id)
@@ -750,6 +813,7 @@ def test_retry_same_handler_different_goal_dedup_records_winner_goal(
     task_a = _enqueue_investigation_task(
         bug_ref={"bug_id": "BUG-SG"}, canonical_branch_def_id="branch-canonical-abc",
         base_path=tmp_path, request_id=stable_id, goal_id="goal-A",
+        resolution_source="goal_canonical",
     )
     assert task_a.goal_id == "goal-A"
 
@@ -762,10 +826,67 @@ def test_retry_same_handler_different_goal_dedup_records_winner_goal(
     )
     assert rec.branch_def_id == "branch-canonical-abc"
     assert rec.goal_id == "goal-A"                    # WINNER's goal, not env ""
-    assert rec.resolution_source == "goal_canonical"  # inferred from winner's goal
+    assert rec.resolution_source == "goal_canonical"  # persisted on winner
     # And the persisted task carries goal_id for soul-guided dispatch.
     task = next(t for t in read_queue(tmp_path) if t.branch_task_id == stable_id)
     assert task.goal_id == "goal-A"
+
+
+def test_retry_preserves_pre_r25_task_and_receipt_provenance(tmp_path, monkeypatch):
+    """A legacy task without task-level provenance must not erase its receipt.
+
+    This is the r24-to-r25 upgrade window: the durable task already won the
+    stable id before goal/source fields existed, while the pending receipt still
+    carries the original goal-canonical resolution.
+    """
+    import json as _json
+
+    from tinyassets.branch_tasks import queue_path
+    from tinyassets.bug_investigation import (
+        _enqueue_investigation_task,
+        investigation_task_id,
+        retry_pending_investigation_triggers,
+    )
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    receipt = _tr.create_pending(
+        request_id="BUG-UPGRADE", request_kind="bug", request_page="p",
+        branch_def_id="branch-canonical-abc", goal_id="goal-original",
+        universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-UPGRADE"}',
+    )
+    with _tr._conn() as c:
+        c.execute(
+            "UPDATE wiki_trigger_attempts SET resolution_source=? "
+            "WHERE trigger_attempt_id=?",
+            ("goal_canonical", receipt.trigger_attempt_id),
+        )
+    receipt.resolution_source = "goal_canonical"
+    stable_id = investigation_task_id(receipt.trigger_attempt_id)
+    _enqueue_investigation_task(
+        bug_ref={"bug_id": "BUG-UPGRADE"},
+        canonical_branch_def_id="branch-canonical-abc",
+        base_path=tmp_path,
+        request_id=stable_id,
+    )
+    raw = _json.loads(queue_path(tmp_path).read_text(encoding="utf-8"))
+    raw[0].pop("goal_id", None)
+    raw[0].pop("resolution_source", None)
+    queue_path(tmp_path).write_text(_json.dumps(raw), encoding="utf-8")
+
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    rec = _tr.get_receipt(receipt.trigger_attempt_id)
+    assert rec is not None
+    assert rec.branch_def_id == "branch-canonical-abc"
+    assert rec.goal_id == "goal-original"
+    assert rec.resolution_source == "goal_canonical"
 
 
 def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
@@ -927,6 +1048,7 @@ def test_wiki_file_bug_invokes_maybe_enqueue_investigation(tmp_path, monkeypatch
     3. A queued request appends the Investigation section to the bug page.
     """
     from tinyassets.api import wiki as wiki_api
+    from tinyassets.branch_tasks import BranchTask
 
     wiki_root = tmp_path / "wiki"
     data_root = tmp_path / "data"
@@ -941,7 +1063,13 @@ def test_wiki_file_bug_invokes_maybe_enqueue_investigation(tmp_path, monkeypatch
 
     with patch(
         "tinyassets.bug_investigation._maybe_enqueue_investigation",
-        return_value="fake-request-id",
+        return_value=BranchTask(
+            branch_task_id="fake-request-id",
+            branch_def_id="branch-canonical-abc",
+            universe_id="default",
+            goal_id="",
+            resolution_source="env_fallback",
+        ),
     ) as helper:
         result_json = wiki_api._wiki_file_bug(
             component="engine",
@@ -1052,10 +1180,17 @@ def test_wiki_file_bug_resolves_handler_once_shared_provenance(tmp_path, monkeyp
         *, bug_ref, canonical_branch_def_id, base_path, universe_id="",
         request_id="", **_kw,
     ):
-        captured["branch_def_id"] = canonical_branch_def_id
-        return request_id or "req-shared"
+        from tinyassets.branch_tasks import BranchTask
 
-    monkeypatch.setattr(bi, "enqueue_investigation_request", _fake_enqueue)
+        captured["branch_def_id"] = canonical_branch_def_id
+        return BranchTask(
+            branch_task_id=request_id or "req-shared",
+            branch_def_id=canonical_branch_def_id,
+            universe_id=universe_id or "default",
+            resolution_source=_kw.get("resolution_source", ""),
+        )
+
+    monkeypatch.setattr(bi, "_enqueue_investigation_task", _fake_enqueue)
 
     import json as _json
 
@@ -1066,3 +1201,56 @@ def test_wiki_file_bug_resolves_handler_once_shared_provenance(tmp_path, monkeyp
     assert resolver.call_count == 1                        # SINGLE resolution
     assert result["trigger"]["branch_def_id"] == "handler-ONE"   # receipt = call-1
     assert captured["branch_def_id"] == "handler-ONE"     # enqueue = SAME resolution
+
+
+def test_wiki_file_bug_records_atomic_winner_not_local_resolution(tmp_path, monkeypatch):
+    """The normal wiki path must carry the atomic task winner to its receipt.
+
+    Local resolution sees handler A, but a concurrent retry wins the stable-id
+    append with handler B before the normal enqueue. The wiki response and
+    durable receipt must describe B, never overwrite them with local A.
+    """
+    import json as _json
+
+    import tinyassets.bug_investigation as bi
+    from tinyassets.api import wiki as wiki_api
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    wiki_root = tmp_path / "wiki"
+    data_root = tmp_path / "data"
+    wiki_api._ensure_wiki_scaffold(wiki_root)
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    monkeypatch.setattr(
+        bi,
+        "resolve_investigation_handler_with_provenance",
+        lambda _base: ("branch-A", "ok", "env_fallback", ""),
+    )
+    monkeypatch.setattr(bi, "_handler_branch_exists", lambda *_a, **_k: True)
+
+    def _retry_wins_first(*, bug_id, frontmatter, base_path, request_id, **_kwargs):
+        return bi._enqueue_investigation_task(
+            bug_ref={**frontmatter, "bug_id": bug_id},
+            canonical_branch_def_id="branch-B",
+            base_path=base_path,
+            request_id=request_id,
+            goal_id="goal-B",
+            resolution_source="goal_canonical",
+        )
+
+    monkeypatch.setattr(bi, "_maybe_enqueue_investigation", _retry_wins_first)
+
+    result = _json.loads(wiki_api._wiki_file_bug(
+        component="engine", severity="minor", title="atomic winner race",
+        observed="boom", universe_id="race-universe",
+    ))
+
+    assert result["investigation"]["dispatcher_request_id"].startswith("inv:")
+    assert result["trigger"]["branch_def_id"] == "branch-B"
+    assert result["trigger"]["goal_id"] == "goal-B"
+    receipt = _tr.get_receipt(result["trigger"]["trigger_attempt_id"])
+    assert receipt is not None
+    assert receipt.branch_def_id == "branch-B"
+    assert receipt.goal_id == "goal-B"
+    assert receipt.resolution_source == "goal_canonical"

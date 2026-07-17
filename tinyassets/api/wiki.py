@@ -2223,6 +2223,7 @@ def _wiki_file_bug(
                 request_page=rel_path,
                 branch_def_id=canonical_branch_def_id,
                 goal_id=(_handler_goal or None),
+                resolution_source=(_handler_source or None),
                 # Codex r21 #1c: record the universe so the retry consumer
                 # re-enqueues a recovered trigger into the right queue.
                 universe_id=target_universe_id or None,
@@ -2245,7 +2246,7 @@ def _wiki_file_bug(
                 bug_investigation.investigation_task_id(_receipt.trigger_attempt_id)
                 if _receipt is not None else ""
             )
-            request_id = bug_investigation._maybe_enqueue_investigation(
+            winning_task = bug_investigation._maybe_enqueue_investigation(
                 bug_id=bug_id,
                 frontmatter=frontmatter,
                 base_path=universe_path,
@@ -2254,6 +2255,7 @@ def _wiki_file_bug(
                 request_id=_stable_task_id,
                 # Codex r25 #2: persist the resolved goal on the task.
                 goal_id=(_handler_goal or ""),
+                resolution_source=(_handler_source or ""),
             )
         except Exception as _enq_exc:
             # Trigger helper raised. Update receipt then re-raise into the outer
@@ -2267,7 +2269,8 @@ def _wiki_file_bug(
                     pass
             raise
 
-        if request_id:
+        if winning_task:
+            request_id = winning_task.branch_task_id
             investigation_section = bug_investigation.format_investigation_comment(
                 request_id=request_id,
                 status="queued",
@@ -2288,20 +2291,10 @@ def _wiki_file_bug(
             # ``universe action=queue_list`` with the branch_task_id.
             if verbose:
                 try:
-                    from tinyassets.branch_tasks import read_queue
-
-                    task = next(
-                        (
-                            t for t in read_queue(universe_path)
-                            if t.branch_task_id == request_id
-                        ),
-                        None,
-                    )
-                    if task is not None:
-                        investigation["branch_task"] = task.to_dict()
+                    investigation["branch_task"] = winning_task.to_dict()
                 except Exception as _queue_exc:  # noqa: BLE001
                     _logger_wiki.warning(
-                        "file_bug investigation task read failed for %s: %s",
+                        "file_bug investigation task serialization failed for %s: %s",
                         bug_id,
                         _queue_exc,
                     )
@@ -2310,14 +2303,13 @@ def _wiki_file_bug(
                     # Codex r23 #3: record provenance on the NORMAL success path
                     # too (not just retry) — the actual handler + resolution
                     # source + goal, so the receipt never contradicts the task.
-                    # ``or None`` on the handler PRESERVES the receipt's existing
-                    # (extracted) id when the resolve yielded no branch id — never
-                    # overwrite a recorded handler with "".
+                    # Every field comes from the atomic persisted winner, never
+                    # from this call's potentially losing local resolution.
                     _receipt = _tr.mark_queued(
                         _receipt, dispatcher_request_id=request_id,
-                        branch_def_id=(resolved_branch_def_id or None),
-                        goal_id=_handler_goal,
-                        resolution_source=_handler_source,
+                        branch_def_id=winning_task.branch_def_id,
+                        goal_id=winning_task.goal_id,
+                        resolution_source=(winning_task.resolution_source or None),
                     )
                 except Exception:  # noqa: BLE001
                     pass
