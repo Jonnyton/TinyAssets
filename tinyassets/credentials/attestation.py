@@ -225,17 +225,18 @@ def byo_execution_enabled(
     3. the specific record validates (a real scope-checked ``get`` succeeds),
     4. provider auth-health (supplied by the adapter).
 
-    Any failure returns False — never a partial or ambient enablement.
+    Any failure returns False — never a partial or ambient enablement. Uses the
+    CACHED per-boot attestation (``_ensure_attested``), NOT a fresh probe per
+    check — re-probing per call would leak a permanent deleted-claim tombstone
+    every time.
     """
     if not operator_opt_in():
         return False
     if not auth_health:
         return False
-    probe = attest_store(backend)
-    if not probe.ok:
-        return False
     try:
-        with backend.get(binding, binding.scope):
+        backend._ensure_attested()  # cached per-boot store probe
+        with backend.get(binding, binding.scope):  # record validates (scope-checked)
             pass
     except CredentialUnavailable:
         return False

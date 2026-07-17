@@ -36,6 +36,10 @@ class VaultErrorCode:
     REVOKED = "REVOKED"
     EXPIRED = "EXPIRED"
     DISABLED = "DISABLED"
+    # A refresh was claimed but never completed (crash/wedge): the provider may
+    # or may not have rotated the one-use token, so the state is UNKNOWN — the
+    # user must re-authorize. Retrying is unsafe; a silent None is dishonest.
+    REAUTHORIZATION_REQUIRED = "REAUTHORIZATION_REQUIRED"
 
     _ALL = frozenset(
         {
@@ -54,6 +58,7 @@ class VaultErrorCode:
             REVOKED,
             EXPIRED,
             DISABLED,
+            REAUTHORIZATION_REQUIRED,
         }
     )
 

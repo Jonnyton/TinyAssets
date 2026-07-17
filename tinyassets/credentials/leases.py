@@ -86,7 +86,36 @@ CREATE TABLE IF NOT EXISTS vault_refresh_claims (
     claimed_at      REAL NOT NULL,
     deleted         INTEGER NOT NULL DEFAULT 0
 );
+
+-- Daemon-local AUTHORITATIVE liveness pointer (unused by the platform backend).
+-- The credential value lives in a per-version sidecar FILE, but which version is
+-- LIVE is decided ONLY by this control-DB row: the sidecar write is subordinate
+-- and not live until this row commits. A commit failure leaves the OLD version
+-- authoritative, so ``get`` never reads an uncommitted sidecar.
+CREATE TABLE IF NOT EXISTS vault_local_live (
+    ref          TEXT PRIMARY KEY,
+    live_version INTEGER NOT NULL
+);
 """
+
+
+def get_live_version(conn: sqlite3.Connection, ref: str) -> int | None:
+    row = conn.execute(
+        "SELECT live_version FROM vault_local_live WHERE ref = ?", (ref,)
+    ).fetchone()
+    return None if row is None else int(row["live_version"])
+
+
+def set_live_version(conn: sqlite3.Connection, ref: str, version: int) -> None:
+    conn.execute(
+        "INSERT INTO vault_local_live(ref, live_version) VALUES(?, ?) "
+        "ON CONFLICT(ref) DO UPDATE SET live_version = excluded.live_version",
+        (ref, int(version)),
+    )
+
+
+def clear_live_version(conn: sqlite3.Connection, ref: str) -> None:
+    conn.execute("DELETE FROM vault_local_live WHERE ref = ?", (ref,))
 
 
 def claim_refresh(
@@ -181,6 +210,38 @@ def is_deleted(conn: sqlite3.Connection, ref: str) -> bool:
         "SELECT deleted FROM vault_refresh_claims WHERE ref = ?", (ref,)
     ).fetchone()
     return row is not None and bool(int(row["deleted"]))
+
+
+# A refresh that claimed the current version but never advanced it past this
+# window is treated as WEDGED (the holder crashed / the provider may have rotated
+# the one-use token). Generous — a provider refresh + persist completes in well
+# under this; only a genuine crash lingers.
+REFRESH_WEDGE_TIMEOUT = 300.0
+
+
+def reauth_if_wedged(
+    conn: sqlite3.Connection, ref: str, version: int, now: float, timeout: float
+) -> None:
+    """Raise REAUTHORIZATION_REQUIRED if a refresh at ``version`` is wedged.
+
+    Wedged = a claim exists at the CURRENT credential version (a ``begin_refresh``
+    ran but ``complete_refresh`` never advanced the credential) AND it is older
+    than ``timeout``. We can't know whether the provider rotated the one-use
+    token, so the honest, safe answer is: re-authorize (never silently wedge on
+    ``None``, never unsafely retry). A recent claim is treated as in-flight (the
+    caller gets ``None`` from the subsequent monotonic claim).
+    """
+    row = conn.execute(
+        "SELECT claimed_version, claimed_at, deleted FROM vault_refresh_claims "
+        "WHERE ref = ?",
+        (ref,),
+    ).fetchone()
+    if row is None or int(row["deleted"]):
+        return
+    if int(row["claimed_version"]) == int(version) and (
+        now - float(row["claimed_at"])
+    ) > timeout:
+        raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED, ref)
 
 
 def acquire_fenced(
