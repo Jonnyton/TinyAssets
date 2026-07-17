@@ -69,7 +69,8 @@ def test_status_reports_bound_universe(tmp_path, monkeypatch):
     monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")  # executable BYO on
     import tinyassets.engine_binding as _eb
-    monkeypatch.setattr(_eb, "_vault_encryption_capability_attested", lambda: True)
+    monkeypatch.setattr(_eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
+    monkeypatch.setattr(_eb, "_sandbox_execution_attested", lambda: True)
     udir = _make_universe(tmp_path, monkeypatch, "u-bound")
     write_credential_vault(udir, [{
         "credential_type": "llm_api_key",

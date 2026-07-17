@@ -74,7 +74,8 @@ def _no_pinned_writer(monkeypatch):
     import tinyassets.engine_binding as _eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
-    monkeypatch.setattr(_eb, "_vault_encryption_capability_attested", lambda: True)
+    monkeypatch.setattr(_eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
+    monkeypatch.setattr(_eb, "_sandbox_execution_attested", lambda: True)
 
 
 def _unbound_universe(tmp_path):

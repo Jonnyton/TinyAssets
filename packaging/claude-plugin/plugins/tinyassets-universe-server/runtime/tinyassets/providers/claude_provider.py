@@ -94,12 +94,33 @@ def _sandbox_cli_args(
     return flags, run_cwd
 
 
-# Round-13 #1: shell-escape / host-access tools denied for a BYO execution turn.
-# The founder's own key runs in a clean, bare context — a Bash subprocess could
-# read host files or exfiltrate the key, so it is the hard floor (on top of
-# --bare, which already skips OAuth/keychain, hooks, plugins, MCP, and ambient
-# instructions). code.claude.com/docs/en/headless.
-_BYO_HARDENED_DENY_TOOLS: tuple[str, ...] = ("Bash", "BashOutput", "KillShell")
+# Round-13 #1 / round-14 #2: DEFAULT-DENY every built-in tool for a BYO execution
+# turn. `--bare` still permits file Read/Edit (Codex r14: Claude docs), so denying
+# only Bash left a host-file read/edit path. Until the per-job runner provides real
+# OS isolation (which also gates BYO execution ON via sandbox attestation — the
+# path is dark till then), the interim floor denies the WHOLE known tool surface so
+# a future-enabled BYO process can't read/modify host files or escape the shell.
+_BYO_HARDENED_DENY_TOOLS: tuple[str, ...] = (
+    "Bash", "BashOutput", "KillShell", "Read", "Edit", "MultiEdit", "Write",
+    "NotebookEdit", "Glob", "Grep", "WebFetch", "WebSearch", "Task",
+    "TodoWrite", "SlashCommand", "ExitPlanMode",
+)
+
+
+def _byo_scratch_dir(universe_dir: Path | None) -> str | None:
+    """Return an empty per-universe SCRATCH cwd for a hardened BYO launch.
+
+    Round-14 #2: a hardened spawn must NOT keep ``cwd=None`` (which inherits the
+    daemon's checkout — repo source / other universes). Pin cwd to an isolated
+    EMPTY scratch dir so, even before OS-level sandboxing, the process starts in a
+    directory with nothing sensitive. ``None`` (no universe) falls back to the
+    caller's cwd resolution — but hardened spawns always carry a universe_dir.
+    """
+    if universe_dir is None:
+        return None
+    scratch = Path(universe_dir) / ".credentials" / "claude-byo-scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    return str(scratch)
 
 
 def _byo_hardening_flags(proc_env: dict[str, str]) -> list[str]:
@@ -109,8 +130,8 @@ def _byo_hardening_flags(proc_env: dict[str, str]) -> list[str]:
     ``subprocess_env_for_provider`` sets (round-13 #1) after it has scrubbed every
     host credential from the child env. Forces ``--bare`` (clean context: no host
     OAuth/keychain/hooks/plugins/MCP/ambient instructions — the founder's key is
-    the ONLY credential) + an explicit shell-escape tool deny floor, so Bash/hooks/
-    MCP inside the subprocess can read NEITHER the founder key nor host creds.
+    the ONLY credential) + a DEFAULT-DENY tool floor (round-14 #2), so nothing
+    inside the subprocess can read/modify host files or escape the shell.
     """
     if proc_env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") != "1":
         return []
@@ -142,7 +163,10 @@ class ClaudeProvider(BaseProvider):
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
-        cmd.extend(_byo_hardening_flags(proc_env))  # round-13 #1: --bare + tool floor
+        hardening = _byo_hardening_flags(proc_env)  # round-13 #1: --bare + tool floor
+        cmd.extend(hardening)
+        if hardening:  # round-14 #2: pin a hardened BYO spawn to an empty scratch cwd
+            run_cwd = _byo_scratch_dir(universe_dir) or run_cwd
 
         win_kw = _no_window_kwargs()
         if use_shell:
@@ -234,7 +258,10 @@ class ClaudeProvider(BaseProvider):
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
-        cmd.extend(_byo_hardening_flags(proc_env))  # round-13 #1: --bare + tool floor
+        hardening = _byo_hardening_flags(proc_env)  # round-13 #1: --bare + tool floor
+        cmd.extend(hardening)
+        if hardening:  # round-14 #2: pin a hardened BYO spawn to an empty scratch cwd
+            run_cwd = _byo_scratch_dir(universe_dir) or run_cwd
 
         win_kw = _no_window_kwargs()
         if use_shell:

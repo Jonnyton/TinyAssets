@@ -52,8 +52,11 @@ Separately, OpenAI's own **Codex CI/CD auth guide** says plainly: **"The right w
 authenticate automation is with an API key,"** and, notably, DOES permit ChatGPT-
 subscription-auth-in-CI as an *"advanced workflow for … trusted **private**
 automation," "personal account automation only," "single machine or serialized job
-streams per token,"* explicitly **not for public repos or platforms running automation
-on behalf of other users** — i.e. Codex sanctions trusted *private* account-auth, so
+streams per token."* The guide explicitly forbids **public / open-source** use.
+**(round-14 #6 INFERENCE, not a verbatim quote):** from "personal/private only" +
+"no public/OSS" we *infer* it is also not sanctioned for **a platform running
+automation on behalf of other users** — the guide does not say that phrase
+literally. Either way, Codex sanctions trusted *private* account-auth, so
 the blanket "no ChatGPT automation" reading is too strong (see the Enterprise
 access-token narrowing below).
 
@@ -165,8 +168,11 @@ router-execution gate is deliberately NOT built here.
 enforced today: a BYO-bound universe's **writer** never borrows platform provider
 auth (the writer-binding constraint, centralized + fail-closed). A "writer route"
 is `role == "writer"` OR any role NOT in `FALLBACK_CHAINS` (an unknown role aliases
-to the writer chain — `model_hint` is user free-form — so it must be enforced too;
-`model_hint` is also whitelisted at the write surface). Judge/extract calls may
+to the writer chain — `model_hint` is user free-form — so it must be enforced too.
+**(round-14 #6 correction:** an earlier draft said `model_hint` is *whitelisted* at
+the write surface; it is NOT — r11 #5 deliberately RESTORED free-form stored
+`model_hint`, and the security invariant lives at the shared ROUTER boundary, which
+classifies any unknown role as a writer route.) Judge/extract calls may
 still use platform capacity — the judge/extract fallback chains have no claude-code
 entry, so a claude-only BYO universe would have an EMPTY judge chain and could not
 evaluate at all. Per-universe judge/extract routing is Phase-2 work.

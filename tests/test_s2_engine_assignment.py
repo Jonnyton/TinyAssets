@@ -31,11 +31,13 @@ def test_write_universe_config_fields_merges_and_preserves(tmp_path):
 
 
 def _enable_byo(monkeypatch):
-    """Simulate Phase-2: executable BYO on (flag + code-backed attestation)."""
+    """Simulate Phase-2: executable BYO on (flag + per-record encryption attestation
+    + sandbox-readiness attestation — round-14 #4 requires ALL)."""
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
-    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda: True)
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
 
 
 def test_byo_claude_injected_only_when_executable(tmp_path, monkeypatch):
@@ -79,11 +81,12 @@ def test_attestation_toctou_uses_one_snapshot(tmp_path, monkeypatch):
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
-    # Attestation flips True on the 1st read, then False on every later read —
-    # a race that would fail-open WITHOUT a single-snapshot decision.
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    # Per-record attestation flips True on the 1st read, then False on every later
+    # read — a race that would fail-open WITHOUT a single-snapshot decision.
     calls = {"n": 0}
 
-    def _flipping():
+    def _flipping(*a, **k):
         calls["n"] += 1
         return calls["n"] == 1
 
@@ -285,10 +288,45 @@ def test_set_engine_host_daemon_declares_no_summon(tmp_path, monkeypatch):
     assert "daemon_summon" not in json.dumps(out)
 
 
+@pytest.mark.parametrize("payload", [
+    {"engine_source": "host_daemon", "provider": "codex"},
+    {"engine_source": "market_rented", "market_model": "glm-5.2",
+     "preferred_writer": "codex"},
+    {"engine_source": "self_hosted_endpoint",
+     "endpoint": "https://ollama.example.com", "preferred_writer": "codex"},
+])
+def test_r14_1_declaration_never_touches_live_routing(tmp_path, monkeypatch, payload):
+    """Round-14 #1: an inactive (executable:false) engine DECLARATION must be pure
+    inert metadata — it must NEVER write the live `preferred_writer` the provider
+    router reads. Declaring own-device codex must leave the ambient writer chain
+    UNCHANGED (was: it moved the first provider to codex with PLATFORM creds)."""
+    from tinyassets.config import load_universe_config
+    from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
+
+    uid = "u-decl-routing"
+    out = _set_engine(monkeypatch, tmp_path, uid, payload)
+    assert out["status"] == "engine_declared" and out["executable"] is False
+    cfg = load_universe_config(tmp_path / uid)
+    # The live routing field is untouched; the preference is stored inertly.
+    assert cfg.preferred_writer == ""
+    if payload.get("preferred_writer") or payload.get("provider"):
+        assert cfg.extra.get("declared_preferred_writer")  # inert record exists
+    # The ambient writer chain is UNCHANGED by the declaration.
+    router = ProviderRouter()
+    base_chain = list(FALLBACK_CHAINS["writer"])
+    routed = base_chain
+    if cfg.preferred_writer:
+        routed = router._apply_preference(base_chain, cfg.preferred_writer)
+    assert routed == base_chain, "declaration leaked into live ambient routing"
+
+
 def test_r12_5_lane_switch_replaces_engine_namespace(tmp_path, monkeypatch):
     """Round-12 #5: switching engine lanes REPLACES the engine namespace — stale
     fields from the previous lane (market_rate / spending_cap / market_model /
-    preferred_writer) must not survive in the new lane's config.yaml."""
+    declared_preferred_writer) must not survive in the new lane's config.yaml.
+
+    Round-14 #1: the declared writer is stored INERTLY as declared_preferred_writer
+    (never the live preferred_writer the router reads)."""
     import yaml
 
     uid = "u-lane-switch"
@@ -299,10 +337,13 @@ def test_r12_5_lane_switch_replaces_engine_namespace(tmp_path, monkeypatch):
     })
     assert out1["status"] == "engine_declared"
     raw1 = yaml.safe_load((tmp_path / uid / "config.yaml").read_text())
-    assert raw1["market_model"] == "glm-5.2" and raw1["preferred_writer"] == "codex"
+    assert raw1["market_model"] == "glm-5.2"
+    # Declared inertly — NEVER the live preferred_writer (#1).
+    assert raw1["declared_preferred_writer"] == "codex"
+    assert "preferred_writer" not in raw1
 
-    # 2) switch to self_hosted_endpoint — the market_* + preferred_writer fields
-    # MUST be cleared from the on-disk config (replaced, not merged).
+    # 2) switch to self_hosted_endpoint — the market_* + declared_preferred_writer
+    # fields MUST be cleared from the on-disk config (replaced, not merged).
     out2 = _set_engine(monkeypatch, tmp_path, uid, {
         "engine_source": "self_hosted_endpoint",
         "endpoint": "https://ollama.example.com",
@@ -311,7 +352,10 @@ def test_r12_5_lane_switch_replaces_engine_namespace(tmp_path, monkeypatch):
     raw2 = yaml.safe_load((tmp_path / uid / "config.yaml").read_text())
     assert raw2["engine_source"] == "self_hosted_endpoint"
     assert raw2["engine_endpoint"] == "https://ollama.example.com"
-    for stale in ("market_model", "market_rate", "spending_cap", "preferred_writer"):
+    for stale in (
+        "market_model", "market_rate", "spending_cap",
+        "preferred_writer", "declared_preferred_writer",
+    ):
         assert stale not in raw2, f"stale {stale!r} leaked across the lane switch"
     # And the loaded config reflects the cleared defaults.
     cfg2 = load_universe_config(tmp_path / uid)

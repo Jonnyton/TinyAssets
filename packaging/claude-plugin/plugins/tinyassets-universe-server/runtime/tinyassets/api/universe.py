@@ -4945,11 +4945,18 @@ _KNOWN_ENGINE_PROVIDERS: frozenset[str] = frozenset({"claude-code", "codex"})
 
 # Round-12 #5: the full engine-lane namespace in config.yaml. A lane switch
 # REPLACES this namespace (clears the fields the new lane does not set) so a
-# stale market_rate / engine_endpoint / preferred_writer from a previous lane
+# stale market_rate / engine_endpoint / declared writer from a previous lane
 # never leaks into the new one. Each _set_engine_* clears NAMESPACE − its fields.
+#
+# Round-14 #1: a DECLARATION is INERT metadata — it must NEVER write a field the
+# router/executor consumes. ``preferred_writer`` (which the provider router reads
+# to prioritize a provider with PLATFORM credentials) is therefore in the clear
+# set BUT never in a declaration's fields; the founder's stated writer preference
+# is stored inertly as ``declared_preferred_writer`` (nothing reads it) until a
+# real executor is bound (Phase 2), which will promote it.
 _ENGINE_CONFIG_NAMESPACE: frozenset[str] = frozenset({
     "engine_source", "engine_endpoint", "preferred_writer",
-    "market_model", "market_rate", "spending_cap",
+    "declared_preferred_writer", "market_model", "market_rate", "spending_cap",
 })
 
 
@@ -5048,7 +5055,7 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
         return json.dumps({"error": endpoint_err})
     fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
     if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
+        fields["declared_preferred_writer"] = preferred_writer  # inert (#1)
     try:
         write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
@@ -5056,12 +5063,14 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
     return json.dumps({
         "status": "engine_declared", "universe_id": uid,
         "engine_source": "self_hosted_endpoint",
-        "engine_endpoint_redacted": _redact_endpoint(endpoint),  # never echo raw
-        "preferred_writer": preferred_writer,
+        "engine_endpoint_redacted": _redact_endpoint(endpoint),  # response echo only
+        "declared_preferred_writer": preferred_writer,
         "executable": False,
-        "note": "Endpoint DECLARED (not stored/echoed in full). Self-hosted "
-                "execution routing does not exist yet (Phase 2) — run the daemon "
-                "on your own device to use this endpoint now.",
+        "note": "Endpoint DECLARED as inert metadata. Round-14 #6 truthfulness: the "
+                "FULL endpoint is stored server-side in config.yaml (nothing "
+                "routes/executes on it yet); only THIS response echoes a redacted "
+                "form. Self-hosted execution routing does not exist yet (Phase 2) — "
+                "run the daemon on your own device to use this endpoint now.",
     })
 
 
@@ -5098,7 +5107,7 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
         "market_rate": market_rate, "spending_cap": spending_cap,
     }
     if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
+        fields["declared_preferred_writer"] = preferred_writer  # inert (#1)
     try:
         write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
@@ -5129,8 +5138,11 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
             "error": f"unknown provider {provider!r} for host_daemon.",
             "expected_providers": sorted(_KNOWN_ENGINE_PROVIDERS),
         })
+    # Round-14 #1: store the declared provider INERTLY — NEVER preferred_writer
+    # (the router reads preferred_writer and would prioritize this provider with
+    # PLATFORM credentials, even though the declaration is executable:false).
     fields = {"engine_source": "host_daemon",
-              "preferred_writer": preferred_writer or provider}
+              "declared_preferred_writer": preferred_writer or provider}
     try:
         write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
@@ -5138,7 +5150,7 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     return json.dumps({
         "status": "engine_declared", "universe_id": uid,
         "engine_source": "host_daemon", "provider": provider,
-        "preferred_writer": fields["preferred_writer"],
+        "declared_preferred_writer": fields["declared_preferred_writer"],
         "executable": False,
         "note": "host_daemon DECLARED. The platform does not run it — run the "
                 "daemon on YOUR OWN device (a real device-executor binding is "

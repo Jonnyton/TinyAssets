@@ -213,39 +213,65 @@ def write_universe_config_fields(
     Fails loudly (raises) if PyYAML is unavailable or the write fails — a
     silently-dropped engine assignment would leave the universe on the wrong
     engine (Hard Rule #8).
+
+    Round-14 #5 (data-loss fix): the whole read-modify-write runs under a
+    CROSS-PROCESS ``filelock`` so concurrent declarations can't clobber each
+    other, and an existing config.yaml that is UNREADABLE / malformed / non-mapping
+    is a **loud raise**, NEVER a silent rewrite-fresh (which erased the founder's
+    real fields — the reproduced bug). Fix or remove the bad file, then retry.
     """
     import os
     import tempfile
 
     import yaml
+    from filelock import FileLock, Timeout
 
     config_file = Path(universe_path) / "config.yaml"
-    data: dict[str, Any] = {}
-    if config_file.exists():
-        try:
-            loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception as e:  # noqa: BLE001 - fall back to empty, log below
-            logger.warning(
-                "Existing config.yaml at %s unreadable (%s); rewriting fresh",
-                config_file, e,
-            )
-    for key in clear:
-        data.pop(key, None)
-    data.update(fields)
-
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
-    )
+    lock = FileLock(str(config_file) + ".lock", timeout=30)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
-        os.replace(tmp_path, config_file)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+        with lock:
+            data: dict[str, Any] = {}
+            if config_file.exists():
+                try:
+                    raw = config_file.read_text(encoding="utf-8")
+                    loaded = yaml.safe_load(raw)
+                except (OSError, yaml.YAMLError) as e:
+                    # Hard Rule #8: NEVER silently overwrite unreadable/malformed
+                    # existing state — that erases the founder's real fields.
+                    raise ValueError(
+                        f"config.yaml at {config_file} is unreadable/malformed "
+                        f"({e}); refusing to overwrite (would lose existing "
+                        "fields). Fix or remove the file, then retry."
+                    ) from e
+                if loaded is None:
+                    data = {}
+                elif isinstance(loaded, dict):
+                    data = loaded
+                else:
+                    raise ValueError(
+                        f"config.yaml at {config_file} is not a mapping; refusing "
+                        "to overwrite (would lose existing state)."
+                    )
+            for key in clear:
+                data.pop(key, None)
+            data.update(fields)
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
+                os.replace(tmp_path, config_file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+    except Timeout as e:
+        raise ValueError(
+            f"could not acquire the config.yaml lock for {config_file} within "
+            "30s; another writer may be stuck."
+        ) from e

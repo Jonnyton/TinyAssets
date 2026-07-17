@@ -150,6 +150,11 @@ class EngineBinding:
     reason: str
     eligible_providers: frozenset[str] = frozenset()
     vault_providers: frozenset[str] = frozenset()
+    #: Round-14 #3: True when the universe holds a legacy ``llm_subscription``
+    #: record (retired lane). The universe is MISCONFIGURED — every spawn would
+    #: raise until the record is migrated out — so get_status surfaces it as
+    #: needs-migration with remediation rather than an opaque spawn crash.
+    needs_migration: bool = False
 
     def is_eligible_for(self, provider_name: str) -> bool:
         """Return True iff bound capacity can serve *provider_name*."""
@@ -173,6 +178,7 @@ class EngineBinding:
             "reason": self.reason,
             "eligible_providers": sorted(self.eligible_providers),
             "vault_providers": sorted(self.vault_providers),
+            "needs_migration": self.needs_migration,
         }
 
 
@@ -190,21 +196,35 @@ def non_ambient_work_enabled() -> bool:
     return os.environ.get(NON_AMBIENT_WORK_ENV, "").strip().lower() in _TRUTHY
 
 
-def _vault_encryption_capability_attested() -> bool:
-    """Code-backed proof that per-tenant vault encryption is REAL. DEFAULT False.
+def _vault_encryption_capability_attested(universe_dir: str | Path | None = None) -> bool:
+    """Per-record proof that the SELECTED vault secret is REAL-encrypted. DEFAULT False.
 
-    The current vault stores keys plaintext-base64 — a truthy env flag alone must
-    NEVER unlock deposit+execution of plaintext keys (C4). This returns False
-    until real envelope encryption / an external secret manager is implemented
-    AND verified in Phase 2; at that point, swap in the actual capability probe.
+    Round-14 #4 (adopt the vault's ``byo_execution_enabled(binding)`` contract): a
+    GLOBAL boolean cannot honor a *per-record* promise — it can't verify that THE
+    specific secret about to be used is envelope-encrypted + correctly scoped. So
+    this now TAKES the record context (``universe_dir``, the binding locus) even
+    though Phase-1 returns False unconditionally. The Phase-2 implementation must,
+    given the universe/record, verify that record's ciphertext + key reference
+    decrypt under a per-tenant DEK — NOT merely that a KMS is globally reachable.
 
-    Round-11 #2 contract for the Phase-2 implementation: the attestation must
-    prove the SPECIFIC vault record about to be used is envelope-encrypted — NOT
-    merely that a KMS/secret-manager is globally reachable. (A per-record check;
-    take the universe/record context and verify that record's ciphertext + key
-    reference decrypt.) Tests simulate Phase-2 by monkeypatching this to True.
+    The current vault stores keys plaintext-base64, so a truthy env flag alone must
+    NEVER unlock deposit+execution of plaintext keys (C4). Tests simulate Phase-2
+    by monkeypatching this to return True.
     """
     return False  # Phase 2: implement real per-record envelope encryption here.
+
+
+def _sandbox_execution_attested() -> bool:
+    """Proof that OS-level sandbox isolation is READY for BYO execution. DEFAULT False.
+
+    Round-14 #2 + #4: a founder's BYO key must not run until the per-job runner
+    (real OS isolation — container/namespace, separate working dir) attests it is
+    ready. Until then BYO execution is genuinely DARK, which makes the interim CLI
+    file-access surface (``--bare`` still permits Read/Edit) UNREACHABLE. The
+    runner build wires this to a live probe; here it is hardcoded False so no flag
+    combination can enable BYO execution without sandbox attestation.
+    """
+    return False  # Phase 2: wire to the per-job runner's sandbox-readiness probe.
 
 
 #: Round-12 #3 (attestation TOCTOU). Route selection
@@ -221,11 +241,15 @@ _BYO_EXECUTION_SNAPSHOT: ContextVar[bool | None] = ContextVar(
 )
 
 
-def _byo_execution_enabled_uncached() -> bool:
-    """Live read of the executable-BYO prerequisite (flag AND attestation)."""
+def _byo_execution_enabled_uncached(universe_dir: str | Path | None = None) -> bool:
+    """Live read of the executable-BYO prerequisite. ALL must hold (round-14 #4):
+    operator opt-in flag AND sandbox-readiness attestation (round-14 #2) AND the
+    selected record's per-record encryption attestation. Any False → BYO dark."""
     if os.environ.get(BYO_VAULT_ENCRYPTED_ENV, "").strip().lower() not in _TRUTHY:
         return False
-    return _vault_encryption_capability_attested()
+    if not _sandbox_execution_attested():
+        return False
+    return _vault_encryption_capability_attested(universe_dir)
 
 
 @contextlib.contextmanager
@@ -246,25 +270,28 @@ def pin_byo_execution_snapshot():
         _BYO_EXECUTION_SNAPSHOT.reset(token)
 
 
-def byo_execution_enabled() -> bool:
+def byo_execution_enabled(universe_dir: str | Path | None = None) -> bool:
     """Return whether the executable BYO-key path is enabled. DEFAULT OFF.
 
-    Requires BOTH the operator opt-in (:data:`BYO_VAULT_ENCRYPTED_ENV`) AND a
-    code-backed encryption-capability attestation
-    (:func:`_vault_encryption_capability_attested`). Because the attestation is
-    False until Phase-2 envelope encryption lands, **the flag alone cannot unlock
+    Requires ALL of (round-14 #4, the vault's ``byo_execution_enabled(binding)``
+    contract): operator opt-in (:data:`BYO_VAULT_ENCRYPTED_ENV`), sandbox-readiness
+    attestation (:func:`_sandbox_execution_attested`, round-14 #2), and the SELECTED
+    record's per-record encryption attestation
+    (:func:`_vault_encryption_capability_attested`). Because sandbox + encryption
+    attestation are both False until Phase-2, **the flag alone cannot unlock
     plaintext-key deposit+execution** (C4). OFF (this deploy) → the executable BYO
     path is DARK end-to-end: no deposit, no bound BYO, no direct BYO routing, no
-    BYO env injection.
+    BYO env injection, no BYO subprocess execution.
 
-    When a routing operation has pinned a snapshot
-    (:func:`pin_byo_execution_snapshot`), returns that immutable value so route
-    selection and subprocess spawn always agree (round-12 #3).
+    ``universe_dir`` threads the record locus to the per-record attestation. When a
+    routing operation has pinned a snapshot (:func:`pin_byo_execution_snapshot`),
+    returns that immutable value so route selection and subprocess spawn always
+    agree (round-12 #3).
     """
     pinned = _BYO_EXECUTION_SNAPSHOT.get()
     if pinned is not None:
         return pinned
-    return _byo_execution_enabled_uncached()
+    return _byo_execution_enabled_uncached(universe_dir)
 
 
 def _byo_key_auth_health(provider_name: str, universe_dir: Path) -> str:
@@ -468,6 +495,30 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
             universe_id, declared_source,
             "unknown engine_source — expected one of "
             f"{sorted(_KNOWN_ENGINE_SOURCES)}",
+        )
+
+    # Round-14 #3: a legacy llm_subscription record (retired lane) makes EVERY
+    # spawn raise RetiredSubscriptionLaneError, and re-declaring an engine only
+    # edits config.yaml — it can't remove the record. Surface the universe as
+    # needs-migration (with remediation) here so get_status reports it clearly
+    # instead of the founder hitting an opaque spawn crash forever.
+    from tinyassets.credential_vault import has_legacy_subscription_records
+
+    if has_legacy_subscription_records(udir):
+        return EngineBinding(
+            bound=False,
+            engine_source=declared_source,
+            capacity_kinds=(),
+            reason=(
+                "needs_migration: this universe's vault holds a legacy subscription "
+                "credential (a RETIRED lane — the platform never custodies "
+                "subscription tokens). Every engine spawn will fail until it is "
+                "removed. Run the subscription-record migration "
+                "(credential_vault.quarantine_legacy_subscription_records) to "
+                "quarantine it, then re-bind a sanctioned engine via "
+                "write_graph target=engine."
+            ),
+            needs_migration=True,
         )
 
     try:

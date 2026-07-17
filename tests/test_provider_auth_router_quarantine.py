@@ -236,7 +236,8 @@ def _enable_byo(monkeypatch):
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
-    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda: True)
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
 
 
 def _byo_claude_universe(tmp_path):
@@ -648,10 +649,12 @@ def test_r12_3_router_pins_one_byo_snapshot_across_spawn(
     from tinyassets.providers.base import UniverseContext
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
-    # Attestation is True only on the FIRST read; every later read flips False.
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    # Per-record attestation is True only on the FIRST read; every later read flips
+    # False (the TOCTOU race the pin must neutralize).
     calls = {"n": 0}
 
-    def _flip():
+    def _flip(*a, **k):
         calls["n"] += 1
         return calls["n"] <= 1
 
@@ -749,6 +752,7 @@ def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
     import json as _json
     import sys as _sys
     import textwrap as _textwrap
+    from pathlib import Path
 
     from tinyassets.providers import claude_provider as cp
     from tinyassets.providers.base import ModelConfig
@@ -758,7 +762,8 @@ def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
     stub.write_text(_textwrap.dedent(f"""
         import sys, os, json
         sys.stdin.buffer.read()  # drain the piped prompt
-        json.dump({{"argv": sys.argv[1:], "env": dict(os.environ)}},
+        json.dump({{"argv": sys.argv[1:], "env": dict(os.environ),
+                    "cwd": os.getcwd()}},
                   open(r"{dump}", "w", encoding="utf-8"))
         sys.stdout.write("ok")
     """), encoding="utf-8")
@@ -781,11 +786,18 @@ def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
         "hello", "", ModelConfig(timeout=30), universe_dir=udir,
     ))
     data = _json.loads(dump.read_text(encoding="utf-8"))
-    argv, child_env = data["argv"], data["env"]
+    argv, child_env, child_cwd = data["argv"], data["env"], data["cwd"]
 
-    # Clean bare context + explicit shell-escape tool floor.
+    # Clean bare context.
     assert "--bare" in argv
-    assert "--disallowedTools" in argv and "Bash" in argv
+    # DEFAULT-DENY tool floor (round-14 #2): not just Bash — file Read/Edit/Write
+    # are denied too (--bare alone still permits them).
+    assert "--disallowedTools" in argv
+    for denied in ("Bash", "Read", "Edit", "Write", "WebFetch"):
+        assert denied in argv, f"{denied} not in the default-deny tool floor"
+    # cwd is pinned to an isolated scratch dir (round-14 #2), NOT the daemon cwd.
+    assert "claude-byo-scratch" in child_cwd
+    assert Path(child_cwd).resolve() != Path.cwd().resolve()
     # The CLI keeps the key out of its OWN tool subprocesses.
     assert child_env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") == "1"
     # Neither host OAuth nor host cloud creds reached the child.
@@ -797,6 +809,19 @@ def test_r13_1_byo_claude_cli_is_credential_isolated(tmp_path, monkeypatch):
     # The child's ONLY Anthropic credential is the founder's BYO key + isolated cfg.
     assert child_env.get("ANTHROPIC_API_KEY", "").startswith("sk-ant-")
     assert "claude-byo-isolated" in child_env.get("CLAUDE_CONFIG_DIR", "")
+
+
+@pytest.mark.skip(reason=(
+    "ROLLOUT GATE (round-14 #2): a hostile real-CLI filesystem test — spawn the "
+    "REAL `claude -p` hardened for BYO and assert Read/Edit of a host file FAILS — "
+    "requires the actual claude binary (absent in this env) AND the per-job runner's "
+    "OS sandbox. BYO execution stays dark (sandbox attestation False) until both "
+    "land; enable + implement this at Phase-2 rollout. The stub test above proves "
+    "our CODE emits --bare + default-deny + cwd-pin; it cannot prove the binary's "
+    "real filesystem enforcement."
+))
+def test_r14_2_byo_hostile_real_cli_filesystem_isolation():  # pragma: no cover
+    raise NotImplementedError("Phase-2 rollout gate — see skip reason.")
 
 
 @pytest.mark.parametrize("lane", ["market_rented", "host_daemon", "self_hosted_endpoint"])

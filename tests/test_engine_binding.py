@@ -33,7 +33,38 @@ def byo_enabled(monkeypatch):
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
-    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda: True)
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+
+
+def test_r14_4_byo_execution_dark_until_sandbox_attested(tmp_path, monkeypatch):
+    """Round-14 #4/#2: BYO execution requires ALL of flag + per-record encryption
+    attestation + SANDBOX-readiness attestation. With the flag on and encryption
+    attested but sandbox NOT attested, byo_execution_enabled stays False (dark) —
+    so a future-enabled BYO file-access path is unreachable until the runner lands."""
+    import tinyassets.engine_binding as eb
+
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
+    # Sandbox NOT attested (the default; runner not built).
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: False)
+    assert eb.byo_execution_enabled(tmp_path) is False
+    # Attest sandbox too → now enabled (all three hold).
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    assert eb.byo_execution_enabled(tmp_path) is True
+
+
+def test_r14_4_attestation_takes_record_context(tmp_path):
+    """Round-14 #4: the per-record attestation now accepts the record locus
+    (universe_dir) rather than promising per-record proof from a global bool."""
+    import inspect
+
+    import tinyassets.engine_binding as eb
+
+    sig = inspect.signature(eb._vault_encryption_capability_attested)
+    assert "universe_dir" in sig.parameters
+    # Default deploy: dark regardless of context.
+    assert eb._vault_encryption_capability_attested(tmp_path) is False
 
 
 # ---- non_ambient_work_enabled: default OFF -------------------------------
@@ -349,9 +380,13 @@ def test_subscription_row_never_counts_and_never_crashes(tmp_path):
     assert binding.bound is False
 
 
-def test_subscription_row_alongside_real_byo_binds_via_byo(tmp_path, byo_enabled):
-    """A subscription row does not add capacity; a real Anthropic BYO key still
-    binds and eligibility reflects only the BYO key."""
+def test_subscription_row_alongside_real_byo_needs_migration(tmp_path, byo_enabled):
+    """Round-14 #3: a legacy subscription row present ALONGSIDE a real BYO key
+    makes the universe needs-migration, NOT bound — because that record would make
+    every spawn raise RetiredSubscriptionLaneError. The founder must quarantine the
+    subscription record first; only then can the BYO key bind."""
+    from tinyassets.credential_vault import quarantine_legacy_subscription_records
+
     udir = tmp_path / "u-mixed"
     udir.mkdir()
     write_credential_vault(udir, [
@@ -368,9 +403,16 @@ def test_subscription_row_alongside_real_byo_binds_via_byo(tmp_path, byo_enabled
         },
     ])
     binding = resolve_engine_binding(udir)
-    assert binding.bound is True
-    assert "byo_api_key" in binding.capacity_kinds
-    assert binding.eligible_providers == frozenset({"claude-code"})
+    assert binding.bound is False
+    assert binding.needs_migration is True
+
+    # After migrating the legacy record out, the real BYO key binds.
+    quarantine_legacy_subscription_records(udir)
+    migrated = resolve_engine_binding(udir)
+    assert migrated.bound is True
+    assert migrated.needs_migration is False
+    assert "byo_api_key" in migrated.capacity_kinds
+    assert migrated.eligible_providers == frozenset({"claude-code"})
 
 
 def test_declared_subscription_source_is_idle_not_loud(tmp_path):

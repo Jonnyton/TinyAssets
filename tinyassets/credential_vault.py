@@ -255,6 +255,66 @@ def _reject_retired_subscription_records(universe_dir: str | Path | None) -> Non
         )
 
 
+def has_legacy_subscription_records(universe_dir: str | Path | None) -> bool:
+    """Return True iff the universe vault holds a legacy ``llm_subscription`` record
+    (round-14 #3 status probe). Fails CLOSED-quiet on a resolution error (returns
+    False) — a malformed vault surfaces separately as an EngineMisconfiguredError."""
+    try:
+        return bool(_llm_subscription_records(universe_dir))
+    except (ValueError, OSError):
+        return False
+
+
+#: Where quarantined legacy subscription records are archived on migration.
+QUARANTINE_FILENAME = ".credential-vault-quarantine.json"
+
+
+def quarantine_legacy_subscription_records(
+    universe_dir: str | Path,
+) -> dict[str, Any]:
+    """Migrate a universe OFF the retired subscription lane (round-14 #3).
+
+    Removes EVERY legacy ``llm_subscription`` record from the vault, archiving them
+    to :data:`QUARANTINE_FILENAME` (audit trail) and rewriting the vault WITHOUT
+    them — so the universe stops raising :class:`RetiredSubscriptionLaneError` on
+    every spawn and surfaces as migrated. This is the explicit remediation for the
+    "re-declaring an engine only edits config.yaml, it can't remove the vault
+    record → stranded forever" bug. Idempotent: a vault with no subscription
+    records is a no-op. Raises ``ValueError`` on a malformed vault (fail loud —
+    never silently rewrite unreadable state). Returns a non-secret summary.
+    """
+    universe = Path(universe_dir)
+    records = load_credential_vault(universe)  # raises ValueError if malformed
+    legacy = [r for r in records if r.get("credential_type") == "llm_subscription"]
+    if not legacy:
+        return {"migrated": 0, "remaining": len(records), "quarantine_path": None}
+    kept = [r for r in records if r.get("credential_type") != "llm_subscription"]
+    qpath = universe / QUARANTINE_FILENAME
+    prior: list[dict[str, Any]] = []
+    if qpath.is_file():
+        try:
+            loaded = json.loads(qpath.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and isinstance(loaded.get("quarantined"), list):
+                prior = loaded["quarantined"]
+        except (OSError, ValueError):
+            prior = []
+    tmp = qpath.with_name(f"{qpath.name}.tmp")
+    tmp.write_text(
+        json.dumps({"schema_version": 1, "quarantined": prior + legacy}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    _chmod_best_effort(tmp, 0o600)
+    tmp.replace(qpath)
+    _chmod_best_effort(qpath, 0o600)
+    write_credential_vault(universe, kept)  # rewrite vault WITHOUT the legacy rows
+    return {
+        "migrated": len(legacy),
+        "remaining": len(kept),
+        "quarantine_path": str(qpath),
+    }
+
+
 def supported_llm_api_key_services() -> frozenset[str]:
     """Services a BYO ``llm_api_key`` deposit may target.
 

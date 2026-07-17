@@ -1303,8 +1303,30 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
             engine_binding["non_ambient_gate"] = gate_on
             # workable = will the daemon work this universe? Bound universes
             # always; unbound universes only while the gate is off (ambient).
-            engine_binding["workable"] = binding.bound or not gate_on
-            if not binding.bound:
+            # A needs-migration universe is NEVER workable — every spawn would
+            # raise until its legacy subscription record is migrated out (#3).
+            engine_binding["workable"] = (
+                binding.bound or (not gate_on and not binding.needs_migration)
+            )
+            if binding.needs_migration:
+                engine_binding["status"] = "misconfigured"
+                engine_binding["note"] = (
+                    "MISCONFIGURED — a legacy subscription credential in this "
+                    "universe's vault blocks every engine spawn. Migrate it out "
+                    "(quarantine the subscription record), then re-bind a "
+                    "sanctioned engine. Until then this universe cannot run."
+                )
+                caveats.append(
+                    "engine_binding.needs_migration is true — a legacy subscription "
+                    "record must be quarantined before this universe can run."
+                )
+                actionable_next_steps.append(
+                    "Migrate this universe off the retired subscription lane: run "
+                    "the subscription-record quarantine migration "
+                    "(credential_vault.quarantine_legacy_subscription_records), "
+                    "then re-bind a sanctioned engine via write_graph target=engine."
+                )
+            elif not binding.bound:
                 engine_binding["note"] = (
                     "This universe has no engine bound to it and will stay idle "
                     "until you bind one — no ambient work runs for it."

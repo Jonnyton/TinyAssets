@@ -94,7 +94,8 @@ def _enable_byo(monkeypatch):
     """Enable the executable-BYO prerequisite (flag + attestation) for the test."""
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda: True)
+    monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
 
 
 def test_subprocess_env_resolves_byo_key_per_universe_context(
