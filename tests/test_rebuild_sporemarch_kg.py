@@ -121,7 +121,7 @@ def test_rebuild_writes_to_knowledge_db(tmp_path: Path) -> None:
         ],
     })
 
-    def fake_provider_call(prompt, system="", *, role="writer", fallback_response=None):
+    def fake_provider_call(prompt, system="", *, role="writer", fallback_response=None, **_kw):
         return extraction_json
 
     with patch.object(MOD, "_load_provider_call", return_value=fake_provider_call):
@@ -149,7 +149,7 @@ def test_rebuild_is_idempotent(tmp_path: Path) -> None:
         "facts": [],
     })
 
-    def fake_provider_call(prompt, system="", *, role="writer", fallback_response=None):
+    def fake_provider_call(prompt, system="", *, role="writer", fallback_response=None, **_kw):
         return extraction_json
 
     with patch.object(MOD, "_load_provider_call", return_value=fake_provider_call):
@@ -165,7 +165,7 @@ def test_empty_scene_file_counts_as_failure(tmp_path: Path) -> None:
     empty = udir / "output" / "book-1" / "chapter-01" / "scene-99.md"
     empty.write_text("", encoding="utf-8")
 
-    def fake_provider_call(prompt, system="", *, role="writer", fallback_response=None):
+    def fake_provider_call(prompt, system="", *, role="writer", fallback_response=None, **_kw):
         return json.dumps({"entities": [], "relationships": [], "facts": []})
 
     with patch.object(MOD, "_load_provider_call", return_value=fake_provider_call):

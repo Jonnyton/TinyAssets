@@ -25,7 +25,7 @@ from tinyassets.graph_compiler import ConcurrencyTracker, compile_branch
 
 
 def _static_provider(val: str = "ok"):
-    def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
+    def _call(prompt: str, system: str = "", *, role: str = "writer", **_kw) -> str:
         return val
     return _call
 

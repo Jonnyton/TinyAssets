@@ -528,7 +528,7 @@ class TestVerifyAndFillGaps:
         docs = {"characters": "# Characters\n\nKael the mage."}
         calls = []
 
-        def mock_provider(prompt, system, role="writer"):
+        def mock_provider(prompt, system, role="writer", **_kw):
             calls.append(role)
             return '{"gaps": []}'
 
@@ -543,7 +543,7 @@ class TestVerifyAndFillGaps:
         docs = {"characters": "# Characters\n\nKael."}
         call_count = [0]
 
-        def mock_provider(prompt, system, role="writer"):
+        def mock_provider(prompt, system, role="writer", **_kw):
             call_count[0] += 1
             if call_count[0] == 1:
                 return '{"gaps": ["Missing location Thornwall"]}'
@@ -568,7 +568,7 @@ class TestVerifyAndFillGaps:
         """Provider failure during verification returns original docs."""
         docs = {"chars": "# Chars\n\nContent."}
 
-        def failing_provider(prompt, system, role="writer"):
+        def failing_provider(prompt, system, role="writer", **_kw):
             raise RuntimeError("Provider down")
 
         result = _verify_and_fill_gaps(
@@ -581,7 +581,7 @@ class TestVerifyAndFillGaps:
         docs = {"chars": "# Chars\n\nContent."}
         call_count = [0]
 
-        def mock_provider(prompt, system, role="writer"):
+        def mock_provider(prompt, system, role="writer", **_kw):
             call_count[0] += 1
             if call_count[0] == 1:
                 return '{"gaps": ["Missing detail"]}'
@@ -600,7 +600,7 @@ class TestSynthesisWithVerification:
         canon_dir.mkdir()
         call_count = [0]
 
-        def mock_provider(prompt, system, role="writer", fallback_response=None):
+        def mock_provider(prompt, system, role="writer", fallback_response=None, **_kw):
             call_count[0] += 1
             if call_count[0] == 1:
                 # Initial synthesis

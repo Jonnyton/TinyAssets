@@ -50,6 +50,9 @@ from tinyassets.graph_compiler import (
     seed_initial_state,
 )
 
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
+
 logger = logging.getLogger(__name__)
 
 
@@ -893,6 +896,14 @@ def update_run_status(
                     "status update preserved",
                     run_id, status, exc,
                 )
+            # Terminal-run cleanup: REVOKE this run's opaque workspace refs (Codex
+            # S3 r20 #3) so a token captured from a finished / failed / cancelled
+            # run can never be replayed. Best-effort — never blocks a status update.
+            try:
+                from tinyassets.sandbox_policy import release_run_workspace_refs
+                release_run_workspace_refs(run_id)
+            except Exception:  # noqa: BLE001 — cleanup is best-effort observability
+                logger.debug("workspace-ref release failed for run %s", run_id)
 
 
 def record_run_receipt(
@@ -2295,6 +2306,10 @@ def _invoke_graph_inner(
 
     Blocks until the graph finishes or is cancelled. Updates run status
     to RUNNING on entry, COMPLETED / FAILED / CANCELLED on exit.
+
+    ``execution_scope`` is the AUTHORITATIVE tenant scope (Codex S3 r20 #2),
+    threaded EXPLICITLY to the compiler so a sandbox-required node with an UNKNOWN
+    scope fails closed. ``None`` → UNKNOWN (fail closed) at the choke point.
     """
     thread_id = run_id
     execution_cursor = {"step": 0}
@@ -2950,6 +2965,27 @@ def _node_id_from_timeout_message(message: str) -> str:
     return m.group(1) if m else "(timeout)"
 
 
+def _default_execution_scope(universe_id: str) -> "ExecutionScope":
+    """Derive the default AUTHORITATIVE :class:`ExecutionScope` for a run from its
+    universe id (Codex S3 r20 #2). An empty id → LEGACY_UNBOUND (single-universe
+    legacy, ambient OK). A bound id → BOUND(resolved dir), or UNKNOWN (fail closed)
+    when it cannot be resolved — never silently unscoped. Callers that already hold
+    the resolved scope pass it explicitly instead of relying on this default."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ExecutionScope.legacy_unbound()
+    try:
+        from tinyassets.api.helpers import _universe_dir
+        udir = _universe_dir(uid)
+    except Exception:  # noqa: BLE001 — unresolvable bound id ⇒ fail closed
+        return ExecutionScope.unknown()
+    if udir is None or not Path(udir).is_dir():
+        return ExecutionScope.unknown()
+    return ExecutionScope.bound(str(udir))
+
+
 def execute_branch(
     base_path: str | Path,
     *,
@@ -2984,6 +3020,11 @@ def execute_branch(
         Optional override for LangGraph's recursion limit. When ``None``
         (default), uses :data:`DEFAULT_RECURSION_LIMIT` (100). Branches
         with deep conditional loops (Tier-1 Step 6) bump this.
+    execution_scope
+        The AUTHORITATIVE tenant scope (Codex S3 r20 #2). When ``None``, a default
+        is derived from ``_enqueue_universe_id`` (empty → legacy-unbound; a bound id
+        → bound). Callers that know the scope pass it explicitly. UNKNOWN fails
+        closed for sandbox-required nodes.
     """
     execution_scope = _coherent_execution_scope(
         base_path,
@@ -3009,6 +3050,8 @@ def execute_branch(
         parent_branch_task_id=_parent_branch_task_id,
         origin_branch_task_id=_origin_branch_task_id,
     )
+    if execution_scope is None:
+        execution_scope = _default_execution_scope(_enqueue_universe_id)
     return _invoke_graph(
         base_path,
         run_id=run_id, branch=branch, inputs=inputs,
@@ -3017,8 +3060,8 @@ def execute_branch(
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
-        enqueue_context=enqueue_context,
         execution_scope=execution_scope,
+        enqueue_context=enqueue_context,
     )
 
 
@@ -3280,6 +3323,10 @@ def execute_branch_async(
     _invocation_depth
         Phase A item 5 / Task #76c — sub-branch builders pass ``depth+1``
         when spawning a child. Top-level callers leave default (0).
+    execution_scope
+        The AUTHORITATIVE tenant scope (Codex S3 r20 #2). MCP handlers compute it
+        from the run's universe id and pass it explicitly; ``None`` → UNKNOWN
+        (fail closed) for a sandbox-required node.
     """
     return _execute_branch_core(
         base_path,
@@ -3605,7 +3652,10 @@ def _invoke_graph_resume_inner(
     provider_call: Callable[..., str] | None,
     execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
-    """Compile branch + invoke with None inputs to resume from checkpoint."""
+    """Compile branch + invoke with None inputs to resume from checkpoint.
+
+    ``execution_scope`` is the AUTHORITATIVE tenant scope (Codex S3 r20 #2) —
+    ``None`` → UNKNOWN (fail closed) for a sandbox-required node on resume."""
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
     provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
 

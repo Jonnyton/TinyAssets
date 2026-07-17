@@ -744,7 +744,7 @@ class TestEditorialReaderEnrichedContext:
 
         captured_prompts = []
 
-        def mock_call(prompt, system, role="judge"):
+        def mock_call(prompt, system, role="judge", **_kw):
             captured_prompts.append(prompt)
             return json.dumps({
                 "protect": ["vivid imagery"],

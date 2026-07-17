@@ -589,7 +589,11 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             if (r.get("author") or "") != actor:
                 continue
         node_defs = r.get("node_defs", [])
-        has_sandbox_nodes = any(nd.get("requires_sandbox") for nd in node_defs)
+        # Classify by CAPABILITY (node_requires_sandbox), not the raw flag: a
+        # coding node (node_kind="coding") is sandbox-required even with
+        # requires_sandbox unset, so the filter must not miss it (patch-loop S3).
+        from tinyassets.sandbox_policy import node_requires_sandbox
+        has_sandbox_nodes = any(node_requires_sandbox(nd) for nd in node_defs)
         if rs_filter == "none" and has_sandbox_nodes:
             continue
         if rs_filter == "any" and not has_sandbox_nodes:
@@ -662,6 +666,11 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         "source_code": kwargs.get("source_code", ""),
         "prompt_template": kwargs.get("prompt_template", ""),
         "author": kwargs.get("author") or _current_actor(),
+        # patch-loop S3: carry the sandbox classification on inline add_node.
+        # (For a node_ref copy these stay source-derived — _resolve_node_spec
+        # does not overlay them, so a copy cannot drop the classification.)
+        "requires_sandbox": kwargs.get("requires_sandbox", False),
+        "node_kind": kwargs.get("node_kind", ""),
     }
     if "node_ref" in kwargs:
         raw["node_ref"] = kwargs["node_ref"]
@@ -887,38 +896,27 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
         if _node_source_code_unrunnable(nd)
     ]
 
-    # sandbox-compat warning: list any requires_sandbox=True nodes when
-    # the host's bwrap probe says sandbox is unavailable. Non-fatal.
-    sandbox_warnings: list[str] = []
-    try:
-        from tinyassets.providers.base import get_sandbox_status
-        sb = get_sandbox_status()
-        if not sb.get("bwrap_available"):
-            sandbox_nodes = [
-                nd.node_id
-                for nd in branch.node_defs
-                if getattr(nd, "requires_sandbox", False)
-            ]
-            if sandbox_nodes:
-                reason = sb.get("reason") or "bwrap unavailable"
-                sandbox_warnings.append(
-                    f"This branch contains {len(sandbox_nodes)} node(s) that "
-                    f"require a sandbox ({', '.join(sorted(sandbox_nodes))}) but "
-                    f"the host sandbox probe returned: {reason}. "
-                    f"These nodes will fail at runtime. Options: enable bwrap "
-                    f"on the host, or use a branch variant without "
-                    f"requires_sandbox=true nodes (design-only branch)."
-                )
-    except Exception:  # noqa: BLE001 — best-effort non-blocking warning
-        pass
+    # Sandbox gate at VALIDATE time — MUST match the ACTUAL runtime truth (Codex
+    # S3 REJECT R4): a repo-touching node (coding / repo-exec / repo-read)
+    # requires the per-job sandbox runner, which does not exist in this deploy, so
+    # it fails closed at run time. validate reads the SAME single source of truth
+    # (`coding_nodes_runnable`) the node runtime + get_status use, so readiness can
+    # never drift from runtime — never "ready because claude is on PATH".
+    # Classification errors fail CLOSED (never swallow into runnable=true).
+    from tinyassets.sandbox_policy import branch_sandbox_status
+
+    sandbox_blocked, _repo_nodes, sandbox_warnings = branch_sandbox_status(
+        branch.node_defs, getattr(branch, "domain_id", "") or "",
+    )
 
     return json.dumps({
         "branch_def_id": bid,
         "valid": not errors,
         "errors": errors,
-        "runnable": not errors and not unapproved_sc,
+        "runnable": not errors and not unapproved_sc and not sandbox_blocked,
         "unapproved_source_code_nodes": unapproved_sc,
         "sandbox_warnings": sandbox_warnings,
+        "sandbox_blocked": sandbox_blocked,
     })
 
 
@@ -1547,6 +1545,10 @@ def _lookup_node_body(
             "approved_at": hit.get("approved_at", ""),
             "approved_source_hash": hit.get("approved_source_hash", ""),
             "approval_reason": hit.get("approval_reason", ""),
+            # patch-loop S3: carry the sandbox classification through a node-ref
+            # copy so a copied coding node stays sandbox-required.
+            "requires_sandbox": bool(hit.get("requires_sandbox", False)),
+            "node_kind": hit.get("node_kind", "") or "",
         }, ""
 
     # Otherwise treat `source` as a branch_def_id.
@@ -1582,6 +1584,10 @@ def _lookup_node_body(
                 "approved_at": nd.get("approved_at", ""),
                 "approved_source_hash": nd.get("approved_source_hash", ""),
                 "approval_reason": nd.get("approval_reason", ""),
+                # patch-loop S3: carry the sandbox classification through a
+                # node-ref copy so a copied coding node stays sandbox-required.
+                "requires_sandbox": bool(nd.get("requires_sandbox", False)),
+                "node_kind": nd.get("node_kind", "") or "",
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
@@ -1653,6 +1659,17 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             timeout_seconds = float(timeout_seconds_raw)
         except (TypeError, ValueError):
             return f"node '{nid}' timeout_seconds must be a number."
+        # Reject non-finite / non-positive at the AUTHORING boundary (Codex S3
+        # REJECT r3 C1a): NaN/Infinity/negative/zero must NOT persist — otherwise
+        # int(nan) later raises during config construction and a swallowed error
+        # would dispatch an UNRESTRICTED config. Nothing is persisted here.
+        import math as _math
+        if not _math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            return (
+                f"node '{nid}' timeout_seconds must be a finite positive number "
+                f"(got {timeout_seconds_raw!r}); NaN, Infinity, negative and zero "
+                "are rejected."
+            )
     # BUG-045: thread the three sub-branch / sibling-run spec fields. The
     # compiler reads them (tinyassets/graph_compiler.py:_build_invoke_branch /
     # invoke_branch_version / await_run callables) and NodeDefinition
@@ -1681,6 +1698,30 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     else:
         return (
             f"node '{nid}' effects must be a JSON array of strings"
+        )
+    # SECURITY (patch-loop S3): thread the sandbox classification fields so an
+    # authored spec with {"requires_sandbox": true, "node_kind": "coding"}
+    # actually persists. Dropping them silently would let a coding node be
+    # stored unclassified, so it would never get the hardened sandbox posture.
+    requires_sandbox_raw = raw.get("requires_sandbox", False)
+    if isinstance(requires_sandbox_raw, bool):
+        requires_sandbox_arg = requires_sandbox_raw
+    else:
+        requires_sandbox_arg, rs_err = _coerce_node_update_bool(
+            requires_sandbox_raw, f"node '{nid}' requires_sandbox",
+        )
+        if rs_err:
+            return rs_err
+    node_kind_arg = str(raw.get("node_kind", "") or "").strip()
+    # SECURITY (Codex S3 r11 #2): reject an UNKNOWN node_kind at the authoring
+    # boundary rather than silently persisting an unclassified node that the
+    # capability classifier would downgrade to the least-restricted "text" class.
+    from tinyassets.sandbox_policy import node_kind_is_known as _kind_known
+    if not _kind_known(node_kind_arg):
+        return (
+            f"node '{nid}' has unknown node_kind '{node_kind_arg}'. A node_kind "
+            f"must be empty or a recognized kind; refusing to store an "
+            f"unclassified node (fail closed)."
         )
     # SECURITY (Codex ADAPT, PR #1349): a node is only approved when the
     # recorded approval hash matches the *effective* source_code being stored.
@@ -1731,6 +1772,8 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
             effects=effects_arg,
+            requires_sandbox=requires_sandbox_arg,
+            node_kind=node_kind_arg,
         )
     except ValueError as exc:
         return str(exc)
@@ -1890,6 +1933,8 @@ _NODE_UPDATE_FIELDS = frozenset({
     "timeout_seconds",
     "retry_policy",
     "enabled",
+    "requires_sandbox",
+    "node_kind",
     "invoke_branch_spec",
     "invoke_branch_version_spec",
     "await_run_spec",
@@ -1913,10 +1958,19 @@ def _coerce_node_update_bool(raw: Any, field: str) -> tuple[bool | None, str]:
 
 
 def _coerce_timeout_seconds_update(raw: Any, field: str) -> tuple[float, str]:
+    import math as _math
+
     try:
-        return float(raw), ""
+        value = float(raw)
     except (TypeError, ValueError):
         return 0.0, f"{field} must be a number."
+    # C1a: reject non-finite / non-positive at the update boundary too.
+    if not _math.isfinite(value) or value <= 0:
+        return 0.0, (
+            f"{field} must be a finite positive number "
+            "(NaN, Infinity, negative and zero are rejected)."
+        )
+    return value, ""
 
 
 def _coerce_retry_policy_update(raw: Any, field: str) -> tuple[dict[str, Any], str]:
@@ -2073,6 +2127,70 @@ def _apply_node_updates(
         if err:
             return err
         node.enabled = bool(enabled)
+    # Codex S3 r11 #2/#3/#4: node_kind + requires_sandbox are SECURITY-relevant
+    # metadata. (#2) reject an unknown node_kind vocabulary rather than silently
+    # downgrading to the least-restricted "text" class; (#3) forbid a DOWNGRADE of
+    # the sandbox class (escalation stays allowed); (#4) any change to this
+    # metadata invalidates a source_code node's approval (the approval covered the
+    # old source+kind+sandbox tuple; a change must be re-reviewed). Computed
+    # against the node's pre-mutation capability so a downgrade can't slip through.
+    _touches_kind = "node_kind" in editable_updates
+    _touches_rs = "requires_sandbox" in editable_updates
+    if _touches_kind or _touches_rs:
+        from tinyassets.sandbox_policy import (
+            capability_rank as _cap_rank,
+        )
+        from tinyassets.sandbox_policy import (
+            node_capability as _node_cap,
+        )
+        from tinyassets.sandbox_policy import (
+            node_kind_is_known as _kind_known,
+        )
+        _old_cap = _node_cap(node)
+        _old_kind = str(getattr(node, "node_kind", "") or "").strip()
+        _old_rs = bool(getattr(node, "requires_sandbox", False))
+        _new_kind = (
+            str(editable_updates["node_kind"] or "").strip()
+            if _touches_kind else _old_kind
+        )
+        if _touches_kind and not _kind_known(_new_kind):
+            return (
+                f"Unknown node_kind '{_new_kind}' on node '{node.node_id}'. A "
+                f"node_kind must be empty or a recognized kind; refusing to store "
+                f"an unclassified node that would silently downgrade to the "
+                f"least-restricted class (fail closed)."
+            )
+        if _touches_rs:
+            _new_rs_val, _rs_err = _coerce_node_update_bool(
+                editable_updates["requires_sandbox"], "requires_sandbox",
+            )
+            if _rs_err:
+                return _rs_err
+            _new_rs = bool(_new_rs_val)
+        else:
+            _new_rs = _old_rs
+        _proposed = {
+            "source_code": getattr(node, "source_code", "") or "",
+            "node_kind": _new_kind,
+            "requires_sandbox": _new_rs,
+            "node_id": getattr(node, "node_id", "") or "",
+        }
+        _new_cap = _node_cap(_proposed)
+        if _cap_rank(_new_cap) < _cap_rank(_old_cap):
+            return (
+                f"Refusing to DOWNGRADE the sandbox class of node "
+                f"'{node.node_id}' ({_old_cap} → {_new_cap}). Security "
+                f"metadata (node_kind / requires_sandbox) may be escalated but "
+                f"never lowered; delete and recreate the node, or re-approve it "
+                f"under host review (fail closed)."
+            )
+        _security_changed = (_new_kind != _old_kind) or (_new_rs != _old_rs)
+        node.node_kind = _new_kind
+        node.requires_sandbox = _new_rs
+        # (#4) approval covered the OLD security metadata — invalidate it on any
+        # change so a stale approval can't ride a re-classified source_code node.
+        if _security_changed and (getattr(node, "source_code", "") or "").strip():
+            _clear_source_code_approval(node)
     for spec_field in _NODE_UPDATE_SPEC_FIELDS:
         if spec_field in editable_updates:
             val, err = _coerce_node_spec_update(
@@ -2277,6 +2395,16 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     branch, staging_errors = _staged_branch_from_spec(spec)
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
+
+    # Codex S3 r13 #1 + r14 #2: a user-authored branch may NOT select a HOST-ONLY
+    # (daemon-internal) or UNCLASSIFIED opaque callable. Use the SAME fail-closed
+    # validator the storage choke point enforces, so authoring gives immediate,
+    # actionable feedback AND cannot fail open on a resolution error (the r13
+    # inline check swallowed resolution errors to []).
+    from tinyassets.sandbox_policy import user_branch_capability_rejections
+    errors += user_branch_capability_rejections(
+        branch.node_defs, getattr(branch, "domain_id", "") or "",
+    )
 
     # Validate fork_from points to a real branch_version_id.
     if branch.fork_from:
@@ -2833,6 +2961,7 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "prompt_template", "source_code", "model_hint",
             "input_keys", "output_keys", "tools_allowed",
             "timeout_seconds", "retry_policy", "enabled",
+            "requires_sandbox", "node_kind",
         ):
             if field in kwargs and kwargs.get(field) is not None and kwargs.get(field) != "":
                 updates[field] = kwargs[field]
@@ -3065,6 +3194,9 @@ _PATCH_NODES_FIELDS: dict[str, Any] = {
     "model_hint": str,
     "timeout_seconds": float,
     "enabled": bool,
+    # patch-loop S3: allow bulk-setting the sandbox classification too.
+    "requires_sandbox": bool,
+    "node_kind": str,
 }
 
 
@@ -3088,9 +3220,21 @@ def _coerce_patch_nodes_value(
         return None, f"Cannot coerce {raw!r} to bool."
     if kind is float:
         try:
-            return float(raw), None
+            value = float(raw)
         except (TypeError, ValueError):
             return None, f"Cannot coerce {raw!r} to float."
+        # C1a (Fable non-blocking): the third authoring surface must also reject
+        # non-finite / non-positive timeout_seconds at the boundary — NaN /
+        # Infinity / negative / zero must not persist.
+        if field == "timeout_seconds":
+            import math as _math
+
+            if not _math.isfinite(value) or value <= 0:
+                return None, (
+                    f"{field} must be a finite positive number "
+                    "(NaN, Infinity, negative and zero are rejected)."
+                )
+        return value, None
     return str(raw), None
 
 
@@ -3189,6 +3333,58 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
             "error": "Branch has no nodes to patch.",
         })
 
+    # Codex S3 r11 #2/#3: node_kind / requires_sandbox are SECURITY metadata.
+    # patch_nodes is ATOMIC, so validate the whole batch BEFORE mutating: reject
+    # an unknown node_kind vocabulary (#2) and reject any per-node DOWNGRADE of the
+    # sandbox class (#3). Approval invalidation (#4) happens in the mutation loop.
+    if field in ("node_kind", "requires_sandbox"):
+        from tinyassets.sandbox_policy import (
+            capability_rank as _cap_rank,
+        )
+        from tinyassets.sandbox_policy import (
+            node_capability as _node_cap,
+        )
+        from tinyassets.sandbox_policy import (
+            node_kind_is_known as _kind_known,
+        )
+        if field == "node_kind" and not _kind_known(value):
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    f"Unknown node_kind '{value}'. A node_kind must be empty or a "
+                    f"recognized kind; refusing to store an unclassified node that "
+                    f"would silently downgrade to the least-restricted class "
+                    f"(fail closed). Atomic — no node was patched."
+                ),
+            })
+        for node in staging.node_defs:
+            if node.node_id not in target_ids:
+                continue
+            _old_cap = _node_cap(node)
+            _proposed = {
+                "source_code": getattr(node, "source_code", "") or "",
+                "node_kind": (
+                    str(value).strip() if field == "node_kind"
+                    else str(getattr(node, "node_kind", "") or "").strip()
+                ),
+                "requires_sandbox": (
+                    bool(value) if field == "requires_sandbox"
+                    else bool(getattr(node, "requires_sandbox", False))
+                ),
+                "node_id": node.node_id,
+            }
+            _new_cap = _node_cap(_proposed)
+            if _cap_rank(_new_cap) < _cap_rank(_old_cap):
+                return json.dumps({
+                    "status": "rejected",
+                    "error": (
+                        f"Refusing to DOWNGRADE the sandbox class of node "
+                        f"'{node.node_id}' ({_old_cap} → {_new_cap}). Security "
+                        f"metadata (node_kind / requires_sandbox) may be escalated "
+                        f"but never lowered. Atomic — no node was patched."
+                    ),
+                })
+
     # Apply the field. prompt_template / source_code are mutually
     # exclusive — clear the other when setting one.
     #
@@ -3204,6 +3400,7 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
     for node in staging.node_defs:
         if node.node_id not in target_ids:
             continue
+        _old_field_val = getattr(node, field, None)
         setattr(node, field, value)
         if field == "prompt_template" and value:
             node.source_code = ""
@@ -3218,6 +3415,14 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
                 node.approved, node.source_code or "",
                 node.approved_source_hash or "",
             ):
+                _clear_source_code_approval(node)
+        elif field in ("node_kind", "requires_sandbox"):
+            # (#4) a change to security metadata invalidates a source_code node's
+            # approval — the approval covered the old source+kind+sandbox tuple, so
+            # a stale approval can't ride a re-classified node into execution.
+            if value != _old_field_val and (
+                getattr(node, "source_code", "") or ""
+            ).strip():
                 _clear_source_code_approval(node)
 
     old_version = int(source.get("version") or 1)

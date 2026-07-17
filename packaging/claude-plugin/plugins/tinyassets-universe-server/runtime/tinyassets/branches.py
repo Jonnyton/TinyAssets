@@ -334,6 +334,16 @@ class NodeDefinition:
     # host's sandbox probe fails. Default False preserves back-compat.
     requires_sandbox: bool = False
 
+    # STABLE capability classifier (patch-loop S3, Codex adapt): what KIND of
+    # work this node does, independent of the editable node_id. A repo-writing
+    # coding node declares node_kind="coding" (e.g. the patch loop's draft_patch)
+    # so the runtime can require the hardened sandbox posture BY CAPABILITY — a
+    # remix that RENAMES the node still carries its node_kind, so it cannot rename
+    # its way out of confinement (which keying on node_id=="draft_patch" alone
+    # allowed). See tinyassets.sandbox_policy.node_requires_sandbox. Persisted +
+    # round-trips via to_dict/from_dict; empty = unclassified (back-compat).
+    node_kind: str = ""
+
     # Partial-credit checkpoints authored into node_def.
     # Each entry: {
     #   "checkpoint_id": str (unique within node),

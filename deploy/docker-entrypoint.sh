@@ -81,6 +81,29 @@ else
     echo "[entrypoint] API-key providers explicitly enabled by TINYASSETS_ALLOW_API_KEY_PROVIDERS=1" >&2
 fi
 
+# ── Coding-node OS-sandbox attestation (patch-loop S3) ───────────────────────
+# TINYASSETS_OS_SANDBOX_ATTESTED is DELIBERATELY UNSET here.
+#
+# Sandbox-required coding nodes (the patch loop's draft_patch etc.) run a coding
+# agent with real filesystem/shell tools. tinyassets/providers/base.py
+# enforce_os_sandbox() FAILS CLOSED unless this var is truthy — so on this
+# container (which does NOT yet provide per-job OS isolation) every coding node
+# is refused at run time BY DESIGN. That is the intended state until a host that
+# actually confines each job exists; the S6 daemon-setup walkthrough expects
+# users to hit this wall. Design-only branches are unaffected.
+#
+# TINYASSETS_OS_SANDBOX_ATTESTED may ONLY be set by an entrypoint whose per-job
+# runner provides ALL of (the deferred production enabler — NOT built yet):
+#   (a) a prepared per-job repo checkout (the job's own working tree),
+#   (b) tenant/host path invisibility (no /data, no other tenants, no platform
+#       source visible to the job),
+#   (c) restricted network egress,
+#   (d) resource limits (cpu/mem/pids/time), and
+#   (e) scoped credential brokering — the job sees ONLY its own owner-scoped
+#       credential, never the platform-global CODEX_HOME / CLAUDE_* on /data.
+# Setting it without ALL five re-opens the exact exfiltration vector the gate
+# closes. Do not add it here as a convenience.
+
 # Codex stores auth in CODEX_HOME/auth.json. In production CODEX_HOME
 # defaults to /data/.codex so daemon + worker share one durable auth
 # lineage on the tinyassets-data volume. Local/dev containers that do not

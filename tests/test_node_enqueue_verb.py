@@ -35,6 +35,25 @@ from tinyassets.graph_compiler import (
     compile_branch,
 )
 
+
+@pytest.fixture(autouse=True)
+def _sandbox_runner_present(monkeypatch):
+    """Codex S3 r11 #1: a ``source_code`` node (the enqueue driver here) is
+    in-process host code and FAILS CLOSED in Phase 1 (no per-job sandbox runner).
+    In-node enqueue is a Phase-2 concern, so these tests simulate the runner being
+    present via the single readiness gate ``coding_nodes_runnable``. The Phase-1
+    fail-closed posture is covered by ``tests/test_patch_loop_sandbox_enforcement.py``;
+    the production default is unchanged (still fail-closed)."""
+    # Codex S3 r17 #1/#2: install a TYPED isolated executor whose dispatch runs
+    # the SERIALIZABLE request as the Phase-2 worker would (in a test the worker
+    # is in-process). This exercises the real data-not-code dispatch contract —
+    # it does NOT patch out the gate. The daemon's fail-closed default (no typed
+    # executor) + no-in-process-callable invariant are covered by
+    # test_patch_loop_sandbox_enforcement.
+    from tests._executor_sim import install_worker_sim
+    install_worker_sim(monkeypatch)
+
+
 ENQUEUE_ONE = (
     "def run(state):\n"
     "    r = invoke_mcp_action('enqueue_branch_run',\n"
@@ -107,9 +126,15 @@ def _ctx(**kw) -> NodeEnqueueContext:
 def _run(b, *, invocation_depth=0, thread="t", context=None, base_path="/fake/base"):
     if context is None:
         context = _ctx()
+    # Codex S3 r20 #2: a sandbox-required node needs an EXPLICIT execution scope.
+    # These enqueue-mechanics tests are not credential-scope tests, so they run in
+    # an explicit legacy-unbound scope (no bound tenant) — the source_exec driver
+    # then dispatches to the simulated Phase-2 runner instead of failing closed.
+    from tinyassets.sandbox_policy import ExecutionScope
     compiled = compile_branch(
         b, invocation_depth=invocation_depth,
         base_path=base_path, enqueue_context=context,
+        execution_scope=ExecutionScope.legacy_unbound(),
     )
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     return app.invoke({}, config={"configurable": {"thread_id": thread}})

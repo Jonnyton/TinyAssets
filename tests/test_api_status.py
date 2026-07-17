@@ -104,6 +104,23 @@ def test_get_status_returns_versioned_contract_keys(status_env):
     assert parsed["schema_version"] == 1
 
 
+def test_sandbox_status_surfaces_attestation_and_prod_runnability(status_env, monkeypatch):
+    # Codex S3 REJECT R4/5c: sandbox_status exposes the ONE shared readiness truth.
+    # coding_nodes_runnable is ALWAYS False in this deploy (no per-job runner) —
+    # even under attestation (attestation alone is not the runner) — with the
+    # honest reason; and it surfaces the attestation flag for operators.
+    monkeypatch.delenv("TINYASSETS_OS_SANDBOX_ATTESTED", raising=False)
+    sb = json.loads(get_status())["sandbox_status"]
+    assert sb["os_sandbox_attested"] is False
+    assert sb["coding_nodes_runnable"] is False
+    assert "runner" in sb.get("coding_nodes_note", "")
+
+    monkeypatch.setenv("TINYASSETS_OS_SANDBOX_ATTESTED", "1")
+    sb2 = json.loads(get_status())["sandbox_status"]
+    assert sb2["os_sandbox_attested"] is True
+    assert sb2["coding_nodes_runnable"] is False  # attestation ≠ runner
+
+
 def test_get_status_active_host_shape(status_env):
     parsed = json.loads(get_status())
     host = parsed["active_host"]

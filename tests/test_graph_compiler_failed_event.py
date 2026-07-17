@@ -71,7 +71,7 @@ def test_failed_event_emitted_on_provider_exception():
     def _sink(node_id, **detail):
         captured.append({"node_id": node_id, **detail})
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted for role=writer")
 
     branch = _simple_branch()
@@ -105,7 +105,14 @@ def test_failed_event_emitted_on_policy_path_exception(monkeypatch):
         captured.append({"node_id": node_id, **detail})
 
     class _RaisingRouter:
-        def call_with_policy_sync(self, role, prompt, system, policy):
+        # config=None + **kwargs so the hardened (closed_tool_surface) text-node
+        # config forwards cleanly and we actually REACH the router call — the
+        # point of this test is that a router that RAISES emits a failed event.
+        # A config-less signature would instead trip the fail-closed
+        # config-drop refusal before the router is ever invoked.
+        def call_with_policy_sync(
+            self, role, prompt, system, policy, config=None, **kwargs
+        ):
             raise RuntimeError("All providers for role='writer' are API-key-backed")
 
     monkeypatch.setattr(
@@ -116,7 +123,7 @@ def test_failed_event_emitted_on_policy_path_exception(monkeypatch):
     branch = _simple_branch()
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "codex"}}
 
-    def _unused(prompt, system, *, role):
+    def _unused(prompt, system, *, role, **_kw):
         raise AssertionError("plain provider_call should not be reached")
 
     compiled = compile_branch(branch, provider_call=_unused, event_sink=_sink)
@@ -144,7 +151,7 @@ def test_failed_event_emission_resilient_to_sink_exception():
         if detail.get("phase") == "failed":
             raise RuntimeError("sink boom")
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted")
 
     branch = _simple_branch()
@@ -165,7 +172,7 @@ def test_no_failed_event_when_no_event_sink():
     be compiled without a sink (e.g. dry-run or unit-test paths)."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted")
 
     branch = _simple_branch()
@@ -178,13 +185,48 @@ def test_no_failed_event_when_no_event_sink():
         )
 
 
+def test_failed_event_emitted_on_sandbox_refusal():
+    """Codex r10 #2: a repo-touching node fails closed (no per-job sandbox
+    runner). That refusal is a TERMINAL node failure — it must emit
+    phase='failed' before the SandboxUnavailableError propagates, so the
+    run record names the refusing node instead of leaving it parked at
+    'starting' (the same contradictory shape as BUG-038/041)."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    captured: list[dict] = []
+
+    def _sink(node_id, **detail):
+        captured.append({"node_id": node_id, **detail})
+
+    branch = _simple_branch()
+    # node_kind drives the capability taxonomy; 'coding' == repo-write, which
+    # requires the (absent) per-job sandbox runner → fails closed.
+    branch.node_defs[0].node_kind = "coding"
+
+    def _never(prompt, system, *, role, **_kw):
+        raise AssertionError("provider must never be reached for a fail-closed node")
+
+    compiled = compile_branch(branch, provider_call=_never, event_sink=_sink)
+    runnable = compiled.graph.compile(checkpointer=InMemorySaver())
+    with pytest.raises(Exception):  # noqa: B017 - SandboxUnavailableError subclass
+        runnable.invoke(
+            {"x": "test"},
+            config={"configurable": {"thread_id": "t-fail-sandbox"}},
+        )
+
+    failed_events = [e for e in captured if e.get("phase") == "failed"]
+    assert failed_events, f"sandbox refusal emitted no failed event: {captured}"
+    assert failed_events[0]["node_id"] == "step1"
+    assert "cannot run" in failed_events[0]["error"].lower()
+
+
 # runs.py translator + build_node_status_map contract
 
 
 def test_execute_branch_records_failed_node_event(tmp_path):
     """Provider exceptions must leave a terminal failed event in run_events."""
 
-    def _exhausted(prompt, system, *, role):
+    def _exhausted(prompt, system, *, role, **_kw):
         raise RuntimeError("All providers exhausted")
 
     base = tmp_path / "output"

@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 import tinyassets.api.helpers as helpers
@@ -30,6 +31,25 @@ from tinyassets.branches import (
     NodeDefinition,
 )
 from tinyassets.graph_compiler import NodeEnqueueContext, compile_branch
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_runner_present(monkeypatch):
+    """Codex S3 r11 #1: the enqueue-driver ``source_code`` node is in-process host
+    code and FAILS CLOSED in Phase 1 (no per-job sandbox runner). In-node enqueue
+    is a Phase-2 concern, so this test simulates the runner being present via the
+    single readiness gate ``coding_nodes_runnable``. The Phase-1 fail-closed posture
+    is covered by ``tests/test_patch_loop_sandbox_enforcement.py``; the production
+    default is unchanged (still fail-closed)."""
+    # Codex S3 r17 #1/#2: install a TYPED isolated executor whose dispatch runs
+    # the SERIALIZABLE request as the Phase-2 worker would (in a test the worker
+    # is in-process). This exercises the real data-not-code dispatch contract —
+    # it does NOT patch out the gate. The daemon's fail-closed default (no typed
+    # executor) + no-in-process-callable invariant are covered by
+    # test_patch_loop_sandbox_enforcement.
+    from tests._executor_sim import install_worker_sim
+    install_worker_sim(monkeypatch)
+
 
 _BUDGET = 5
 _RUNS = 8  # concurrent branch runs
@@ -79,9 +99,13 @@ def _one_run(run_id: int) -> str:
         universe_id="uni", actor="anyone",
         parent_branch_task_id="", origin_branch_task_id="",
     )
+    # Codex S3 r20 #2: the source_exec enqueue driver needs an EXPLICIT scope; this
+    # concurrency test runs it in an explicit legacy-unbound scope so it dispatches.
+    from tinyassets.sandbox_policy import ExecutionScope
     compiled = compile_branch(
         _branch(), invocation_depth=0,
         base_path="/fake/base", enqueue_context=ctx,
+        execution_scope=ExecutionScope.legacy_unbound(),
     )
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     out = app.invoke(

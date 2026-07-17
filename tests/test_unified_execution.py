@@ -23,6 +23,27 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _sandbox_runner_present(monkeypatch):
+    """Codex S3 r11 #1: a ``source_code`` node is in-process host code and FAILS
+    CLOSED in Phase 1 (no per-job sandbox runner). These tests exercise source_code
+    EXECUTION MECHANICS — a Phase-2 concern — so they simulate the runner being
+    present via the single readiness gate ``coding_nodes_runnable``. The Phase-1
+    fail-closed posture itself is covered by
+    ``tests/test_patch_loop_sandbox_enforcement.py`` and the r11 regression tests
+    in ``tests/test_patch_loop_sandbox_authoring.py``; the production default here
+    is unchanged (still fail-closed)."""
+    # Codex S3 r17 #1/#2: install a TYPED isolated executor whose dispatch runs
+    # the SERIALIZABLE request as the Phase-2 worker would (in a test the worker
+    # is in-process). This exercises the real data-not-code dispatch contract —
+    # it does NOT patch out the gate. The daemon's fail-closed default (no typed
+    # executor) + no-in-process-callable invariant are covered by
+    # test_patch_loop_sandbox_enforcement.
+    from tests._executor_sim import install_worker_sim
+    install_worker_sim(monkeypatch)
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
 # ───────────────────────────────────────────────────────────────────────
@@ -32,12 +53,24 @@ import pytest
 def clean_registry():
     """Reset the domain registry between tests so monkey-patches
     don't leak across test boundaries.
+
+    Snapshot/restore ALL three parallel registries (callable + capability +
+    host_only, Codex S3 r12/r13) together — restoring only ``_REGISTRY`` left the
+    capability/host_only entries out of sync (a callable present in ``_REGISTRY``
+    but missing from ``_CAPABILITY_REGISTRY`` classifies as ``opaque_unclassified``
+    and leaks into later tests).
     """
     from tinyassets import domain_registry
     saved = dict(domain_registry._REGISTRY)
+    saved_cap = dict(domain_registry._CAPABILITY_REGISTRY)
+    saved_host = dict(domain_registry._HOST_ONLY_REGISTRY)
     yield domain_registry
     domain_registry._REGISTRY.clear()
     domain_registry._REGISTRY.update(saved)
+    domain_registry._CAPABILITY_REGISTRY.clear()
+    domain_registry._CAPABILITY_REGISTRY.update(saved_cap)
+    domain_registry._HOST_ONLY_REGISTRY.clear()
+    domain_registry._HOST_ONLY_REGISTRY.update(saved_host)
 
 
 @pytest.fixture
@@ -47,10 +80,13 @@ def fresh_registrations(clean_registry):
     """
     import fantasy_daemon.branch_registrations  # noqa: F401
 
-    # Re-registration is idempotent.
+    # Re-registration is idempotent. Codex S3 r13/r14 #3: register EXACTLY as
+    # production does — host_only=True — so these tests exercise the real
+    # host-only / trusted boundary instead of masking it as community "text".
     from fantasy_daemon.branch_registrations import universe_cycle_wrapper
     clean_registry.register_domain_callable(
         "fantasy_author", "universe_cycle_wrapper", universe_cycle_wrapper,
+        host_only=True,
     )
     return clean_registry
 
@@ -122,7 +158,7 @@ def test_opaque_node_resolves_via_registry(clean_registry):
         called.append(state)
         return {"seen": True}
 
-    clean_registry.register_domain_callable("testdom", "x", fake)
+    clean_registry.register_domain_callable("testdom", "x", fake, capability="text")
     from tinyassets.graph_compiler import compile_branch
 
     branch = _minimal_branch(domain_id="testdom")
@@ -150,7 +186,9 @@ def test_source_code_node_run_sees_top_level_helpers(clean_registry):
         "    return {'foo': _text(state.get('name', 'n'))}\n"
     )
     branch = _minimal_branch(node_body={"source_code": src, "approved": True})
-    compiled = compile_branch(branch)
+    # Codex S3 r20 #2: a source_exec node needs an EXPLICIT scope to dispatch.
+    from tinyassets.sandbox_policy import ExecutionScope
+    compiled = compile_branch(branch, execution_scope=ExecutionScope.legacy_unbound())
     runner = compiled.graph.compile()
     result = runner.invoke({"name": "Z"})
     assert result.get("foo") == "helper:Z"
@@ -176,7 +214,7 @@ def test_opaque_node_bypasses_source_code_validation(clean_registry):
     from tinyassets.graph_compiler import compile_branch
 
     clean_registry.register_domain_callable(
-        "testdom", "x", lambda s: {"ok": True},
+        "testdom", "x", lambda s: {"ok": True}, capability="text",
     )
     branch = _minimal_branch(
         domain_id="testdom",
@@ -556,7 +594,8 @@ def test_flag_on_boundary_state_resumes_only_six_fields(
                 "total_words": 10, "total_chapters": 1,
                 "health": {"stopped": True},
             },
-        )
+            host_only=True,  # Codex S3 r13/r14 #3: match production trust class;
+        )                    # the trusted _build_unified_graph_builder runs it.
         # Re-build + recompile so the new callable is bound.
         graph2 = _build_unified_graph_builder()
         compiled = graph2.compile(checkpointer=saver)
@@ -598,3 +637,49 @@ def test_seed_yaml_exists_and_compiles(fresh_registrations):
     assert graph is not None
     compiled = graph.compile()
     assert compiled is not None
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r13/r14 #3 — the REAL host-only/trusted boundary for
+# universe_cycle_wrapper (previously masked by re-registering it as community
+# capability="text"). Assert BOTH untrusted rejection AND trusted success.
+# --------------------------------------------------------------------------- #
+
+
+def test_universe_cycle_wrapper_host_only_boundary(fresh_registrations):
+    import pytest as _pytest
+
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.base import SandboxUnavailableError
+    from tinyassets.sandbox_policy import (
+        effective_node_capability,
+        user_branch_capability_rejections,
+    )
+
+    # Register a host-only STUB (matches production trust class) returning a dict.
+    fresh_registrations.register_domain_callable(
+        "fantasy_author", "universe_cycle_wrapper",
+        lambda s: {"ran": True}, host_only=True,
+    )
+    node = NodeDefinition(
+        node_id="universe_cycle_wrapper", display_name="UCW", output_keys=["ran"],
+    )
+    # Classifier reports host_only (blocked for user branches).
+    assert effective_node_capability(node, "fantasy_author") == "host_only"
+    # Authoring validator rejects a user branch that selects it.
+    assert user_branch_capability_rejections([node], "fantasy_author")
+    # An UNTRUSTED (user) compile fails closed at run — never reaches the callable.
+    with _pytest.raises(SandboxUnavailableError):
+        _build_node(
+            node, provider_call=None, event_sink=None,
+            domain_id="fantasy_author", trusted=False,
+        )({})
+    # A TRUSTED (daemon) compile runs it.
+    assert _build_node(
+        node, provider_call=None, event_sink=None,
+        domain_id="fantasy_author", trusted=True,
+    )({}) == {"ran": True}
+    # And the real fixed-seed compile (compile_branch trusted=True) builds cleanly.
+    from fantasy_daemon.__main__ import _build_unified_graph_builder
+    assert _build_unified_graph_builder() is not None

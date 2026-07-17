@@ -60,7 +60,38 @@ class ModelConfig:
     checkout, exposing repo files / ``CLAUDE.md`` / other universes). Set for the
     founder-facing universe-intelligence turn; leave False for host-trusted engine
     roles. The isolation is only as strong as the tool policy below — pair it with
-    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out)."""
+    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out).
+
+    This is the *conversation* sandbox profile (WebFetch-only, no filesystem
+    tools): safe WITHOUT an OS sandbox because the tool denylist removes every
+    filesystem/shell tool. Coding nodes that must actually READ/WRITE a repo use
+    ``os_sandbox_required`` instead — they keep the coding tools, so their
+    confinement depends on an OS-level sandbox, not the tool denylist."""
+
+    os_sandbox_required: bool = False
+    """Require an OS-level sandbox (bwrap / container) to confine this call, and
+    FAIL CLOSED if none is available. Set for coding nodes (``requires_sandbox``
+    on the NodeDefinition, e.g. the patch loop's ``draft_patch``) that run a
+    coding agent with real filesystem/shell tools against a checked-out repo.
+
+    Unlike ``sandbox_workspace`` (which is safe unsandboxed because it denies all
+    filesystem tools), a coding node KEEPS Read/Write/Edit/Bash so it can produce
+    a patch — and the claude CLI cannot confine those tools to a directory
+    (Read/Glob/Grep are default-allowed, and a bare deny is all-or-nothing). The
+    only real confinement for a repo-touching coding turn is therefore an OS
+    sandbox around the whole subprocess. When True, subprocess providers MUST:
+    (1) refuse to run when no OS sandbox is available (raise
+    :class:`SandboxUnavailableError` — never run unconfined), and (2) never use
+    any bypass-sandbox escape hatch (codex ``--dangerously-bypass-approvals-and-
+    sandbox``). Host-trusted roles leave this False (default) and are unaffected."""
+
+    closed_tool_surface: bool = False
+    """Disable ALL built-in tools for this call (maps to ``claude -p --tools ""``,
+    per Anthropic's CLI docs). Set for text-generation nodes: a plain prompt node
+    produces text and needs NO tools, so the honest closed surface is "no tools at
+    all" (plus a strict empty MCP config) rather than a rotting per-name denylist.
+    This is how a non-coding node is kept incapable of repo write — coding tools
+    are reachable only through the coding classifier."""
 
     allowed_tools: tuple[str, ...] | None = None
     """Allowlist of CLI tool names the subprocess may use (e.g.
@@ -148,6 +179,57 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     for name in API_KEY_PROVIDER_ENV_VARS:
         env.pop(name, None)
     return env
+
+
+# NOTE (Codex S3 r9 #4 — dead-stack removal): the sanitized minimal-allowlist +
+# per-universe vault-only env (`sanitized_subprocess_env`, `_has_provider_vault_auth`,
+# the vault-auth refusal) was the ENVIRONMENT materialization for a repo-writing
+# coding subprocess. Repo-touching nodes fail closed at the graph choke point
+# before any provider spawn (no per-job runner), so that plumbing is unreachable
+# and has been REMOVED as dead security surface — git history preserves it as the
+# Phase-2 per-job runner slice's contract. Text nodes use the normal
+# `subprocess_env_for_provider`; their cwd isolation is the per-job scratch below.
+
+
+def new_sandbox_job_dir() -> str:
+    """Create a fresh, empty per-job scratch dir for a sandbox-required spawn.
+
+    The coding node's cwd is pinned here — NOT the daemon's source checkout
+    (which exposes our platform source) and NOT ``/data`` (cross-tenant data).
+    Caller removes it via :func:`cleanup_sandbox_job_dir` when the job ends.
+    """
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="tinyassets-sandbox-job-")
+
+
+def cleanup_sandbox_job_dir(scratch_dir: str | None) -> None:
+    """Best-effort removal of a per-job scratch dir (no-op for ``None``)."""
+    if not scratch_dir:
+        return
+    import shutil
+
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def sandbox_spawn_env_and_dir(
+    provider_name: str,
+    config: "ModelConfig",  # noqa: ARG001 — kept for call-site stability
+    *,
+    universe_dir: Path | None = None,
+) -> tuple[dict[str, str], str | None]:
+    """Return ``(proc_env, None)`` for a provider subprocess spawn.
+
+    Returns the normal provider env; the coding-EXECUTION env materialization
+    (sanitized vault-only env + vault-auth refusal) was Phase-2 runner plumbing
+    and has been removed (see the note above) — repo/coding nodes never reach a
+    provider. The per-job scratch cwd for hardened text spawns is created by the
+    provider itself (codex `-C`, claude cwd) via :func:`new_sandbox_job_dir`.
+    """
+    return (
+        subprocess_env_for_provider(provider_name, universe_dir=universe_dir),
+        None,
+    )
 
 
 def subprocess_env_for_provider(
@@ -684,6 +766,85 @@ def check_bwrap_failure(stderr_text: str) -> None:
             )
 
 
+OS_SANDBOX_ATTESTATION_ENV = "TINYASSETS_OS_SANDBOX_ATTESTED"
+
+
+def os_sandbox_attested() -> bool:
+    """True only when the ENTIRE server process is attested to run under real OS
+    isolation.
+
+    Meant to be set (``TINYASSETS_OS_SANDBOX_ATTESTED=1``) ONLY by a container
+    entrypoint that has genuinely confined the whole process (container-per-job /
+    gVisor / microVM / namespaces). This is the ONLY thing that confines an
+    in-process, NON-self-sandboxing coding agent like ``claude -p`` — which is
+    spawned with Bash/Read/Write and has no sandbox flag of its own. A launchable
+    ``bwrap`` (``get_sandbox_status``) proves only that bwrap CAN start a sandbox;
+    it does NOT prove the running ``claude -p`` subprocess is confined (Codex S3
+    review). So confinement of that class is gated on this attestation, never on
+    bwrap-launchability.
+
+    Reality today (patch-loop S3): the production entrypoint / compose
+    (``deploy/docker-entrypoint.sh``, ``deploy/compose.yml``) DELIBERATELY do NOT
+    set this — the current droplet provides no per-job OS isolation, so every
+    sandbox-required coding node fails closed at run time BY DESIGN until such a
+    host exists. Do not set it as a convenience; that re-opens the exact
+    exfiltration vector the gate closes.
+
+    ``TINYASSETS_OS_SANDBOX_ATTESTED`` may ONLY be set when a real per-job runner
+    provides ALL of (Codex latest-model FINDING 3, the deferred production
+    enabler — NOT built in this slice):
+      (a) a prepared per-job repo checkout (the job's own working tree),
+      (b) tenant/host path invisibility (no /data, no other tenants, no platform
+          source visible to the job),
+      (c) restricted network egress,
+      (d) resource limits (cpu/mem/pids/time), and
+      (e) scoped credential brokering — the job sees ONLY its own owner-scoped
+          credential, never platform-global auth (see sanitized_subprocess_env /
+          FINDING 2).
+    Until a runner enforces all five, coding nodes stay fail-closed in prod — that
+    is the design, stated loudly.
+    """
+    return _truthy_env(os.environ.get(OS_SANDBOX_ATTESTATION_ENV))
+
+
+def enforce_os_sandbox(config: "ModelConfig") -> None:
+    """Fail closed unless the running process is attested to be OS-isolated.
+
+    The build-blocking gate for coding nodes (``os_sandbox_required``): a node
+    that runs a coding agent with real filesystem/shell tools against a repo can
+    only be confined by an OS-level sandbox around the WHOLE process — the CLI
+    tool denylist cannot pin Read/Bash to a directory, and ``claude -p`` does not
+    self-sandbox. Requiring merely that ``bwrap`` can launch is insufficient: a
+    bare Linux host where bwrap works would pass yet still spawn ``claude -p``
+    UNCONFINED (Codex S3 CRITICAL). So the gate requires
+    :func:`os_sandbox_attested` — a positive attestation from the container
+    entrypoint that the process is actually isolated. No attestation ⇒ raise so
+    the node fails LOUDLY (hard rule #8) rather than run a coding agent
+    unconfined on the capacity host (arbitrary-repo exfiltration / abuse vector).
+    Called by the router preflight and the claude provider BEFORE spawning.
+    No-op for host-trusted roles (``os_sandbox_required`` is False by default).
+
+    (Codex ``codex exec`` self-confines via ``--full-auto`` + bwrap and enforces
+    that in its own provider path; this whole-process attestation is the gate for
+    the non-self-sandboxing ``claude -p`` path and the provider-agnostic router
+    preflight.)
+    """
+    if not getattr(config, "os_sandbox_required", False):
+        return
+    if not os_sandbox_attested():
+        raise SandboxUnavailableError(
+            "This node runs a coding agent with real filesystem/shell tools and "
+            "requires the ENTIRE server process to run under verified OS "
+            "isolation (a container entrypoint that confines the process and "
+            f"sets {OS_SANDBOX_ATTESTATION_ENV}=1). That attestation is absent — "
+            "and a launchable bwrap does NOT prove the running claude -p "
+            "subprocess is confined (it is spawned with Bash/Read/Write and no "
+            "self-sandbox). Refusing to run the coding node unconfined (fail "
+            "closed). Run the daemon inside the attested OS-isolation container, "
+            "or use a design-only branch with no requires_sandbox nodes."
+        )
+
+
 def probe_sandbox_available() -> dict[str, object]:
     """Probe whether bwrap is available on this host.
 
@@ -757,6 +918,24 @@ class BaseProvider(abc.ABC):
 
     family: str = ""
     """Model family for judge diversity enforcement."""
+
+    supports_coding_sandbox: bool = False
+    """Whether this provider DECLARES AND ENFORCES the hardened coding-sandbox
+    contract (os_sandbox attestation / bwrap self-confinement + sanitized env +
+    tool policy). Only the subprocess CLI providers (claude-code, codex) do. A
+    sandbox-required call is HARD-FILTERED to these providers before dispatch
+    (Codex latest-model FINDING 4): a text/HTTP/local provider (e.g. ollama)
+    silently ignores the hardened config and would return a fake 'patched'
+    without ever confining anything — never let it serve a coding job."""
+
+    enforces_closed_tool_surface: bool = False
+    """Whether this provider actually HONORS a closed / text-only tool surface
+    (``ModelConfig.closed_tool_surface`` → claude ``--tools ""``). TRUE only for
+    claude-code. FALSE for codex — codex ignores tool allow/deny fields entirely,
+    so a ``closed_tool_surface`` node routed to codex would silently keep tools.
+    A call whose config requires the closed surface is HARD-FILTERED to enforcing
+    providers before dispatch (Codex S3 REJECT r2 C1b); if none is available it
+    fails closed rather than run on a provider that can't honor it."""
 
     @classmethod
     def is_available(cls) -> bool:
