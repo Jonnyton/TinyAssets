@@ -15,7 +15,8 @@
 # 4. Keep Claude subscription auth under CLAUDE_CONFIG_DIR, defaulting
 #    to /data/.claude on the same durable tinyassets-data volume.
 # 5. Fail loud if required static data files are missing from the image.
-# 6. exec the passed CMD (preserves tini PID-1 signal forwarding).
+# 6. Initialize writable vault state as root, preload root-only KEKs, then
+#    drop permanently to the tinyassets user in the Python bootstrap.
 #
 # Placed before CMD so operators can override CMD freely.
 
@@ -170,6 +171,19 @@ else
 fi
 unset TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64
 
+# The production image intentionally starts this entrypoint as root. Root may
+# read the 0400 KEK mount, but the daemon must not. Prepare the persistent
+# writable domains here; tinyassets.vault_bootstrap validates/preloads KEKs
+# and drops UID/GID before importing daemon code. Non-root execution remains a
+# supported packaging/test probe and passes through without privileged setup.
+export TINYASSETS_VAULT_ROLLBACK_GUARD="${TINYASSETS_VAULT_ROLLBACK_GUARD:-/vault-guard}"
+if [[ "$(id -u)" -eq 0 ]]; then
+    mkdir -p "${TINYASSETS_VAULT_ROLLBACK_GUARD}"
+    chown -R tinyassets:tinyassets "${TINYASSETS_VAULT_ROLLBACK_GUARD}"
+    chown tinyassets:tinyassets "${TINYASSETS_DATA_DIR:-/data}"
+    chown -R tinyassets:tinyassets "${CODEX_HOME}" "${CLAUDE_CONFIG_DIR}"
+fi
+
 _tinyassets_bash_path() {
     local _path="${1:-}"
     if [[ "${_path}" =~ ^([A-Za-z]):([\\/].*)$ ]]; then
@@ -206,4 +220,7 @@ for _rel in "${_required_data_files[@]}"; do
     fi
 done
 
+if [[ "$(id -u)" -eq 0 ]]; then
+    exec python -m tinyassets.vault_bootstrap "$@"
+fi
 exec "$@"

@@ -34,6 +34,9 @@ services:
     image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
     container_name: tinyassets-daemon
     restart: unless-stopped
+    # Root exists only at the entrypoint custody boundary: preload 0400 KEKs,
+    # initialize /vault-guard, then drop permanently to UID/GID 1001.
+    user: "0:0"
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined

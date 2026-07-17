@@ -59,6 +59,7 @@ APP_JWT_TTL_SECONDS = 540
 APP_JWT_DRIFT_SECONDS = 60
 
 _HTTP_TIMEOUT_SECONDS = 30.0
+_INSTALLATION_PERMISSION_LEVELS = {"read": 1, "write": 2}
 
 # OAuth error codes that mean the stored grant is dead: the user must
 # re-authorize. Everything else is an exchange failure (retryable/operational).
@@ -215,6 +216,9 @@ def mint_installation_token(
     *,
     app_id: str,
     installation_id: str,
+    repositories: list[str] | None = None,
+    repository_ids: list[int] | None = None,
+    permissions: dict[str, str] | None = None,
     api_base: str = GITHUB_API_BASE,
     http_post_json: JsonPost | None = None,
 ) -> InstallationToken:
@@ -226,6 +230,18 @@ def mint_installation_token(
     * anything else -> :class:`GitHubTokenExchangeError` (operational).
     """
     post = http_post_json if http_post_json is not None else _http_post_json
+    requested_names = _validate_repository_names(repositories)
+    requested_ids = _validate_repository_ids(repository_ids)
+    requested_permissions = _validate_installation_permissions(permissions)
+    if bool(requested_names) == bool(requested_ids) or not requested_permissions:
+        raise GitHubTokenExchangeError(
+            status=0, error_code="missing_installation_scope"
+        )
+    payload: dict[str, Any] = {"permissions": requested_permissions}
+    if requested_names:
+        payload["repositories"] = requested_names
+    else:
+        payload["repository_ids"] = requested_ids
     with backend.get(binding, expected) as lease:
         token_jwt = github_app_jwt(bytes(lease.reveal()), app_id)
     url = (
@@ -238,7 +254,7 @@ def mint_installation_token(
             "Authorization": f"Bearer {token_jwt}",
             "Accept": "application/vnd.github+json",
         },
-        {},
+        payload,
     )
     if status == 401:
         raise CredentialUnavailable(
@@ -251,12 +267,109 @@ def mint_installation_token(
     token = body.get("token")
     if not isinstance(token, str) or not token:
         raise GitHubTokenExchangeError(status=status, error_code="missing_token")
-    permissions = body.get("permissions")
+    response_permissions = body.get("permissions")
+    _verify_installation_permissions(response_permissions, requested_permissions)
+    _verify_installation_repositories(body.get("repositories"), requested_names, requested_ids)
     return InstallationToken(
         token=SecretBytes(token.encode("utf-8")),
         expires_at=_parse_github_timestamp(body.get("expires_at")),
-        permissions=permissions if isinstance(permissions, dict) else None,
+        permissions=response_permissions,
     )
+
+
+def _validate_repository_names(values: list[str] | None) -> list[str]:
+    if values is None:
+        return []
+    if not isinstance(values, list) or not values or len(values) > 500:
+        raise GitHubTokenExchangeError(status=0, error_code="invalid_repositories")
+    cleaned = [value.strip() for value in values if isinstance(value, str)]
+    if len(cleaned) != len(values) or any(not value or "/" in value for value in cleaned):
+        raise GitHubTokenExchangeError(status=0, error_code="invalid_repositories")
+    if len(set(cleaned)) != len(cleaned):
+        raise GitHubTokenExchangeError(status=0, error_code="invalid_repositories")
+    return cleaned
+
+
+def _validate_repository_ids(values: list[int] | None) -> list[int]:
+    if values is None:
+        return []
+    if (
+        not isinstance(values, list)
+        or not values
+        or len(values) > 500
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in values
+        )
+        or len(set(values)) != len(values)
+    ):
+        raise GitHubTokenExchangeError(status=0, error_code="invalid_repository_ids")
+    return list(values)
+
+
+def _validate_installation_permissions(
+    values: dict[str, str] | None,
+) -> dict[str, str]:
+    if not isinstance(values, dict) or not values:
+        return {}
+    cleaned: dict[str, str] = {}
+    for name, level in values.items():
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(level, str)
+            or level not in _INSTALLATION_PERMISSION_LEVELS
+        ):
+            raise GitHubTokenExchangeError(
+                status=0, error_code="invalid_installation_permissions"
+            )
+        cleaned[name.strip()] = level
+    return cleaned
+
+
+def _verify_installation_permissions(
+    response: object, requested: dict[str, str]
+) -> None:
+    if not isinstance(response, dict):
+        raise GitHubTokenExchangeError(
+            status=0, error_code="missing_installation_permissions"
+        )
+    for name, level in response.items():
+        if (
+            not isinstance(name, str)
+            or not isinstance(level, str)
+            or name not in requested
+            or level not in _INSTALLATION_PERMISSION_LEVELS
+            or _INSTALLATION_PERMISSION_LEVELS[level]
+            > _INSTALLATION_PERMISSION_LEVELS[requested[name]]
+        ):
+            raise GitHubTokenExchangeError(
+                status=0, error_code="installation_permissions_exceeded"
+            )
+
+
+def _verify_installation_repositories(
+    response: object, requested_names: list[str], requested_ids: list[int]
+) -> None:
+    if not isinstance(response, list):
+        raise GitHubTokenExchangeError(
+            status=0, error_code="missing_installation_repositories"
+        )
+    try:
+        if requested_names:
+            actual = {item["name"] for item in response}
+            allowed = set(requested_names)
+        else:
+            actual = {item["id"] for item in response}
+            allowed = set(requested_ids)
+    except (KeyError, TypeError):
+        raise GitHubTokenExchangeError(
+            status=0, error_code="malformed_installation_repositories"
+        ) from None
+    if not actual <= allowed:
+        raise GitHubTokenExchangeError(
+            status=0, error_code="installation_repositories_exceeded"
+        )
 
 
 # ---------------------------------------------------------------------------

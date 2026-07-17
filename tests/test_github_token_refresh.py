@@ -76,6 +76,7 @@ def fake_github(rsa_keypair):
         "used_refresh_tokens": set(),
         "counter": 0,
         "requests": [],
+        "installation_payloads": [],
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -95,6 +96,8 @@ def fake_github(rsa_keypair):
             raw = self.rfile.read(length) if length else b""
             state["requests"].append(self.path)
             if self.path == f"/app/installations/{INSTALLATION_ID}/access_tokens":
+                request_payload = json.loads(raw.decode("utf-8"))
+                state["installation_payloads"].append(request_payload)
                 auth = self.headers.get("Authorization", "")
                 if not auth.startswith("Bearer "):
                     self._reply(401, {"message": "Requires authentication"})
@@ -119,6 +122,7 @@ def fake_github(rsa_keypair):
                         "token": "ghs_installation_token_1",
                         "expires_at": expires,
                         "permissions": {"contents": "write"},
+                        "repositories": [{"id": 101, "name": "repo-a"}],
                     },
                 )
                 return
@@ -200,10 +204,15 @@ def test_installation_token_exchange(platform_vault_env, rsa_keypair, fake_githu
     token = mint_installation_token(
         platform_backend(), binding, binding.scope,
         app_id=APP_ID, installation_id=INSTALLATION_ID, api_base=base_url,
+        repositories=["repo-a"], permissions={"contents": "write"},
     )
     assert token.token.reveal() == b"ghs_installation_token_1"
     assert token.expires_at > time.time() + 3000  # ~1h, parsed from ISO8601
     assert token.permissions == {"contents": "write"}
+    assert _state["installation_payloads"] == [{
+        "repositories": ["repo-a"],
+        "permissions": {"contents": "write"},
+    }]
     # In-memory only + redacted.
     assert "ghs_installation_token_1" not in repr(token)
 
@@ -225,8 +234,73 @@ def test_installation_token_wrong_key_is_reauthorization(
         mint_installation_token(
             platform_backend(), binding, binding.scope,
             app_id=APP_ID, installation_id=INSTALLATION_ID, api_base=base_url,
+            repositories=["repo-a"], permissions={"contents": "write"},
         )
     assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+def test_installation_token_refuses_unscoped_request(
+    platform_vault_env, rsa_keypair, fake_github
+):
+    private_pem, _public = rsa_keypair
+    base_url, state = fake_github
+    _deposit_app_key(private_pem)
+    binding = find_binding("u-gha", "github", "app_auth", "app:test-app")
+
+    with pytest.raises(GitHubTokenExchangeError) as exc:
+        mint_installation_token(
+            platform_backend(), binding, binding.scope,
+            app_id=APP_ID, installation_id=INSTALLATION_ID, api_base=base_url,
+        )
+
+    assert exc.value.error_code == "missing_installation_scope"
+    assert state["installation_payloads"] == []
+
+
+@pytest.mark.parametrize(
+    ("body", "error_code"),
+    [
+        (
+            {
+                "token": "overbroad",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "permissions": {"contents": "write", "issues": "write"},
+                "repositories": [{"id": 101, "name": "repo-a"}],
+            },
+            "installation_permissions_exceeded",
+        ),
+        (
+            {
+                "token": "overbroad",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "permissions": {"contents": "write"},
+                "repositories": [
+                    {"id": 101, "name": "repo-a"},
+                    {"id": 102, "name": "repo-b"},
+                ],
+            },
+            "installation_repositories_exceeded",
+        ),
+    ],
+)
+def test_installation_token_rejects_response_broader_than_request(
+    platform_vault_env, rsa_keypair, body, error_code
+):
+    private_pem, _public = rsa_keypair
+    _deposit_app_key(private_pem)
+    binding = find_binding("u-gha", "github", "app_auth", "app:test-app")
+
+    with pytest.raises(GitHubTokenExchangeError) as exc:
+        mint_installation_token(
+            platform_backend(), binding, binding.scope,
+            app_id=APP_ID,
+            installation_id=INSTALLATION_ID,
+            repositories=["repo-a"],
+            permissions={"contents": "write"},
+            http_post_json=lambda *_args: (201, body),
+        )
+
+    assert exc.value.error_code == error_code
 
 
 def test_user_token_refresh_rotates_through_the_vault(

@@ -150,7 +150,28 @@ def _write_durable(path: Path, data: bytes) -> None:
         0o600,
     )
     try:
-        os.write(fd, data)
+        view = memoryview(data)
+        written = 0
+        while written < len(view):
+            count = os.write(fd, view[written:])
+            if count <= 0:
+                raise OSError("durable credential write made no progress")
+            written += count
+        if os.fstat(fd).st_size != len(data):
+            raise OSError("durable credential write size mismatch")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _fsync_directory(path.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory entries on the Linux production filesystem."""
+    if os.name != "posix":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
+    try:
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -213,6 +234,14 @@ def migrate_universe_credentials(
     universe_id = universe.name
     marker = universe / MIGRATION_MARKER_FILENAME
     if marker.is_file():
+        if (
+            (universe / LEGACY_VAULT_FILENAME).exists()
+            or (universe / LEGACY_ARTIFACT_DIR).exists()
+        ):
+            raise CredentialMigrationBlocked(
+                "legacy credential plaintext reappeared after retirement; "
+                "refusing to trust either state"
+            )
         return {"status": "already_migrated", "universe_id": universe_id}
     vault_file = universe / LEGACY_VAULT_FILENAME
     artifact_dir = universe / LEGACY_ARTIFACT_DIR
@@ -261,6 +290,7 @@ def migrate_universe_credentials(
         platform_vault_dir(base) / QUARANTINE_SUBDIR / universe_id / stamp
     )
     quarantine_dir.mkdir(parents=True, exist_ok=True)
+    _fsync_directory(quarantine_dir.parent)
     sources: list[tuple[Path, str]] = []
     if vault_file.exists():
         sources.append((vault_file, LEGACY_VAULT_FILENAME))
@@ -299,6 +329,7 @@ def migrate_universe_credentials(
         vault_file.unlink()
     if artifact_dir.exists():
         shutil.rmtree(artifact_dir)
+    _fsync_directory(universe)
 
     # 4) Non-secret marker: the fail-closed record that this universe migrated.
     summary = {
@@ -321,6 +352,7 @@ def migrate_universe_credentials(
         ).encode("utf-8"),
     )
     marker_tmp.replace(marker)
+    _fsync_directory(marker.parent)
     return summary
 
 

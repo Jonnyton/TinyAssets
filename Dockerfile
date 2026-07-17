@@ -225,7 +225,10 @@ RUN mkdir -p /data && \
     chmod +x /app/docker-entrypoint.sh && \
     chown -R tinyassets:tinyassets /data /app
 
-USER tinyassets
+# Start the entrypoint as root so it can validate/read the root-owned 0400 KEK
+# mount. tinyassets.vault_bootstrap preloads the keys and irrevocably drops to
+# UID/GID 1001 before importing or running the daemon.
+USER root
 
 EXPOSE 8001
 

@@ -137,10 +137,16 @@ def require_no_legacy_vault(universe_dir: str | Path) -> None:
     state and blocks too — ambiguity must never read as "fresh".
     """
     universe = Path(universe_dir)
-    if (universe / MIGRATION_MARKER_FILENAME).is_file():
-        return
     legacy_file = universe / LEGACY_VAULT_FILENAME
     legacy_dir = universe / LEGACY_ARTIFACT_DIR
+    if (universe / MIGRATION_MARKER_FILENAME).is_file():
+        if legacy_file.exists() or legacy_dir.exists():
+            raise LegacyCredentialVaultError(
+                f"universe {universe.name!r} has legacy credential plaintext "
+                "that reappeared after retirement. Refusing to trust either "
+                "state; quarantine the restored artifacts before continuing."
+            )
+        return
     if legacy_file.exists() or legacy_dir.exists():
         raise LegacyCredentialVaultError(
             f"universe {universe.name!r} has unmigrated legacy credential "
@@ -157,9 +163,55 @@ def require_no_legacy_vault(universe_dir: str | Path) -> None:
 
 VAULT_KEK_DIR_ENV = "TINYASSETS_VAULT_KEK_DIR"
 
+_PRELOADED_KEY_PROVIDER: KeyProvider | None = None
 
-def platform_key_provider() -> FileKeyProvider:
+
+class _PreloadedPlatformKeyProvider:
+    """Process-local KEKs captured at the root custody boundary."""
+
+    def __init__(self, keys: dict[str, bytes], active_key_id: str) -> None:
+        self._keys = dict(keys)
+        self._active_key_id = active_key_id
+
+    def active_key_id(self) -> str:
+        return self._active_key_id
+
+    def get_key(self, key_id: str) -> bytes:
+        try:
+            return self._keys[key_id]
+        except KeyError:
+            raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE) from None
+
+
+def preload_platform_keys() -> KeyProvider:
+    """Validate and preload every root-owned KEK before privilege drop.
+
+    The container starts as root solely for this custody boundary.  The daemon
+    process then keeps only opaque key bytes in memory and drops to UID 1001;
+    it never gains filesystem access to the root-only KEK mount.
+    """
+    global _PRELOADED_KEY_PROVIDER
+
+    kek_dir = os.environ.get(VAULT_KEK_DIR_ENV, "").strip()
+    if not kek_dir:
+        raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE)
+    file_provider = FileKeyProvider(kek_dir)
+    active_key_id = file_provider.active_key_id()
+    key_ids = {
+        path.name.removesuffix(".bin")
+        for path in Path(kek_dir).glob("*.bin")
+        if path.name.endswith(".bin")
+    }
+    key_ids.add(active_key_id)
+    keys = {key_id: file_provider.get_key(key_id) for key_id in sorted(key_ids)}
+    _PRELOADED_KEY_PROVIDER = _PreloadedPlatformKeyProvider(keys, active_key_id)
+    return _PRELOADED_KEY_PROVIDER
+
+
+def platform_key_provider() -> KeyProvider:
     """The production KEK source. ``TINYASSETS_VAULT_KEK_DIR`` is required."""
+    if _PRELOADED_KEY_PROVIDER is not None:
+        return _PRELOADED_KEY_PROVIDER
     kek_dir = os.environ.get(VAULT_KEK_DIR_ENV, "").strip()
     if not kek_dir:
         # No KEK directory -> platform custody cannot decrypt anything. Typed
@@ -588,11 +640,75 @@ def deposit_credential(
         purpose=_clean_field(purpose, "purpose"),
     )
     be = backend if backend is not None else platform_backend(base)
+    existing = [
+        (binding, status)
+        for binding, status in list_bindings(
+            scope.universe_id, provider=scope.provider, purpose=scope.purpose, base=base
+        )
+        if binding.scope.destination == scope.destination
+    ]
+    if existing and existing[0][1] == BINDING_STATUS_ACTIVE:
+        binding = existing[0][0]
+        if binding.scope != scope:
+            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        if binding.kind != kind:
+            raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT, binding.ref)
+        with be.get(binding, scope) as lease:
+            version = lease.version
+        _revoke_job_grants(be, binding.ref)
+        descriptor = be.put(
+            binding.store,
+            scope,
+            kind,
+            SecretBytes(value),
+            replace=binding.ref,
+            expected_version=version,
+            expires_at=expires_at,
+        )
+        return descriptor.public_projection()
+
     descriptor = be.put(
         platform_store(), scope, kind, SecretBytes(value), expires_at=expires_at
     )
-    record_binding(descriptor.binding, status=BINDING_STATUS_ACTIVE, base=base)
+    try:
+        record_binding(descriptor.binding, status=BINDING_STATUS_ACTIVE, base=base)
+    except Exception:
+        try:
+            be.delete(descriptor.binding, descriptor.binding.scope)
+        except Exception as cleanup_error:
+            raise CredentialUnavailable(
+                VaultErrorCode.BACKEND_UNAVAILABLE, descriptor.binding.ref
+            ) from cleanup_error
+        raise
     return descriptor.public_projection()
+
+
+def _revoke_job_grants(backend: PlatformVaultBackend, ref: str) -> None:
+    """Invalidate every outstanding job capability before credential CAS."""
+    from tinyassets.credentials.grants import revoke_grant
+
+    backend.initialize()
+    conn = backend._connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        grant_ids = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT grant_id FROM vault_job_grants WHERE ref = ?", (ref,)
+            ).fetchall()
+        ]
+        for grant_id in grant_ids:
+            revoke_grant(conn, grant_id)
+        if grant_ids:
+            backend._reserve_epoch(conn)
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("ROLLBACK")
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
 
 
 def deposit_engine_api_key(
@@ -727,6 +843,7 @@ def provider_auth_env_overrides(
     *,
     base: str | Path | None = None,
     backend: PlatformVaultBackend | None = None,
+    require_binding: bool = False,
 ) -> dict[str, str]:
     """Subprocess env overrides for a CLI provider, from platform custody.
 
@@ -746,6 +863,8 @@ def provider_auth_env_overrides(
     require_no_legacy_vault(universe)
     services = ENGINE_SERVICES_BY_CLI_PROVIDER.get(provider_name.strip())
     if not services:
+        if require_binding:
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         return {}
     universe_id = universe.name
     rows = [
@@ -757,6 +876,8 @@ def provider_auth_env_overrides(
         and binding.scope.destination == ENGINE_DESTINATION
     ]
     if not rows:
+        if require_binding:
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         return {}
     for binding, status in rows:
         if status == BINDING_STATUS_NEEDS_REDEPOSIT:

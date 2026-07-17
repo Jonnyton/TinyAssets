@@ -173,13 +173,14 @@ if [[ -n "${DAEMON_IMAGE}" ]]; then
             python /app/scripts/vault_restore_bump.py; then
         log "  vault guard advanced — credentials now require re-authorization (intended)"
     else
-        log "WARNING: vault guard bump failed. The vault still fails closed on"
-        log "  its own epoch mismatch, but run scripts/vault_restore_bump.py"
-        log "  manually so the restore is recorded explicitly."
+        log "ERROR: vault guard bump failed; restored credentials cannot be"
+        log "  proven invalidated. Refusing to report a usable restore."
+        exit 6
     fi
 else
-    log "WARNING: no daemon image found for the vault guard bump; run"
-    log "  scripts/vault_restore_bump.py manually after starting the daemon."
+    log "ERROR: no daemon image found for the mandatory vault guard bump."
+    log "  Refusing to report a usable restore."
+    exit 6
 fi
 
 # ----- 8. done — caller starts the daemon -------------------------------

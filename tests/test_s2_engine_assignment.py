@@ -9,12 +9,28 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tinyassets.config import load_universe_config, write_universe_config_fields
 from tinyassets.credential_broker import (
+    BINDING_STATUS_NEEDS_REDEPOSIT,
+    BINDING_STATUS_REVOKED,
+    ENGINE_DESTINATION,
+    ENGINE_PURPOSE,
     deposit_engine_api_key,
+    platform_store,
     provider_auth_env_overrides,
+    record_binding,
     resolve_credential,
     supported_llm_api_key_services,
+)
+from tinyassets.credentials import (
+    CredentialUnavailable,
+    SecretBinding,
+    SecretKind,
+    SecretScope,
+    VaultErrorCode,
+    new_secret_ref,
 )
 from tinyassets.providers.base import subprocess_env_for_provider
 
@@ -57,6 +73,85 @@ def test_openai_key_maps_to_codex_only(platform_vault_env):
     # The wrong provider does not receive it (no cross-provider bleed).
     assert "OPENAI_API_KEY" not in provider_auth_env_overrides("claude-code", udir)
     assert "ANTHROPIC_API_KEY" not in provider_auth_env_overrides("claude-code", udir)
+
+
+def test_byo_subprocess_env_strips_host_auth_before_vault_overlay(
+    platform_vault_env, monkeypatch
+):
+    udir = platform_vault_env / "u-isolated"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="byo_api_key")
+    deposit_engine_api_key(
+        universe_id="u-isolated",
+        founder_id="founder-1",
+        service="openai",
+        api_key="vault-openai-key",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "HOST_AMBIENT_SECRET")
+    monkeypatch.setenv("CODEX_HOME", "/host/codex")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "HOST_CLAUDE_SECRET")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/host/claude")
+
+    env = subprocess_env_for_provider("codex", universe_dir=udir)
+
+    assert env["OPENAI_API_KEY"] == "vault-openai-key"
+    assert "CODEX_HOME" not in env
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert "CLAUDE_CONFIG_DIR" not in env
+    assert "HOST_AMBIENT_SECRET" not in env.values()
+    assert "HOST_CLAUDE_SECRET" not in env.values()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_code"),
+    [
+        (None, VaultErrorCode.NOT_FOUND),
+        (BINDING_STATUS_NEEDS_REDEPOSIT, VaultErrorCode.REAUTHORIZATION_REQUIRED),
+        (BINDING_STATUS_REVOKED, VaultErrorCode.REVOKED),
+    ],
+)
+def test_byo_missing_or_inactive_binding_never_inherits_host_identity(
+    platform_vault_env, monkeypatch, status, expected_code
+):
+    udir = platform_vault_env / f"u-byo-{status or 'missing'}"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="byo_api_key")
+    if status is not None:
+        record_binding(
+            SecretBinding(
+                ref=new_secret_ref(),
+                kind=SecretKind.API_KEY,
+                scope=SecretScope(
+                    founder_id="founder-1",
+                    universe_id=udir.name,
+                    provider="openai",
+                    destination=ENGINE_DESTINATION,
+                    purpose=ENGINE_PURPOSE,
+                ),
+                store=platform_store(),
+            ),
+            status=status,
+        )
+    monkeypatch.setenv("OPENAI_API_KEY", "HOST_AMBIENT_SECRET")
+    monkeypatch.setenv("CODEX_HOME", "/host/codex")
+
+    with pytest.raises(CredentialUnavailable) as exc:
+        subprocess_env_for_provider("codex", universe_dir=udir)
+
+    assert exc.value.code == expected_code
+
+
+def test_explicit_host_daemon_may_inherit_host_subscription_auth(
+    platform_vault_env, monkeypatch
+):
+    udir = platform_vault_env / "u-host-daemon"
+    udir.mkdir()
+    write_universe_config_fields(udir, engine_source="host_daemon")
+    monkeypatch.setenv("CODEX_HOME", "/host/codex")
+
+    env = subprocess_env_for_provider("codex", universe_dir=udir)
+
+    assert env["CODEX_HOME"] == "/host/codex"
 
 
 def test_set_engine_action_writes_vault_and_config(platform_vault_env, monkeypatch):

@@ -10,9 +10,11 @@ left in place.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
+from tinyassets import credential_migration as migration
 from tinyassets.credential_broker import (
     GITHUB_PROVIDER,
     GITHUB_WRITE_PURPOSE,
@@ -131,6 +133,45 @@ def test_migration_is_idempotent(platform_vault_env):
     assert migrate_universe_credentials(udir)["status"] == "migrated"
     assert migrate_universe_credentials(udir)["status"] == "already_migrated"
     assert len(list_bindings("u-once")) == 3  # no duplicate rows
+
+
+def test_durable_write_retries_short_writes_and_fsyncs_parent(tmp_path, monkeypatch):
+    target = tmp_path / "durable.bin"
+    real_write = os.write
+    writes = []
+    synced_dirs = []
+
+    def short_write(fd, data):
+        writes.append(len(data))
+        return real_write(fd, bytes(data[:1]))
+
+    monkeypatch.setattr(migration.os, "write", short_write)
+    monkeypatch.setattr(
+        migration,
+        "_fsync_directory",
+        lambda path: synced_dirs.append(path),
+        raising=False,
+    )
+
+    migration._write_durable(target, b"complete-payload")
+
+    assert target.read_bytes() == b"complete-payload"
+    assert len(writes) == len(b"complete-payload")
+    assert synced_dirs == [tmp_path]
+
+
+def test_retirement_marker_plus_restored_plaintext_blocks(platform_vault_env):
+    udir = _legacy_universe(platform_vault_env, "u-restored", _RECORDS[:1])
+    (udir / ".credential-vault.retired.json").write_text(
+        json.dumps({"schema": 1, "status": "migrated"}), encoding="utf-8"
+    )
+
+    with pytest.raises(LegacyCredentialVaultError, match="reappeared"):
+        require_no_legacy_vault(udir)
+    with pytest.raises(CredentialMigrationBlocked, match="reappeared"):
+        migrate_universe_credentials(udir)
+
+    assert (udir / ".credential-vault.json").exists()
 
 
 def test_unreadable_vault_blocks_and_keeps_plaintext(platform_vault_env):

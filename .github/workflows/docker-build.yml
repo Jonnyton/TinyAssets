@@ -65,6 +65,23 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Vault root-preload and privilege-drop smoke
+        run: |
+          docker run --rm \
+            --entrypoint /bin/bash \
+            -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
+            tinyassets-daemon:ci -lc '
+              set -euo pipefail
+              mkdir -p /vault-keys /vault-guard /data
+              head -c 32 /dev/urandom > /vault-keys/k1.bin
+              printf "%s\n" k1 > /vault-keys/active
+              chmod 0400 /vault-keys/k1.bin /vault-keys/active
+              export TINYASSETS_VAULT_KEK_DIR=/vault-keys
+              export TINYASSETS_VAULT_ROLLBACK_GUARD=/vault-guard
+              exec /app/docker-entrypoint.sh \
+                python -m tinyassets.vault_container_smoke
+            '
+
       - name: Start container
         run: |
           docker run -d --rm \

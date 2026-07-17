@@ -164,6 +164,73 @@ def test_deposit_and_resolve_roundtrip(platform_vault_env):
         assert lease.ref == binding.ref
 
 
+def test_redeposit_cas_rotates_value_and_revokes_outstanding_grants(
+    platform_vault_env,
+):
+    _deposit_github(platform_vault_env, "u-rotate", "octo/repo", b"old-token")
+    binding = find_binding(
+        "u-rotate", GITHUB_PROVIDER, GITHUB_WRITE_PURPOSE, "octo/repo"
+    )
+    backend = broker.platform_backend()
+    run_id = _provision_run(
+        platform_vault_env, founder=FOUNDER, universe_id="u-rotate"
+    )
+    grant = backend.mint_job_grant(binding, binding.scope, run_id)
+    with backend.resolve_job_grant(grant, verify_context=lambda _ctx: True) as lease:
+        assert lease.reveal() == b"old-token"
+
+    projection = _deposit_github(
+        platform_vault_env, "u-rotate", "octo/repo", b"new-token"
+    )
+
+    assert projection["ref"] == binding.ref
+    with broker.resolve_credential(
+        "u-rotate", GITHUB_PROVIDER, GITHUB_WRITE_PURPOSE, "octo/repo"
+    ) as lease:
+        assert lease.reveal() == b"new-token"
+        assert lease.version == 2
+    with pytest.raises(CredentialUnavailable) as exc:
+        backend.resolve_job_grant(grant, verify_context=lambda _ctx: True)
+    assert exc.value.code == VaultErrorCode.NOT_FOUND
+
+
+def test_new_deposit_registry_failure_revokes_unbound_value(
+    platform_vault_env, monkeypatch
+):
+    backend = broker.platform_backend()
+    captured = {}
+    original_put = backend.put
+
+    def capturing_put(*args, **kwargs):
+        descriptor = original_put(*args, **kwargs)
+        captured["descriptor"] = descriptor
+        return descriptor
+
+    monkeypatch.setattr(backend, "put", capturing_put)
+
+    def fail_registry(*_args, **_kwargs):
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE)
+
+    monkeypatch.setattr(broker, "record_binding", fail_registry)
+    with pytest.raises(CredentialUnavailable) as exc:
+        deposit_credential(
+            universe_id="u-registry-fail",
+            founder_id=FOUNDER,
+            provider=GITHUB_PROVIDER,
+            destination="octo/repo",
+            purpose=GITHUB_WRITE_PURPOSE,
+            kind=SecretKind.GITHUB_PAT,
+            value=b"must-not-remain-live",
+            backend=backend,
+        )
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+    descriptor = captured["descriptor"]
+    with pytest.raises(CredentialUnavailable) as revoked:
+        backend.get(descriptor.binding, descriptor.binding.scope)
+    assert revoked.value.code == VaultErrorCode.NOT_FOUND
+
+
 def test_find_binding_typed_miss_never_none(platform_vault_env):
     _deposit_github(platform_vault_env, "u-a", "octo/repo-a", b"t")
     with pytest.raises(CredentialUnavailable) as exc:

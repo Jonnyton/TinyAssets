@@ -108,6 +108,15 @@ API_KEY_PROVIDER_ENV_VARS: tuple[str, ...] = (
     "XAI_API_KEY",
 )
 
+HOST_AUTH_ENV_VARS: tuple[str, ...] = (
+    *API_KEY_PROVIDER_ENV_VARS,
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "TINYASSETS_CODEX_AUTH_JSON_B64",
+    "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
+)
+
 
 def _truthy_env(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -157,18 +166,34 @@ def subprocess_env_for_provider(
     the universe's engine stops rather than silently running on the host's
     credentials (the ambient identity leak).
     """
-    env = subprocess_env_without_api_keys() or os.environ.copy()
+    host_env = subprocess_env_without_api_keys() or os.environ.copy()
     from tinyassets.credential_broker import (
         provider_auth_env_overrides,
         resolve_universe_from_env,
     )
 
     resolved_universe = (
-        universe_dir if universe_dir is not None else resolve_universe_from_env(env)
+        universe_dir if universe_dir is not None else resolve_universe_from_env(host_env)
     )
     if resolved_universe is None:
-        return env
-    env.update(provider_auth_env_overrides(provider_name, resolved_universe))
+        return host_env
+
+    from tinyassets.config import load_universe_config
+
+    engine_source = load_universe_config(resolved_universe).engine_source.strip().lower()
+    if engine_source == "host_daemon":
+        return host_env
+
+    env = os.environ.copy()
+    for name in HOST_AUTH_ENV_VARS:
+        env.pop(name, None)
+    env.update(
+        provider_auth_env_overrides(
+            provider_name,
+            resolved_universe,
+            require_binding=engine_source == "byo_api_key",
+        )
+    )
     return env
 
 
