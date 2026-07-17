@@ -211,8 +211,9 @@ class GitHubApi(Protocol):
         "actor_type", "bypass_mode"}]}``."""
         ...
 
-    def get_codeowners(self, *, destination: str) -> str | None:
-        """The repo's CODEOWNERS file text, or None if absent."""
+    def get_codeowners(self, *, destination: str, ref: str = "") -> str | None:
+        """The repo's CODEOWNERS text at the PR's base ``ref`` (Codex r14 #6), or
+        None if absent."""
         ...
 
     def get_pull(self, *, destination: str, pr_number: int) -> dict[str, Any]:
@@ -253,22 +254,74 @@ def _has_required_status_checks(rules: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _codeowners_catchall_owner(text: str, expected_owner: str) -> bool:
-    """True iff CODEOWNERS has a ``*`` catch-all owned by ``expected_owner`` — so
-    the founder owns the ENTIRE merge path (a docs-only entry is NOT enough)."""
-    want = (expected_owner or "").strip().lstrip("@").lower()
-    if not want:
-        return False
+#: Representative paths whose EFFECTIVE (last-matching) owner must be the
+#: founder for the gate to pass: a root code path (the merge path) AND the
+#: CODEOWNERS file itself (so it can't be changed without founder review).
+_CODEOWNERS_PROBE_PATHS = (
+    "src/main.py", "README.md", ".github/CODEOWNERS", "CODEOWNERS",
+)
+
+
+def _codeowners_pattern_matches(pattern: str, path: str) -> bool:
+    """Approximate GitHub CODEOWNERS path matching for the gate's probe paths."""
+    import fnmatch
+
+    pat = pattern.strip()
+    p = path.lstrip("/")
+    if pat == "*":
+        return True
+    anchored = pat.startswith("/")
+    pat = pat.lstrip("/")
+    if pat.endswith("/"):  # directory → matches anything under it
+        return p == pat.rstrip("/") or p.startswith(pat)
+    # Anchored patterns match from repo root; unanchored match any path segment.
+    if anchored:
+        return fnmatch.fnmatch(p, pat) or fnmatch.fnmatch(p, pat + "/*") or p == pat
+    return (
+        fnmatch.fnmatch(p, pat) or fnmatch.fnmatch(p, "*/" + pat)
+        or p.endswith("/" + pat) or p == pat
+    )
+
+
+def _codeowners_effective_owners(text: str, path: str) -> list[str]:
+    """Return the owners of the LAST CODEOWNERS rule matching ``path`` — GitHub's
+    last-match-wins semantics (Codex r14 #6). A `* @founder` catch-all overridden
+    by a LATER pattern yields the later owners, not the founder."""
+    owners: list[str] = []
     for raw in (text or "").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
         parts = line.split()
-        if len(parts) < 2 or parts[0] != "*":
+        if len(parts) < 2:
             continue
-        if any(o.strip().lstrip("@").lower() == want for o in parts[1:]):
-            return True
-    return False
+        if _codeowners_pattern_matches(parts[0], path):
+            owners = [o.strip().lstrip("@").lower() for o in parts[1:]]
+    return owners
+
+
+def _codeowners_founder_owns_merge_path(text: str, expected_owner: str) -> bool:
+    """True iff the founder is the EFFECTIVE (last-matching) owner of BOTH a root
+    code path AND the CODEOWNERS file itself, for every probe path — so no later
+    pattern can override the founder's ownership of the merge path or leave
+    CODEOWNERS itself unprotected (Codex r14 #6)."""
+    want = (expected_owner or "").strip().lstrip("@").lower()
+    if not want:
+        return False
+    for probe in _CODEOWNERS_PROBE_PATHS:
+        owners = _codeowners_effective_owners(text, probe)
+        if want not in owners:
+            return False
+    return True
+
+
+def _get_codeowners_at_ref(api: Any, *, destination: str, ref: str) -> str | None:
+    """Fetch CODEOWNERS at the PR's actual base ``ref`` (Codex r14 #6). Tolerates
+    a client whose ``get_codeowners`` doesn't yet accept ``ref``."""
+    try:
+        return api.get_codeowners(destination=destination, ref=ref)
+    except TypeError:
+        return api.get_codeowners(destination=destination)
 
 
 def verify_review_gate_active(
@@ -348,17 +401,20 @@ def verify_review_gate_active(
                         missing.append("app_not_bypass_actor")
                         break
 
+    # CODEOWNERS at the PR's ACTUAL base ref (Codex r14 #6) — the base branch's
+    # CODEOWNERS governs review requests. Effective (last-match-wins) ownership of
+    # the merge path AND of CODEOWNERS itself must be the founder.
     try:
-        codeowners = api.get_codeowners(destination=destination)
+        codeowners = _get_codeowners_at_ref(api, destination=destination, ref=branch)
     except Exception as exc:  # noqa: BLE001
         codeowners = None
         summary["error_codeowners"] = str(exc)
     if not (expected_owner or "").strip():
         missing.append("expected_owner_unknown")
-    elif not _codeowners_catchall_owner(codeowners or "", expected_owner):
-        missing.append("codeowners_catchall_owner")
+    elif not _codeowners_founder_owns_merge_path(codeowners or "", expected_owner):
+        missing.append("codeowners_founder_effective_owner")
     else:
-        summary["codeowners_catchall_owner"] = expected_owner.strip().lstrip("@")
+        summary["codeowners_founder_effective_owner"] = expected_owner.strip().lstrip("@")
 
     # De-dup while preserving order.
     seen: set[str] = set()

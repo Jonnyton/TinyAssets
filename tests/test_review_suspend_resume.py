@@ -164,33 +164,30 @@ def test_resume_is_idempotent_only_suspended_transitions(owner_env):
     assert rq.get_suspension(owner_env, run_id=_RUN)["resume_decision"] == "approve"
 
 
-def test_decision_and_resume_are_atomic_no_split_brain(owner_env):
-    """Codex r12 #3: an approve then a reject must never leave projection=rejected
-    with a resume directive of {action: merge}. decide_and_resume couples the
-    projection outcome + the resume directive in one transaction, so the second
-    decision's directive wins together with its outcome."""
+def test_first_decision_is_immutable_no_split_brain(owner_env):
+    """Codex r14 #3: the FIRST decision on a head is IMMUTABLE. An approve then a
+    reject must NOT be able to coexist — the second decision is REFUSED
+    (decision_locked), so an old approval can never merge after a later
+    rejection. projection.workflow_outcome and the suspension directive stay the
+    approve that was first accepted; they CANNOT disagree."""
     _present_projects_and_suspends(owner_env)
-    _call(
+    first = _call(
         "review_queue_approve", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
-    # A second decision (reject) on the same PR. The suspension is already
-    # DECIDED (approve), so this reject updates the projection but finds no
-    # ACTIVE (suspended) suspension — the earlier directive (merge) stays coupled
-    # to the approve that produced it. There is no window where the SAME accepted
-    # decision has projection + directive disagree (they were written together).
+    assert first["status"] == "approved"
+    # A second, conflicting decision on the same head is REFUSED.
     reject = _call(
         "review_queue_reject", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
+    assert reject["failure_class"] == "decision_locked"
+    # The projection + suspension still reflect ONLY the first (approve) decision.
     proj = rq.get_projection(owner_env, destination=_DEST, pr_number=_PR)
-    assert proj["workflow_outcome"] == "rejected"
+    assert proj["workflow_outcome"] == "approved"
     susp = rq.get_suspension(owner_env, run_id=_RUN)
-    assert susp["status"] == "decided"
     assert susp["resume_decision"] == "approve"
     assert susp["resume_directive"]["action"] == "merge"
-    # The reject found no active suspension to consume (already decided).
-    assert reject["pending"] is None
 
 
 def test_retry_never_reopens_a_resumed_decision(owner_env):

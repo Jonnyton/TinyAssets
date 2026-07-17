@@ -107,8 +107,9 @@ def run_effects_for_branch(
     # Authoritative identity from the RUN CONTEXT (Codex r11 #3): the merge
     # effector resolves the owner-bound merge preference by this branch_def_id
     # (+ the universe from base_path), never by model-emitted packet identity.
+    # The CODEOWNERS owner (Codex r14 #2) is NOT a BranchDefinition field — the
+    # merge effector resolves it from the authoritative merge-preference binding.
     authoritative_branch_def_id = str(getattr(branch, "branch_def_id", "") or "")
-    expected_owner = str(getattr(branch, "founder_github_handle", "") or "")
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])
         if EXTERNAL_WRITE_SINK_GITHUB_MERGE not in effects:
@@ -125,7 +126,6 @@ def run_effects_for_branch(
                 run_id=run_id,
                 dry_run=bool(dry_run),
                 authoritative_branch_def_id=authoritative_branch_def_id,
-                expected_owner=expected_owner,
             )
         except Exception as exc:  # defensive: never raise from completion path
             result = {

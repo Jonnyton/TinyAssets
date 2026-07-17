@@ -260,10 +260,12 @@ class HttpGitHubApi:
             assembled.append(slot)
         return assembled
 
-    def get_codeowners(self, *, destination: str) -> str | None:
-        """The repo's CODEOWNERS text (first path that exists), or None."""
+    def get_codeowners(self, *, destination: str, ref: str = "") -> str | None:
+        """The repo's CODEOWNERS text at the PR's base ``ref`` (Codex r14 #6;
+        first path that exists), or None. The base branch's CODEOWNERS governs."""
+        query = f"?ref={ref}" if ref else ""
         for path in _CODEOWNERS_PATHS:
-            status, payload = self._get(f"/repos/{destination}/contents/{path}")
+            status, payload = self._get(f"/repos/{destination}/contents/{path}{query}")
             if status == 404:
                 continue
             if status >= 400 or not isinstance(payload, dict):

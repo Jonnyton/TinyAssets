@@ -255,114 +255,130 @@ def run_github_merge_effector(
             ),
         }
 
-    # ── autonomous (auto / not_before): FAIL-CLOSED setup verification ────────
-    if github_api is None:
+    # ── autonomous (auto / not_before): delegate to THE ONE shared fail-closed
+    # executor (Codex r14 #2), so the initial effector, the resumed continuation,
+    # and the timer fire all run the identical gate against fresh GitHub state.
+    result = run_autonomous_merge(
+        universe_dir, destination=destination, pr_number=pr_number,
+        branch_def_id=branch_def_id, expected_head_sha=expected_head_sha,
+        base_ref_hint=base_ref, github_api=github_api, verifier_api=verifier_api,
+        app_actor_id=app_actor_id, expected_owner=expected_owner, now=ts,
+    )
+    if not result.get("ok"):
         return _error(
-            "review_gate_unverifiable",
-            (
-                f"'{preference}' is autonomous and requires a verified GitHub "
-                "review gate, but no GitHub client is wired. Refusing autonomous "
-                "merge; 'manual' stays available."
-            ),
+            result.get("error_kind", "autonomous_merge_refused"),
+            result.get("error", "autonomous merge refused"),
+            setup=result.get("setup"), base_ref=result.get("base_ref"),
             **common,
         )
-    # Codex r13 #3: the gate must read bypass_actors, which GitHub returns ONLY
-    # to a ruleset-WRITE (elevated) caller. The App's minimal merge identity
-    # can't see it, so autonomous merge REQUIRES a separate opt-in VERIFIER
-    # identity (the owner's ruleset-read token). Manual never reaches here — it
-    # relies on the owner's own review + native ruleset enforcement at merge.
-    gate_api = verifier_api if verifier_api is not None else None
-    if gate_api is None:
-        return _error(
-            "autonomous_requires_verifier",
-            (
-                f"'{preference}' is an OPT-IN autonomous preference: it needs the "
-                "ruleset-read verifier identity (the owner's token) to positively "
-                "confirm the gate + bypass config, which the App's minimal merge "
-                "scope deliberately lacks. Grant the ruleset-read verifier or use "
-                "'manual' (owner-reviewed each time, minimal scope)."
-            ),
-            **common,
-        )
+    return {**common, **{k: v for k, v in result.items() if k != "ok"}}
 
-    # Read the PR's ACTUAL base branch + node id + head from GitHub — never trust
-    # the packet's base_ref for the gate (Codex r11 #1).
+
+def run_autonomous_merge(
+    universe_dir: Any,
+    *,
+    destination: str,
+    pr_number: int,
+    branch_def_id: str,
+    expected_head_sha: str,
+    base_ref_hint: str = "main",
+    github_api: Any,
+    verifier_api: Any = None,
+    app_actor_id: Any = None,
+    expected_owner: str = "",
+    firing: bool = False,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """THE ONE fail-closed autonomous-merge executor (Codex r14 #2/#5), shared by
+    the initial effector, the resumed continuation, AND the timer fire. Re-runs
+    the FULL gate against FRESH GitHub state (the PR's actual base ref + head +
+    node id, read now) via the ruleset-read VERIFIER identity every time — state
+    can change between review and merge, so the gate must re-run before ANY
+    autonomous action.
+
+    ``preference`` is resolved from the OWNER binding here (never a packet).
+    Returns ``{"ok": bool, "action"|"error_kind", "state"?, "effects"?,
+    "not_before"?, ...}``. Fails closed on: no merge client, no verifier
+    identity, unreadable PR, or an unverified gate.
+    """
+    ts = now if now is not None else time.time()
+    binding = rq.resolve_merge_preference_binding(
+        universe_dir, branch_def_id=branch_def_id,
+    )
+    preference = mp.normalize_preference(binding["merge_preference"])
+    # The CODEOWNERS owner is resolved from the AUTHORITATIVE binding (Codex r14
+    # #2), never a packet / undefined branch field. An explicit arg overrides.
+    expected_owner = expected_owner or (binding.get("founder_github_handle") or "")
+    if preference == mp.MERGE_PREFERENCE_MANUAL:
+        # Manual never merges autonomously — the owner triggers it, GitHub
+        # enforces the ruleset at merge. Nothing for the executor to do.
+        return {"ok": True, "action": "await_owner_merge", "state": "await_owner_merge"}
+    if github_api is None:
+        return {"ok": False, "error_kind": "review_gate_unverifiable",
+                "error": ("no GitHub merge client wired; refusing autonomous "
+                          "merge — 'manual' stays available")}
+    if verifier_api is None:
+        return {"ok": False, "error_kind": "autonomous_requires_verifier",
+                "error": (
+                    "autonomous merge needs the ruleset-read verifier identity "
+                    "(the App's minimal scope can't see bypass_actors); 'manual' "
+                    "stays available")}
     try:
         pull = github_api.get_pull(destination=destination, pr_number=pr_number)
     except Exception as exc:  # noqa: BLE001 — uninspectable ⇒ fail closed
-        return _error(
-            "pull_unreadable",
-            f"could not read {destination}#{pr_number} from GitHub: {exc}",
-            **common,
-        )
-    real_base = (pull.get("base_ref") or "").strip() or base_ref
+        return {"ok": False, "error_kind": "pull_unreadable", "error": str(exc)}
+    real_base = (pull.get("base_ref") or "").strip() or base_ref_hint
     pr_node_id = (pull.get("node_id") or "").strip()
-
+    live_head = (pull.get("head_sha") or "").strip()
+    # Head-bind against FRESH GitHub state: if the PR head moved since the
+    # decision, refuse (the reviewed content is gone).
+    want_head = (expected_head_sha or "").strip()
+    if want_head and live_head and want_head != live_head:
+        return {"ok": False, "error_kind": "head_moved",
+                "error": f"reviewed head {want_head[:8]} != live head {live_head[:8]}"}
     gated, setup = github_native.verify_review_gate_active(
-        gate_api, destination=destination, branch=real_base,
+        verifier_api, destination=destination, branch=real_base,
         app_actor_id=app_actor_id, expected_owner=expected_owner,
     )
     if not gated:
-        return _error(
-            "review_gate_not_configured",
-            (
-                f"{destination}@{real_base} is not verifiably review-gated; "
-                "configure a ruleset requiring PR + code-owner review + required "
-                "status checks + stale-dismissal + latest-push approval, a "
-                "CODEOWNERS '* @owner' catch-all, and a known App identity that "
-                "is NOT a bypass actor before enabling an autonomous merge "
-                "preference. 'manual' stays available (with a warning)."
-            ),
-            setup=setup, base_ref=real_base,
-            **common,
-        )
+        return {"ok": False, "error_kind": "review_gate_not_configured",
+                "setup": setup, "base_ref": real_base,
+                "error": f"{destination}@{real_base} is not verifiably review-gated"}
 
-    def _enable_call() -> dict[str, Any]:
-        return github_native.enable_auto_merge(
+    # `auto` enables now; `not_before` enables now ONLY when the timer is FIRING
+    # (its delay already elapsed) — otherwise it (re)schedules the timer.
+    if preference == mp.MERGE_PREFERENCE_AUTO or (
+        preference == mp.MERGE_PREFERENCE_NOT_BEFORE and firing
+    ):
+        call = github_native.enable_auto_merge(
             destination=destination, pr_number=pr_number,
-            expected_head_sha=expected_head_sha, pull_request_id=pr_node_id,
-        ).to_dict()
+            expected_head_sha=want_head, pull_request_id=pr_node_id,
+        )
+        return {"ok": True, "action": "enable_auto_merge",
+                "state": "approved_auto_merge_enabled", "github_call": call.to_dict(),
+                "base_ref": real_base, "setup": setup}
 
-    if preference == mp.MERGE_PREFERENCE_AUTO:
-        return {
-            **common,
-            "action": "enable_auto_merge",
-            "base_ref": real_base,
-            "github_call": _enable_call(),
-            "setup": setup,
-            "note": (
-                "auto preference: GitHub merges the PR the moment its own "
-                "required reviews/checks pass; the enable call is head-bound."
-            ),
-        }
-
-    # not_before: schedule the single durable timer, persisting the expected head
-    # SHA + binding revision so the fire path can re-read GitHub + re-authorize
-    # against the current binding before acting (Codex r11 #2).
+    # not_before: honor the FULL configured delay + persist the safety anchors
+    # (Codex r14 #5). The timer-watcher re-runs THIS executor at fire.
     delay = float(binding.get("not_before_delay_s") or 0.0)
     fire_at = ts + delay
     rq.schedule_not_before(
         universe_dir, destination=destination, pr_number=pr_number,
-        not_before=fire_at, now=ts, expected_head_sha=expected_head_sha,
+        not_before=fire_at, now=ts, expected_head_sha=want_head,
         branch_def_id=branch_def_id, binding_revision=int(binding.get("revision") or 0),
     )
-    return {
-        **common,
-        "action": "scheduled_not_before",
-        "base_ref": real_base,
-        "not_before": fire_at,
-        "delay_s": delay,
-        "github_call_on_fire": _enable_call(),
-        "setup": setup,
-        "note": (
-            "not_before preference: a single durable timer (bound to this head + "
-            "binding revision) will re-read GitHub, re-authorize, then enable "
-            "auto-merge when it fires."
-        ),
-    }
+    on_fire = github_native.enable_auto_merge(
+        destination=destination, pr_number=pr_number,
+        expected_head_sha=want_head, pull_request_id=pr_node_id,
+    )
+    return {"ok": True, "action": "scheduled_not_before", "not_before": fire_at,
+            "delay_s": delay, "state": "approved_timer_scheduled",
+            "github_call_on_fire": on_fire.to_dict(), "base_ref": real_base,
+            "setup": setup}
 
 
 __all__ = [
     "EXTERNAL_WRITE_SINK_GITHUB_MERGE",
     "run_github_merge_effector",
+    "run_autonomous_merge",
 ]

@@ -83,6 +83,14 @@ class ReviewHeadChanged(Exception):
     the projection honest before the Phase-2 call runs."""
 
 
+class DecisionLocked(Exception):
+    """Raised when a SECOND owner decision is attempted on a PR whose current
+    head already has a recorded decision (Codex r14 #3). The FIRST decision on a
+    given head is immutable — an old approval must not be able to merge after a
+    later rejection. A genuine re-push (new head) resets the projection + creates
+    a new suspension generation, which the owner may decide afresh."""
+
+
 def review_queue_db_path(universe_dir: str | Path) -> Path:
     """Resolve the per-universe review-queue DB path."""
     return Path(universe_dir) / _DB_FILENAME
@@ -161,6 +169,10 @@ CREATE TABLE IF NOT EXISTS merge_preference_bindings (
     -- half of the re-authorization — this is the GitHub-native analog of the
     -- deleted policy_generation, with GitHub as truth rather than local tokens.
     revision           INTEGER NOT NULL DEFAULT 1,
+    -- The founder's GitHub handle the CODEOWNERS catch-all must name (Codex r14
+    -- #2): resolved from the AUTHORITATIVE owner binding, never an undefined
+    -- BranchDefinition field or a model packet.
+    founder_github_handle TEXT NOT NULL DEFAULT '',
     bound_by           TEXT NOT NULL DEFAULT '',
     bound_at           REAL NOT NULL DEFAULT 0
 );
@@ -223,6 +235,20 @@ CREATE TABLE IF NOT EXISTS review_suspensions (
 
 CREATE INDEX IF NOT EXISTS idx_review_suspensions_pr
     ON review_suspensions(destination, pr_number, status);
+
+-- Durable effect RECEIPTS (Codex r14 #7): each externally-visible GitHub effect
+-- a continuation performs (submit_review / enable_auto_merge / create_revised_run
+-- / merge) records a receipt keyed by (run_id, effect_kind). Replay checks the
+-- receipt BEFORE re-executing, so a crash after GitHub succeeded but before the
+-- local ack can't double-submit a review or double-create a revised run — the
+-- real-world harm this store exists to prevent.
+CREATE TABLE IF NOT EXISTS effect_receipts (
+    run_id      TEXT NOT NULL,
+    effect_kind TEXT NOT NULL,
+    detail      TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (run_id, effect_kind)
+);
 """
 
 SUSPENSION_SUSPENDED = "suspended"
@@ -563,6 +589,24 @@ def enqueue_reshape(
     }
 
 
+def mark_reshape_outbox_consumed(
+    universe_dir: str | Path, *, run_id: str, now: float | None = None
+) -> int:
+    """Mark the reshape outbox row(s) for ``run_id`` consumed once the revised run
+    is created (Codex r14 #4) — so a reshape can't leave a permanently pending
+    outbox. Returns the number of rows consumed."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "UPDATE reshape_outbox SET consumed_at = ? "
+                "WHERE run_id = ? AND consumed_at IS NULL",
+                (ts, (run_id or "").strip()),
+            )
+            return cur.rowcount
+
+
 def list_pending_reshapes(universe_dir: str | Path) -> list[dict[str, Any]]:
     initialize_review_queue_db(universe_dir)
     with _connect(universe_dir) as conn:
@@ -593,6 +637,7 @@ def _preference_default(branch_def_id: str) -> dict[str, Any]:
         "not_before_delay_s": 0.0,
         "review_required": True,
         "revision": 0,
+        "founder_github_handle": "",
         "bound": False,
         "bound_by": "",
         "bound_at": 0.0,
@@ -606,12 +651,14 @@ def set_merge_preference_binding(
     merge_preference: str = "manual",
     not_before_delay_s: float = 0.0,
     review_required: bool = True,
+    founder_github_handle: str = "",
     bound_by: str,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Owner-bind the off-GitHub merge preference for a remix design. Validates a
     finite, non-negative ``not_before`` delay; raises on empty
-    ``branch_def_id`` / ``bound_by``."""
+    ``branch_def_id`` / ``bound_by``. ``founder_github_handle`` is the
+    authoritative CODEOWNERS owner for the autonomous gate."""
     bdid = (branch_def_id or "").strip()
     if not bdid:
         raise ValueError("set_merge_preference_binding requires non-empty branch_def_id")
@@ -635,17 +682,22 @@ def set_merge_preference_binding(
                 """
                 INSERT INTO merge_preference_bindings (
                     branch_def_id, merge_preference, not_before_delay_s,
-                    review_required, revision, bound_by, bound_at
-                ) VALUES (?, ?, ?, ?, 1, ?, ?)
+                    review_required, revision, founder_github_handle,
+                    bound_by, bound_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
                 ON CONFLICT(branch_def_id) DO UPDATE SET
                     merge_preference = excluded.merge_preference,
                     not_before_delay_s = excluded.not_before_delay_s,
                     review_required = excluded.review_required,
                     revision = merge_preference_bindings.revision + 1,
+                    founder_github_handle = excluded.founder_github_handle,
                     bound_by = excluded.bound_by,
                     bound_at = excluded.bound_at
                 """,
-                (bdid, pref, delay, 1 if review_required else 0, bound_by, ts),
+                (
+                    bdid, pref, delay, 1 if review_required else 0,
+                    (founder_github_handle or "").strip().lstrip("@"), bound_by, ts,
+                ),
             )
             revision = conn.execute(
                 "SELECT revision FROM merge_preference_bindings WHERE branch_def_id = ?",
@@ -657,6 +709,7 @@ def set_merge_preference_binding(
         "not_before_delay_s": delay,
         "review_required": bool(review_required),
         "revision": revision,
+        "founder_github_handle": (founder_github_handle or "").strip().lstrip("@"),
         "bound": True,
         "bound_by": bound_by,
         "bound_at": ts,
@@ -683,6 +736,7 @@ def resolve_merge_preference_binding(
         "not_before_delay_s": row["not_before_delay_s"],
         "review_required": bool(row["review_required"]),
         "revision": row["revision"],
+        "founder_github_handle": row["founder_github_handle"],
         "bound": True,
         "bound_by": row["bound_by"],
         "bound_at": row["bound_at"],
@@ -1073,6 +1127,29 @@ def decide_and_resume(
                     f"decision head {want_head[:8] or '(none)'} != current PR head "
                     f"{current_head[:8] or '(none)'} on {dest}#{pr_number}"
                 )
+            # IMMUTABLE first decision (Codex r14 #3): if a suspension for this PR
+            # is already past `suspended` (decided/resumed), or — fire-and-forget
+            # — the projection already carries a terminal owner decision on this
+            # same head, REFUSE the second decision. A re-push (new head) resets
+            # the projection + suspension, opening a fresh generation.
+            prior = conn.execute(
+                "SELECT status FROM review_suspensions "
+                "WHERE destination = ? AND pr_number = ? "
+                "ORDER BY suspended_at DESC LIMIT 1",
+                (dest, pr_number),
+            ).fetchone()
+            if prior is not None and prior["status"] in (
+                SUSPENSION_DECIDED, SUSPENSION_RESUMED
+            ):
+                raise DecisionLocked(
+                    f"{dest}#{pr_number} already has a recorded decision on head "
+                    f"{current_head[:8]}; the first decision is immutable"
+                )
+            if prior is None and (proj["owner_intent"] or "").strip():
+                raise DecisionLocked(
+                    f"{dest}#{pr_number} already decided ({proj['owner_intent']}); "
+                    "the first decision on this head is immutable"
+                )
             conn.execute(
                 """
                 UPDATE pr_projection SET
@@ -1187,6 +1264,51 @@ def list_pending_continuations(universe_dir: str | Path) -> list[dict[str, Any]]
     return [_suspension_to_dict(r) for r in rows]
 
 
+# ── effect receipts (idempotent replay — Codex r14 #7) ───────────────────────
+
+
+def record_effect_receipt(
+    universe_dir: str | Path, *, run_id: str, effect_kind: str,
+    detail: dict[str, Any] | None = None, now: float | None = None,
+) -> bool:
+    """Record that a GitHub effect (``effect_kind``) for ``run_id`` was performed.
+    Returns True if newly recorded, False if a receipt already existed (a replay
+    must NOT re-perform it). Idempotent via ``INSERT OR IGNORE`` on the PK."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO effect_receipts "
+                "(run_id, effect_kind, detail, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    (run_id or "").strip(), effect_kind,
+                    json.dumps(detail) if detail else "", ts,
+                ),
+            )
+            return cur.rowcount > 0
+
+
+def has_effect_receipt(
+    universe_dir: str | Path, *, run_id: str, effect_kind: str
+) -> dict[str, Any] | None:
+    """Return the receipt for ``(run_id, effect_kind)`` if it exists, else None."""
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        row = conn.execute(
+            "SELECT * FROM effect_receipts WHERE run_id = ? AND effect_kind = ?",
+            ((run_id or "").strip(), effect_kind),
+        ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    try:
+        d["detail"] = json.loads(d["detail"]) if d.get("detail") else None
+    except (ValueError, TypeError):
+        d["detail"] = None
+    return d
+
+
 __all__ = [
     "VERIFY_PASS",
     "VERIFY_FAIL",
@@ -1205,6 +1327,7 @@ __all__ = [
     "INTENT_RESHAPE",
     "INTENT_REJECT",
     "ReviewHeadChanged",
+    "DecisionLocked",
     "review_queue_db_path",
     "initialize_review_queue_db",
     "project_pr",
@@ -1214,6 +1337,7 @@ __all__ = [
     "reconcile_projection",
     "enqueue_reshape",
     "list_pending_reshapes",
+    "mark_reshape_outbox_consumed",
     "set_merge_preference_binding",
     "resolve_merge_preference_binding",
     "schedule_not_before",
@@ -1230,4 +1354,6 @@ __all__ = [
     "decide_and_resume",
     "ack_continuation",
     "list_pending_continuations",
+    "record_effect_receipt",
+    "has_effect_receipt",
 ]

@@ -98,14 +98,14 @@ def test_fails_without_codeowners_catchall():
     api = InMemoryGitHubApi(codeowners="/docs @owner\n")
     gated, summary = _verify(api)
     assert gated is False
-    assert "codeowners_catchall_owner" in summary["missing"]
+    assert "codeowners_founder_effective_owner" in summary["missing"]
 
 
 def test_fails_when_catchall_owned_by_someone_else():
     api = InMemoryGitHubApi(codeowners="* @not-the-founder\n")
     gated, summary = _verify(api, expected_owner="owner")
     assert gated is False
-    assert "codeowners_catchall_owner" in summary["missing"]
+    assert "codeowners_founder_effective_owner" in summary["missing"]
 
 
 def test_fails_when_expected_owner_unknown():

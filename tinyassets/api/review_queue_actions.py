@@ -34,7 +34,7 @@ from typing import Any
 
 from tinyassets import github_native
 from tinyassets import merge_policy as mp
-from tinyassets.storage.review_queue import ReviewHeadChanged
+from tinyassets.storage.review_queue import DecisionLocked, ReviewHeadChanged
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,16 @@ def _head_changed(exc: ReviewHeadChanged) -> str:
     return json.dumps({
         "error": str(exc),
         "failure_class": "head_changed",
+        "actionable_by": "chatbot",
+    })
+
+
+def _decision_locked(exc: DecisionLocked) -> str:
+    """Codex r14 #3: the first decision on a head is immutable — a second
+    conflicting decision is refused, never silently overwrites."""
+    return json.dumps({
+        "error": str(exc),
+        "failure_class": "decision_locked",
         "actionable_by": "chatbot",
     })
 
@@ -249,6 +259,8 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
+    except DecisionLocked as exc:
+        return _decision_locked(exc)
     except Exception as exc:
         logger.exception("review_queue_approve failed")
         return json.dumps({
@@ -324,7 +336,8 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             destination=destination, pr_number=pr_number,
             intent=INTENT_RESHAPE, workflow_outcome=WORKFLOW_RESHAPED,
             decided_by=_current_actor(), expected_head_sha=head,
-            directive={"action": "draft_patch", "route_back": route_back},
+            directive={"action": "draft_patch", "route_back": route_back,
+                       "github_call": call.to_dict()},
             recorded_call=call.to_dict(), notes=notes,
             reshape={
                 "universe_id": existing.get("universe_id") or "",
@@ -335,6 +348,8 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
+    except DecisionLocked as exc:
+        return _decision_locked(exc)
     except Exception as exc:
         logger.exception("review_queue_reshape failed")
         return json.dumps({
@@ -389,11 +404,13 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             destination=destination, pr_number=pr_number,
             intent=INTENT_REJECT, workflow_outcome=WORKFLOW_REJECTED,
             decided_by=_current_actor(), expected_head_sha=head,
-            directive={"action": "terminal_reject"},
+            directive={"action": "terminal_reject", "github_call": call.to_dict()},
             recorded_call=call.to_dict(), notes=notes,
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
+    except DecisionLocked as exc:
+        return _decision_locked(exc)
     except Exception as exc:
         logger.exception("review_queue_reject failed")
         return json.dumps({

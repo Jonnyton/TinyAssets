@@ -35,8 +35,9 @@ class ScriptedTransport:
         if suffix == "" and "graphql" in url:
             suffix = "/graphql"
         self.calls.append((method, suffix))
+        match_suffix = suffix.split("?", 1)[0]  # ignore query (e.g. ?ref=main)
         for (m, s), queue in self._routes.items():
-            if m == method and suffix.endswith(s) and queue:
+            if m == method and match_suffix.endswith(s) and queue:
                 # Repeat the last queued response so retry-on-5xx sees a stable
                 # status instead of running the queue dry.
                 return queue.pop(0) if len(queue) > 1 else queue[0]

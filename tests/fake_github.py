@@ -62,7 +62,7 @@ class InMemoryGitHubApi:
         self,
         *,
         rulesets: list[dict[str, Any]] | None = None,
-        codeowners: str | None = "* @owner\n",
+        codeowners: str | None = "* @owner\n.github/CODEOWNERS @owner\n",
         pulls: dict[int, dict[str, Any]] | None = None,
         raise_on_rulesets: bool = False,
         default_base_ref: str = "main",
@@ -80,8 +80,8 @@ class InMemoryGitHubApi:
             raise RuntimeError("403 Forbidden (fake)")
         return list(self._rulesets)
 
-    def get_codeowners(self, *, destination: str) -> str | None:
-        self.calls.append(("get_codeowners", {"destination": destination}))
+    def get_codeowners(self, *, destination: str, ref: str = "") -> str | None:
+        self.calls.append(("get_codeowners", {"destination": destination, "ref": ref}))
         return self._codeowners
 
     def get_pull(self, *, destination: str, pr_number: int) -> dict[str, Any]:
