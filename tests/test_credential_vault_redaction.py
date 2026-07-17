@@ -167,6 +167,54 @@ def test_platform_never_leaks_canary(tmp_path, caplog_root):
     _assert_absent(CANARY_PEM, log_blob, "logs")
 
 
+def test_reprs_hide_internal_metadata(tmp_path):
+    """No repr/str of any vault type may leak custody/store/daemon ids, version,
+    ciphertext, wrapped DEKs, or filesystem paths (design forbids them in logs)."""
+    from tinyassets.credentials import DpapiBlob, EncryptedRow, SecretBinding
+    from tinyassets.credentials.types import DescriptorState, SecretDescriptor
+
+    kek = sodium.randombytes(32)
+    be = PlatformVaultBackend(
+        InMemoryKeyProvider({"STOREKEY-CANARY": kek}, "STOREKEY-CANARY"),
+        store_id="STOREID-CANARY", db_path=tmp_path / "vault.db",
+    )
+    store = VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="STOREID-CANARY")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(CANARY_TOKEN))
+    lease = be.get(d.binding, SCOPE)
+
+    daemon_store = VaultStore(
+        custody=Custody.DAEMON_LOCAL, store_id="STOREID-CANARY", daemon_id="DAEMON-CANARY"
+    )
+    binding = SecretBinding(
+        ref=d.binding.ref, kind=SecretKind.API_KEY, scope=SCOPE, store=daemon_store
+    )
+    descriptor = SecretDescriptor(
+        binding=binding, version=7770001, created_at=1.0, updated_at=2.0,
+        state=DescriptorState.REVOCATION_PENDING,
+    )
+    enc = EncryptedRow(
+        descriptor=descriptor, algorithm="xchacha20poly1305-ietf", key_id="STOREKEY-CANARY",
+        wrap_nonce=b"WRAPCANARY", wrapped_dek=b"DEKCANARY", data_nonce=b"NONCECANARY",
+        ciphertext=b"CIPHERTEXT-CANARY",
+    )
+    blob_meta = DpapiBlob(descriptor=descriptor, blob_path="C:/secret/PATH-CANARY.json")
+
+    forbidden = (
+        "STOREID-CANARY", "DAEMON-CANARY", "STOREKEY-CANARY", "7770001",
+        "REVOCATION_PENDING", "revocation_pending", "CIPHERTEXT-CANARY",
+        "DEKCANARY", "WRAPCANARY", "PATH-CANARY",
+    )
+    surfaces = [
+        repr(store), str(store), repr(daemon_store), repr(binding), str(binding),
+        repr(descriptor), str(descriptor), repr(lease), str(lease), format(lease),
+        repr(enc), str(enc), repr(blob_meta), str(blob_meta),
+    ]
+    lease.zero()
+    for surface in surfaces:
+        for token in forbidden:
+            assert token not in surface, f"internal metadata {token!r} leaked in {surface[:60]!r}"
+
+
 def test_public_projection_is_allowlist_only(tmp_path):
     kek = sodium.randombytes(32)
     be = PlatformVaultBackend(

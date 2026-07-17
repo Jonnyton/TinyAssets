@@ -24,10 +24,12 @@ from tinyassets.credentials import (
     FileKeyProvider,
     InMemoryKeyProvider,
     PlatformVaultBackend,
+    RefreshTicket,
     SecretBinding,
     SecretBytes,
     SecretKind,
     SecretScope,
+    VaultBroker,
     VaultErrorCode,
     VaultStore,
 )
@@ -500,6 +502,92 @@ def test_attestation_converts_probe_read_fault_to_failed_result(tmp_path):
             SCOPE,
         )
     assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+
+# ===========================================================================
+# Review r4 finding 2 — per-record DACL verified at ACCESS (not cached probe)
+# ===========================================================================
+
+
+@WINDOWS_ONLY
+def test_broadened_dacl_fails_get_closed(tmp_path):
+    """A credential whose DACL is broadened AFTER the boot probe must fail get()
+    closed — never return the secret from a world-readable blob."""
+    import ntsecuritycon
+    import win32security
+
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"localsecret"))
+    with be.get(d.binding, SCOPE) as lease:  # fine while narrow
+        assert lease.reveal() == b"localsecret"
+
+    blob = str(be._blob_path(d.binding.ref))
+    everyone = win32security.ConvertStringSidToSid("S-1-1-0")
+    sd = win32security.GetFileSecurity(blob, win32security.DACL_SECURITY_INFORMATION)
+    dacl = sd.GetSecurityDescriptorDacl()
+    dacl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_GENERIC_READ, everyone)
+    win32security.SetNamedSecurityInfo(
+        blob, win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        None, None, dacl, None,
+    )
+    with pytest.raises(CredentialUnavailable) as exc:
+        be.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+
+# ===========================================================================
+# Review r4 finding 3 — refresh is a first-class broker op, completion bound
+# ===========================================================================
+
+
+def test_broker_protocol_includes_refresh(platform):
+    assert isinstance(platform, VaultBroker)  # begin/complete present + typed
+    assert hasattr(VaultBroker, "begin_refresh")
+    assert hasattr(VaultBroker, "complete_refresh")
+
+
+def test_complete_refresh_requires_valid_ticket(platform, store):
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t1"))
+    ticket = platform.begin_refresh(d.binding, SCOPE, "A", at_version=1)
+    d2 = platform.complete_refresh(d.binding, SCOPE, ticket, SecretBytes(b"t2"))
+    assert d2.version == 2
+    with platform.get(d2.binding, SCOPE) as lease:
+        assert lease.reveal() == b"t2"
+    # a forged ticket whose claim is NOT on record cannot complete a refresh
+    bogus = RefreshTicket(ref=d.binding.ref, version=2, holder="attacker")
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.complete_refresh(d2.binding, SCOPE, bogus, SecretBytes(b"evil"))
+    assert exc.value.code == VaultErrorCode.LEASE_LOST
+
+
+# ===========================================================================
+# Review r4 finding 5 — typed errors after cached attestation + ref validation
+# ===========================================================================
+
+
+def test_corrupt_db_after_attestation_is_typed_and_invalidates_gate(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    with open(tmp_path / "vault.db", "r+b") as fh:
+        fh.seek(0)
+        fh.write(b"NOT A SQLITE DATABASE HEADER" * 20)
+    with pytest.raises(CredentialUnavailable) as exc:  # never a raw sqlite3 error
+        platform.get(d.binding, SCOPE)
+    assert exc.value.code in {VaultErrorCode.CORRUPT_RECORD, VaultErrorCode.BACKEND_UNAVAILABLE}
+    assert platform._attested is None  # cached gate invalidated → re-probes next time
+
+
+def test_malformed_ref_is_not_echoed(platform, store):
+    injected = SecretBinding(
+        ref="secret:v1:zz\ninjected-log-line", kind=SecretKind.API_KEY, scope=SCOPE, store=store
+    )
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.get(injected, SCOPE)
+    assert exc.value.code == VaultErrorCode.NOT_FOUND
+    assert exc.value.ref is None  # malformed ref never echoed into the error
+    assert "injected" not in str(exc.value)
 
 
 @WINDOWS_ONLY

@@ -274,10 +274,9 @@ def _claim_worker(args: tuple[str, str, str, str, str, int, bool]) -> str:
                 return "skip-claimed"
             # THE single provider redemption for this refresh event
             Path(marker_dir, f"call-{n}.marker").write_text("1", encoding="utf-8")
-            be.put(
-                _store(), SCOPE, SecretKind.GITHUB_APP_USER_TOKEN,
-                SecretBytes(f"fresh-{n}".encode()), replace=ref,
-                expected_version=ticket.version,
+            # completion bound to the durable ticket (sanctioned broker path)
+            be.complete_refresh(
+                binding, SCOPE, ticket, SecretBytes(f"fresh-{n}".encode())
             )
             return "refreshed"
     except CredentialUnavailable as exc:
@@ -359,11 +358,49 @@ def test_refresh_claim_survives_hard_crash(tmp_path):
     assert be2.begin_refresh(binding, SCOPE, "recover", at_version=1) is None
 
 
-def test_vault_db_is_synchronous_full(tmp_path):
+def test_vault_db_durability_posture(tmp_path):
     be = _build(str(tmp_path / "v.db"), sodium.randombytes(32).hex(), "k1")
     info = be.durability_info()
     assert info["synchronous"] == "FULL"  # power-loss durable
-    assert info["journal_mode"].upper() == "WAL"
+    # NOT WAL — avoids the SQLite WAL-reset concurrent-writer corruption bug.
+    assert info["journal_mode"].upper() in {"TRUNCATE", "DELETE"}
+    assert info["journal_mode"].upper() != "WAL"
+
+
+# ---------------------------------------------------------------------------
+# Worker 7: daemon-local writes are power-loss durable (fsync) — survive a HARD
+# process kill (review r4 #6).
+# ---------------------------------------------------------------------------
+
+
+def _dpapi_put_then_crash(args: tuple[str, str]) -> None:
+    base, ref_file = args
+    be = DpapiVaultBackend(daemon_id=DAEMON_ID, store_id=STORE_ID, base=base)
+    store = _dpapi_store(STORE_ID, DAEMON_ID)
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"durable-local"))
+    Path(ref_file).write_text(d.binding.ref, encoding="utf-8")
+    os._exit(0)  # HARD crash after the fsync'd durable write
+
+
+@WINDOWS_ONLY
+def test_local_write_survives_hard_crash(tmp_path):
+    base = str(tmp_path / "loc")
+    ref_file = str(tmp_path / "ref.txt")
+    ctx = mp.get_context("spawn")
+    proc = ctx.Process(target=_dpapi_put_then_crash, args=((base, ref_file),))
+    proc.start()
+    proc.join(timeout=60)
+    assert proc.exitcode == 0, f"crash worker exit={proc.exitcode}"
+
+    ref = Path(ref_file).read_text(encoding="utf-8").strip()
+    be = DpapiVaultBackend(daemon_id=DAEMON_ID, store_id=STORE_ID, base=base)
+    be.attest()
+    binding = SecretBinding(
+        ref=ref, kind=SecretKind.API_KEY, scope=SCOPE,
+        store=_dpapi_store(STORE_ID, DAEMON_ID),
+    )
+    with be.get(binding, SCOPE) as lease:
+        assert lease.reveal() == b"durable-local"
 
 
 @WINDOWS_ONLY
