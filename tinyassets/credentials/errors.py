@@ -36,10 +36,15 @@ class VaultErrorCode:
     REVOKED = "REVOKED"
     EXPIRED = "EXPIRED"
     DISABLED = "DISABLED"
-    # A refresh was claimed but never completed (crash/wedge): the provider may
-    # or may not have rotated the one-use token, so the state is UNKNOWN — the
-    # user must re-authorize. Retrying is unsafe; a silent None is dishonest.
+    # A refresh was claimed but never completed (crash/wedge), OR the store was
+    # rolled back (restored from an older snapshot): the provider may have rotated
+    # the one-use token, so the state is UNKNOWN — the user must re-authorize.
+    # Retrying is unsafe; a silent None is dishonest.
     REAUTHORIZATION_REQUIRED = "REAUTHORIZATION_REQUIRED"
+    # Caller-supplied argument is invalid (empty/oversized payload, bad CAS
+    # pairing, inactive rotation key). Typed so the broker contract holds: every
+    # failure is CredentialUnavailable, never a raw ValueError.
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"
 
     _ALL = frozenset(
         {
@@ -59,6 +64,7 @@ class VaultErrorCode:
             EXPIRED,
             DISABLED,
             REAUTHORIZATION_REQUIRED,
+            INVALID_ARGUMENT,
         }
     )
 

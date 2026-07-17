@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import NoReturn
 
+from .errors import CredentialUnavailable, VaultErrorCode
+
 _REDACTED = "<redacted-secret>"
 
 # A credential value (token / PEM / key bundle) is small; cap it generously so a
@@ -25,13 +27,12 @@ MAX_SECRET_BYTES = 1 * 1024 * 1024  # 1 MiB
 def require_nonempty_bounded(value: "SecretBytes") -> None:
     """Reject an empty or oversized credential payload at the broker boundary.
 
-    Raised BEFORE any write, so a rejected CAS/deposit preserves the prior value.
+    Raised (TYPED) BEFORE any write, so a rejected CAS/deposit preserves the prior
+    value; the broker contract holds (never a raw ValueError).
     """
     length = len(value)
-    if length == 0:
-        raise ValueError("empty credential payload is not allowed")
-    if length > MAX_SECRET_BYTES:
-        raise ValueError(f"credential payload exceeds the {MAX_SECRET_BYTES}-byte cap")
+    if length == 0 or length > MAX_SECRET_BYTES:
+        raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
 
 
 def _refuse_serialize(*_args: object, **_kwargs: object) -> NoReturn:

@@ -52,12 +52,13 @@ def require_cas_pairing(replace: str | None, expected_version: int | None) -> No
     """``replace`` and ``expected_version`` must be supplied together or not at all.
 
     A replace without a CAS guard silently permits lost updates (v1->v2->v3); an
-    expected_version without a replace is a caller mistake. Reject both inverses.
+    expected_version without a replace is a caller mistake. Reject both inverses
+    with a TYPED error (broker contract: every failure is CredentialUnavailable).
     """
     if replace is not None and expected_version is None:
-        raise ValueError("put(replace=...) requires expected_version for a safe CAS")
+        raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
     if replace is None and expected_version is not None:
-        raise ValueError("put(expected_version=...) is only valid with replace=...")
+        raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
 
 
 LEASE_SCHEMA = """
@@ -87,6 +88,14 @@ CREATE TABLE IF NOT EXISTS vault_refresh_claims (
     deleted         INTEGER NOT NULL DEFAULT 0
 );
 
+-- Monotonic anti-rollback epoch (one row). Bumped on every mutation; mirrored
+-- to a file OUTSIDE the DB snapshot so a full-DB / full-directory restore leaves
+-- the DB epoch BEHIND the mirror, which is detected as a rollback.
+CREATE TABLE IF NOT EXISTS vault_meta (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    epoch INTEGER NOT NULL
+);
+
 -- Daemon-local AUTHORITATIVE liveness pointer (unused by the platform backend).
 -- The credential value lives in a per-version sidecar FILE, but which version is
 -- LIVE is decided ONLY by this control-DB row: the sidecar write is subordinate
@@ -97,6 +106,23 @@ CREATE TABLE IF NOT EXISTS vault_local_live (
     live_version INTEGER NOT NULL
 );
 """
+
+
+def read_epoch(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT epoch FROM vault_meta WHERE id = 1").fetchone()
+    return 0 if row is None else int(row["epoch"])
+
+
+def bump_epoch(conn: sqlite3.Connection) -> int:
+    """Increment + return the anti-rollback epoch (call inside a mutation txn)."""
+    current = read_epoch(conn)
+    new = current + 1
+    conn.execute(
+        "INSERT INTO vault_meta(id, epoch) VALUES(1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch",
+        (new,),
+    )
+    return new
 
 
 def get_live_version(conn: sqlite3.Connection, ref: str) -> int | None:
