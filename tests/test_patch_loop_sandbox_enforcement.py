@@ -2594,6 +2594,87 @@ def test_resume_threads_persisted_compile_context(tmp_path, monkeypatch):
     assert captured["enqueue_context"] == context
 
 
+def test_resume_dispatches_persisted_context_in_executor_request(tmp_path, monkeypatch):
+    """The resume path's actual executor envelope carries the original context."""
+    from types import SimpleNamespace
+
+    import tinyassets.sandbox_policy as sp
+    from tinyassets import runs
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.graph_compiler import (
+        EXECUTION_REQUEST_SCHEMA_VERSION,
+        NodeEnqueueContext,
+        _build_node,
+        make_execution_response,
+    )
+
+    context = NodeEnqueueContext(
+        universe_id="tenant-A", actor="tester",
+        parent_branch_task_id="parent-task", origin_branch_task_id="origin-task",
+    )
+    branch = BranchDefinition(branch_def_id="resume-dispatch", name="resume")
+    run_id = runs.create_run(
+        tmp_path, branch_def_id=branch.branch_def_id, thread_id="resume-dispatch",
+        inputs={}, actor="tester", invocation_depth=3, enqueue_context=context,
+    )
+    dispatched = []
+    resolved_during_dispatch = []
+
+    class CaptureExecutor:
+        executor_class = sp.EXECUTOR_CLASS_REPO
+
+        def supports(self, capability_class):
+            return capability_class == self.executor_class
+
+        def supported_request_schema_versions(self):
+            return frozenset({EXECUTION_REQUEST_SCHEMA_VERSION})
+
+        def is_healthy(self):
+            return True
+
+        def dispatch(self, request):
+            dispatched.append(request)
+            resolved_during_dispatch.append(sp.resolve_workspace_ref(
+                request["workspace_ref"], run_id=request["parent_run_id"],
+                audience=request["capability_class"],
+            ))
+            return make_execution_response(status="ok", result={})
+
+    monkeypatch.setattr(sp, "resolve_isolated_executor", lambda _class: CaptureExecutor())
+
+    def _compile_for_resume(_branch, **kwargs):
+        node_fn = _build_node(
+            _coding_node(), provider_call=None, event_sink=None,
+            base_path=kwargs["base_path"], parent_run_id=kwargs["parent_run_id"],
+            invocation_depth=kwargs["invocation_depth"],
+            enqueue_context=kwargs["enqueue_context"],
+            execution_scope=kwargs["execution_scope"],
+        )
+        app = SimpleNamespace(invoke=lambda *_args, **_kwargs: node_fn({}))
+        graph = SimpleNamespace(compile=lambda **_kwargs: app)
+        return SimpleNamespace(graph=graph)
+
+    monkeypatch.setattr(runs, "compile_branch", _compile_for_resume)
+    outcome = runs._invoke_graph_resume(
+        tmp_path, run_id=run_id, branch=branch, thread_id=run_id,
+        provider_call=None, execution_scope=ExecutionScope.legacy_unbound(),
+    )
+    assert outcome.status == runs.RUN_STATUS_COMPLETED
+    assert len(dispatched) == 1
+    request = dispatched[0]
+    assert request["parent_run_id"] == run_id
+    assert request["invocation_depth"] == 3
+    assert request["enqueue_context"] == {
+        "universe_id": "tenant-A", "actor": "tester",
+        "parent_branch_task_id": "parent-task",
+        "origin_branch_task_id": "origin-task",
+    }
+    assert resolved_during_dispatch == [str(tmp_path)]
+    assert sp.resolve_workspace_ref(
+        request["workspace_ref"], run_id=run_id, audience=sp.EXECUTOR_CLASS_REPO,
+    ) is None
+
+
 # --------------------------------------------------------------------------- #
 # Codex S3 r20 #3 — workspace references have a real job lifecycle: bound to
 # run_id + executor audience + expiry, revoked on terminal cleanup, bounded.
