@@ -312,6 +312,17 @@ class IsolatedExecutor(Protocol):
     #: the executor's capability class — must equal EXECUTOR_CLASS_{REPO,SOURCE_EXEC}.
     executor_class: str
 
+    def supports(self, capability_class: str) -> bool:
+        """True when this executor can run adapters of *capability_class* (Codex S3
+        r18 #1 — DECLARE supported capabilities, don't infer from a single attr)."""
+        ...
+
+    def supported_request_schema_versions(self) -> "frozenset[int]":
+        """The execution-request schema versions this executor consumes (Codex S3
+        r18 #1). The daemon refuses to dispatch a request whose schema version the
+        executor does not support (contract compatibility)."""
+        ...
+
     def is_healthy(self) -> bool:
         """True when the executor is attested/healthy and ready to dispatch."""
         ...
@@ -325,20 +336,30 @@ class IsolatedExecutor(Protocol):
 
 def executor_satisfies(executor: Any, executor_class: str) -> bool:
     """True iff *executor* is a TYPED, HEALTHY, dispatch-available
-    :class:`IsolatedExecutor` for *executor_class* (Codex S3 r17 #1). A bare
-    ``True`` / sentinel / callable / wrong-class / unhealthy handle → False.
+    :class:`IsolatedExecutor` that DECLARES support for *executor_class* (Codex S3
+    r17 #1 + r18 #1). A bare ``True`` / sentinel / callable / wrong-class /
+    unhealthy / non-supporting handle → False.
 
     Duck-typed explicitly (not on ``isinstance`` alone) so the check covers the
-    complete executable path: right class, health/attestation, AND a callable
-    ``dispatch``. Any error in the health probe fails CLOSED."""
+    complete executable path: declared capability support, health/attestation, AND
+    a callable ``dispatch``. Any error in a probe fails CLOSED."""
     if executor is None or isinstance(executor, bool):
         return False
     if not isinstance(executor, IsolatedExecutor):
         return False
-    if getattr(executor, "executor_class", None) != executor_class:
-        return False
     _dispatch = getattr(executor, "dispatch", None)
     if not callable(_dispatch):
+        return False
+    # DECLARED capability support (Codex S3 r18 #1). Prefer supports(); fall back
+    # to the executor_class attribute for a minimal executor.
+    _supports = getattr(executor, "supports", None)
+    if callable(_supports):
+        try:
+            if not _supports(executor_class):
+                return False
+        except Exception:  # noqa: BLE001 — a failing support probe ⇒ not ready
+            return False
+    elif getattr(executor, "executor_class", None) != executor_class:
         return False
     _health = getattr(executor, "is_healthy", None)
     if not callable(_health):

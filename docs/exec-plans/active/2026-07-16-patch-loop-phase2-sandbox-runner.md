@@ -118,22 +118,34 @@ are TWO such executors (repo class + source_exec class). Each must provide:
   OWN OS-isolation worker (a source-execution attestation), which is a distinct
   deliverable from the repo runner.
 
-## Delivery gate — a TYPED executor + serializable request, not a boolean (Codex S3 r16/r17)
+## Delivery gate — a TYPED executor + complete serializable request (Codex S3 r16/r17/r18)
 
 **A readiness BOOLEAN is not an execution boundary.** The runtime gate is a TYPED
 `IsolatedExecutor` returned by `sandbox_policy.resolve_isolated_executor(class)`
-and verified by `executor_satisfies` (right class + `is_healthy()` + callable
-`dispatch`). The adapter is DISPATCHED to it as a SERIALIZABLE REQUEST
-(`graph_compiler.build_executor_execution_request`) and runs INSIDE the worker,
-NEVER as `fn(state)` in the daemon. In Phase 1 `resolve_isolated_executor` returns
-`None`, so `coding_nodes_runnable()` / `source_exec_runnable()` (which DERIVE from
-it) are `False` and every sandbox-required adapter is refused. Phase 2 delivers by:
+and verified by `executor_satisfies` — it DECLARES capabilities (`supports(class)`)
++ request-schema support (`supported_request_schema_versions()`), is `is_healthy()`,
+and has a callable `dispatch` (r18 #1: a bare `True`/sentinel/wrong-class/unhealthy/
+non-supporting handle is rejected). The adapter is DISPATCHED as a COMPLETE
+SERIALIZABLE REQUEST (`graph_compiler.build_executor_execution_request`, versioned
+by `EXECUTION_REQUEST_SCHEMA_VERSION`) carrying everything `compile_branch`
+computes — node spec, inputs, capability class, domain, state schema, effective
+`llm_policy`, concurrency budget, a SERIALIZABLE provider-bridge reference (never
+the callable), data-dir ref + lineage + enqueue context — so the worker can run
+ANY node (source_exec / coding+prompt_template / opaque). It runs INSIDE the
+worker, NEVER as `fn(state)` in the daemon. The adapter builders
+(`_build_prompt_template_node` / `_build_source_code_node` / `_build_opaque_node`)
+are PURE (r18 #1: no second gate) — the single gate is `_build_node`; the isolated
+worker uses the pure builders. A worker failure emits a terminal `failed` event
+(r18 #2). In Phase 1 `resolve_isolated_executor` returns `None`, so
+`coding_nodes_runnable()` / `source_exec_runnable()` (which DERIVE from it) are
+`False` and every sandbox-required adapter is refused. Phase 2 delivers by:
 
-1. Building the subprocess/container executor: a concrete `IsolatedExecutor` whose
-   `dispatch(request)` compiles + executes the request INSIDE the isolated worker,
-   with the env/config/credential/egress/resource guarantees above. (The daemon
-   holds NO adapter callable — the worker is the only thing that turns the request
-   into execution.)
+1. Building the subprocess/container executor: a concrete `IsolatedExecutor` that
+   `supports()` its class + the request schema and whose `dispatch(request)`
+   compiles + executes the request INSIDE the isolated worker, with the
+   env/config/credential/egress/resource guarantees above. (The daemon holds NO
+   adapter callable — the worker is the only thing that turns the request into
+   execution; the request is the runner's complete input contract.)
 2. Returning that TYPED executor from `resolve_isolated_executor` (repo class and
    source_exec class are SEPARATE executors — the in-process `exec` worker is
    distinct from the repo-checkout runner).

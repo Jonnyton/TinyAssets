@@ -975,52 +975,19 @@ def _build_prompt_template_node(
     # fast+cheap) + the node's own timeout. Built once per node. ModelConfig is
     # imported lazily so graph_compiler keeps no hard provider import.
     _node_reasoning_effort = (getattr(node, "reasoning_effort", "") or "").strip()
-    # SECURITY (patch-loop S3 — Codex REJECT reframe): classify node capability.
-    # A REPO-TOUCHING node (coding=repo-write / repo_exec=run commands /
-    # repo_read=inspect) requires the per-job sandbox runner subsystem (prepared
-    # checkout + tenant isolation + scoped creds + egress/resource limits), which
-    # does NOT exist in this deployment (a future slice). So repo-touching nodes
-    # FAIL CLOSED on EVERY provider, deterministically, before any provider spawn
-    # (C3/C4/R5). A plain TEXT node gets the closed-tool-surface config and runs.
-    from tinyassets.sandbox_policy import (
-        coding_nodes_runnable as _coding_nodes_runnable,
-    )
-    from tinyassets.sandbox_policy import (
-        node_capability as _node_capability_fn,
-    )
+    # NOTE (Codex S3 r18 #1): this is a PURE adapter builder — the sandbox
+    # capability gate lives ONLY at the single choke point (``_build_node``), which
+    # refuses a repo-touching node BEFORE it ever reaches this builder in the
+    # daemon. The ISOLATED WORKER (Phase-2 runner) uses this builder directly to
+    # run a dispatched node inside its own isolation, so it must NOT re-refuse a
+    # repo/coding node here (a redundant second gate blocked the worker). Approval
+    # + config-build fail-closed guards below remain. ``_node_needs_sandbox`` is
+    # still computed — it drives the config-forwarding refusal + policy-router
+    # ``needs_sandbox`` below (a hardened node must never dispatch config-less).
     from tinyassets.sandbox_policy import (
         node_requires_sandbox_runner as _node_requires_sandbox_runner,
     )
-    _node_capability_kind = _node_capability_fn(node)
     _node_needs_sandbox = _node_requires_sandbox_runner(node)
-    if _node_needs_sandbox:
-        _runner_ok, _runner_reason = _coding_nodes_runnable()
-        if not _runner_ok:
-            try:
-                from tinyassets.providers.base import (
-                    SandboxUnavailableError as _RepoSUE,
-                )
-            except Exception:  # noqa: BLE001
-                _RepoSUE = type("_SandboxUnavailableError", (Exception,), {})
-
-            _cap = _node_capability_kind
-            _nid = node.node_id
-
-            def _repo_capability_fail_closed(
-                state: dict[str, Any],
-            ) -> dict[str, Any]:
-                exc = _RepoSUE(
-                    f"Node '{_nid}' has {_cap} (repo-touching) capability and "
-                    f"cannot run: {_runner_reason}"
-                )
-                # Codex r10 #2: a sandbox refusal is a terminal node failure —
-                # emit the same failed event every other failure gets so the run
-                # record names the refusing node + reason.
-                _emit_failed_event(event_sink, _nid, exc)
-                raise exc
-
-            # Deterministic fail-closed node fn — never builds/uses any provider.
-            return _repo_capability_fail_closed
     try:
         from tinyassets.sandbox_policy import (
             text_node_model_config as _text_node_model_config,
@@ -2657,6 +2624,12 @@ def _build_await_branch_run_node(
     return _node_fn
 
 
+# Version of the serializable execution request / dispatch protocol (Codex S3
+# r18 #1). The isolated worker declares which versions it supports; bump on any
+# breaking change to the request shape so the runner build has a stable contract.
+EXECUTION_REQUEST_SCHEMA_VERSION = 1
+
+
 def build_executor_execution_request(
     node: NodeDefinition,
     inputs: "dict[str, Any]",
@@ -2667,22 +2640,31 @@ def build_executor_execution_request(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    state_schema: "list[dict[str, Any]] | None" = None,
+    effective_llm_policy: "dict[str, Any] | None" = None,
+    concurrency_budget: int | None = None,
+    provider_ref: "dict[str, Any] | None" = None,
 ) -> "dict[str, Any]":
-    """Build the SERIALIZABLE execution REQUEST (Codex S3 r17 #2) an isolated
-    executor consumes: pure DATA — node spec, inputs, capability class, domain,
-    and the run's serializable context (data-dir ref, lineage, enqueue context) —
-    NO callable. The isolated worker (Phase-2 runner) COMPILES + EXECUTES this
-    inside itself; the daemon holds no code that runs the adapter. This is the
-    runner's input contract.
+    """Build the SERIALIZABLE execution REQUEST (Codex S3 r17 #2 + r18 #1) an
+    isolated executor consumes: pure DATA — node spec, inputs, capability class,
+    domain, and the COMPLETE effective execution context ``compile_branch``
+    computes (state schema, effective llm_policy, concurrency budget, a
+    serializable provider-bridge reference, run data-dir ref + lineage + enqueue
+    context) — NO callable. The isolated worker (Phase-2 runner) COMPILES +
+    EXECUTES this inside itself; the daemon holds no code that runs the adapter.
+    This is the runner's complete input contract.
 
-    Note: ``base_path`` here is the run's data-dir reference the worker resolves;
-    a real Phase-2 worker maps it to its OWN prepared/isolated workspace rather
-    than the daemon's host path.
+    ``provider_ref`` is a SERIALIZABLE reference to the provider bridge (e.g.
+    ``{"kind": "platform_call_provider", "universe_id": ...}``), NOT the callable —
+    the worker reconstructs its OWN scoped provider from it. ``base_path`` is the
+    run's data-dir reference; a real Phase-2 worker maps it to its OWN prepared /
+    isolated workspace rather than the daemon's host path.
     """
     import dataclasses as _dc
 
     return {
         "kind": "isolated_execution_request",
+        "schema_version": EXECUTION_REQUEST_SCHEMA_VERSION,
         "capability_class": executor_class,
         "domain_id": domain_id,
         "node_spec": node.to_dict(),
@@ -2693,6 +2675,12 @@ def build_executor_execution_request(
         "enqueue_context": (
             _dc.asdict(enqueue_context) if enqueue_context is not None else None
         ),
+        "state_schema": list(state_schema) if state_schema else [],
+        "effective_llm_policy": (
+            dict(effective_llm_policy) if effective_llm_policy else None
+        ),
+        "concurrency_budget": concurrency_budget,
+        "provider_ref": provider_ref,
     }
 
 
@@ -2706,6 +2694,10 @@ def _build_executor_request_dispatch_node(
     parent_run_id: str,
     invocation_depth: int,
     enqueue_context: "NodeEnqueueContext | None",
+    state_schema: "list[dict[str, Any]] | None",
+    effective_llm_policy: "dict[str, Any] | None",
+    concurrency_budget: int | None,
+    provider_ref: "dict[str, Any] | None",
     event_sink: Callable[..., None] | None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """DISPATCH a sandbox-required adapter to the isolated executor (Codex S3 r16
@@ -2719,6 +2711,21 @@ def _build_executor_request_dispatch_node(
     before ever calling this.
     """
     _nid = node.node_id
+    # Contract compatibility (Codex S3 r18 #1): the executor must DECLARE support
+    # for this request schema version, else it would receive a request it cannot
+    # parse. Fail loud at compile.
+    _schema_support = getattr(executor, "supported_request_schema_versions", None)
+    if callable(_schema_support):
+        try:
+            _supported_versions = _schema_support()
+        except Exception:  # noqa: BLE001 — unknown support ⇒ fail closed
+            _supported_versions = frozenset()
+        if EXECUTION_REQUEST_SCHEMA_VERSION not in _supported_versions:
+            raise CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' executor does not "
+                f"support execution-request schema v{EXECUTION_REQUEST_SCHEMA_VERSION} "
+                f"(supports {sorted(_supported_versions)}); refusing to dispatch."
+            )
     # DAEMON-side authorization (data check, NOT execution): a source_code node's
     # host-approval provenance is validated here at COMPILE time so an unapproved
     # source is refused before any dispatch — the daemon never trusts the worker
@@ -2732,7 +2739,9 @@ def _build_executor_request_dispatch_node(
             node, state, executor_class,
             domain_id=domain_id, base_path=base_path,
             parent_run_id=parent_run_id, invocation_depth=invocation_depth,
-            enqueue_context=enqueue_context,
+            enqueue_context=enqueue_context, state_schema=state_schema,
+            effective_llm_policy=effective_llm_policy,
+            concurrency_budget=concurrency_budget, provider_ref=provider_ref,
         )
         if event_sink is not None:
             try:
@@ -2744,12 +2753,29 @@ def _build_executor_request_dispatch_node(
                 if _is_cancel_exception(exc):
                     raise
                 logger.exception("event_sink raised in %s (starting)", _nid)
-        result = executor.dispatch(request)
+        try:
+            result = executor.dispatch(request)
+        except Exception as exc:
+            # Codex S3 r18 #2 (same class as the r10 sandbox-refusal fix): a worker
+            # failure is a TERMINAL node failure — emit the failed event (wrapped
+            # with node/executor context) before re-raising, so the run records the
+            # failing node + reason, not a node stuck at 'starting'. Cancellation
+            # propagates untouched.
+            if _is_cancel_exception(exc):
+                raise
+            wrapped = CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' executor dispatch "
+                f"failed: {type(exc).__name__}: {exc}"
+            )
+            _emit_failed_event(event_sink, _nid, wrapped)
+            raise wrapped from exc
         if not isinstance(result, dict):
-            raise CompilerError(
-                f"Node '{_nid}': isolated executor '{executor_class}' returned "
+            exc = CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' executor returned "
                 f"{type(result).__name__}, expected a dict of state updates."
             )
+            _emit_failed_event(event_sink, _nid, exc)
+            raise exc
         # Emit the terminal 'ran' event (matching every adapter) so the runner's
         # node-status callback flips the node to 'ran'.
         if event_sink is not None:
@@ -2871,11 +2897,24 @@ def _build_node(
                 # Phase 2: emit a serializable execution REQUEST + dispatch it to
                 # the isolated worker. The daemon builds NO adapter callable here;
                 # checkpoints are evaluated against the returned delta (a data op).
+                # Carry the COMPLETE effective context compile_branch computed
+                # (Codex S3 r18 #1): state schema, effective llm_policy, concurrency
+                # budget, and a SERIALIZABLE provider-bridge reference (never the
+                # callable) so the isolated worker can actually run the node.
+                _provider_ref = None
+                if provider_call is not None:
+                    _uid = getattr(enqueue_context, "universe_id", "") or ""
+                    _provider_ref = {
+                        "kind": "platform_call_provider", "universe_id": _uid,
+                    }
                 _dispatch = _build_executor_request_dispatch_node(
                     node, _executor, _exec_class,
                     domain_id=domain_id, base_path=base_path,
                     parent_run_id=parent_run_id, invocation_depth=invocation_depth,
-                    enqueue_context=enqueue_context, event_sink=event_sink,
+                    enqueue_context=enqueue_context, state_schema=state_schema,
+                    effective_llm_policy=llm_policy,
+                    concurrency_budget=getattr(concurrency_tracker, "budget", None),
+                    provider_ref=_provider_ref, event_sink=event_sink,
                 )
                 return _wrap_with_checkpoints(_dispatch, node, event_sink)
             _refuse = True

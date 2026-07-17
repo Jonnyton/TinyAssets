@@ -90,15 +90,21 @@ def _run_node_capturing_config(node: NodeDefinition) -> ModelConfig | None:
 
 
 def _run_node_expect_fail_closed(node: NodeDefinition):
-    """Compile *node* and assert it FAILS CLOSED (raises SandboxUnavailableError)
-    before any provider is ever called."""
+    """Compile *node* through the single choke point (_build_node) and assert it
+    FAILS CLOSED (raises SandboxUnavailableError) before any provider is called.
+
+    Codex S3 r18 #1: the gate lives ONLY at _build_node now (the adapter builders
+    are pure, so the isolated worker can run a dispatched node), so this must go
+    through _build_node — the real gate — not _build_prompt_template_node."""
+    from tinyassets.graph_compiler import _build_node
+
     called: list = []
 
     def stub(prompt: str, system: str, *, role: str = "writer", config=None) -> str:
         called.append(1)
         return "SHOULD NOT RUN"
 
-    fn = _build_prompt_template_node(node, provider_call=stub, event_sink=None)
+    fn = _build_node(node, provider_call=stub, event_sink=None)
     with pytest.raises(SandboxUnavailableError):
         fn({})
     assert not called, "a repo-touching node must NEVER reach the provider"
@@ -1989,3 +1995,85 @@ def test_build_node_has_no_executor_skip_gate():
     from tinyassets.graph_compiler import _build_node
 
     assert "_skip_executor_gate" not in inspect.signature(_build_node).parameters
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r18 #1 — the request carries the COMPLETE context: the worker runs the
+# draft_patch coding+prompt_template path END-TO-END from the request.
+# --------------------------------------------------------------------------- #
+
+
+def test_draft_patch_coding_prompt_template_dispatched_end_to_end(monkeypatch):
+    from tests._executor_sim import install_worker_sim
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.call import call_provider
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    install_worker_sim(monkeypatch)  # TYPED executor whose dispatch runs the node
+    node = NodeDefinition(
+        node_id="draft_patch", display_name="Draft", node_kind="coding",
+        prompt_template="implement: {task}", input_keys=["task"],
+        output_keys=["draft_patch_output"],
+    )
+    # It is a coding (sandbox-required) node → routed to the isolated executor.
+    assert effective_node_capability(node) == "coding"
+    fn = _build_node(
+        node, provider_call=call_provider, event_sink=None,
+        state_schema=[
+            {"name": "task", "type": "str"},
+            {"name": "draft_patch_output", "type": "str"},
+        ],
+    )
+    # Runs END-TO-END inside the (in-process) worker from the serializable request —
+    # the request carried provider_ref + state_schema + effective policy, so the
+    # worker could reconstruct the provider bridge and execute the prompt node.
+    out = fn({"task": "fix the bug"})
+    assert "draft_patch_output" in out
+    assert out["draft_patch_output"]  # non-empty (mock provider response)
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r18 #2 — a worker (dispatch) failure emits a TERMINAL failed event
+# (same class as the r10 sandbox-refusal fix), not a node stuck at 'starting'.
+# --------------------------------------------------------------------------- #
+
+
+def test_executor_dispatch_failure_emits_failed_event(_opaque_registry, monkeypatch):
+    import tinyassets.sandbox_policy as sp
+    from tinyassets.graph_compiler import (
+        EXECUTION_REQUEST_SCHEMA_VERSION,
+        CompilerError,
+        _build_node,
+    )
+
+    class RaisingExecutor:
+        executor_class = "repo"
+
+        def supports(self, c):
+            return c == "repo"
+
+        def supported_request_schema_versions(self):
+            return frozenset({EXECUTION_REQUEST_SCHEMA_VERSION})
+
+        def is_healthy(self):
+            return True
+
+        def dispatch(self, request):
+            raise RuntimeError("worker exploded")
+
+    monkeypatch.setattr(sp, "resolve_isolated_executor", lambda cls: RaisingExecutor())
+    _opaque_registry.register_domain_callable(
+        "rd", "rr", lambda s: {"ok": 1}, capability="repo_read",
+    )
+    events: list = []
+
+    def sink(node_id, **detail):
+        events.append((node_id, detail.get("phase")))
+
+    node = NodeDefinition(node_id="rr", display_name="R", output_keys=["ok"])
+    fn = _build_node(node, provider_call=None, event_sink=sink, domain_id="rd")
+    with pytest.raises(CompilerError):
+        fn({})
+    failed = [e for e in events if e[1] == "failed"]
+    assert failed, f"no terminal failed event emitted: {events}"
+    assert failed[0][0] == "rr"
