@@ -4,7 +4,7 @@ This closes the known concurrent-refresh CVE class (Better Auth CVE-2026-53517;
 rotating-refresh providers revoke the whole token family on replay). Two proofs:
 
 * **50+ concurrent put/get/delete** across real OS processes against one
-  rollback-journal (TRUNCATE + EXTRA, NOT WAL) DB — proves the store survives
+  rollback-journal (DELETE + EXTRA, NOT WAL) DB — proves the store survives
   simultaneous writers with no corruption or lost fail-closed semantics.
 * **single-refresh race** — many workers race to refresh ONE ref; the fenced
   exclusive per-ref lease + still-held check + fenced commit means exactly ONE

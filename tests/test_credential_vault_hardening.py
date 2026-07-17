@@ -520,7 +520,7 @@ def test_broadened_dacl_fails_get_closed(tmp_path):
     with be.get(d.binding, SCOPE) as lease:  # fine while narrow
         assert lease.reveal() == b"localsecret"
 
-    blob = str(be._blob_path(d.binding.ref))
+    blob = str(be._blob_path(d.binding.ref, d.version))
     everyone = win32security.ConvertStringSidToSid("S-1-1-0")
     sd = win32security.GetFileSecurity(blob, win32security.DACL_SECURITY_INFORMATION)
     dacl = sd.GetSecurityDescriptorDacl()
@@ -544,6 +544,111 @@ def test_broker_protocol_includes_refresh(platform):
     assert isinstance(platform, VaultBroker)  # begin/complete present + typed
     assert hasattr(VaultBroker, "begin_refresh")
     assert hasattr(VaultBroker, "complete_refresh")
+
+
+# ===========================================================================
+# Review r8 finding 1 — local CAS: SQLite commit is authoritative
+# ===========================================================================
+
+
+@WINDOWS_ONLY
+def test_local_commit_failure_preserves_old_value(tmp_path, monkeypatch):
+    from tinyassets.credentials import leases as vault_leases
+
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v1"))
+    d2 = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v2"),
+                replace=d.binding.ref, expected_version=1)
+
+    def _boom(_conn, _ref, _version):
+        raise sqlite3.OperationalError("injected control-DB commit failure")
+
+    monkeypatch.setattr(vault_leases, "set_live_version", _boom)
+    with pytest.raises(CredentialUnavailable) as exc:
+        be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v3-must-not-persist"),
+               replace=d.binding.ref, expected_version=2)
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+    monkeypatch.undo()
+    # the control-DB live-version pointer never advanced → OLD value is live
+    with be.get(d2.binding, SCOPE) as lease:
+        assert lease.reveal() == b"v2"
+        assert lease.version == 2
+
+
+# ===========================================================================
+# Review r8 finding 2 — crash mid-refresh → reauthorization_required
+# ===========================================================================
+
+
+def test_wedged_refresh_surfaces_reauthorization(platform, store, tmp_path):
+    """A refresh claimed at the current version but never completed (a crash at
+    ANY of the three boundaries — before the provider call, after provider
+    success before persist, before completion — all converge to this same
+    persisted state) surfaces REAUTHORIZATION_REQUIRED once past the wedge
+    timeout: never a silent-None wedge, never an unsafe retry."""
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    b = d.binding
+    tk = platform.begin_refresh(b, SCOPE, "A", at_version=1)  # claimed, never completed
+    assert tk is not None
+    # recent claim = in-flight → None (let the holder finish), NOT reauth
+    assert platform.begin_refresh(b, SCOPE, "B", at_version=1, wedge_timeout=300) is None
+    # backdate the claim → wedged past timeout → reauthorization_required
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    conn.execute("UPDATE vault_refresh_claims SET claimed_at = 0 WHERE ref = ?", (b.ref,))
+    conn.commit()
+    conn.close()
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.begin_refresh(b, SCOPE, "C", at_version=1, wedge_timeout=1.0)
+    assert exc.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+
+
+def test_completed_refresh_is_not_wedged(platform, store):
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t1"))
+    b = d.binding
+    tk = platform.begin_refresh(b, SCOPE, "A", at_version=1)
+    platform.complete_refresh(b, SCOPE, tk, SecretBytes(b"t2"))  # advances to v2
+    # a normal next refresh at the NEW version is fine — not a wedge
+    tk2 = platform.begin_refresh(b, SCOPE, "A", at_version=2, wedge_timeout=1.0)
+    assert tk2 is not None
+
+
+# ===========================================================================
+# Review r8 finding 3 — sqlite connect failure normalized (db_path is a dir)
+# ===========================================================================
+
+
+def test_db_path_directory_is_typed(tmp_path):
+    d = tmp_path / "not-a-db"
+    d.mkdir()
+    be = PlatformVaultBackend(_kp("k1"), store_id="platform:default", db_path=d)
+    with pytest.raises(CredentialUnavailable) as exc:  # never a raw OperationalError
+        be.put(
+            VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default"),
+            SCOPE, SecretKind.API_KEY, SecretBytes(b"x"),
+        )
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+
+# ===========================================================================
+# Review r8 finding 4 — attestation probes must not leak permanent tombstones
+# ===========================================================================
+
+
+def test_byo_checks_do_not_leak_tombstones(platform, store, tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    from tinyassets.credentials import byo_execution_enabled
+
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    for _ in range(5):
+        assert byo_execution_enabled(platform, d.binding) is True
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    try:
+        rows = conn.execute("SELECT COUNT(*) FROM vault_refresh_claims").fetchone()[0]
+    finally:
+        conn.close()
+    assert rows == 0  # cached per-boot probe + non-tombstoning probe delete = no leak
 
 
 # ===========================================================================
@@ -579,7 +684,7 @@ def test_deleted_local_sidecar_reappears_refused(tmp_path):
     be.attest()
     store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
     d = be.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
-    blob = be._blob_path(d.binding.ref)
+    blob = be._blob_path(d.binding.ref, d.version)
     saved = blob.read_bytes()
     be.delete(d.binding, SCOPE)  # tombstone (control DB) + remove sidecar
     # the sidecar reappears / is restored WITHOUT touching the control-DB tombstone
@@ -803,7 +908,7 @@ def test_local_sidecar_non_object_is_typed(tmp_path):
     store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
     d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
     # overwrite with valid JSON that is NOT an object → must not leak AttributeError
-    be._blob_path(d.binding.ref).write_text("[]", encoding="utf-8")
+    be._blob_path(d.binding.ref, d.version).write_text("[]", encoding="utf-8")
     with pytest.raises(CredentialUnavailable) as exc:
         be.get(d.binding, SCOPE)
     assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
@@ -864,7 +969,7 @@ def test_local_attestation_verifies_dacl_honestly(tmp_path):
 
     store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
     d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"probe"))
-    blob = be._blob_path(d.binding.ref)
+    blob = be._blob_path(d.binding.ref, d.version)
     assert lb.dacl_is_current_user_and_system_only(blob) is True
 
     # Broaden the DACL (grant Everyone) → the verifier must report False.
