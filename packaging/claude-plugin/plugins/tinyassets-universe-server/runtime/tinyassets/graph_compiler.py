@@ -2709,10 +2709,16 @@ def _build_node(
         _OPAQUE_UNCLASSIFIED as _OPAQUE_UNCLASSIFIED,
     )
     from tinyassets.sandbox_policy import (
+        _SOURCE_EXEC_CAPABILITY as _SOURCE_EXEC,
+    )
+    from tinyassets.sandbox_policy import (
         coding_nodes_runnable as _cnr,
     )
     from tinyassets.sandbox_policy import (
         effective_node_capability as _eff_cap,
+    )
+    from tinyassets.sandbox_policy import (
+        source_exec_runnable as _ser,
     )
     _node_eff_cap = _eff_cap(node, domain_id)
     # A HOST-ONLY adapter is allowed ONLY for a trusted (daemon) compile.
@@ -2735,7 +2741,14 @@ def _build_node(
                 "capability class; refusing an unclassified host-code adapter "
                 "(fail closed)"
             )
+        elif _node_eff_cap == _SOURCE_EXEC:
+            # Codex S3 r15 #1: source_code runs arbitrary Python IN-PROCESS —
+            # gated by its OWN OS-isolation readiness, SEPARATE from the per-job
+            # REPO runner. Repo-runner readiness must NEVER enable in-process exec.
+            _runner_ok, _runner_reason = _ser()
+            _refuse = not _runner_ok
         else:
+            # coding / repo_exec / repo_read — the per-job repo/container runner.
             _runner_ok, _runner_reason = _cnr()
             _refuse = not _runner_ok
         if _refuse:

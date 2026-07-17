@@ -33,8 +33,11 @@ cannot run at all until the runner lands. These tests prove:
       open tool surface for such a node; the only node that RUNS is a plain TEXT
       node under a CLOSED tool surface (claude ``--tools ""``); and
   (4) the existing universe-intelligence isolation is UNCHANGED (not weakened,
-      and it must NOT become os_sandbox_required — WebFetch-only is safe
-      unsandboxed, so it must keep running on bwrap-less hosts).
+      and it must NOT become os_sandbox_required — WebFetch-only + the closed tool
+      surface keep it RUNNABLE on bwrap-less hosts as DEFENSE-IN-DEPTH; note the
+      Codex S3 r15 #2 caveat that a tool-less claude -p is not a COMPLETE sandbox
+      because managed-settings hooks load regardless of CLI flags — the complete
+      boundary for untrusted execution is the Phase-2 OS-isolation worker).
 """
 from __future__ import annotations
 
@@ -400,9 +403,10 @@ def test_universe_intelligence_config_is_conversation_not_os_sandbox():
     # Conversation profile: cwd-pinned, WebFetch-only.
     assert cfg.sandbox_workspace is True
     assert cfg.allowed_tools == ("WebFetch",)
-    # Must NOT become os_sandbox_required: it is safe unsandboxed (no filesystem
-    # tools), so requiring bwrap would wrongly break the founder turn on
-    # bwrap-less hosts.
+    # Must NOT become os_sandbox_required: WebFetch-only (no filesystem tools) is
+    # DEFENSE-IN-DEPTH (not a proven-complete boundary — see the r15 #2
+    # managed-hooks caveat), and requiring bwrap would wrongly break the founder
+    # turn on bwrap-less hosts. The complete boundary is the Phase-2 OS worker.
     assert cfg.os_sandbox_required is False
 
 
@@ -1546,3 +1550,142 @@ def test_save_branch_definition_refuses_unclassified_user_branch(_opaque_registr
     }
     with pytest.raises(ValueError, match="unclassified|never run"):
         save_branch_definition(base, branch_def=branch_def)
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r15 #1 — source_exec (in-process exec) has its OWN readiness gate,
+# SEPARATE from the per-job REPO runner. Repo-runner readiness must NEVER enable
+# in-process exec.
+# --------------------------------------------------------------------------- #
+
+
+def test_source_exec_refused_even_when_repo_runner_ready(monkeypatch):
+    import tinyassets.sandbox_policy as sp
+    from tinyassets.graph_compiler import _build_node
+
+    # Simulate the FUTURE repo runner becoming ready.
+    monkeypatch.setattr(sp, "coding_nodes_runnable", lambda: (True, "repo runner ready"))
+    assert sp.source_exec_runnable()[0] is False  # its own gate stays closed
+    src = "def run(state):\n    return {'proof': 'ran'}\n"
+    node = NodeDefinition(node_id="evil", display_name="E", source_code=src, approved=True)
+    node.mark_approved()
+    # branch_sandbox_status must also still block it (no drift from runtime).
+    assert sp.branch_sandbox_status([node])[0] is True
+    fn = _build_node(node, provider_call=None, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_repo_read_runs_when_repo_runner_ready_proving_the_split(_opaque_registry, monkeypatch):
+    """The split is a SEPARATION, not a blanket block: a repo_read adapter DOES
+    run when the repo runner is ready (only source_exec stays closed)."""
+    import tinyassets.sandbox_policy as sp
+    from tinyassets.graph_compiler import _build_node
+
+    monkeypatch.setattr(sp, "coding_nodes_runnable", lambda: (True, "repo runner ready"))
+    _opaque_registry.register_domain_callable(
+        "rd", "rr", lambda s: {"ok": True}, capability="repo_read",
+    )
+    node = NodeDefinition(node_id="rr", display_name="R", output_keys=["ok"])
+    out = _build_node(
+        node, provider_call=None, event_sink=None, domain_id="rd",
+    )({})
+    assert out == {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r15 #3 — the persistence choke point validates the FULLY-MERGED
+# record on EVERY write path (legacy `nodes` + update_branch_definition), not
+# just the new node_defs.
+# --------------------------------------------------------------------------- #
+
+
+def _host_reg(reg):
+    reg.register_domain_callable("hd", "danger", lambda s: {"ran": True}, host_only=True)
+
+
+def test_save_via_legacy_nodes_refuses_host_only(_opaque_registry, tmp_path):
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    _host_reg(_opaque_registry)
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    # Legacy `nodes` (no node_defs) carrying a host-only selection.
+    rec = {
+        "branch_def_id": "b1", "name": "evil", "domain_id": "hd",
+        "entry_point": "danger", "nodes": [{"node_id": "danger", "display_name": "D"}],
+        "edges": [],
+    }
+    with pytest.raises(ValueError, match="HOST-ONLY|may never run|host-only"):
+        save_branch_definition(base, branch_def=rec)
+
+
+def test_update_branch_definition_refuses_host_only(_opaque_registry, tmp_path):
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        initialize_author_server,
+        save_branch_definition,
+        update_branch_definition,
+    )
+
+    _host_reg(_opaque_registry)
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    save_branch_definition(base, branch_def={
+        "branch_def_id": "b2", "name": "x", "domain_id": "workflow",
+        "entry_point": "n",
+        "node_defs": [{"node_id": "n", "display_name": "N", "prompt_template": "hi"}],
+        "edges": [],
+    })
+    # update_branch_definition writes node_defs + domain directly.
+    with pytest.raises(ValueError, match="HOST-ONLY|may never run|host-only"):
+        update_branch_definition(base, branch_def_id="b2", updates={
+            "domain_id": "hd", "node_defs": [{"node_id": "danger", "display_name": "D"}],
+        })
+    # And nothing was persisted — the node set is unchanged.
+    persisted = get_branch_definition(base, branch_def_id="b2")["node_defs"]
+    assert [n["node_id"] for n in persisted] == ["n"]
+
+
+def test_update_domain_only_refuses_when_existing_node_becomes_host_only(
+    _opaque_registry, tmp_path,
+):
+    """A domain-only update can turn an existing benign node into a host-only
+    selection — the merged record must be re-validated."""
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+        update_branch_definition,
+    )
+
+    _host_reg(_opaque_registry)
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    # Persist under a domain where "danger" is NOT host-only (workflow) — allowed.
+    save_branch_definition(base, branch_def={
+        "branch_def_id": "b3", "name": "y", "domain_id": "workflow",
+        "entry_point": "danger",
+        "node_defs": [{"node_id": "danger", "display_name": "D"}],
+        "edges": [],
+    })
+    # Now flip ONLY the domain to "hd" — "danger" becomes host-only.
+    with pytest.raises(ValueError, match="HOST-ONLY|may never run|host-only"):
+        update_branch_definition(base, branch_def_id="b3", updates={"domain_id": "hd"})
+
+
+def test_trusted_persist_bypasses_the_gate(_opaque_registry, tmp_path):
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    _host_reg(_opaque_registry)
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    # _trusted=True (daemon-internal) may persist a host-only node.
+    save_branch_definition(base, branch_def={
+        "branch_def_id": "b4", "name": "t", "domain_id": "hd",
+        "entry_point": "danger",
+        "node_defs": [{"node_id": "danger", "display_name": "D"}], "edges": [],
+    }, _trusted=True)

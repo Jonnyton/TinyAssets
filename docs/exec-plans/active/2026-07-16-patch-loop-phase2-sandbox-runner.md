@@ -70,18 +70,47 @@ can return True
   existing `enforce_os_sandbox` / `os_sandbox_attested` attestation path, so a
   coding agent's tool surface is confined at the OS boundary, not just by CLI
   flags.
+- **Sanitized CLI env/config — the managed-hooks vector (Codex S3 r15 #2).** An
+  UNTRUSTED CLI turn (`claude -p` / `codex exec`) MUST run inside the isolated
+  worker with a sanitized environment and config. Anthropic's MANAGED policy
+  settings load regardless of `--setting-sources`, and managed settings can
+  define shell-command HOOKS that fire even in `-p` sessions with the normal
+  subprocess env — so a prompt could trigger host-side hook execution. There is
+  no documented user-space flag to disable managed-policy loading; the worker
+  must therefore neutralize it structurally (run under an identity/filesystem
+  view where the host's managed-settings path is absent/empty, e.g. inside the
+  container/VM with no host `ProgramData` / `/etc/claude-code` / managed-settings
+  mount). This is the same conclusion as the converse-sandbox-P0 finding:
+  OS-level isolation is the only COMPLETE boundary; the closed CLI tool surface
+  is defense-in-depth, not the boundary.
+
+- **Separate `source_exec` (in-process code) attestation — NEVER share the repo
+  runner's readiness (Codex S3 r15 #1).** A `source_code` node runs arbitrary
+  Python IN-PROCESS with full builtins (`exec`); the per-job REPO runner (a
+  prepared checkout for a SUBPROCESS agent) does NOT sandbox in-process `exec`.
+  `sandbox_policy.source_exec_runnable()` is a SEPARATE hard-`False` gate so that
+  flipping `coding_nodes_runnable()` (repo readiness) can never re-open the
+  in-process `exec` surface. `source_exec` stays closed until it runs inside its
+  OWN OS-isolation worker (a source-execution attestation), which is a distinct
+  deliverable from the repo runner.
 
 ## Delivery gate
 
 `coding_nodes_runnable()`'s hard-coded `False` is replaced with real runner
 detection ONLY when all of the above are present and independently reviewed
-(opposite-provider security review + live proof). Until then the fail-closed
-enforcement is the correct, honest behavior.
+(opposite-provider security review + live proof). `source_exec_runnable()` is a
+SEPARATE gate with its own OS-isolation deliverable — repo-runner readiness must
+never enable it. Until then the fail-closed enforcement is the correct, honest
+behavior.
 
 ## Do NOT
 
 - Do NOT flip `coding_nodes_runnable()` to True, add a runner shim, or add a
   bypass env flag "just to test" — that re-opens the exact code-execution
   surface Phase-1 closes.
-- Do NOT weaken the universe-intelligence isolation (WebFetch-only, safe
-  unsandboxed) to share a code path with the coding runner.
+- Do NOT let `coding_nodes_runnable()` (repo readiness) gate `source_exec` — the
+  repo runner does not sandbox in-process `exec`; source_exec needs its own gate.
+- Do NOT call a tool-less `claude -p` a complete sandbox — managed-settings hooks
+  load regardless of CLI flags; the OS-isolation worker is the boundary.
+- Do NOT weaken the universe-intelligence isolation (WebFetch-only,
+  defense-in-depth) to share a code path with the coding runner.

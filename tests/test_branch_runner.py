@@ -34,6 +34,11 @@ def _sandbox_runner_present(monkeypatch):
     monkeypatch.setattr(
         _sp, "coding_nodes_runnable", lambda: (True, "test: runner present"),
     )
+    # Codex S3 r15 #1: source_exec has its OWN gate — simulate the source-
+    # execution worker present too so mechanics tests exercise in-process nodes.
+    monkeypatch.setattr(
+        _sp, "source_exec_runnable", lambda: (True, "test: source worker present"),
+    )
 
 
 @pytest.fixture

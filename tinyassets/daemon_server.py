@@ -2129,6 +2129,26 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
+def _enforce_user_branch_capabilities(
+    node_defs: Any, domain_id: Any, trusted: bool,
+) -> None:
+    """Fail closed (Codex S3 r14 #2 / r15 #3) if a USER branch selects a
+    capability it may never run (host-only / unclassified adapter). ``trusted``
+    (daemon-internal persistence) skips the gate. Shared by every write path so
+    the storage choke point validates the fully-merged record, not a subset."""
+    if trusted:
+        return
+    from tinyassets.sandbox_policy import user_branch_capability_rejections
+    rejections = user_branch_capability_rejections(
+        node_defs or [], str(domain_id or ""),
+    )
+    if rejections:
+        raise ValueError(
+            "Refusing to persist a user-authored branch that selects a "
+            "capability it may never run: " + "; ".join(rejections)
+        )
+
+
 def save_branch_definition(
     base_path: str | Path,
     *,
@@ -2152,17 +2172,16 @@ def save_branch_definition(
     HOST-ONLY or UNCLASSIFIED opaque adapter is refused (ValueError). ``_trusted``
     (daemon-internal persistence only) skips the gate.
     """
-    if not _trusted:
-        from tinyassets.sandbox_policy import user_branch_capability_rejections
-        _rejections = user_branch_capability_rejections(
-            branch_def.get("node_defs", []) or [],
-            str(branch_def.get("domain_id", "") or ""),
-        )
-        if _rejections:
-            raise ValueError(
-                "Refusing to persist a user-authored branch that selects a "
-                "capability it may never run: " + "; ".join(_rejections)
-            )
+    # Codex S3 r15 #3: validate the FULLY-MERGED node set — node_defs UNION the
+    # legacy ``nodes`` input (a legacy node dict can carry source_code / node_kind
+    # / an opaque adapter selection, so validating only node_defs left the legacy
+    # path as a bypass).
+    _nodes_to_check = list(branch_def.get("node_defs") or [])
+    if "nodes" in branch_def:
+        _nodes_to_check += list(branch_def.get("nodes") or [])
+    _enforce_user_branch_capabilities(
+        _nodes_to_check, branch_def.get("domain_id", ""), _trusted,
+    )
     now = _now()
     branch_def_id = branch_def.get("branch_def_id", uuid.uuid4().hex[:12])
 
@@ -2321,6 +2340,7 @@ def update_branch_definition(
     *,
     branch_def_id: str,
     updates: dict[str, Any],
+    _trusted: bool = False,
 ) -> dict[str, Any]:
     """Update specific fields of a branch definition.
 
@@ -2328,6 +2348,25 @@ def update_branch_definition(
     entry_point, graph_nodes, edges, conditional_edges, node_defs,
     state_schema, published, stats. Also accepts legacy "nodes" key.
     """
+    # Codex S3 r15 #3: this is a WRITE path — it persists domain_id / node_defs /
+    # legacy nodes DIRECTLY, so it MUST run the same fail-closed capability gate as
+    # save_branch_definition, on the FULLY-MERGED record (existing + updates). A
+    # domain-only change (e.g. → "fantasy_author") can turn an existing benign node
+    # into a host-only selection, so re-validate the existing node set against the
+    # merged domain when no node change is supplied.
+    if not _trusted:
+        _existing = get_branch_definition(base_path, branch_def_id=branch_def_id)
+        _merged_domain = updates.get("domain_id", _existing.get("domain_id", ""))
+        _node_sources: list[Any] = []
+        if "node_defs" in updates:
+            _node_sources += list(updates.get("node_defs") or [])
+        if "nodes" in updates:
+            _node_sources += list(updates.get("nodes") or [])
+        if not _node_sources:
+            _node_sources = list(_existing.get("node_defs") or [])
+            _node_sources += list((_existing.get("graph", {}) or {}).get("nodes", []) or [])
+        _enforce_user_branch_capabilities(_node_sources, _merged_domain, _trusted)
+
     now = _now()
     sets: list[str] = ["updated_at = ?"]
     params: list[Any] = [now]

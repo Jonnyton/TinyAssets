@@ -305,12 +305,35 @@ def coding_nodes_runnable() -> "tuple[bool, str]":
     future runner slice replaces the hard-coded False with real runner detection.
     """
     return False, (
-        "repo-touching / in-process code nodes (source_code / coding / repo-exec "
-        "/ repo-read) require the per-job sandbox runner subsystem (prepared "
-        "per-job checkout + tenant isolation + scoped credentials + egress/resource "
-        "limits), which is NOT available in this deployment. They fail closed on "
-        "every provider until the runner lands (a future slice). Use a design-only "
-        "/ text-only (prompt_template) branch."
+        "repo-touching nodes (coding / repo-exec / repo-read) require the per-job "
+        "sandbox runner subsystem (prepared per-job checkout + tenant isolation + "
+        "scoped credentials + egress/resource limits), which is NOT available in "
+        "this deployment. They fail closed on every provider until the runner "
+        "lands (a future slice). Use a design-only / text-only (prompt_template) "
+        "branch."
+    )
+
+
+def source_exec_runnable() -> "tuple[bool, str]":
+    """Can an in-process ``source_code`` (``source_exec``) node ACTUALLY run
+    SAFELY in this deployment? (Codex S3 r15 #1 — split from repo-runner readiness.)
+
+    **ALWAYS False.** A ``source_exec`` node runs arbitrary Python IN-PROCESS with
+    full builtins (``graph_compiler._build_source_code_node`` → ``exec``). The
+    per-job REPO runner that :func:`coding_nodes_runnable` gates does NOT sandbox
+    in-process ``exec`` — it prepares a repo checkout for a SUBPROCESS coding
+    agent. So repo-runner readiness must NEVER enable ``source_exec``: in-process
+    host-code execution needs its OWN OS-isolation worker (a source-execution
+    attestation), which does not exist. Kept hard-False until that isolation lands
+    — a SEPARATE gate so a future ``coding_nodes_runnable``==True can never
+    accidentally re-open the in-process ``exec`` surface.
+    """
+    return False, (
+        "source_code runs arbitrary Python IN-PROCESS with full builtins; the "
+        "per-job repo runner does NOT sandbox in-process exec (it prepares a "
+        "checkout for a subprocess agent). A source_exec node requires its OWN "
+        "OS-isolation worker (a source-execution attestation), SEPARATE from "
+        "repo-runner readiness, which does not exist. Fail closed."
     )
 
 
@@ -336,6 +359,7 @@ def branch_sandbox_status(
     warnings: list[str] = []
     try:
         repo_nodes: list[str] = []
+        source_exec_nodes: list[str] = []
         host_only_nodes: list[str] = []
         unclassified_nodes: list[str] = []
         for nd in node_defs:
@@ -352,6 +376,11 @@ def branch_sandbox_status(
                 unclassified_nodes.append(nid)
             if cap == _HOST_ONLY and nid:
                 host_only_nodes.append(nid)
+            # Codex S3 r15 #1: source_exec has its OWN readiness gate, separate
+            # from the repo runner — so validate/enqueue never drift from the
+            # runtime choke point when the repo runner lands.
+            if cap == _SOURCE_EXEC_CAPABILITY and nid:
+                source_exec_nodes.append(nid)
         repo_nodes = sorted(repo_nodes)
         if host_only_nodes:
             warnings.append(
@@ -368,12 +397,24 @@ def branch_sandbox_status(
                 "(fail closed)."
             )
             return True, repo_nodes, warnings
-        if repo_nodes:
+        if source_exec_nodes:
+            runnable, reason = source_exec_runnable()
+            if not runnable:
+                warnings.append(
+                    f"This branch has {len(source_exec_nodes)} in-process "
+                    f"source_code node(s) ({', '.join(sorted(source_exec_nodes))}). "
+                    f"{reason}"
+                )
+                return True, repo_nodes, warnings
+        # Remaining non-text nodes are repo-touching (coding / repo_exec /
+        # repo_read) — gated by the per-job repo runner.
+        _repo_touching = [n for n in repo_nodes if n not in source_exec_nodes]
+        if _repo_touching:
             runnable, reason = coding_nodes_runnable()
             if not runnable:
                 warnings.append(
-                    f"This branch has {len(repo_nodes)} repo-touching node(s) "
-                    f"({', '.join(repo_nodes)}) that read/exec/write a repo. "
+                    f"This branch has {len(_repo_touching)} repo-touching node(s) "
+                    f"({', '.join(_repo_touching)}) that read/exec/write a repo. "
                     f"{reason}"
                 )
                 return True, repo_nodes, warnings
@@ -441,13 +482,24 @@ def text_node_model_config(
 ) -> "Any":
     """Build the text-only :class:`ModelConfig` for a NON-repo node.
 
-    Uses a CLOSED tool surface (``closed_tool_surface`` → claude ``--tools ""``,
-    per Anthropic's docs) so the node has NO built-in tools at all — pure text
-    generation, incapable of repo write/exec/read. This is the ONLY runnable-node
-    config: a repo-touching (coding-classified) node fails closed at the graph
-    choke point before any config is built, so capability is inseparable from
-    classification. Not ``os_sandbox_required`` — a tool-less node has nothing to
-    confine.
+    Uses a CLOSED tool surface (``closed_tool_surface`` → claude ``--tools ""`` +
+    ``--setting-sources project`` + strict empty MCP, per Anthropic's docs) so the
+    node has no built-in tools, no user/project MCP, and a scratch cwd. This is the
+    ONLY runnable-node config: a repo-touching / source-exec node fails closed at
+    the graph choke point before any config is built, so capability is inseparable
+    from classification.
+
+    DEFENSE-IN-DEPTH, NOT a complete sandbox (Codex S3 r15 #2). A tool-less
+    ``claude -p`` is NOT a proven-safe boundary for untrusted execution: Anthropic
+    documents that MANAGED policy settings load regardless of ``--setting-sources``,
+    and managed settings can define shell-command HOOKS that fire even in
+    non-interactive ``-p`` sessions — so a text-node prompt could trigger host-side
+    hook execution. Threat model: that requires controlling the HOST's managed
+    settings (the daemon operator's machine), i.e. an attacker who already owns the
+    host — it is NOT a user-branch RCE, so text nodes stay runnable. But the closed
+    tool surface is one layer; the COMPLETE boundary for untrusted execution is the
+    Phase-2 OS-isolation worker (sanitized env/config, per
+    ``docs/exec-plans/active/2026-07-16-patch-loop-phase2-sandbox-runner.md``).
     """
     from tinyassets.providers.base import ModelConfig
 
@@ -473,6 +525,7 @@ __all__ = [
     "node_coding_capability",
     "node_requires_sandbox",
     "coding_nodes_runnable",
+    "source_exec_runnable",
     "branch_sandbox_status",
     "user_branch_capability_rejections",
     "text_node_model_config",

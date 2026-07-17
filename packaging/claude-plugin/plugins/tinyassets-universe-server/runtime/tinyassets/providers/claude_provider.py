@@ -65,6 +65,20 @@ def _sandbox_cli_args(
     shell escape even if a settings file would grant it; ``run_cwd`` pins the
     subprocess to the universe's own dir. Both are no-ops for host-trusted roles
     that leave the config fields at their defaults.
+
+    DEFENSE-IN-DEPTH, NOT a complete sandbox (Codex S3 r15 #2). These flags close
+    the ambient-config / user-MCP / built-in-tool surface, but a tool-less
+    ``claude -p`` is NOT a proven-safe boundary for UNTRUSTED execution: Anthropic
+    documents that MANAGED policy settings load regardless of ``--setting-sources``,
+    and managed settings can define shell-command HOOKS that fire even in ``-p``
+    sessions with the normal subprocess environment. There is no documented
+    user-space mechanism to disable managed-policy loading (it is enterprise policy,
+    intentionally non-bypassable), so this seam does NOT neutralize it — do not
+    treat it as complete. The threat requires controlling the HOST's managed
+    settings (an attacker who already owns the daemon operator's machine), so it is
+    NOT a user-branch RCE; the COMPLETE boundary for untrusted execution is the
+    Phase-2 OS-isolation worker (sanitized env/config), tracked in
+    ``docs/exec-plans/active/2026-07-16-patch-loop-phase2-sandbox-runner.md``.
     """
     flags: list[str] = []
     # Strip ambient MCP + user config for every hardened profile: the founder
