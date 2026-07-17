@@ -265,11 +265,17 @@ def dacl_is_current_user_and_system_only(path: Path) -> bool:
         return False
 
 
-def _ref_filename(ref: str) -> str:
+def _ref_tail(ref: str) -> str:
     if not is_secret_ref(ref):
         raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
     # ref = "secret:v1:<64 hex>"; the hex tail is filename-safe + unique (256-bit).
-    return f"{ref.rsplit(':', 1)[-1]}.json"
+    return ref.rsplit(":", 1)[-1]
+
+
+def _ref_filename(ref: str, version: int) -> str:
+    # Per-version sidecar: which version is LIVE is decided by the control-DB
+    # pointer, not the filesystem — a versioned file is inert until committed.
+    return f"{_ref_tail(ref)}.v{int(version)}.json"
 
 
 def _chmod_best_effort(path: Path, mode: int) -> None:
@@ -317,7 +323,8 @@ class DpapiVaultBackend:
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(self._control_db), timeout=30.0, isolation_level=None)
-        except OSError:
+        except (OSError, sqlite3.Error):
+            # sqlite3.connect() raises sqlite3.OperationalError, not OSError.
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         try:
             conn.row_factory = sqlite3.Row
@@ -344,8 +351,21 @@ class DpapiVaultBackend:
         if store.store_id != self._store_id or store.daemon_id != self._daemon_id:
             raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
 
-    def _blob_path(self, ref: str) -> Path:
-        return self._dir / _ref_filename(ref)
+    def _blob_path(self, ref: str, version: int) -> Path:
+        return self._dir / _ref_filename(ref, version)
+
+    def _live_and_deleted(self, ref: str) -> tuple[int | None, bool]:
+        """Read the AUTHORITATIVE live version + deletion tombstone (control DB)."""
+        self._leases.ensure_schema()
+        conn = self._control_connect()
+        try:
+            return leases.get_live_version(conn, ref), leases.is_deleted(conn, ref)
+        except sqlite3.Error:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
 
     # ------------------------------------------------------------------
     # attestation gate
@@ -411,8 +431,8 @@ class DpapiVaultBackend:
             custody=Custody.DAEMON_LOCAL, store_id=self._store_id, daemon_id=self._daemon_id
         )
 
-    def _read_sidecar(self, ref: str) -> dict[str, Any] | None:
-        path = self._blob_path(ref)
+    def _read_sidecar(self, ref: str, version: int) -> dict[str, Any] | None:
+        path = self._blob_path(ref, version)
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -430,15 +450,15 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
         return raw
 
-    def _write_sidecar(self, ref: str, record_dict: dict[str, Any]) -> None:
-        """Fail-safe, power-loss-durable write.
+    def _write_sidecar(self, ref: str, version: int, record_dict: dict[str, Any]) -> None:
+        """Durably write the per-version sidecar. It is INERT until the control-DB
+        live-version pointer commits to it, so this write is never "live" on its
+        own — a subsequent commit failure just leaves an orphaned versioned file.
 
-        Order matters: write temp -> fsync -> apply+VERIFY the restrictive DACL
-        ON THE TEMP -> only then durable-replace. Any failure (I/O, DACL) removes
-        the temp and leaves the OLD blob completely intact — a failed CAS/deposit
-        must never destroy the existing credential.
+        write temp -> fsync -> verify size -> apply+VERIFY the DACL on the temp ->
+        durable disk-flushed replace into the versioned name.
         """
-        path = self._blob_path(ref)
+        path = self._blob_path(ref, version)
         tmp = path.with_name(path.name + ".tmp")
         data = json.dumps(record_dict, sort_keys=True).encode("utf-8")
         try:
@@ -447,7 +467,7 @@ class DpapiVaultBackend:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
                 # os.write() may write FEWER bytes than requested — loop until all
-                # are written, or a truncated temp would replace the old blob.
+                # are written, or a truncated temp would replace the file.
                 view = memoryview(data)
                 written = 0
                 while written < len(data):
@@ -465,7 +485,7 @@ class DpapiVaultBackend:
             _durable_replace(tmp, path)  # disk-flushed atomic replace
         except (OSError, CredentialUnavailable):
             with contextlib.suppress(OSError):
-                os.remove(tmp)  # OLD blob untouched
+                os.remove(tmp)
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
 
     def _seal_sidecar(
@@ -540,48 +560,71 @@ class DpapiVaultBackend:
         fence: RefreshLease | None = None,
         ticket: RefreshTicket | None = None,
     ) -> SecretDescriptor:
-        # Whole mutation under an exclusive control-DB lock → atomic CAS.
-        with self._leases.mutation_lock() as conn:
-            now = time.time()
-            if replace is None:
-                ref = new_secret_ref()
-                version = 1
-                created = now
-            else:
-                ref = replace
-                if not is_secret_ref(ref):
-                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
-                existing_sidecar = self._read_sidecar(ref)
-                if existing_sidecar is None:
-                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
-                existing, _val = self._decrypt_sidecar(
-                    existing_sidecar, ref=ref, kind=kind, scope=scope, store=store
-                )
-                if (
-                    expected_version is not None
-                    and int(existing["version"]) != expected_version
-                ):
-                    raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
-                if fence is not None:
-                    self._require_fence(conn, ref, fence, now)
-                if kind in ROTATING_TOKEN_KINDS and ticket is None:
-                    raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
-                if ticket is not None and not (
-                    ticket.ref == ref
-                    and ticket.version == int(existing["version"])
-                    and leases.capability_valid(
-                        conn, ref, ticket.version, ticket.holder,
-                        ticket._reveal_capability(),
+        old_version: int | None = None
+        try:
+            # Whole mutation under an exclusive control-DB lock. The versioned
+            # sidecar write is SUBORDINATE; the control-DB commit (which advances
+            # the live-version pointer) is the single atomic commit point. A
+            # commit failure leaves the OLD version live.
+            with self._leases.mutation_lock() as conn:
+                now = time.time()
+                if replace is None:
+                    ref = new_secret_ref()
+                    version = 1
+                    created = now
+                else:
+                    ref = replace
+                    if not is_secret_ref(ref):
+                        raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
+                    if leases.is_deleted(conn, ref):
+                        raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
+                    live = leases.get_live_version(conn, ref)
+                    if live is None:
+                        raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
+                    old_version = live
+                    existing_sidecar = self._read_sidecar(ref, live)
+                    if existing_sidecar is None:
+                        raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
+                    existing, _val = self._decrypt_sidecar(
+                        existing_sidecar, ref=ref, kind=kind, scope=scope, store=store
                     )
-                ):
-                    raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
-                version = int(existing["version"]) + 1
-                created = float(existing["created_at"])
+                    if (
+                        expected_version is not None
+                        and int(existing["version"]) != expected_version
+                    ):
+                        raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
+                    if fence is not None:
+                        self._require_fence(conn, ref, fence, now)
+                    if kind in ROTATING_TOKEN_KINDS and ticket is None:
+                        raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
+                    if ticket is not None and not (
+                        ticket.ref == ref
+                        and ticket.version == int(existing["version"])
+                        and leases.capability_valid(
+                            conn, ref, ticket.version, ticket.holder,
+                            ticket._reveal_capability(),
+                        )
+                    ):
+                        raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
+                    version = int(existing["version"]) + 1
+                    created = float(existing["created_at"])
 
-            sidecar = self._seal_sidecar(
-                store, scope, kind, ref, version, value.reveal(), created, now, expires_at
-            )
-            self._write_sidecar(ref, sidecar)
+                sidecar = self._seal_sidecar(
+                    store, scope, kind, ref, version, value.reveal(), created, now, expires_at
+                )
+                self._write_sidecar(ref, version, sidecar)  # inert until commit
+                leases.set_live_version(conn, ref, version)  # atomic commit point
+        except CredentialUnavailable:
+            raise
+        except sqlite3.Error:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+
+        # Commit succeeded — the new version is authoritative. Clean up the OLD
+        # versioned sidecar (best-effort; an orphan is harmless, never live).
+        if old_version is not None:
+            with contextlib.suppress(OSError):
+                os.remove(self._blob_path(ref, old_version))
 
         binding = SecretBinding(ref=ref, kind=kind, scope=scope, store=store)
         return SecretDescriptor(
@@ -598,28 +641,14 @@ class DpapiVaultBackend:
         ):
             raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
 
-    def _require_record_dacl(self, ref: str) -> None:
-        """Verify THIS record's file DACL at access time (not a cached probe).
+    def _require_record_dacl(self, ref: str, version: int) -> None:
+        """Verify THIS record's live sidecar DACL at access time (not a cached probe).
 
         A DACL broadened after the boot probe must fail the access closed — never
         return the secret from a world-readable blob.
         """
-        if not dacl_is_current_user_and_system_only(self._blob_path(ref)):
+        if not dacl_is_current_user_and_system_only(self._blob_path(ref, version)):
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref)
-
-    def _require_not_tombstoned(self, ref: str) -> None:
-        """A deleted ref is consumed forever — a restored sidecar must be refused.
-
-        The control-DB tombstone is authoritative across the two persistence
-        domains (filesystem sidecar vs control DB).
-        """
-        conn = self._control_connect()
-        try:
-            deleted = leases.is_deleted(conn, ref)
-        finally:
-            conn.close()
-        if deleted:
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
 
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         if not is_secret_ref(binding.ref):
@@ -627,11 +656,15 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        sidecar = self._read_sidecar(binding.ref)
+        # The AUTHORITATIVE live version comes from the control DB, NOT the
+        # filesystem — a restored/orphaned sidecar is never live.
+        live, deleted = self._live_and_deleted(binding.ref)
+        if deleted or live is None:
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+        sidecar = self._read_sidecar(binding.ref, live)
         if sidecar is None:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-        self._require_not_tombstoned(binding.ref)  # restored-sidecar defense
-        self._require_record_dacl(binding.ref)  # per-record ACL isolation, verified now
+        self._require_record_dacl(binding.ref, live)  # per-record ACL isolation now
         rec, secret_value = self._decrypt_sidecar(
             sidecar, ref=binding.ref, kind=binding.kind, scope=expected, store=binding.store
         )
@@ -641,29 +674,46 @@ class DpapiVaultBackend:
             scope=expected, version=int(rec["version"]),
         )
 
-    def _delete(self, binding: SecretBinding, expected: SecretScope) -> None:
+    def _delete(
+        self, binding: SecretBinding, expected: SecretScope, *, tombstone: bool = True
+    ) -> None:
         if not is_secret_ref(binding.ref):
             # Validate before use; never echo a malformed ref (injection defense).
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        # Order matters (two-domain consistency): commit the DURABLE control-DB
-        # tombstone FIRST, then remove the sidecar. A crash between the two leaves
-        # the sidecar tombstoned (refused), never re-claimable.
-        with self._leases.mutation_lock() as conn:
-            sidecar = self._read_sidecar(binding.ref)
-            if sidecar is None:
-                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-            # Authenticate the COMPLETE record before removing — a forged/
-            # mismatched binding produces wrong entropy and fails here.
-            rec, _v = self._decrypt_sidecar(
-                sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
-                store=binding.store,
-            )
-            leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
-        # tombstone committed durably — the sidecar removal is secondary/best-effort
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(self._blob_path(binding.ref))
+        # Order matters: commit the DURABLE control-DB state (clear the live
+        # pointer + optional tombstone) FIRST, then remove the sidecar files. A
+        # crash between leaves the ref not-live (control DB authoritative) and,
+        # with the tombstone, never re-claimable.
+        removed_versions: list[int] = []
+        try:
+            with self._leases.mutation_lock() as conn:
+                live = leases.get_live_version(conn, binding.ref)
+                if live is None or leases.is_deleted(conn, binding.ref):
+                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+                sidecar = self._read_sidecar(binding.ref, live)
+                if sidecar is None:
+                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+                # Authenticate the COMPLETE record before removing — a forged/
+                # mismatched binding produces wrong entropy and fails here.
+                rec, _v = self._decrypt_sidecar(
+                    sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
+                    store=binding.store,
+                )
+                if tombstone:
+                    leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
+                leases.clear_live_version(conn, binding.ref)
+                removed_versions.append(live)
+        except CredentialUnavailable:
+            raise
+        except sqlite3.Error:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        # control-DB state committed durably — sidecar removal is secondary
+        for v in removed_versions:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(self._blob_path(binding.ref, v))
 
     # ------------------------------------------------------------------
     # Fenced exclusive per-ref refresh lease
@@ -680,14 +730,22 @@ class DpapiVaultBackend:
         return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
 
     def begin_refresh(
-        self, binding: SecretBinding, expected: SecretScope, holder: str, at_version: int
+        self,
+        binding: SecretBinding,
+        expected: SecretScope,
+        holder: str,
+        at_version: int,
+        *,
+        wedge_timeout: float = leases.REFRESH_WEDGE_TIMEOUT,
     ) -> RefreshTicket | None:
         """Atomic consume-before-mint gate for a local refresh (see platform docs).
 
         Under the exclusive mutation lock: authenticate the current record,
         enforce active/unexpired, confirm the version equals ``at_version``, then
         claim its redemption right. Winner gets a :class:`RefreshTicket`; ``None``
-        otherwise. A non-existent version claims nothing (no permanent block).
+        otherwise. A non-existent version claims nothing (no permanent block); a
+        wedged (crashed-mid-refresh) version past ``wedge_timeout`` raises
+        ``REAUTHORIZATION_REQUIRED``.
         """
         self._require_available()
         self._require_local_store(binding.store)
@@ -701,25 +759,43 @@ class DpapiVaultBackend:
             at_version = int(at_version)
         except (TypeError, ValueError):
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, binding.ref) from None
-        with self._leases.mutation_lock() as conn:
-            if leases.is_deleted(conn, binding.ref):
-                # deleted ref — a restored sidecar cannot be refreshed
-                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-            sidecar = self._read_sidecar(binding.ref)
-            if sidecar is None:
-                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-            self._require_record_dacl(binding.ref)  # verify ACL isolation at access
-            rec, _v = self._decrypt_sidecar(
-                sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
-                store=binding.store,
-            )
-            record.check_lifecycle(rec, binding.ref)
-            version = int(rec["version"])
-            secret = leases.mint_capability()
-            won = version == int(at_version) and leases.claim_refresh(
-                conn, binding.ref, version, holder, time.time(),
-                leases.capability_hash(secret),
-            )
+        try:
+            with self._leases.mutation_lock() as conn:
+                if leases.is_deleted(conn, binding.ref):
+                    # deleted ref — a restored sidecar cannot be refreshed
+                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+                live = leases.get_live_version(conn, binding.ref)
+                if live is None:
+                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+                sidecar = self._read_sidecar(binding.ref, live)
+                if sidecar is None:
+                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+                self._require_record_dacl(binding.ref, live)  # ACL isolation at access
+                rec, _v = self._decrypt_sidecar(
+                    sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
+                    store=binding.store,
+                )
+                record.check_lifecycle(rec, binding.ref)
+                version = int(rec["version"])
+                if version != at_version:
+                    return None
+                # A refresh already claimed at the CURRENT version but not yet
+                # completed (crashed/in-flight past the timeout) is UNKNOWN — the
+                # provider may have rotated the token. Surface reauthorization
+                # rather than a silent-None wedge or an unsafe retry.
+                leases.reauth_if_wedged(
+                    conn, binding.ref, version, time.time(), wedge_timeout
+                )
+                secret = leases.mint_capability()
+                won = leases.claim_refresh(
+                    conn, binding.ref, version, holder, time.time(),
+                    leases.capability_hash(secret),
+                )
+        except CredentialUnavailable:
+            raise
+        except sqlite3.Error:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         if not won:
             return None
         return RefreshTicket(
@@ -765,7 +841,7 @@ class DpapiVaultBackend:
             return lease.reveal()
 
     def _probe_delete(self, binding: SecretBinding, expected: SecretScope) -> None:
-        self._delete(binding, expected)
+        self._delete(binding, expected, tombstone=False)  # no permanent tombstone
 
     def inspect_persisted(self, ref: str, probe_value: bytes) -> dict[str, object]:
         """Evidence for attestation.
@@ -776,10 +852,13 @@ class DpapiVaultBackend:
         (verified via the Windows security API, not an icacls heuristic). Both are
         required for a passing local attestation.
         """
-        sidecar = self._read_sidecar(ref)
+        live, _deleted = self._live_and_deleted(ref)
+        if live is None:
+            return {"present": False}
+        sidecar = self._read_sidecar(ref, live)
         if sidecar is None:
             return {"present": False}
-        blob_path = self._blob_path(ref)
+        blob_path = self._blob_path(ref, live)
         try:
             raw_file = blob_path.read_bytes()
         except OSError:

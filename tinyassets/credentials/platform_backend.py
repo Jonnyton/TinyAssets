@@ -113,8 +113,10 @@ class PlatformVaultBackend:
         try:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(self._db_path), timeout=30.0, isolation_level=None)
-        except OSError:
-            # Backend I/O unavailable — never leak the path in a traceback.
+        except (OSError, sqlite3.Error):
+            # sqlite3.connect() failures raise sqlite3.OperationalError (NOT
+            # OSError) — e.g. db_path is a directory. Normalize both; never leak
+            # the path in a traceback.
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         try:
             conn.row_factory = sqlite3.Row
@@ -480,7 +482,9 @@ class PlatformVaultBackend:
             scope=expected, version=int(rec["version"]),
         )
 
-    def _delete(self, binding: SecretBinding, expected: SecretScope) -> None:
+    def _delete(
+        self, binding: SecretBinding, expected: SecretScope, *, tombstone: bool = True
+    ) -> None:
         if not is_secret_ref(binding.ref):
             # Validate before use; never echo a malformed ref (injection defense).
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
@@ -502,9 +506,12 @@ class PlatformVaultBackend:
                 store=binding.store,
             )
             conn.execute("DELETE FROM vault_secrets WHERE ref = ?", (binding.ref,))
-            # Irreversible tombstone: keep a durable deleted high-water row so a
-            # restored/backed-up row can never be re-read or re-claimed.
-            leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
+            if tombstone:
+                # Irreversible tombstone: keep a durable deleted high-water row so
+                # a restored/backed-up row can never be re-read or re-claimed.
+                # Ephemeral attestation probes pass tombstone=False so they do not
+                # accumulate permanent tombstone rows.
+                leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
             conn.execute("COMMIT")
         except sqlite3.Error:
             with contextlib.suppress(sqlite3.Error):
@@ -549,7 +556,13 @@ class PlatformVaultBackend:
         return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
 
     def begin_refresh(
-        self, binding: SecretBinding, expected: SecretScope, holder: str, at_version: int
+        self,
+        binding: SecretBinding,
+        expected: SecretScope,
+        holder: str,
+        at_version: int,
+        *,
+        wedge_timeout: float = leases.REFRESH_WEDGE_TIMEOUT,
     ) -> RefreshTicket | None:
         """Atomic consume-before-mint gate for a refresh (the ONE broker refresh op).
 
@@ -557,12 +570,14 @@ class PlatformVaultBackend:
         active + unexpired, confirm its version equals ``at_version`` (the version
         the caller observed), then claim the exclusive redemption right for THAT
         version. Returns a :class:`RefreshTicket` only to the sole winner; ``None``
-        if the version already moved or is already claimed.
+        if the version already moved or is in-flight (recently claimed).
 
         Because the claimed version is the authenticated current version, a claim
         for a non-existent version (``at_version=99``) inserts NOTHING and can
-        never permanently block it. Complete with
-        ``put(replace=binding.ref, expected_version=ticket.version, ...)``.
+        never permanently block it. A refresh that claimed this version but never
+        completed (crashed) past ``wedge_timeout`` raises
+        ``REAUTHORIZATION_REQUIRED`` — the honest answer when the provider may have
+        rotated the one-use token. Complete with :meth:`complete_refresh`.
         """
         self._require_platform_store(binding.store)
         self._ensure_attested()
@@ -576,6 +591,8 @@ class PlatformVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, binding.ref) from None
         self.initialize()
         conn = self._connect()
+        secret: bytes | None = None
+        won = False
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -588,11 +605,15 @@ class PlatformVaultBackend:
             )
             record.check_lifecycle(rec, binding.ref)
             version = int(rec["version"])
-            secret = leases.mint_capability()
-            won = version == int(at_version) and leases.claim_refresh(
-                conn, binding.ref, version, holder, time.time(),
-                leases.capability_hash(secret),
-            )
+            if version == at_version:
+                leases.reauth_if_wedged(
+                    conn, binding.ref, version, time.time(), wedge_timeout
+                )
+                secret = leases.mint_capability()
+                won = leases.claim_refresh(
+                    conn, binding.ref, version, holder, time.time(),
+                    leases.capability_hash(secret),
+                )
             conn.execute("COMMIT")
         except sqlite3.Error:
             with contextlib.suppress(sqlite3.Error):
@@ -744,7 +765,7 @@ class PlatformVaultBackend:
             return lease.reveal()
 
     def _probe_delete(self, binding: SecretBinding, expected: SecretScope) -> None:
-        self._delete(binding, expected)
+        self._delete(binding, expected, tombstone=False)  # no permanent tombstone
 
     def inspect_persisted(self, ref: str, probe_value: bytes) -> dict[str, object]:
         """Evidence about the persisted bytes for ``ref`` (attestation)."""
