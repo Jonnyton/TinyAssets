@@ -24,12 +24,26 @@ a connection factory for acquire/heartbeat/release and provides the exclusive
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
+import secrets
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .errors import CredentialUnavailable, VaultErrorCode
+
+_CAPABILITY_BYTES = 32
+
+
+def mint_capability() -> bytes:
+    """Random unforgeable secret the broker mints for a refresh claim."""
+    return secrets.token_bytes(_CAPABILITY_BYTES)
+
+
+def capability_hash(secret: bytes) -> str:
+    return hashlib.sha256(secret).hexdigest()
 
 
 def require_cas_pairing(replace: str | None, expected_version: int | None) -> None:
@@ -53,60 +67,90 @@ CREATE TABLE IF NOT EXISTS vault_refresh_leases (
     expires_at  REAL NOT NULL
 );
 
--- Atomic consume-before-mint: one durable claim per (ref, version). The claim
--- is the exclusive RIGHT to redeem the refresh token of that version at the
--- provider. Only the process that wins the INSERT may call the provider; a
--- crash before the version advances leaves the claim in place (fail closed —
--- the wedged version needs re-authorization, never a second redemption).
+-- Consume-before-mint, HIGH-WATER model: ONE row per ref holding the highest
+-- version ever claimed + the hash of an UNFORGEABLE broker-minted capability.
+-- A claim for version V succeeds only if V is strictly higher than the stored
+-- ``claimed_version`` (monotonic), so a retired (lower) version can NEVER be
+-- re-claimed — retirement (advance) can't reopen the re-redeem window, and the
+-- table stays bounded to one row per ref (no unbounded growth). Only the caller
+-- presenting the exact minted capability (checked against ``capability_hash``)
+-- may complete the refresh.
 CREATE TABLE IF NOT EXISTS vault_refresh_claims (
-    ref        TEXT NOT NULL,
-    version    INTEGER NOT NULL,
-    holder     TEXT NOT NULL,
-    claimed_at REAL NOT NULL,
-    PRIMARY KEY (ref, version)
+    ref             TEXT PRIMARY KEY,
+    claimed_version INTEGER NOT NULL,
+    capability_hash TEXT NOT NULL,
+    holder          TEXT NOT NULL,
+    claimed_at      REAL NOT NULL
 );
 """
 
 
 def claim_refresh(
-    conn: sqlite3.Connection, ref: str, version: int, holder: str, now: float
+    conn: sqlite3.Connection,
+    ref: str,
+    version: int,
+    holder: str,
+    now: float,
+    cap_hash: str,
 ) -> bool:
-    """Atomically claim the exclusive right to redeem ``(ref, version)``.
+    """Atomically claim the redemption right for ``ref`` at ``version``.
 
-    Returns True iff THIS caller won the claim (may now call the provider). A
-    False means the version was already claimed by someone (possibly a crashed
-    holder) — the caller MUST NOT call the provider and should re-read the store.
-    Must run inside an open transaction.
-    """
-    try:
-        conn.execute(
-            "INSERT INTO vault_refresh_claims(ref, version, holder, claimed_at) "
-            "VALUES(?,?,?,?)",
-            (ref, int(version), holder, now),
-        )
-    except sqlite3.IntegrityError:
-        return False
-    return True
-
-def claim_held(conn: sqlite3.Connection, ref: str, version: int, holder: str) -> bool:
-    """True iff ``holder`` holds the durable claim for ``(ref, version)``.
-
-    Used to bind a refresh COMPLETION to the ticket: a CAS that completes a
-    refresh must present a ticket whose claim is on record — no bypass.
+    Succeeds iff ``version`` is strictly higher than any previously-claimed
+    version for this ref (monotonic high-water) — a lower/equal version (a
+    straggler or a re-redeem attempt) is refused. On success the single per-ref
+    row advances to ``version`` and stores the capability hash. Must run in an
+    open transaction.
     """
     row = conn.execute(
-        "SELECT holder FROM vault_refresh_claims WHERE ref = ? AND version = ?",
-        (ref, int(version)),
+        "SELECT claimed_version FROM vault_refresh_claims WHERE ref = ?", (ref,)
     ).fetchone()
-    return row is not None and row["holder"] == holder
+    if row is None:
+        conn.execute(
+            "INSERT INTO vault_refresh_claims(ref, claimed_version, capability_hash, "
+            "holder, claimed_at) VALUES(?,?,?,?,?)",
+            (ref, int(version), cap_hash, holder, now),
+        )
+        return True
+    if int(version) > int(row["claimed_version"]):
+        conn.execute(
+            "UPDATE vault_refresh_claims SET claimed_version = ?, capability_hash = ?, "
+            "holder = ?, claimed_at = ? WHERE ref = ?",
+            (int(version), cap_hash, holder, now, ref),
+        )
+        return True
+    return False
 
 
-# NOTE: claims are NEVER pruned on advance. Deleting a consumed claim reopens a
-# window where a slow straggler that still holds version N as "current" could
-# re-claim (ref, N) and redeem T_N a SECOND time — exactly the token-reuse CVE.
-# The table grows one row per successful refresh (small, bounded by refresh
-# count); a safe long-retention GC of ancient claims is a future operational
-# concern, never a same-token deletion.
+def capability_valid(
+    conn: sqlite3.Connection, ref: str, version: int, holder: str, secret: bytes
+) -> bool:
+    """True iff ``secret`` matches the minted capability for ``ref@version``.
+
+    Binds a refresh COMPLETION to the unforgeable minted capability: a
+    reconstructed ticket without the exact secret cannot pass. Constant-time
+    compare over the stored hash.
+    """
+    row = conn.execute(
+        "SELECT claimed_version, capability_hash, holder FROM vault_refresh_claims "
+        "WHERE ref = ?",
+        (ref,),
+    ).fetchone()
+    if row is None:
+        return False
+    if int(row["claimed_version"]) != int(version) or row["holder"] != holder:
+        return False
+    return hmac.compare_digest(row["capability_hash"], capability_hash(secret))
+
+
+def retire_claim(conn: sqlite3.Connection, ref: str) -> None:
+    """Drop the claim row for a DELETED ref.
+
+    Safe because a SecretRef is a one-time 256-bit random value that is never
+    reused, so freeing the row cannot let a future ref re-redeem an old token.
+    Bounds the table; does NOT free a version slot for a live ref (that would
+    reopen the re-redeem window — see the high-water invariant).
+    """
+    conn.execute("DELETE FROM vault_refresh_claims WHERE ref = ?", (ref,))
 
 
 def acquire_fenced(
@@ -178,23 +222,36 @@ def release_fenced(
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class RefreshTicket:
-    """Proof that the holder won the exclusive right to redeem ``(ref, version)``.
+    """Proof that the holder won the exclusive right to redeem ``ref@version``.
 
-    Returned by ``begin_refresh`` after it atomically authenticated the current
-    record and claimed its version. The completion write must CAS on
-    ``expected_version == version``.
+    Returned by ``begin_refresh``. ``secret`` is the UNFORGEABLE broker-minted
+    capability — ``complete_refresh`` requires presenting it (matched against the
+    stored hash), so a reconstructed dataclass cannot complete a refresh. The
+    ``secret`` is redacted from ``repr``/``str`` and cannot be pickled.
     """
 
     ref: str
     version: int
     holder: str
+    secret: bytes = field(repr=False)
+
+    def __repr__(self) -> str:
+        return f"RefreshTicket(ref={self.ref!r}, capability=<redacted>)"
+
+    __str__ = __repr__
+
+    def __reduce__(self):
+        raise TypeError("RefreshTicket carries a capability and cannot be pickled")
 
 
-@dataclass
+@dataclass(repr=False)
 class RefreshLease:
-    """A held, fenced refresh lease. Verify + release go through the manager."""
+    """A held, fenced refresh lease. Verify + release go through the manager.
+
+    ``repr`` redacts holder/fence (internal coordination metadata).
+    """
 
     ref: str
     holder: str
@@ -209,6 +266,9 @@ class RefreshLease:
 
     def release(self) -> None:
         self._manager._release(self.ref, self.holder, self.fence)
+
+    def __repr__(self) -> str:
+        return f"RefreshLease(ref={self.ref!r})"
 
     def __enter__(self) -> "RefreshLease":
         return self

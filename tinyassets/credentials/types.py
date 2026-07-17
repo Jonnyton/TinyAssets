@@ -230,6 +230,14 @@ class DpapiBlob:
         return "DpapiBlob(<redacted-backend-path>)"
 
 
+# Rotating one-time-refresh-token kinds: advancing these records is allowed ONLY
+# through the broker's begin_refresh/complete_refresh pair (with a minted
+# capability), never a generic put(replace) — a bare CAS would bypass
+# consume-before-mint and permit a double provider redemption.
+ROTATING_TOKEN_KINDS = frozenset(
+    {SecretKind.GITHUB_APP_USER_TOKEN, SecretKind.OAUTH2_GENERIC}
+)
+
 # Algorithm tag persisted with every platform row.
 XCHACHA20POLY1305_IETF = "xchacha20poly1305-ietf"
 

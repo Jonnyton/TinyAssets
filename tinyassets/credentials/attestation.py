@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from .errors import CredentialUnavailable
+from .errors import CredentialUnavailable, VaultErrorCode
 from .types import (
     PROBE_SCOPE,
     Custody,
@@ -39,7 +39,7 @@ BOOT_ID = uuid.uuid4().hex
 _PROBE_VALUE_BYTES = 32
 
 
-@dataclass
+@dataclass(repr=False)
 class AttestationResult:
     ok: bool
     store_id: str
@@ -48,6 +48,10 @@ class AttestationResult:
     tested_at: float
     checks: dict[str, bool] = field(default_factory=dict)
     failure: str | None = None
+
+    def __repr__(self) -> str:
+        # Redact store_id / custody / boot_id — backend internals, not for logs.
+        return f"AttestationResult(ok={self.ok}, tested_at={self.tested_at})"
 
     def public_projection(self) -> dict[str, Any]:
         """Safe status projection — health + timestamp only.
@@ -125,13 +129,13 @@ def attest_store(backend: Any) -> AttestationResult:
         ev_ok, ev_checks = _evidence_ok(custody, evidence)
         result.checks.update(ev_checks)
 
-        # 3. a wrong-scope read MUST fail with the EXPECTED typed error
+        # 3. a wrong-scope read MUST fail with SCOPE_MISMATCH specifically. The
+        # binding carries the REAL scope; a mismatched ``expected`` must be
+        # rejected by the scope guard — NOT_FOUND or any other code is NOT proof
+        # of scope isolation.
         wrong = _wrong_scope(scope)
-        wrong_binding = SecretBinding(
-            ref=binding.ref, kind=binding.kind, scope=wrong, store=binding.store
-        )
-        result.checks["wrong_scope_fails"] = _must_fail(
-            backend._probe_get, wrong_binding, wrong
+        result.checks["wrong_scope_fails"] = _must_fail_code(
+            backend._probe_get, VaultErrorCode.SCOPE_MISMATCH, binding, wrong
         )
     except CredentialUnavailable as exc:
         probe_error = f"probe:{exc.code}"
@@ -164,17 +168,17 @@ def _class(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-def _must_fail(fn: Any, *args: Any) -> bool:
-    """True ONLY iff ``fn(*args)`` raises the EXPECTED typed CredentialUnavailable.
+def _must_fail_code(fn: Any, code: str, *args: Any) -> bool:
+    """True ONLY iff ``fn(*args)`` raises ``CredentialUnavailable`` with ``code``.
 
-    An unexpected exception type is NOT accepted as proof of scope isolation —
-    it returns False so attestation fails (a fail-closed test must assert the
-    specific expected failure, not "any exception counts").
+    A different code (e.g. ``NOT_FOUND`` from a fake backend) or any other
+    exception is NOT accepted — a fail-closed proof must assert the SPECIFIC
+    expected failure, not "any CredentialUnavailable counts".
     """
     try:
         fn(*args)
-    except CredentialUnavailable:
-        return True
+    except CredentialUnavailable as exc:
+        return exc.code == code
     except Exception:  # noqa: BLE001 — wrong failure mode → not proven fail-closed
         return False
     return False
