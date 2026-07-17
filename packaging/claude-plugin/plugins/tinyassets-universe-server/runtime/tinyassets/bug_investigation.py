@@ -217,6 +217,7 @@ def enqueue_investigation_request(
     base_path: "Path | str",
     universe_id: str = "",
     priority: int = 0,
+    request_id: str = "",
 ) -> str:
     """Enqueue a bug-investigation dispatcher request.
 
@@ -240,7 +241,7 @@ def enqueue_investigation_request(
     from datetime import datetime, timezone
 
     from tinyassets.api.market import filing_effort_dispatch_route
-    from tinyassets.branch_tasks import BranchTask, append_task
+    from tinyassets.branch_tasks import BranchTask, append_task_if_absent
     from tinyassets.dispatcher import prefers_request_type
 
     if not canonical_branch_def_id:
@@ -255,7 +256,11 @@ def enqueue_investigation_request(
     import uuid
     base = Path(base_path)
     uid = universe_id or base.name
-    request_id = str(uuid.uuid4())
+    # Codex r22 #1: a caller may pass a STABLE ``request_id`` (the retry consumer
+    # derives one deterministically from the receipt) so a re-poll / crash / two
+    # concurrent pollers can't double-enqueue — the idempotent append below dedups
+    # on it. The happy path passes none -> a fresh uuid4 that never collides.
+    request_id = request_id or str(uuid.uuid4())
     effort_route = filing_effort_dispatch_route(
         bug_ref.get("effort_classification")
     )
@@ -294,9 +299,13 @@ def enqueue_investigation_request(
             f"investigation handler {canonical_branch_def_id!r} was deleted before "
             "enqueue (concurrent delete race); refusing to queue a dead reference"
         )
-    append_task(base, task)
+    # IDEMPOTENT append (Codex r22 #1): dedup on branch_task_id under the queue
+    # lock so a stable-id re-enqueue is exactly-once. ``appended`` False means the
+    # task was already present (a prior poll / crash-recovery) — still success.
+    appended = append_task_if_absent(base, task)
     _logger.info(
-        "enqueue_investigation_request | %s | %s", bug_ref.get("bug_id", "?"), request_id
+        "enqueue_investigation_request | %s | %s | appended=%s",
+        bug_ref.get("bug_id", "?"), request_id, appended,
     )
     return request_id
 
@@ -454,65 +463,68 @@ def _handler_branch_exists(base_path: "Path | str", branch_def_id: str) -> bool:
     return _handler_branch_status(base_path, branch_def_id) == "exists"
 
 
-def resolve_investigation_handler_detail(
+def resolve_investigation_handler_with_provenance(
     base_path: "Path | str",
-) -> "tuple[str, str]":
-    """Resolve the investigation handler AND report why when there isn't one.
+) -> "tuple[str, str, str, str]":
+    """Resolve the investigation handler with PROVENANCE (Codex r22 #3).
 
-    Returns ``(branch_def_id, reason)``:
+    Returns ``(branch_def_id, reason, resolution_source, goal_id)``:
+    - ``branch_def_id`` is a REAL branch id (or "" — NEVER synthetic ``goal:``
+      text; the goal is in ``goal_id``).
+    - ``reason`` is ``"ok"`` / ``"handler_not_found:<id>"`` /
+      ``"handler_unavailable:..."`` / ``"not_configured"`` (as before).
+    - ``resolution_source`` is ``"goal_canonical"`` / ``"env_fallback"`` / ""
+      — how the handler was picked, so the receipt/task can record it.
+    - ``goal_id`` is the configured goal (when goal-canonical), else "".
 
-    - ``(<id>, "ok")`` — a handler resolved and its branch def EXISTS.
-    - ``("", "handler_not_found:<ids>")`` — one or more ids resolved (goal
-      canonical and/or env fallback) but none exist in the registry (dead
-      refs). Fail loudly on the TRIGGER, never the filing: callers must not
-      enqueue, and should surface an explicit failed-trigger status while the
-      filing itself persists.
-    - ``("", "handler_unavailable:<id>")`` — the handler resolved but the
-      registry read was TRANSIENTLY unavailable (e.g. SQLite locked). This is
-      NOT a definitive miss (Codex r20 #2): the caller must leave a RETRYABLE
-      trigger, NEVER a terminal handler_not_found.
-    - ``("", "not_configured")`` — no goal binding and no env fallback set.
+    The FIRST yielded candidate is authoritative (goal-canonical when a goal is
+    configured with a canonical, else env fallback). A dead authoritative handler
+    FAILS the trigger — it must NOT fall through to a different handler.
     """
-    # The FIRST yielded candidate is the AUTHORITATIVE handler for this filing
-    # (goal-canonical when a goal is configured with a canonical, else the env
-    # fallback). A dead authoritative handler must FAIL the trigger — it must
-    # NOT fall through to a different handler, or a misconfigured goal canonical
-    # would silently run the wrong investigation branch (Codex S1 review; G4).
-    # The env fallback is only reached when the goal path yields no candidate at
-    # all (not when its canonical resolves to a dead ref).
     try:
         primary = next(_iter_handler_candidates(base_path), None)
     except _CanonicalResolutionUnavailable as exc:
         # Codex r21 #1a: goal-canonical resolution failed TRANSIENTLY — do NOT
-        # fall back to the env handler and do NOT dead_ref. Surface a RETRYABLE
-        # outcome so file_bug leaves a retryable trigger.
+        # fall back to the env handler and do NOT dead_ref. Surface RETRYABLE.
+        # goal id lives in goal_id (4th value), NEVER in branch_def_id.
         _logger.warning(
             "resolve_investigation_handler | canonical resolution UNAVAILABLE "
             "for goal %s (%s) — retryable, NOT env fallback / dead ref",
             exc.goal_id, exc.cause,
         )
-        return "", f"handler_unavailable:goal:{exc.goal_id}"
+        return "", "handler_unavailable:goal", "goal_canonical", exc.goal_id
     if primary is None:
-        return "", "not_configured"
-    # Tri-state (Codex r20 #2): thread transient-unavailable through the FULL
-    # resolution chain so a locked registry can't be misreported as a permanent
-    # dead ref. exists -> ok; unavailable -> retryable; missing -> dead.
-    status = _handler_branch_status(base_path, primary)
+        return "", "not_configured", "", ""
+    bdid, source, goal_id = primary
+    # Tri-state (Codex r20 #2): exists -> ok; unavailable -> retryable; missing -> dead.
+    status = _handler_branch_status(base_path, bdid)
     if status == "exists":
-        return primary, "ok"
+        return bdid, "ok", source, goal_id
     if status == "unavailable":
         _logger.warning(
             "resolve_investigation_handler | registry UNAVAILABLE for %s "
             "(transient) — RETRYABLE, not a dead ref; refusing to enqueue now",
-            primary,
+            bdid,
         )
-        return "", "handler_unavailable:" + primary
+        return "", "handler_unavailable:" + bdid, source, goal_id
     _logger.error(
         "resolve_investigation_handler | authoritative handler %s does NOT "
         "exist in the branch registry (dead ref) — refusing to enqueue",
-        primary,
+        bdid,
     )
-    return "", "handler_not_found:" + primary
+    return "", "handler_not_found:" + bdid, source, goal_id
+
+
+def resolve_investigation_handler_detail(
+    base_path: "Path | str",
+) -> "tuple[str, str]":
+    """Thin 2-tuple wrapper over
+    ``resolve_investigation_handler_with_provenance`` — ``(branch_def_id, reason)``
+    for existing callers (Codex r22 #3 kept the old signature stable)."""
+    bdid, reason, _source, _goal = resolve_investigation_handler_with_provenance(
+        base_path
+    )
+    return bdid, reason
 
 
 def _resolve_investigation_handler(base_path: "Path | str") -> str:
@@ -561,7 +573,18 @@ def retry_pending_investigation_triggers(
       - still transiently unavailable / not configured -> leave PENDING for the
         next sweep.
     Wired into the dispatcher poll (``select_next_task``) so every daemon tick
-    drains recoverable triggers. Never raises — best-effort; returns a summary."""
+    drains recoverable triggers. Never raises — best-effort; returns a summary.
+
+    EXACTLY-ONCE (Codex r22 #1): each receipt enqueues a task with a STABLE
+    ``branch_task_id`` derived from the receipt id, via an idempotent
+    append-if-absent — so two concurrent pollers, or a crash after enqueue but
+    before mark_queued, can never double-enqueue one receipt.
+    CONTENT (Codex r22 #2): the enqueued ``bug_ref`` is the receipt's ORIGINAL
+    persisted filing payload, not a bare {"bug_id": ...} that loses title etc.
+    PROVENANCE + REBINDING (Codex r22 #3): retry REBINDS to the CURRENTLY-resolved
+    handler (the canonical may have legitimately changed since filing) and records
+    the ACTUAL handler + goal + resolution source on both the task and the receipt.
+    """
     from tinyassets.wiki import trigger_receipts as _tr
 
     summary: dict[str, list[str]] = {"queued": [], "failed": [], "still_pending": []}
@@ -574,25 +597,38 @@ def retry_pending_investigation_triggers(
     if not pending:
         return summary
 
-    # Resolve ONCE — all pending receipts share the current goal/env config.
-    resolved, reason = resolve_investigation_handler_detail(base_path)
+    # Resolve ONCE (with provenance) — all pending receipts share the current
+    # goal/env config; the retry REBINDS every receipt to this current handler.
+    resolved, reason, source, goal_id = (
+        resolve_investigation_handler_with_provenance(base_path)
+    )
     for receipt in pending:
         request_id = receipt.request_id
         if not request_id:
             continue
         if resolved:
+            # STABLE, deterministic task id (idempotency key) + ORIGINAL payload.
+            stable_id = f"retry:{receipt.trigger_attempt_id}"
+            bug_ref = _reconstruct_bug_ref(receipt, request_id)
             try:
-                req = enqueue_investigation_request(
-                    bug_ref={"bug_id": request_id},
+                enqueue_investigation_request(
+                    bug_ref=bug_ref,
                     canonical_branch_def_id=resolved,
                     base_path=base_path,
                     universe_id=universe_id,
+                    request_id=stable_id,
                 )
-                _tr.mark_queued(receipt, dispatcher_request_id=req)
+                _tr.mark_queued(
+                    receipt,
+                    dispatcher_request_id=stable_id,
+                    branch_def_id=resolved,
+                    goal_id=(goal_id or None),
+                    resolution_source=source,
+                )
                 summary["queued"].append(request_id)
                 _logger.info(
-                    "retry | pending trigger %s RECOVERED -> queued %s",
-                    request_id, req,
+                    "retry | pending trigger %s RECOVERED -> queued %s "
+                    "(handler=%s src=%s)", request_id, stable_id, resolved, source,
                 )
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(
@@ -616,6 +652,29 @@ def retry_pending_investigation_triggers(
             # handler_unavailable / not_configured -> still retryable next sweep.
             summary["still_pending"].append(request_id)
     return summary
+
+
+def _reconstruct_bug_ref(receipt: object, request_id: str) -> dict:
+    """Rebuild the ORIGINAL filing bug_ref from the receipt's persisted payload
+    (Codex r22 #2) so a retried trigger enqueues the SAME content — title,
+    component, severity, observed, expected, repro. Falls back to a bare
+    {"bug_id": ...} only for legacy receipts with no persisted payload."""
+    payload_json = getattr(receipt, "payload_json", None)
+    if payload_json:
+        try:
+            import json as _json
+
+            payload = _json.loads(payload_json)
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                payload["bug_id"] = payload.get("bug_id") or request_id
+                return payload
+        except Exception:  # noqa: BLE001 — corrupt payload; degrade to bug_id
+            _logger.warning(
+                "retry | payload_json parse failed for %s; using bare bug_id",
+                request_id,
+            )
+    return {"bug_id": request_id}
 
 
 class _CanonicalResolutionUnavailable(Exception):
@@ -700,7 +759,9 @@ def _iter_handler_candidates(base_path: "Path | str"):
                     resolution.get("branch_version_id"),
                     resolution.get("source"),
                 )
-                yield bdid
+                # Codex r22 #3: yield (branch_id, resolution_source, goal_id) so
+                # provenance is exact (goal_canonical vs env_fallback).
+                yield bdid, "goal_canonical", goal_id
                 return  # goal is authoritative; do NOT also offer the env handler
         else:
             error_kind = resolution.get("error_kind") or "unknown"
@@ -732,4 +793,4 @@ def _iter_handler_candidates(base_path: "Path | str"):
             "branch_def_id=%s (cutover plan Step 5/6 retires this path)",
             fallback,
         )
-        yield fallback
+        yield fallback, "env_fallback", ""

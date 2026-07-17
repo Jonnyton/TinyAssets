@@ -79,6 +79,14 @@ class TriggerReceipt:
     # re-enqueues a recovered trigger into the RIGHT universe queue (a global
     # pending sweep must not misroute a universe-A filing into universe B).
     universe_id: str | None = None
+    # Codex r22 #2: the normalized filing payload (component/severity/title/
+    # observed/expected/repro/...) as JSON, so a RETRIED trigger enqueues the SAME
+    # content as the original — not a bare {"bug_id": ...} that loses the filing.
+    payload_json: str | None = None
+    # Codex r22 #3: where the handler was resolved from on the (re)attempt that
+    # queued this receipt (e.g. "goal_canonical" / "env_fallback"). branch_def_id
+    # holds the ACTUAL branch id used, NEVER synthetic "goal:<id>" text.
+    resolution_source: str | None = None
     queued_at: str | None = None
     run_id: str | None = None
     dispatcher_request_id: str | None = None
@@ -127,6 +135,8 @@ CREATE TABLE IF NOT EXISTS wiki_trigger_attempts (
     goal_id               TEXT,
     branch_def_id         TEXT,
     universe_id           TEXT,
+    payload_json          TEXT,
+    resolution_source     TEXT,
     queued_at             TEXT,
     run_id                TEXT,
     dispatcher_request_id TEXT,
@@ -177,11 +187,14 @@ def _conn(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(str(p))
     try:
         conn.execute(_TABLE_DDL)
-        # Migration (Codex r21 #1c): add universe_id to an older DB that predates
-        # the retry consumer. SQLite has no ADD COLUMN IF NOT EXISTS, so probe.
+        # Migrations (Codex r21 #1c + r22 #2/#3): add columns an older DB lacks.
+        # SQLite has no ADD COLUMN IF NOT EXISTS, so probe.
         _cols = {r[1] for r in conn.execute("PRAGMA table_info(wiki_trigger_attempts)")}
-        if "universe_id" not in _cols:
-            conn.execute("ALTER TABLE wiki_trigger_attempts ADD COLUMN universe_id TEXT")
+        for _col in ("universe_id", "payload_json", "resolution_source"):
+            if _col not in _cols:
+                conn.execute(
+                    f"ALTER TABLE wiki_trigger_attempts ADD COLUMN {_col} TEXT"
+                )
         for ddl in _INDEX_DDL:
             conn.execute(ddl)
         conn.row_factory = sqlite3.Row
@@ -204,6 +217,7 @@ def create_pending(
     goal_id: str | None = None,
     branch_def_id: str | None = None,
     universe_id: str | None = None,
+    payload_json: str | None = None,
     db_path: Path | None = None,
 ) -> TriggerReceipt:
     """Insert a new pending receipt and return it.
@@ -215,6 +229,8 @@ def create_pending(
 
     ``universe_id`` records which universe the filing belongs to so the retry
     consumer (Codex r21 #1c) re-enqueues a recovered trigger into the right queue.
+    ``payload_json`` persists the normalized filing content (Codex r22 #2) so a
+    retried trigger enqueues the SAME content, not a bare {"bug_id": ...}.
     """
     receipt = TriggerReceipt(
         trigger_attempt_id=str(uuid.uuid4()),
@@ -226,18 +242,21 @@ def create_pending(
         goal_id=goal_id,
         branch_def_id=branch_def_id,
         universe_id=universe_id,
+        payload_json=payload_json,
     )
     with _conn(db_path) as c:
         c.execute(
             """INSERT INTO wiki_trigger_attempts (
                 trigger_attempt_id, request_id, request_kind, request_page,
-                status, attempted_at, goal_id, branch_def_id, universe_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                status, attempted_at, goal_id, branch_def_id, universe_id,
+                payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 receipt.trigger_attempt_id, receipt.request_id,
                 receipt.request_kind, receipt.request_page,
                 receipt.status, receipt.attempted_at,
                 receipt.goal_id, receipt.branch_def_id, receipt.universe_id,
+                receipt.payload_json,
             ),
         )
     logger.info(
@@ -252,27 +271,45 @@ def mark_queued(
     *,
     dispatcher_request_id: str | None = None,
     run_id: str | None = None,
+    branch_def_id: str | None = None,
+    goal_id: str | None = None,
+    resolution_source: str | None = None,
     db_path: Path | None = None,
 ) -> TriggerReceipt:
-    """Update an existing receipt to status=queued. Returns the updated obj."""
+    """Update an existing receipt to status=queued. Returns the updated obj.
+
+    Codex r22 #3: records the ACTUAL provenance of the queued task —
+    ``branch_def_id`` (the real branch id enqueued, never synthetic goal: text),
+    ``goal_id``, and ``resolution_source`` — so the receipt can never contradict
+    the task. Any of these left None preserves the receipt's existing value.
+    """
     receipt.status = STATUS_QUEUED
     receipt.queued_at = _utc_now_iso()
     receipt.dispatcher_request_id = dispatcher_request_id
     receipt.run_id = run_id
+    if branch_def_id is not None:
+        receipt.branch_def_id = branch_def_id
+    if goal_id is not None:
+        receipt.goal_id = goal_id
+    if resolution_source is not None:
+        receipt.resolution_source = resolution_source
     with _conn(db_path) as c:
         c.execute(
             """UPDATE wiki_trigger_attempts
-               SET status=?, queued_at=?, dispatcher_request_id=?, run_id=?
+               SET status=?, queued_at=?, dispatcher_request_id=?, run_id=?,
+                   branch_def_id=?, goal_id=?, resolution_source=?
                WHERE trigger_attempt_id=?""",
             (
                 receipt.status, receipt.queued_at,
                 receipt.dispatcher_request_id, receipt.run_id,
+                receipt.branch_def_id, receipt.goal_id, receipt.resolution_source,
                 receipt.trigger_attempt_id,
             ),
         )
     logger.info(
-        "trigger_receipt | queued | %s | dispatcher=%s run=%s",
+        "trigger_receipt | queued | %s | dispatcher=%s run=%s handler=%s src=%s",
         receipt.trigger_attempt_id, dispatcher_request_id, run_id,
+        receipt.branch_def_id, receipt.resolution_source,
     )
     return receipt
 
@@ -434,9 +471,12 @@ def pending_attempts(
     was transiently unavailable, or the trigger helper never finalized it). The
     retry consumer re-attempts each until it resolves to queued (handler
     recovered) or failed (definitively missing). When ``universe_id`` is given,
-    only that universe's pending receipts are returned (plus legacy rows with a
-    NULL universe_id, which predate the column) so a per-universe sweep does not
-    misroute another universe's filing."""
+    ONLY that universe's pending receipts are returned — a NULL-universe legacy
+    receipt is NEVER auto-consumed by an arbitrary universe's poll (Codex r22 #4:
+    the old ``OR universe_id IS NULL`` let the first universe polling after an
+    upgrade grab another universe's filing — a cross-universe leak). Orphan
+    NULL-universe rows are quarantined for explicit recovery via
+    ``orphan_universe_attempts``."""
     with _conn(db_path) as c:
         if universe_id is None:
             rows = c.execute(
@@ -447,10 +487,29 @@ def pending_attempts(
         else:
             rows = c.execute(
                 "SELECT * FROM wiki_trigger_attempts WHERE status = ? "
-                "AND (universe_id = ? OR universe_id IS NULL) "
+                "AND universe_id = ? "
                 "ORDER BY attempted_at LIMIT ?",
                 (STATUS_PENDING, universe_id, max(1, int(limit))),
             ).fetchall()
+    return [TriggerReceipt(**dict(r)) for r in rows]
+
+
+def orphan_universe_attempts(
+    *,
+    limit: int = 500,
+    db_path: Path | None = None,
+) -> list[TriggerReceipt]:
+    """PENDING receipts with NO universe_id (legacy rows predating the column) —
+    QUARANTINED from per-universe retry so no arbitrary universe consumes them
+    (Codex r22 #4). Surfaced here for EXPLICIT recovery (an operator/migration
+    can determine the universe from ``request_page`` and re-stamp them)."""
+    with _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT * FROM wiki_trigger_attempts "
+            "WHERE status = ? AND universe_id IS NULL "
+            "ORDER BY attempted_at LIMIT ?",
+            (STATUS_PENDING, max(1, int(limit))),
+        ).fetchall()
     return [TriggerReceipt(**dict(r)) for r in rows]
 
 

@@ -364,6 +364,192 @@ def test_retry_consumer_fails_pending_trigger_when_handler_definitively_gone(
     )
 
 
+def test_retry_is_exactly_once_under_concurrent_polls(tmp_path, monkeypatch):
+    # Codex r22 #1: N concurrent poller threads processing the SAME pending
+    # receipt must produce EXACTLY ONE queue task (stable branch_task_id +
+    # idempotent append-under-lock), never N.
+    import threading
+
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    _tr.create_pending(
+        request_id="BUG-CONC", request_kind="bug",
+        request_page="pages/bugs/bug-conc.md",
+        branch_def_id="branch-canonical-abc", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-CONC", "title": "conc"}',
+    )
+
+    n = 5
+    barrier = threading.Barrier(n)
+
+    def _poll():
+        barrier.wait()  # maximize contention
+        retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    threads = [threading.Thread(target=_poll) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    q = [t for t in read_queue(tmp_path) if t.request_type == "bug_investigation"]
+    assert len(q) == 1, [t.branch_task_id for t in q]   # EXACTLY ONE, not n
+    assert not any(
+        r.request_id == "BUG-CONC" for r in _tr.pending_attempts(universe_id=None)
+    )
+
+
+def test_retry_crash_recovery_does_not_double_enqueue(tmp_path, monkeypatch):
+    # Codex r22 #1 (crash case): a crash AFTER enqueue but BEFORE mark_queued
+    # leaves the receipt pending + the task queued. The next poll re-enqueues with
+    # the SAME stable id -> idempotent no-op -> STILL exactly one task.
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    _tr.create_pending(
+        request_id="BUG-CRASH", request_kind="bug",
+        request_page="pages/bugs/bug-crash.md",
+        branch_def_id="branch-canonical-abc", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-CRASH"}',
+    )
+    # First poll enqueues task-1 + marks queued.
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+    # Simulate a crash BEFORE mark_queued: force the receipt back to pending.
+    with _tr._conn() as c:
+        c.execute(
+            "UPDATE wiki_trigger_attempts SET status='pending' WHERE request_id=?",
+            ("BUG-CRASH",),
+        )
+    # Re-poll: same stable id -> append_if_absent finds the existing task -> no dup.
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    q = [t for t in read_queue(tmp_path) if t.request_type == "bug_investigation"]
+    assert len(q) == 1, [t.branch_task_id for t in q]   # STILL exactly one
+
+
+def test_retry_preserves_original_filing_content(tmp_path, monkeypatch):
+    # Codex r22 #2: a retried trigger enqueues the SAME content (title/component/
+    # severity/observed/expected/repro) reconstructed from the persisted payload —
+    # not a bare {"bug_id": ...} that queues "bug BUG-CONTEXT: Untitled".
+    import json as _json
+
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    payload = {
+        "bug_id": "BUG-CONTEXT", "title": "Export button broken",
+        "component": "export", "severity": "major", "kind": "bug",
+        "observed": "no download", "expected": "csv downloads",
+        "repro": "click export",
+    }
+    _tr.create_pending(
+        request_id="BUG-CONTEXT", request_kind="bug",
+        request_page="pages/bugs/bug-context.md",
+        branch_def_id="branch-canonical-abc", universe_id=tmp_path.name,
+        payload_json=_json.dumps(payload),
+    )
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    task = next(
+        t for t in read_queue(tmp_path) if t.request_type == "bug_investigation"
+    )
+    blob = _json.dumps(task.inputs)
+    # The ORIGINAL filing fields survive — NOT lost to a bare bug_id.
+    for value in (
+        "Export button broken", "export", "major",
+        "no download", "csv downloads", "click export",
+    ):
+        assert value in blob, (value, task.inputs)
+    assert "Untitled" not in task.inputs.get("request_text", "")
+
+
+def test_retry_records_actual_handler_provenance(tmp_path, monkeypatch):
+    # Codex r22 #3: the receipt records the ACTUAL rebound handler + source, so it
+    # can't contradict the queued task; branch_def_id is a REAL branch id, never
+    # synthetic goal: text.
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    # The receipt recorded a STALE handler; the current config resolves a
+    # DIFFERENT one. Retry REBINDS to the current one and records it.
+    _tr.create_pending(
+        request_id="BUG-PROV", request_kind="bug",
+        request_page="pages/bugs/bug-prov.md",
+        branch_def_id="stale-handler-A", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-PROV"}',
+    )
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    task = next(
+        t for t in read_queue(tmp_path) if t.request_type == "bug_investigation"
+    )
+    assert task.branch_def_id == "branch-canonical-abc"   # rebound to current
+    rec = next(
+        r for r in _tr.recent_attempts(limit=20) if r.request_id == "BUG-PROV"
+    )
+    assert rec.branch_def_id == "branch-canonical-abc"    # receipt == task, no drift
+    assert rec.resolution_source == "env_fallback"
+    assert not (rec.branch_def_id or "").startswith("goal:")
+
+
+def test_retry_does_not_cross_universe_boundaries(tmp_path, monkeypatch):
+    # Codex r22 #4: a universe-A poll must NOT consume a universe-B receipt nor a
+    # NULL-universe legacy receipt (which is quarantined for explicit recovery).
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    _tr.create_pending(
+        request_id="BUG-OTHER", request_kind="bug", request_page="p",
+        branch_def_id="branch-canonical-abc", universe_id="other-universe",
+        payload_json='{"bug_id": "BUG-OTHER"}',
+    )
+    _tr.create_pending(
+        request_id="BUG-LEGACY", request_kind="bug", request_page="p",
+        branch_def_id="branch-canonical-abc", universe_id=None,
+        payload_json='{"bug_id": "BUG-LEGACY"}',
+    )
+    summary = retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    assert "BUG-OTHER" not in summary["queued"]
+    assert "BUG-LEGACY" not in summary["queued"]
+    assert read_queue(tmp_path) == []   # nothing enqueued into THIS universe
+    pend = {r.request_id for r in _tr.pending_attempts(universe_id=None)}
+    assert {"BUG-OTHER", "BUG-LEGACY"} <= pend   # both untouched
+    # The legacy NULL-universe receipt is quarantined for EXPLICIT recovery.
+    assert "BUG-LEGACY" in {r.request_id for r in _tr.orphan_universe_attempts()}
+
+
 def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
     # Codex r14 #4 (G4 deletion race): a handler deleted between the upstream
     # existence check and the durable enqueue must NOT queue a dead reference —
@@ -632,15 +818,24 @@ def test_wiki_file_bug_resolves_handler_once_shared_provenance(tmp_path, monkeyp
 
     # The resolver would return DIFFERENT handlers on successive calls — a
     # canonical change/removal racing the filing. With the single-resolution
-    # fix only the FIRST is ever observed.
-    resolver = MagicMock(side_effect=[("handler-ONE", "ok"), ("handler-TWO", "ok")])
-    monkeypatch.setattr(bi, "resolve_investigation_handler_detail", resolver)
+    # fix only the FIRST is ever observed. (r22 #3: file_bug now resolves via the
+    # 4-tuple provenance resolver — branch_def_id, reason, source, goal_id.)
+    resolver = MagicMock(side_effect=[
+        ("handler-ONE", "ok", "env_fallback", ""),
+        ("handler-TWO", "ok", "env_fallback", ""),
+    ])
+    monkeypatch.setattr(
+        bi, "resolve_investigation_handler_with_provenance", resolver,
+    )
 
     captured: dict[str, str] = {}
 
-    def _fake_enqueue(*, bug_ref, canonical_branch_def_id, base_path, universe_id=""):
+    def _fake_enqueue(
+        *, bug_ref, canonical_branch_def_id, base_path, universe_id="",
+        request_id="", **_kw,
+    ):
         captured["branch_def_id"] = canonical_branch_def_id
-        return "req-shared"
+        return request_id or "req-shared"
 
     monkeypatch.setattr(bi, "enqueue_investigation_request", _fake_enqueue)
 

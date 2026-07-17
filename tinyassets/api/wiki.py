@@ -2193,31 +2193,42 @@ def _wiki_file_bug(
         # otherwise the enqueue helper re-resolves and a canonical change/removal
         # between the two calls yields mismatched provenance (receipt says
         # handler_not_found while the enqueue reports a different outcome).
-        resolved_branch_def_id, _handler_reason = (
-            bug_investigation.resolve_investigation_handler_detail(universe_path)
+        (
+            resolved_branch_def_id, _handler_reason,
+            _handler_source, _handler_goal,
+        ) = bug_investigation.resolve_investigation_handler_with_provenance(
+            universe_path
         )
-        canonical_branch_def_id = resolved_branch_def_id
+        # Codex r22 #3: branch_def_id records a REAL branch id only, NEVER
+        # synthetic ``goal:<id>`` text — the goal goes in its own goal_id field.
+        canonical_branch_def_id = resolved_branch_def_id or None
         if not canonical_branch_def_id and (
             _handler_reason.startswith("handler_not_found:")
-            or _handler_reason.startswith("handler_unavailable:")
+            or (
+                _handler_reason.startswith("handler_unavailable:")
+                # the goal-resolution-crash reason ("handler_unavailable:goal")
+                # carries NO branch id — the goal is in _handler_goal instead.
+                and _handler_reason != "handler_unavailable:goal"
+            )
         ):
-            # Record the id we expected to invoke (RECEIPT ONLY — the enqueue
-            # still refuses via the empty resolution below). Covers both a dead
-            # ref (handler_not_found) and a transient miss (handler_unavailable,
-            # Codex r20 #2).
+            # A dead / transiently-unavailable id we expected to invoke (RECEIPT
+            # ONLY — the enqueue still refuses via the empty resolution below).
             canonical_branch_def_id = (
                 _handler_reason.split(":", 1)[1].split(",")[0] or None
             )
-        canonical_branch_def_id = canonical_branch_def_id or None
         try:
             _receipt = _tr.create_pending(
                 request_id=bug_id,
                 request_kind=effective_kind,
                 request_page=rel_path,
                 branch_def_id=canonical_branch_def_id,
+                goal_id=(_handler_goal or None),
                 # Codex r21 #1c: record the universe so the retry consumer
                 # re-enqueues a recovered trigger into the right queue.
                 universe_id=target_universe_id or None,
+                # Codex r22 #2: persist the normalized filing payload so a
+                # RETRIED trigger enqueues the SAME content, not a bare bug_id.
+                payload_json=json.dumps(frontmatter, default=str),
             )
         except Exception as _rcpt_exc:  # noqa: BLE001 - filing must survive receipt-store outage.
             _logger_wiki.warning(

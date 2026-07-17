@@ -276,6 +276,35 @@ def append_task(universe_path: Path, task: BranchTask) -> None:
         _write_raw(qp, raw)
 
 
+def append_task_if_absent(universe_path: Path, task: BranchTask) -> bool:
+    """IDEMPOTENT append keyed on ``branch_task_id`` (Codex r22 #1). Under the
+    queue file lock, check whether a task with this ``branch_task_id`` already
+    exists; append only if absent. Returns True if appended, False if a task with
+    that id was already present.
+
+    This is the exactly-once primitive for the retry consumer: a STABLE
+    (deterministic) ``branch_task_id`` derived from the trigger receipt + this
+    check-and-append-UNDER-THE-LOCK means two concurrent pollers (or a crash +
+    re-poll) can NEVER double-enqueue one receipt — the file lock serializes the
+    check, so the second caller sees the first's task and skips. For a fresh
+    uuid4 id it always appends (no collision)."""
+    if task.trigger_source not in VALID_TRIGGER_SOURCES:
+        raise ValueError(f"Invalid trigger_source: {task.trigger_source}")
+    if task.status not in VALID_STATUSES:
+        raise ValueError(f"Invalid status: {task.status}")
+    if not task.queued_at:
+        task.queued_at = _now_iso()
+    qp = queue_path(universe_path)
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        for row in raw:
+            if isinstance(row, dict) and row.get("branch_task_id") == task.branch_task_id:
+                return False  # already enqueued — idempotent no-op
+        raw.append(task.to_dict())
+        _write_raw(qp, raw)
+        return True
+
+
 class QueueCapExceeded(RuntimeError):
     """A queue-growth cap (global active or per-origin lineage) would be
     exceeded. The task was NOT appended."""
