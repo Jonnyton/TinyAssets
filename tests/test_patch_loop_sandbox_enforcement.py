@@ -59,6 +59,7 @@ from tinyassets.providers.base import (
 from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.codex_provider import CodexProvider, _codex_sandbox_args
 from tinyassets.sandbox_policy import (
+    ExecutionScope,
     node_requires_sandbox,
 )
 
@@ -2009,19 +2010,16 @@ def test_build_node_has_no_executor_skip_gate():
 
 
 def test_draft_patch_coding_prompt_template_dispatched_end_to_end(tmp_path, monkeypatch):
-    import functools
-
     from tests._executor_sim import install_worker_sim, redeemed_universe_dirs
     from tinyassets.graph_compiler import _build_node
-    from tinyassets.providers.base import UniverseContext
     from tinyassets.providers.call import call_provider
     from tinyassets.sandbox_policy import effective_node_capability
 
     install_worker_sim(monkeypatch)  # TYPED executor + test broker: dispatch runs it
-    # The run binds a UniverseContext into provider_call (as api/runs.py does); the
-    # daemon derives the OPAQUE credential grant from THAT authoritative binding.
-    uctx = UniverseContext(universe_dir=tmp_path, config=None)
-    provider_call = functools.partial(call_provider, universe_context=uctx)
+    # The run carries an EXPLICIT, AUTHORITATIVE BOUND scope (Codex S3 r20 #2); the
+    # daemon derives the OPAQUE credential grant from THAT scope, not from the
+    # provider-callable shape.
+    scope = ExecutionScope.bound(str(tmp_path))
     node = NodeDefinition(
         node_id="draft_patch", display_name="Draft", node_kind="coding",
         prompt_template="implement: {task}", input_keys=["task"],
@@ -2030,7 +2028,8 @@ def test_draft_patch_coding_prompt_template_dispatched_end_to_end(tmp_path, monk
     # It is a coding (sandbox-required) node → routed to the isolated executor.
     assert effective_node_capability(node) == "coding"
     fn = _build_node(
-        node, provider_call=provider_call, event_sink=None,
+        node, provider_call=call_provider, event_sink=None,
+        execution_scope=scope,
         state_schema=[
             {"name": "task", "type": "str"},
             {"name": "draft_patch_output", "type": "str"},
@@ -2086,7 +2085,10 @@ def test_executor_dispatch_failure_emits_failed_event(_opaque_registry, monkeypa
         events.append((node_id, detail.get("phase")))
 
     node = NodeDefinition(node_id="rr", display_name="R", output_keys=["ok"])
-    fn = _build_node(node, provider_call=None, event_sink=sink, domain_id="rd")
+    fn = _build_node(
+        node, provider_call=None, event_sink=sink, domain_id="rd",
+        execution_scope=ExecutionScope.legacy_unbound(),
+    )
     with pytest.raises(CompilerError):
         fn({})
     failed = [e for e in events if e[1] == "failed"]
@@ -2197,7 +2199,10 @@ def test_response_envelope_encode_decode_and_remote_failure_reconstruction(
         events.append((node_id, detail.get("phase")))
 
     node = NodeDefinition(node_id="rr", display_name="R", output_keys=["ok"])
-    fn = _build_node(node, provider_call=None, event_sink=sink, domain_id="rd")
+    fn = _build_node(
+        node, provider_call=None, event_sink=sink, domain_id="rd",
+        execution_scope=ExecutionScope.legacy_unbound(),
+    )
     with pytest.raises(CompilerError) as excinfo:
         fn({})
     # The daemon RECONSTRUCTED the remote error's type + message (real IPC), not a
@@ -2237,7 +2242,10 @@ def test_cancelled_envelope_propagates_as_cancellation(_opaque_registry, monkeyp
         "rd", "rr", lambda s: {"ok": 1}, capability="repo_read",
     )
     node = NodeDefinition(node_id="rr", display_name="R", output_keys=["ok"])
-    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="rd")
+    fn = _build_node(
+        node, provider_call=None, event_sink=None, domain_id="rd",
+        execution_scope=ExecutionScope.legacy_unbound(),
+    )
     with pytest.raises(Exception) as excinfo:  # noqa: PT011
         fn({})
     # A cancelled envelope propagates AS cancellation (recognized by the daemon's
@@ -2290,13 +2298,12 @@ def test_worker_fails_closed_for_bad_credential_grant(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_grant_scoped_to_authoritative_binding_not_forgeable_enqueue_context(
+def test_grant_scoped_to_explicit_scope_not_forgeable_enqueue_context(
     tmp_path, monkeypatch,
 ):
-    """The grant scope comes from the AUTHORITATIVE provider binding, NOT the
-    caller-forgeable (and async-dropped) enqueue_context universe_id."""
-    import functools
-
+    """The grant scope comes from the EXPLICIT authoritative ExecutionScope (Codex
+    S3 r20 #2), NOT the caller-forgeable (and async-dropped) enqueue_context, and
+    NOT inferred from the provider-callable shape."""
     from tests._executor_sim import install_worker_sim, redeemed_universe_dirs
     from tinyassets.graph_compiler import NodeEnqueueContext, _build_node
     from tinyassets.providers.call import call_provider
@@ -2304,11 +2311,10 @@ def test_grant_scoped_to_authoritative_binding_not_forgeable_enqueue_context(
     install_worker_sim(monkeypatch)
     dir_a = tmp_path / "universe-A"
     dir_a.mkdir()
-    # provider_call is bound to universe A (the real, resolved run scope)…
-    provider_call = functools.partial(
-        call_provider, universe_context=UniverseContext(universe_dir=dir_a, config=None),
-    )
-    # …while an attacker forges enqueue_context to claim universe B.
+    # The EXPLICIT authoritative scope is universe A…
+    scope = ExecutionScope.bound(str(dir_a))
+    # …while an attacker forges enqueue_context to claim universe B, and passes a
+    # plain (unbound) provider callable — neither can move the scope off A.
     forged_ctx = NodeEnqueueContext(universe_id="attacker-universe-B", actor="mallory")
     node = NodeDefinition(
         node_id="draft_patch", display_name="Draft", node_kind="coding",
@@ -2316,23 +2322,22 @@ def test_grant_scoped_to_authoritative_binding_not_forgeable_enqueue_context(
         output_keys=["draft_patch_output"],
     )
     fn = _build_node(
-        node, provider_call=provider_call, event_sink=None,
-        enqueue_context=forged_ctx,
+        node, provider_call=call_provider, event_sink=None,
+        enqueue_context=forged_ctx, execution_scope=scope,
         state_schema=[
             {"name": "task", "type": "str"},
             {"name": "draft_patch_output", "type": "str"},
         ],
     )
     fn({"task": "x"})
-    # Scope came from the AUTHORITATIVE binding (A), never the forged context (B).
+    # Scope came from the EXPLICIT scope (A), never the forged context (B).
     assert redeemed_universe_dirs() == [str(dir_a)]
 
 
 def test_two_universe_credential_isolation_across_run_paths(tmp_path, monkeypatch):
     """Two universes each redeem ONLY their own scope; B can never resolve A's
     credentials. Plus a source-level guard that every run path (async run, resume,
-    versioned) binds the authoritative universe context (never drops the scope)."""
-    import functools
+    versioned) carries the authoritative EXPLICIT scope (never drops it)."""
     import inspect
 
     from tests._executor_sim import install_worker_sim, redeemed_universe_dirs
@@ -2342,17 +2347,14 @@ def test_two_universe_credential_isolation_across_run_paths(tmp_path, monkeypatc
 
     def _run_for(universe_dir):
         install_worker_sim(monkeypatch)  # resets the redemption spy each call
-        provider_call = functools.partial(
-            call_provider,
-            universe_context=UniverseContext(universe_dir=universe_dir, config=None),
-        )
         node = NodeDefinition(
             node_id="draft_patch", display_name="Draft", node_kind="coding",
             prompt_template="do: {task}", input_keys=["task"],
             output_keys=["draft_patch_output"],
         )
         fn = _build_node(
-            node, provider_call=provider_call, event_sink=None,
+            node, provider_call=call_provider, event_sink=None,
+            execution_scope=ExecutionScope.bound(str(universe_dir)),
             state_schema=[
                 {"name": "task", "type": "str"},
                 {"name": "draft_patch_output", "type": "str"},
@@ -2369,10 +2371,307 @@ def test_two_universe_credential_isolation_across_run_paths(tmp_path, monkeypatc
     assert _run_for(dir_b) == [str(dir_b)]  # B resolves ONLY B
     assert str(dir_a) != str(dir_b)
 
-    # Source-level guard: EVERY run entrypoint routes provider_call through
-    # _bind_universe_context, so no path (async run / resume / versioned) drops the
-    # authoritative scope the grant is derived from. This closes the r19 #1 defect
-    # where async execution dropped enqueue_context and the scope became "".
+    # Source-level guard: EVERY run entrypoint resolves the authoritative scope via
+    # _run_execution_scope AND binds provider auth via _bind_universe_context, so no
+    # path (async run / resume / versioned) drops the scope the grant derives from
+    # (Codex S3 r20 #2 — test every execution caller, not just the MCP handlers).
     for name in ("_action_run_branch", "_action_resume_run", "_action_run_branch_version"):
         src = inspect.getsource(getattr(runs_api, name))
         assert "_bind_universe_context(" in src, name
+        assert "_run_execution_scope(" in src, name
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r20 #2 (CRITICAL) — the AUTHORITATIVE scope is carried EXPLICITLY, not
+# inferred from the provider-callable shape. UNKNOWN fails closed; a DIRECT
+# provider callable (the real daemon soul-loop shape) no longer silently degrades
+# to ambient.
+# --------------------------------------------------------------------------- #
+
+
+def _coding_node():
+    return NodeDefinition(
+        node_id="draft_patch", display_name="Draft", node_kind="coding",
+        prompt_template="do: {task}", input_keys=["task"],
+        output_keys=["draft_patch_output"],
+    )
+
+
+_CODING_SCHEMA = [
+    {"name": "task", "type": "str"},
+    {"name": "draft_patch_output", "type": "str"},
+]
+
+
+def test_unknown_scope_fails_closed_before_dispatch(tmp_path, monkeypatch):
+    """A sandbox-required node whose scope is UNKNOWN (undeclared) FAILS CLOSED
+    before ANY dispatch — even with a healthy executor available. This is the r20
+    #2 defect: an unrecognized provider wrapper silently read as unscoped."""
+    from tests._executor_sim import install_worker_sim, redeemed_universe_dirs
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.call import call_provider
+
+    install_worker_sim(monkeypatch)  # a healthy executor IS available
+    fn = _build_node(
+        _coding_node(), provider_call=call_provider, event_sink=None,
+        execution_scope=ExecutionScope.unknown(),  # undeclared scope
+        state_schema=_CODING_SCHEMA,
+    )
+    with pytest.raises(SandboxUnavailableError):
+        fn({"task": "x"})
+    # It never dispatched → the worker never redeemed any scope.
+    assert redeemed_universe_dirs() == []
+
+
+def test_none_scope_defaults_to_unknown_and_fails_closed(tmp_path, monkeypatch):
+    """A missing (``None``) scope is treated as UNKNOWN → fail closed (a caller that
+    forgets to declare scope can never run a sandbox node on ambient auth)."""
+    from tests._executor_sim import install_worker_sim
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.call import call_provider
+
+    install_worker_sim(monkeypatch)
+    fn = _build_node(
+        _coding_node(), provider_call=call_provider, event_sink=None,
+        execution_scope=None,  # not declared at all
+        state_schema=_CODING_SCHEMA,
+    )
+    with pytest.raises(SandboxUnavailableError):
+        fn({"task": "x"})
+
+
+def test_legacy_unbound_scope_dispatches_without_grant(tmp_path, monkeypatch):
+    """An EXPLICITLY legacy-unbound run (no bound tenant) dispatches and the worker
+    uses the process-global provider — no grant is issued or redeemed (r20 #2)."""
+    from tests._executor_sim import install_worker_sim, redeemed_universe_dirs
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.call import call_provider
+
+    install_worker_sim(monkeypatch)
+    fn = _build_node(
+        _coding_node(), provider_call=call_provider, event_sink=None,
+        execution_scope=ExecutionScope.legacy_unbound(),
+        state_schema=_CODING_SCHEMA,
+    )
+    out = fn({"task": "x"})
+    assert out.get("draft_patch_output")  # ran on the ambient/process-global provider
+    assert redeemed_universe_dirs() == []  # no bound tenant → no grant redeemed
+
+
+def test_direct_provider_callable_scope_is_explicit_not_inferred(tmp_path, monkeypatch):
+    """The real daemon soul-loop passes a DIRECT provider callable + a separate
+    universe id (fantasy_daemon/__main__.py). With an EXPLICIT BOUND scope the grant
+    resolves to that universe; the provider-callable shape is irrelevant (r20 #2)."""
+    from tests._executor_sim import install_worker_sim, redeemed_universe_dirs
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.call import call_provider  # a DIRECT callable, not a partial
+
+    install_worker_sim(monkeypatch)
+    dir_a = tmp_path / "soul-universe"
+    dir_a.mkdir()
+    fn = _build_node(
+        _coding_node(), provider_call=call_provider, event_sink=None,
+        execution_scope=ExecutionScope.bound(str(dir_a)),
+        state_schema=_CODING_SCHEMA,
+    )
+    fn({"task": "x"})
+    assert redeemed_universe_dirs() == [str(dir_a)]
+
+
+def test_default_execution_scope_resolution(tmp_path, monkeypatch):
+    """``_default_execution_scope`` (the sync-path default used by the soul-loop's
+    ``execute_branch(_enqueue_universe_id=...)``) resolves BOUND / LEGACY_UNBOUND /
+    UNKNOWN authoritatively from a universe id (Codex S3 r20 #2)."""
+    from tinyassets.runs import _default_execution_scope
+    from tinyassets.sandbox_policy import ScopeKind
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    (tmp_path / "u-real").mkdir()
+
+    assert _default_execution_scope("").kind is ScopeKind.LEGACY_UNBOUND
+    bound = _default_execution_scope("u-real")
+    assert bound.kind is ScopeKind.BOUND
+    assert bound.universe_dir == str((tmp_path / "u-real").resolve())
+    # A declared-but-unresolvable universe id → UNKNOWN (fail closed), never ambient.
+    assert _default_execution_scope("does-not-exist").kind is ScopeKind.UNKNOWN
+
+
+def test_soul_loop_caller_passes_authoritative_universe_id():
+    """Source guard (Codex S3 r20 #2 — test EVERY execution caller): the fantasy
+    daemon soul-loop drives ``execute_branch`` with ``_enqueue_universe_id`` set, so
+    the sync path derives a BOUND scope for that universe instead of ambient."""
+    import inspect
+
+    from fantasy_daemon import __main__ as fd_main
+
+    src = inspect.getsource(fd_main)
+    # The soul-loop execute_branch call carries the universe id authoritatively.
+    assert "_enqueue_universe_id=universe_id" in src
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r20 #3 — workspace references have a real job lifecycle: bound to
+# run_id + executor audience + expiry, revoked on terminal cleanup, bounded.
+# --------------------------------------------------------------------------- #
+
+
+def test_workspace_ref_bound_to_run_and_audience():
+    import tinyassets.sandbox_policy as sp
+
+    ref = sp.issue_workspace_ref(run_id="run-A", base_path="/ws/a", audience="repo")
+    # Matching run + audience resolves.
+    assert sp.resolve_workspace_ref(ref, run_id="run-A", audience="repo") == "/ws/a"
+    # Cross-job replay (wrong run) fails closed.
+    assert sp.resolve_workspace_ref(ref, run_id="run-B", audience="repo") is None
+    # Wrong executor audience fails closed.
+    assert sp.resolve_workspace_ref(ref, run_id="run-A", audience="source_exec") is None
+    sp.release_run_workspace_refs("run-A")
+
+
+def test_workspace_ref_replay_after_release_fails_closed():
+    import tinyassets.sandbox_policy as sp
+
+    ref = sp.issue_workspace_ref(run_id="run-rel", base_path="/ws/x", audience="repo")
+    assert sp.resolve_workspace_ref(ref, run_id="run-rel", audience="repo") == "/ws/x"
+    revoked = sp.release_run_workspace_refs("run-rel")
+    assert revoked == 1
+    # A token captured from a finished run can never be replayed.
+    assert sp.resolve_workspace_ref(ref, run_id="run-rel", audience="repo") is None
+
+
+def test_workspace_ref_expiry_fails_closed():
+    import tinyassets.sandbox_policy as sp
+
+    # An already-expired ref (ttl <= 0) resolves to None.
+    ref = sp.issue_workspace_ref(
+        run_id="run-exp", base_path="/ws/e", audience="repo", ttl_seconds=-1.0,
+    )
+    assert sp.resolve_workspace_ref(ref, run_id="run-exp", audience="repo") is None
+
+
+def test_workspace_ref_registry_bounded_under_sustained_load():
+    import tinyassets.sandbox_policy as sp
+
+    sp._WORKSPACE_REF_REGISTRY.clear()
+    # Issue many already-expired refs — each issue evicts dead entries, so the
+    # registry never grows unbounded (Codex S3 r20 #3).
+    for i in range(500):
+        sp.issue_workspace_ref(
+            run_id=f"r{i}", base_path=f"/ws/{i}", audience="repo", ttl_seconds=-1.0,
+        )
+    assert len(sp._WORKSPACE_REF_REGISTRY) <= 1
+    sp._WORKSPACE_REF_REGISTRY.clear()
+
+
+def test_unknown_workspace_ref_fails_closed():
+    import tinyassets.sandbox_policy as sp
+
+    assert sp.resolve_workspace_ref("ws:does-not-exist", run_id="x", audience="repo") is None
+    assert sp.resolve_workspace_ref("", run_id="x", audience="repo") is None
+
+
+def test_update_run_status_releases_workspace_refs_on_terminal():
+    """Terminal run cleanup is wired into ``update_run_status`` (Codex S3 r20 #3)."""
+    import inspect
+
+    import tinyassets.runs as runs
+
+    src = inspect.getsource(runs.update_run_status)
+    assert "release_run_workspace_refs" in src
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r20 #4 — STRICT JSON: reject NaN, real decode round-trip, discriminated
+# schemas, bounded sizes, no ``.get()``-on-a-string error crash.
+# --------------------------------------------------------------------------- #
+
+
+def test_execution_request_rejects_nan_strict_json():
+    from tinyassets.graph_compiler import (
+        CompilerError,
+        build_executor_execution_request,
+    )
+    from tinyassets.sandbox_policy import EXECUTOR_CLASS_SOURCE_EXEC
+
+    node = NodeDefinition(
+        node_id="s", display_name="S",
+        source_code="def run(state):\n    return {}\n",
+    )
+    node.mark_approved()
+    # NaN is NOT valid JSON — strict validation rejects it BEFORE dispatch.
+    with pytest.raises(CompilerError):
+        build_executor_execution_request(
+            node, {"x": float("nan")}, EXECUTOR_CLASS_SOURCE_EXEC,
+        )
+
+
+def test_execution_response_rejects_string_error_no_get_crash():
+    """A ``status='error'`` envelope with a BARE STRING error is rejected by
+    validation — the daemon never calls ``.get()`` on a string (Codex S3 r20 #4)."""
+    from tinyassets.graph_compiler import (
+        EXECUTION_REQUEST_SCHEMA_VERSION,
+        CompilerError,
+        validate_execution_response,
+    )
+
+    bad = {
+        "kind": "isolated_execution_response",
+        "schema_version": EXECUTION_REQUEST_SCHEMA_VERSION,
+        "status": "error",
+        "result": None,
+        "error": "boom",  # a bare string, not a structured dict
+    }
+    with pytest.raises(CompilerError):
+        validate_execution_response(bad)
+
+
+def test_make_execution_response_normalizes_and_truncates_error():
+    from tinyassets.graph_compiler import (
+        _MAX_ERROR_MESSAGE_CHARS,
+        _MAX_ERROR_TYPE_CHARS,
+        make_execution_response,
+        validate_execution_response,
+    )
+
+    # A bare-string error is normalized into a structured, bounded dict.
+    env = make_execution_response(status="error", error="x" * 99999)
+    validate_execution_response(env)  # passes — normalized to a dict
+    assert env["error"]["type"] == "Error"
+    assert len(env["error"]["message"]) <= _MAX_ERROR_MESSAGE_CHARS
+    # An oversized type is truncated too.
+    env2 = make_execution_response(
+        status="error", error={"type": "T" * 999, "message": "m"},
+    )
+    validate_execution_response(env2)
+    assert len(env2["error"]["type"]) <= _MAX_ERROR_TYPE_CHARS
+
+
+def test_execution_response_ok_requires_dict_result():
+    from tinyassets.graph_compiler import (
+        CompilerError,
+        make_execution_response,
+        validate_execution_response,
+    )
+
+    # status='ok' with a non-dict result is rejected.
+    bad = make_execution_response(status="ok", result=None)
+    with pytest.raises(CompilerError):
+        validate_execution_response(bad)
+
+
+def test_worker_side_request_validation_rejects_bad_request(monkeypatch):
+    """The worker RE-VALIDATES the request before acting (Codex S3 r20 #4); a
+    malformed request comes back as a typed error envelope, not a crash."""
+    from tests._executor_sim import (
+        WorkerSimExecutor,
+        install_test_credential_broker,
+    )
+    from tinyassets.graph_compiler import validate_execution_response
+    from tinyassets.sandbox_policy import EXECUTOR_CLASS_REPO
+
+    install_test_credential_broker(monkeypatch)
+    worker = WorkerSimExecutor(EXECUTOR_CLASS_REPO)
+    # A request missing required fields / wrong kind.
+    envelope = worker.dispatch({"kind": "not-a-request", "inputs": {}})
+    validate_execution_response(envelope)
+    assert envelope["status"] == "error"

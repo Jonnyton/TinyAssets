@@ -126,9 +126,15 @@ def _ctx(**kw) -> NodeEnqueueContext:
 def _run(b, *, invocation_depth=0, thread="t", context=None, base_path="/fake/base"):
     if context is None:
         context = _ctx()
+    # Codex S3 r20 #2: a sandbox-required node needs an EXPLICIT execution scope.
+    # These enqueue-mechanics tests are not credential-scope tests, so they run in
+    # an explicit legacy-unbound scope (no bound tenant) — the source_exec driver
+    # then dispatches to the simulated Phase-2 runner instead of failing closed.
+    from tinyassets.sandbox_policy import ExecutionScope
     compiled = compile_branch(
         b, invocation_depth=invocation_depth,
         base_path=base_path, enqueue_context=context,
+        execution_scope=ExecutionScope.legacy_unbound(),
     )
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     return app.invoke({}, config={"configurable": {"thread_id": thread}})

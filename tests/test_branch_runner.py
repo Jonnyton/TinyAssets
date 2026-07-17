@@ -18,6 +18,13 @@ from tinyassets.branches import (
     GraphNodeRef,
     NodeDefinition,
 )
+from tinyassets.sandbox_policy import ExecutionScope
+
+# Codex S3 r20 #2: these tests simulate the Phase-2 runner (autouse fixture) and
+# exercise source_code EXECUTION mechanics, so they run under an EXPLICIT
+# legacy-unbound scope (no bound tenant) — a sandbox-required node then dispatches
+# instead of failing closed on an undeclared (UNKNOWN) scope.
+_LEGACY_SCOPE = ExecutionScope.legacy_unbound()
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +121,7 @@ def test_compiler_rejects_invalid_branch(tmp_path):
 
     b = BranchDefinition(name="")  # no name, no nodes
     with pytest.raises(CompilerError):
-        compile_branch(b)
+        compile_branch(b, execution_scope=_LEGACY_SCOPE)
 
 
 def test_compiler_rejects_unapproved_source_code():
@@ -132,7 +139,7 @@ def test_compiler_rejects_unapproved_source_code():
         EdgeDefinition(from_node="only", to_node="END"),
     ]
     with pytest.raises(UnapprovedNodeError):
-        compile_branch(b)
+        compile_branch(b, execution_scope=_LEGACY_SCOPE)
 
 
 def test_compiler_accepts_approved_source_code():
@@ -154,7 +161,7 @@ def test_compiler_accepts_approved_source_code():
         {"name": "x", "type": "int"},
         {"name": "out", "type": "int"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, execution_scope=_LEGACY_SCOPE)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke({"x": 5}, config={"configurable": {"thread_id": "t1"}})
     assert result["out"] == 6
@@ -200,7 +207,7 @@ def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
         {"name": "goal_id", "type": "str"},
         {"name": "leaderboard_count", "type": "int"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, execution_scope=_LEGACY_SCOPE)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke(
         {"goal_id": "g1"}, config={"configurable": {"thread_id": "mcp-ok"}},
@@ -239,7 +246,7 @@ def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
         EdgeDefinition(from_node="only", to_node="END"),
     ]
     b.state_schema = [{"name": "out", "type": "str"}]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, execution_scope=_LEGACY_SCOPE)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
 
     with pytest.raises(CompilerError) as exc_info:
@@ -283,7 +290,7 @@ def test_source_code_node_can_call_wiki_read(monkeypatch):
         {"name": "q", "type": "str"},
         {"name": "n", "type": "int"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, execution_scope=_LEGACY_SCOPE)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke(
         {"q": "backlog"}, config={"configurable": {"thread_id": "wiki-ok"}},
@@ -322,7 +329,7 @@ def test_source_code_node_cannot_call_wiki_write(monkeypatch):
         EdgeDefinition(from_node="only", to_node="END"),
     ]
     b.state_schema = [{"name": "out", "type": "str"}]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, execution_scope=_LEGACY_SCOPE)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
 
     # 'wiki.write' is not in the alias allow-list at all — unsupported action.
@@ -366,7 +373,7 @@ def test_node_wiki_dispatch_blocks_write_even_if_aliased(monkeypatch):
         EdgeDefinition(from_node="only", to_node="END"),
     ]
     b.state_schema = [{"name": "out", "type": "str"}]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, execution_scope=_LEGACY_SCOPE)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
 
     with pytest.raises(CompilerError) as exc_info:
@@ -418,7 +425,7 @@ def test_compiler_synthesized_typeddict_reducer_append():
     b.state_schema = [
         {"name": "log", "type": "list", "reducer": "append"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, execution_scope=_LEGACY_SCOPE)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke(
         {"log": ["start"]}, config={"configurable": {"thread_id": "acc1"}},
@@ -1229,7 +1236,9 @@ def test_async_run_completes_successfully(tmp_path):
         {"name": "x", "type": "int"}, {"name": "out", "type": "int"},
     ]
 
-    outcome = execute_branch_async(tmp_path, branch=b, inputs={"x": 7})
+    outcome = execute_branch_async(
+        tmp_path, branch=b, inputs={"x": 7}, execution_scope=_LEGACY_SCOPE,
+    )
     assert outcome.status == "queued"
     wait_for(outcome.run_id, timeout=10.0)
 

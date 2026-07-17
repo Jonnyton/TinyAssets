@@ -586,6 +586,23 @@ def _bind_universe_context(provider_call: Any, universe_id: str) -> Any:
     return _functools.partial(provider_call, universe_context=uctx)
 
 
+def _run_execution_scope(universe_id: str = "") -> Any:
+    """The AUTHORITATIVE :class:`ExecutionScope` for a run (Codex S3 r20 #2),
+    resolved the SAME way :func:`_bind_universe_context` resolves the provider
+    binding — so the tenant scope carried to the dispatch choke point and the
+    provider's vault auth never drift. Empty id → LEGACY_UNBOUND (single-universe
+    legacy, ambient OK); a bound id → BOUND(resolved dir), or FAIL CLOSED (raise)
+    when it cannot resolve (never silently unscoped — the same fail-closed contract
+    as ``_run_universe_context``). Passed EXPLICITLY into the run APIs, never
+    inferred from the provider-callable shape."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uctx = _run_universe_context(universe_id)  # raises on an unresolvable bound id
+    if uctx is None:
+        return ExecutionScope.legacy_unbound()
+    return ExecutionScope.bound(str(uctx.universe_dir))
+
+
 def _sandbox_enqueue_refusal(branch: Any) -> str | None:
     """Refuse a known-unrunnable branch at QUEUE TIME (Codex r10 #1).
 
@@ -752,6 +769,9 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     provider_call = _bind_universe_context(
         provider_call, kwargs.get("universe_id") or "",
     )
+    # The AUTHORITATIVE tenant scope, carried EXPLICITLY to the compiler (Codex S3
+    # r20 #2) — not inferred from the provider-callable shape.
+    _exec_scope = _run_execution_scope(kwargs.get("universe_id") or "")
 
     # Parse + validate recursion_limit_override (10-1000).
     _rl_raw = kwargs.get("recursion_limit_override", "")
@@ -779,6 +799,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             actor=actor,
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            execution_scope=_exec_scope,
         )
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)
@@ -1348,10 +1369,12 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
     # C2 r2: the resumed run's universe comes from its record — bind it so the
     # resume path resolves the run's OWN vault (not process-global / another
     # tenant's), same as run_branch.
-    provider_call = _bind_universe_context(
-        provider_call,
-        _run_universe_id(_resume_record) if _resume_record is not None else "",
+    _resume_universe_id = (
+        _run_universe_id(_resume_record) if _resume_record is not None else ""
     )
+    provider_call = _bind_universe_context(provider_call, _resume_universe_id)
+    # AUTHORITATIVE tenant scope on resume, explicit (Codex S3 r20 #2).
+    _exec_scope = _run_execution_scope(_resume_universe_id)
 
     # Codex r10 #1: refuse a sandbox-blocked branch at RESUME time too — a resumed
     # run re-executes its repo-touching node(s), which fail closed with no per-job
@@ -1372,6 +1395,7 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
             actor=actor,
             branch_lookup=_branch_lookup,
             provider_call=provider_call,
+            execution_scope=_exec_scope,
         )
     except ResumeError as exc:
         return json.dumps({
@@ -1828,6 +1852,8 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     provider_call = _bind_universe_context(
         provider_call, kwargs.get("universe_id") or "",
     )
+    # AUTHORITATIVE tenant scope, explicit (Codex S3 r20 #2).
+    _exec_scope = _run_execution_scope(kwargs.get("universe_id") or "")
 
     # Parse + validate recursion_limit_override (10-1000) — same shape as run_branch.
     _rl_raw = kwargs.get("recursion_limit_override", "")
@@ -1884,6 +1910,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             actor=_run_actor_for_kwargs(kwargs),
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            execution_scope=_exec_scope,
         )
     except KeyError as exc:
         return json.dumps({"error": str(exc).strip("'\"")})

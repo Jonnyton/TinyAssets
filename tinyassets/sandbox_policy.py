@@ -25,6 +25,12 @@ credentials + egress/resource limits) is a separate, host-approved slice.
 """
 from __future__ import annotations
 
+import secrets as _secrets
+import threading as _ws_threading
+import time as _ws_time
+from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -296,6 +302,73 @@ EXECUTOR_CLASS_REPO = "repo"          # per-job checkout runner (coding/repo_exe
 EXECUTOR_CLASS_SOURCE_EXEC = "source_exec"  # in-process-code OS-isolation worker
 
 
+# --------------------------------------------------------------------------- #
+# Explicit execution scope (Codex S3 r20 #2) — the AUTHORITATIVE tenant scope a
+# run carries, threaded EXPLICITLY through the run/compile/dispatch APIs instead
+# of INFERRED from a provider-callable shape or a forgeable enqueue_context.
+#
+# The r19 fix inferred scope from ``functools.partial(..., universe_context=...)``.
+# That silently returns "unscoped" for a direct provider callable / alternate
+# wrapper (the real daemon soul-loop passes a direct callable + a separate
+# universe id) — enabling ambient credentials for a scoped run. Explicit scope
+# with three states closes it; UNKNOWN FAILS CLOSED so a caller that forgets to
+# declare scope can never silently run a sandbox-required node on ambient auth.
+# --------------------------------------------------------------------------- #
+
+
+class ScopeKind(str, Enum):
+    """The three authoritative scope states (Codex S3 r20 #2)."""
+
+    BOUND = "bound"                    # a resolved per-universe tenant scope
+    LEGACY_UNBOUND = "legacy_unbound"  # explicitly NO tenant (single-universe legacy) — ambient OK
+    UNKNOWN = "unknown"                # scope not declared → FAIL CLOSED
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionScope:
+    """The AUTHORITATIVE tenant scope a run declares, carried explicitly to the
+    dispatch choke point (Codex S3 r20 #2). ``universe_dir`` is set only for
+    ``BOUND``. Construct via the factories so intent is unambiguous at call sites.
+    """
+
+    kind: ScopeKind
+    universe_dir: str | None = None
+
+    @classmethod
+    def bound(cls, universe_dir: "str | Any") -> "ExecutionScope":
+        """A resolved per-universe tenant scope. ``universe_dir`` MUST be a real,
+        resolved directory (the caller resolved + fail-closed already)."""
+        text = str(universe_dir).strip() if universe_dir is not None else ""
+        if not text:
+            # A BOUND scope with no resolved dir is a caller bug — fail closed
+            # rather than silently degrade to ambient.
+            return cls(kind=ScopeKind.UNKNOWN)
+        return cls(kind=ScopeKind.BOUND, universe_dir=text)
+
+    @classmethod
+    def legacy_unbound(cls) -> "ExecutionScope":
+        """Explicitly no bound tenant (single-universe legacy) — ambient OK."""
+        return cls(kind=ScopeKind.LEGACY_UNBOUND)
+
+    @classmethod
+    def unknown(cls) -> "ExecutionScope":
+        """Scope not declared → the choke point FAILS CLOSED for a sandbox node."""
+        return cls(kind=ScopeKind.UNKNOWN)
+
+    @classmethod
+    def coerce(cls, value: "ExecutionScope | None") -> "ExecutionScope":
+        """Normalize an optional scope: ``None`` → UNKNOWN (fail closed)."""
+        return value if isinstance(value, cls) else cls.unknown()
+
+    @property
+    def is_bound(self) -> bool:
+        return self.kind is ScopeKind.BOUND
+
+    @property
+    def is_unknown(self) -> bool:
+        return self.kind is ScopeKind.UNKNOWN
+
+
 @runtime_checkable
 class IsolatedExecutor(Protocol):
     """The TYPED contract a sandbox-required adapter is DISPATCHED to (Codex S3
@@ -396,38 +469,121 @@ def isolated_executor_available(executor_class: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Opaque workspace reference — host-path invisibility (Codex S3 r19 #3)
+# Opaque workspace reference — host-path invisibility + job lifecycle
+# (Codex S3 r19 #3, lifecycle hardened r20 #3)
 # --------------------------------------------------------------------------- #
 #
 # The serializable execution request must NEVER carry the daemon's absolute host
 # path (a compromised worker must not learn it). The daemon issues an OPAQUE
 # workspace REFERENCE; the isolated worker resolves it to its OWN prepared
-# workspace. Phase 1 default: an opaque token mapped to the path in a daemon-side
-# registry (in-process, so tests + the trusted daemon can resolve). A real runner
-# OVERRIDES ``resolve_workspace_ref`` to point at the isolated workspace (the
-# daemon's registry is not shared with a separate worker process).
-_WORKSPACE_REF_REGISTRY: dict[str, str] = {}
+# workspace. A bare "token → path" map was NOT a job lifecycle (r20 #3): it grew
+# forever, ignored ``run_id``, and reused tokens across jobs. Each reference is
+# now BOUND to a job (``run_id``) + an executor AUDIENCE (the executor class) +
+# an EXPIRY, and is REVOKED on terminal run cleanup — a replayed / cross-job /
+# expired ref FAILS CLOSED. Phase 1 keeps a daemon-side in-process registry (so
+# tests + the trusted daemon can resolve); a real separate-process runner
+# OVERRIDES ``resolve_workspace_ref`` to point at its OWN prepared workspace (the
+# daemon's registry is not shared across processes).
 
 
-def issue_workspace_ref(*, run_id: str, base_path: "str | Any | None") -> str:
-    """Issue an OPAQUE workspace reference for *base_path* (Codex S3 r19 #3) so the
-    request never leaks the host path. Empty when there is no workspace."""
+@dataclass(frozen=True, slots=True)
+class _WorkspaceRefEntry:
+    base_path: str
+    run_id: str
+    audience: str
+    expires_at: float  # ``time.monotonic()`` deadline
+    consumed: bool = False
+
+
+_WORKSPACE_REF_TTL_SECONDS = 3600.0
+_WORKSPACE_REF_REGISTRY: "dict[str, _WorkspaceRefEntry]" = {}
+_WORKSPACE_REF_LOCK = _ws_threading.Lock()
+
+
+def _evict_dead_workspace_refs(now: float | None = None) -> None:
+    """Drop expired / consumed entries so the registry stays bounded (r20 #3)."""
+    now = _ws_time.monotonic() if now is None else now
+    with _WORKSPACE_REF_LOCK:
+        dead = [
+            tok for tok, e in _WORKSPACE_REF_REGISTRY.items()
+            if e.consumed or e.expires_at <= now
+        ]
+        for tok in dead:
+            _WORKSPACE_REF_REGISTRY.pop(tok, None)
+
+
+def issue_workspace_ref(
+    *,
+    run_id: str,
+    base_path: "str | Any | None",
+    audience: str = "",
+    ttl_seconds: float = _WORKSPACE_REF_TTL_SECONDS,
+) -> str:
+    """Issue an OPAQUE workspace reference bound to *run_id* + executor *audience*
+    with an EXPIRY (Codex S3 r19 #3 / r20 #3). Empty when there is no workspace.
+    Evicts dead entries on each issue so the registry cannot grow unbounded."""
     if base_path is None or not str(base_path).strip():
         return ""
-    import secrets
-
-    token = "ws:" + secrets.token_hex(12)
-    _WORKSPACE_REF_REGISTRY[token] = str(base_path)
+    _evict_dead_workspace_refs()
+    token = "ws:" + _secrets.token_hex(16)
+    entry = _WorkspaceRefEntry(
+        base_path=str(base_path),
+        run_id=str(run_id or ""),
+        audience=str(audience or ""),
+        expires_at=_ws_time.monotonic() + float(ttl_seconds),
+    )
+    with _WORKSPACE_REF_LOCK:
+        _WORKSPACE_REF_REGISTRY[token] = entry
     return token
 
 
-def resolve_workspace_ref(workspace_ref: str | None) -> str | None:
+def resolve_workspace_ref(
+    workspace_ref: str | None,
+    *,
+    run_id: str = "",
+    audience: str = "",
+    consume: bool = False,
+) -> str | None:
     """Resolve an opaque workspace ref to the worker's workspace path — or ``None``
-    (fail closed) for an unknown ref (Codex S3 r19 #3). A real runner overrides
-    this to its OWN isolated workspace."""
+    (FAIL CLOSED) for an unknown / expired / cross-job / wrong-audience ref (Codex
+    S3 r19 #3 / r20 #3). When ``run_id`` / ``audience`` are supplied they MUST match
+    the ref's binding. ``consume=True`` marks the ref one-time (use for a
+    single-shot job); the default leaves it valid until terminal cleanup / expiry so
+    a node that legitimately re-executes within a run can re-resolve. A real
+    separate-process runner overrides this to its OWN isolated workspace."""
     if not workspace_ref:
         return None
-    return _WORKSPACE_REF_REGISTRY.get(workspace_ref)
+    now = _ws_time.monotonic()
+    with _WORKSPACE_REF_LOCK:
+        entry = _WORKSPACE_REF_REGISTRY.get(workspace_ref)
+        if entry is None:
+            return None
+        if entry.consumed or entry.expires_at <= now:
+            _WORKSPACE_REF_REGISTRY.pop(workspace_ref, None)  # evict dead
+            return None
+        if run_id and entry.run_id and str(run_id) != entry.run_id:
+            return None  # cross-job replay → fail closed
+        if audience and entry.audience and str(audience) != entry.audience:
+            return None  # wrong executor audience → fail closed
+        if consume:
+            _WORKSPACE_REF_REGISTRY[workspace_ref] = _dc_replace(entry, consumed=True)
+        return entry.base_path
+
+
+def release_run_workspace_refs(run_id: str) -> int:
+    """Revoke ALL workspace refs for *run_id* on terminal run cleanup (Codex S3
+    r20 #3) — a token captured from a finished/cancelled run can never be replayed.
+    Returns the count revoked."""
+    rid = str(run_id or "")
+    if not rid:
+        return 0
+    with _WORKSPACE_REF_LOCK:
+        doomed = [
+            tok for tok, e in _WORKSPACE_REF_REGISTRY.items() if e.run_id == rid
+        ]
+        for tok in doomed:
+            _WORKSPACE_REF_REGISTRY.pop(tok, None)
+    return len(doomed)
 
 
 def coding_nodes_runnable() -> "tuple[bool, str]":

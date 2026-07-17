@@ -99,9 +99,13 @@ def _one_run(run_id: int) -> str:
         universe_id="uni", actor="anyone",
         parent_branch_task_id="", origin_branch_task_id="",
     )
+    # Codex S3 r20 #2: the source_exec enqueue driver needs an EXPLICIT scope; this
+    # concurrency test runs it in an explicit legacy-unbound scope so it dispatches.
+    from tinyassets.sandbox_policy import ExecutionScope
     compiled = compile_branch(
         _branch(), invocation_depth=0,
         base_path="/fake/base", enqueue_context=ctx,
+        execution_scope=ExecutionScope.legacy_unbound(),
     )
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     out = app.invoke(

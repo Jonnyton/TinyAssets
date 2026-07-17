@@ -37,12 +37,15 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import TYPE_CHECKING, Annotated, Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
 from tinyassets.branches import BranchDefinition, GraphNodeRef, NodeDefinition
 from tinyassets.exceptions import AllProvidersExhaustedError
+
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
 
 logger = logging.getLogger(__name__)
 
@@ -2260,11 +2263,14 @@ def _build_invoke_branch_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_spec`` node.
 
     The callable spawns a child branch run (blocking or async) and writes
-    declared output_mapping fields back into the parent state.
+    declared output_mapping fields back into the parent state. The child INHERITS
+    the parent's authoritative :class:`ExecutionScope` (Codex S3 r20 #2) so a
+    scoped parent never spawns a child that drops to ambient credentials.
     """
     from tinyassets.runs import (
         _runtime_max_invocation_depth,
@@ -2337,6 +2343,7 @@ def _build_invoke_branch_node(
                     actor=actor_arg,
                     provider_call=provider_call,
                     _invocation_depth=depth + 1,
+                    execution_scope=execution_scope,
                 )
                 if outcome.status == "completed":
                     try:
@@ -2385,6 +2392,7 @@ def _build_invoke_branch_node(
                 actor=actor_arg,
                 provider_call=provider_call,
                 _invocation_depth=depth + 1,
+                execution_scope=execution_scope,
             )
             # async: write the child run_id into the first output_mapping target.
             # design_used emit deferred to await_branch_run on success
@@ -2406,6 +2414,7 @@ def _build_invoke_branch_version_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_version_spec`` node.
 
@@ -2504,6 +2513,7 @@ def _build_invoke_branch_version_node(
                     actor=actor_arg,
                     provider_call=provider_call,
                     _invocation_depth=depth + 1,
+                    execution_scope=execution_scope,
                 )
                 # Block until the child terminates; harvest its output dict.
                 record = poll_child_run_status(_base, outcome.run_id)
@@ -2561,6 +2571,7 @@ def _build_invoke_branch_version_node(
                 actor=actor_arg,
                 provider_call=provider_call,
                 _invocation_depth=depth + 1,
+                execution_scope=execution_scope,
             )
             # design_used emit deferred to await on success (mirrors
             # invoke_branch async path).
@@ -2634,21 +2645,49 @@ EXECUTION_REQUEST_SCHEMA_VERSION = 2
 _REQUEST_KIND = "isolated_execution_request"
 _RESPONSE_KIND = "isolated_execution_response"
 
+# Strict-transport limits (Codex S3 r20 #4). The request/response cross a REAL
+# process boundary, so validation is STRICT JSON (reject NaN/Infinity + a real
+# decode round-trip, not merely a json.dumps() that succeeds) with BOUNDED payload
+# and error sizes. A remote error is a STRUCTURED dict with a bounded type +
+# message — never a bare string the daemon would then call ``.get()`` on.
+_MAX_TRANSPORT_BYTES = 4_000_000
+_MAX_ERROR_TYPE_CHARS = 200
+_MAX_ERROR_MESSAGE_CHARS = 4000
+_RESPONSE_STATUSES = ("ok", "error", "cancelled")
 
-def validate_execution_request(request: "dict[str, Any]") -> None:
-    """Validate the execution request is a COMPLETE, JSON-COMPATIBLE contract
-    (Codex S3 r19 #3): it must JSON round-trip (so a `Path`/`set`/other non-JSON
-    value in `inputs` is rejected BEFORE dispatch — never at the transport), carry
-    the required fields, and match the current schema version. Fail LOUD."""
-    if not isinstance(request, dict):
-        raise CompilerError("execution request must be a dict")
+
+def _strict_json_roundtrip(obj: Any, *, label: str) -> Any:
+    """STRICT-encode (reject NaN/Infinity) then DECODE back, proving the payload
+    survives real cross-process transport and is size-bounded (Codex S3 r20 #4).
+    Returns the decoded object. Fail LOUD."""
     try:
-        json.dumps(request)
+        encoded = json.dumps(obj, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise CompilerError(
-            f"execution request is not JSON-serializable (an input value is not "
-            f"transport-safe): {exc}"
+            f"{label} is not strict-JSON-serializable (non-JSON value or "
+            f"NaN/Infinity, which is not valid JSON): {exc}"
         ) from exc
+    if len(encoded.encode("utf-8")) > _MAX_TRANSPORT_BYTES:
+        raise CompilerError(
+            f"{label} exceeds the {_MAX_TRANSPORT_BYTES}-byte transport limit."
+        )
+    try:
+        return json.loads(encoded)
+    except (TypeError, ValueError) as exc:  # pragma: no cover — defensive
+        raise CompilerError(
+            f"{label} did not survive a JSON decode round-trip: {exc}"
+        ) from exc
+
+
+def validate_execution_request(request: "dict[str, Any]") -> None:
+    """Validate the execution request is a COMPLETE, STRICT-JSON, discriminated
+    contract (Codex S3 r19 #3 / r20 #4): STRICT-JSON round-trip (so a `Path`/`set`/
+    `NaN` value is rejected BEFORE dispatch, never at the transport), size-bounded,
+    with the required fields present AND of the exact declared types, matching the
+    current schema version, and no raw host path. Fail LOUD."""
+    if not isinstance(request, dict):
+        raise CompilerError("execution request must be a dict")
+    _strict_json_roundtrip(request, label="execution request")
     for key in ("kind", "schema_version", "capability_class", "node_spec", "inputs"):
         if key not in request:
             raise CompilerError(f"execution request missing required field '{key}'")
@@ -2659,6 +2698,19 @@ def validate_execution_request(request: "dict[str, Any]") -> None:
             f"execution request schema v{request.get('schema_version')} != "
             f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
         )
+    # Discriminated field types (r20 #4) — exact types, not just presence.
+    if not isinstance(request.get("capability_class"), str):
+        raise CompilerError("execution request 'capability_class' must be a str")
+    if not isinstance(request.get("node_spec"), dict):
+        raise CompilerError("execution request 'node_spec' must be a dict")
+    if not isinstance(request.get("inputs"), dict):
+        raise CompilerError("execution request 'inputs' must be a dict")
+    if not isinstance(request.get("workspace_ref", ""), str):
+        raise CompilerError("execution request 'workspace_ref' must be a str")
+    if "credential_scope_required" in request and not isinstance(
+        request["credential_scope_required"], bool
+    ):
+        raise CompilerError("execution request 'credential_scope_required' must be a bool")
     # A raw host path must NEVER be present (host-path invisibility, r19 #3).
     if "base_path" in request:
         raise CompilerError(
@@ -2671,36 +2723,46 @@ def make_execution_response(
     *,
     status: str,
     result: "dict[str, Any] | None" = None,
-    error: "dict[str, Any] | None" = None,
+    error: "Any" = None,
 ) -> "dict[str, Any]":
-    """Build the typed, JSON-compatible execution RESPONSE envelope (Codex S3 r19
-    #3) an isolated worker returns: ``status`` is ``ok`` | ``error`` | ``cancelled``.
-    The daemon RECONSTRUCTS a remote failure from ``error`` (type + message) — the
-    contract is real cross-process IPC, not just an in-process Python exception."""
+    """Build the typed, STRICT-JSON execution RESPONSE envelope (Codex S3 r19 #3 /
+    r20 #4) an isolated worker returns: ``status`` is ``ok`` | ``error`` |
+    ``cancelled``. A remote failure is a STRUCTURED, size-bounded error dict (type +
+    message) the daemon reconstructs — never a bare string. Any ``error`` (dict or
+    string) is normalized + truncated so the transport can never carry an unbounded
+    or non-structured error."""
+    norm_error: dict[str, str] | None = None
+    if error is not None:
+        if isinstance(error, dict):
+            etype = str(error.get("type", "Error"))
+            emsg = str(error.get("message", ""))
+        else:
+            etype, emsg = "Error", str(error)
+        norm_error = {
+            "type": etype[:_MAX_ERROR_TYPE_CHARS],
+            "message": emsg[:_MAX_ERROR_MESSAGE_CHARS],
+        }
     return {
         "kind": _RESPONSE_KIND,
         "schema_version": EXECUTION_REQUEST_SCHEMA_VERSION,
         "status": status,
         "result": result,
-        "error": error,
+        "error": norm_error,
     }
 
 
 def validate_execution_response(envelope: Any) -> None:
-    """Validate the worker's response envelope is a JSON-compatible typed contract
-    (Codex S3 r19 #3). Fail LOUD on a non-dict, non-JSON, unknown-status, or
-    wrong-schema envelope."""
+    """Validate the worker's response envelope is a STRICT-JSON, discriminated
+    contract (Codex S3 r19 #3 / r20 #4). Fail LOUD on a non-dict, non-strict-JSON,
+    oversized, unknown-status, or wrong-schema envelope — and specifically require a
+    STRUCTURED error dict for ``status='error'`` (fixing the ``.get()``-on-a-string
+    crash) and a dict ``result`` for ``status='ok'``."""
     if not isinstance(envelope, dict):
         raise CompilerError(
             f"isolated executor returned {type(envelope).__name__}, expected a "
             "response envelope dict."
         )
-    try:
-        json.dumps(envelope)
-    except (TypeError, ValueError) as exc:
-        raise CompilerError(
-            f"execution response is not JSON-serializable: {exc}"
-        ) from exc
+    _strict_json_roundtrip(envelope, label="execution response")
     if envelope.get("kind") != _RESPONSE_KIND:
         raise CompilerError(f"execution response has wrong kind {envelope.get('kind')!r}")
     if envelope.get("schema_version") != EXECUTION_REQUEST_SCHEMA_VERSION:
@@ -2708,8 +2770,29 @@ def validate_execution_response(envelope: Any) -> None:
             f"execution response schema v{envelope.get('schema_version')} != "
             f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
         )
-    if envelope.get("status") not in ("ok", "error", "cancelled"):
-        raise CompilerError(f"execution response has unknown status {envelope.get('status')!r}")
+    status = envelope.get("status")
+    if status not in _RESPONSE_STATUSES:
+        raise CompilerError(f"execution response has unknown status {status!r}")
+    if status == "ok" and not isinstance(envelope.get("result"), dict):
+        raise CompilerError(
+            "execution response status='ok' must carry a dict 'result'"
+        )
+    if status == "error":
+        err = envelope.get("error")
+        if not isinstance(err, dict):
+            raise CompilerError(
+                "execution response status='error' must carry a STRUCTURED error "
+                "dict (type + message), never a bare string."
+            )
+        if not isinstance(err.get("type"), str) or not isinstance(err.get("message"), str):
+            raise CompilerError(
+                "execution response error dict must have str 'type' and 'message'"
+            )
+        if (
+            len(err["type"]) > _MAX_ERROR_TYPE_CHARS
+            or len(err["message"]) > _MAX_ERROR_MESSAGE_CHARS
+        ):
+            raise CompilerError("execution response error exceeds the bounded size")
 
 
 def build_executor_execution_request(
@@ -2767,30 +2850,6 @@ def build_executor_execution_request(
     }
     validate_execution_request(request)
     return request
-
-
-def _authoritative_universe_dir(provider_call: Any) -> "str | None":
-    """Extract the AUTHORITATIVE universe directory from the run's bound provider
-    bridge (Codex S3 r19 #1). The public run paths bind a ``UniverseContext`` into
-    ``provider_call`` via ``functools.partial(call_provider, universe_context=uctx)``
-    (``api/runs.py::_bind_universe_context``); ``uctx.universe_dir`` is the tenant's
-    real, resolved home. This is the ONLY trustworthy scope source — the forgeable
-    ``enqueue_context.universe_id`` is dropped on the async / resume / version paths
-    (the r19 #1 defect). Returns the dir as ``str``, or ``None`` when no universe is
-    bound (unscoped run) so the grant issuer fails closed.
-    """
-    import functools as _functools
-
-    cur = provider_call
-    for _ in range(8):  # bounded walk of a (possibly nested) partial chain
-        if cur is None:
-            break
-        keywords = getattr(cur, "keywords", None)
-        if isinstance(keywords, dict) and "universe_context" in keywords:
-            udir = getattr(keywords.get("universe_context"), "universe_dir", None)
-            return str(udir) if udir else None
-        cur = cur.func if isinstance(cur, _functools.partial) else None
-    return None
 
 
 def _build_executor_request_dispatch_node(
@@ -2944,6 +3003,7 @@ def _build_node(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
     trusted: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
@@ -2992,6 +3052,9 @@ def _build_node(
         EXECUTOR_CLASS_SOURCE_EXEC as _EXEC_SRC,
     )
     from tinyassets.sandbox_policy import (
+        ExecutionScope as _ExecScope,
+    )
+    from tinyassets.sandbox_policy import (
         effective_node_capability as _eff_cap,
     )
     from tinyassets.sandbox_policy import (
@@ -3031,7 +3094,21 @@ def _build_node(
             # fall-through, and the daemon holds no callable that runs the adapter).
             _exec_class = _EXEC_SRC if _node_eff_cap == _SOURCE_EXEC else _EXEC_REPO
             _executor = _resolve_executor(_exec_class)
-            if _executor_satisfies(_executor, _exec_class):
+            # AUTHORITATIVE tenant scope is carried EXPLICITLY (Codex S3 r20 #2),
+            # NOT inferred from the provider-callable shape (a direct callable /
+            # alternate wrapper would silently read as "unscoped" → ambient). An
+            # UNKNOWN scope FAILS CLOSED before any dispatch — a caller that did not
+            # declare scope can never run a sandbox-required node on ambient auth.
+            _scope = _ExecScope.coerce(execution_scope)
+            if _executor_satisfies(_executor, _exec_class) and _scope.is_unknown:
+                _refuse = True
+                _runner_reason = (
+                    "its execution scope is UNKNOWN (the run did not declare a "
+                    "bound universe or an explicit legacy-unbound scope); refusing "
+                    "to dispatch a sandbox-required node on undeclared scope "
+                    "(fail closed, Codex S3 r20 #2)"
+                )
+            elif _executor_satisfies(_executor, _exec_class):
                 # Phase 2: emit a serializable execution REQUEST + dispatch it to
                 # the isolated worker. The daemon builds NO adapter callable here;
                 # checkpoints are evaluated against the returned delta (a data op).
@@ -3039,21 +3116,25 @@ def _build_node(
                 # (Codex S3 r18 #1): state schema, effective llm_policy, concurrency
                 # budget. Credential scope + workspace are OPAQUE, daemon-issued
                 # references (Codex S3 r19 #1/#3), NEVER a raw universe_id or host
-                # path — derived from the AUTHORITATIVE provider binding (the run's
-                # UniverseContext bound into provider_call), not the forgeable /
-                # async-lost enqueue_context.
+                # path. Scope comes from the EXPLICIT ExecutionScope (r20 #2): a
+                # BOUND scope requires a redeemable grant; LEGACY_UNBOUND has no
+                # bound tenant so ambient is acceptable.
                 from tinyassets.credential_vault import (
                     issue_job_credential_grant as _issue_grant,
                 )
                 from tinyassets.sandbox_policy import (
                     issue_workspace_ref as _issue_workspace_ref,
                 )
-                _auth_universe_dir = _authoritative_universe_dir(provider_call)
-                _credential_grant = _issue_grant(
-                    run_id=parent_run_id, universe_dir=_auth_universe_dir,
+                _scope_required = _scope.is_bound
+                _credential_grant = (
+                    _issue_grant(
+                        run_id=parent_run_id, universe_dir=_scope.universe_dir,
+                    )
+                    if _scope_required else None
                 )
                 _workspace_ref = _issue_workspace_ref(
                     run_id=parent_run_id, base_path=base_path,
+                    audience=_exec_class,
                 )
                 _dispatch = _build_executor_request_dispatch_node(
                     node, _executor, _exec_class,
@@ -3063,21 +3144,22 @@ def _build_node(
                     effective_llm_policy=llm_policy,
                     concurrency_budget=getattr(concurrency_tracker, "budget", None),
                     credential_grant=_credential_grant,
-                    # AUTHORITATIVE: a bound universe ⇒ scope is required ⇒ the
-                    # worker must redeem the grant or FAIL CLOSED (never fall back
-                    # to process-global creds for a scoped run). Codex S3 r19 #1.
-                    credential_scope_required=bool(_auth_universe_dir),
+                    # AUTHORITATIVE: a BOUND scope ⇒ scope is required ⇒ the worker
+                    # must redeem the grant or FAIL CLOSED (never fall back to
+                    # process-global creds for a scoped run). Codex S3 r19 #1/r20 #2.
+                    credential_scope_required=_scope_required,
                     event_sink=event_sink,
                 )
                 return _wrap_with_checkpoints(_dispatch, node, event_sink)
-            _refuse = True
-            _runner_reason = (
-                f"it requires a TYPED, healthy isolated {_exec_class} executor "
-                f"(subprocess/container) it can be DISPATCHED to as a serializable "
-                f"request — a readiness flag / bare handle is not a boundary; NO "
-                f"such executor is available, so the adapter is refused (never "
-                f"invoked in the daemon process, fail closed)"
-            )
+            else:
+                _refuse = True
+                _runner_reason = (
+                    f"it requires a TYPED, healthy isolated {_exec_class} executor "
+                    f"(subprocess/container) it can be DISPATCHED to as a serializable "
+                    f"request — a readiness flag / bare handle is not a boundary; NO "
+                    f"such executor is available, so the adapter is refused (never "
+                    f"invoked in the daemon process, fail closed)"
+                )
         if _refuse:
             try:
                 from tinyassets.providers.base import (
@@ -3149,6 +3231,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_scope=execution_scope,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
@@ -3162,6 +3245,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_scope=execution_scope,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
@@ -3271,6 +3355,7 @@ def compile_branch(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
     trusted: bool = False,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
@@ -3400,6 +3485,7 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            execution_scope=execution_scope,
             trusted=trusted,
         )
         graph.add_node(gn.id, fn)

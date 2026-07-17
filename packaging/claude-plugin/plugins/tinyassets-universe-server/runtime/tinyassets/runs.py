@@ -34,7 +34,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from tinyassets.branches import BranchDefinition
 from tinyassets.graph_compiler import (
@@ -46,6 +46,9 @@ from tinyassets.graph_compiler import (
     compile_branch,
     seed_initial_state,
 )
+
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
 
 logger = logging.getLogger(__name__)
 
@@ -885,6 +888,14 @@ def update_run_status(
                     "status update preserved",
                     run_id, status, exc,
                 )
+            # Terminal-run cleanup: REVOKE this run's opaque workspace refs (Codex
+            # S3 r20 #3) so a token captured from a finished / failed / cancelled
+            # run can never be replayed. Best-effort — never blocks a status update.
+            try:
+                from tinyassets.sandbox_policy import release_run_workspace_refs
+                release_run_workspace_refs(run_id)
+            except Exception:  # noqa: BLE001 — cleanup is best-effort observability
+                logger.debug("workspace-ref release failed for run %s", run_id)
 
 
 def record_run_receipt(
@@ -2113,11 +2124,16 @@ def _invoke_graph(
     on_node_status: Callable[[str, str], None] | None = None,
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
     Blocks until the graph finishes or is cancelled. Updates run status
     to RUNNING on entry, COMPLETED / FAILED / CANCELLED on exit.
+
+    ``execution_scope`` is the AUTHORITATIVE tenant scope (Codex S3 r20 #2),
+    threaded EXPLICITLY to the compiler so a sandbox-required node with an UNKNOWN
+    scope fails closed. ``None`` → UNKNOWN (fail closed) at the choke point.
     """
     thread_id = run_id
     execution_cursor = {"step": 0}
@@ -2297,6 +2313,7 @@ def _invoke_graph(
             parent_run_id=run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            execution_scope=execution_scope,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -2772,6 +2789,27 @@ def _node_id_from_timeout_message(message: str) -> str:
     return m.group(1) if m else "(timeout)"
 
 
+def _default_execution_scope(universe_id: str) -> "ExecutionScope":
+    """Derive the default AUTHORITATIVE :class:`ExecutionScope` for a run from its
+    universe id (Codex S3 r20 #2). An empty id → LEGACY_UNBOUND (single-universe
+    legacy, ambient OK). A bound id → BOUND(resolved dir), or UNKNOWN (fail closed)
+    when it cannot be resolved — never silently unscoped. Callers that already hold
+    the resolved scope pass it explicitly instead of relying on this default."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ExecutionScope.legacy_unbound()
+    try:
+        from tinyassets.api.helpers import _universe_dir
+        udir = _universe_dir(uid)
+    except Exception:  # noqa: BLE001 — unresolvable bound id ⇒ fail closed
+        return ExecutionScope.unknown()
+    if udir is None or not Path(udir).is_dir():
+        return ExecutionScope.unknown()
+    return ExecutionScope.bound(str(udir))
+
+
 def execute_branch(
     base_path: str | Path,
     *,
@@ -2790,6 +2828,7 @@ def execute_branch(
     _enqueue_universe_id: str = "",
     _parent_branch_task_id: str = "",
     _origin_branch_task_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Synchronous end-to-end execution.
 
@@ -2805,6 +2844,11 @@ def execute_branch(
         Optional override for LangGraph's recursion limit. When ``None``
         (default), uses :data:`DEFAULT_RECURSION_LIMIT` (100). Branches
         with deep conditional loops (Tier-1 Step 6) bump this.
+    execution_scope
+        The AUTHORITATIVE tenant scope (Codex S3 r20 #2). When ``None``, a default
+        is derived from ``_enqueue_universe_id`` (empty → legacy-unbound; a bound id
+        → bound). Callers that know the scope pass it explicitly. UNKNOWN fails
+        closed for sandbox-required nodes.
     """
     run_id = _prepare_run(
         base_path,
@@ -2820,6 +2864,8 @@ def execute_branch(
         parent_branch_task_id=_parent_branch_task_id,
         origin_branch_task_id=_origin_branch_task_id,
     )
+    if execution_scope is None:
+        execution_scope = _default_execution_scope(_enqueue_universe_id)
     return _invoke_graph(
         base_path,
         run_id=run_id, branch=branch, inputs=inputs,
@@ -2828,6 +2874,7 @@ def execute_branch(
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
+        execution_scope=execution_scope,
         enqueue_context=enqueue_context,
     )
 
@@ -2974,6 +3021,7 @@ def _execute_branch_core(
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
     _invocation_depth: int = 0,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -3015,6 +3063,7 @@ def _execute_branch_core(
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
                 invocation_depth=_invocation_depth,
+                execution_scope=execution_scope,
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -3053,6 +3102,7 @@ def execute_branch_async(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
     in the background. Returns within a few ms with ``status=queued``.
@@ -3075,6 +3125,10 @@ def execute_branch_async(
     _invocation_depth
         Phase A item 5 / Task #76c — sub-branch builders pass ``depth+1``
         when spawning a child. Top-level callers leave default (0).
+    execution_scope
+        The AUTHORITATIVE tenant scope (Codex S3 r20 #2). MCP handlers compute it
+        from the run's universe id and pass it explicitly; ``None`` → UNKNOWN
+        (fail closed) for a sandbox-required node.
     """
     return _execute_branch_core(
         base_path,
@@ -3088,6 +3142,7 @@ def execute_branch_async(
         on_node_status=on_node_status,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
+        execution_scope=execution_scope,
     )
 
 
@@ -3119,6 +3174,7 @@ def execute_branch_version_async(
     recursion_limit_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -3177,6 +3233,7 @@ def execute_branch_version_async(
         on_node_status=on_node_status,
         branch_version_id=branch_version_id,
         _invocation_depth=_invocation_depth,
+        execution_scope=execution_scope,
     )
 
 
@@ -3222,6 +3279,7 @@ def resume_run(
     actor: str,
     branch_lookup: Callable[[str, int], BranchDefinition | None],
     provider_call: Callable[..., str] | None = None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Resume an INTERRUPTED run from its SqliteSaver checkpoint.
 
@@ -3325,6 +3383,7 @@ def resume_run(
             branch=branch,
             thread_id=thread_id,
             provider_call=provider_call,
+            execution_scope=execution_scope,
         )
 
     future = executor.submit(_resume_worker)
@@ -3343,8 +3402,12 @@ def _invoke_graph_resume(
     branch: BranchDefinition,
     thread_id: str,
     provider_call: Callable[..., str] | None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
-    """Compile branch + invoke with None inputs to resume from checkpoint."""
+    """Compile branch + invoke with None inputs to resume from checkpoint.
+
+    ``execution_scope`` is the AUTHORITATIVE tenant scope (Codex S3 r20 #2) —
+    ``None`` → UNKNOWN (fail closed) for a sandbox-required node on resume."""
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
     provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
 
@@ -3409,6 +3472,7 @@ def _invoke_graph_resume(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
+            execution_scope=execution_scope,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(

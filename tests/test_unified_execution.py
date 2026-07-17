@@ -186,7 +186,9 @@ def test_source_code_node_run_sees_top_level_helpers(clean_registry):
         "    return {'foo': _text(state.get('name', 'n'))}\n"
     )
     branch = _minimal_branch(node_body={"source_code": src, "approved": True})
-    compiled = compile_branch(branch)
+    # Codex S3 r20 #2: a source_exec node needs an EXPLICIT scope to dispatch.
+    from tinyassets.sandbox_policy import ExecutionScope
+    compiled = compile_branch(branch, execution_scope=ExecutionScope.legacy_unbound())
     runner = compiled.graph.compile()
     result = runner.invoke({"name": "Z"})
     assert result.get("foo") == "helper:Z"

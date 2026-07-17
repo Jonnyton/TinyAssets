@@ -156,14 +156,21 @@ class WorkerSimExecutor:
         from tinyassets import credential_vault, sandbox_policy
         from tinyassets.branches import NodeDefinition
 
+        # WORKER-SIDE request validation (Codex S3 r20 #4): the worker re-validates
+        # the strict-JSON discriminated contract before acting on it — it does not
+        # trust the transport to have validated.
+        gc.validate_execution_request(request)
         node = NodeDefinition.from_dict(request["node_spec"])
         inputs = request.get("inputs", {}) or {}
         ec_dict = request.get("enqueue_context")
         enqueue_context = gc.NodeEnqueueContext(**ec_dict) if ec_dict else None
         # OPAQUE workspace ref → the worker's OWN workspace path (never a host path
-        # in the request). Codex S3 r19 #3.
+        # in the request). Resolution is bound to THIS job's run_id + executor
+        # audience → a replayed / cross-job ref fails closed (Codex S3 r19 #3 / r20 #3).
         base_path = sandbox_policy.resolve_workspace_ref(
-            request.get("workspace_ref") or ""
+            request.get("workspace_ref") or "",
+            run_id=request.get("parent_run_id", "") or "",
+            audience=request.get("capability_class", "") or "",
         )
         depth = int(request.get("invocation_depth", 0) or 0)
         state_schema = request.get("state_schema") or []
