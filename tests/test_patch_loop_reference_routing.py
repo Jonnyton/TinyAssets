@@ -312,6 +312,26 @@ def test_reference_declares_real_effects_and_sandbox_node_kinds():
     assert built["merge"].effects == ["github_merge"]
 
 
+def test_artifact_envelope_shape_for_s4_bundle_reader():
+    # Codex r15 #2: S4's bundle detector reads nodes from spec.node_defs (after
+    # S4's corrected reader). S1's only obligation is to keep that envelope shape
+    # STABLE so future drift trips a test here (S1 does NOT edit S4's detector).
+    # Pin: spec.node_defs present + non-empty, and each node carries the shape
+    # S4 + the enforcement slice expect (node_kind + requires_sandbox on the
+    # repo-touching nodes; effects on the effect nodes).
+    spec = _reference_spec()
+    assert isinstance(spec.get("node_defs"), list) and spec["node_defs"], spec
+    assert "nodes" not in spec   # S1 stores under node_defs, not top-level nodes
+    nodes = {n["node_id"]: n for n in spec["node_defs"]}
+    for nid, kind in (
+        ("investigate", "repo_read"), ("verify", "repo_exec"), ("draft_patch", "coding"),
+    ):
+        assert nodes[nid]["node_kind"] == kind, nid
+        assert nodes[nid]["requires_sandbox"] is True, nid
+    assert nodes["present"]["effects"] == ["github_pull_request"]
+    assert nodes["merge"]["effects"] == ["github_merge"]
+
+
 def test_present_output_keys_satisfy_github_pr_effector_contract():
     # Codex r10 #1 (effector contract): a valid github_pull_request packet placed
     # under one of present's declared output_keys must be FOUND by the effector —
@@ -383,6 +403,31 @@ def test_env_var_alone_does_not_enable_availability(monkeypatch):
     # the REAL function captured at import, bypassing the routing autouse seam.)
     monkeypatch.setenv("TINYASSETS_SANDBOX_ENFORCEMENT", "1")
     assert _REAL_SANDBOX_AVAILABLE() is False
+
+
+def test_sandbox_availability_unpacks_s3_tuple_contract(monkeypatch):
+    # Codex r15 #3: S3's coding_nodes_runnable() returns (runnable, reason). A
+    # non-empty tuple is TRUTHY, so bool(result) would misread (False, reason) as
+    # "available" and run unconfined. The availability probe must UNPACK. Tested
+    # against S3's ACTUAL shape via a fake sandbox_policy module (not a
+    # monkeypatch-to-True, which proves nothing about the real contract).
+    import sys
+    import types
+
+    fake = types.ModuleType("tinyassets.sandbox_policy")
+    monkeypatch.setitem(sys.modules, "tinyassets.sandbox_policy", fake)
+
+    # (False, reason) — the CURRENT S3 enforcement-only state — must read False.
+    fake.coding_nodes_runnable = lambda: (False, "sandbox runner not integrated")
+    assert _REAL_SANDBOX_AVAILABLE() is False
+    # (True, reason) — a real runner present — reads True.
+    fake.coding_nodes_runnable = lambda: (True, "runner ready")
+    assert _REAL_SANDBOX_AVAILABLE() is True
+    # Forward/backward compat: a bare bool still works.
+    fake.coding_nodes_runnable = lambda: False
+    assert _REAL_SANDBOX_AVAILABLE() is False
+    fake.coding_nodes_runnable = lambda: True
+    assert _REAL_SANDBOX_AVAILABLE() is True
 
 
 def test_requires_sandbox_node_runs_when_runner_available(monkeypatch):

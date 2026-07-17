@@ -54,9 +54,9 @@ def test_get_status_tool_is_safe_to_call() -> None:
 def test_get_status_reference_designs_health_is_live_not_boot_cached(tmp_path, monkeypatch) -> None:
     """Codex r14 #3: get_status.reference_designs.healthy must be LIVE registry
     health, NOT the boot-seed cache. Repro: seed healthy, DELETE the authoritative
-    row, and status must flip to unhealthy + required_missing — a cached "healthy"
-    lie is exactly what the r13 serve-while-unhealthy fix promised not to do. The
-    boot-seed snapshot is kept SEPARATELY under `last_seed`."""
+    row, and status must flip to unhealthy + surface it in `unhealthy` — a cached
+    "healthy" lie is exactly what the r13 serve-while-unhealthy fix promised not
+    to do. The boot-seed snapshot is kept SEPARATELY under `last_seed`."""
     import tinyassets.universe_server as us
     from tinyassets.branch_designs import _reference_branch_id, seed_reference_designs
     from tinyassets.daemon_server import delete_branch_definition
@@ -73,7 +73,7 @@ def test_get_status_reference_designs_health_is_live_not_boot_cached(tmp_path, m
 
     rd = json.loads(get_status())["reference_designs"]
     assert rd["healthy"] is True
-    assert rd["required_missing"] == []
+    assert rd["unhealthy"] == []
     assert rd["last_seed"]["seeded"] == ["design:patch_loop_reference@v1"]
 
     # Delete the authoritative row — the boot cache is now STALE.
@@ -82,7 +82,7 @@ def test_get_status_reference_designs_health_is_live_not_boot_cached(tmp_path, m
 
     rd2 = json.loads(get_status())["reference_designs"]
     assert rd2["healthy"] is False, rd2                    # LIVE, not cached
-    assert "patch_loop_reference" in rd2["required_missing"], rd2
+    assert "patch_loop_reference" in rd2["unhealthy"], rd2
     # Boot cache still shows the (now stale) healthy seed — kept separate.
     assert rd2["last_seed"]["seeded"] == ["design:patch_loop_reference@v1"]
 

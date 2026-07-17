@@ -302,6 +302,41 @@ def test_maybe_enqueue_recovers_from_handler_deleted_race(tmp_path, monkeypatch)
     assert read_queue(tmp_path) == []
 
 
+def test_claim_task_refuses_dead_handler_at_consumption(tmp_path, monkeypatch):
+    # Codex r15 #5: the enqueue-boundary check only NARROWS the race window — a
+    # delete while the task sits queued still needs closure at CONSUMPTION. The
+    # claim boundary must revalidate the handler before transitioning to running:
+    # a deleted handler yields a structured dead_ref terminal state, never a run
+    # against a dead reference.
+    import json as _json
+
+    from tinyassets.branch_tasks import claim_task, queue_path
+    from tinyassets.bug_investigation import enqueue_investigation_request
+    from tinyassets.daemon_server import delete_branch_definition
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+
+    request_id = enqueue_investigation_request(
+        bug_ref={"bug_id": "BUG-CLAIM"},
+        canonical_branch_def_id="branch-canonical-abc",
+        base_path=tmp_path,
+    )
+    assert request_id   # enqueued while the handler existed
+
+    # Handler deleted while the task sits QUEUED (the window the enqueue check
+    # can't cover).
+    delete_branch_definition(tmp_path, branch_def_id="branch-canonical-abc")
+
+    claimed = claim_task(tmp_path, request_id, claimer="daemon-1")
+    assert claimed is None   # refused — NOT transitioned to running
+
+    raw = _json.loads(queue_path(tmp_path).read_text(encoding="utf-8"))
+    row = next(r for r in raw if r["branch_task_id"] == request_id)
+    assert row["status"] == "dead_ref"                       # structured outcome
+    assert row["dead_ref_reason"].startswith("handler_deleted:")
+
+
 # ── Integration: _wiki_file_bug call site ─────────────────────────────────────
 
 

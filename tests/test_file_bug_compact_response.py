@@ -35,6 +35,23 @@ def wired_wiki(tmp_path, monkeypatch):
         "branch-canonical-test",
     )
     monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
+    # G4 (patch-loop S1): the resolver + enqueue now REFUSE a handler id that
+    # doesn't exist in the registry (never queue a dead reference). So the wired
+    # handler must actually be registered, else file_bug reports handler_not_found
+    # instead of queued.
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(tmp_path)
+    save_branch_definition(
+        tmp_path,
+        branch_def=BranchDefinition(
+            branch_def_id="branch-canonical-test", name="branch-canonical-test",
+        ).to_dict(),
+    )
     return wiki_root
 
 

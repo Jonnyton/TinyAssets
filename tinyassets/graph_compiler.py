@@ -909,16 +909,24 @@ def _sandbox_enforcement_available() -> bool:
     must never enable execution (that was the r13 bypass). The capability is
     feature-detected from S3's policy module
     (``tinyassets.sandbox_policy.coding_nodes_runnable``): ABSENT on this branch
-    (ImportError -> False), and once S3 is integrated it returns False
-    (enforcement-only) until the host-approved Phase-2 per-job runner lands.
-    Tests get their seam by monkeypatching THIS function (a test fixture), never
-    a production env var. Never raises."""
+    (ImportError -> False), and once S3 is integrated it returns
+    ``(runnable: bool, reason: str)`` — False (enforcement-only) until the
+    host-approved Phase-2 per-job runner lands. We UNPACK that tuple (Codex r15
+    #3): a non-empty ``(False, reason)`` tuple is TRUTHY, so ``bool(result)``
+    would wrongly read "available". Pinned to S3's CURRENT signature; if S3's
+    contract changes we re-sync. Tests get their seam by monkeypatching THIS
+    function (a test fixture), never a production env var. Never raises."""
     try:
         from tinyassets.sandbox_policy import coding_nodes_runnable  # type: ignore
 
-        return bool(coding_nodes_runnable())
+        result = coding_nodes_runnable()
     except Exception:  # noqa: BLE001 — absent (S1) / broken => not runnable
         return False
+    # S3's CURRENT contract: (runnable: bool, reason: str). Unpack the runnable
+    # flag explicitly; tolerate a bare bool for forward/backward compat.
+    if isinstance(result, (tuple, list)):
+        return bool(result[0]) if result else False
+    return bool(result)
 
 
 def _build_prompt_template_node(

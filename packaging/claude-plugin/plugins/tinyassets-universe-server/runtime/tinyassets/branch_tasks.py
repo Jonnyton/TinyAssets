@@ -56,9 +56,12 @@ VALID_TRIGGER_SOURCES = frozenset({
 })
 
 VALID_STATUSES = frozenset({
-    "pending", "running", "succeeded", "failed", "cancelled",
+    "pending", "running", "succeeded", "failed", "cancelled", "dead_ref",
 })
-TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+# ``dead_ref`` (Codex r15 #5): a task whose handler branch was deleted while it
+# sat queued — refused at claim time, never run. A terminal SINK (counts as a
+# resolved row for the loop-stall signal, not a stuck backlog item).
+TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "dead_ref"})
 
 # Valid transitions. `pending` can go to running or cancelled;
 # running can go to any terminal state. Terminal states are sinks.
@@ -346,6 +349,25 @@ def claim_task(
                 continue
             if row.get("status") != "pending":
                 return None
+            # CONSUMPTION-time dead-ref guard (Codex r15 #5): the enqueue-boundary
+            # check only narrows the deletion-race window; a concurrent delete can
+            # land while the task sits queued. Before transitioning a
+            # bug_investigation task to running, revalidate its handler branch
+            # still exists — never RUN against a dead reference. Mark it a
+            # structured ``dead_ref`` terminal state instead of claiming it.
+            if row.get("request_type") == "bug_investigation":
+                from tinyassets.bug_investigation import (
+                    revalidate_investigation_handler,
+                )
+
+                ok, reason = revalidate_investigation_handler(
+                    universe_path, row.get("branch_def_id", ""),
+                )
+                if not ok:
+                    row["status"] = "dead_ref"
+                    row["dead_ref_reason"] = reason
+                    _write_raw(qp, raw)
+                    return None
             heartbeat_at, lease_expires_at = _lease_window()
             row["status"] = "running"
             row["claimed_by"] = claimer

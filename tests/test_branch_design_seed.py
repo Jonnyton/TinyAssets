@@ -70,6 +70,52 @@ def test_patch_loop_reference_is_repo_blind():
     assert "credential_ref" not in raw
 
 
+def test_binding_fields_marked_and_survive_into_branch_version(data_dir):
+    # Codex S1 r15 addendum A: the execution-gating binding surfaces must be
+    # marked is_binding so S2's branch-version guard can keep a remix INERT
+    # until the owner binds them. The marker must SURVIVE the build/seed path
+    # into the persisted BranchDefinition (that is what branch_versions reads),
+    # not just live in the raw artifact.
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        list_branch_definitions,
+    )
+
+    artifact = next(
+        a for a in load_design_artifacts()
+        if a["design_id"] == "patch_loop_reference"
+    )
+    by_name = {f["name"]: f for f in artifact["spec"]["state_schema"]}
+    # target_repo (destination) MUST be marked — it execution-gates the loop.
+    assert by_name["target_repo"].get("is_binding") is True
+    # merge_policy is the owner's merge-authority preference — marked binding
+    # so no silent default can auto-merge to the owner's repo unbound.
+    assert by_name["merge_policy"].get("is_binding") is True
+
+    # r15 addendum A / r10 Finding 4a reconciliation: there is NO separate
+    # credential binding field. The credential is resolved BY DESTINATION at
+    # write time (never a handle in state or prompts), so binding target_repo
+    # IS binding the credential-lookup key; a missing credential fails closed
+    # at the effector. A credential_ref binding would be redundant with
+    # target_repo AND reintroduce the forbidden handle, so none is added.
+    assert all(
+        not (f.get("is_binding") and "credential" in f["name"].lower())
+        for f in artifact["spec"]["state_schema"]
+    )
+
+    # The marker must round-trip into the persisted branch S2's guard reads.
+    seed_reference_designs(data_dir)
+    tag = design_tag("patch_loop_reference", 1)
+    bdid = list_branch_definitions(data_dir, tag=tag)[0]["branch_def_id"]
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(data_dir, branch_def_id=bdid)
+    )
+    persisted = {f.get("name"): f for f in branch.state_schema}
+    assert persisted["target_repo"].get("is_binding") is True
+    assert persisted["merge_policy"].get("is_binding") is True
+
+
 def test_patch_loop_reference_builds_through_user_path(data_dir):
     # The artifact's spec must pass the SAME composite build_branch validation
     # a user's chatbot goes through — the reference is an ordinary user build.
@@ -354,6 +400,34 @@ def test_multi_version_rollback_not_reported_present(data_dir):
     assert "<quarantined-rolled-back-content:patch_loop_reference>" in results["failed"]
 
 
+def test_rolled_back_reference_vanishes_from_published_discovery(data_dir):
+    # Codex r15 #1 (CRITICAL): quarantine must remove the reference from
+    # DISCOVERY too. scope=published took the NEWEST version regardless of
+    # status, so a rolled-back reference still showed as published/remixable.
+    # After rolling back the only version, discovery must return EMPTY (the
+    # discovery query filters for ACTIVE versions).
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    pre = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id in {b["branch_def_id"] for b in pre["branches"]}   # listed while active
+
+    with _connect(data_dir) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET status='rolled_back' WHERE branch_def_id=?",
+            (fixed_id,),
+        )
+    assert not any(
+        v.status == "active" for v in list_branch_versions(data_dir, fixed_id, limit=50)
+    )
+
+    post = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id not in {b["branch_def_id"] for b in post["branches"]}, post
+
+
 def test_interrupted_publication_mismatched_active_is_repaired(data_dir):
     # Codex r12 #1: an ACTIVE version whose content != the authoritative artifact
     # (interrupted / mismatched publication) must FAIL health and be repaired.
@@ -613,10 +687,10 @@ def test_seed_crash_stays_up_and_reports_unhealthy(monkeypatch, caplog):
         results = universe_server._seed_reference_designs_best_effort()  # must NOT raise
     assert results == {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
     assert any("seeding crashed" in r.message for r in caplog.records)
-    # Loud + checkable: stashed, and the required design shows as unhealthy.
+    # Loud + checkable: stashed, and the packaged design shows as unhealthy.
     assert universe_server.last_seed_result() == results
-    from tinyassets.branch_designs import missing_required_designs
-    assert "patch_loop_reference" in missing_required_designs(results)
+    from tinyassets.branch_designs import unhealthy_packaged_designs
+    assert "patch_loop_reference" in unhealthy_packaged_designs(results)
 
 
 def test_seed_failure_is_loud_but_contained(data_dir, monkeypatch, caplog):
@@ -750,6 +824,20 @@ def test_staged_build_strips_reserved_author(data_dir):
     assert branch.author != "reference-designs"
 
 
+def test_yaml_import_strips_reserved_seed_author():
+    # Codex r15 addendum B: reserved identity is unforgeable on the IMPORT path
+    # too — a YAML payload claiming author="reference-designs" must be stripped,
+    # else the next seed's reserved-author stray-row prune would DELETE the
+    # imported branch (identity forgery + griefing deletion).
+    from tinyassets.catalog.serializer import branch_from_yaml_payload
+
+    branch = branch_from_yaml_payload({
+        "name": "Imported", "author": "reference-designs",
+    })
+    assert branch.author != "reference-designs"
+    assert branch.author == "anonymous"
+
+
 # ── Codex r13 #2: reserved seed is undeletable/immutable via public mutation ──
 
 
@@ -814,6 +902,24 @@ def test_reserved_seed_immutable_via_atomic_add_node(data_dir):
         get_branch_definition(data_dir, branch_def_id=fixed_id)
     ).node_defs)
     assert after == before   # no node added
+
+
+def test_reserved_seed_immutable_via_approve_source_code(data_dir):
+    # Codex r15 #6: approve_source_code SAVES the branch, so it is a mutation
+    # path and must honor the reserved-seed guard too. The seed has no
+    # source_code nodes, but the guard must still refuse (fires before node
+    # resolution) so the "every public mutation path" invariant holds.
+    from tinyassets.api.branches import _ext_branch_approve_source_code
+    from tinyassets.branch_designs import _reference_branch_id
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+
+    out = json.loads(_ext_branch_approve_source_code({
+        "branch_def_id": fixed_id, "node_id": "draft_patch",
+    }))
+    assert out.get("status") == "rejected"
+    assert "protected reference-design seed" in out["error"], out
 
 
 # ── Finding 5: concurrent seed + loud crash ────────────────────────────────
@@ -924,10 +1030,10 @@ def test_load_design_artifacts_rejects_missing_and_bad_format(tmp_path, monkeypa
         bd.load_design_artifacts()
 
 
-def test_empty_package_fails_loud_on_required_artifact(data_dir, tmp_path, monkeypatch):
-    # Codex r10 #4: an EMPTY designs dir (or a package that dropped the required
-    # artifact) must FAIL LOUD, not look healthy. The required-artifact manifest
-    # makes the seed report the missing required id in `failed`.
+def test_empty_package_fails_loud_on_packaged_design(data_dir, tmp_path, monkeypatch):
+    # Codex r10 #4: an EMPTY designs dir (or a package that dropped a packaged
+    # artifact) must FAIL LOUD, not look healthy. The packaged-design manifest
+    # makes the seed report the missing packaged id in `failed`.
     import tinyassets.branch_designs as bd
 
     empty = tmp_path / "empty_designs"
@@ -937,14 +1043,15 @@ def test_empty_package_fails_loud_on_required_artifact(data_dir, tmp_path, monke
     results = bd.seed_reference_designs(data_dir)
     assert results["seeded"] == []
     assert results["present"] == []
-    assert "<missing-required-artifact:patch_loop_reference>" in results["failed"], results
+    assert "<missing-packaged-design:patch_loop_reference>" in results["failed"], results
 
 
-def test_required_missing_stays_up_reports_unhealthy(data_dir, tmp_path, monkeypatch):
-    # Codex r13 #3: a REQUIRED design missing from the package must NOT take down
-    # the server — the startup seam stays UP (no raise) and reports unhealthy so
-    # a canary / get_status reader detects it. "Refuse to SHIP broken" is the CI
-    # gate (test_packaged_reference_design_is_valid_and_seedable), not runtime death.
+def test_missing_packaged_design_stays_up_reports_unhealthy(data_dir, tmp_path, monkeypatch):
+    # Codex r13 #3 + r15 #4: a PACKAGED design missing from the package must NOT
+    # take down the server — the startup seam stays UP (no raise) and reports
+    # unhealthy so a canary / get_status reader detects it. "Refuse to SHIP
+    # broken" is the CI gate (test_packaged_reference_design_is_valid_and_seedable),
+    # not runtime death. The reference is OPTIONAL for startup (r15 #4).
     import tinyassets.branch_designs as bd
     from tinyassets import universe_server
 
@@ -952,28 +1059,28 @@ def test_required_missing_stays_up_reports_unhealthy(data_dir, tmp_path, monkeyp
     empty.mkdir()
     monkeypatch.setattr(bd, "DESIGNS_DIR", empty)
     results = universe_server._seed_reference_designs_best_effort()  # must NOT raise
-    assert "<missing-required-artifact:patch_loop_reference>" in results["failed"]
-    assert "patch_loop_reference" in bd.missing_required_designs(results)
+    assert "<missing-packaged-design:patch_loop_reference>" in results["failed"]
+    assert "patch_loop_reference" in bd.unhealthy_packaged_designs(results)
 
 
 def test_packaged_reference_design_is_valid_and_seedable(data_dir):
     # Codex r13 #3: "refuse to SHIP broken" belongs in CI, not runtime. This is
-    # that gate — the PACKAGED reference artifact must parse, carry the required
+    # that gate — the PACKAGED reference artifact must parse, carry the packaged
     # design, build through the real user path, and seed HEALTHY. A broken commit
     # to the packaged seed fails CI here rather than degrading a running server.
     from tinyassets.branch_designs import (
-        REQUIRED_DESIGN_IDS,
+        PACKAGED_DESIGN_IDS,
         load_design_artifacts,
-        missing_required_designs,
+        unhealthy_packaged_designs,
     )
 
     artifacts = load_design_artifacts()          # raises on a malformed artifact
     ids = {a["design_id"] for a in artifacts}
-    assert REQUIRED_DESIGN_IDS <= ids, (REQUIRED_DESIGN_IDS, ids)
+    assert PACKAGED_DESIGN_IDS <= ids, (PACKAGED_DESIGN_IDS, ids)
 
     results = seed_reference_designs(data_dir)    # builds + publishes for real
-    assert missing_required_designs(results) == [], results
-    for design_id in REQUIRED_DESIGN_IDS:
+    assert unhealthy_packaged_designs(results) == [], results
+    for design_id in PACKAGED_DESIGN_IDS:
         assert any(
             t.startswith(f"design:{design_id}@v")
             for t in (results["seeded"] + results["present"])

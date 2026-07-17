@@ -2288,7 +2288,7 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
     ``<seed-crashed>`` marker in ``failed`` and stashes the result.
     """
     global _LAST_SEED_RESULT
-    from tinyassets.branch_designs import missing_required_designs
+    from tinyassets.branch_designs import unhealthy_packaged_designs
 
     try:
         from tinyassets.api.helpers import _base_path
@@ -2304,14 +2304,16 @@ def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
         results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
     _LAST_SEED_RESULT = results
 
-    missing = missing_required_designs(results)
-    if missing:
-        # Loud feature-health signal — the server STAYS UP and serves; the
-        # unhealthy reference is surfaced via get_status + logs (NOT a raise).
+    # The reference seed is a COMMONS FEATURE, not a boot-critical fixture
+    # (Codex r15 #4). An unhealthy PACKAGED design is reported LOUDLY (log +
+    # get_status.reference_designs + last_seed_result) — the server STAYS UP and
+    # serves; it NEVER refuses startup (Forever Rule / Hard Rule 4). CI owns
+    # "refuse to SHIP broken".
+    unhealthy = unhealthy_packaged_designs(results)
+    if unhealthy:
         logger.error(
-            "REQUIRED reference design(s) unhealthy: %s — server stays UP, "
-            "reporting unhealthy via get_status.reference_designs (CI gate owns "
-            "'refuse to ship broken')", missing,
+            "packaged reference design(s) unhealthy: %s — server stays UP, "
+            "reporting unhealthy via get_status.reference_designs", unhealthy,
         )
     return results
 

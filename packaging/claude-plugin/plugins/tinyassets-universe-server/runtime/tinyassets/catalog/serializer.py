@@ -174,11 +174,17 @@ def branch_from_yaml_payload(
         for c in (payload.get("conditional_edges") or [])
     ]
 
+    # Reserved identity is unforgeable across ALL create paths, including YAML
+    # import (Codex r15 addendum B): a non-system caller must not author as the
+    # reserved seed author, or the next seed's reserved-author stray-row prune
+    # would DELETE their imported branch (identity forgery + griefing deletion).
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
     branch = BranchDefinition(
         branch_def_id=payload.get("id") or "",
         name=payload.get("name", ""),
         description=payload.get("description", ""),
-        author=payload.get("author", "anonymous"),
+        author=_sanitize_reserved_author(payload.get("author")) or "anonymous",
         domain_id=payload.get("domain_id", "workflow"),
         goal_id=payload.get("goal_id", ""),
         tags=list(payload.get("tags", []) or []),

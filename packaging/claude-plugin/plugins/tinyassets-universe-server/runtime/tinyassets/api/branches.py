@@ -536,6 +536,14 @@ def _ext_branch_approve_source_code(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
+    # approve_source_code SAVES the branch, so it is a mutation path — it must
+    # honor the reserved-seed immutability invariant (Codex r15 #6). The current
+    # seed has no source_code nodes, but future reference designs would be exposed
+    # without this. (Minimal reserved-author check; S3's REJECT rework of
+    # approval provenance may reconcile with this at integration.)
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
 
     try:
         source = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -630,10 +638,21 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         if scope == "published":
             from tinyassets.branch_versions import list_branch_versions
 
-            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
-            if not versions:
+            # Discovery must surface only an ACTIVE published version (Codex r15
+            # #1). Taking versions[0] regardless of status let a rolled-back /
+            # quarantined newest version keep showing as published — a
+            # deliberately rolled-back reference must vanish from discovery, not
+            # be remixable. list_branch_versions is newest-first, so pick the
+            # newest NON-rolled-back (active) version; none active => not listed.
+            versions = list_branch_versions(
+                _base_path(), r.get("branch_def_id", ""), limit=50,
+            )
+            active = next(
+                (v for v in versions if (v.status or "active") == "active"), None,
+            )
+            if active is None:
                 continue
-            published_version_id = versions[0].branch_version_id
+            published_version_id = active.branch_version_id
         elif scope == "mine":
             if (r.get("author") or "") != actor:
                 continue
@@ -1921,6 +1940,11 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     }
     if raw.get("reducer"):
         entry["reducer"] = raw["reducer"]
+    # Codex S1 r15 addendum A: preserve the is_binding marker through the
+    # build/seed path so S2's branch-version guard can keep a remix inert
+    # until the owner binds the execution-gating field (e.g. target_repo).
+    if raw.get("is_binding"):
+        entry["is_binding"] = True
     # BUG-094: ``default_value`` is the canonical StateFieldDecl key
     # (tinyassets/branches.py:224). Read it first, fall back to the legacy
     # ``default`` / ``field_default`` spec shapes. Write to ``default_value``

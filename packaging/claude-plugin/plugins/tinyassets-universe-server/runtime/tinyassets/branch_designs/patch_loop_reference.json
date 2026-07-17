@@ -80,8 +80,8 @@
     "state_schema": [
       {"name": "intake_source", "type": "str"},
       {"name": "request_payload", "type": "str"},
-      {"name": "target_repo", "type": "str"},
-      {"name": "merge_policy", "type": "str"},
+      {"name": "target_repo", "type": "str", "is_binding": true},
+      {"name": "merge_policy", "type": "str", "is_binding": true},
       {"name": "verify_command", "type": "str"},
       {"name": "reshape_notes", "type": "str"},
       {"name": "intake_output", "type": "str"},

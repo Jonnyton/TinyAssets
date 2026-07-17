@@ -1273,13 +1273,13 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
 
     release_state = _load_release_state()
 
-    # reference_designs — process-global seed-health signal (Codex F3 + r13 #3).
-    # The reference seed is a FEATURE, not process-critical: the server STAYS UP
-    # even when a required design is unhealthy (r13 reversed r12's startup-refusal
-    # — a feature rollback must not be a control-plane outage). This is the LOUD
-    # health surface a reader / canary checks: ``last_seed_result()`` is set on
-    # the startup seam (None before the first seed). Best-effort; never fail
-    # get_status on it.
+    # reference_designs — process-global seed-health signal (Codex F3 + r13 #3 +
+    # r15 #4). The reference seed is a FEATURE, not process-critical: the server
+    # STAYS UP even when the design is unhealthy (r13 reversed r12's
+    # startup-refusal — a feature rollback must not be a control-plane outage).
+    # This is the LOUD health surface a reader / canary checks; ``healthy`` is
+    # recomputed LIVE at read time, and the boot-seed snapshot is kept separately
+    # under ``last_seed``. Best-effort; never fail get_status on it.
     try:
         from tinyassets.branch_designs import reference_designs_live_health
         from tinyassets.universe_server import last_seed_result
@@ -1289,10 +1289,10 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         _live = reference_designs_live_health(_base_path())
         _seed = last_seed_result()  # boot history, kept SEPARATE (may be stale)
         reference_designs = {
-            "healthy": _live["healthy"],                     # LIVE
-            "required_missing": _live["required_missing"],   # LIVE
-            "per_design": _live["per_design"],               # LIVE
-            "last_seed": {                                   # boot snapshot
+            "healthy": _live["healthy"],             # LIVE
+            "unhealthy": _live["unhealthy"],         # LIVE (packaged designs unhealthy)
+            "per_design": _live["per_design"],       # LIVE
+            "last_seed": {                           # boot snapshot
                 "ran": _seed is not None,
                 "seeded": list((_seed or {}).get("seeded", [])),
                 "present": list((_seed or {}).get("present", [])),
