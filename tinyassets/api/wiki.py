@@ -2188,23 +2188,48 @@ def _wiki_file_bug(
         # *expected* to invoke even if the enqueue helper rejects — including a
         # dead ref (handler_not_found), where the receipt keeps the dead id for
         # audit while the enqueue is refused.
-        canonical_branch_def_id, _handler_reason = (
-            bug_investigation.resolve_investigation_handler_detail(universe_path)
+        # Resolve the handler ONCE here (Codex S1 latest-model Finding 3) and
+        # thread the SAME resolution into both the receipt and the enqueue —
+        # otherwise the enqueue helper re-resolves and a canonical change/removal
+        # between the two calls yields mismatched provenance (receipt says
+        # handler_not_found while the enqueue reports a different outcome).
+        (
+            resolved_branch_def_id, _handler_reason,
+            _handler_source, _handler_goal,
+        ) = bug_investigation.resolve_investigation_handler_with_provenance(
+            universe_path
         )
-        if not canonical_branch_def_id and _handler_reason.startswith(
-            "handler_not_found:"
+        # Codex r22 #3: branch_def_id records a REAL branch id only, NEVER
+        # synthetic ``goal:<id>`` text — the goal goes in its own goal_id field.
+        canonical_branch_def_id = resolved_branch_def_id or None
+        if not canonical_branch_def_id and (
+            _handler_reason.startswith("handler_not_found:")
+            or (
+                _handler_reason.startswith("handler_unavailable:")
+                # the goal-resolution-crash reason ("handler_unavailable:goal")
+                # carries NO branch id — the goal is in _handler_goal instead.
+                and _handler_reason != "handler_unavailable:goal"
+            )
         ):
-            # Record the first dead id we expected to invoke.
+            # A dead / transiently-unavailable id we expected to invoke (RECEIPT
+            # ONLY — the enqueue still refuses via the empty resolution below).
             canonical_branch_def_id = (
                 _handler_reason.split(":", 1)[1].split(",")[0] or None
             )
-        canonical_branch_def_id = canonical_branch_def_id or None
         try:
             _receipt = _tr.create_pending(
                 request_id=bug_id,
                 request_kind=effective_kind,
                 request_page=rel_path,
                 branch_def_id=canonical_branch_def_id,
+                goal_id=(_handler_goal or None),
+                resolution_source=(_handler_source or None),
+                # Codex r21 #1c: record the universe so the retry consumer
+                # re-enqueues a recovered trigger into the right queue.
+                universe_id=target_universe_id or None,
+                # Codex r22 #2: persist the normalized filing payload so a
+                # RETRIED trigger enqueues the SAME content, not a bare bug_id.
+                payload_json=json.dumps(frontmatter, default=str),
             )
         except Exception as _rcpt_exc:  # noqa: BLE001 - filing must survive receipt-store outage.
             _logger_wiki.warning(
@@ -2213,11 +2238,24 @@ def _wiki_file_bug(
             _receipt = None
 
         try:
-            request_id = bug_investigation._maybe_enqueue_investigation(
+            # Codex r23 #1: the INITIAL enqueue uses the SAME stable task id the
+            # retry consumer will derive from this receipt, so an initial-enqueue
+            # -> crash-before-mark_queued -> retry collapses to ONE task (exactly
+            # once across the real crash window). No receipt -> "" -> fresh uuid4.
+            _stable_task_id = (
+                bug_investigation.investigation_task_id(_receipt.trigger_attempt_id)
+                if _receipt is not None else ""
+            )
+            winning_task = bug_investigation._maybe_enqueue_investigation(
                 bug_id=bug_id,
                 frontmatter=frontmatter,
                 base_path=universe_path,
                 universe_id=target_universe_id,
+                resolved_branch_def_id=resolved_branch_def_id,
+                request_id=_stable_task_id,
+                # Codex r25 #2: persist the resolved goal on the task.
+                goal_id=(_handler_goal or ""),
+                resolution_source=(_handler_source or ""),
             )
         except Exception as _enq_exc:
             # Trigger helper raised. Update receipt then re-raise into the outer
@@ -2231,7 +2269,8 @@ def _wiki_file_bug(
                     pass
             raise
 
-        if request_id:
+        if winning_task:
+            request_id = winning_task.branch_task_id
             investigation_section = bug_investigation.format_investigation_comment(
                 request_id=request_id,
                 status="queued",
@@ -2252,32 +2291,43 @@ def _wiki_file_bug(
             # ``universe action=queue_list`` with the branch_task_id.
             if verbose:
                 try:
-                    from tinyassets.branch_tasks import read_queue
-
-                    task = next(
-                        (
-                            t for t in read_queue(universe_path)
-                            if t.branch_task_id == request_id
-                        ),
-                        None,
-                    )
-                    if task is not None:
-                        investigation["branch_task"] = task.to_dict()
+                    investigation["branch_task"] = winning_task.to_dict()
                 except Exception as _queue_exc:  # noqa: BLE001
                     _logger_wiki.warning(
-                        "file_bug investigation task read failed for %s: %s",
+                        "file_bug investigation task serialization failed for %s: %s",
                         bug_id,
                         _queue_exc,
                     )
             if _receipt is not None:
                 try:
+                    # Codex r23 #3: record provenance on the NORMAL success path
+                    # too (not just retry) — the actual handler + resolution
+                    # source + goal, so the receipt never contradicts the task.
+                    # Every field comes from the atomic persisted winner, never
+                    # from this call's potentially losing local resolution.
                     _receipt = _tr.mark_queued(
                         _receipt, dispatcher_request_id=request_id,
+                        branch_def_id=winning_task.branch_def_id,
+                        goal_id=winning_task.goal_id,
+                        resolution_source=(winning_task.resolution_source or None),
                     )
                 except Exception:  # noqa: BLE001
                     pass
         else:
-            if _handler_reason.startswith("handler_not_found:"):
+            if _handler_reason.startswith("handler_unavailable:"):
+                # Codex r20 #2: the handler registry was TRANSIENTLY unavailable
+                # (e.g. SQLite locked) — NOT proof the handler is gone. Surface a
+                # RETRYABLE trigger and leave the receipt PENDING (non-terminal),
+                # so a later re-file / retry enqueues once storage recovers.
+                # NEVER a terminal handler_not_found on a transient error. The
+                # filing itself persists regardless.
+                investigation = {
+                    "status": "retryable",
+                    "error": "handler_unavailable",
+                    "detail": _handler_reason,
+                }
+                # Deliberately do NOT mark the receipt failed: pending == retryable.
+            elif _handler_reason.startswith("handler_not_found:"):
                 # G4: a handler RESOLVED but its branch def does not exist
                 # (dead ref — e.g. wiped registry). Fail loudly on the
                 # trigger, never the filing: explicit failed status, nothing
@@ -2296,9 +2346,35 @@ def _wiki_file_bug(
                         )
                     except Exception:  # noqa: BLE001
                         pass
+            elif resolved_branch_def_id:
+                # Codex r11 #4: a VALID handler resolved but the enqueue was
+                # REFUSED (the dispatcher rejected the request_type, or another
+                # recoverable ValueError/RuntimeError inside the enqueue helper).
+                # This is a DISTINCT failure class from no_canonical_branch — the
+                # handler exists; the enqueue failed. Do not mislabel it skipped.
+                investigation = {
+                    "status": "enqueue_failed",
+                    "error": "enqueue_failed",
+                    "branch_def_id": resolved_branch_def_id,
+                }
+                if _receipt is not None:
+                    try:
+                        _receipt = _tr.mark_failed(
+                            _receipt,
+                            error_class="enqueue_failed",
+                            error_message=(
+                                "handler resolved but dispatcher enqueue was "
+                                "refused"
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             else:
                 # Skipped because no canonical branch configured (env var
                 # empty or filing without bug_id). Record for audit.
+                investigation = {
+                    "status": "skipped", "reason": "no_canonical_branch",
+                }
                 if _receipt is not None:
                     try:
                         _receipt = _tr.mark_skipped(
@@ -2320,12 +2396,34 @@ def _wiki_file_bug(
         "kind": effective_kind,
         "severity": severity,
         "component": component,
-        "effort_classification": effort_classification,
-        "effort_dispatch_route": effort_dispatch_route,
         "investigation": investigation,
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
     }
+    # Effort metadata (Codex r20 #4 — RESOLVE the >1 KB compact response, don't
+    # mask it): the COMPACT response keeps the decision-relevant classification
+    # (effort_class, attention, signals, confidence) + the full dispatch route,
+    # but DROPS the pure-diagnostic nested blocks (structural_features /
+    # authority_boundary) that no caller acts on — they are operator detail,
+    # surfaced only under verbose=True (like the branch_task mirror below). This
+    # is a deliberate contract trim, not a masked failure: it brings the compact
+    # response back under the ~1 KB phone-legibility limit. The full block is
+    # always persisted in the filing frontmatter regardless.
+    if verbose:
+        response_body["effort_classification"] = effort_classification
+        response_body["effort_dispatch_route"] = effort_dispatch_route
+    else:
+        response_body["effort_classification"] = {
+            k: v for k, v in effort_classification.items()
+            if k not in ("structural_features", "authority_boundary")
+        }
+        # Route: keep only the fields a caller acts on (lane + pickup weight +
+        # attention family when present); the diagnostic triage_policy /
+        # visible_reason are verbose-only. Comfortable < 1 KB headroom.
+        response_body["effort_dispatch_route"] = {
+            k: v for k, v in effort_dispatch_route.items()
+            if k in ("lane", "pickup_signal_weight", "attention_family")
+        }
     if dropped_kwargs:
         response_body["warning"] = (
             "Dropped unsupported file_bug field(s): "

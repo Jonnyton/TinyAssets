@@ -50,12 +50,14 @@ class TestCreatePending:
             request_page="pages/feature-requests/feat-007.md",
             goal_id="c4f481e65b13",
             branch_def_id="fd5c66b1d87d",
+            resolution_source="goal_canonical",
             db_path=db_path,
         )
         fetched = tr.get_receipt(r.trigger_attempt_id, db_path=db_path)
         assert fetched is not None
         assert fetched.goal_id == "c4f481e65b13"
         assert fetched.branch_def_id == "fd5c66b1d87d"
+        assert fetched.resolution_source == "goal_canonical"
 
 
 class TestMarkQueued:

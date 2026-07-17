@@ -51,40 +51,42 @@ def test_get_status_tool_is_safe_to_call() -> None:
         assert getattr(ann, "destructiveHint", None) is False
 
 
-def test_get_status_reference_designs_health_is_live_not_boot_cached(
-    tmp_path, monkeypatch,
-) -> None:
-    """Live registry health must remain distinct from boot-seed history."""
-    import tinyassets.universe_server as universe_server
+def test_get_status_reference_designs_health_is_live_not_boot_cached(tmp_path, monkeypatch) -> None:
+    """Codex r14 #3: get_status.reference_designs.healthy must be LIVE registry
+    health, NOT the boot-seed cache. Repro: seed healthy, DELETE the authoritative
+    row, and status must flip to unhealthy + surface it in `unhealthy` — a cached
+    "healthy" lie is exactly what the r13 serve-while-unhealthy fix promised not
+    to do. The boot-seed snapshot is kept SEPARATELY under `last_seed`."""
+    import tinyassets.universe_server as us
     from tinyassets.branch_designs import _reference_branch_id, seed_reference_designs
     from tinyassets.daemon_server import delete_branch_definition
 
     base = tmp_path / "data"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    seed_reference_designs(base)
+    seed_reference_designs(base)   # live-healthy
+    # Boot cache says healthy (and stays that way even after we delete the row).
     monkeypatch.setattr(
-        universe_server,
-        "_LAST_SEED_RESULT",
+        us, "_LAST_SEED_RESULT",
         {"seeded": ["design:patch_loop_reference@v1"], "present": [], "failed": []},
     )
 
-    reference_status = json.loads(get_status())["reference_designs"]
-    assert reference_status["healthy"] is True
-    assert reference_status["unhealthy"] == []
-    assert reference_status["last_seed"]["seeded"] == [
-        "design:patch_loop_reference@v1",
-    ]
+    rd = json.loads(get_status())["reference_designs"]
+    assert rd["healthy"] is True
+    assert rd["unhealthy"] == []
+    assert rd["last_seed"]["seeded"] == ["design:patch_loop_reference@v1"]
 
+    # Delete the authoritative row — the boot cache is now STALE. Post-r17 the
+    # public API can't delete a reserved seed; internal_seed_write=True simulates
+    # an out-of-band loss (direct SQL / admin) that live health must still catch.
     fixed_id = _reference_branch_id("patch_loop_reference", 1)
-    delete_branch_definition(base, branch_def_id=fixed_id)
+    delete_branch_definition(base, branch_def_id=fixed_id, internal_seed_write=True)
 
-    reference_status = json.loads(get_status())["reference_designs"]
-    assert reference_status["healthy"] is False
-    assert "patch_loop_reference" in reference_status["unhealthy"]
-    assert reference_status["last_seed"]["seeded"] == [
-        "design:patch_loop_reference@v1",
-    ]
+    rd2 = json.loads(get_status())["reference_designs"]
+    assert rd2["healthy"] is False, rd2                    # LIVE, not cached
+    assert "patch_loop_reference" in rd2["unhealthy"], rd2
+    # Boot cache still shows the (now stale) healthy seed — kept separate.
+    assert rd2["last_seed"]["seeded"] == ["design:patch_loop_reference@v1"]
 
 
 def test_get_status_returns_required_shape() -> None:

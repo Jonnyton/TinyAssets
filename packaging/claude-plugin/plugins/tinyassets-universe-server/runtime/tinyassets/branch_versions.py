@@ -443,12 +443,21 @@ def get_newest_active_version(
 def get_newest_active_versions(
     base_path: str | Path,
     branch_def_ids: "list[str]",
+    *,
+    content_hashes: dict[str, str] | None = None,
 ) -> dict[str, BranchVersion]:
-    """Newest ACTIVE version per branch_def_id in ONE query (no N+1).
+    """Newest discoverable ACTIVE version per branch_def_id in ONE query.
 
     Codex S2 F4: the published listing used one query per row (N+1). This
     batches the active-version lookup into a single ``WHERE branch_def_id IN
-    (...) AND status='active'`` scan so the listing's query count is bounded.
+    (...)`` scan so the listing's query count is bounded.
+
+    When ``content_hashes`` is supplied, an active version normally must match
+    the current branch definition exactly. The sole fallback is a legitimate
+    rollback shape: the current content has a rolled-back version and an older
+    version remains active. A mismatched active version published after the
+    rollback target is rejected, preventing unrelated/stale content from
+    silently keeping a rolled-back design discoverable.
     """
     ids = [str(i) for i in (branch_def_ids or []) if i]
     if not ids:
@@ -456,16 +465,39 @@ def get_newest_active_versions(
     initialize_branch_versions_db(base_path)
     placeholders = ",".join("?" * len(ids))
     with _connect(base_path) as conn:
+        status_clause = "" if content_hashes is not None else "AND status = 'active' "
         rows = conn.execute(
             f"SELECT * FROM branch_versions WHERE branch_def_id IN ({placeholders}) "
-            "AND status = 'active' ORDER BY published_at DESC",
+            f"{status_clause}ORDER BY published_at DESC",
             ids,
         ).fetchall()
+    versions = [_row_to_version(row) for row in rows]
     out: dict[str, BranchVersion] = {}
-    for row in rows:
-        version = _row_to_version(row)
-        # Newest first -> first row per branch_def_id wins.
-        out.setdefault(version.branch_def_id, version)
+    if content_hashes is None:
+        for version in versions:
+            # Newest first -> first active row per branch_def_id wins.
+            out.setdefault(version.branch_def_id, version)
+        return out
+
+    rolled_back_current_at: dict[str, str] = {}
+    for version in versions:
+        expected_hash = content_hashes.get(version.branch_def_id)
+        if version.content_hash != expected_hash:
+            continue
+        if version.status == "active":
+            out.setdefault(version.branch_def_id, version)
+        elif version.status == "rolled_back":
+            rolled_back_current_at.setdefault(
+                version.branch_def_id,
+                version.published_at,
+            )
+
+    for version in versions:
+        if version.branch_def_id in out or version.status != "active":
+            continue
+        rollback_at = rolled_back_current_at.get(version.branch_def_id)
+        if rollback_at is not None and version.published_at < rollback_at:
+            out[version.branch_def_id] = version
     return out
 
 
@@ -485,6 +517,46 @@ def list_branch_versions(
             (branch_def_id, limit),
         ).fetchall()
     return [_row_to_version(r) for r in rows]
+
+
+def get_versions_by_content_hash(
+    base_path: str | Path,
+    branch_def_id: str,
+    content_hash: str,
+) -> list[BranchVersion]:
+    """All versions of ``branch_def_id`` carrying EXACTLY ``content_hash``, via the
+    indexed ``(branch_def_id, content_hash)`` lookup — NOT a bounded LIMIT-N
+    history scan (Codex r20 #3).
+
+    Durable discovery/health/quarantine must find the authoritative version
+    regardless of how many total versions exist. ``publish_branch_version`` dedups
+    on ``content_hash``, so this result is tiny (typically the active row + at most
+    a rolled-back row of the same content). Newest first.
+    """
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM branch_versions "
+            "WHERE branch_def_id = ? AND content_hash = ? "
+            "ORDER BY published_at DESC",
+            (branch_def_id, content_hash),
+        ).fetchall()
+    return [_row_to_version(r) for r in rows]
+
+
+def get_active_version_by_content_hash(
+    base_path: str | Path,
+    branch_def_id: str,
+    content_hash: str,
+) -> BranchVersion | None:
+    """The ACTIVE version carrying ``content_hash`` (newest), or None — an indexed
+    lookup, not a bounded scan (Codex r20 #3). ``active`` includes legacy
+    empty/NULL status to match the ``(status or 'active')`` convention used across
+    the reference-design health path."""
+    for v in get_versions_by_content_hash(base_path, branch_def_id, content_hash):
+        if (v.status or "active") == "active":
+            return v
+    return None
 
 
 def _validate_version_exists(conn: sqlite3.Connection, version_id: str) -> None:

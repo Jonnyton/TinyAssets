@@ -1361,9 +1361,9 @@ def test_import_and_remix_never_write_a_public_row(data_dir, monkeypatch):
     real_save = ds.save_branch_definition
     seen = []
 
-    def _spy(base_path, *, branch_def):
+    def _spy(base_path, *, branch_def, **save_kwargs):
         seen.append((branch_def.get("name"), branch_def.get("visibility")))
-        return real_save(base_path, branch_def=branch_def)
+        return real_save(base_path, branch_def=branch_def, **save_kwargs)
 
     monkeypatch.setattr(ds, "save_branch_definition", _spy)
 

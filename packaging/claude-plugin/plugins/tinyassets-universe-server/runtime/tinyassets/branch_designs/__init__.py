@@ -41,7 +41,6 @@ discoverable/remixable TEMPLATE, but it cannot RUN unconfined (Codex r13 #1).
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -50,32 +49,46 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+# Reserved reference-design identity lives in a tiny dependency-free CORE module
+# (Codex r21 #2) so the storage write guard can check reserved ids without
+# importing this heavy package. This package re-exports it as the single source
+# of truth; the ``_`` aliases preserve existing internal call sites.
+from tinyassets.reference_seed_core import (  # noqa: F401 — re-exported API
+    PACKAGED_DESIGN_IDS,
+    PACKAGED_DESIGN_MANIFEST,
+    RESERVED_SEED_AUTHOR,
+    reference_branch_id,
+    sanitize_reserved_author,
+)
+from tinyassets.reference_seed_core import (
+    is_reserved_seed_id as is_reserved_seed_id,
+)
+from tinyassets.reference_seed_core import (
+    reserved_seed_ids as reserved_seed_ids,
+)
+
+_reference_branch_id = reference_branch_id
+_sanitize_reserved_author = sanitize_reserved_author
+
 logger = logging.getLogger("universe_server.branch_designs")
 
 DESIGNS_DIR = Path(__file__).parent
 DESIGN_FORMAT = "tinyassets.branch_design/v1"
 REFERENCE_TAG = "reference-design"
 
-# The seeder's ownership signal is a RESERVED system author, NOT the design tag.
-# Tags are user-controllable: a fork INHERITS the source's tags and users can
-# submit arbitrary tags (Codex S1 latest-model Finding 1). Reconciling by tag
-# alone let a reseed treat a user's remix as "the reference row" and overwrite /
-# delete it — user data loss. ``author`` does NOT propagate on fork (``fork()``
-# records the FORKING user), and the user-facing build/fork paths strip this
-# reserved value (see ``_sanitize_reserved_author``), so it cannot be smuggled.
-# Reconcile + prune only ever touch rows carrying BOTH the reserved author and
-# the reserved deterministic id below; a user row that merely shares the tag is
-# invisible to the seeder.
-RESERVED_SEED_AUTHOR = "reference-designs"
+# Codex r16 #5: stray rows carrying the reserved author + reference tag are
+# QUARANTINED here (author sanitized, reference tags dropped, made private,
+# tagged for review), NEVER hard-deleted — the reserved author + tag were
+# user-forgeable before the sanitizers landed, so an existing stray row may be
+# legitimate user-authored content. Deleting it is unrecoverable data loss.
+QUARANTINE_TAG = "quarantine:reserved-seed-collision"
 
-# Packaged-design manifest (Codex r10 #4): the design_ids the package MUST ship
-# and that SHOULD seed healthy. An empty designs dir / a dropped artifact would
-# otherwise make ``load_design_artifacts`` return [] and the seed report all-empty
-# — a BROKEN package looking healthy. This is a PACKAGING + HEALTH invariant: the
-# seed marks a missing packaged design loudly
-# (``failed:[<missing-packaged-design:...>]``, reflected in ``last_seed_result()``
-# + get_status), and CI validates it. It is NOT a boot-readiness gate.
-PACKAGED_DESIGN_IDS = frozenset({"patch_loop_reference"})
+# RESERVED_SEED_AUTHOR + PACKAGED_DESIGN_MANIFEST + PACKAGED_DESIGN_IDS are
+# imported from ``tinyassets.reference_seed_core`` (the tiny dependency-free
+# core, Codex r21 #2). The reserved author is the seeder's ownership signal (NOT
+# the design tag — tags are user-forgeable and a fork inherits them); reconcile +
+# prune only ever touch rows carrying BOTH the reserved author and the reserved
+# deterministic id, so a user row that merely shares the tag is invisible.
 
 # Boot-REQUIRED fixtures (PLAN "required seeded fixtures refuse startup"). The
 # reference patch loop is a COMMONS FEATURE, not boot-critical — the Forever Rule
@@ -95,37 +108,6 @@ _REQUIRED_ENVELOPE_KEYS = ("design_format", "design_id", "design_version", "spec
 _ALLOWED_ENVELOPE_KEYS = frozenset(
     {"design_format", "design_id", "design_version", "title", "provenance", "spec"}
 )
-
-
-def _reference_branch_id(design_id: str, design_version: int) -> str:
-    """Deterministic, RESERVED branch_def_id for a seeded reference design.
-
-    Two jobs: (1) concurrency safety — ``save_branch_definition`` is
-    ``INSERT OR REPLACE`` keyed on ``branch_def_id``, so two concurrent seeds
-    (threads OR multi-worker processes) that both target this fixed id UPSERT
-    to one row instead of minting duplicates (Codex S1 latest-model Finding 5);
-    (2) unspoofable identity — ``branch_def_id`` is server-assigned on every
-    build/fork (users cannot set it), so a user can never occupy this id. Same
-    12-hex shape as ``_new_id`` so it round-trips every id-shaped consumer.
-    """
-    digest = hashlib.sha256(
-        f"tinyassets.reference-design:{design_id}@v{int(design_version)}".encode()
-    ).hexdigest()
-    return digest[:12]
-
-
-def _sanitize_reserved_author(author: str | None) -> str:
-    """Strip the reserved seed author from a user-supplied value so it cannot be
-    smuggled onto a user branch via build/fork/import (Finding 1c). Returns ""
-    when the value is the reserved author, else the value unchanged.
-
-    Defensive against non-strings (Codex r12 #4): only a genuine string is
-    stripped/compared. A non-string author is rejected at the public boundary
-    (build_branch / create_branch); here we never ``.strip()`` a non-string, so
-    even an internal caller can't trigger an AttributeError."""
-    if not isinstance(author, str):
-        return ""
-    return "" if author.strip() == RESERVED_SEED_AUTHOR else author
 
 
 @contextmanager
@@ -231,7 +213,10 @@ def _publish_reference(base_path: str | Path, branch_def_id: str, tag: str) -> N
         get_branch_definition(base_path, branch_def_id=branch_def_id)
     )
     branch.published = True
-    saved = save_branch_definition(base_path, branch_def=branch.to_dict())
+    # Seeder-owned write to the reserved id (Codex r17 #3 central guard).
+    saved = save_branch_definition(
+        base_path, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
     version = publish_branch_version(
         base_path, saved, publisher="reference-designs",
         notes=f"reference design seed {tag}",
@@ -276,17 +261,16 @@ def _content_hash_quarantined(
     is the Fable belt-and-braces for the un-ORDER-BY'd dedup SELECT: if a
     legitimate active same-hash version already exists, the reference is fine.
     """
-    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branch_versions import get_versions_by_content_hash
 
-    versions = list_branch_versions(base_path, branch_def_id, limit=200)
-    has_rolled_back = any(
-        v.content_hash == content_hash and v.status == "rolled_back"
-        for v in versions
-    )
-    has_active = any(
-        v.content_hash == content_hash and (v.status or "active") == "active"
-        for v in versions
-    )
+    # DIRECT indexed lookup by (branch_def_id, content_hash), NOT a bounded
+    # LIMIT-N history scan (Codex r20 #3): a bounded scan could miss the
+    # rolled-back / active rows for this exact hash once a design had >N total
+    # versions, wrongly clearing (or asserting) quarantine. This returns exactly
+    # the versions carrying this content, regardless of total version count.
+    same_hash = get_versions_by_content_hash(base_path, branch_def_id, content_hash)
+    has_rolled_back = any(v.status == "rolled_back" for v in same_hash)
+    has_active = any((v.status or "active") == "active" for v in same_hash)
     return has_rolled_back and not has_active
 
 
@@ -343,11 +327,46 @@ def _build_reference_branch(base_path: str | Path, artifact: dict, tag: str) -> 
     return out["branch_def_id"]
 
 
+def _reference_expected_meta(artifact: dict, tag: str) -> dict:
+    """The DISCOVERY metadata a healthy reserved-seed row MUST carry (Codex r23
+    #2). ``_content_fingerprint`` covers only node/edge/state content, so a
+    private seed (undiscoverable), or a drifted name/description/tags, passes the
+    fingerprint yet breaks discovery.
+
+    Derived from the NORMALIZED canonical ``BranchDefinition`` — NOT raw artifact
+    values (Codex r24 #2). The build path (``_staged_branch_from_spec``, which the
+    seeder's ``_ext_branch_build`` uses) TRIMS the name and converts a null
+    description -> "", so comparing RAW artifact metadata against the normalized
+    persisted row spuriously failed health right after seeding. Stage the SAME
+    reference-tagged spec the seeder builds and read the normalized result."""
+    spec = dict(artifact.get("spec") or {})
+    spec["tags"] = sorted(set(list(spec.get("tags") or []) + [REFERENCE_TAG, tag]))
+    try:
+        from tinyassets.api.branches import _staged_branch_from_spec
+
+        staged, _errors = _staged_branch_from_spec(spec)
+        d = staged.to_dict()
+        name = d.get("name", "")
+        description = d.get("description", "")
+        tags = sorted(set(d.get("tags") or []))
+    except Exception:  # noqa: BLE001 — apply the same normalization by hand
+        name = str(spec.get("name") or "").strip()
+        description = spec.get("description") or ""
+        tags = sorted(set(spec.get("tags") or []))
+    return {
+        "name": name,
+        "description": description,
+        "tags": tags,
+        "visibility": "public",
+    }
+
+
 def _reference_row_is_healthy(
     base_path: str | Path,
     expected_fp: str,
     branch_def_id: str,
     authoritative_hash: str,
+    expected_meta: dict | None = None,
 ) -> bool:
     """Healthy = the row's content matches the authoritative build (fingerprint),
     ``published`` set, AND there is an ACTIVE branch version whose ``content_hash``
@@ -363,7 +382,7 @@ def _reference_row_is_healthy(
     failed. Also catches an interrupted publication (active version whose content
     != the authoritative artifact).
     """
-    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branch_versions import get_active_version_by_content_hash
     from tinyassets.daemon_server import get_branch_definition
 
     full = get_branch_definition(base_path, branch_def_id=branch_def_id)
@@ -371,10 +390,37 @@ def _reference_row_is_healthy(
         return False
     if not full.get("published"):
         return False
-    versions = list_branch_versions(base_path, branch_def_id, limit=200)
-    return any(
-        (v.status or "active") == "active" and v.content_hash == authoritative_hash
-        for v in versions
+    # Forbidden METADATA drift (Codex r17 #3): the reserved reference is a
+    # goal-AGNOSTIC commons Branch owned by the reserved author. A goal binding
+    # (the market goal-bind reproduction) or a changed author is drift even when
+    # the node CONTENT still matches the authoritative fingerprint. Read
+    # UNHEALTHY so live-health surfaces it AND the reconcile repairs it
+    # (re-overwrites with an empty goal + reserved author).
+    if (full.get("goal_id") or "") or (full.get("author") or "") != RESERVED_SEED_AUTHOR:
+        return False
+    # DISCOVERY metadata (Codex r23 #2): a private seed is UNDISCOVERABLE, and a
+    # drifted name/description/tags mislabels it in discovery — both must read
+    # UNHEALTHY so the reconcile repairs them (the overwrite restores the
+    # artifact-owned metadata + public visibility from the temp build).
+    if expected_meta is not None:
+        if (full.get("visibility") or "public") != expected_meta["visibility"]:
+            return False
+        if (full.get("name") or "") != expected_meta["name"]:
+            return False
+        if (full.get("description") or "") != expected_meta["description"]:
+            return False
+        if sorted(set(full.get("tags") or [])) != expected_meta["tags"]:
+            return False
+    # DIRECT indexed lookup for the ACTIVE version at the authoritative hash, NOT
+    # a bounded LIMIT-N history scan (Codex r20 #3): with >N versions a bounded
+    # scan missed a restored older authoritative-hash version, so a healthy
+    # reference read UNHEALTHY and reseed churned. The indexed query finds it
+    # regardless of version count.
+    return (
+        get_active_version_by_content_hash(
+            base_path, branch_def_id, authoritative_hash,
+        )
+        is not None
     )
 
 
@@ -393,7 +439,12 @@ def _overwrite_reference_content(
     branch.branch_def_id = target_id
     branch.author = RESERVED_SEED_AUTHOR
     branch.published = True
-    save_branch_definition(base_path, branch_def=branch.to_dict())
+    # The seeder is the ONLY sanctioned writer of the reserved id; the storage
+    # choke-point guard (_guard_reserved_seed_write) refuses every public writer
+    # (Codex r17 #3). internal_seed_write=True is the admin recovery route.
+    save_branch_definition(
+        base_path, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
 
 
 def _get_branch_or_none(base_path: str | Path, branch_def_id: str) -> dict | None:
@@ -432,6 +483,7 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
         get_branch_definition,
         initialize_author_server,
         list_branch_definitions,
+        update_branch_definition,
     )
 
     results: dict[str, list[str]] = {"seeded": [], "present": [], "failed": []}
@@ -453,17 +505,31 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
         results["failed"].append("<load-design-artifacts-failed>")
         return results
 
-    # Packaged-design manifest (#4, reclassified r15 #4): a PACKAGED design that's
-    # missing (or an empty package dir) must FAIL LOUD, not look healthy — record
-    # each absent packaged id in ``failed`` so ``last_seed_result()`` / get_status
-    # surface it. This is a packaging/health signal, NOT a boot-readiness gate.
-    present_ids = {a.get("design_id") for a in artifacts}
-    for packaged_id in sorted(PACKAGED_DESIGN_IDS - present_ids):
-        logger.error(
-            "reference design seeding: PACKAGED artifact %r is missing from the "
-            "package (present=%s)", packaged_id, sorted(present_ids),
-        )
-        results["failed"].append(f"<missing-packaged-design:{packaged_id}>")
+    # Packaged-design manifest (#4, reclassified r15 #4; tuple-exact r21 #4): a
+    # PACKAGED design that's missing OR present at the WRONG version must FAIL
+    # LOUD, not look healthy. The reserved id is version-specific, so a version
+    # mismatch is as broken as a total miss. Compare (design_id, version) TUPLES.
+    present_tuples = {
+        (a.get("design_id", ""), int(a.get("design_version", 1) or 1))
+        for a in artifacts
+    }
+    present_ids = {did for did, _v in present_tuples}
+    for missing_id, missing_ver in sorted(PACKAGED_DESIGN_MANIFEST - present_tuples):
+        if missing_id not in present_ids:
+            logger.error(
+                "reference design seeding: PACKAGED design %r is missing from the "
+                "package (present=%s)", missing_id, sorted(present_tuples),
+            )
+            results["failed"].append(f"<missing-packaged-design:{missing_id}>")
+        else:
+            logger.error(
+                "reference design seeding: PACKAGED design %r present but NOT at "
+                "manifest version v%s (present=%s)",
+                missing_id, missing_ver, sorted(present_tuples),
+            )
+            results["failed"].append(
+                f"<packaged-version-mismatch:{missing_id}@v{missing_ver}>"
+            )
 
     for artifact in artifacts:
         tag = design_tag(artifact["design_id"], artifact["design_version"])
@@ -500,7 +566,8 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 )
                 results["failed"].append(tag)
             elif existing is not None and _reference_row_is_healthy(
-                base_path, expected_fp, fixed_id, auth_hash
+                base_path, expected_fp, fixed_id, auth_hash,
+                expected_meta=_reference_expected_meta(artifact, tag),
             ):
                 results["present"].append(tag)
             elif _content_hash_quarantined(base_path, fixed_id, auth_hash):
@@ -524,7 +591,8 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 _overwrite_reference_content(base_path, fixed_id, correct_id)
                 _publish_reference(base_path, fixed_id, tag)
                 if _reference_row_is_healthy(
-                    base_path, expected_fp, fixed_id, auth_hash
+                    base_path, expected_fp, fixed_id, auth_hash,
+                    expected_meta=_reference_expected_meta(artifact, tag),
                 ):
                     logger.info("reference design seeded: %s -> %s", tag, fixed_id)
                     results["seeded"].append(tag)
@@ -532,23 +600,46 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                     logger.error("reference design %s could not be seeded", tag)
                     results["failed"].append(tag)
 
-            # Defensive prune: delete any OTHER rows carrying BOTH the reserved
+            # Defensive reconcile of any OTHER rows carrying BOTH the reserved
             # author AND this tag (a legacy random-id reserved row, or a
             # concurrent-seed straggler). Gated on the reserved author, so a
             # user remix/tagged branch is NEVER touched. include_private=True so
             # a PRIVATE stray reserved row doesn't evade cleanup (Fable MINOR) —
             # only reserved-author rows are ever visible to this query.
+            #
+            # QUARANTINE, never hard-delete (Codex r16 #5): the reserved author
+            # + tag were USER-FORGEABLE before the sanitizers shipped, so a stray
+            # row may be legitimate user-authored content, not a seed straggler.
+            # We cannot prove provenance, so we preserve it — strip the reserved
+            # author + reference tags (removing the collision so the next seed
+            # won't re-touch it), make it private, and tag it needs-review. Same
+            # pattern as the vault legacy-file + S5 llm_subscription migrations:
+            # move to a quarantine namespace, surface for review, recoverable.
             for r in list_branch_definitions(
                 base_path, author=RESERVED_SEED_AUTHOR, tag=tag,
                 include_private=True,
             ):
                 if r.get("branch_def_id") not in (fixed_id, correct_id):
+                    stray_id = r["branch_def_id"]
+                    kept_tags = [
+                        t for t in (r.get("tags") or [])
+                        if t not in (REFERENCE_TAG, tag)
+                    ]
                     logger.warning(
-                        "pruning stray reserved reference row %s for %s",
-                        r.get("branch_def_id"), tag,
+                        "quarantining stray reserved reference row %s for %s "
+                        "(reserved author+tag were forgeable pre-release; "
+                        "preserved private under %s for review, not deleted)",
+                        stray_id, tag, QUARANTINE_TAG,
                     )
-                    delete_branch_definition(
-                        base_path, branch_def_id=r["branch_def_id"],
+                    update_branch_definition(
+                        base_path,
+                        branch_def_id=stray_id,
+                        updates={
+                            "author": _sanitize_reserved_author(r.get("author"))
+                            or "anonymous",
+                            "tags": sorted(set(kept_tags + [QUARANTINE_TAG])),
+                            "visibility": "private",
+                        },
                     )
         except Exception:  # noqa: BLE001 - seeding must never break startup
             logger.exception("reference design seed CRASHED for %s", tag)
@@ -579,11 +670,15 @@ def unhealthy_packaged_designs(results: dict[str, list[str]]) -> list[str]:
         return sorted(PACKAGED_DESIGN_IDS)
     healthy_tags = set(results.get("seeded", [])) | set(results.get("present", []))
     unhealthy: list[str] = []
-    for design_id in sorted(PACKAGED_DESIGN_IDS):
-        prefix = f"design:{design_id}@v"
-        if not any(t.startswith(prefix) for t in healthy_tags):
+    # Compare the EXACT (design_id, version) manifest tag — NOT a bare
+    # ``design:<id>@v`` prefix (Codex r21 #4). A prefix match let a design that
+    # seeded at the WRONG version pass health, because the reserved id is
+    # version-specific: a version mismatch seeds an id absent from the reserved
+    # manifest while health reported no missing entry.
+    for design_id, version in sorted(PACKAGED_DESIGN_MANIFEST):
+        if design_tag(design_id, version) not in healthy_tags:
             unhealthy.append(design_id)
-    return unhealthy
+    return sorted(set(unhealthy))
 
 
 def reference_designs_live_health(base_path: str | Path) -> dict[str, Any]:
@@ -612,12 +707,24 @@ def reference_designs_live_health(base_path: str | Path) -> dict[str, Any]:
             "per_design": {},
         }
 
-    for artifact in artifacts:
-        design_id = artifact.get("design_id", "")
+    # Index on-disk artifacts by (design_id, version) and drive health off the
+    # MANIFEST tuples (Codex r21 #4): a packaged design present at the WRONG
+    # version (or absent) reads UNHEALTHY, because the reserved id is
+    # version-specific. Keyed by design_id for backward-compatible callers.
+    by_tuple = {
+        (a.get("design_id", ""), int(a.get("design_version", 1) or 1)): a
+        for a in artifacts
+    }
+    for design_id, version in PACKAGED_DESIGN_MANIFEST:
+        artifact = by_tuple.get((design_id, version))
+        if artifact is None:
+            # Manifest version missing on disk (absent OR version mismatch).
+            per_design[design_id] = False
+            continue
         try:
             from tinyassets.api.branches import _staged_branch_from_spec
 
-            fixed_id = _reference_branch_id(design_id, artifact["design_version"])
+            fixed_id = _reference_branch_id(design_id, version)
             staged, errors = _staged_branch_from_spec(dict(artifact["spec"]))
             if errors:
                 per_design[design_id] = False
@@ -632,6 +739,9 @@ def reference_designs_live_health(base_path: str | Path) -> dict[str, Any]:
                 and (row.get("author") or "") == RESERVED_SEED_AUTHOR
                 and _reference_row_is_healthy(
                     base_path, expected_fp, fixed_id, auth_hash,
+                    expected_meta=_reference_expected_meta(
+                        artifact, design_tag(design_id, version),
+                    ),
                 )
             )
         except Exception:  # noqa: BLE001 — a compute failure is unhealthy

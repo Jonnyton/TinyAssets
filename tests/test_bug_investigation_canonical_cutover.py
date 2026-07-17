@@ -17,7 +17,7 @@ Tests the round-1-cheat-loop → leaderboard-canonical swap in
 
 The dispatcher hop itself is mocked so the test doesn't depend on
 the universe's branch_tasks.json shape; the assertion is that
-``enqueue_investigation_request`` is called with the correct
+``_enqueue_investigation_task`` is called with the correct
 ``canonical_branch_def_id``.
 """
 
@@ -28,6 +28,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+from tinyassets.branch_tasks import BranchTask
 
 
 @pytest.fixture(autouse=True)
@@ -207,7 +209,7 @@ def _frontmatter(bug_id: str = "BUG-099") -> dict:
 def test_no_env_no_enqueue(base_path):
     from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "tinyassets.bug_investigation.enqueue_investigation_request"
+        "tinyassets.bug_investigation._enqueue_investigation_task"
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="BUG-001",
@@ -225,7 +227,7 @@ def test_empty_bug_id_skipped_even_with_env(base_path, monkeypatch):
     )
     from tinyassets.bug_investigation import _maybe_enqueue_investigation
     with patch(
-        "tinyassets.bug_investigation.enqueue_investigation_request"
+        "tinyassets.bug_investigation._enqueue_investigation_task"
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="",
@@ -248,9 +250,12 @@ def test_env_fallback_preserved_when_no_goal_id(base_path, monkeypatch):
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
     )
     from tinyassets.bug_investigation import _maybe_enqueue_investigation
+    winner = BranchTask(
+        branch_task_id="req-1", branch_def_id="fallback-branch", universe_id="u",
+    )
     with patch(
-        "tinyassets.bug_investigation.enqueue_investigation_request",
-        return_value="req-1",
+        "tinyassets.bug_investigation._enqueue_investigation_task",
+        return_value=winner,
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="BUG-001",
@@ -258,7 +263,7 @@ def test_env_fallback_preserved_when_no_goal_id(base_path, monkeypatch):
             base_path=base_path,
             universe_id="u",
         )
-    assert result == "req-1"
+    assert result is winner
     mock_enq.assert_called_once()
     call_kwargs = mock_enq.call_args.kwargs
     assert call_kwargs["canonical_branch_def_id"] == "fallback-branch"
@@ -283,9 +288,12 @@ def test_env_fallback_used_when_goal_id_has_no_canonical(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "fallback-branch",
     )
     from tinyassets.bug_investigation import _maybe_enqueue_investigation
+    winner = BranchTask(
+        branch_task_id="req-2", branch_def_id="fallback-branch", universe_id="u",
+    )
     with patch(
-        "tinyassets.bug_investigation.enqueue_investigation_request",
-        return_value="req-2",
+        "tinyassets.bug_investigation._enqueue_investigation_task",
+        return_value=winner,
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="BUG-002",
@@ -293,7 +301,7 @@ def test_env_fallback_used_when_goal_id_has_no_canonical(
             base_path=base_path,
             universe_id="u",
         )
-    assert result == "req-2"
+    assert result is winner
     mock_enq.assert_called_once()
     assert mock_enq.call_args.kwargs["canonical_branch_def_id"] == (
         "fallback-branch"
@@ -315,9 +323,12 @@ def test_goal_canonical_used_when_set(base_path, monkeypatch):
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "should-not-be-used",
     )
     from tinyassets.bug_investigation import _maybe_enqueue_investigation
+    winner = BranchTask(
+        branch_task_id="req-3", branch_def_id=bdid, universe_id="u",
+    )
     with patch(
-        "tinyassets.bug_investigation.enqueue_investigation_request",
-        return_value="req-3",
+        "tinyassets.bug_investigation._enqueue_investigation_task",
+        return_value=winner,
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="BUG-003",
@@ -325,7 +336,7 @@ def test_goal_canonical_used_when_set(base_path, monkeypatch):
             base_path=base_path,
             universe_id="u",
         )
-    assert result == "req-3"
+    assert result is winner
     mock_enq.assert_called_once()
     # Used the Goal's canonical branch_def_id, NOT the env fallback.
     assert (
@@ -431,9 +442,12 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
 
     monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g1")
     from tinyassets.bug_investigation import _maybe_enqueue_investigation
+    winner = BranchTask(
+        branch_task_id="req-auto", branch_def_id="new", universe_id="u",
+    )
     with patch(
-        "tinyassets.bug_investigation.enqueue_investigation_request",
-        return_value="req-auto",
+        "tinyassets.bug_investigation._enqueue_investigation_task",
+        return_value=winner,
     ) as mock_enq:
         result = _maybe_enqueue_investigation(
             bug_id="BUG-004",
@@ -441,7 +455,7 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
             base_path=base_path,
             universe_id="u",
         )
-    assert result == "req-auto"
+    assert result is winner
     mock_enq.assert_called_once()
     # The auto-refresh swapped canonical to 'new' BEFORE dispatch.
     assert mock_enq.call_args.kwargs["canonical_branch_def_id"] == "new"

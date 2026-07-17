@@ -941,6 +941,58 @@ def _extract_json_object(response: str) -> dict[str, Any]:
     return parsed
 
 
+class SandboxEnforcementUnavailableError(RuntimeError):
+    """Raised at INVOKE time when a ``requires_sandbox`` node would execute but no
+    real sandbox RUNNER can confine it (Codex r13 #1, r14 #1/#2).
+
+    S1 does not confine ``requires_sandbox`` nodes — the compiler has no
+    enforcement — so honestly failing closed (refuse to run) is safer than
+    silently executing a node that was declared to need a sandbox. S3 adds
+    fail-closed ENFORCEMENT only (``coding_nodes_runnable() == False``); the
+    per-job RUNNER that actually confines + executes such a node is an explicit
+    host-approved Phase-2 slice. So this fires on S1 AND on S1+S3, and stops only
+    when the Phase-2 runner lands."""
+
+
+def _sandbox_enforcement_available() -> bool:
+    """True ONLY when a real sandbox RUNNER can confine + execute a
+    ``requires_sandbox`` node (Codex r14 #1/#2).
+
+    NO environment assertion — a truthy env var does NOT prove confinement, so it
+    must never enable execution (that was the r13 bypass). The capability is
+    feature-detected from S3's policy module
+    (``tinyassets.sandbox_policy.coding_nodes_runnable``): ABSENT on this branch
+    (ImportError -> False), and once S3 is integrated it returns
+    ``(runnable: bool, reason: str)`` — False (enforcement-only) until the
+    host-approved Phase-2 per-job runner lands. We UNPACK that tuple (Codex r15
+    #3): a non-empty ``(False, reason)`` tuple is TRUTHY, so ``bool(result)``
+    would wrongly read "available". Pinned to S3's CURRENT signature; if S3's
+    contract changes we re-sync. Tests get their seam by monkeypatching THIS
+    function (a test fixture), never a production env var. Never raises."""
+    try:
+        from tinyassets.sandbox_policy import coding_nodes_runnable  # type: ignore
+
+        result = coding_nodes_runnable()
+    except Exception:  # noqa: BLE001 — absent (S1) / broken => not runnable
+        return False
+    # Accept ONLY a REAL boolean signal (Codex r18 #3). S3's documented contract
+    # is EXACTLY (runnable: bool, reason: str); a bare bool is also honored for
+    # forward/backward compat. Never ``bool()``-coerce the flag — a drifted
+    # policy returning ("false", "malformed") would coerce truthy and enable
+    # execution UNCONFINED. So require result[0] to BE a bool and the tuple to be
+    # exactly length 2. ANY other shape (wrong length, non-bool flag, a list, a
+    # non-bool non-tuple) is a broken/drifted policy module => FAIL CLOSED.
+    if isinstance(result, bool):
+        return result
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], bool)
+    ):
+        return result[0]
+    return False
+
+
 def _build_prompt_template_node(
     node: NodeDefinition,
     *,
@@ -1095,6 +1147,19 @@ def _build_prompt_template_node(
         return provider_call(_p, _s, role=role)
 
     def _fn(state: dict[str, Any]) -> dict[str, Any]:
+        # Fail-closed sandbox gate (Codex r13 #1): the compiler does NOT confine
+        # a ``requires_sandbox`` node, so it must REFUSE to run — before ANY
+        # provider dispatch — while sandbox enforcement is unavailable
+        # (feature-detected; always absent on S1, binds to S3's real gate at
+        # integration). Honestly fail-closed instead of silently executing
+        # unconfined. Checked FIRST so the provider is never called.
+        if getattr(node, "requires_sandbox", False) and not _sandbox_enforcement_available():
+            raise SandboxEnforcementUnavailableError(
+                f"Node '{node.node_id}' requires_sandbox=true but sandbox "
+                "enforcement is unavailable on this build — refusing to execute "
+                "before any provider dispatch (fail-closed; the S3 sandbox runner "
+                "is not integrated)."
+            )
         # Normalize Jinja-style ``{{var}}`` into Python's ``{var}``.
         # Claude.ai-authored prompt_templates tend to use doubled braces
         # by convention; without this the braces are passed through to
@@ -3292,6 +3357,17 @@ def _build_node(
             f"source_code — exactly one must be set."
         )
     if has_source:
+        # SANDBOX ENFORCEMENT COMPOSITION (Codex r16 #1): source_code is
+        # dispatched here, BEFORE the prompt-template adapter that carries S1's
+        # requires_sandbox fail-closed gate (see _build_prompt_template_node) —
+        # so on S1-ALONE an approved source_code node with requires_sandbox=True
+        # is NOT confined at this choke point. That gap is S3-owned: S3's
+        # node_capability classifier routes source_code to a sandboxed exec path
+        # at this same _build_node choke point (f19eb589). S1 must NOT add a
+        # duplicate guard here — the two would conflict at the S1+S3 merge. The
+        # BUNDLED integration acceptance proves fail-closed for EVERY executable
+        # node type (prompt_template + source_code + future adapters). Marker
+        # test: test_sandbox_enforcement_composition_boundary_is_documented.
         inner = _build_source_code_node(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
             invocation_depth=invocation_depth,
@@ -3377,6 +3453,7 @@ def _build_node(
 def _build_conditional_router(
     source_node: NodeDefinition | None,
     conditions: dict[str, str],
+    declared_fallback: str = "",
 ) -> Callable[[dict[str, Any]], str]:
     """Return a LangGraph-compatible router function.
 
@@ -3386,8 +3463,17 @@ def _build_conditional_router(
     a target node directly makes LangGraph raise ``KeyError`` (the
     target isn't a path_map key). Conditions IS the path_map here, so
     the router reads the state's output_key and returns it verbatim
-    when it's a valid label; otherwise falls back to the first declared
-    label so the graph cannot hang on a missing/malformed output.
+    when it's a valid label; otherwise falls back to the declared fallback.
+
+    Off-label fallback selection (Fable-5 CRITICAL, 2026-07-15): the fallback
+    MUST be the edge's explicitly declared ``fallback`` label when present —
+    NOT ``next(iter(conditions))``. The registry serializes ``conditions``
+    through ``_json_dumps(sort_keys=True)``, which ALPHABETIZES the keys, so
+    "the first condition key is the safe branch" does not survive save/load
+    (e.g. verify ``{red, green}`` persists as ``{green, red}`` -> an off-label
+    verdict would route to ``present``; owner_gate would MERGE on any off-label
+    decision). A declared scalar fallback is immune to key sorting. First-key
+    is kept ONLY as the last resort for legacy edges that declare no fallback.
 
     Rationale for returning-label-not-target: matches
     ``graph.add_conditional_edges(..., path_map=conditions)`` semantics.
@@ -3400,8 +3486,13 @@ def _build_conditional_router(
     if source_node and source_node.output_keys:
         output_key = source_node.output_keys[0]
 
-    # Fallback must be a LABEL (path_map key), not a target.
-    fallback = next(iter(conditions.keys()), END)
+    # Fallback must be a LABEL (path_map key), not a target. Prefer the
+    # explicitly declared fallback (persistence-order-independent); fall back
+    # to the first declared label only when no fallback is declared.
+    if declared_fallback and declared_fallback in conditions:
+        fallback = declared_fallback
+    else:
+        fallback = next(iter(conditions.keys()), END)
 
     def _route(state: dict[str, Any]) -> str:
         if not output_key:
@@ -3410,8 +3501,8 @@ def _build_conditional_router(
         if not isinstance(value, str):
             value = str(value)
         # Return the label when it's a valid path_map key; otherwise
-        # fall back to the first declared label so the graph advances
-        # rather than KeyError-ing.
+        # fall back to the declared safe label so the graph advances
+        # rather than KeyError-ing — and never drifts to an unsafe branch.
         if value in conditions:
             return value
         return fallback
@@ -3610,7 +3701,9 @@ def compile_branch(
             label: (END if tgt == "END" else tgt)
             for label, tgt in cedge.conditions.items()
         }
-        router = _build_conditional_router(source_def, conditions)
+        router = _build_conditional_router(
+            source_def, conditions, getattr(cedge, "fallback", ""),
+        )
         graph.add_conditional_edges(cedge.from_node, router, conditions)
 
     return CompiledBranch(

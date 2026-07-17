@@ -144,8 +144,15 @@ design version id so drift is detectable.
   deposited through the encrypted broker and resolve by destination; no secret
   or binding value enters the shared design, exported artifact, ledger, or run
   record.
-- **S3 — Coding-node sandbox** (G5): enforce sandbox + tool policy for
-  draft_patch-class nodes. Blocking gate for any live run against a repo.
+- **S3 — Coding-node sandbox ENFORCEMENT** (G5): fail-closed enforcement +
+  tool policy for draft_patch-class nodes — S3 makes `coding_nodes_runnable()`
+  return `False`, so such nodes REFUSE to run. S3 does NOT supply the per-job
+  RUNNER that actually confines + executes them.
+- **BLOCKER — per-job sandbox RUNNER (Phase 2, host-approved):** the runner that
+  lets a `requires_sandbox` node execute confined is an explicit, separate,
+  host-approved Phase-2 slice. Until it lands, `_sandbox_enforcement_available()`
+  stays `False` on S1 AND S1+S3, so no repo-touching node ever runs. This is the
+  hard dependency for a live patch loop, distinct from S3's enforcement.
 - **S4 — Owner review surface + merge policies** (G3 + G6): review queue with
   approve/reshape/reject from phone; manual/auto/timer; founder-OAuth-per-
   merge; extend `github_merge` accordingly.
@@ -159,8 +166,73 @@ design version id so drift is detectable.
   filed and fixed.
 
 Each slice ships with tests + opposite-provider review; surface changes get
-the rendered-chatbot ui-test per AGENTS quality gates. S1/S2 may land ahead of
-S3, but no remixed loop executes against a real repo until S3 lands.
+the rendered-chatbot ui-test per AGENTS quality gates.
+
+**Bundled deploy (corrected 2026-07-15 — supersedes "S1/S2 may land ahead of
+S3"):** the patch-loop stack merges to `main` in dependency order (S1 → S3 →
+S4 → S2 → S5) and ships as ONE deploy; **no slice deploys independently.** The
+seeded reference's repo-touching nodes (`investigate` repo-read, `verify`
+repo-exec, `draft_patch` repo-write/coding) are sandbox-required and honestly
+**FAIL CLOSED**: the compiled node **refuses to execute at invoke time (before
+any provider dispatch)** while a real sandbox RUNNER is unavailable
+(`graph_compiler._sandbox_enforcement_available` — feature-detects
+`tinyassets.sandbox_policy.coding_nodes_runnable`; always False on S1, and still
+False on S1+S3 because **S3 is enforcement-only — the per-job runner is a
+separate host-approved Phase-2 slice**, NOT part of S3). `present` / `merge` EMIT
+`github_pull_request` / `github_merge` effect packets whose effectors resolve at
+run time (`github_merge` lands with S4). So the seeded reference is never live
+without its runner — S1 in isolation SEEDS a discoverable/remixable template that
+cannot RUN unconfined (Codex r13 #1 / r14 #1-#2: it now provably refuses, and the
+gate is NOT bypassable by an env var — availability comes only from the real
+runner capability). **Merged-stack proof (integration-activated, NOT yet
+passing).** The S1→S3→S4 fail-closed proof activates ONLY at INTEGRATION — it
+requires all three together (S1's seeded reference + S3's sandbox enforcement +
+S4's effector) and is NOT provable on S1 alone (repo-touching nodes fail closed
+until S3's runner). The proof lives in S4's bundle e2e
+(`tests/test_patch_loop_bundle_e2e.py`). S1's only obligation is to keep the
+artifact contract stable: reference nodes live under **`spec.node_defs`** (the
+structural envelope test pins this). The S4 bundle test MUST read
+`spec.node_defs` (not top-level `node_defs`) and MUST **FAIL — not silently
+skip** — when the artifact exists but its node contract is unreadable, so a
+contract mismatch can never masquerade as a passing (or skipped) proof. As of
+Codex r19, current S4 (`d47ee60b`) reads `spec.node_defs` and has the
+fail-not-skip guard — the S4-side test-quality fix has landed. **Combined
+S1/S3/S4 execution nonetheless remains UNVERIFIED**: the fail-closed bundle proof
+only truly runs on the merged integration branch (S1 seed + S3 enforcement + S4
+effector together), which has not yet been assembled/run. Do not read "S4 reads
+spec.node_defs" as "the loop is proven" — the integration acceptance is still
+outstanding.
+
+**Pre-runner behavior is fail-closed refusal AT `investigate` (Codex r20 #1).**
+`investigate` is the FIRST repo-touching node (`requires_sandbox=true`,
+node_kind `repo_read`), so a run with no sandbox runner REFUSES there — before
+any provider dispatch and long before `present`. A bundle test that invokes the
+reference with empty inputs + `provider_call=None` and expects it to REACH
+`present` is therefore asserting an architecturally-impossible path on S1 (and on
+S1+S3, which is enforcement-only): the correct pre-runner assertion is
+"refuses at `investigate`". The full happy-path flow to `present` → owner review
+→ `merge` requires the Phase-2 runner + valid inputs + real provider outputs, so
+the S4 bundle test must SPLIT: (1) a pre-runner fail-closed test asserting
+refusal at `investigate`, and (2) a Phase-2 test with a real/fake runner. That
+test split is S4-owned; S1 only keeps `spec.node_defs` + the envelope test
+stable.
+
+**Phase-2 execution boundary (Codex r11 #2; host "build execution first").** The
+S1 reference declares the full intended loop with correct effect + gate
+*contracts*, but the loop cannot execute end-to-end yet, and S1 does not build
+the executor. The gap: owner review must happen AFTER the PR effector writes the
+PR, but the graph's inline `owner_gate → merge` edge decides BEFORE the
+post-graph PR effector runs. Closing it needs a **Phase-2 durable two-stage
+pause/resume subsystem** — S1 graph interrupt/suspend after `present`, S4 resume
+on the owner's review-queue decision, and the run engine carrying state across
+the suspend — which then reshapes the inline `owner_gate → merge` into that
+resume flow. Phase-1 scope (done here): the reference is a correct declared
+TEMPLATE — `present` emits a `github_pull_request` packet carrying the changes
+reference (`changes_json` from `draft_patch`, produced by the Phase-2 sandbox
+coding node) + S4 `payload.review_queue` metadata; `merge` emits a `github_merge`
+packet; the effect/effector names + `review_queue` keys align with S4's
+`_BUNDLE_READY` expectations (S4 reads `spec.node_defs`). Do NOT restructure the
+graph or build the resume engine before Phase 2.
 
 ## 7. Security posture
 

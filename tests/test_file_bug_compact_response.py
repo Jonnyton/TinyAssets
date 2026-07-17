@@ -35,6 +35,23 @@ def wired_wiki(tmp_path, monkeypatch):
         "branch-canonical-test",
     )
     monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
+    # G4 (patch-loop S1): the resolver + enqueue now REFUSE a handler id that
+    # doesn't exist in the registry (never queue a dead reference). So the wired
+    # handler must actually be registered, else file_bug reports handler_not_found
+    # instead of queued.
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(tmp_path)
+    save_branch_definition(
+        tmp_path,
+        branch_def=BranchDefinition(
+            branch_def_id="branch-canonical-test", name="branch-canonical-test",
+        ).to_dict(),
+    )
     return wiki_root
 
 
@@ -75,6 +92,27 @@ class TestDefaultCompact:
             f"Keys: {sorted(resp.keys())}, "
             f"investigation keys: {sorted(resp.get('investigation', {}).keys())}"
         )
+
+    def test_default_effort_drops_diagnostic_nested_blocks(self, wired_wiki):
+        # Codex r20 #4 RESOLUTION: the nested DIAGNOSTIC blocks
+        # (structural_features / authority_boundary) pushed the compact response
+        # over 1 KB. The compact response keeps the decision-relevant fields
+        # (effort_class, attention, signals) + the dispatch route, but drops the
+        # two nested blocks (verbose-only). This pins the trim as a deliberate
+        # contract so it can't silently re-bloat.
+        resp = _file_one(verbose=False, wired_wiki=wired_wiki)
+        ec = resp["effort_classification"]
+        assert "effort_class" in ec and "attention" in ec and "signals" in ec, ec
+        assert "structural_features" not in ec, ec
+        assert "authority_boundary" not in ec, ec
+        # The dispatch route (lane etc.) stays — callers act on it.
+        assert "lane" in resp["effort_dispatch_route"]
+
+    def test_verbose_effort_restores_diagnostic_blocks(self, wired_wiki):
+        # The verbose response restores the full nested classification.
+        resp = _file_one(verbose=True, wired_wiki=wired_wiki)
+        ec = resp["effort_classification"]
+        assert "structural_features" in ec and "authority_boundary" in ec, ec
 
     def test_default_response_preserves_top_level_fields(self, wired_wiki):
         resp = _file_one(verbose=False, wired_wiki=wired_wiki)

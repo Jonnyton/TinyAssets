@@ -379,6 +379,11 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
 
     visibility_in = (kwargs.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
+    # ``author`` must be a STRING — a non-string reaching ``.strip()`` crashes
+    # with AttributeError (Codex r12 #4). Reject cleanly at this public boundary
+    # (nothing persists), then strip the reserved seed author (Fable MAJOR): a
+    # user could otherwise create_branch author="reference-designs" + force-tag
+    # it and get their branch DELETED by the next boot's reserved-author prune.
     from tinyassets.branch_designs import _sanitize_reserved_author
 
     author_in = kwargs.get("author")
@@ -621,7 +626,11 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         # filter AND visibility BEFORE LIMIT/OFFSET (one cross-DB query), or
         # newer private designs consume the public page and hide older public
         # designs behind the cursor. public_only (directory) -> strictly public.
-        from tinyassets.branch_versions import get_newest_active_versions
+        from tinyassets.branch_versions import (
+            _canonical_snapshot,
+            compute_content_hash,
+            get_newest_active_versions,
+        )
         from tinyassets.daemon_server import list_visible_published_branch_ids
 
         published_ids = list_visible_published_branch_ids(
@@ -632,13 +641,25 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             offset=offset,
         )
         next_offset = offset + len(published_ids) if len(published_ids) == limit else None
-        active_by_bid = get_newest_active_versions(_base_path(), published_ids)
         rows = []
         for bid in published_ids:
             try:
                 rows.append(get_branch_definition(_base_path(), branch_def_id=bid))
             except KeyError:
                 continue
+        content_hashes: dict[str, str] = {}
+        for row in rows:
+            try:
+                content_hashes[row["branch_def_id"]] = compute_content_hash(
+                    _canonical_snapshot(row)
+                )
+            except Exception:  # noqa: BLE001 - malformed rows are not discoverable
+                continue
+        # One batched lookup preserves S2's bounded query count while selecting
+        # only an ACTIVE version whose content matches the authoritative row.
+        active_by_bid = get_newest_active_versions(
+            _base_path(), published_ids, content_hashes=content_hashes,
+        )
     else:
         # scope=all / mine — visibility-aware DB-boundary pagination.
         rows = list_branch_definitions(
@@ -763,9 +784,13 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         # patch-loop S3: carry the sandbox classification on inline add_node.
         # (For a node_ref copy these stay source-derived — _resolve_node_spec
         # does not overlay them, so a copy cannot drop the classification.)
-        "requires_sandbox": kwargs.get("requires_sandbox", False),
-        "node_kind": kwargs.get("node_kind", ""),
     }
+    # Only overlay security classification when the caller explicitly supplied
+    # it. A node_ref copy inherits these fields from its source; manufacturing
+    # False/"" here would look like an attempted downgrade of that source.
+    for classification_field in ("requires_sandbox", "node_kind"):
+        if classification_field in kwargs:
+            raw[classification_field] = kwargs[classification_field]
     if "node_ref" in kwargs:
         raw["node_ref"] = kwargs["node_ref"]
     if "intent" in kwargs:
@@ -1570,6 +1595,26 @@ def _resolve_node_spec(
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
+        # requires_sandbox override with DIRECTION validation (Codex r13 #5). The
+        # source's value is copied by default; a caller may ESCALATE (source
+        # false -> requested true) but must NEVER DOWNGRADE (source true ->
+        # requested false), which would silently un-sandbox a node meant to be
+        # confined. It was dropped from the overlay allowlist above, so an
+        # escalation request was silently ignored — support it, gated.
+        if "requires_sandbox" in raw:
+            requested = raw["requires_sandbox"]
+            if not isinstance(requested, bool):
+                return None, (
+                    "node_ref 'requires_sandbox' override must be a boolean"
+                )
+            source_requires = bool(resolved.get("requires_sandbox", False))
+            if source_requires and not requested:
+                return None, (
+                    "node_ref cannot downgrade requires_sandbox from true to "
+                    "false — that silently removes a required sandbox. Fork the "
+                    "node explicitly if an unsandboxed variant is truly intended."
+                )
+            merged["requires_sandbox"] = requested
         # SECURITY (Codex ADAPT, PR #1349): approval provenance must follow
         # the *executable content*, never the inherited boolean. A caller can
         # node_ref an approved node and then override ``source_code`` — that
@@ -1861,7 +1906,6 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             f"node '{nid}' strict_input_isolation must be a JSON boolean "
             "(true or false)."
         )
-
     phase = (raw.get("phase") or "").strip() or "custom"
     in_keys, err = _coerce_node_keys(raw.get("input_keys"), "input_keys")
     if err:
@@ -2066,6 +2110,11 @@ def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
                 "conditional edge outcome/target must be non-empty strings"
             )
         conditions[outcome_str] = target_str
+    # ``fallback`` pins the safe off-label branch as a SCALAR label immune to
+    # the registry's sort_keys serialization (Fable-5). It must be a STRING (a
+    # non-string like `fallback: 123` must be a clean validation error, NOT an
+    # AttributeError crash — Codex r11 #3) and one of the declared outcome
+    # labels, else it's a dangling route — reject loudly.
     fallback_raw = raw.get("fallback")
     if fallback_raw is not None and not isinstance(fallback_raw, str):
         return (
@@ -2107,6 +2156,11 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     }
     if raw.get("reducer"):
         entry["reducer"] = raw["reducer"]
+    # Codex S1 r15 addendum A: preserve the is_binding marker through the
+    # build/seed path so S2's branch-version guard can keep a remix inert
+    # until the owner binds the execution-gating field (e.g. target_repo).
+    if raw.get("is_binding"):
+        entry["is_binding"] = True
     # BUG-094: ``default_value`` is the canonical StateFieldDecl key
     # (tinyassets/branches.py:224). Read it first, fall back to the legacy
     # ``default`` / ``field_default`` spec shapes. Write to ``default_value``
@@ -2479,6 +2533,11 @@ def _staged_branch_from_spec(
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
+    # ``author`` must be a STRING — a non-string (int/bool/list/dict) reaching
+    # ``.strip()`` crashes staging with AttributeError (Codex r12 #4). Reject it
+    # at this public boundary so build_branch returns a structured error and
+    # nothing persists; then strip the reserved seed author so a user build can
+    # never smuggle the seeder's ownership identity (Finding 1c).
     from tinyassets.branch_designs import _sanitize_reserved_author
 
     author_raw = spec.get("author")
@@ -2836,6 +2895,9 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "spec_json has malformed field types: "
             + "; ".join(shape_errors),
+            # Backward-compatible structured list retained for S1 callers;
+            # S2's compact summary and actionable suggestions stay additive.
+            "errors": shape_errors,
             "suggestions": [
                 {"issue": msg, "proposed_fix": "Correct the field type and resend."}
                 for msg in shape_errors

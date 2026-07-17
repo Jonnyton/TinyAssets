@@ -428,6 +428,108 @@ def test_rolled_back_reference_vanishes_from_published_discovery(data_dir):
     assert fixed_id not in {b["branch_def_id"] for b in post["branches"]}, post
 
 
+def test_multi_version_rollback_vanishes_from_discovery(data_dir):
+    # Codex r16 #3: DISCOVERY (not just health) must be content-consistent. The
+    # r15 #1 fix picked the newest ACTIVE version regardless of content, so with
+    # the authoritative version rolled back and an UNRELATED older version still
+    # active, scope=published returned the rolled-back reference paired with the
+    # stale active version id — an inconsistent (branch, version) pair that kept
+    # the rolled-back reference remixable. Require content consistency: no active
+    # version matching the branch's current content => it must vanish.
+    import uuid
+    from datetime import datetime, timezone
+
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    pre = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id in {b["branch_def_id"] for b in pre["branches"]}
+
+    auth_version = list_branch_versions(data_dir, fixed_id, limit=50)[0]
+    # Roll back the AUTHORITATIVE version and inject a DIFFERENT active version at
+    # a NON-authoritative content hash (the multi-version rollback shape).
+    with _connect(data_dir) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET status='rolled_back', rolled_back_by='sec' "
+            "WHERE branch_version_id=?", (auth_version.branch_version_id,),
+        )
+        conn.execute(
+            "INSERT INTO branch_versions (branch_version_id, branch_def_id, "
+            "content_hash, snapshot_json, notes, publisher, published_at, "
+            "parent_version_id, status, watch_window_seconds) "
+            "VALUES (?,?,?,?,?,?,?,?, 'active', ?)",
+            (
+                f"{fixed_id}@stale-{uuid.uuid4().hex[:8]}", fixed_id,
+                "stale_hash_" + uuid.uuid4().hex, "{}", "stale", "x",
+                datetime.now(timezone.utc).isoformat(), None, 86400,
+            ),
+        )
+    # A DIFFERENT active version exists — but NOT at the authoritative content.
+    assert any(
+        v.status == "active"
+        for v in list_branch_versions(data_dir, fixed_id, limit=50)
+    )
+    # Discovery must NOT surface the reference paired with the unrelated active
+    # version — the (branch, version) pair would be content-inconsistent.
+    post = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id not in {b["branch_def_id"] for b in post["branches"]}, post
+
+
+def test_authoritative_version_found_beyond_bounded_scan_window(data_dir):
+    # Codex r20 #3: discovery + health must find the authoritative ACTIVE version
+    # via a DIRECT (branch_def_id, content_hash) index lookup, regardless of how
+    # many total versions exist. The pre-r20 bounded newest-N scans (50 for
+    # discovery, 200 for health/quarantine) missed the authoritative version once
+    # it fell OUTSIDE the window — a live reference vanished from discovery and
+    # read unhealthy. Reproduce with 210+ newer noise versions ahead of it.
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.branch_designs import (
+        _reference_branch_id,
+        reference_designs_live_health,
+    )
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    auth = list_branch_versions(data_dir, fixed_id, limit=50)[0]  # authoritative active
+
+    old_ts = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    with _connect(data_dir) as conn:
+        # Backdate the authoritative version so the noise sorts AHEAD of it.
+        conn.execute(
+            "UPDATE branch_versions SET published_at=? WHERE branch_version_id=?",
+            (old_ts.isoformat(), auth.branch_version_id),
+        )
+        # 210 NEWER, non-authoritative-hash versions — a bounded newest-50/200
+        # scan would never reach the (old) authoritative row.
+        for i in range(210):
+            ts = (old_ts + timedelta(minutes=i + 1)).isoformat()
+            conn.execute(
+                "INSERT INTO branch_versions (branch_version_id, branch_def_id, "
+                "content_hash, snapshot_json, notes, publisher, published_at, "
+                "parent_version_id, status, watch_window_seconds) "
+                "VALUES (?,?,?,?,?,?,?,?, 'superseded', ?)",
+                (
+                    f"{fixed_id}@noise-{i}-{uuid.uuid4().hex[:6]}", fixed_id,
+                    "noise_hash_" + uuid.uuid4().hex, "{}", "noise", "x", ts,
+                    None, 86400,
+                ),
+            )
+
+    # The authoritative version is WAY outside any newest-N window — the direct
+    # indexed lookup still finds it: discovery lists the reference AND health true.
+    listed = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id in {b["branch_def_id"] for b in listed["branches"]}, listed
+    health = reference_designs_live_health(data_dir)
+    assert health["healthy"], health
+
+
 def test_interrupted_publication_mismatched_active_is_repaired(data_dir):
     # Codex r12 #1: an ACTIVE version whose content != the authoritative artifact
     # (interrupted / mismatched publication) must FAIL health and be repaired.
@@ -480,7 +582,12 @@ def test_content_drift_is_repaired_not_present(data_dir):
         get_branch_definition(data_dir, branch_def_id=bdid)
     )
     branch.node_defs[0].prompt_template = "CORRUPTED SAME-SIZED REFERENCE"
-    save_branch_definition(data_dir, branch_def=branch.to_dict())
+    # Post-r17 the public API can't write the reserved id; simulate the drift
+    # via the internal seeder path (an interrupted/buggy overwrite) so we're
+    # testing the REPAIR, not the write guard (covered separately).
+    save_branch_definition(
+        data_dir, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
 
     results = seed_reference_designs(data_dir)
     assert tag in results["seeded"]              # repaired
@@ -493,6 +600,202 @@ def test_content_drift_is_repaired_not_present(data_dir):
     assert len(rows) == 1                        # repaired in place, no duplicate
     listed = json.loads(_ext_branch_list({"scope": "published"}))
     assert bdid in {b["branch_def_id"] for b in listed["branches"]}
+
+
+def test_reserved_seed_central_guard_refuses_every_public_writer(data_dir):
+    # Codex r17 #3 (CLASS fix): the reserved-seed guard is CENTRALIZED at the
+    # storage choke point (save/update/delete_branch_definition), so EVERY public
+    # writer — current and future — is refused BY CONSTRUCTION, not by a
+    # per-handler guard. update_branch_definition is exactly the funnel market
+    # goal-bind used to bypass the old MCP-layer guard.
+    from tinyassets.branch_designs import RESERVED_SEED_AUTHOR, _reference_branch_id
+    from tinyassets.daemon_server import (
+        ReservedSeedMutationError,
+        delete_branch_definition,
+        get_branch_definition,
+        save_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    seed_row = get_branch_definition(data_dir, branch_def_id=fixed_id)
+
+    # goal-bind (the market.py reproduction) funnels through here — REFUSED.
+    with pytest.raises(ReservedSeedMutationError):
+        update_branch_definition(
+            data_dir, branch_def_id=fixed_id, updates={"goal_id": "goal_x"},
+        )
+    # any protected-field mutation — REFUSED.
+    with pytest.raises(ReservedSeedMutationError):
+        update_branch_definition(
+            data_dir, branch_def_id=fixed_id, updates={"author": "attacker"},
+        )
+    # a full overwrite / forgery of the reserved id — REFUSED.
+    with pytest.raises(ReservedSeedMutationError):
+        save_branch_definition(data_dir, branch_def=dict(seed_row, author="x"))
+    # delete — REFUSED (undeletable).
+    with pytest.raises(ReservedSeedMutationError):
+        delete_branch_definition(data_dir, branch_def_id=fixed_id)
+
+    # The seed is untouched: still reserved author, still no goal binding.
+    after = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert (after.get("author") or "") == RESERVED_SEED_AUTHOR
+    assert not (after.get("goal_id") or "")
+
+
+def test_reserved_seed_metadata_drift_reads_unhealthy_and_self_heals(data_dir):
+    # Codex r17 #3: health must detect forbidden METADATA drift — a reserved seed
+    # bound to a Goal (or with an altered author) — not only a content-hash
+    # mismatch. Simulate a goal binding that slipped in via a direct/internal
+    # path, then assert live health flags it UNHEALTHY and the reconcile repairs
+    # it (clears the goal).
+    from tinyassets.branch_designs import (
+        _reference_branch_id,
+        reference_designs_live_health,
+    )
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    assert reference_designs_live_health(data_dir)["healthy"]
+
+    # Force a goal binding via the internal path (public writers are refused).
+    update_branch_definition(
+        data_dir, branch_def_id=fixed_id, updates={"goal_id": "sneaky"},
+        internal_seed_write=True,
+    )
+    row = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert (row.get("goal_id") or "") == "sneaky"
+
+    # Content unchanged, yet health must read UNHEALTHY on the metadata drift.
+    health = reference_designs_live_health(data_dir)
+    assert not health["healthy"], health
+    assert "patch_loop_reference" in health["unhealthy"], health
+
+    # Reconcile REPAIRS it — clears the goal, health green again.
+    seed_reference_designs(data_dir)
+    healed = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert not (healed.get("goal_id") or ""), healed
+    assert reference_designs_live_health(data_dir)["healthy"]
+
+
+def test_reserved_seed_stats_bumps_still_allowed(data_dir):
+    # The reference is MEANT to be forked/run; a stats-only update (fork_count /
+    # run_count bump — a legitimate side effect of USING it) must NOT be refused
+    # by the central guard.
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    row = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    stats = dict(row.get("stats") or {})
+    stats["fork_count"] = stats.get("fork_count", 0) + 1
+    update_branch_definition(
+        data_dir, branch_def_id=fixed_id, updates={"stats": stats},
+    )
+    after = get_branch_definition(data_dir, branch_def_id=fixed_id)
+    assert (after.get("stats") or {}).get("fork_count") == stats["fork_count"]
+
+
+def test_packaged_manifest_matches_on_disk_artifacts():
+    # Codex r18 #2: the reserved-seed guard derives protected ids from the STATIC
+    # PACKAGED_DESIGN_MANIFEST (via hashlib), NEVER by parsing the artifact JSON.
+    # Drift guard: the manifest must exactly match the (design_id, version) set of
+    # the on-disk packaged artifacts, so a version bump that forgets the manifest
+    # — which would leave the new reserved id UNPROTECTED — trips here.
+    from tinyassets.branch_designs import (
+        PACKAGED_DESIGN_MANIFEST,
+        load_design_artifacts,
+    )
+
+    on_disk = {
+        (a["design_id"], int(a["design_version"]))
+        for a in load_design_artifacts()
+    }
+    assert set(PACKAGED_DESIGN_MANIFEST) == on_disk, (PACKAGED_DESIGN_MANIFEST, on_disk)
+
+
+def test_reserved_seed_guard_is_parse_independent_fail_closed(data_dir, monkeypatch):
+    # Codex r18 #2 (fail-OPEN fix): a guard must NEVER depend on parsing the thing
+    # it protects. Even if load_design_artifacts BLOWS UP (malformed packaged
+    # JSON), the protected-id set is computed from the STATIC manifest via
+    # hashlib, so is_reserved_seed_id stays correct and a public write to the
+    # reserved id is STILL refused (the old artifact-parsing version returned an
+    # empty set here => fail-open, and a write to d5e4d07ed1f8 succeeded).
+    import tinyassets.branch_designs as bd
+    from tinyassets.branch_designs import (
+        _reference_branch_id,
+        is_reserved_seed_id,
+        reserved_seed_ids,
+    )
+    from tinyassets.daemon_server import (
+        ReservedSeedMutationError,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+
+    def _boom():
+        raise ValueError("malformed packaged JSON")
+
+    monkeypatch.setattr(bd, "load_design_artifacts", _boom)
+
+    # Protected-id set is STILL populated (no artifact parse) — never fails open.
+    assert fixed_id in reserved_seed_ids()
+    assert is_reserved_seed_id(fixed_id)
+    # And a public write to the reserved id is STILL refused.
+    with pytest.raises(ReservedSeedMutationError):
+        update_branch_definition(
+            data_dir, branch_def_id=fixed_id, updates={"goal_id": "x"},
+        )
+
+
+def test_broken_seed_package_does_not_block_ordinary_branch_writes(tmp_path, monkeypatch):
+    # Codex r21 #2: an optional / broken reference-seed PACKAGE must NOT take
+    # ordinary branch authoring offline (Forever Rule). The write guard now imports
+    # the TINY dependency-free reference_seed_core, NOT the heavy branch_designs
+    # package (which parses artifact JSON on import). Simulate a broken
+    # branch_designs import: ordinary (non-reserved) writes STILL SUCCEED; reserved
+    # id writes STILL REFUSED (fail-closed for reserved ids specifically).
+    import sys
+
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import (
+        ReservedSeedMutationError,
+        get_branch_definition,
+        initialize_author_server,
+        save_branch_definition,
+    )
+    from tinyassets.reference_seed_core import reference_branch_id
+
+    initialize_author_server(tmp_path)
+    # Break the heavy package's importability entirely.
+    monkeypatch.setitem(sys.modules, "tinyassets.branch_designs", None)
+
+    # Ordinary user branch write SUCCEEDS despite the broken seed package.
+    save_branch_definition(
+        tmp_path,
+        branch_def=BranchDefinition(branch_def_id="user-xyz", name="ok").to_dict(),
+    )
+    assert get_branch_definition(tmp_path, branch_def_id="user-xyz")
+
+    # Reserved-id write is STILL refused (the guard resolves reserved ids via the
+    # import-light core, which does not depend on the broken package).
+    reserved = reference_branch_id("patch_loop_reference", 1)
+    with pytest.raises(ReservedSeedMutationError):
+        save_branch_definition(
+            tmp_path,
+            branch_def=BranchDefinition(branch_def_id=reserved, name="forge").to_dict(),
+        )
 
 
 def test_publish_failure_after_overwrite_leaves_no_duplicate(data_dir, monkeypatch):
@@ -518,7 +821,9 @@ def test_publish_failure_after_overwrite_leaves_no_duplicate(data_dir, monkeypat
         get_branch_definition(data_dir, branch_def_id=bdid)
     )
     branch.node_defs[0].prompt_template = "CORRUPTED SAME-SIZED REFERENCE"
-    save_branch_definition(data_dir, branch_def=branch.to_dict())
+    save_branch_definition(
+        data_dir, branch_def=branch.to_dict(), internal_seed_write=True,
+    )
 
     # Make publish blow up AFTER the in-place overwrite step.
     def _boom(*a, **k):
@@ -1046,6 +1351,109 @@ def test_empty_package_fails_loud_on_packaged_design(data_dir, tmp_path, monkeyp
     assert "<missing-packaged-design:patch_loop_reference>" in results["failed"], results
 
 
+def test_private_seed_reads_unhealthy_and_repairs_to_public(data_dir):
+    # Codex r23 #2: a PRIVATE reserved seed is UNDISCOVERABLE — health must read
+    # UNHEALTHY (fingerprint/published/author alone missed it) and the reconcile
+    # must REPAIR visibility to public.
+    import tinyassets.branch_designs as bd
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = bd._reference_branch_id("patch_loop_reference", 1)
+    assert bd.reference_designs_live_health(data_dir)["healthy"]
+
+    # Force the seed PRIVATE via the internal path (the public API is guarded).
+    update_branch_definition(
+        data_dir, branch_def_id=fixed_id, updates={"visibility": "private"},
+        internal_seed_write=True,
+    )
+    assert get_branch_definition(
+        data_dir, branch_def_id=fixed_id
+    ).get("visibility") == "private"
+
+    # Health flags it AND published discovery drops it.
+    health = bd.reference_designs_live_health(data_dir)
+    assert not health["healthy"], health
+    assert "patch_loop_reference" in health["unhealthy"], health
+    listed = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id not in {b["branch_def_id"] for b in listed["branches"]}
+
+    # Reseed REPAIRS visibility -> healthy + discoverable again.
+    seed_reference_designs(data_dir)
+    assert get_branch_definition(
+        data_dir, branch_def_id=fixed_id
+    ).get("visibility") == "public"
+    assert bd.reference_designs_live_health(data_dir)["healthy"]
+    listed2 = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id in {b["branch_def_id"] for b in listed2["branches"]}
+
+
+def test_health_normalizes_metadata_padded_name_null_description(data_dir, tmp_path, monkeypatch):
+    # Codex r24 #2: expected discovery metadata is derived from the NORMALIZED
+    # BranchDefinition, not raw artifact values. An artifact with a PADDED name +
+    # null description + unsorted duplicate tags must seed HEALTHY immediately —
+    # the raw-vs-normalized mismatch previously reported failed right after seeding.
+    import tinyassets.branch_designs as bd
+
+    real = dict(
+        next(a for a in bd.load_design_artifacts() if a["design_id"] == "patch_loop_reference")
+    )
+    spec = dict(real["spec"])
+    spec["name"] = "  " + str(spec.get("name") or "") + "  "   # padded (build trims)
+    spec["description"] = None                                  # null -> "" on build
+    spec["tags"] = ["z", "a", "a"]                              # unsorted + duplicate
+    real["spec"] = spec
+    designs = tmp_path / "designs_norm"
+    designs.mkdir()
+    (designs / "patch_loop_reference.json").write_text(
+        json.dumps(real), encoding="utf-8",
+    )
+    monkeypatch.setattr(bd, "DESIGNS_DIR", designs)
+
+    results = bd.seed_reference_designs(data_dir)
+    tag = bd.design_tag("patch_loop_reference", 1)
+    assert tag in results["seeded"], results          # HEALTHY immediately
+    assert tag not in results["failed"], results
+    assert bd.reference_designs_live_health(data_dir)["healthy"]
+    # Idempotent: an immediate reseed reads present (not a repair churn).
+    results2 = bd.seed_reference_designs(data_dir)
+    assert tag in results2["present"], results2
+
+
+def test_packaged_version_mismatch_fails_health(data_dir, tmp_path, monkeypatch):
+    # Codex r21 #4: health must compare EXACT (design_id, version) tuples. A
+    # packaged design present at the WRONG version (not the manifest's) seeds a
+    # reserved id absent from the manifest, so it must read UNHEALTHY — a bare
+    # design_id check would wave it through.
+    import tinyassets.branch_designs as bd
+
+    # The real artifact, but bumped to design_version=2 (manifest expects v1).
+    real = dict(
+        next(a for a in bd.load_design_artifacts() if a["design_id"] == "patch_loop_reference")
+    )
+    real["design_version"] = 2
+    designs = tmp_path / "designs_v2"
+    designs.mkdir()
+    (designs / "patch_loop_reference.json").write_text(
+        json.dumps(real), encoding="utf-8",
+    )
+    monkeypatch.setattr(bd, "DESIGNS_DIR", designs)
+
+    results = bd.seed_reference_designs(data_dir)
+    # The manifest's (id, v1) is missing at its exact version -> version mismatch.
+    assert "<packaged-version-mismatch:patch_loop_reference@v1>" in results["failed"], results
+    # And both health surfaces flag it, not just "some version of the id exists".
+    assert "patch_loop_reference" in bd.unhealthy_packaged_designs(results), results
+    assert (
+        "patch_loop_reference"
+        in bd.reference_designs_live_health(data_dir)["unhealthy"]
+    )
+
+
 def test_missing_packaged_design_stays_up_reports_unhealthy(data_dir, tmp_path, monkeypatch):
     # Codex r13 #3 + r15 #4: a PACKAGED design missing from the package must NOT
     # take down the server — the startup seam stays UP (no raise) and reports
@@ -1122,6 +1530,26 @@ def test_optional_design_failure_keeps_server_ready(data_dir, tmp_path, monkeypa
     assert "design:optional_broken@v1" in results["failed"], results
 
 
+def test_seed_best_effort_survives_feature_import_failure(tmp_path, monkeypatch):
+    # Codex r19 #3: the startup seam must NEVER raise, even when a FEATURE IMPORT
+    # fails (a missing/broken package). The pre-r19 code imported
+    # unhealthy_packaged_designs BEFORE the try, so a broken package raised
+    # ModuleNotFoundError and crashed startup. Every feature import now lives
+    # inside the guarded block, so an unimportable feature symbol degrades to
+    # <seed-crashed> and the server stays UP.
+    import tinyassets.branch_designs as bd
+    from tinyassets import universe_server
+
+    base = tmp_path / "data"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    # Simulate a broken package: a feature symbol the seam imports is missing.
+    monkeypatch.delattr(bd, "unhealthy_packaged_designs", raising=False)
+
+    results = universe_server._seed_reference_designs_best_effort()  # must NOT raise
+    assert "<seed-crashed>" in results["failed"], results
+
+
 def test_artifact_semantic_fields_survive_build(data_dir):
     # Finding 4b: the safety-critical artifact fields must survive the build ->
     # persist -> reload round trip: routing output keys, the sandbox flag, the
@@ -1158,7 +1586,12 @@ def test_resolver_refuses_dead_handler_ref(data_dir, monkeypatch):
         _resolve_investigation_handler,
         resolve_investigation_handler_detail,
     )
+    from tinyassets.daemon_server import initialize_author_server
 
+    # r21 #1b: only a KeyError (registry present, id absent) is a DEFINITIVE miss.
+    # Initialize the registry so a nonexistent id raises KeyError -> handler_not_found
+    # (an UNINITIALIZED registry now reads UNAVAILABLE/retryable, not missing).
+    initialize_author_server(data_dir)
     monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "deadbeef0000",
@@ -1184,6 +1617,87 @@ def test_resolver_accepts_existing_handler(data_dir, monkeypatch):
     resolved, reason = resolve_investigation_handler_detail(data_dir)
     assert resolved == bdid
     assert reason == "ok"
+
+
+def test_goal_canonical_crash_does_not_fall_through_to_env(data_dir, monkeypatch):
+    # Codex r21 #1a: a CRASH in goal-canonical resolution is TRANSIENT — it must
+    # NOT silently fall back to the env handler (running a DIFFERENT branch on a
+    # retryable error). It must surface RETRYABLE (handler_unavailable), not env.
+    from unittest.mock import patch
+
+    from tinyassets.bug_investigation import resolve_investigation_handler_detail
+    from tinyassets.daemon_server import initialize_author_server, save_goal
+
+    initialize_author_server(data_dir)
+    save_goal(data_dir, goal=dict(
+        goal_id="g-crash", name="inv", description="",
+        author="host", tags=[], visibility="public",
+    ))
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g-crash")
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "live-env-fallback"
+    )
+    with patch(
+        "tinyassets.api.canonical_dispatch.resolve_canonical_for_run",
+        side_effect=OSError("disk blip"),
+    ):
+        bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""                                   # NOT the env fallback
+    assert reason.startswith("handler_unavailable:")    # retryable, not env / dead
+    assert "live-env-fallback" not in reason
+
+
+def test_goal_canonical_transient_kind_does_not_fall_through_to_env(data_dir, monkeypatch):
+    # Codex r21 #1a: a TRANSIENT ok=False (goal_load_failed) also must NOT fall to
+    # env — only a DEFINITIVE "no canonical" does.
+    from unittest.mock import patch
+
+    from tinyassets.bug_investigation import resolve_investigation_handler_detail
+    from tinyassets.daemon_server import initialize_author_server, save_goal
+
+    initialize_author_server(data_dir)
+    save_goal(data_dir, goal=dict(
+        goal_id="g-load", name="inv", description="",
+        author="host", tags=[], visibility="public",
+    ))
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "g-load")
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "live-env-fallback"
+    )
+    with patch(
+        "tinyassets.api.canonical_dispatch.resolve_canonical_for_run",
+        return_value={"ok": False, "error_kind": "goal_load_failed"},
+    ):
+        bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""
+    assert reason.startswith("handler_unavailable:")
+
+
+def test_permission_error_at_handler_check_is_retryable_not_dead(data_dir, monkeypatch):
+    # Codex r21 #1b: only KeyError proves deletion. A PermissionError / I/O error
+    # reading the registry stays UNAVAILABLE (retryable), never terminal dead_ref.
+    import tinyassets.daemon_server as ds
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.bug_investigation import resolve_investigation_handler_detail
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(data_dir)
+    save_branch_definition(
+        data_dir, branch_def=BranchDefinition(branch_def_id="h1", name="h1").to_dict(),
+    )
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
+    monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "h1")
+
+    def _perm(*a, **k):
+        raise PermissionError("locked out")
+
+    monkeypatch.setattr(ds, "get_branch_definition", _perm)
+    bdid, reason = resolve_investigation_handler_detail(data_dir)
+    assert bdid == ""
+    assert reason.startswith("handler_unavailable:")    # NOT handler_not_found
 
 
 def test_dead_goal_canonical_does_not_fall_through_to_env(data_dir, monkeypatch):
@@ -1236,7 +1750,12 @@ def test_file_bug_dead_handler_fails_trigger_keeps_filing(data_dir, monkeypatch)
     # failed trigger, enqueues NOTHING, and the filing itself persists.
     from tinyassets.api.wiki import _wiki_file_bug
     from tinyassets.branch_tasks import read_queue
+    from tinyassets.daemon_server import initialize_author_server
 
+    # r21 #1b: initialize the registry so the nonexistent handler raises KeyError
+    # -> DEFINITIVE handler_not_found (an uninitialized registry now reads
+    # UNAVAILABLE/retryable, which is a DIFFERENT, non-terminal outcome).
+    initialize_author_server(data_dir)
     monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "deadbeef0000",

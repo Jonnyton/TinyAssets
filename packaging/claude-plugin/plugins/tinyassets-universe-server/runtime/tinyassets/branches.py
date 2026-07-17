@@ -1360,7 +1360,11 @@ class BranchDefinition:
         forked = BranchDefinition.from_dict(self.to_dict())
         forked.branch_def_id = _new_id()
         forked.name = new_name or f"{self.name} (fork)"
-        forked.author = author
+        # A fork records the FORKING user as author; the reserved seed identity
+        # must never propagate or be smuggled in (Finding 1c).
+        from tinyassets.branch_designs import _sanitize_reserved_author
+
+        forked.author = _sanitize_reserved_author(author) or "anonymous"
         forked.version = 1
         forked.parent_def_id = self.branch_def_id
         forked.published = False
