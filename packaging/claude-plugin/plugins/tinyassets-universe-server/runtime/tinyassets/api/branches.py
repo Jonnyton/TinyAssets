@@ -2389,25 +2389,15 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
 
-    # Codex S3 r13 #1: a user-authored branch may NOT select a HOST-ONLY
-    # (daemon-internal) opaque callable (e.g. universe_cycle_wrapper, which runs
-    # the full daemon graph). Reject at the authoring boundary — the runtime choke
-    # point + queue refusal also fail closed, but rejecting here gives the author
-    # immediate, actionable feedback and prevents a doomed branch from persisting.
-    try:
-        from tinyassets.domain_registry import resolve_domain_host_only
-        _host_only_nodes = sorted(
-            nd.node_id for nd in branch.node_defs
-            if resolve_domain_host_only(branch.domain_id, nd.node_id)
-        )
-    except Exception:  # noqa: BLE001 — resolution failure ⇒ defer to runtime gate
-        _host_only_nodes = []
-    if _host_only_nodes:
-        errors.append(
-            "Branch selects HOST-ONLY (daemon-internal) node(s): "
-            f"{', '.join(_host_only_nodes)}. A user-authored branch cannot select "
-            "or run these daemon-internal callables; remove them (fail closed)."
-        )
+    # Codex S3 r13 #1 + r14 #2: a user-authored branch may NOT select a HOST-ONLY
+    # (daemon-internal) or UNCLASSIFIED opaque callable. Use the SAME fail-closed
+    # validator the storage choke point enforces, so authoring gives immediate,
+    # actionable feedback AND cannot fail open on a resolution error (the r13
+    # inline check swallowed resolution errors to []).
+    from tinyassets.sandbox_policy import user_branch_capability_rejections
+    errors += user_branch_capability_rejections(
+        branch.node_defs, getattr(branch, "domain_id", "") or "",
+    )
 
     # Validate fork_from points to a real branch_version_id.
     if branch.fork_from:

@@ -2133,6 +2133,7 @@ def save_branch_definition(
     base_path: str | Path,
     *,
     branch_def: dict[str, Any],
+    _trusted: bool = False,
 ) -> dict[str, Any]:
     """Insert or replace a branch definition.
 
@@ -2143,7 +2144,25 @@ def save_branch_definition(
 
     Also accepts legacy format with "nodes" key (flat node list stored
     in graph_json for backward compatibility during migration).
+
+    SECURITY (Codex S3 r14 #2): this is the SINGLE storage choke point for branch
+    persistence, so the fail-closed user-branch capability validator runs HERE —
+    no authoring path (build / add_node / patch_branch / update_node / patch_nodes
+    / fork / rollback / import / selector) can bypass it. A user branch selecting a
+    HOST-ONLY or UNCLASSIFIED opaque adapter is refused (ValueError). ``_trusted``
+    (daemon-internal persistence only) skips the gate.
     """
+    if not _trusted:
+        from tinyassets.sandbox_policy import user_branch_capability_rejections
+        _rejections = user_branch_capability_rejections(
+            branch_def.get("node_defs", []) or [],
+            str(branch_def.get("domain_id", "") or ""),
+        )
+        if _rejections:
+            raise ValueError(
+                "Refusing to persist a user-authored branch that selects a "
+                "capability it may never run: " + "; ".join(_rejections)
+            )
     now = _now()
     branch_def_id = branch_def.get("branch_def_id", uuid.uuid4().hex[:12])
 

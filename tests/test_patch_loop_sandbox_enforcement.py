@@ -1439,3 +1439,110 @@ def test_mock_still_works_behind_force_mock_switch():
     fn = _build_node(node, provider_call=None, event_sink=None)
     out = fn({})
     assert "Mock response" in out["t_out"]
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r14 #1 — classifier precedence: registered adapter trust DOMINATES
+# mutable node metadata; most-restrictive rank wins. Runner-enabled so a mistaken
+# non-text classification would actually EXECUTE (proving the fix, not luck).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("node_kind", ["", "text", "coding", "repo_read", "repo_exec"])
+def test_host_only_dominates_every_node_kind(_opaque_registry, monkeypatch, node_kind):
+    import tinyassets.sandbox_policy as sp
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    monkeypatch.setattr(sp, "coding_nodes_runnable", lambda: (True, "runner on"))
+    _opaque_registry.register_domain_callable(
+        "hd", "danger", lambda s: {"ran": True}, host_only=True,
+    )
+    node = NodeDefinition(node_id="danger", display_name="D", node_kind=node_kind)
+    # Mutable node_kind can NEVER lower host_only below sandbox-required.
+    assert effective_node_capability(node, "hd") == "host_only"
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="hd", trusted=False)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+@pytest.mark.parametrize("node_kind", ["", "text", "coding", "repo_exec"])
+def test_unclassified_dominates_every_node_kind(_opaque_registry, monkeypatch, node_kind):
+    import tinyassets.sandbox_policy as sp
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    monkeypatch.setattr(sp, "coding_nodes_runnable", lambda: (True, "runner on"))
+    _opaque_registry.register_domain_callable(
+        "ud", "myst", lambda s: {"ran": True},  # NO declared capability
+    )
+    node = NodeDefinition(node_id="myst", display_name="M", node_kind=node_kind)
+    assert effective_node_capability(node, "ud") == "opaque_unclassified"
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="ud", trusted=False)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_declared_adapter_capability_not_reduced_by_node_metadata(_opaque_registry):
+    """A declared repo_read adapter tagged node_kind=text must stay repo_read
+    (metadata may escalate, never reduce below the adapter's demand)."""
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    _opaque_registry.register_domain_callable(
+        "rd", "rr", lambda s: {"ran": True}, capability="repo_read",
+    )
+    downgrade = NodeDefinition(node_id="rr", display_name="R", node_kind="text")
+    assert effective_node_capability(downgrade, "rd") == "repo_read"
+    # And node metadata MAY escalate the restriction (repo_read → coding).
+    escalate = NodeDefinition(node_id="rr", display_name="R", node_kind="coding")
+    assert effective_node_capability(escalate, "rd") == "coding"
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r14 #2 — the fail-closed user-branch capability validator is enforced
+# at the STORAGE choke point (save_branch_definition), so NO persistence path can
+# bypass it. A host-only / unclassified selection is refused before persistence.
+# --------------------------------------------------------------------------- #
+
+
+def test_save_branch_definition_refuses_host_only_user_branch(_opaque_registry, tmp_path):
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    _opaque_registry.register_domain_callable(
+        "hd", "danger", lambda s: {"ran": True}, host_only=True,
+    )
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    branch_def = {
+        "branch_def_id": "b1", "name": "evil", "domain_id": "hd",
+        "entry_point": "danger",
+        "node_defs": [{"node_id": "danger", "display_name": "D"}],
+        "graph_nodes": [{"id": "danger", "node_def_id": "danger"}],
+        "edges": [{"from_node": "START", "to_node": "danger"},
+                  {"from_node": "danger", "to_node": "END"}],
+    }
+    # The storage choke point refuses (fail closed) — no path can persist it.
+    with pytest.raises(ValueError, match="HOST-ONLY|may never run|host-only"):
+        save_branch_definition(base, branch_def=branch_def)
+    # A trusted (daemon-internal) persist may pass the gate.
+    save_branch_definition(base, branch_def=branch_def, _trusted=True)
+
+
+def test_save_branch_definition_refuses_unclassified_user_branch(_opaque_registry, tmp_path):
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    _opaque_registry.register_domain_callable("ud", "myst", lambda s: {"ran": True})
+    base = tmp_path / "out"
+    base.mkdir()
+    initialize_author_server(base)
+    branch_def = {
+        "branch_def_id": "b2", "name": "x", "domain_id": "ud",
+        "entry_point": "myst",
+        "node_defs": [{"node_id": "myst", "display_name": "M"}],
+        "graph_nodes": [{"id": "myst", "node_def_id": "myst"}],
+        "edges": [{"from_node": "START", "to_node": "myst"},
+                  {"from_node": "myst", "to_node": "END"}],
+    }
+    with pytest.raises(ValueError, match="unclassified|never run"):
+        save_branch_definition(base, branch_def=branch_def)

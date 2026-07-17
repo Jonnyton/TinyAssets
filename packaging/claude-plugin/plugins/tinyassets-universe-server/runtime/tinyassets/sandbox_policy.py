@@ -159,33 +159,24 @@ def node_capability(node: Any) -> str:
     return "text"
 
 
-def effective_node_capability(node: Any, domain_id: str = "") -> str:
-    """Capability INCLUDING opaque-adapter resolution (Codex S3 r12 #1).
+def _resolve_opaque_adapter_capability(node: Any, domain_id: str) -> str | None:
+    """Return the REGISTERED opaque adapter's capability for *node*, or ``None``
+    when the node is not an opaque adapter (dispatched by its own source/template
+    adapter, or its ``(domain_id, node_id)`` is not registered).
 
-    :func:`node_capability` classifies by the node's own fields (source_code /
-    node_kind / requires_sandbox / node_id). But an OPAQUE adapter's capability is
-    the nature of its REGISTERED CALLABLE — invisible to those fields: a
-    repo-reading ``read_repo_files`` node looks like plain text. This resolves the
-    registered adapter's DECLARED capability so the graph choke-point + validate +
-    enqueue classify it identically (readiness never drifts from runtime).
-
-    An opaque adapter registered with NO declared capability returns
-    ``opaque_unclassified`` — the caller must fail it closed, never treat it as
-    text. A node dispatched by its own source/template adapter (not an opaque
-    callable) keeps its base capability.
-    """
-    base = node_capability(node)
-    if base != "text":
-        return base
+    Returns ``host_only`` for a daemon-internal adapter, ``opaque_unclassified``
+    for a registered callable with no/typo'd declared capability, else the
+    declared capability class. Derived from the REGISTERED CALLABLE — invisible to
+    user-controlled node fields (Codex S3 r12/r13/r14)."""
     # A source/template node is dispatched by that adapter, not an opaque one.
     if str(_node_attr(node, "source_code") or "").strip():
-        return base
+        return None
     if str(_node_attr(node, "prompt_template") or "").strip():
-        return base
+        return None
     dom = str(domain_id or "").strip()
     nid = str(_node_attr(node, "node_id") or "").strip()
     if not dom or not nid:
-        return base
+        return None
     # Best-effort: import the effectors package so platform opaque callables are
     # registered before we resolve (same registration side-effect the compiler
     # relies on). Guarded — a missing optional dep never breaks classification.
@@ -200,18 +191,49 @@ def effective_node_capability(node: Any, domain_id: str = "") -> str:
             resolve_domain_host_only,
         )
     except Exception:  # noqa: BLE001
-        return base
+        return None
     if resolve_domain_callable(dom, nid) is None:
-        return base  # not an opaque adapter — a plain node in a domain branch
-    # Codex S3 r13 #1: a HOST-ONLY adapter is daemon-internal — a user branch may
-    # not run it. Report it as `host_only` (blocked for user branches); the graph
-    # choke point allows it ONLY for a trusted (daemon) compile.
+        return None  # not an opaque adapter — a plain node in a domain branch
     if resolve_domain_host_only(dom, nid):
         return _HOST_ONLY
     cap = resolve_domain_capability(dom, nid)
     if not cap:
         return _OPAQUE_UNCLASSIFIED
     return str(cap).strip().lower() or _OPAQUE_UNCLASSIFIED
+
+
+def effective_node_capability(node: Any, domain_id: str = "") -> str:
+    """Capability INCLUDING opaque-adapter resolution — MOST-RESTRICTIVE wins, and
+    REGISTERED TRUST DOMINATES mutable metadata (Codex S3 r12/r13/r14 #1).
+
+    :func:`node_capability` classifies by the node's own (user-controlled) fields
+    (source_code / node_kind / requires_sandbox / node_id). But an OPAQUE adapter's
+    capability is the nature of its REGISTERED CALLABLE — invisible to those fields:
+    a repo-reading ``read_repo_files`` node looks like plain text, and a host-only
+    ``universe_cycle_wrapper`` node could be tagged ``node_kind="coding"``.
+
+    PRECEDENCE (the r14 fix): resolve the registered adapter FIRST, THEN combine —
+    never let mutable node metadata reduce the restriction below what the adapter
+    demands. ``host_only`` and ``opaque_unclassified`` ALWAYS dominate (metadata
+    can never lower them). For a declared adapter capability, the effective class is
+    the MOST RESTRICTIVE rank of (registered adapter capability, node-metadata
+    capability) — so node metadata may only ESCALATE restriction, never reduce it.
+    A node that is not an opaque adapter keeps its node-derived capability
+    (``source_exec`` for source_code is itself derived from the actual field and
+    already unspoofable).
+    """
+    base = node_capability(node)
+    adapter_cap = _resolve_opaque_adapter_capability(node, domain_id)
+    if adapter_cap is None:
+        return base  # not an opaque adapter — node-derived capability stands
+    # host_only / unclassified ALWAYS dominate — mutable metadata can never reduce
+    # below them (the r14 escape: node_kind="coding" must NOT beat host_only).
+    if adapter_cap in (_HOST_ONLY, _OPAQUE_UNCLASSIFIED):
+        return adapter_cap
+    # A declared adapter capability combines with node metadata at the MOST
+    # RESTRICTIVE rank: metadata may escalate (coding > repo_read) but a
+    # node_kind="text" can never reduce a repo_read adapter back to text.
+    return adapter_cap if capability_rank(adapter_cap) >= capability_rank(base) else base
 
 
 # A registered opaque adapter with NO declared capability class (Codex S3 r12 #1).
@@ -314,8 +336,8 @@ def branch_sandbox_status(
     warnings: list[str] = []
     try:
         repo_nodes: list[str] = []
-        has_unclassified = False
-        has_host_only = False
+        host_only_nodes: list[str] = []
+        unclassified_nodes: list[str] = []
         for nd in node_defs:
             cap = effective_node_capability(nd, domain_id)
             if cap == "text":
@@ -323,23 +345,27 @@ def branch_sandbox_status(
             nid = str(_node_attr(nd, "node_id") or "").strip()
             if nid:
                 repo_nodes.append(nid)
-            if cap == _OPAQUE_UNCLASSIFIED:
-                has_unclassified = True
-            if cap == _HOST_ONLY:
-                has_host_only = True
+            # Codex S3 r14 #4: track the ACTUAL host-only / unclassified node IDs
+            # separately — a mixed branch must not report every non-text node as
+            # host-only just because one host-only adapter is present.
+            if cap == _OPAQUE_UNCLASSIFIED and nid:
+                unclassified_nodes.append(nid)
+            if cap == _HOST_ONLY and nid:
+                host_only_nodes.append(nid)
         repo_nodes = sorted(repo_nodes)
-        if has_host_only:
+        if host_only_nodes:
             warnings.append(
                 f"This branch selects HOST-ONLY (daemon-internal) adapter node(s) "
-                f"({', '.join(repo_nodes)}) that a user-authored branch may not "
-                "run; refusing (fail closed)."
+                f"({', '.join(sorted(host_only_nodes))}) that a user-authored "
+                "branch may not run; refusing (fail closed)."
             )
             return True, repo_nodes, warnings
-        if has_unclassified:
+        if unclassified_nodes:
             warnings.append(
                 f"This branch has opaque adapter node(s) "
-                f"({', '.join(repo_nodes)}) with NO declared sandbox capability; "
-                "refusing to run an unclassified adapter (fail closed)."
+                f"({', '.join(sorted(unclassified_nodes))}) with NO declared "
+                "sandbox capability; refusing to run an unclassified adapter "
+                "(fail closed)."
             )
             return True, repo_nodes, warnings
         if repo_nodes:
@@ -358,6 +384,56 @@ def branch_sandbox_status(
             "treating the branch as NOT runnable (fail closed)."
         )
         return True, [], warnings
+
+
+def user_branch_capability_rejections(
+    node_defs: Iterable[Any],
+    domain_id: str = "",
+) -> "list[str]":
+    """Return rejection messages for a USER-authored branch selecting a capability
+    a user branch may NEVER select or run (Codex S3 r14 #2). Empty list == OK.
+
+    Rejects a node whose EFFECTIVE capability (registered-trust-dominates, so a
+    spoofed / capability-escalated node still resolves to the dominant class) is
+    ``host_only`` (daemon-internal) or ``opaque_unclassified`` (registered adapter
+    with no / typo'd declared capability). Repo-touching nodes (source_exec /
+    coding / repo_exec / repo_read) are AUTHORABLE — they run when the per-job
+    runner lands and are blocked at RUN by :func:`branch_sandbox_status` / the
+    choke point, not at authoring — so they are NOT rejected here.
+
+    FAIL CLOSED: any classification error yields a rejection (never a silent
+    pass). This is the single validator invoked before every persistence path.
+    """
+    rejections: list[str] = []
+    try:
+        for nd in node_defs:
+            nid = str(_node_attr(nd, "node_id") or "").strip() or "?"
+            try:
+                cap = effective_node_capability(nd, domain_id)
+            except Exception as exc:  # noqa: BLE001 — classification error ⇒ closed
+                rejections.append(
+                    f"Node '{nid}': capability classification failed "
+                    f"({type(exc).__name__}: {exc}); refusing to persist "
+                    "(fail closed)."
+                )
+                continue
+            if cap == _HOST_ONLY:
+                rejections.append(
+                    f"Node '{nid}' selects a HOST-ONLY (daemon-internal) adapter "
+                    "that a user-authored branch may not select or run."
+                )
+            elif cap == _OPAQUE_UNCLASSIFIED:
+                rejections.append(
+                    f"Node '{nid}' selects an opaque adapter with NO declared "
+                    "sandbox capability (unclassified); refusing to persist "
+                    "(fail closed)."
+                )
+    except Exception as exc:  # noqa: BLE001 — iteration error ⇒ fail closed
+        rejections.append(
+            f"User-branch capability check failed ({type(exc).__name__}: {exc}); "
+            "refusing to persist (fail closed)."
+        )
+    return rejections
 
 
 def text_node_model_config(
@@ -398,5 +474,6 @@ __all__ = [
     "node_requires_sandbox",
     "coding_nodes_runnable",
     "branch_sandbox_status",
+    "user_branch_capability_rejections",
     "text_node_model_config",
 ]

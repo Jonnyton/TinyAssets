@@ -77,11 +77,13 @@ def fresh_registrations(clean_registry):
     """
     import fantasy_daemon.branch_registrations  # noqa: F401
 
-    # Re-registration is idempotent.
+    # Re-registration is idempotent. Codex S3 r13/r14 #3: register EXACTLY as
+    # production does — host_only=True — so these tests exercise the real
+    # host-only / trusted boundary instead of masking it as community "text".
     from fantasy_daemon.branch_registrations import universe_cycle_wrapper
     clean_registry.register_domain_callable(
         "fantasy_author", "universe_cycle_wrapper", universe_cycle_wrapper,
-        capability="text",  # Codex S3 r12 #1: safe writer wrapper, no repo/exec
+        host_only=True,
     )
     return clean_registry
 
@@ -587,8 +589,8 @@ def test_flag_on_boundary_state_resumes_only_six_fields(
                 "total_words": 10, "total_chapters": 1,
                 "health": {"stopped": True},
             },
-            capability="text",  # Codex S3 r12 #1: safe stubbed writer wrapper
-        )
+            host_only=True,  # Codex S3 r13/r14 #3: match production trust class;
+        )                    # the trusted _build_unified_graph_builder runs it.
         # Re-build + recompile so the new callable is bound.
         graph2 = _build_unified_graph_builder()
         compiled = graph2.compile(checkpointer=saver)
@@ -630,3 +632,49 @@ def test_seed_yaml_exists_and_compiles(fresh_registrations):
     assert graph is not None
     compiled = graph.compile()
     assert compiled is not None
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r13/r14 #3 — the REAL host-only/trusted boundary for
+# universe_cycle_wrapper (previously masked by re-registering it as community
+# capability="text"). Assert BOTH untrusted rejection AND trusted success.
+# --------------------------------------------------------------------------- #
+
+
+def test_universe_cycle_wrapper_host_only_boundary(fresh_registrations):
+    import pytest as _pytest
+
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.base import SandboxUnavailableError
+    from tinyassets.sandbox_policy import (
+        effective_node_capability,
+        user_branch_capability_rejections,
+    )
+
+    # Register a host-only STUB (matches production trust class) returning a dict.
+    fresh_registrations.register_domain_callable(
+        "fantasy_author", "universe_cycle_wrapper",
+        lambda s: {"ran": True}, host_only=True,
+    )
+    node = NodeDefinition(
+        node_id="universe_cycle_wrapper", display_name="UCW", output_keys=["ran"],
+    )
+    # Classifier reports host_only (blocked for user branches).
+    assert effective_node_capability(node, "fantasy_author") == "host_only"
+    # Authoring validator rejects a user branch that selects it.
+    assert user_branch_capability_rejections([node], "fantasy_author")
+    # An UNTRUSTED (user) compile fails closed at run — never reaches the callable.
+    with _pytest.raises(SandboxUnavailableError):
+        _build_node(
+            node, provider_call=None, event_sink=None,
+            domain_id="fantasy_author", trusted=False,
+        )({})
+    # A TRUSTED (daemon) compile runs it.
+    assert _build_node(
+        node, provider_call=None, event_sink=None,
+        domain_id="fantasy_author", trusted=True,
+    )({}) == {"ran": True}
+    # And the real fixed-seed compile (compile_branch trusted=True) builds cleanly.
+    from fantasy_daemon.__main__ import _build_unified_graph_builder
+    assert _build_unified_graph_builder() is not None
