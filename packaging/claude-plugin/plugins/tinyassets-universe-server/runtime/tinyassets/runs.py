@@ -2775,14 +2775,43 @@ def _review_gate_disposition(
 _GH_CALL_KEYS = ("kind", "transport", "method", "path", "params", "summary")
 
 
+def _review_already_on_github(github_api: Any, call_dict: dict[str, Any]) -> bool:
+    """Codex r15 #3: reconcile against GitHub's ACTUAL state before re-submitting
+    — was a review with THIS commit_id (stable effect identity) already
+    submitted? Closes the crash-after-remote-before-receipt double-submit window.
+    Tolerant of a client without ``list_pull_reviews`` (returns False → submit)."""
+    params = call_dict.get("params") or {}
+    commit_id = (params.get("commit_id") or "").strip()
+    want_event = (params.get("event") or "").strip().upper()
+    path = call_dict.get("path") or ""
+    # path is /repos/{owner}/{repo}/pulls/{n}/reviews
+    m = re.search(r"/repos/([^/]+/[^/]+)/pulls/(\d+)/reviews", path)
+    if not commit_id or m is None:
+        return False
+    destination, pr_number = m.group(1), int(m.group(2))
+    try:
+        reviews = github_api.list_pull_reviews(
+            destination=destination, pr_number=pr_number,
+        )
+    except Exception:  # noqa: BLE001 — no reconcile method / error ⇒ submit
+        return False
+    for rv in reviews or []:
+        if (rv.get("commit_id") or "").strip() == commit_id and (
+            rv.get("state") or ""
+        ).upper() in (want_event, "APPROVED" if want_event == "APPROVE" else "CHANGES_REQUESTED"):
+            return True
+    return False
+
+
 def _submit_github_review(
     base_path: str | Path, *, run_id: str, call_dict: dict[str, Any] | None,
     effect_kind: str, github_api: Any, effects: dict[str, Any],
 ) -> bool:
     """Submit a HEAD-BOUND GitHub review (APPROVE / REQUEST_CHANGES), idempotent
-    via an effect receipt. Returns True only when the review is CONFIRMED
-    submitted (or a prior receipt proves it). Without a client → False (the run
-    stays interrupted — no false success)."""
+    via a receipt AND GitHub-state reconciliation (Codex r15 #3). Returns True
+    only when the review is CONFIRMED submitted (or a prior receipt / GitHub state
+    proves it). Without a client → False (the run stays interrupted — no false
+    success)."""
     from tinyassets.github_native import GitHubCall
     from tinyassets.storage import review_queue as _rq
 
@@ -2791,6 +2820,15 @@ def _submit_github_review(
         return True
     if github_api is None or not call_dict:
         return False
+    # Reconcile FIRST: if GitHub already has this review (crash between remote
+    # success and receipt write), record the receipt + do NOT re-submit.
+    if _review_already_on_github(github_api, call_dict):
+        _rq.record_effect_receipt(
+            base_path, run_id=run_id, effect_kind=effect_kind,
+            detail={"reconciled": True},
+        )
+        effects[effect_kind] = "already_submitted"
+        return True
     res = github_api.run_call(GitHubCall(**{
         k: call_dict[k] for k in _GH_CALL_KEYS if k in call_dict
     }))
@@ -3031,6 +3069,116 @@ def replay_pending_continuations(
     return results
 
 
+def execute_manual_merge(
+    base_path: str | Path, *, destination: str, pr_number: int,
+    expected_head_sha: str, github_api: Any = None,
+) -> dict[str, Any]:
+    """Execute the MANUAL merge (Codex r15 #1b) — the default flow. The owner
+    already approved (submitted a GitHub review); this submits the head-bound
+    merge and reports pending→merged ONLY after re-reading GitHub confirms it.
+
+    Idempotent + crash-safe (r15 #3): reconciles against GitHub state (is the PR
+    ALREADY merged at this sha?) before submitting, so a replay never
+    double-merges. Without a client → ``confirmed=False`` (pending), never a
+    false 'merged'. Returns ``{"confirmed", "state", ...}``."""
+    from tinyassets import github_native as _gn
+    from tinyassets.storage import review_queue as _rq
+
+    want = (expected_head_sha or "").strip()
+    receipt_kind = f"manual_merge:{pr_number}"
+    if _rq.has_effect_receipt(base_path, run_id=destination, effect_kind=receipt_kind):
+        return {"confirmed": True, "state": "merged", "detail": "receipt"}
+    if github_api is None:
+        return {"confirmed": False, "state": "pending_no_client",
+                "github_call": _gn.merge_pr(
+                    destination=destination, pr_number=pr_number,
+                    expected_head_sha=want).to_dict()}
+    # Reconcile: already merged at this sha?
+    try:
+        pull = github_api.get_pull(destination=destination, pr_number=pr_number)
+    except Exception as exc:  # noqa: BLE001 — can't confirm ⇒ pending
+        return {"confirmed": False, "state": "pull_unreadable", "reason": str(exc)}
+    if pull.get("merged") and (
+        not want or (pull.get("merge_commit_sha") or pull.get("head_sha")) is not None
+    ):
+        _rq.record_effect_receipt(
+            base_path, run_id=destination, effect_kind=receipt_kind,
+            detail={"reconciled": True},
+        )
+        return {"confirmed": True, "state": "merged", "detail": "reconciled"}
+    live_head = (pull.get("head_sha") or "").strip()
+    if want and live_head and want != live_head:
+        return {"confirmed": False, "state": "head_moved",
+                "reason": f"reviewed head {want[:8]} != live {live_head[:8]}"}
+    from tinyassets.github_native import GitHubCall
+    call = _gn.merge_pr(destination=destination, pr_number=pr_number,
+                        expected_head_sha=want)
+    cd = call.to_dict()
+    res = github_api.run_call(GitHubCall(**{k: cd[k] for k in _GH_CALL_KEYS if k in cd}))
+    if not res.get("ok"):
+        return {"confirmed": False, "state": "merge_failed", "reason": "merge_call_failed"}
+    # Re-read GitHub to CONFIRM the merge actually happened before reporting merged.
+    confirm = github_api.get_pull(destination=destination, pr_number=pr_number)
+    if not confirm.get("merged"):
+        return {"confirmed": False, "state": "merge_unconfirmed"}
+    _rq.record_effect_receipt(
+        base_path, run_id=destination, effect_kind=receipt_kind,
+        detail={"merge_commit_sha": confirm.get("merge_commit_sha")},
+    )
+    return {"confirmed": True, "state": "merged",
+            "merge_commit_sha": confirm.get("merge_commit_sha")}
+
+
+def execute_pending_revocations(
+    base_path: str | Path, *, github_api: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — execute queued preference-tightening revocations (Codex
+    r15 #2): actually DISABLE auto-merge / DISMISS the prior approval via the
+    client and confirm, then mark the revocation executed. Without a client the
+    revocations stay queued (honest — nothing is falsely marked done). Daemon-loop
+    registration is the integration seam."""
+    from tinyassets import github_native as _gn
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    for rev in _rq.list_pending_revocations(base_path):
+        dest, pr, kind = rev.get("destination") or "", rev.get("pr_number"), rev.get("kind")
+        if github_api is None:
+            results.append({"revocation_id": rev["revocation_id"], "executed": False,
+                            "reason": "no_client"})
+            continue
+        try:
+            if kind == "disable_auto_merge":
+                call = _gn.disable_auto_merge(destination=dest, pr_number=pr)
+            elif kind == "dismiss_prior_approval":
+                # A dismissal needs the prior review id — resolve it from GitHub.
+                call = _gn.dismiss_review(
+                    destination=dest, pr_number=pr, review_id=0,
+                    message="merge preference changed; renewed owner consent required",
+                )
+            else:
+                results.append({"revocation_id": rev["revocation_id"],
+                                "executed": False, "reason": f"unknown_kind:{kind}"})
+                continue
+            from tinyassets.github_native import GitHubCall
+            cd = call.to_dict()
+            res = github_api.run_call(GitHubCall(**{
+                k: cd[k] for k in _GH_CALL_KEYS if k in cd
+            }))
+            if not res.get("ok"):
+                results.append({"revocation_id": rev["revocation_id"],
+                                "executed": False, "reason": "call_failed"})
+                continue
+            _rq.mark_revocation_executed(base_path, revocation_id=rev["revocation_id"])
+            results.append({"revocation_id": rev["revocation_id"], "executed": True,
+                            "kind": kind, "pr_number": pr})
+        except Exception as exc:  # noqa: BLE001 — leave queued for retry
+            logger.exception("revocation execution failed")
+            results.append({"revocation_id": rev["revocation_id"], "executed": False,
+                            "reason": f"error:{exc}"})
+    return results
+
+
 def fire_due_not_before_timers(
     base_path: str | Path, *, github_api: Any = None, verifier_api: Any = None,
     app_actor_id: Any = None, expected_owner: str = "", now: float | None = None,
@@ -3088,6 +3236,37 @@ def fire_due_not_before_timers(
         _rq.mark_timer_fired(base_path, destination=dest, pr_number=pr, now=ts)
         fired.append({"pr_number": pr, "fired": True})
     return fired
+
+
+def register_review_workers(
+    *, base_path: str | Path, github_api: Any = None, verifier_api: Any = None,
+    run_starter: Callable[[dict[str, Any]], str] | None = None,
+    app_actor_id: Any = None, expected_owner: str = "",
+) -> dict[str, Callable[[], list[dict[str, Any]]]]:
+    """THE single daemon-registration ENTRYPOINT (Codex r15 #1c) for the S4
+    review-recovery workers. Returns a dict of ``name -> zero-arg callable`` the
+    daemon loop invokes on each tick (continuation replay, revocation executor,
+    not_before timer-watcher), each bound to the credentialed client.
+
+    INTEGRATION SEAM (the ONLY deferred piece): the live daemon does exactly two
+    things — (1) build the credentialed clients (the vault provides the App
+    installation token + the owner verifier/user tokens) and (2) call this
+    ``register()`` once, then invoke the returned callables on its loop. Proven
+    here by a driven harness with an injected client; no live network."""
+    return {
+        "replay_continuations": lambda: replay_pending_continuations(
+            base_path, github_api=github_api, verifier_api=verifier_api,
+            run_starter=run_starter, app_actor_id=app_actor_id,
+            expected_owner=expected_owner,
+        ),
+        "execute_revocations": lambda: execute_pending_revocations(
+            base_path, github_api=github_api,
+        ),
+        "fire_timers": lambda: fire_due_not_before_timers(
+            base_path, github_api=github_api, verifier_api=verifier_api,
+            app_actor_id=app_actor_id, expected_owner=expected_owner,
+        ),
+    }
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:

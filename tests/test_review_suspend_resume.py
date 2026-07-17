@@ -79,7 +79,7 @@ def test_approve_resumes_run_to_merge(owner_env):
         "review_queue_approve", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
-    assert out["status"] == "approved"
+    assert out["status"] == "pending"  # honest (no client)
     # The owner's decision moves the suspension to the durable DECIDED
     # (resume-pending) state with the directive; the run continuation itself is
     # proven in test_run_review_suspension_e2e (this storage-level test has no
@@ -102,7 +102,7 @@ def test_reshape_resumes_run_to_draft_patch(owner_env):
         "review_queue_reshape", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD, notes="cover the empty case",
     )
-    assert out["status"] == "reshaped"
+    assert out["status"] == "pending"
     directive = out["pending"]["directive"]
     assert directive["action"] == "draft_patch"
     assert directive["route_back"]["target_node"] == "draft_patch"
@@ -121,7 +121,7 @@ def test_reject_resumes_run_to_terminal(owner_env):
         "review_queue_reject", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
-    assert out["status"] == "rejected"
+    assert out["status"] == "pending"
     assert out["pending"]["directive"]["action"] == "terminal_reject"
     assert rq.get_suspension(owner_env, run_id=_RUN)["status"] == "decided"
 
@@ -175,7 +175,7 @@ def test_first_decision_is_immutable_no_split_brain(owner_env):
         "review_queue_approve", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
-    assert first["status"] == "approved"
+    assert first["status"] == "pending"
     # A second, conflicting decision on the same head is REFUSED.
     reject = _call(
         "review_queue_reject", universe_id="u1", pr_number=_PR, destination=_DEST,
@@ -252,5 +252,5 @@ def test_owner_verb_without_suspension_reports_no_pending(owner_env):
         "review_queue_approve", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
-    assert out["status"] == "approved"
+    assert out["status"] == "pending"  # honest (no client)
     assert out["pending"] is None

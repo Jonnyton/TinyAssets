@@ -587,7 +587,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     # the old hold/release verbs no longer exist.)
     extension_writes.update({
         "review_queue_approve", "review_queue_reshape", "review_queue_reject",
-        "review_queue_set_preference",
+        "review_queue_merge", "review_queue_set_preference",
     })
     _extend_scope_rows(
         rows,

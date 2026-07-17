@@ -1390,7 +1390,8 @@ def extensions(
       subscribe_branch, unsubscribe_branch, list_scheduler_subscriptions.
     - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
     - Owner review queue: review_queue_list, review_queue_approve,
-      review_queue_reshape, review_queue_reject, review_queue_set_preference.
+      review_queue_reshape, review_queue_reject, review_queue_merge,
+      review_queue_set_preference.
 
     Owner review verbs (patch-loop S4, GitHub-native) let a project owner act on
     the App-authored PRs their loop produced. GitHub owns review/merge state;

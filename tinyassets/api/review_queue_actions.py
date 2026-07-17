@@ -44,6 +44,14 @@ _PHASE2_NOTE = (
     "will run; the live GitHub App executes the call in Phase 2."
 )
 
+#: Honest wording when the decision is durably recorded but the GitHub effect is
+#: not yet executed/confirmed (Codex r15 #1a — never report success prematurely).
+_HONEST_NOTE = (
+    "Your decision is durably recorded, but the GitHub effect is PENDING: the "
+    "daemon submits it with the credentialed client and it is confirmed only "
+    "after GitHub is re-read. This is not yet reflected on GitHub."
+)
+
 
 def _head_changed(exc: ReviewHeadChanged) -> str:
     return json.dumps({
@@ -102,6 +110,20 @@ def _current_actor() -> str:
     from tinyassets.api.permissions import current_actor_id
 
     return current_actor_id()
+
+
+def _server_side_founder_handle(target_universe: str) -> str:
+    """Resolve the founder's GitHub handle SERVER-SIDE from the authenticated
+    GitHub identity (Codex r15 #5) — NEVER from caller-supplied text. Returns ""
+    when no GitHub identity is connected, in which case autonomous merge stays
+    fail-closed (the honest default). The live daemon wires the owner's connected
+    GitHub login here; tests monkeypatch it."""
+    try:
+        from tinyassets.api.permissions import current_github_handle
+
+        return (current_github_handle(target_universe) or "").strip().lstrip("@")
+    except Exception:  # noqa: BLE001 — no identity wired ⇒ empty ⇒ fail closed
+        return ""
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -271,13 +293,20 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
     if result["projection"] is None:
         return _not_projected("review_queue_approve", destination, pr_number)
     run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
+    confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
-        "status": "approved",
+        # HONEST (Codex r15 #1a): the owner's DECISION is durably recorded, but
+        # the GitHub review is PENDING until a wired client submits it + GitHub
+        # is re-read. Never report 'approved' (reads as GitHub-approved) before
+        # the effect is confirmed.
+        "status": "approved" if confirmed else "pending",
+        "owner_decision": "approve",
+        "github_effect": "confirmed" if confirmed else "pending",
+        "pending": result["pending"],
         "projection": result["projection"],
         "github_call": call.to_dict(),
-        "pending": result["pending"],
         "run_continued": run_continued,
-        "note": _PHASE2_NOTE,
+        "note": _HONEST_NOTE if not confirmed else "GitHub review submitted + confirmed.",
     })
 
 
@@ -360,12 +389,15 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
     if result["projection"] is None:
         return _not_projected("review_queue_reshape", destination, pr_number)
     run_continued = _continue_run(universe_dir, result["pending"])
+    confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
-        "status": "reshaped",
+        "status": "reshaped" if confirmed else "pending",
+        "owner_decision": "reshape",
+        "github_effect": "confirmed" if confirmed else "pending",
+        "pending": result["pending"],
         "projection": result["projection"],
         "route_back": route_back,
         "github_call": call.to_dict(),
-        "pending": result["pending"],
         "run_continued": run_continued,
         "note": (
             "Reshape recorded a REQUEST_CHANGES review call + a durable "
@@ -421,11 +453,14 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
     if result["projection"] is None:
         return _not_projected("review_queue_reject", destination, pr_number)
     run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
+    confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
-        "status": "rejected",
+        "status": "rejected" if confirmed else "pending",
+        "owner_decision": "reject",
+        "github_effect": "confirmed" if confirmed else "pending",
+        "pending": result["pending"],
         "projection": result["projection"],
         "github_call": call.to_dict(),
-        "pending": result["pending"],
         "run_continued": run_continued,
         "note": (
             "Reject recorded a REQUEST_CHANGES review + a terminal workflow "
@@ -483,6 +518,7 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
         from tinyassets.storage.review_queue import (
             WORKFLOW_APPROVED,
             cancel_timers_for_branch,
+            enqueue_revocation,
             list_projections,
             set_merge_preference_binding,
         )
@@ -492,16 +528,18 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
             universe_dir,
             branch_def_id=branch_def_id, merge_preference=preference,
             not_before_delay_s=not_before_delay_s, review_required=review_required,
+            # Codex r15 #5: the CODEOWNERS owner is resolved SERVER-SIDE from the
+            # authenticated GitHub identity, never caller text.
+            founder_github_handle=_server_side_founder_handle(target_universe),
             bound_by=_current_actor(),
         )
-        # ATOMIC tightening (Codex r11 #2): re-binding revokes prior scheduled /
-        # standing merge authority in the SAME operation — cancel every pending
-        # not_before timer this branch authorized, and record the GitHub effects
-        # (disable auto-merge; dismiss a prior approval if renewed consent is
-        # required) for each affected open PR. A due timer can no longer outrun
-        # an owner switch to manual.
+        # Tightening (Codex r11 #2 + r15 #2): re-binding revokes prior scheduled /
+        # standing merge authority. Cancel every pending timer this branch
+        # authorized, AND durably ENQUEUE the GitHub revocations (disable
+        # auto-merge; dismiss a prior approval) so a worker EXECUTES them with the
+        # client — descriptions alone don't disable an already-live auto-merge.
         cancelled = cancel_timers_for_branch(universe_dir, branch_def_id=branch_def_id)
-        revoke_calls: list[dict[str, Any]] = []
+        queued = 0
         seen_prs: set[tuple[str, int]] = set()
         open_projs = [
             p for p in list_projections(universe_dir)
@@ -514,28 +552,24 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
             if not dest or not isinstance(pr, int):
                 continue
             seen_prs.add((dest, pr))
-            revoke_calls.append(
-                github_native.disable_auto_merge(destination=dest, pr_number=pr).to_dict()
-            )
+            queued += int(enqueue_revocation(
+                universe_dir, destination=dest, pr_number=pr,
+                kind="disable_auto_merge", branch_def_id=branch_def_id,
+            ))
             if proj.get("workflow_outcome") == WORKFLOW_APPROVED:
-                revoke_calls.append({
-                    "kind": "dismiss_prior_approval_intent",
-                    "destination": dest, "pr_number": pr,
-                    "summary": (
-                        f"dismiss the prior approval on {dest}#{pr} — the merge "
-                        "preference changed and renewed owner consent is required"
-                    ),
-                })
-        # A cancelled timer whose PR isn't in the projection list still gets a
-        # disable_auto_merge recorded (belt-and-suspenders).
+                queued += int(enqueue_revocation(
+                    universe_dir, destination=dest, pr_number=pr,
+                    kind="dismiss_prior_approval", branch_def_id=branch_def_id,
+                ))
+        # A cancelled timer whose PR isn't in the projection list still needs a
+        # disable_auto_merge enqueued (belt-and-suspenders).
         for t in cancelled:
             key = (t.get("destination") or "", t.get("pr_number"))
             if key not in seen_prs and isinstance(key[1], int):
-                revoke_calls.append(
-                    github_native.disable_auto_merge(
-                        destination=key[0], pr_number=key[1]
-                    ).to_dict()
-                )
+                queued += int(enqueue_revocation(
+                    universe_dir, destination=key[0], pr_number=key[1],
+                    kind="disable_auto_merge", branch_def_id=branch_def_id,
+                ))
     except ValueError as exc:
         return json.dumps({
             "error": str(exc),
@@ -562,8 +596,75 @@ def _action_review_queue_set_preference(kwargs: dict[str, Any]) -> str:
         "status": "bound",
         "binding": binding,
         "cancelled_timers": len(cancelled),
-        "revoke_calls": revoke_calls,
-        "note": note,
+        "revocations_queued": queued,
+        "note": (
+            note + " Prior scheduled/standing merge authority is being revoked: "
+            f"{queued} revocation(s) queued for the worker to execute + confirm."
+        ),
+    })
+
+
+def _action_review_queue_merge(kwargs: dict[str, Any]) -> str:
+    """HEAD-BOUND MANUAL merge (Codex r15 #1b) — the DEFAULT flow. After the owner
+    approves (a real GitHub review), the owner triggers the merge here: the verb
+    submits the head-bound merge and reports pending→merged ONLY after re-reading
+    GitHub confirms it. Owner-gated; requires the PR be approved first.
+
+    The live daemon injects the credentialed client; the MCP path alone has none,
+    so it reports ``pending`` (the merge call to run) — never a false 'merged'."""
+    universe_id = (kwargs.get("universe_id") or "").strip()
+    destination, pr_number, head, head_err = _require_pr_and_head(
+        "review_queue_merge", kwargs
+    )
+    if head_err is not None:
+        return head_err
+    target_universe, err = _owner_gate("review_queue_merge", universe_id)
+    if err is not None:
+        return json.dumps(err)
+    try:
+        from tinyassets.runs import execute_manual_merge
+        from tinyassets.storage.review_queue import WORKFLOW_APPROVED, get_projection
+
+        universe_dir = _universe_dir_for(target_universe)
+        proj = get_projection(universe_dir, destination=destination, pr_number=pr_number)
+        if proj is None:
+            return _not_projected("review_queue_merge", destination, pr_number)
+        if proj.get("workflow_outcome") != WORKFLOW_APPROVED:
+            return json.dumps({
+                "error": (
+                    f"{destination}#{pr_number} must be approved before merge "
+                    f"(currently {proj.get('workflow_outcome')!r})"
+                ),
+                "failure_class": "not_approved",
+                "actionable_by": "chatbot",
+            })
+        # MCP path has no client → pending; the daemon worker/verb with a wired
+        # client confirms merged.
+        result = execute_manual_merge(
+            universe_dir, destination=destination, pr_number=pr_number,
+            expected_head_sha=head, github_api=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("review_queue_merge failed")
+        return json.dumps({
+            "error": f"review_queue_merge failed: {exc}",
+            "failure_class": "storage_error",
+            "actionable_by": "host",
+        })
+    confirmed = bool(result.get("confirmed"))
+    return json.dumps({
+        # HONEST: never 'merged' until GitHub confirms (Codex r15 #1a).
+        "status": "merged" if confirmed else "pending",
+        "github_effect": "confirmed" if confirmed else "pending",
+        "merge_state": result.get("state"),
+        "github_call": result.get("github_call"),
+        "note": (
+            "manual merge submitted + confirmed via GitHub re-read"
+            if confirmed else
+            "manual merge is PENDING — recorded head-bound; the daemon executes "
+            "it with the credentialed client and reports merged only after GitHub "
+            "confirms the merge (never before)."
+        ),
     })
 
 
@@ -572,6 +673,7 @@ _REVIEW_QUEUE_ACTIONS = {
     "review_queue_approve": _action_review_queue_approve,
     "review_queue_reshape": _action_review_queue_reshape,
     "review_queue_reject": _action_review_queue_reject,
+    "review_queue_merge": _action_review_queue_merge,
     "review_queue_set_preference": _action_review_queue_set_preference,
 }
 

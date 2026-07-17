@@ -254,40 +254,10 @@ def _has_required_status_checks(rules: list[dict[str, Any]]) -> bool:
     return False
 
 
-#: Representative paths whose EFFECTIVE (last-matching) owner must be the
-#: founder for the gate to pass: a root code path (the merge path) AND the
-#: CODEOWNERS file itself (so it can't be changed without founder review).
-_CODEOWNERS_PROBE_PATHS = (
-    "src/main.py", "README.md", ".github/CODEOWNERS", "CODEOWNERS",
-)
-
-
-def _codeowners_pattern_matches(pattern: str, path: str) -> bool:
-    """Approximate GitHub CODEOWNERS path matching for the gate's probe paths."""
-    import fnmatch
-
-    pat = pattern.strip()
-    p = path.lstrip("/")
-    if pat == "*":
-        return True
-    anchored = pat.startswith("/")
-    pat = pat.lstrip("/")
-    if pat.endswith("/"):  # directory → matches anything under it
-        return p == pat.rstrip("/") or p.startswith(pat)
-    # Anchored patterns match from repo root; unanchored match any path segment.
-    if anchored:
-        return fnmatch.fnmatch(p, pat) or fnmatch.fnmatch(p, pat + "/*") or p == pat
-    return (
-        fnmatch.fnmatch(p, pat) or fnmatch.fnmatch(p, "*/" + pat)
-        or p.endswith("/" + pat) or p == pat
-    )
-
-
-def _codeowners_effective_owners(text: str, path: str) -> list[str]:
-    """Return the owners of the LAST CODEOWNERS rule matching ``path`` — GitHub's
-    last-match-wins semantics (Codex r14 #6). A `* @founder` catch-all overridden
-    by a LATER pattern yields the later owners, not the founder."""
-    owners: list[str] = []
+def _codeowners_rule_lines(text: str) -> list[tuple[str, list[str]]]:
+    """Parse CODEOWNERS into ``(pattern, owners)`` rule lines (comments/blank
+    dropped). Owners are lowercased, ``@``/``@org/team`` markers stripped."""
+    rules: list[tuple[str, list[str]]] = []
     for raw in (text or "").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -295,22 +265,32 @@ def _codeowners_effective_owners(text: str, path: str) -> list[str]:
         parts = line.split()
         if len(parts) < 2:
             continue
-        if _codeowners_pattern_matches(parts[0], path):
-            owners = [o.strip().lstrip("@").lower() for o in parts[1:]]
-    return owners
+        owners = [o.strip().lstrip("@").lower() for o in parts[1:]]
+        rules.append((parts[0], owners))
+    return rules
 
 
-def _codeowners_founder_owns_merge_path(text: str, expected_owner: str) -> bool:
-    """True iff the founder is the EFFECTIVE (last-matching) owner of BOTH a root
-    code path AND the CODEOWNERS file itself, for every probe path — so no later
-    pattern can override the founder's ownership of the merge path or leave
-    CODEOWNERS itself unprotected (Codex r14 #6)."""
+def _codeowners_strict_founder_only(text: str, expected_owner: str) -> bool:
+    """STRICT-CANONICAL CODEOWNERS check (Codex r15 #4): the founder must own the
+    WHOLE repo via a ``*`` catch-all, and NO rule may grant ownership to anyone
+    other than the founder — a later override like ``secrets/** @attacker`` (which
+    GitHub honors via last-match-wins) FAILS the gate closed. This also protects
+    CODEOWNERS itself (no non-founder rule can cover it). Simpler + safer than
+    per-path last-match evaluation, and immune to the approximate-parser bug.
+    """
     want = (expected_owner or "").strip().lstrip("@").lower()
     if not want:
         return False
-    for probe in _CODEOWNERS_PROBE_PATHS:
-        owners = _codeowners_effective_owners(text, probe)
-        if want not in owners:
+    rules = _codeowners_rule_lines(text)
+    if not rules:
+        return False
+    has_catch_all = any(pat == "*" and owners == [want] for pat, owners in rules)
+    if not has_catch_all:
+        return False
+    # NO rule may grant ownership to anyone other than the founder (a rule with a
+    # different/additional owner is a last-match-wins override → fail closed).
+    for _pat, owners in rules:
+        if owners != [want]:
             return False
     return True
 
@@ -411,10 +391,10 @@ def verify_review_gate_active(
         summary["error_codeowners"] = str(exc)
     if not (expected_owner or "").strip():
         missing.append("expected_owner_unknown")
-    elif not _codeowners_founder_owns_merge_path(codeowners or "", expected_owner):
-        missing.append("codeowners_founder_effective_owner")
+    elif not _codeowners_strict_founder_only(codeowners or "", expected_owner):
+        missing.append("codeowners_strict_founder_only")
     else:
-        summary["codeowners_founder_effective_owner"] = expected_owner.strip().lstrip("@")
+        summary["codeowners_strict_founder_only"] = expected_owner.strip().lstrip("@")
 
     # De-dup while preserving order.
     seen: set[str] = set()

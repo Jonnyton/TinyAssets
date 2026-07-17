@@ -793,7 +793,7 @@ def _extensions_impl(
             "list_effector_consents",
             "review_queue_list", "review_queue_approve",
             "review_queue_reshape", "review_queue_reject",
-            "review_queue_set_preference",
+            "review_queue_merge", "review_queue_set_preference",
         ],
     })
 

@@ -114,6 +114,7 @@ def test_review_queue_mutating_verbs_require_write_scope() -> None:
         "review_queue_approve",
         "review_queue_reshape",
         "review_queue_reject",
+        "review_queue_merge",
         "review_queue_set_preference",
     ):
         row = registry[f"extensions.{action}"]

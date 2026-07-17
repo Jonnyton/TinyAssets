@@ -98,14 +98,32 @@ def test_fails_without_codeowners_catchall():
     api = InMemoryGitHubApi(codeowners="/docs @owner\n")
     gated, summary = _verify(api)
     assert gated is False
-    assert "codeowners_founder_effective_owner" in summary["missing"]
+    assert "codeowners_strict_founder_only" in summary["missing"]
 
 
 def test_fails_when_catchall_owned_by_someone_else():
     api = InMemoryGitHubApi(codeowners="* @not-the-founder\n")
     gated, summary = _verify(api, expected_owner="owner")
     assert gated is False
-    assert "codeowners_founder_effective_owner" in summary["missing"]
+    assert "codeowners_strict_founder_only" in summary["missing"]
+
+
+def test_fails_when_later_override_pattern_exists():
+    """Codex r15 #4: `* @owner` followed by `secrets/** @attacker` must FAIL — a
+    later last-match-wins override means secrets/** wouldn't need founder review.
+    Strict-canonical refuses ANY non-founder rule."""
+    api = InMemoryGitHubApi(codeowners="* @owner\nsecrets/** @attacker\n")
+    gated, summary = _verify(api, expected_owner="owner")
+    assert gated is False
+    assert "codeowners_strict_founder_only" in summary["missing"]
+
+
+def test_strict_canonical_founder_only_passes():
+    """A CODEOWNERS with only founder-owned rules + a `* @owner` catch-all passes
+    (protecting CODEOWNERS itself)."""
+    api = InMemoryGitHubApi(codeowners="* @owner\n.github/CODEOWNERS @owner\n")
+    gated, summary = _verify(api)
+    assert gated is True, summary["missing"]
 
 
 def test_fails_when_expected_owner_unknown():

@@ -95,7 +95,8 @@ def test_owner_approve_records_github_review_call(owner_env):
         "review_queue_approve", universe_id="u1", pr_number=_PR,
         destination=_DEST, expected_head_sha=_HEAD,
     )
-    assert out["status"] == "approved"
+    assert out["status"] == "pending"  # honest: no client → GitHub effect pending
+    assert out["github_effect"] == "pending"
     call = out["github_call"]
     assert call["kind"] == "submit_review_approve"
     assert call["params"]["event"] == "APPROVE"
@@ -142,7 +143,8 @@ def test_owner_reshape_records_request_changes_and_outbox(owner_env):
         "review_queue_reshape", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD, notes="cover the empty case",
     )
-    assert out["status"] == "reshaped"
+    assert out["status"] == "pending"  # honest: effect pending
+    assert out["github_effect"] == "pending"
     assert out["github_call"]["params"]["event"] == "REQUEST_CHANGES"
     assert out["route_back"]["target_node"] == "draft_patch"
     assert out["route_back"]["owner_notes"] == "cover the empty case"
@@ -170,7 +172,8 @@ def test_owner_reject_records_terminal_outcome(owner_env):
         "review_queue_reject", universe_id="u1", pr_number=_PR, destination=_DEST,
         expected_head_sha=_HEAD,
     )
-    assert out["status"] == "rejected"
+    assert out["status"] == "pending"  # honest: effect pending
+    assert out["github_effect"] == "pending"
     assert out["github_call"]["params"]["event"] == "REQUEST_CHANGES"
     assert rq.get_projection(owner_env, destination=_DEST, pr_number=_PR)[
         "workflow_outcome"
@@ -232,8 +235,7 @@ def test_set_preference_tightening_is_atomic(owner_env):
     )
     assert out["status"] == "bound"
     assert out["cancelled_timers"] == 1
-    kinds = [c.get("kind") for c in out["revoke_calls"]]
-    assert "disable_auto_merge" in kinds
+    assert out["revocations_queued"] >= 1
     # The timer is gone — it cannot fire after the tighten.
     assert rq.due_not_before_timers(owner_env, now=1000.0) == []
 
@@ -254,8 +256,7 @@ def test_set_preference_dismisses_prior_approval(owner_env):
         "review_queue_set_preference", universe_id="u1", branch_def_id="bd",
         merge_preference="manual",
     )
-    kinds = [c.get("kind") for c in out["revoke_calls"]]
-    assert "dismiss_prior_approval_intent" in kinds
+    assert out["revocations_queued"] >= 2  # disable + dismiss
 
 
 # ── non-owner / write-collaborator denied on every verb ──────────────────────

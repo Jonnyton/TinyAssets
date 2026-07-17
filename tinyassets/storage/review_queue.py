@@ -249,6 +249,25 @@ CREATE TABLE IF NOT EXISTS effect_receipts (
     created_at  REAL NOT NULL,
     PRIMARY KEY (run_id, effect_kind)
 );
+
+-- Durable REVOCATION outbox (Codex r15 #2): when the owner tightens a
+-- preference, the GitHub revocations (disable auto-merge; dismiss prior
+-- approval) are ENQUEUED here and EXECUTED by a worker with the client — not
+-- merely described. So an already-enabled auto-merge is actually disabled, even
+-- when the owner verb had no client. A partial-unique index keeps one pending
+-- revocation per (destination, pr_number, kind).
+CREATE TABLE IF NOT EXISTS revocation_outbox (
+    revocation_id TEXT PRIMARY KEY,
+    destination   TEXT NOT NULL DEFAULT '',
+    pr_number     INTEGER NOT NULL DEFAULT 0,
+    kind          TEXT NOT NULL DEFAULT '',
+    branch_def_id TEXT NOT NULL DEFAULT '',
+    created_at    REAL NOT NULL,
+    executed_at   REAL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_revocation_pending
+    ON revocation_outbox(destination, pr_number, kind) WHERE executed_at IS NULL;
 """
 
 SUSPENSION_SUSPENDED = "suspended"
@@ -1289,6 +1308,53 @@ def record_effect_receipt(
             return cur.rowcount > 0
 
 
+def enqueue_revocation(
+    universe_dir: str | Path, *, destination: str, pr_number: int, kind: str,
+    branch_def_id: str = "", now: float | None = None,
+) -> bool:
+    """Enqueue a durable revocation (``disable_auto_merge`` / ``dismiss_review``)
+    for a worker to EXECUTE with the client (Codex r15 #2). Idempotent: at most
+    one pending revocation per (destination, pr_number, kind). Returns True if
+    newly enqueued."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    rid = f"rev-{uuid.uuid4().hex[:16]}"
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO revocation_outbox "
+                "(revocation_id, destination, pr_number, kind, branch_def_id, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (rid, (destination or "").strip(), pr_number, kind, branch_def_id, ts),
+            )
+            return cur.rowcount > 0
+
+
+def list_pending_revocations(universe_dir: str | Path) -> list[dict[str, Any]]:
+    initialize_review_queue_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT * FROM revocation_outbox WHERE executed_at IS NULL "
+            "ORDER BY created_at",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_revocation_executed(
+    universe_dir: str | Path, *, revocation_id: str, now: float | None = None
+) -> bool:
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            cur = conn.execute(
+                "UPDATE revocation_outbox SET executed_at = ? "
+                "WHERE revocation_id = ? AND executed_at IS NULL",
+                (ts, (revocation_id or "").strip()),
+            )
+            return cur.rowcount > 0
+
+
 def has_effect_receipt(
     universe_dir: str | Path, *, run_id: str, effect_kind: str
 ) -> dict[str, Any] | None:
@@ -1356,4 +1422,7 @@ __all__ = [
     "list_pending_continuations",
     "record_effect_receipt",
     "has_effect_receipt",
+    "enqueue_revocation",
+    "list_pending_revocations",
+    "mark_revocation_executed",
 ]
