@@ -177,12 +177,15 @@ def test_public_projection_is_allowlist_only(tmp_path):
     store = VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default")
     d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(CANARY_TOKEN))
     proj = d.public_projection()
+    # Design allowlist = ref / kind / scope / timestamps ONLY (no version/state).
     assert set(proj) == {
-        "ref", "kind", "scope", "version", "state", "created_at", "updated_at", "expires_at",
+        "ref", "kind", "scope", "created_at", "updated_at", "expires_at",
     }
-    # no custody internals, key ids, ciphertext, wrapped DEKs, backend paths
+    # no custody internals, key ids, ciphertext, wrapped DEKs, backend paths, lifecycle counters
     text = repr(proj)
-    for forbidden in ("ciphertext", "wrapped_dek", "key_id", "wrap_nonce", "blob_path"):
+    for forbidden in (
+        "ciphertext", "wrapped_dek", "key_id", "wrap_nonce", "blob_path", "version", "state",
+    ):
         assert forbidden not in text
 
 

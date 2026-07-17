@@ -32,6 +32,7 @@ from tinyassets.credentials import (
     VaultStore,
 )
 from tinyassets.credentials import crypto as vault_crypto
+from tinyassets.credentials import record as vault_record
 
 WINDOWS_ONLY = pytest.mark.skipif(
     sys.platform != "win32", reason="DPAPI local backend is Windows-only"
@@ -348,12 +349,140 @@ def test_file_key_provider_rejects_group_readable(tmp_path):
     assert exc.value.code == VaultErrorCode.KEK_INSECURE
 
 
+# ===========================================================================
+# Review r2 finding 1 — atomic consume-before-mint (single-process semantics)
+# ===========================================================================
+
+
+def test_claim_refresh_is_exclusive_and_persistent(platform, store):
+    """Only one holder can claim a version's redemption right; the claim persists
+    after the version advances (no window to re-redeem the same token)."""
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t1"))
+    ref = d.binding.ref
+    assert platform.claim_refresh(ref, 1, "A") is True
+    assert platform.claim_refresh(ref, 1, "B") is False  # B must NOT call provider
+
+    # advance to version 2 (A's redemption completed)
+    platform.put(
+        store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t2"),
+        replace=ref, expected_version=1,
+    )
+    # the consumed claim persists — a straggler cannot re-redeem version 1's token
+    assert platform.claim_refresh(ref, 1, "C") is False
+    # the NEW version is independently claimable exactly once
+    assert platform.claim_refresh(ref, 2, "C") is True
+    assert platform.claim_refresh(ref, 2, "D") is False
+
+
+# ===========================================================================
+# Review r2 finding 2 — non-finite (NaN/Inf) numeric metadata bypasses lifecycle
+# ===========================================================================
+
+
+def test_nan_expiry_rejected_at_put(platform, store):
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(CredentialUnavailable) as exc:
+            platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"), expires_at=bad)
+        assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+
+
+def test_check_lifecycle_rejects_nan_expiry():
+    with pytest.raises(CredentialUnavailable) as exc:
+        vault_record.check_lifecycle(
+            {"state": "active", "expires_at": float("nan")}, "secret:v1:x"
+        )
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+
+
+def test_decode_record_rejects_nan_json():
+    import json
+
+    raw = json.dumps({"state": "active", "expires_at": float("nan")}).encode("utf-8")
+    with pytest.raises(CredentialUnavailable) as exc:
+        vault_crypto.decode_record(raw)
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+
+
+# ===========================================================================
+# Review r2 finding 4 — KEK rotation false success
+# ===========================================================================
+
+
+def test_rotate_kek_requires_new_key_to_be_active(platform, store):
+    platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    # k1 is still the active write key → rotating to k2 must be refused loudly.
+    with pytest.raises(ValueError):
+        platform.rotate_kek("k2")
+
+
+def test_rotate_kek_leaves_no_row_on_old_key(platform, store):
+    d1 = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"a"))
+    d2 = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"b"))
+    platform._keys._active = "k2"
+    platform.rotate_kek("k2")
+    for d in (d1, d2):
+        ev = platform.inspect_persisted(d.binding.ref, b"")
+        assert ev["key_id"] == "k2"
+        assert ev["key_id_active"] is True
+
+
+# ===========================================================================
+# Review r2 finding 6 — attestation must fail with typed errors
+# ===========================================================================
+
+
+def test_attestation_rejects_untyped_wrong_scope_failure(tmp_path):
+    """If the wrong-scope probe fails with an UNEXPECTED (non-typed) error, that
+    is NOT accepted as proof of scope isolation — attestation fails."""
+
+    class WrongScopeRaisesRuntime(PlatformVaultBackend):
+        def _probe_get(self, binding, expected):
+            if expected.destination == "__wrong_destination__":
+                raise RuntimeError("unexpected backend fault")  # wrong failure mode
+            return super()._probe_get(binding, expected)
+
+    be = WrongScopeRaisesRuntime(
+        _kp("k1"), store_id="platform:default", db_path=tmp_path / "v.db"
+    )
+    result = be.attest()
+    assert result.ok is False
+    assert result.checks.get("wrong_scope_fails") is False
+
+
+def test_attestation_converts_probe_read_fault_to_failed_result(tmp_path):
+    """A backend read fault after probe creation must become a failed result, not
+    escape as a raw exception."""
+
+    class ReadAlwaysFaults(PlatformVaultBackend):
+        def _probe_get(self, binding, expected):
+            raise RuntimeError("read fault")
+
+    be = ReadAlwaysFaults(_kp("k1"), store_id="platform:default", db_path=tmp_path / "v.db")
+    result = be.attest()  # must NOT raise
+    assert result.ok is False
+    # and the gated surface fails closed
+    with pytest.raises(CredentialUnavailable) as exc:
+        be.get(
+            SecretBinding(
+                ref="secret:v1:" + "0" * 64, kind=SecretKind.API_KEY, scope=SCOPE,
+                store=VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default"),
+            ),
+            SCOPE,
+        )
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+
+
 @WINDOWS_ONLY
-def test_local_attestation_reports_dacl_evidence(tmp_path):
+def test_local_attestation_conservative_no_dacl_claim(tmp_path):
+    """Local attestation proves current-user DPAPI encryption but must NOT claim
+    the narrow DACL — that gate is deferred to deployment integration."""
     be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
-    be.attest()
+    result = be.attest()
+    assert result.ok is True  # passes on encryption evidence alone
     store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
     d = be.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"probe"))
     ev = be.inspect_persisted(d.binding.ref, b"probe")
-    assert "dacl_current_user_only" in ev  # evidence surfaced (bool or None)
     assert ev["current_user_bound"] is True
+    # DACL is NOT claimed as proven — it is an explicit deferred marker.
+    assert ev["dacl_gate"] == "deferred-to-deployment"
+    assert "dacl_current_user_only" not in ev
