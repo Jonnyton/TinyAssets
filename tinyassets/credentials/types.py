@@ -113,11 +113,16 @@ class VaultStore:
 
     custody: Custody
     store_id: str
-    daemon_id: str | None = None  # required only for DAEMON_LOCAL
+    daemon_id: str | None = None  # required for DAEMON_LOCAL, FORBIDDEN for platform
 
     def __post_init__(self) -> None:
         if self.custody == Custody.DAEMON_LOCAL and not self.daemon_id:
             raise ValueError("daemon_local store requires a daemon_id")
+        if self.custody == Custody.PLATFORM_ENCRYPTED and self.daemon_id is not None:
+            # A platform store with a daemon_id is not round-trippable: the id is
+            # never persisted, so rotation reconstructs a different identity and
+            # authentication breaks. Forbid the invalid shape at construction.
+            raise ValueError("platform_encrypted store must not carry a daemon_id")
 
 
 @dataclass(frozen=True)

@@ -31,6 +31,19 @@ from dataclasses import dataclass
 
 from .errors import CredentialUnavailable, VaultErrorCode
 
+
+def require_cas_pairing(replace: str | None, expected_version: int | None) -> None:
+    """``replace`` and ``expected_version`` must be supplied together or not at all.
+
+    A replace without a CAS guard silently permits lost updates (v1->v2->v3); an
+    expected_version without a replace is a caller mistake. Reject both inverses.
+    """
+    if replace is not None and expected_version is None:
+        raise ValueError("put(replace=...) requires expected_version for a safe CAS")
+    if replace is None and expected_version is not None:
+        raise ValueError("put(expected_version=...) is only valid with replace=...")
+
+
 LEASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS vault_refresh_leases (
     ref         TEXT PRIMARY KEY,
@@ -152,6 +165,20 @@ def release_fenced(
     )
 
 
+@dataclass(frozen=True)
+class RefreshTicket:
+    """Proof that the holder won the exclusive right to redeem ``(ref, version)``.
+
+    Returned by ``begin_refresh`` after it atomically authenticated the current
+    record and claimed its version. The completion write must CAS on
+    ``expected_version == version``.
+    """
+
+    ref: str
+    version: int
+    holder: str
+
+
 @dataclass
 class RefreshLease:
     """A held, fenced refresh lease. Verify + release go through the manager."""
@@ -255,27 +282,6 @@ class RefreshLeaseManager:
         try:
             yield conn
             conn.execute("COMMIT")
-        except BaseException:
-            with contextlib.suppress(sqlite3.Error):
-                conn.execute("ROLLBACK")
-            raise
-        finally:
-            conn.close()
-
-    def claim_refresh(self, ref: str, version: int, holder: str) -> bool:
-        """Atomically claim the redemption right for ``(ref, version)``.
-
-        True → caller alone may call the provider; False → already claimed, do
-        NOT call the provider. This is the consume-before-mint gate (the fenced
-        lease is only coarse coordination; THIS is the exactly-once guarantee).
-        """
-        self.ensure_schema()
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            won = claim_refresh(conn, ref, version, holder, time.time())
-            conn.execute("COMMIT")
-            return won
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
