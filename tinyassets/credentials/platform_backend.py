@@ -118,18 +118,15 @@ class PlatformVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         try:
             conn.row_factory = sqlite3.Row
-            # Rollback-journal (NOT WAL) + FULL: version-independent durability.
-            # WAL has a documented reset-corruption bug affecting CONCURRENT
-            # WRITERS through SQLite 3.51.2 (this env links 3.50.4); the
-            # credential workload is low-concurrency so rollback-journal sidesteps
-            # the bug entirely while FULL fsyncs every commit for power-loss
-            # durability of claims/rows.
-            conn.execute("PRAGMA journal_mode = TRUNCATE")
+            # DELETE rollback-journal (NOT WAL) + EXTRA: version-independent
+            # power-loss durability. WAL has a documented reset-corruption bug on
+            # CONCURRENT WRITERS through SQLite 3.51.2 (this env links 3.50.4), so
+            # rollback-journal sidesteps it. EXTRA's extra fsync applies to DELETE
+            # mode specifically — TRUNCATE commits WITHOUT the following fsync and
+            # is only "usually" power-loss safe, which would let a rolled-back
+            # refresh claim re-redeem a one-use token. So DELETE + EXTRA.
+            conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("PRAGMA busy_timeout = 30000")
-            # EXTRA (not FULL): rollback-journal FULL can still lose the LAST
-            # committed transaction after power loss; EXTRA is the ACID setting
-            # that fsyncs the directory after the journal is unlinked. A lost
-            # claim would permit a second one-time redemption, so EXTRA it is.
             conn.execute("PRAGMA synchronous = EXTRA")
         except sqlite3.DatabaseError:
             with contextlib.suppress(sqlite3.Error):
@@ -158,6 +155,18 @@ class PlatformVaultBackend:
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
 
+    def _is_tombstoned(self, ref: str) -> bool:
+        self.initialize()
+        conn = self._connect()
+        try:
+            return leases.is_deleted(conn, ref)
+        except sqlite3.DatabaseError:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+
     def initialize(self) -> None:
         if self._initialized:
             return
@@ -165,6 +174,9 @@ class PlatformVaultBackend:
         try:
             conn.executescript(_SCHEMA)
             conn.executescript(leases.LEASE_SCHEMA)
+        except sqlite3.Error:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
         finally:
             conn.close()
         self._initialized = True
@@ -172,12 +184,12 @@ class PlatformVaultBackend:
     def durability_info(self) -> dict[str, str]:
         """Report the durability posture (for ops verification / the DR gate).
 
-        ``synchronous`` MUST be ``EXTRA`` (the ACID/power-loss setting; FULL can
-        still lose the last rollback-journal commit on power loss) and
-        ``journal_mode`` MUST be a rollback-journal (``TRUNCATE``/``DELETE``), NOT
-        ``WAL`` (WAL's reset-corruption bug, SQLite ≤3.51.2 / this env 3.50.4,
-        hits concurrent writers). Full power-cut/VM-reset proof is a deploy
-        validation item; EXTRA is the correct pragma.
+        ``synchronous`` MUST be ``EXTRA`` and ``journal_mode`` MUST be ``DELETE``
+        (NOT WAL — WAL's reset-corruption bug, SQLite ≤3.51.2 / this env 3.50.4,
+        hits concurrent writers; NOT TRUNCATE — TRUNCATE commits without the
+        following fsync, so EXTRA's power-loss guarantee only holds in DELETE
+        mode). Full power-cut/VM-reset proof is a deploy validation gate; EXTRA +
+        DELETE is the correct pragma pair.
         """
         self.initialize()
         conn = self._connect()
@@ -262,13 +274,18 @@ class PlatformVaultBackend:
 
     @staticmethod
     def _envelope_from_row(row: sqlite3.Row) -> Envelope:
-        return Envelope(
-            row["key_id"],
-            bytes(row["wrap_nonce"]),
-            bytes(row["wrapped_dek"]),
-            bytes(row["data_nonce"]),
-            bytes(row["ciphertext"]),
-        )
+        # A row whose BLOB columns are the wrong storage type (e.g. TEXT) is
+        # structural corruption — normalize, never a raw TypeError.
+        try:
+            return Envelope(
+                row["key_id"],
+                bytes(row["wrap_nonce"]),
+                bytes(row["wrapped_dek"]),
+                bytes(row["data_nonce"]),
+                bytes(row["ciphertext"]),
+            )
+        except (TypeError, ValueError, KeyError, IndexError):
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
 
     def _decrypt_row(
         self,
@@ -285,13 +302,21 @@ class PlatformVaultBackend:
         plaintext columns; the version comes from the plaintext hint but a
         tampered version makes the AAD wrong and the decrypt fail closed.
         """
+        # Structural row corruption (non-int version, wrong BLOB storage type)
+        # is a damaged store → typed error + invalidate the cached gate. A crypto
+        # authentication failure below is NOT structural (could be a legit
+        # wrong-scope/tamper), so it does not invalidate attestation.
         try:
             version = int(row["version"])
-        except (TypeError, ValueError):
-            # Tampered non-integer version hint → typed error, never raw ValueError.
+            envelope = self._envelope_from_row(row)
+        except CredentialUnavailable:
+            self._attested = None
+            raise
+        except (TypeError, ValueError, KeyError, IndexError):
+            self._attested = None
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from None
         aad = _aad(scope, ref, kind.value, version, store)
-        payload = crypto.open_envelope(self._keys, self._envelope_from_row(row), aad, ref)
+        payload = crypto.open_envelope(self._keys, envelope, aad, ref)
         record_json, value = crypto.unframe_record(payload)
         rec = crypto.decode_record(record_json)
         record.verify_record_identity(
@@ -404,6 +429,11 @@ class PlatformVaultBackend:
                 if cur.rowcount != 1:
                     raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
             conn.execute("COMMIT")
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            self._attested = None  # a storage fault invalidates the cached gate
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
@@ -435,6 +465,9 @@ class PlatformVaultBackend:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         self.initialize()
+        if self._is_tombstoned(binding.ref):
+            # A deleted ref is consumed forever — a restored row is refused.
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
         row = self._fetch_row(binding.ref)
         if row is None:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
@@ -464,13 +497,20 @@ class PlatformVaultBackend:
                 raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
             # Authenticate the COMPLETE record (ref/kind/scope/custody/store)
             # before removing — a forged/mismatched binding must not delete.
-            self._decrypt_row(
+            rec, _v = self._decrypt_row(
                 row, ref=binding.ref, kind=binding.kind, scope=expected,
                 store=binding.store,
             )
             conn.execute("DELETE FROM vault_secrets WHERE ref = ?", (binding.ref,))
-            leases.retire_claim(conn, binding.ref)  # a one-time ref is never reused
+            # Irreversible tombstone: keep a durable deleted high-water row so a
+            # restored/backed-up row can never be re-read or re-claimed.
+            leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
             conn.execute("COMMIT")
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            self._attested = None  # a storage fault invalidates the cached gate
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
@@ -530,6 +570,10 @@ class PlatformVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        try:
+            at_version = int(at_version)  # malformed input → typed, not raw ValueError
+        except (TypeError, ValueError):
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, binding.ref) from None
         self.initialize()
         conn = self._connect()
         try:
@@ -550,6 +594,11 @@ class PlatformVaultBackend:
                 leases.capability_hash(secret),
             )
             conn.execute("COMMIT")
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            self._attested = None  # a storage fault invalidates the cached gate
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
@@ -662,6 +711,11 @@ class PlatformVaultBackend:
             if stragglers:
                 raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
             conn.execute("COMMIT")
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            self._attested = None  # a storage fault invalidates the cached gate
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")

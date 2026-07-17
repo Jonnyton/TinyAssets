@@ -321,12 +321,11 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
         try:
             conn.row_factory = sqlite3.Row
-            # Rollback-journal (NOT WAL) + FULL — same version-independent
-            # durability rationale as the platform backend (avoids the WAL-reset
-            # bug).
-            conn.execute("PRAGMA journal_mode = TRUNCATE")
+            # DELETE rollback-journal + EXTRA — same version-independent
+            # power-loss durability rationale as the platform backend (EXTRA's
+            # extra fsync is a DELETE-mode guarantee; TRUNCATE is not durable).
+            conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("PRAGMA busy_timeout = 30000")
-            # EXTRA is the ACID/power-loss setting (see platform backend note).
             conn.execute("PRAGMA synchronous = EXTRA")
         except sqlite3.DatabaseError:
             with contextlib.suppress(sqlite3.Error):
@@ -608,6 +607,20 @@ class DpapiVaultBackend:
         if not dacl_is_current_user_and_system_only(self._blob_path(ref)):
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref)
 
+    def _require_not_tombstoned(self, ref: str) -> None:
+        """A deleted ref is consumed forever — a restored sidecar must be refused.
+
+        The control-DB tombstone is authoritative across the two persistence
+        domains (filesystem sidecar vs control DB).
+        """
+        conn = self._control_connect()
+        try:
+            deleted = leases.is_deleted(conn, ref)
+        finally:
+            conn.close()
+        if deleted:
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
+
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         if not is_secret_ref(binding.ref):
             # Validate before use; never echo a malformed ref (injection defense).
@@ -617,6 +630,7 @@ class DpapiVaultBackend:
         sidecar = self._read_sidecar(binding.ref)
         if sidecar is None:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+        self._require_not_tombstoned(binding.ref)  # restored-sidecar defense
         self._require_record_dacl(binding.ref)  # per-record ACL isolation, verified now
         rec, secret_value = self._decrypt_sidecar(
             sidecar, ref=binding.ref, kind=binding.kind, scope=expected, store=binding.store
@@ -633,19 +647,23 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        # Order matters (two-domain consistency): commit the DURABLE control-DB
+        # tombstone FIRST, then remove the sidecar. A crash between the two leaves
+        # the sidecar tombstoned (refused), never re-claimable.
         with self._leases.mutation_lock() as conn:
             sidecar = self._read_sidecar(binding.ref)
             if sidecar is None:
                 raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
             # Authenticate the COMPLETE record before removing — a forged/
             # mismatched binding produces wrong entropy and fails here.
-            self._decrypt_sidecar(
+            rec, _v = self._decrypt_sidecar(
                 sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
                 store=binding.store,
             )
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(self._blob_path(binding.ref))
-            leases.retire_claim(conn, binding.ref)  # a one-time ref is never reused
+            leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
+        # tombstone committed durably — the sidecar removal is secondary/best-effort
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(self._blob_path(binding.ref))
 
     # ------------------------------------------------------------------
     # Fenced exclusive per-ref refresh lease
@@ -679,7 +697,14 @@ class DpapiVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        try:
+            at_version = int(at_version)
+        except (TypeError, ValueError):
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, binding.ref) from None
         with self._leases.mutation_lock() as conn:
+            if leases.is_deleted(conn, binding.ref):
+                # deleted ref — a restored sidecar cannot be refreshed
+                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
             sidecar = self._read_sidecar(binding.ref)
             if sidecar is None:
                 raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
