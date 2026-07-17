@@ -721,6 +721,116 @@ def test_retry_corrupt_dedup_row_heals_never_queues_without_runnable_task(
     assert rec.branch_def_id == "branch-canonical-abc"
 
 
+def test_retry_dead_ref_dedup_row_rebinds_to_live_handler(tmp_path, monkeypatch):
+    """A dead-ref sink never ran, so it cannot consume the retry idempotency key."""
+    import json as _json
+
+    from tinyassets.branch_tasks import BranchTask, queue_path, read_queue
+    from tinyassets.bug_investigation import (
+        investigation_task_id,
+        retry_pending_investigation_triggers,
+    )
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch, branch_def_id="restored-handler")
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "restored-handler"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    receipt = _tr.create_pending(
+        request_id="BUG-DEAD-REF", request_kind="bug", request_page="p",
+        branch_def_id="deleted-handler", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-DEAD-REF"}',
+    )
+    stable_id = investigation_task_id(receipt.trigger_attempt_id)
+    dead_ref = BranchTask(
+        branch_task_id=stable_id,
+        branch_def_id="deleted-handler",
+        universe_id=tmp_path.name,
+        queued_at="2026-07-17T00:00:00+00:00",
+        request_type="bug_investigation",
+        status="dead_ref",
+        terminal_at="2026-07-17T00:01:00+00:00",
+        dead_ref_reason="handler_deleted:deleted-handler",
+    )
+    queue_path(tmp_path).write_text(
+        _json.dumps([dead_ref.to_dict()]), encoding="utf-8",
+    )
+
+    summary = retry_pending_investigation_triggers(
+        tmp_path, universe_id=tmp_path.name,
+    )
+
+    matches = [t for t in read_queue(tmp_path) if t.branch_task_id == stable_id]
+    assert len(matches) == 1
+    assert matches[0].status == "pending"
+    assert matches[0].branch_def_id == "restored-handler"
+    assert matches[0].dead_ref_reason == ""
+    rec = _tr.get_receipt(receipt.trigger_attempt_id)
+    assert rec is not None
+    assert rec.status == "queued"
+    assert rec.dispatcher_request_id == stable_id
+    assert rec.branch_def_id == "restored-handler"
+    assert summary == {
+        "queued": ["BUG-DEAD-REF"], "failed": [], "still_pending": [],
+    }
+
+
+def test_retry_dead_ref_without_live_handler_never_marks_receipt_queued(
+    tmp_path, monkeypatch,
+):
+    """A dead-ref sink stays visible when no replacement handler can be resolved."""
+    import json as _json
+
+    from tinyassets.branch_tasks import BranchTask, queue_path
+    from tinyassets.bug_investigation import (
+        investigation_task_id,
+        retry_pending_investigation_triggers,
+    )
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.daemon_server import initialize_author_server
+
+    initialize_author_server(tmp_path)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "still-deleted-handler"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    receipt = _tr.create_pending(
+        request_id="BUG-DEAD-NO-HANDLER", request_kind="bug", request_page="p",
+        branch_def_id="deleted-handler", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-DEAD-NO-HANDLER"}',
+    )
+    stable_id = investigation_task_id(receipt.trigger_attempt_id)
+    dead_ref = BranchTask(
+        branch_task_id=stable_id,
+        branch_def_id="deleted-handler",
+        universe_id=tmp_path.name,
+        queued_at="2026-07-17T00:00:00+00:00",
+        request_type="bug_investigation",
+        status="dead_ref",
+        terminal_at="2026-07-17T00:01:00+00:00",
+        dead_ref_reason="handler_deleted:deleted-handler",
+    )
+    queue_path(tmp_path).write_text(
+        _json.dumps([dead_ref.to_dict()]), encoding="utf-8",
+    )
+
+    summary = retry_pending_investigation_triggers(
+        tmp_path, universe_id=tmp_path.name,
+    )
+
+    rec = _tr.get_receipt(receipt.trigger_attempt_id)
+    assert rec is not None
+    assert rec.status == "failed"
+    assert rec.error_class == "handler_not_found"
+    assert rec.dispatcher_request_id is None
+    assert summary == {
+        "queued": [], "failed": ["BUG-DEAD-NO-HANDLER"], "still_pending": [],
+    }
+
+
 @pytest.mark.parametrize(
     ("bad_field", "bad_value"),
     (("request_type", "branch_run"), ("status", "not-a-status")),

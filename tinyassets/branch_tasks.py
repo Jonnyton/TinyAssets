@@ -62,6 +62,10 @@ VALID_STATUSES = frozenset({
 # sat queued — refused at claim time, never run. A terminal SINK (counts as a
 # resolved row for the loop-stall signal, not a stuck backlog item).
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "dead_ref"})
+# Idempotent retries must preserve work already pending, running, completed, or
+# deliberately cancelled. ``dead_ref`` is the sole exception: it was refused
+# before execution, so retaining it would silently consume a retry request.
+_IDEMPOTENT_WINNER_STATUSES = VALID_STATUSES - {"dead_ref"}
 
 # Valid transitions. `pending` can go to running or cancelled;
 # running can go to any terminal state. Terminal states are sinks.
@@ -282,12 +286,14 @@ def append_task(universe_path: Path, task: BranchTask) -> None:
 def _valid_runnable_task(
     row: Any, *, expected: BranchTask,
 ) -> "BranchTask | None":
-    """Return a dispatchable row for the expected idempotent request.
+    """Return a durable winner for the expected idempotent request.
 
     Presence by id is insufficient: defaults can make a malformed row appear
     valid while changing its request type, tenant universe, or status. Validate
     every field the dispatcher consumes and the identity fields that must match
-    this append before accepting a persisted winner.
+    this append before accepting a persisted winner. Completed and deliberately
+    cancelled tasks remain winners because replay would double-process them;
+    ``dead_ref`` never ran and must be healed against the current handler.
     """
     if not isinstance(row, dict):
         return None
@@ -323,7 +329,10 @@ def _valid_runnable_task(
         return None
     if not isinstance(t.inputs, dict):
         return None
-    if t.trigger_source not in VALID_TRIGGER_SOURCES or t.status not in VALID_STATUSES:
+    if (
+        t.trigger_source not in VALID_TRIGGER_SOURCES
+        or t.status not in _IDEMPOTENT_WINNER_STATUSES
+    ):
         return None
     if t.branch_task_id != expected.branch_task_id:
         return None
@@ -343,8 +352,8 @@ def append_task_if_absent(
     - If a VALID, runnable task with this id already exists -> retain one winner,
       remove every duplicate-id row, and return ``(False, that_task)``.
     - If duplicate-id rows exist but NONE is valid (corrupt / wrong request type /
-      wrong universe / invalid status or field types) -> HEAL the entire set to
-      one valid task and return ``(True, task)``.
+      wrong universe / invalid status or field types / never-run ``dead_ref``) ->
+      HEAL the entire set to one valid task and return ``(True, task)``.
     - Else append and return ``(True, task)``.
 
     The exactly-once primitive for the retry consumer: a STABLE
