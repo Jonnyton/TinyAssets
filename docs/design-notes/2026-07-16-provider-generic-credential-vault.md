@@ -1,8 +1,8 @@
 # Provider-generic credential vault
 
-**Status:** implementation design; host-approved direction, Claude-family review required before build
-**Date / initial provider:** 2026-07-16 / Codex
-**Scope:** design only; replaces Phase-1 plaintext/base64 vault semantics; GitHub is the first adapter, not the abstraction
+**Status:** IMPLEMENTED (CORE, `feat/credential-vault`, draft PR #1469). Claude-family review = APPROVE with adaptations (`docs/audits/2026-07-16-...-claude-review.md`); hardened through seven Codex adversarial security-review rounds (`...-codex-review{,-2..7}.md`). Not yet wired into S2/S4/S5 callers (separate seams).
+**Date / initial provider:** 2026-07-16 / Codex (design) + Claude (CORE implementation)
+**Scope:** CORE build complete; replaces Phase-1 plaintext/base64 vault semantics; GitHub is the first adapter, not the abstraction
 
 ## Decision
 
@@ -77,12 +77,20 @@ class VaultBroker(Protocol):
             expected_version: int | None = None, expires_at=None) -> SecretDescriptor: ...
     def get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease: ...
     def delete(self, binding: SecretBinding, expected: SecretScope) -> None: ...
+    # First-class refresh (implemented) — the ONLY sanctioned way to rotate a
+    # one-use token; a plain put(replace) REFUSES rotating-token kinds.
+    def begin_refresh(self, binding, expected, holder, at_version) -> RefreshTicket | None: ...
+    def complete_refresh(self, binding, expected, ticket, value, *, expires_at=None) -> SecretDescriptor: ...
 ```
 
-- `SecretBytes`/`SecretLease` cannot stringify, serialize, pickle, or reveal in `repr`; lease buffers are short-lived and zeroed best-effort. Only provider adapters may read bytes.
-- `put(replace=..., expected_version=...)` is atomic CAS. A DB-backed exclusive per-ref lease surrounds one-time refresh exchanges; this serializes GitHub refresh and prevents two processes using the same refresh token.
-- Backend absence, missing/corrupt/ref-swapped records, scope mismatch, revoked/expired values, or failed attestation raise `CredentialUnavailable(code, ref)` with no provider body/value or backend path. `""`, `None`, process env, shared auth homes, and global credentials are forbidden fallbacks.
-- The binding's discriminated store selects exactly one backend; the backend re-derives/verifies ref, kind, scope, custody, and store identity from protected contents. Cross-store lookup is forbidden. `delete` checks scope and backend, tombstones the binding, then removes protected bytes; absence is `NOT_FOUND`, not success. Provider revocation is a separate adapter step.
+- `SecretBytes`/`SecretLease` cannot stringify, serialize, pickle, or reveal in `repr`; lease buffers are short-lived and zeroed best-effort. Only provider adapters may read bytes. `put`/`complete_refresh` reject empty and >1 MiB payloads at the boundary before any write.
+- `put(replace=..., expected_version=...)` is atomic CAS (both must be supplied together). **Refresh consume-before-mint (implemented high-water capability protocol):** `begin_refresh` atomically authenticates the current record and, only if `at_version` equals the authenticated current version, mints a random UNFORGEABLE capability (stored hashed under a monotonic **high-water** claim, one row per ref) and returns a `RefreshTicket`; the caller alone may then call the provider. `complete_refresh` requires presenting the exact minted capability (constant-time hash compare) and CAS-advances. `put(replace)` REFUSES `github_app_user_token`/`oauth2_generic`, so bypass is structurally impossible. A version can only be claimed if strictly higher than the high-water, so a straggler/replay cannot re-redeem a consumed one-use token.
+- Backend absence, missing/corrupt/ref-swapped records, scope mismatch, revoked/expired values, malformed refs/inputs, corrupt SQLite/row shapes, or failed attestation raise `CredentialUnavailable(code, ref)` with no provider body/value or backend path; corruption invalidates the cached attestation. `""`, `None`, process env, shared auth homes, and global credentials are forbidden fallbacks.
+- The binding's discriminated store selects exactly one backend; the backend re-derives/verifies ref, kind, scope, custody, and store identity from protected contents. Cross-store lookup is forbidden. **`delete` writes a durable, IRREVERSIBLE high-water tombstone (control-DB row, `deleted=1`, never removed) BEFORE removing the protected bytes**, so a restored/reappearing record after deletion is refused (`NOT_FOUND`) and never re-claimable — closing the two-domain (sidecar-file vs control-DB) restore race. Absence is `NOT_FOUND`, not success. Provider revocation is a separate adapter step.
+
+**Durability / storage (implemented).** Both SQLite stores use rollback-journal `journal_mode=DELETE` + `synchronous=EXTRA` (NOT WAL — the WAL-reset concurrent-writer bug ≤3.51.2; NOT TRUNCATE — EXTRA's extra fsync only holds in DELETE mode). Local DPAPI writes use a full `os.write` loop + fsync + Windows `MOVEFILE_WRITE_THROUGH`.
+
+**Honestly-unresolved limitations (deploy-validation release gates, not proven by `os._exit`):** (a) full power-cut / VM-reset durability of the rollback-journal + EXTRA guarantee is a documented deploy-validation test, not proven in-suite (`os._exit` proves process-crash only); (b) the separate vault-broker process / UID+capability-drop / socket boundary is production-infra integration; (c) the Windows local blob DACL is set + verified per-record by the library, but the narrowed-DACL deployment posture across service accounts is an installer concern.
 
 ## Chat OAuth connect / disconnect
 

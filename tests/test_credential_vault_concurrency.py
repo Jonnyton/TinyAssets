@@ -359,10 +359,10 @@ def test_refresh_claim_survives_hard_crash(tmp_path):
 def test_vault_db_durability_posture(tmp_path):
     be = _build(str(tmp_path / "v.db"), sodium.randombytes(32).hex(), "k1")
     info = be.durability_info()
-    assert info["synchronous"] == "EXTRA"  # ACID power-loss setting (not FULL)
-    # NOT WAL — avoids the SQLite WAL-reset concurrent-writer corruption bug.
-    assert info["journal_mode"].upper() in {"TRUNCATE", "DELETE"}
-    assert info["journal_mode"].upper() != "WAL"
+    # EXTRA's extra fsync is a DELETE-mode guarantee — TRUNCATE is not durable,
+    # WAL has the reset-corruption bug. Assert the EFFECTIVE (queried-back) pragmas.
+    assert info["synchronous"] == "EXTRA"
+    assert info["journal_mode"].upper() == "DELETE"
 
 
 # ---------------------------------------------------------------------------

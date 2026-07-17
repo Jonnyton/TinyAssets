@@ -547,6 +547,79 @@ def test_broker_protocol_includes_refresh(platform):
 
 
 # ===========================================================================
+# Review r7 finding 2 — deletion is an irreversible tombstone (restored data refused)
+# ===========================================================================
+
+
+def test_deleted_platform_restored_row_refused(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    row = conn.execute(
+        "SELECT * FROM vault_secrets WHERE ref = ?", (d.binding.ref,)
+    ).fetchone()
+    cols = [c[1] for c in conn.execute("PRAGMA table_info(vault_secrets)")]
+    conn.close()
+    platform.delete(d.binding, SCOPE)  # irreversible tombstone
+    # restore the deleted row (partial backup restore)
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    placeholders = ",".join(["?"] * len(cols))
+    conn.execute(
+        f"INSERT INTO vault_secrets ({','.join(cols)}) VALUES ({placeholders})", row
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CredentialUnavailable) as exc:
+        platform.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.NOT_FOUND  # tombstone refuses the restore
+
+
+@WINDOWS_ONLY
+def test_deleted_local_sidecar_reappears_refused(tmp_path):
+    be = DpapiVaultBackend(daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc")
+    be.attest()
+    store = VaultStore(custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1")
+    d = be.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    blob = be._blob_path(d.binding.ref)
+    saved = blob.read_bytes()
+    be.delete(d.binding, SCOPE)  # tombstone (control DB) + remove sidecar
+    # the sidecar reappears / is restored WITHOUT touching the control-DB tombstone
+    blob.write_bytes(saved)
+    with pytest.raises(CredentialUnavailable) as exc:
+        be.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.NOT_FOUND
+    with pytest.raises(CredentialUnavailable) as exc2:
+        be.begin_refresh(d.binding, SCOPE, "A", at_version=1)
+    assert exc2.value.code == VaultErrorCode.NOT_FOUND
+
+
+# ===========================================================================
+# Review r7 finding 3 — remaining typed-error escapes normalized
+# ===========================================================================
+
+
+def test_blob_column_wrong_storage_type_is_typed(platform, store, tmp_path):
+    d = platform.put(store, SCOPE, SecretKind.API_KEY, SecretBytes(b"x"))
+    conn = sqlite3.connect(str(tmp_path / "vault.db"))
+    conn.execute(
+        "UPDATE vault_secrets SET ciphertext = ? WHERE ref = ?",
+        ("now-a-text-column", d.binding.ref),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CredentialUnavailable) as exc:  # never a raw TypeError
+        platform.get(d.binding, SCOPE)
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+    assert platform._attested is None  # structural corruption invalidates the gate
+
+
+def test_begin_refresh_malformed_at_version_is_typed(platform, store):
+    d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"tok"))
+    with pytest.raises(CredentialUnavailable) as exc:  # never a raw ValueError
+        platform.begin_refresh(d.binding, SCOPE, "A", at_version="not-an-int")
+    assert exc.value.code == VaultErrorCode.CORRUPT_RECORD
+
+
+# ===========================================================================
 # Review r6 finding 1 — short writes must not destroy the existing credential
 # ===========================================================================
 
@@ -658,7 +731,7 @@ def test_put_replace_refused_for_rotating_kind(platform, store):
     assert d2.version == 2
 
 
-def test_claim_table_bounded_and_retired_on_delete(platform, store, tmp_path):
+def test_claim_table_bounded_and_tombstoned_on_delete(platform, store, tmp_path):
     d = platform.put(store, SCOPE, SecretKind.GITHUB_APP_USER_TOKEN, SecretBytes(b"t1"))
     b = d.binding
     for i in range(3):  # three refresh cycles
@@ -672,16 +745,16 @@ def test_claim_table_bounded_and_retired_on_delete(platform, store, tmp_path):
     finally:
         conn.close()
     assert n == 1  # high-water: one row per ref, never unbounded
-    # delete retires the claim
+    # delete leaves an IRREVERSIBLE tombstone (deleted=1), never removes the row
     platform.delete(b, SCOPE)
     conn = sqlite3.connect(str(tmp_path / "vault.db"))
     try:
-        n2 = conn.execute(
-            "SELECT COUNT(*) FROM vault_refresh_claims WHERE ref = ?", (b.ref,)
-        ).fetchone()[0]
+        row = conn.execute(
+            "SELECT deleted FROM vault_refresh_claims WHERE ref = ?", (b.ref,)
+        ).fetchone()
     finally:
         conn.close()
-    assert n2 == 0
+    assert row is not None and int(row[0]) == 1  # tombstone retained, consumed forever
 
 
 def test_attestation_fails_when_wrong_scope_returns_wrong_code(tmp_path):
