@@ -123,30 +123,50 @@ class FileKeyProvider:
         env = os.environ.get("TINYASSETS_VAULT_ACTIVE_KEY_ID", "").strip()
         if env:
             return env
-        marker = self._dir / self._ACTIVE_FILE
-        try:
-            value = marker.read_text(encoding="utf-8").strip()
-        except OSError:
-            raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE) from None
+        self._verify_dir_not_symlink()
+        # Read the active-marker with the same no-follow discipline as a key file.
+        value = self._read_secure(self._dir / self._ACTIVE_FILE).decode("utf-8").strip()
         if not value or "/" in value or "\\" in value or value.startswith("."):
             raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE)
         return value
 
-    def _verify_key_file_security(self, path: Path) -> None:
+    def _verify_dir_not_symlink(self) -> None:
         try:
-            st = os.lstat(path)
+            if stat.S_ISLNK(os.lstat(self._dir).st_mode):
+                raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
         except OSError:
             raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE) from None
-        # Symlink-swap defense on every platform.
-        if stat.S_ISLNK(st.st_mode):
-            raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
-        if not self._enforce_permissions or os.name != "posix":
-            return
-        if stat.S_IMODE(st.st_mode) & 0o077:
-            # group/other have access → not a root-only key
-            raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
-        if self._expected_uid is not None and st.st_uid != self._expected_uid:
-            raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
+
+    def _read_secure(self, path: Path) -> bytes:
+        """Open with O_NOFOLLOW, fstat the DESCRIPTOR, validate, then read.
+
+        Closes the lstat→read TOCTOU: the descriptor we validate is the same one
+        we read (a symlink swapped in between cannot redirect us). On POSIX we
+        also enforce mode/owner on the fd. On Windows ``O_NOFOLLOW`` is absent;
+        symlink creation there already needs privilege and ACLs govern.
+        """
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            # ELOOP (symlink with O_NOFOLLOW) or missing → fail closed.
+            import errno
+
+            if getattr(exc, "errno", None) == errno.ELOOP:
+                raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE) from None
+            raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE) from None
+        try:
+            st = os.fstat(fd)
+            if stat.S_ISLNK(st.st_mode):  # belt-and-suspenders
+                raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
+            if self._enforce_permissions and os.name == "posix":
+                if stat.S_IMODE(st.st_mode) & 0o077:
+                    raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
+                if self._expected_uid is not None and st.st_uid != self._expected_uid:
+                    raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
+            return os.read(fd, st.st_size if st.st_size > 0 else 4096)
+        finally:
+            os.close(fd)
 
     def get_key(self, key_id: str) -> bytes:
         if not key_id or "/" in key_id or "\\" in key_id or key_id.startswith("."):
@@ -154,12 +174,8 @@ class FileKeyProvider:
         cached = self._cache.get(key_id)
         if cached is not None:
             return cached
-        path = self._dir / f"{key_id}.bin"
-        self._verify_key_file_security(path)
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE) from None
+        self._verify_dir_not_symlink()
+        raw = self._read_secure(self._dir / f"{key_id}.bin")
         if len(raw) != KEK_BYTES:
             # A wrong-sized key is corruption, not a usable KEK — fail loud.
             raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE)
@@ -201,14 +217,29 @@ def identity_aad(
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def _reject_nan(_token: str) -> float:
+    # json.loads calls parse_constant for NaN / Infinity / -Infinity.
+    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
+
+
 def encode_record(record: dict[str, Any]) -> bytes:
-    """Canonical JSON for the authoritative record embedded in the payload."""
-    return json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    """Canonical JSON for the authoritative record embedded in the payload.
+
+    ``allow_nan=False`` refuses to serialize a ``NaN``/``Infinity`` — non-finite
+    metadata must never be persisted.
+    """
+    try:
+        return json.dumps(
+            record, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except ValueError as exc:  # non-finite float
+        raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from exc
 
 
 def decode_record(raw: bytes) -> dict[str, Any]:
     try:
-        obj = json.loads(raw.decode("utf-8"))
+        # parse_constant rejects NaN/Infinity that a tampered payload might carry.
+        obj = json.loads(raw.decode("utf-8"), parse_constant=_reject_nan)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from exc
     if not isinstance(obj, dict):

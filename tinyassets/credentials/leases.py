@@ -39,7 +39,48 @@ CREATE TABLE IF NOT EXISTS vault_refresh_leases (
     acquired_at REAL NOT NULL,
     expires_at  REAL NOT NULL
 );
+
+-- Atomic consume-before-mint: one durable claim per (ref, version). The claim
+-- is the exclusive RIGHT to redeem the refresh token of that version at the
+-- provider. Only the process that wins the INSERT may call the provider; a
+-- crash before the version advances leaves the claim in place (fail closed —
+-- the wedged version needs re-authorization, never a second redemption).
+CREATE TABLE IF NOT EXISTS vault_refresh_claims (
+    ref        TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    holder     TEXT NOT NULL,
+    claimed_at REAL NOT NULL,
+    PRIMARY KEY (ref, version)
+);
 """
+
+
+def claim_refresh(
+    conn: sqlite3.Connection, ref: str, version: int, holder: str, now: float
+) -> bool:
+    """Atomically claim the exclusive right to redeem ``(ref, version)``.
+
+    Returns True iff THIS caller won the claim (may now call the provider). A
+    False means the version was already claimed by someone (possibly a crashed
+    holder) — the caller MUST NOT call the provider and should re-read the store.
+    Must run inside an open transaction.
+    """
+    try:
+        conn.execute(
+            "INSERT INTO vault_refresh_claims(ref, version, holder, claimed_at) "
+            "VALUES(?,?,?,?)",
+            (ref, int(version), holder, now),
+        )
+    except sqlite3.IntegrityError:
+        return False
+    return True
+
+# NOTE: claims are NEVER pruned on advance. Deleting a consumed claim reopens a
+# window where a slow straggler that still holds version N as "current" could
+# re-claim (ref, N) and redeem T_N a SECOND time — exactly the token-reuse CVE.
+# The table grows one row per successful refresh (small, bounded by refresh
+# count); a safe long-retention GC of ancient claims is a future operational
+# concern, never a same-token deletion.
 
 
 def acquire_fenced(
@@ -214,6 +255,27 @@ class RefreshLeaseManager:
         try:
             yield conn
             conn.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def claim_refresh(self, ref: str, version: int, holder: str) -> bool:
+        """Atomically claim the redemption right for ``(ref, version)``.
+
+        True → caller alone may call the provider; False → already claimed, do
+        NOT call the provider. This is the consume-before-mint gate (the fenced
+        lease is only coarse coordination; THIS is the exactly-once guarantee).
+        """
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            won = claim_refresh(conn, ref, version, holder, time.time())
+            conn.execute("COMMIT")
+            return won
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
