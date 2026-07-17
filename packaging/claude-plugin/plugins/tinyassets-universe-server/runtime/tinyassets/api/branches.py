@@ -1713,6 +1713,16 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         if rs_err:
             return rs_err
     node_kind_arg = str(raw.get("node_kind", "") or "").strip()
+    # SECURITY (Codex S3 r11 #2): reject an UNKNOWN node_kind at the authoring
+    # boundary rather than silently persisting an unclassified node that the
+    # capability classifier would downgrade to the least-restricted "text" class.
+    from tinyassets.sandbox_policy import node_kind_is_known as _kind_known
+    if not _kind_known(node_kind_arg):
+        return (
+            f"node '{nid}' has unknown node_kind '{node_kind_arg}'. A node_kind "
+            f"must be empty or a recognized kind; refusing to store an "
+            f"unclassified node (fail closed)."
+        )
     # SECURITY (Codex ADAPT, PR #1349): a node is only approved when the
     # recorded approval hash matches the *effective* source_code being stored.
     # This is the authoring-time half of the provenance gate; the compiler
@@ -2110,16 +2120,70 @@ def _apply_node_updates(
         if err:
             return err
         node.enabled = bool(enabled)
-    if "requires_sandbox" in editable_updates:
-        # patch-loop S3: let update_node set/preserve the sandbox classification.
-        rs, err = _coerce_node_update_bool(
-            editable_updates["requires_sandbox"], "requires_sandbox",
+    # Codex S3 r11 #2/#3/#4: node_kind + requires_sandbox are SECURITY-relevant
+    # metadata. (#2) reject an unknown node_kind vocabulary rather than silently
+    # downgrading to the least-restricted "text" class; (#3) forbid a DOWNGRADE of
+    # the sandbox class (escalation stays allowed); (#4) any change to this
+    # metadata invalidates a source_code node's approval (the approval covered the
+    # old source+kind+sandbox tuple; a change must be re-reviewed). Computed
+    # against the node's pre-mutation capability so a downgrade can't slip through.
+    _touches_kind = "node_kind" in editable_updates
+    _touches_rs = "requires_sandbox" in editable_updates
+    if _touches_kind or _touches_rs:
+        from tinyassets.sandbox_policy import (
+            capability_rank as _cap_rank,
         )
-        if err:
-            return err
-        node.requires_sandbox = bool(rs)
-    if "node_kind" in editable_updates:
-        node.node_kind = str(editable_updates["node_kind"] or "").strip()
+        from tinyassets.sandbox_policy import (
+            node_capability as _node_cap,
+        )
+        from tinyassets.sandbox_policy import (
+            node_kind_is_known as _kind_known,
+        )
+        _old_cap = _node_cap(node)
+        _old_kind = str(getattr(node, "node_kind", "") or "").strip()
+        _old_rs = bool(getattr(node, "requires_sandbox", False))
+        _new_kind = (
+            str(editable_updates["node_kind"] or "").strip()
+            if _touches_kind else _old_kind
+        )
+        if _touches_kind and not _kind_known(_new_kind):
+            return (
+                f"Unknown node_kind '{_new_kind}' on node '{node.node_id}'. A "
+                f"node_kind must be empty or a recognized kind; refusing to store "
+                f"an unclassified node that would silently downgrade to the "
+                f"least-restricted class (fail closed)."
+            )
+        if _touches_rs:
+            _new_rs_val, _rs_err = _coerce_node_update_bool(
+                editable_updates["requires_sandbox"], "requires_sandbox",
+            )
+            if _rs_err:
+                return _rs_err
+            _new_rs = bool(_new_rs_val)
+        else:
+            _new_rs = _old_rs
+        _proposed = {
+            "source_code": getattr(node, "source_code", "") or "",
+            "node_kind": _new_kind,
+            "requires_sandbox": _new_rs,
+            "node_id": getattr(node, "node_id", "") or "",
+        }
+        _new_cap = _node_cap(_proposed)
+        if _cap_rank(_new_cap) < _cap_rank(_old_cap):
+            return (
+                f"Refusing to DOWNGRADE the sandbox class of node "
+                f"'{node.node_id}' ({_old_cap} → {_new_cap}). Security "
+                f"metadata (node_kind / requires_sandbox) may be escalated but "
+                f"never lowered; delete and recreate the node, or re-approve it "
+                f"under host review (fail closed)."
+            )
+        _security_changed = (_new_kind != _old_kind) or (_new_rs != _old_rs)
+        node.node_kind = _new_kind
+        node.requires_sandbox = _new_rs
+        # (#4) approval covered the OLD security metadata — invalidate it on any
+        # change so a stale approval can't ride a re-classified source_code node.
+        if _security_changed and (getattr(node, "source_code", "") or "").strip():
+            _clear_source_code_approval(node)
     for spec_field in _NODE_UPDATE_SPEC_FIELDS:
         if spec_field in editable_updates:
             val, err = _coerce_node_spec_update(
@@ -3252,6 +3316,58 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
             "error": "Branch has no nodes to patch.",
         })
 
+    # Codex S3 r11 #2/#3: node_kind / requires_sandbox are SECURITY metadata.
+    # patch_nodes is ATOMIC, so validate the whole batch BEFORE mutating: reject
+    # an unknown node_kind vocabulary (#2) and reject any per-node DOWNGRADE of the
+    # sandbox class (#3). Approval invalidation (#4) happens in the mutation loop.
+    if field in ("node_kind", "requires_sandbox"):
+        from tinyassets.sandbox_policy import (
+            capability_rank as _cap_rank,
+        )
+        from tinyassets.sandbox_policy import (
+            node_capability as _node_cap,
+        )
+        from tinyassets.sandbox_policy import (
+            node_kind_is_known as _kind_known,
+        )
+        if field == "node_kind" and not _kind_known(value):
+            return json.dumps({
+                "status": "rejected",
+                "error": (
+                    f"Unknown node_kind '{value}'. A node_kind must be empty or a "
+                    f"recognized kind; refusing to store an unclassified node that "
+                    f"would silently downgrade to the least-restricted class "
+                    f"(fail closed). Atomic — no node was patched."
+                ),
+            })
+        for node in staging.node_defs:
+            if node.node_id not in target_ids:
+                continue
+            _old_cap = _node_cap(node)
+            _proposed = {
+                "source_code": getattr(node, "source_code", "") or "",
+                "node_kind": (
+                    str(value).strip() if field == "node_kind"
+                    else str(getattr(node, "node_kind", "") or "").strip()
+                ),
+                "requires_sandbox": (
+                    bool(value) if field == "requires_sandbox"
+                    else bool(getattr(node, "requires_sandbox", False))
+                ),
+                "node_id": node.node_id,
+            }
+            _new_cap = _node_cap(_proposed)
+            if _cap_rank(_new_cap) < _cap_rank(_old_cap):
+                return json.dumps({
+                    "status": "rejected",
+                    "error": (
+                        f"Refusing to DOWNGRADE the sandbox class of node "
+                        f"'{node.node_id}' ({_old_cap} → {_new_cap}). Security "
+                        f"metadata (node_kind / requires_sandbox) may be escalated "
+                        f"but never lowered. Atomic — no node was patched."
+                    ),
+                })
+
     # Apply the field. prompt_template / source_code are mutually
     # exclusive — clear the other when setting one.
     #
@@ -3267,6 +3383,7 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
     for node in staging.node_defs:
         if node.node_id not in target_ids:
             continue
+        _old_field_val = getattr(node, field, None)
         setattr(node, field, value)
         if field == "prompt_template" and value:
             node.source_code = ""
@@ -3281,6 +3398,14 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
                 node.approved, node.source_code or "",
                 node.approved_source_hash or "",
             ):
+                _clear_source_code_approval(node)
+        elif field in ("node_kind", "requires_sandbox"):
+            # (#4) a change to security metadata invalidates a source_code node's
+            # approval — the approval covered the old source+kind+sandbox tuple, so
+            # a stale approval can't ride a re-classified node into execution.
+            if value != _old_field_val and (
+                getattr(node, "source_code", "") or ""
+            ).strip():
                 _clear_source_code_approval(node)
 
     old_version = int(source.get("version") or 1)

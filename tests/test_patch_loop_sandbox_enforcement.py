@@ -13,12 +13,17 @@ built here (see
 this slice does NOT run coding nodes under a hardened policy; it proves they
 cannot run at all until the runner lands. These tests prove:
 
-  (1) a repo-touching node (coding / repo_exec / repo_read — classified by the
-      STABLE ``node_kind``, with node_id backstops) FAILS CLOSED deterministically
-      at the graph choke point in ``_build_node``, before any ModelConfig /
-      provider / scratch / env code runs; ``coding_nodes_runnable()`` is a
-      hard-coded ``False`` that validate, get_status, the enqueue refusal, and the
-      runtime all read, so readiness never drifts from runtime;
+  (1) a repo-touching node (source_exec / coding / repo_exec / repo_read —
+      classified by the ACTUAL executable nature for source_code, else the STABLE
+      ``node_kind`` with node_id backstops) FAILS CLOSED deterministically at the
+      graph choke point in ``_build_node``, before any ModelConfig / provider /
+      scratch / env code runs; ``coding_nodes_runnable()`` is a hard-coded
+      ``False`` that validate, get_status, the enqueue refusal, and the runtime
+      all read, so readiness never drifts from runtime. A ``source_code`` node
+      (in-process host code) is ALWAYS ``source_exec`` regardless of
+      user-controlled ``node_kind`` / ``requires_sandbox`` — the Codex S3 r11
+      metadata-downgrade escape (approve → reclassify ``text`` → skip the gate)
+      cannot spoof it;
   (2) the ``draft_patch`` node class is repo-touching BY DEFAULT — a remix that
       renames the node still carries its ``node_kind`` and cannot escape the
       refusal;
@@ -1131,3 +1136,73 @@ def test_claude_text_node_spawns_closed_surface_argv(monkeypatch):
     assert captured[captured.index("--setting-sources") + 1] == "project"
     assert "--strict-mcp-config" in captured
     assert "--mcp-config" in captured
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r11 — source_code is in-process host code: it fails closed at the
+# sandbox choke-point regardless of user-controlled metadata (the escape).
+# --------------------------------------------------------------------------- #
+
+
+def _approved_source_node(node_id="n", *, node_kind="", requires_sandbox=False):
+    from tinyassets.branches import NodeDefinition
+
+    n = NodeDefinition(
+        node_id=node_id, display_name="N",
+        source_code="def run(state):\n    return {'proof': 'host code executed'}\n",
+        node_kind=node_kind, requires_sandbox=requires_sandbox,
+    )
+    n.mark_approved(approved_by="host")  # genuine approval (matching hash)
+    return n
+
+
+def test_source_code_node_fails_closed_at_choke_point():
+    """A source_code node is classified source_exec (repo/host-code touching) and
+    fails closed at the graph choke-point — the in-process ``exec`` never runs."""
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import (
+        node_capability,
+        node_requires_sandbox_runner,
+    )
+
+    n = _approved_source_node()
+    assert node_capability(n) == "source_exec"
+    assert node_requires_sandbox_runner(n) is True
+    fn = _build_node(n, provider_call=None, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_source_code_metadata_downgrade_still_fails_closed():
+    """The exact Codex r11 escape: approve a source_code node, then reclassify it
+    ``text`` / requires_sandbox=False. Classification is derived from the ACTUAL
+    source_code, not the mutable metadata — so it STILL fails closed and the
+    malicious host code is NEVER executed in-process."""
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import node_capability
+
+    n = _approved_source_node(node_kind="coding", requires_sandbox=True)
+    assert node_capability(n) == "source_exec"
+    # Downgrade the mutable metadata (the escape) — approval hash still matches.
+    n.node_kind = "text"
+    n.requires_sandbox = False
+    assert n.approved is True and n.approved_source_hash  # approval untouched
+    # Classification is unspoofable: still source_exec, still fails closed.
+    assert node_capability(n) == "source_exec"
+    fn = _build_node(n, provider_call=None, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_legacy_unclassified_approved_source_fails_closed():
+    """A legacy approved source_code node with NO node_kind and requires_sandbox
+    False (the pre-classification shape) also fails closed — approval alone can
+    never authorize in-process host-code execution in Phase 1."""
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import node_capability
+
+    n = _approved_source_node(node_kind="", requires_sandbox=False)
+    assert node_capability(n) == "source_exec"
+    fn = _build_node(n, provider_call=None, event_sink=None)
+    with pytest.raises(SandboxUnavailableError):
+        fn({})

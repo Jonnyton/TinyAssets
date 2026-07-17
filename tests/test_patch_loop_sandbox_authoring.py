@@ -375,3 +375,157 @@ def test_patch_nodes_rejects_bad_timeout_seconds(ext_env):
         branch_def_id=bid, field="timeout_seconds", value="45",
     )
     assert ok.get("status") != "rejected", ok
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r11 — mutable capability metadata must not bypass the sandbox gate.
+#   #2 reject unknown node_kind; #3 forbid a downgrade of the sandbox class;
+#   #4 a security-metadata change invalidates a source_code node's approval.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_branch_rejects_unknown_node_kind(ext_env):
+    # #2: an unrecognized node_kind must be REJECTED at authoring, never silently
+    # downgraded to the least-restricted "text" class.
+    us, _base = ext_env
+    spec = {
+        "name": "b", "entry_point": "n",
+        "node_defs": [{
+            "node_id": "n", "display_name": "N",
+            "prompt_template": "do: {x}", "node_kind": "totally_bogus_kind",
+        }],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "state_schema": [{"name": "x", "type": "str"}],
+    }
+    res = _call(us, "extensions", "build_branch", spec_json=json.dumps(spec))
+    assert res.get("status") != "built", res
+
+
+def test_update_node_rejects_unknown_node_kind(ext_env):
+    us, _base = ext_env
+    bid = _build(
+        us,
+        node={"node_id": "n", "display_name": "N", "prompt_template": "do: {x}"},
+        entry="n",
+    )
+    res = _call(
+        us, "extensions", "patch_branch", branch_def_id=bid,
+        changes_json=json.dumps([
+            {"op": "update_node", "node_id": "n", "node_kind": "bogus_kind"},
+        ]),
+    )
+    assert res.get("status") == "rejected", res
+
+
+def test_patch_nodes_rejects_unknown_node_kind(ext_env):
+    us, _base = ext_env
+    bid = _build(
+        us,
+        node={"node_id": "n", "display_name": "N", "prompt_template": "do: {x}"},
+        entry="n",
+    )
+    res = _call(
+        us, "extensions", "patch_nodes",
+        branch_def_id=bid, field="node_kind", value="bogus_kind",
+    )
+    assert res.get("status") == "rejected", res
+
+
+def test_update_node_forbids_sandbox_downgrade(ext_env):
+    # #3: a coding (repo-touching) node may NOT be downgraded to text.
+    us, _base = ext_env
+    bid = _build(
+        us,
+        node={"node_id": "c", "display_name": "C", "prompt_template": "do: {x}",
+              "node_kind": "coding"},
+        entry="c",
+    )
+    res = _call(
+        us, "extensions", "patch_branch", branch_def_id=bid,
+        changes_json=json.dumps([
+            {"op": "update_node", "node_id": "c", "node_kind": "text"},
+        ]),
+    )
+    assert res.get("status") == "rejected", res
+    # Escalation the other way (text → coding) stays allowed.
+    bid2 = _build(
+        us,
+        node={"node_id": "t", "display_name": "T", "prompt_template": "do: {x}"},
+        entry="t", name="b2",
+    )
+    ok = _call(
+        us, "extensions", "patch_branch", branch_def_id=bid2,
+        changes_json=json.dumps([
+            {"op": "update_node", "node_id": "t", "requires_sandbox": True},
+        ]),
+    )
+    assert ok.get("status") != "rejected", ok
+
+
+def test_patch_nodes_forbids_sandbox_downgrade(ext_env):
+    us, _base = ext_env
+    bid = _build(
+        us,
+        node={"node_id": "c", "display_name": "C", "prompt_template": "do: {x}",
+              "requires_sandbox": True},
+        entry="c",
+    )
+    res = _call(
+        us, "extensions", "patch_nodes",
+        branch_def_id=bid, field="requires_sandbox", value="false",
+    )
+    assert res.get("status") == "rejected", res
+
+
+def test_update_node_clears_source_approval_on_metadata_change(ext_env):
+    # #4: a source_code node's approval is bound to its security metadata; a change
+    # to node_kind / requires_sandbox invalidates the approval (re-review needed).
+    us, base = ext_env
+    src = "def run(state):\n    return {}\n"
+    bid = _build(
+        us,
+        node={"node_id": "sc", "display_name": "Custom", "source_code": src},
+        entry="sc",
+    )
+    # Genuinely approve the source_code node via the host approval action.
+    appr = _call(
+        us, "extensions", "approve_source_code",
+        branch_def_id=bid, node_id="sc", reason="reviewed",
+    )
+    assert appr.get("status") == "approved", appr
+    before = _node(_load(base, bid), "sc")
+    assert before["approved"] is True and before["approved_source_hash"], before
+    # Escalate node_kind (allowed direction) — the metadata change must still
+    # invalidate the approval, since it covered the old source+kind+sandbox tuple.
+    res = _call(
+        us, "extensions", "patch_branch", branch_def_id=bid,
+        changes_json=json.dumps([
+            {"op": "update_node", "node_id": "sc", "node_kind": "coding"},
+        ]),
+    )
+    assert res.get("status") != "rejected", res
+    after = _node(_load(base, bid), "sc")
+    assert after["approved"] is False, after
+    assert not after.get("approved_source_hash"), after
+
+
+def test_run_branch_version_fails_closed_on_malformed_snapshot(ext_env, monkeypatch):
+    # #5: a version-run must FAIL CLOSED on an unclassifiable snapshot, not
+    # continue into execution.
+    from tinyassets.api import runs as runs_mod
+
+    us, _base = ext_env
+
+    class _BV:
+        # A non-dict snapshot makes BranchDefinition.from_dict raise → the queue
+        # gate must classify this as unrunnable and refuse (never execute).
+        snapshot = "this-is-not-a-branch-dict"
+
+    monkeypatch.setattr(
+        "tinyassets.branch_versions.get_branch_version", lambda *a, **k: _BV(),
+    )
+    res = json.loads(
+        runs_mod._action_run_branch_version({"branch_version_id": "bv-x"})
+    )
+    assert res.get("sandbox_blocked") is True, res
+    assert "run_id" not in res, res

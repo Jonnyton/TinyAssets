@@ -1845,21 +1845,34 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             })
         recursion_limit_override = _rl_val
 
-    # Codex r10 #1: refuse a sandbox-blocked version snapshot at QUEUE TIME too.
-    # Best-effort reconstruct from the immutable snapshot; if it can't be resolved
-    # here (not-found / schema drift), defer to the executor's canonical error
-    # handling below rather than masking it.
+    # Codex r11 #5: refuse a sandbox-blocked version snapshot at QUEUE TIME, and
+    # FAIL CLOSED on a malformed/unclassifiable snapshot. Only a not-found (the
+    # lookup returns None) defers to the executor's canonical not-found error —
+    # a reconstruction or classification error must NOT continue into execution
+    # (the r10 code caught every exception and fell through, contradicting the
+    # "all three enqueue paths refuse" guarantee).
+    from tinyassets.branch_versions import get_branch_version
     try:
-        from tinyassets.branch_versions import get_branch_version
         _bv = get_branch_version(_base_path(), branch_version_id=bvid)
-        if _bv is not None:
+    except Exception:  # noqa: BLE001 — a lookup failure defers to the executor,
+        _bv = None      # which re-looks-up and returns the canonical not-found.
+    if _bv is not None:
+        try:
             from tinyassets.branches import BranchDefinition as _BranchDef
             _version_branch = _BranchDef.from_dict(_bv.snapshot)
             _sandbox_refusal = _sandbox_enqueue_refusal(_version_branch)
-            if _sandbox_refusal is not None:
-                return _sandbox_refusal
-    except Exception:  # noqa: BLE001 — reconstruct errors surface via executor
-        pass
+        except Exception as _snap_exc:  # noqa: BLE001 — unclassifiable ⇒ fail closed
+            return json.dumps({
+                "error": (
+                    "Branch version snapshot could not be reconstructed or "
+                    "classified for the sandbox gate; refusing to run it "
+                    f"(fail closed): {type(_snap_exc).__name__}: {_snap_exc}"
+                ),
+                "sandbox_blocked": True,
+                "branch_version_id": bvid,
+            })
+        if _sandbox_refusal is not None:
+            return _sandbox_refusal
 
     try:
         outcome = execute_branch_version_async(

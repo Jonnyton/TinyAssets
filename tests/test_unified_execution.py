@@ -23,6 +23,24 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _sandbox_runner_present(monkeypatch):
+    """Codex S3 r11 #1: a ``source_code`` node is in-process host code and FAILS
+    CLOSED in Phase 1 (no per-job sandbox runner). These tests exercise source_code
+    EXECUTION MECHANICS — a Phase-2 concern — so they simulate the runner being
+    present via the single readiness gate ``coding_nodes_runnable``. The Phase-1
+    fail-closed posture itself is covered by
+    ``tests/test_patch_loop_sandbox_enforcement.py`` and the r11 regression tests
+    in ``tests/test_patch_loop_sandbox_authoring.py``; the production default here
+    is unchanged (still fail-closed)."""
+    import tinyassets.sandbox_policy as _sp
+
+    monkeypatch.setattr(
+        _sp, "coding_nodes_runnable", lambda: (True, "test: runner present"),
+    )
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
 # ───────────────────────────────────────────────────────────────────────

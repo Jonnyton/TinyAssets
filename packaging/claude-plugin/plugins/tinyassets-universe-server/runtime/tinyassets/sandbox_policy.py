@@ -69,6 +69,28 @@ _REPO_READ_BACKSTOP_IDS: frozenset[str] = frozenset({"investigate"})
 # Back-compat name kept for readers that imported it.
 SANDBOX_DEFAULT_NODE_IDS: frozenset[str] = _CODING_BACKSTOP_IDS
 
+# The recognized TEXT node_kinds (empty == the plain-prompt default). A non-empty
+# node_kind outside the union of these + the repo-touching sets is UNKNOWN and
+# must be REJECTED at the authoring boundary (Codex S3 r11 #2) — never silently
+# downgraded to the least-restricted "text" class. ``node_kind_is_known`` is the
+# single vocabulary check the authoring surfaces share.
+TEXT_NODE_KINDS: frozenset[str] = frozenset({
+    "", "text", "prompt", "prompt_template", "llm", "writer", "generate",
+    "summarize", "transform", "classify", "extract", "opaque", "invoke",
+})
+
+# The complete recognized node_kind vocabulary (repo-touching ∪ text).
+_KNOWN_NODE_KINDS: frozenset[str] = (
+    CODING_NODE_KINDS | REPO_EXEC_NODE_KINDS | REPO_READ_NODE_KINDS
+    | TEXT_NODE_KINDS
+)
+
+# The most-dangerous capability: a ``source_code`` node runs arbitrary Python
+# IN-PROCESS with full builtins (graph_compiler._build_source_code_node → exec).
+# It is a host-code-execution surface stronger than a subprocess coding agent, so
+# it is repo-touching and fails closed in Phase 1 like coding/repo_exec/repo_read.
+_SOURCE_EXEC_CAPABILITY = "source_exec"
+
 
 def _node_attr(node: Any, name: str) -> Any:
     """Read *name* from a NodeDefinition object OR a raw node_def dict.
@@ -82,14 +104,42 @@ def _node_attr(node: Any, name: str) -> Any:
     return getattr(node, name, None)
 
 
-def node_capability(node: Any) -> str:
-    """Return the node's capability: ``coding`` | ``repo_exec`` | ``repo_read``
-    | ``text``.
+def node_has_source_code(node: Any) -> bool:
+    """True when the node carries non-empty in-process ``source_code``.
 
-    Precedence: the STABLE ``node_kind`` capability first (survives a rename), then
-    the explicit ``requires_sandbox`` flag (repo-write intent), then the
-    reference-design node_id backstops.
+    Derived from the node's ACTUAL executable nature, NEVER from user-editable
+    ``node_kind`` / ``requires_sandbox`` metadata — that mutable metadata was the
+    Codex S3 r11 host-code-execution escape (approve a source_code node, then
+    reclassify it ``text`` to skip the sandbox gate while approval still rode the
+    unchanged source hash). A source_code node is in-process host code and can
+    never be made to look safe by editing its metadata.
     """
+    return bool(str(_node_attr(node, "source_code") or "").strip())
+
+
+def node_kind_is_known(node_kind: Any) -> bool:
+    """True when *node_kind* is in the recognized vocabulary (repo-touching ∪
+    text ∪ empty). Authoring surfaces reject an UNKNOWN non-empty node_kind
+    rather than silently downgrading it to the least-restricted ``text`` class
+    (Codex S3 r11 #2)."""
+    return str(node_kind or "").strip().lower() in _KNOWN_NODE_KINDS
+
+
+def node_capability(node: Any) -> str:
+    """Return the node's capability: ``source_exec`` | ``coding`` | ``repo_exec``
+    | ``repo_read`` | ``text``.
+
+    Precedence (most-restrictive first, unspoofable signals before mutable ones):
+    an in-process ``source_code`` adapter (host code, ALWAYS sandbox-required
+    regardless of metadata), then the STABLE ``node_kind`` capability (survives a
+    rename), then the explicit ``requires_sandbox`` flag, then the reference-design
+    node_id backstops.
+    """
+    # HIGHEST precedence, unspoofable (Codex S3 r11 #1): a source_code node is
+    # in-process host-code execution. No user-controlled metadata can downgrade
+    # it below sandbox-required.
+    if node_has_source_code(node):
+        return _SOURCE_EXEC_CAPABILITY
     kind = str(_node_attr(node, "node_kind") or "").strip().lower()
     if kind in CODING_NODE_KINDS:
         return "coding"
@@ -109,9 +159,33 @@ def node_capability(node: Any) -> str:
     return "text"
 
 
+# Sandbox class ordering (least → most restricted). Used to detect a security
+# DOWNGRADE at the mutation surface (Codex S3 r11 #3): metadata may escalate a
+# node's sandbox class but never lower it. ``source_exec`` is the strongest
+# (in-process host code); ``text`` is the only runnable class in Phase 1.
+_CAPABILITY_RANK: dict[str, int] = {
+    "text": 0,
+    "repo_read": 1,
+    "repo_exec": 2,
+    "coding": 3,
+    _SOURCE_EXEC_CAPABILITY: 4,
+}
+
+
+def capability_rank(capability: str) -> int:
+    """Return the sandbox-class rank of *capability* (higher == more restricted).
+
+    An unrecognized capability ranks as the MAXIMUM (fail closed) so a future
+    capability is never treated as a downgrade target."""
+    return _CAPABILITY_RANK.get(
+        str(capability or "").strip().lower(), max(_CAPABILITY_RANK.values()),
+    )
+
+
 def node_requires_sandbox_runner(node: Any) -> bool:
-    """True when *node* is repo-touching (coding / repo_exec / repo_read) and so
-    requires the per-job sandbox runner — i.e. it fails closed in this deploy."""
+    """True when *node* is repo-touching / host-code-executing (source_exec /
+    coding / repo_exec / repo_read) and so requires the per-job sandbox runner —
+    i.e. it fails closed in this deploy. Only a plain ``text`` node runs."""
     return node_capability(node) != "text"
 
 
@@ -140,11 +214,12 @@ def coding_nodes_runnable() -> "tuple[bool, str]":
     future runner slice replaces the hard-coded False with real runner detection.
     """
     return False, (
-        "repo-touching nodes (coding / repo-exec / repo-read) require the per-job "
-        "sandbox runner subsystem (prepared per-job checkout + tenant isolation + "
-        "scoped credentials + egress/resource limits), which is NOT available in "
-        "this deployment. They fail closed on every provider until the runner "
-        "lands (a future slice). Use a design-only / text-only branch."
+        "repo-touching / in-process code nodes (source_code / coding / repo-exec "
+        "/ repo-read) require the per-job sandbox runner subsystem (prepared "
+        "per-job checkout + tenant isolation + scoped credentials + egress/resource "
+        "limits), which is NOT available in this deployment. They fail closed on "
+        "every provider until the runner lands (a future slice). Use a design-only "
+        "/ text-only (prompt_template) branch."
     )
 
 
@@ -215,8 +290,12 @@ __all__ = [
     "CODING_NODE_KINDS",
     "REPO_EXEC_NODE_KINDS",
     "REPO_READ_NODE_KINDS",
+    "TEXT_NODE_KINDS",
     "SANDBOX_DEFAULT_NODE_IDS",
     "node_capability",
+    "node_has_source_code",
+    "node_kind_is_known",
+    "capability_rank",
     "node_requires_sandbox_runner",
     "node_coding_capability",
     "node_requires_sandbox",

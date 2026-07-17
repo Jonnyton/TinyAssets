@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 import tinyassets.api.helpers as helpers
@@ -30,6 +31,22 @@ from tinyassets.branches import (
     NodeDefinition,
 )
 from tinyassets.graph_compiler import NodeEnqueueContext, compile_branch
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_runner_present(monkeypatch):
+    """Codex S3 r11 #1: the enqueue-driver ``source_code`` node is in-process host
+    code and FAILS CLOSED in Phase 1 (no per-job sandbox runner). In-node enqueue
+    is a Phase-2 concern, so this test simulates the runner being present via the
+    single readiness gate ``coding_nodes_runnable``. The Phase-1 fail-closed posture
+    is covered by ``tests/test_patch_loop_sandbox_enforcement.py``; the production
+    default is unchanged (still fail-closed)."""
+    import tinyassets.sandbox_policy as _sp
+
+    monkeypatch.setattr(
+        _sp, "coding_nodes_runnable", lambda: (True, "test: runner present"),
+    )
+
 
 _BUDGET = 5
 _RUNS = 8  # concurrent branch runs

@@ -35,6 +35,22 @@ from tinyassets.graph_compiler import (
     compile_branch,
 )
 
+
+@pytest.fixture(autouse=True)
+def _sandbox_runner_present(monkeypatch):
+    """Codex S3 r11 #1: a ``source_code`` node (the enqueue driver here) is
+    in-process host code and FAILS CLOSED in Phase 1 (no per-job sandbox runner).
+    In-node enqueue is a Phase-2 concern, so these tests simulate the runner being
+    present via the single readiness gate ``coding_nodes_runnable``. The Phase-1
+    fail-closed posture is covered by ``tests/test_patch_loop_sandbox_enforcement.py``;
+    the production default is unchanged (still fail-closed)."""
+    import tinyassets.sandbox_policy as _sp
+
+    monkeypatch.setattr(
+        _sp, "coding_nodes_runnable", lambda: (True, "test: runner present"),
+    )
+
+
 ENQUEUE_ONE = (
     "def run(state):\n"
     "    r = invoke_mcp_action('enqueue_branch_run',\n"
