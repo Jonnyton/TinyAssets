@@ -2332,6 +2332,7 @@ def list_visible_published_branch_ids(
     base_path: str | Path,
     *,
     viewer: str = "",
+    author: str = "",
     limit: int = 0,
     offset: int = 0,
 ) -> list[str]:
@@ -2343,6 +2344,12 @@ def list_visible_published_branch_ids(
     a cursor. branch_definitions (visibility) lives in ``.tinyassets.db`` and
     branch_versions (active status) in ``.runs.db``, so the runs DB is ATTACHed
     and joined. ``viewer`` empty = strictly public (the directory surface).
+
+    Codex r14 #4: ``author``, when set, is an ADDITIONAL predicate applied inside
+    the SQL (before LIMIT/OFFSET). The published listing forwarded ``author`` but
+    dropped it here, so filtering published designs by author was a silent no-op.
+    It composes with the visibility clause (you still only see public rows plus
+    your own), it does not widen visibility.
     """
     from tinyassets.branch_versions import initialize_branch_versions_db
     from tinyassets.runs import runs_db_path
@@ -2352,11 +2359,15 @@ def list_visible_published_branch_ids(
     runs_db = str(runs_db_path(base_path))
 
     if viewer:
-        vis_clause = "(bd.visibility = 'public' OR bd.author = ?)"
+        clauses = ["(bd.visibility = 'public' OR bd.author = ?)"]
         params: list[Any] = [viewer]
     else:
-        vis_clause = "bd.visibility = 'public'"
+        clauses = ["bd.visibility = 'public'"]
         params = []
+    if author:
+        clauses.append("bd.author = ?")
+        params.append(author)
+    where = " AND ".join(clauses)
     page = ""
     if limit and limit > 0:
         page = "LIMIT ? OFFSET ?"
@@ -2371,7 +2382,7 @@ def list_visible_published_branch_ids(
                 FROM branch_definitions bd
                 JOIN rdb.branch_versions v
                     ON v.branch_def_id = bd.branch_def_id AND v.status = 'active'
-                WHERE {vis_clause}
+                WHERE {where}
                 GROUP BY bd.branch_def_id
                 ORDER BY latest DESC, bd.branch_def_id ASC
                 {page}

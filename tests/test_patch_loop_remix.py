@@ -532,6 +532,48 @@ def test_designs_listing_is_per_viewer(data_dir, monkeypatch):
     assert bid not in bob_ids
 
 
+def test_published_designs_filter_by_author(data_dir, monkeypatch):
+    # Codex r14 #4: read_graph(target=designs, author=X) must filter published
+    # designs to author X INSIDE the SQL (before pagination), not silently
+    # ignore the param. Two authors each publish a PUBLIC design; filtering by
+    # one returns only theirs, and it composes with (never widens) visibility.
+    from tinyassets.api.branches import _ext_branch_build, _ext_branch_list, _ext_branch_patch
+
+    def _publish_public(author: str, name: str) -> str:
+        _actor(monkeypatch, author)
+        bid = json.loads(_ext_branch_build({"spec_json": json.dumps({
+            "name": name,
+            "author": author,
+            "entry_point": "n",
+            "node_defs": [{"node_id": "n", "display_name": "N",
+                           "prompt_template": "x"}],
+            "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        })}))["branch_def_id"]
+        _ext_branch_patch({  # patch publishes a version -> discoverable design
+            "branch_def_id": bid,
+            "changes_json": json.dumps([
+                {"op": "set_description", "description": "publish"},
+            ]),
+        })
+        return bid
+
+    alice_bid = _publish_public("alice", "alice pub")
+    bob_bid = _publish_public("bob", "bob pub")
+
+    # Filtering the published listing by author=alice returns ONLY alice's design
+    # (the param was previously a silent no-op — both would have listed).
+    listed = json.loads(_ext_branch_list({"scope": "published", "author": "alice"}))
+    ids = {b["branch_def_id"] for b in listed["branches"]}
+    assert alice_bid in ids, listed
+    assert bob_bid not in ids, listed
+    # Sanity: unfiltered, both public designs list.
+    both = {
+        b["branch_def_id"]
+        for b in json.loads(_ext_branch_list({"scope": "published"}))["branches"]
+    }
+    assert {alice_bid, bob_bid} <= both
+
+
 # ── Remix guidance is honest about the sandbox gate (F1(i)) ─────────────────
 
 
@@ -1416,12 +1458,15 @@ def test_remix_provenance_returned_error_deletes_child(data_dir, monkeypatch):
     before = {b["branch_def_id"] for b in list_branch_definitions(data_dir)}
     monkeypatch.setattr(
         market, "_action_record_remix",
-        lambda kw: json.dumps({"error": "cycle detected"}),
+        lambda kw: json.dumps({"error": "cycle detected: internal ledger node 7"}),
     )
     out = json.loads(write_graph(target="remix", branch_id=parent))
     assert out["status"] == "rejected"
     assert "provenance" in out["error"].lower()
-    # The orphan child was removed — no new branch persisted.
+    # Codex r14 #5: the internal reason must NOT leak to the chatbot user.
+    assert "cycle detected" not in out["error"]
+    assert "internal ledger node 7" not in out["error"]
+    # The orphan child was removed — no new branch persisted (verified cleanup).
     assert {b["branch_def_id"] for b in list_branch_definitions(data_dir)} == before
 
 
@@ -1430,7 +1475,7 @@ def test_remix_provenance_exception_deletes_child(data_dir, monkeypatch):
     from tinyassets.daemon_server import list_branch_definitions
 
     def _boom(kw):
-        raise RuntimeError("attribution db down")
+        raise RuntimeError("attribution db down at 10.0.0.5")
 
     seed_reference_designs(data_dir)
     parent = _reference_bid(data_dir)
@@ -1439,7 +1484,41 @@ def test_remix_provenance_exception_deletes_child(data_dir, monkeypatch):
     out = json.loads(write_graph(target="remix", branch_id=parent))
     assert out["status"] == "rejected"
     assert "provenance" in out["error"].lower()
+    # The raw exception type/message must NOT leak (r14 #5, security).
+    assert "RuntimeError" not in out["error"]
+    assert "attribution db down" not in out["error"]
+    assert "10.0.0.5" not in out["error"]
     assert {b["branch_def_id"] for b in list_branch_definitions(data_dir)} == before
+
+
+def test_remix_provenance_cleanup_failure_reports_orphan_may_remain(
+    data_dir, monkeypatch,
+):
+    # Codex r14 #5: when the compensating delete FAILS, the response must not
+    # falsely claim the orphan was removed. It verifies the row still exists and
+    # returns an opaque message noting a partial copy may remain (logged for
+    # maintenance), never the raw internal cause.
+    import tinyassets.api.market as market
+    import tinyassets.daemon_server as ds
+
+    seed_reference_designs(data_dir)
+    parent = _reference_bid(data_dir)
+
+    def _boom(kw):
+        raise RuntimeError("attribution db down")
+
+    def _delete_fails(base_path, *, branch_def_id):
+        raise RuntimeError("delete blocked: db locked")
+
+    monkeypatch.setattr(market, "_action_record_remix", _boom)
+    monkeypatch.setattr(ds, "delete_branch_definition", _delete_fails)
+    out = json.loads(write_graph(target="remix", branch_id=parent))
+    assert out["status"] == "rejected"
+    assert "provenance" in out["error"].lower()
+    # Honest about the failed cleanup, opaque about the cause.
+    assert "may remain" in out["error"].lower()
+    assert "db locked" not in out["error"]
+    assert "RuntimeError" not in out["error"]
 
 
 # ── Envelope identity types (Codex latest-model F5) ─────────────────────────

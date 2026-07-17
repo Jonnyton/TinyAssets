@@ -595,6 +595,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         published_ids = list_visible_published_branch_ids(
             _base_path(),
             viewer="" if public_only else actor,
+            author=(kwargs.get("author") or "").strip(),
             limit=limit,
             offset=offset,
         )
@@ -3979,6 +3980,86 @@ def _design_needs_attested_sandbox(node_defs: Any) -> bool:
     return False
 
 
+def _abort_remix_after_child_built(
+    child_id: str,
+    *,
+    internal_detail: str,
+    log_context: str,
+    provenance_maybe_partial: bool,
+) -> str:
+    """Abort a remix after the child branch was built (Codex r14 #5, security).
+
+    Three things the naive path got wrong:
+
+    1. **Do not leak internals.** The raw failure cause (exception type/message,
+       or the upstream error string from ``_action_record_remix``) can carry
+       actor ids, ledger internals, or stack detail. It is logged SERVER-SIDE
+       and NEVER returned to the chatbot user, who gets a stable opaque message.
+    2. **Verify the compensation.** ``delete_branch_definition`` returns whether
+       a row was deleted, and can itself raise; either way the authoritative
+       signal is "does the orphan row still exist?" — so we re-check and report
+       honestly instead of unconditionally claiming "the orphan copy was
+       removed."
+    3. **Partially-committed provenance.** When provenance recording RAISED we
+       cannot know whether the lineage edge was written; that possibility is
+       logged for maintenance reconciliation rather than silently ignored.
+    """
+    import tinyassets.daemon_server as _ds
+
+    logger.error(
+        "remix provenance %s for child %s: %s",
+        log_context, child_id, internal_detail,
+    )
+    if provenance_maybe_partial:
+        logger.error(
+            "remix provenance may be PARTIALLY COMMITTED for child %s "
+            "(recording raised mid-operation) — a dangling lineage edge may "
+            "need maintenance reconciliation", child_id,
+        )
+
+    # Best-effort cleanup that never raises out of here.
+    deleted_row = False
+    try:
+        deleted_row = _ds.delete_branch_definition(
+            _base_path(), branch_def_id=child_id,
+        )
+    except Exception:  # noqa: BLE001 — cleanup must not raise; report instead
+        logger.exception(
+            "remix orphan cleanup raised for child %s (%s)", child_id, log_context,
+        )
+
+    # Authoritative check: is the orphan actually gone?
+    still_present = True
+    try:
+        _ds.get_branch_definition(_base_path(), branch_def_id=child_id)
+    except KeyError:
+        still_present = False
+    except Exception:  # noqa: BLE001 — cannot confirm -> assume it may remain
+        logger.exception(
+            "remix orphan existence re-check failed for child %s", child_id,
+        )
+
+    if still_present:
+        logger.error(
+            "remix orphan child %s STILL PRESENT after cleanup "
+            "(delete_row=%s) — needs admin attention", child_id, deleted_row,
+        )
+        note = (
+            " A partial working copy may remain and will be reconciled by "
+            "maintenance; you can safely retry."
+        )
+    else:
+        note = " No partial copy remains; you can safely retry."
+
+    return json.dumps({
+        "status": "rejected",
+        "error": (
+            "remix could not be completed because its provenance could not be "
+            "recorded." + note
+        ),
+    })
+
+
 def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
     """Fork-copy a PUBLISHED design into the caller's own branch + record it.
 
@@ -3992,7 +4073,6 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
     from tinyassets.branch_versions import branch_has_bound_fields, list_branch_versions
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import (
-        delete_branch_definition,
         get_branch_definition,
     )
 
@@ -4057,27 +4137,27 @@ def _ext_branch_remix_design(kwargs: dict[str, Any]) -> str:
             "actor_id": _current_actor(),
         }))
     except Exception as exc:  # noqa: BLE001 - compensate then fail loud
-        delete_branch_definition(_base_path(), branch_def_id=child_id)
-        return json.dumps({
-            "status": "rejected",
-            "error": (
-                "remix aborted: recording provenance raised "
-                f"{type(exc).__name__}: {exc}. The orphan copy was removed."
-            ),
-        })
+        # RAISED mid-operation: provenance MAY be partially committed. Log the
+        # cause server-side, verify cleanup, return an opaque error (r14 #5).
+        return _abort_remix_after_child_built(
+            child_id,
+            internal_detail=f"{type(exc).__name__}: {exc}",
+            log_context="raised",
+            provenance_maybe_partial=True,
+        )
     if not isinstance(provenance, dict) or provenance.get("error"):
-        delete_branch_definition(_base_path(), branch_def_id=child_id)
+        # Structured error return implies no commit; still log the internal
+        # reason server-side and return an opaque error to the user (r14 #5).
         reason = (
             provenance.get("error")
             if isinstance(provenance, dict) else "malformed provenance response"
         )
-        return json.dumps({
-            "status": "rejected",
-            "error": (
-                f"remix aborted: recording provenance failed ({reason}). "
-                "The orphan copy was removed."
-            ),
-        })
+        return _abort_remix_after_child_built(
+            child_id,
+            internal_detail=str(reason),
+            log_context="returned-error",
+            provenance_maybe_partial=False,
+        )
 
     # Honest next-steps guidance (Codex r12 #3): do NOT instruct users to bind
     # values here — the platform never stores them. A design with binding SLOTS
