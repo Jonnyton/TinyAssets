@@ -320,17 +320,16 @@ def _content_hash_quarantined(
     is the Fable belt-and-braces for the un-ORDER-BY'd dedup SELECT: if a
     legitimate active same-hash version already exists, the reference is fine.
     """
-    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branch_versions import get_versions_by_content_hash
 
-    versions = list_branch_versions(base_path, branch_def_id, limit=200)
-    has_rolled_back = any(
-        v.content_hash == content_hash and v.status == "rolled_back"
-        for v in versions
-    )
-    has_active = any(
-        v.content_hash == content_hash and (v.status or "active") == "active"
-        for v in versions
-    )
+    # DIRECT indexed lookup by (branch_def_id, content_hash), NOT a bounded
+    # LIMIT-N history scan (Codex r20 #3): a bounded scan could miss the
+    # rolled-back / active rows for this exact hash once a design had >N total
+    # versions, wrongly clearing (or asserting) quarantine. This returns exactly
+    # the versions carrying this content, regardless of total version count.
+    same_hash = get_versions_by_content_hash(base_path, branch_def_id, content_hash)
+    has_rolled_back = any(v.status == "rolled_back" for v in same_hash)
+    has_active = any((v.status or "active") == "active" for v in same_hash)
     return has_rolled_back and not has_active
 
 
@@ -407,7 +406,7 @@ def _reference_row_is_healthy(
     failed. Also catches an interrupted publication (active version whose content
     != the authoritative artifact).
     """
-    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.branch_versions import get_active_version_by_content_hash
     from tinyassets.daemon_server import get_branch_definition
 
     full = get_branch_definition(base_path, branch_def_id=branch_def_id)
@@ -423,10 +422,16 @@ def _reference_row_is_healthy(
     # (re-overwrites with an empty goal + reserved author).
     if (full.get("goal_id") or "") or (full.get("author") or "") != RESERVED_SEED_AUTHOR:
         return False
-    versions = list_branch_versions(base_path, branch_def_id, limit=200)
-    return any(
-        (v.status or "active") == "active" and v.content_hash == authoritative_hash
-        for v in versions
+    # DIRECT indexed lookup for the ACTIVE version at the authoritative hash, NOT
+    # a bounded LIMIT-N history scan (Codex r20 #3): with >N versions a bounded
+    # scan missed a restored older authoritative-hash version, so a healthy
+    # reference read UNHEALTHY and reseed churned. The indexed query finds it
+    # regardless of version count.
+    return (
+        get_active_version_by_content_hash(
+            base_path, branch_def_id, authoritative_hash,
+        )
+        is not None
     )
 
 

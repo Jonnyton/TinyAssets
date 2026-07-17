@@ -639,7 +639,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             from tinyassets.branch_versions import (
                 _canonical_snapshot,
                 compute_content_hash,
-                list_branch_versions,
+                get_active_version_by_content_hash,
             )
 
             # Discovery must surface an ACTIVE published version whose content
@@ -653,6 +653,12 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             # matches, the branch's live content has no active version (rolled
             # back / quarantined) => it must vanish from discovery.
             #
+            # DIRECT INDEXED lookup by (branch_def_id, content_hash, active),
+            # NOT a bounded LIMIT-N history scan (Codex r20 #3): a bounded scan
+            # missed the authoritative active version once a branch had >N
+            # versions, so a live reference vanished from discovery. The indexed
+            # query finds it regardless of version count.
+            #
             # Integration convergence (S2): S2's list_visible_published_branch_ids
             # does visibility+active selection in SQL. At the S1+S2 merge, route
             # this through that single query — but the content-consistency
@@ -662,17 +668,9 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
                 current_hash = compute_content_hash(_canonical_snapshot(r))
             except Exception:  # noqa: BLE001 — a malformed row simply won't match
                 current_hash = ""
-            versions = list_branch_versions(
-                _base_path(), r.get("branch_def_id", ""), limit=50,
-            )
-            active = next(
-                (
-                    v for v in versions
-                    if (v.status or "active") == "active"
-                    and v.content_hash == current_hash
-                ),
-                None,
-            )
+            active = get_active_version_by_content_hash(
+                _base_path(), r.get("branch_def_id", ""), current_hash,
+            ) if current_hash else None
             if active is None:
                 continue
             published_version_id = active.branch_version_id

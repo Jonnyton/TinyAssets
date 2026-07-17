@@ -426,13 +426,39 @@ def _handler_branch_status(base_path: "Path | str", branch_def_id: str) -> str:
         return "exists"
     except KeyError:
         return "missing"
-    except Exception:  # noqa: BLE001 - TRANSIENT storage failure, loudly
+    except Exception as exc:  # noqa: BLE001
+        # Only genuine TRANSIENT contention (SQLite database is locked / busy) is
+        # retryable (Codex r19 #2 / r20 #2). Everything else — an absent/
+        # uninitialized registry ("no such table"), a schema error, etc. — means
+        # the handler cannot be resolved and is DEFINITIVELY missing (matches the
+        # pre-tri-state fail-closed default; a real deployment always has the
+        # registry initialized, so a live nonexistent id raises KeyError above).
+        if _is_transient_registry_error(exc):
+            _logger.warning(
+                "_handler_branch_status | registry TRANSIENTLY unavailable for "
+                "%s (%s) — retryable, NOT a definitive miss", branch_def_id, exc,
+            )
+            return "unavailable"
         _logger.exception(
-            "_handler_branch_status | registry read FAILED for %s; TRANSIENT "
-            "(retryable) — NOT a definitive miss",
-            branch_def_id,
+            "_handler_branch_status | registry read failed for %s; treating as "
+            "definitively MISSING (not transient contention)", branch_def_id,
         )
-        return "unavailable"
+        return "missing"
+
+
+def _is_transient_registry_error(exc: BaseException) -> bool:
+    """True when a registry read error is TRANSIENT (retryable) — SQLite
+    contention (``database is locked`` / ``busy``) — rather than a definitive
+    miss. Prefers the 3.11+ ``sqlite_errorcode`` (SQLITE_BUSY=5 / SQLITE_LOCKED=6),
+    falling back to the message text."""
+    import sqlite3
+
+    if isinstance(exc, sqlite3.OperationalError):
+        if getattr(exc, "sqlite_errorcode", None) in (5, 6):
+            return True
+        msg = str(exc).lower()
+        return "locked" in msg or "busy" in msg
+    return False
 
 
 def _handler_branch_exists(base_path: "Path | str", branch_def_id: str) -> bool:
@@ -457,6 +483,10 @@ def resolve_investigation_handler_detail(
       refs). Fail loudly on the TRIGGER, never the filing: callers must not
       enqueue, and should surface an explicit failed-trigger status while the
       filing itself persists.
+    - ``("", "handler_unavailable:<id>")`` — the handler resolved but the
+      registry read was TRANSIENTLY unavailable (e.g. SQLite locked). This is
+      NOT a definitive miss (Codex r20 #2): the caller must leave a RETRYABLE
+      trigger, NEVER a terminal handler_not_found.
     - ``("", "not_configured")`` — no goal binding and no env fallback set.
     """
     # The FIRST yielded candidate is the AUTHORITATIVE handler for this filing
@@ -469,8 +499,19 @@ def resolve_investigation_handler_detail(
     primary = next(_iter_handler_candidates(base_path), None)
     if primary is None:
         return "", "not_configured"
-    if _handler_branch_exists(base_path, primary):
+    # Tri-state (Codex r20 #2): thread transient-unavailable through the FULL
+    # resolution chain so a locked registry can't be misreported as a permanent
+    # dead ref. exists -> ok; unavailable -> retryable; missing -> dead.
+    status = _handler_branch_status(base_path, primary)
+    if status == "exists":
         return primary, "ok"
+    if status == "unavailable":
+        _logger.warning(
+            "resolve_investigation_handler | registry UNAVAILABLE for %s "
+            "(transient) — RETRYABLE, not a dead ref; refusing to enqueue now",
+            primary,
+        )
+        return "", "handler_unavailable:" + primary
     _logger.error(
         "resolve_investigation_handler | authoritative handler %s does NOT "
         "exist in the branch registry (dead ref) — refusing to enqueue",

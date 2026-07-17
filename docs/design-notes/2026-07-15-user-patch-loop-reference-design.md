@@ -198,6 +198,20 @@ effector together), which has not yet been assembled/run. Do not read "S4 reads
 spec.node_defs" as "the loop is proven" — the integration acceptance is still
 outstanding.
 
+**Pre-runner behavior is fail-closed refusal AT `investigate` (Codex r20 #1).**
+`investigate` is the FIRST repo-touching node (`requires_sandbox=true`,
+node_kind `repo_read`), so a run with no sandbox runner REFUSES there — before
+any provider dispatch and long before `present`. A bundle test that invokes the
+reference with empty inputs + `provider_call=None` and expects it to REACH
+`present` is therefore asserting an architecturally-impossible path on S1 (and on
+S1+S3, which is enforcement-only): the correct pre-runner assertion is
+"refuses at `investigate`". The full happy-path flow to `present` → owner review
+→ `merge` requires the Phase-2 runner + valid inputs + real provider outputs, so
+the S4 bundle test must SPLIT: (1) a pre-runner fail-closed test asserting
+refusal at `investigate`, and (2) a Phase-2 test with a real/fake runner. That
+test split is S4-owned; S1 only keeps `spec.node_defs` + the envelope test
+stable.
+
 **Phase-2 execution boundary (Codex r11 #2; host "build execution first").** The
 S1 reference declares the full intended loop with correct effect + gate
 *contracts*, but the loop cannot execute end-to-end yet, and S1 does not build

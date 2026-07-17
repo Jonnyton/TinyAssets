@@ -2197,11 +2197,14 @@ def _wiki_file_bug(
             bug_investigation.resolve_investigation_handler_detail(universe_path)
         )
         canonical_branch_def_id = resolved_branch_def_id
-        if not canonical_branch_def_id and _handler_reason.startswith(
-            "handler_not_found:"
+        if not canonical_branch_def_id and (
+            _handler_reason.startswith("handler_not_found:")
+            or _handler_reason.startswith("handler_unavailable:")
         ):
-            # Record the first dead id we expected to invoke (RECEIPT ONLY — the
-            # enqueue still refuses a dead ref via the empty resolution below).
+            # Record the id we expected to invoke (RECEIPT ONLY — the enqueue
+            # still refuses via the empty resolution below). Covers both a dead
+            # ref (handler_not_found) and a transient miss (handler_unavailable,
+            # Codex r20 #2).
             canonical_branch_def_id = (
                 _handler_reason.split(":", 1)[1].split(",")[0] or None
             )
@@ -2285,7 +2288,20 @@ def _wiki_file_bug(
                 except Exception:  # noqa: BLE001
                     pass
         else:
-            if _handler_reason.startswith("handler_not_found:"):
+            if _handler_reason.startswith("handler_unavailable:"):
+                # Codex r20 #2: the handler registry was TRANSIENTLY unavailable
+                # (e.g. SQLite locked) — NOT proof the handler is gone. Surface a
+                # RETRYABLE trigger and leave the receipt PENDING (non-terminal),
+                # so a later re-file / retry enqueues once storage recovers.
+                # NEVER a terminal handler_not_found on a transient error. The
+                # filing itself persists regardless.
+                investigation = {
+                    "status": "retryable",
+                    "error": "handler_unavailable",
+                    "detail": _handler_reason,
+                }
+                # Deliberately do NOT mark the receipt failed: pending == retryable.
+            elif _handler_reason.startswith("handler_not_found:"):
                 # G4: a handler RESOLVED but its branch def does not exist
                 # (dead ref — e.g. wiped registry). Fail loudly on the
                 # trigger, never the filing: explicit failed status, nothing
@@ -2354,12 +2370,34 @@ def _wiki_file_bug(
         "kind": effective_kind,
         "severity": severity,
         "component": component,
-        "effort_classification": effort_classification,
-        "effort_dispatch_route": effort_dispatch_route,
         "investigation": investigation,
         "note": "Filing sent to navigator triage pipeline. "
                 f"Use `wiki action=list category={category_dir}` to view.",
     }
+    # Effort metadata (Codex r20 #4 — RESOLVE the >1 KB compact response, don't
+    # mask it): the COMPACT response keeps the decision-relevant classification
+    # (effort_class, attention, signals, confidence) + the full dispatch route,
+    # but DROPS the pure-diagnostic nested blocks (structural_features /
+    # authority_boundary) that no caller acts on — they are operator detail,
+    # surfaced only under verbose=True (like the branch_task mirror below). This
+    # is a deliberate contract trim, not a masked failure: it brings the compact
+    # response back under the ~1 KB phone-legibility limit. The full block is
+    # always persisted in the filing frontmatter regardless.
+    if verbose:
+        response_body["effort_classification"] = effort_classification
+        response_body["effort_dispatch_route"] = effort_dispatch_route
+    else:
+        response_body["effort_classification"] = {
+            k: v for k, v in effort_classification.items()
+            if k not in ("structural_features", "authority_boundary")
+        }
+        # Route: keep only the fields a caller acts on (lane + pickup weight +
+        # attention family when present); the diagnostic triage_policy /
+        # visible_reason are verbose-only. Comfortable < 1 KB headroom.
+        response_body["effort_dispatch_route"] = {
+            k: v for k, v in effort_dispatch_route.items()
+            if k in ("lane", "pickup_signal_weight", "attention_family")
+        }
     if dropped_kwargs:
         response_body["warning"] = (
             "Dropped unsupported file_bug field(s): "

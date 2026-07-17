@@ -478,6 +478,58 @@ def test_multi_version_rollback_vanishes_from_discovery(data_dir):
     assert fixed_id not in {b["branch_def_id"] for b in post["branches"]}, post
 
 
+def test_authoritative_version_found_beyond_bounded_scan_window(data_dir):
+    # Codex r20 #3: discovery + health must find the authoritative ACTIVE version
+    # via a DIRECT (branch_def_id, content_hash) index lookup, regardless of how
+    # many total versions exist. The pre-r20 bounded newest-N scans (50 for
+    # discovery, 200 for health/quarantine) missed the authoritative version once
+    # it fell OUTSIDE the window — a live reference vanished from discovery and
+    # read unhealthy. Reproduce with 210+ newer noise versions ahead of it.
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.branch_designs import (
+        _reference_branch_id,
+        reference_designs_live_health,
+    )
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    auth = list_branch_versions(data_dir, fixed_id, limit=50)[0]  # authoritative active
+
+    old_ts = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    with _connect(data_dir) as conn:
+        # Backdate the authoritative version so the noise sorts AHEAD of it.
+        conn.execute(
+            "UPDATE branch_versions SET published_at=? WHERE branch_version_id=?",
+            (old_ts.isoformat(), auth.branch_version_id),
+        )
+        # 210 NEWER, non-authoritative-hash versions — a bounded newest-50/200
+        # scan would never reach the (old) authoritative row.
+        for i in range(210):
+            ts = (old_ts + timedelta(minutes=i + 1)).isoformat()
+            conn.execute(
+                "INSERT INTO branch_versions (branch_version_id, branch_def_id, "
+                "content_hash, snapshot_json, notes, publisher, published_at, "
+                "parent_version_id, status, watch_window_seconds) "
+                "VALUES (?,?,?,?,?,?,?,?, 'superseded', ?)",
+                (
+                    f"{fixed_id}@noise-{i}-{uuid.uuid4().hex[:6]}", fixed_id,
+                    "noise_hash_" + uuid.uuid4().hex, "{}", "noise", "x", ts,
+                    None, 86400,
+                ),
+            )
+
+    # The authoritative version is WAY outside any newest-N window — the direct
+    # indexed lookup still finds it: discovery lists the reference AND health true.
+    listed = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id in {b["branch_def_id"] for b in listed["branches"]}, listed
+    health = reference_designs_live_health(data_dir)
+    assert health["healthy"], health
+
+
 def test_interrupted_publication_mismatched_active_is_repaired(data_dir):
     # Codex r12 #1: an ACTIVE version whose content != the authoritative artifact
     # (interrupted / mismatched publication) must FAIL health and be repaired.

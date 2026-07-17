@@ -252,6 +252,45 @@ def test_wiki_file_bug_distinguishes_enqueue_failure_from_no_canonical(
     assert out2["investigation"].get("reason") == "no_canonical_branch"
 
 
+def test_file_bug_transient_registry_is_retryable_not_terminal(tmp_path, monkeypatch):
+    # Codex r20 #2: the tri-state must thread through the FULL resolution chain
+    # (resolver + file_bug), not just claim_task. A TRANSIENT registry error
+    # (SQLite locked) at file_bug's handler resolution must surface a RETRYABLE
+    # trigger — NEVER a terminal handler_not_found — so the investigation can
+    # retry once storage recovers. The filing itself always persists.
+    import json as _json
+    import sqlite3
+
+    import tinyassets.daemon_server as ds
+    from tinyassets.api import wiki as wiki_api
+
+    wiki_root = tmp_path / "wiki"
+    data_root = tmp_path / "data"
+    wiki_api._ensure_wiki_scaffold(wiki_root)
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    _register_handler_branch(data_root, monkeypatch)   # sets DATA_DIR + registers
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+
+    # Registry read fails TRANSIENTLY at handler resolution (AFTER registration).
+    def _locked(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ds, "get_branch_definition", _locked)
+
+    out = _json.loads(wiki_api._wiki_file_bug(
+        component="engine", severity="minor", title="transient registry",
+        observed="boom",
+    ))
+    assert out["status"] == "filed"                       # filing persists
+    inv = out["investigation"]
+    assert inv["status"] == "retryable", inv              # RETRYABLE, not terminal
+    assert inv["error"] == "handler_unavailable", inv
+    assert inv["status"] not in ("failed", "skipped"), inv
+
+
 def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
     # Codex r14 #4 (G4 deletion race): a handler deleted between the upstream
     # existence check and the durable enqueue must NOT queue a dead reference —
