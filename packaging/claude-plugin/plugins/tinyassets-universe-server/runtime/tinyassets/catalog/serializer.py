@@ -398,10 +398,27 @@ def _conditional_edge_from_dict(data: dict[str, Any]) -> ConditionalEdge:
     ``to_dict`` emits ``{"from": ..., "conditions": ...}`` but the
     dataclass field is named ``from_node``. Translate here rather
     than in the dataclass so the YAML contract stays legible.
+
+    Codex r16 #2: ``fallback`` MUST round-trip. Dropping it here reloaded a
+    ``"reject"`` safe-fallback as ``""`` — and because YAML serialization sorts
+    condition keys, an off-label routing value would then fall through to a
+    DIFFERENT first condition (a rejected patch could route to merge). Mirror
+    ``ConditionalEdge.from_dict``'s robust non-string handling so a malformed
+    persisted fallback surfaces in ``validate()`` rather than crashing here.
+    (S1-owned: this preservation must survive the S1+S3 merge — taking S3
+    verbatim drops it.)
     """
+    _fb = data.get("fallback")
+    if isinstance(_fb, str):
+        fallback: Any = _fb.strip()
+    elif _fb is None:
+        fallback = ""
+    else:
+        fallback = _fb
     return ConditionalEdge(
         from_node=data.get("from") or data.get("from_node", ""),
         conditions=dict(data.get("conditions", {}) or {}),
+        fallback=fallback,
     )
 
 

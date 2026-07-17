@@ -427,6 +427,10 @@ def _compute_supervisor_liveness(
             "succeeded": 0,
             "failed": 0,
             "cancelled": 0,
+            # Codex r16 #4: dead_ref is a terminal status (a task whose handler
+            # branch was deleted while queued). Count it so loop-health surfaces
+            # the terminal event instead of silently dropping it.
+            "dead_ref": 0,
             "policy_parked_pending": 0,
             "stuck_pending_max_age_s": 0,
             "policy_parked_pending_max_age_s": 0,
@@ -628,6 +632,18 @@ def _compute_supervisor_liveness(
     # without claim means the supervisor restart logic isn't reaching
     # the queue (the exact pattern PR #205 fixed).
     out["queue_state"]["recent_succeeded_count"] = recent_succeeded_count
+
+    # Surface dead_ref terminals loudly (Codex r16 #4, Hard Rule #8). A task
+    # that terminated because its handler branch was deleted mid-flight is a
+    # real signal — never a silent drop. The per-task reason lives on the queue
+    # row's ``dead_ref_reason`` field for retrieval.
+    _dead_ref_count = out["queue_state"].get("dead_ref", 0)
+    if _dead_ref_count:
+        out["warnings"].append(
+            f"dead_ref_terminals: {_dead_ref_count} task(s) terminated "
+            "dead_ref (handler branch deleted while queued). See each row's "
+            "dead_ref_reason for the deleted handler id."
+        )
 
     if (
         out["queue_state"]["stuck_pending_max_age_s"]

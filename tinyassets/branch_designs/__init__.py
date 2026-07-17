@@ -56,6 +56,13 @@ DESIGNS_DIR = Path(__file__).parent
 DESIGN_FORMAT = "tinyassets.branch_design/v1"
 REFERENCE_TAG = "reference-design"
 
+# Codex r16 #5: stray rows carrying the reserved author + reference tag are
+# QUARANTINED here (author sanitized, reference tags dropped, made private,
+# tagged for review), NEVER hard-deleted — the reserved author + tag were
+# user-forgeable before the sanitizers landed, so an existing stray row may be
+# legitimate user-authored content. Deleting it is unrecoverable data loss.
+QUARANTINE_TAG = "quarantine:reserved-seed-collision"
+
 # The seeder's ownership signal is a RESERVED system author, NOT the design tag.
 # Tags are user-controllable: a fork INHERITS the source's tags and users can
 # submit arbitrary tags (Codex S1 latest-model Finding 1). Reconciling by tag
@@ -432,6 +439,7 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
         get_branch_definition,
         initialize_author_server,
         list_branch_definitions,
+        update_branch_definition,
     )
 
     results: dict[str, list[str]] = {"seeded": [], "present": [], "failed": []}
@@ -532,23 +540,46 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                     logger.error("reference design %s could not be seeded", tag)
                     results["failed"].append(tag)
 
-            # Defensive prune: delete any OTHER rows carrying BOTH the reserved
+            # Defensive reconcile of any OTHER rows carrying BOTH the reserved
             # author AND this tag (a legacy random-id reserved row, or a
             # concurrent-seed straggler). Gated on the reserved author, so a
             # user remix/tagged branch is NEVER touched. include_private=True so
             # a PRIVATE stray reserved row doesn't evade cleanup (Fable MINOR) —
             # only reserved-author rows are ever visible to this query.
+            #
+            # QUARANTINE, never hard-delete (Codex r16 #5): the reserved author
+            # + tag were USER-FORGEABLE before the sanitizers shipped, so a stray
+            # row may be legitimate user-authored content, not a seed straggler.
+            # We cannot prove provenance, so we preserve it — strip the reserved
+            # author + reference tags (removing the collision so the next seed
+            # won't re-touch it), make it private, and tag it needs-review. Same
+            # pattern as the vault legacy-file + S5 llm_subscription migrations:
+            # move to a quarantine namespace, surface for review, recoverable.
             for r in list_branch_definitions(
                 base_path, author=RESERVED_SEED_AUTHOR, tag=tag,
                 include_private=True,
             ):
                 if r.get("branch_def_id") not in (fixed_id, correct_id):
+                    stray_id = r["branch_def_id"]
+                    kept_tags = [
+                        t for t in (r.get("tags") or [])
+                        if t not in (REFERENCE_TAG, tag)
+                    ]
                     logger.warning(
-                        "pruning stray reserved reference row %s for %s",
-                        r.get("branch_def_id"), tag,
+                        "quarantining stray reserved reference row %s for %s "
+                        "(reserved author+tag were forgeable pre-release; "
+                        "preserved private under %s for review, not deleted)",
+                        stray_id, tag, QUARANTINE_TAG,
                     )
-                    delete_branch_definition(
-                        base_path, branch_def_id=r["branch_def_id"],
+                    update_branch_definition(
+                        base_path,
+                        branch_def_id=stray_id,
+                        updates={
+                            "author": _sanitize_reserved_author(r.get("author"))
+                            or "anonymous",
+                            "tags": sorted(set(kept_tags + [QUARANTINE_TAG])),
+                            "visibility": "private",
+                        },
                     )
         except Exception:  # noqa: BLE001 - seeding must never break startup
             logger.exception("reference design seed CRASHED for %s", tag)

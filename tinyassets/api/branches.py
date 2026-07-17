@@ -636,19 +636,42 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     for r in rows:
         published_version_id = None
         if scope == "published":
-            from tinyassets.branch_versions import list_branch_versions
+            from tinyassets.branch_versions import (
+                _canonical_snapshot,
+                compute_content_hash,
+                list_branch_versions,
+            )
 
-            # Discovery must surface only an ACTIVE published version (Codex r15
-            # #1). Taking versions[0] regardless of status let a rolled-back /
-            # quarantined newest version keep showing as published — a
-            # deliberately rolled-back reference must vanish from discovery, not
-            # be remixable. list_branch_versions is newest-first, so pick the
-            # newest NON-rolled-back (active) version; none active => not listed.
+            # Discovery must surface an ACTIVE published version whose content
+            # MATCHES the branch row being returned (Codex r16 #3, extends r15
+            # #1). Picking the newest active version regardless of content let a
+            # rolled-back reference get paired with an UNRELATED older active
+            # version — an inconsistent (branch, version) pair that kept a
+            # deliberately rolled-back reference remixable. Require content
+            # consistency: the published version's content_hash must equal the
+            # branch's current authoritative content. If no active version
+            # matches, the branch's live content has no active version (rolled
+            # back / quarantined) => it must vanish from discovery.
+            #
+            # Integration convergence (S2): S2's list_visible_published_branch_ids
+            # does visibility+active selection in SQL. At the S1+S2 merge, route
+            # this through that single query — but the content-consistency
+            # requirement here MUST survive; do not regress to "any active
+            # version".
+            try:
+                current_hash = compute_content_hash(_canonical_snapshot(r))
+            except Exception:  # noqa: BLE001 — a malformed row simply won't match
+                current_hash = ""
             versions = list_branch_versions(
                 _base_path(), r.get("branch_def_id", ""), limit=50,
             )
             active = next(
-                (v for v in versions if (v.status or "active") == "active"), None,
+                (
+                    v for v in versions
+                    if (v.status or "active") == "active"
+                    and v.content_hash == current_hash
+                ),
+                None,
             )
             if active is None:
                 continue

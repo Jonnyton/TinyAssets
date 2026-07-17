@@ -2572,6 +2572,17 @@ def _build_node(
             f"source_code — exactly one must be set."
         )
     if has_source:
+        # SANDBOX ENFORCEMENT COMPOSITION (Codex r16 #1): source_code is
+        # dispatched here, BEFORE the prompt-template adapter that carries S1's
+        # requires_sandbox fail-closed gate (see _build_prompt_template_node) —
+        # so on S1-ALONE an approved source_code node with requires_sandbox=True
+        # is NOT confined at this choke point. That gap is S3-owned: S3's
+        # node_capability classifier routes source_code to a sandboxed exec path
+        # at this same _build_node choke point (f19eb589). S1 must NOT add a
+        # duplicate guard here — the two would conflict at the S1+S3 merge. The
+        # BUNDLED integration acceptance proves fail-closed for EVERY executable
+        # node type (prompt_template + source_code + future adapters). Marker
+        # test: test_sandbox_enforcement_composition_boundary_is_documented.
         inner = _build_source_code_node(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
             invocation_depth=invocation_depth,

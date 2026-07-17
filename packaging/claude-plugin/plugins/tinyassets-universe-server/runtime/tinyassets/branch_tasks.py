@@ -113,6 +113,11 @@ class BranchTask:
     # transitions over a window is the 2026-06-25 wedge signature. Empty for
     # pre-field rows; stamped by mark_status on terminal transition.
     terminal_at: str = ""
+    # Codex r16 #4: why a task terminated ``dead_ref`` (handler branch deleted
+    # while the task was queued). A plain field so it survives ``from_dict``
+    # (which filters to declared dataclass fields) and users can retrieve the
+    # reason from the queue/archive row instead of it being silently dropped.
+    dead_ref_reason: str = ""
     rung_claim_recommendations: list[dict] = field(default_factory=list)
     # Spawn depth. 0 for user/forward-triggered tasks. A task enqueued from
     # inside a running branch (via the in-node enqueue verb) carries
@@ -364,8 +369,13 @@ def claim_task(
                     universe_path, row.get("branch_def_id", ""),
                 )
                 if not ok:
+                    # dead_ref is a TERMINAL status — stamp terminal_at like
+                    # mark_status does (Codex r16 #4), so get_status's loop-stall
+                    # signal counts this as a real terminal transition (an empty
+                    # terminal_at would make the wedge gate miss it).
                     row["status"] = "dead_ref"
                     row["dead_ref_reason"] = reason
+                    row["terminal_at"] = _now_iso()
                     _write_raw(qp, raw)
                     return None
             heartbeat_at, lease_expires_at = _lease_window()

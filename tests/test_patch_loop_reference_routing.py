@@ -189,6 +189,80 @@ def test_send_back_verify_routes_to_draft_patch_and_never_present():
     assert visited.count("draft_patch") >= 2, visited
 
 
+def test_conditional_fallback_survives_yaml_round_trip_and_routes_safe():
+    # Codex r16 #2: _conditional_edge_from_dict dropped ``fallback`` on YAML
+    # deserialize, so a "reject"/"send_back" safe-fallback reloaded as "" and an
+    # OFF-LABEL verdict fell through to the alphabetically-first condition
+    # (verify: "pass" -> present; owner_gate: "pass" -> merge) — a rejected/failed
+    # patch could route to MERGE. Prove the fallback round-trips through
+    # serialize -> deserialize -> compile -> invoke and still routes an OFF-LABEL
+    # verdict to the SAFE branch.
+    from tinyassets.catalog.serializer import (
+        branch_from_yaml_payload,
+        branch_to_yaml_payload,
+    )
+
+    branch = _reference_branch()
+    # Round-trip through the YAML contract (crosses _conditional_edge_from_dict).
+    # externalize_nodes=False inlines node bodies so the round-trip is
+    # self-contained (no on-disk node files needed).
+    payload, _node_payloads = branch_to_yaml_payload(
+        branch, branch_slug="patch-loop-ref", externalize_nodes=False,
+    )
+    reloaded = branch_from_yaml_payload(payload)
+
+    # Fallbacks preserved verbatim (the safe branch), not dropped to "".
+    fb = {c.from_node: c.fallback for c in reloaded.conditional_edges}
+    assert fb["verify"] == "send_back", fb
+    assert fb["owner_gate"] == "reject", fb
+
+    # Invoke the RELOADED branch with an OFF-LABEL verify verdict. With the
+    # fallback preserved it routes to send_back -> draft_patch (safe); a lost
+    # fallback would route to the sorted-first key "pass" -> present (unsafe).
+    visited, _state = _invoke_compiled(
+        reloaded,
+        verify_verdicts=["totally_off_label", "pass"],
+        gate_verdict="reject",
+    )
+    first_verify = visited.index("verify")
+    assert visited[first_verify + 1] == "draft_patch", visited
+    assert "present" not in visited[: first_verify + 1], visited
+    # Owner reject terminates at END — a rejected/failed patch NEVER merges.
+    assert "merge" not in visited, visited
+
+
+def test_sandbox_enforcement_composition_boundary_is_documented():
+    # Codex r16 #1 (INTEGRATION-GATED marker, not a duplicate guard): S1's
+    # requires_sandbox fail-closed refusal lives in the PROMPT-TEMPLATE adapter
+    # only (proven by test_requires_sandbox_node_refuses_before_provider). But
+    # _build_node dispatches SOURCE_CODE to a separate adapter FIRST, which S1
+    # alone does NOT gate — that choke point is S3-owned (node_capability
+    # classifier -> source_exec, f19eb589). S1 must NOT add its own source_code
+    # guard (it would conflict at the S1+S3 merge). This marker pins the
+    # composition boundary so any future edit that folds source_code into the
+    # gated path — or adds a new executable adapter — trips it and re-checks that
+    # the S1+S3 bundle proves fail-closed for EVERY executable node type.
+    import inspect
+
+    from tinyassets import graph_compiler
+
+    pt_src = inspect.getsource(graph_compiler._build_prompt_template_node)
+    assert "SandboxEnforcementUnavailableError" in pt_src
+    assert "_sandbox_enforcement_available" in pt_src
+
+    bn_src = inspect.getsource(graph_compiler._build_node)
+    assert "_build_source_code_node" in bn_src
+
+    sc_src = inspect.getsource(graph_compiler._build_source_code_node)
+    assert "SandboxEnforcementUnavailableError" not in sc_src, (
+        "S1 must NOT add a requires_sandbox guard to the source_code adapter — "
+        "that duplicates/conflicts with S3's node_capability classifier "
+        "(f19eb589). source_code enforcement is S3-owned at the _build_node "
+        "choke point; the bundled S1+S3 integration proves fail-closed for "
+        "every executable node type."
+    )
+
+
 def test_reject_owner_gate_routes_to_end_and_never_merge():
     # verify pass gets us to present; reject at the owner gate -> END, never merge.
     visited, result = _run(verify_verdicts=["pass"], gate_verdict="reject")

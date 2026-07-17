@@ -428,6 +428,56 @@ def test_rolled_back_reference_vanishes_from_published_discovery(data_dir):
     assert fixed_id not in {b["branch_def_id"] for b in post["branches"]}, post
 
 
+def test_multi_version_rollback_vanishes_from_discovery(data_dir):
+    # Codex r16 #3: DISCOVERY (not just health) must be content-consistent. The
+    # r15 #1 fix picked the newest ACTIVE version regardless of content, so with
+    # the authoritative version rolled back and an UNRELATED older version still
+    # active, scope=published returned the rolled-back reference paired with the
+    # stale active version id — an inconsistent (branch, version) pair that kept
+    # the rolled-back reference remixable. Require content consistency: no active
+    # version matching the branch's current content => it must vanish.
+    import uuid
+    from datetime import datetime, timezone
+
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.branch_designs import _reference_branch_id
+    from tinyassets.branch_versions import _connect, list_branch_versions
+
+    seed_reference_designs(data_dir)
+    fixed_id = _reference_branch_id("patch_loop_reference", 1)
+    pre = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id in {b["branch_def_id"] for b in pre["branches"]}
+
+    auth_version = list_branch_versions(data_dir, fixed_id, limit=50)[0]
+    # Roll back the AUTHORITATIVE version and inject a DIFFERENT active version at
+    # a NON-authoritative content hash (the multi-version rollback shape).
+    with _connect(data_dir) as conn:
+        conn.execute(
+            "UPDATE branch_versions SET status='rolled_back', rolled_back_by='sec' "
+            "WHERE branch_version_id=?", (auth_version.branch_version_id,),
+        )
+        conn.execute(
+            "INSERT INTO branch_versions (branch_version_id, branch_def_id, "
+            "content_hash, snapshot_json, notes, publisher, published_at, "
+            "parent_version_id, status, watch_window_seconds) "
+            "VALUES (?,?,?,?,?,?,?,?, 'active', ?)",
+            (
+                f"{fixed_id}@stale-{uuid.uuid4().hex[:8]}", fixed_id,
+                "stale_hash_" + uuid.uuid4().hex, "{}", "stale", "x",
+                datetime.now(timezone.utc).isoformat(), None, 86400,
+            ),
+        )
+    # A DIFFERENT active version exists — but NOT at the authoritative content.
+    assert any(
+        v.status == "active"
+        for v in list_branch_versions(data_dir, fixed_id, limit=50)
+    )
+    # Discovery must NOT surface the reference paired with the unrelated active
+    # version — the (branch, version) pair would be content-inconsistent.
+    post = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id not in {b["branch_def_id"] for b in post["branches"]}, post
+
+
 def test_interrupted_publication_mismatched_active_is_repaired(data_dir):
     # Codex r12 #1: an ACTIVE version whose content != the authoritative artifact
     # (interrupted / mismatched publication) must FAIL health and be repaired.

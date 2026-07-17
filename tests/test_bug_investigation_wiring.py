@@ -336,6 +336,27 @@ def test_claim_task_refuses_dead_handler_at_consumption(tmp_path, monkeypatch):
     assert row["status"] == "dead_ref"                       # structured outcome
     assert row["dead_ref_reason"].startswith("handler_deleted:")
 
+    # Codex r16 #4: dead_ref is a COMPLETE terminal state.
+    # (a) terminal_at is stamped (like mark_status) so get_status's loop-stall
+    #     signal counts this as a real terminal transition.
+    assert row.get("terminal_at"), "dead_ref must stamp terminal_at"
+    # (b) dead_ref_reason survives BranchTask deserialization (from_dict filters
+    #     to declared fields — it must be a declared field, not silently dropped).
+    from tinyassets.branch_tasks import BranchTask
+
+    task = BranchTask.from_dict(row)
+    assert task.status == "dead_ref"
+    assert task.dead_ref_reason.startswith("handler_deleted:")
+    assert task.terminal_at
+    # (c) get_status loop-health counts dead_ref and surfaces it as a warning.
+    from tinyassets.api.status import _compute_supervisor_liveness
+
+    live = _compute_supervisor_liveness(tmp_path)
+    assert live["queue_state"]["dead_ref"] == 1, live["queue_state"]
+    assert any(
+        "dead_ref_terminals" in w for w in live["warnings"]
+    ), live["warnings"]
+
 
 # ── Integration: _wiki_file_bug call site ─────────────────────────────────────
 
