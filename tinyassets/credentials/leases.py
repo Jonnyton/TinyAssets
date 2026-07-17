@@ -30,9 +30,11 @@ import secrets
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import NoReturn
 
 from .errors import CredentialUnavailable, VaultErrorCode
+from .secret_bytes import SecretBytes
 
 _CAPABILITY_BYTES = 32
 
@@ -222,28 +224,46 @@ def release_fenced(
     )
 
 
-@dataclass(frozen=True, repr=False)
+def _refuse(*_a: object, **_k: object) -> NoReturn:
+    raise TypeError("RefreshTicket carries a bearer capability and cannot be copied/serialized")
+
+
 class RefreshTicket:
     """Proof that the holder won the exclusive right to redeem ``ref@version``.
 
-    Returned by ``begin_refresh``. ``secret`` is the UNFORGEABLE broker-minted
-    capability — ``complete_refresh`` requires presenting it (matched against the
-    stored hash), so a reconstructed dataclass cannot complete a refresh. The
-    ``secret`` is redacted from ``repr``/``str`` and cannot be pickled.
+    Returned by ``begin_refresh``. The minted capability is stored in a PRIVATE,
+    slotted :class:`SecretBytes` — this is deliberately NOT a dataclass, so
+    ``dataclasses.asdict`` and ``vars`` (which bypass ``repr``/``pickle``
+    protections) cannot extract it. The capability is usable only via the
+    broker's constant-time compare (``_reveal_capability`` is internal); it never
+    appears in a repr/str/format, and the object cannot be copied or pickled.
     """
 
-    ref: str
-    version: int
-    holder: str
-    secret: bytes = field(repr=False)
+    __slots__ = ("ref", "version", "holder", "_capability")
+
+    def __init__(self, *, ref: str, version: int, holder: str, secret: bytes) -> None:
+        self.ref = ref
+        self.version = version
+        self.holder = holder
+        self._capability = SecretBytes(secret)
+
+    def _reveal_capability(self) -> bytes:
+        """Internal: the broker reveals the capability only for a hashed compare."""
+        return self._capability.reveal()
 
     def __repr__(self) -> str:
         return f"RefreshTicket(ref={self.ref!r}, capability=<redacted>)"
 
     __str__ = __repr__
 
-    def __reduce__(self):
-        raise TypeError("RefreshTicket carries a capability and cannot be pickled")
+    def __format__(self, _spec: str) -> str:
+        return self.__repr__()
+
+    __reduce__ = _refuse
+    __reduce_ex__ = _refuse
+    __getstate__ = _refuse
+    __copy__ = _refuse
+    __deepcopy__ = _refuse
 
 
 @dataclass(repr=False)

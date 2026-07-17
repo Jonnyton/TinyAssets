@@ -17,6 +17,22 @@ from typing import NoReturn
 
 _REDACTED = "<redacted-secret>"
 
+# A credential value (token / PEM / key bundle) is small; cap it generously so a
+# bug or abuse can't deposit an unbounded blob. Reject empty at the boundary too.
+MAX_SECRET_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+
+def require_nonempty_bounded(value: "SecretBytes") -> None:
+    """Reject an empty or oversized credential payload at the broker boundary.
+
+    Raised BEFORE any write, so a rejected CAS/deposit preserves the prior value.
+    """
+    length = len(value)
+    if length == 0:
+        raise ValueError("empty credential payload is not allowed")
+    if length > MAX_SECRET_BYTES:
+        raise ValueError(f"credential payload exceeds the {MAX_SECRET_BYTES}-byte cap")
+
 
 def _refuse_serialize(*_args: object, **_kwargs: object) -> NoReturn:
     raise TypeError(
