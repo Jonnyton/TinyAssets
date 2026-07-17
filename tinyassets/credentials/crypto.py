@@ -1,30 +1,37 @@
 """Envelope encryption for the platform backend.
 
-Primitive (review adaptation #1): **libsodium XChaCha20-Poly1305-IETF AEAD**
-(via PyNaCl). Chosen over AES-256-GCM and over libsodium secretbox because the
-AEAD variant lets us bind canonical scope/ref/version metadata as *additional
-authenticated data* on BOTH envelope layers, so swapping a ciphertext or a
-wrapped DEK between records fails authentication.
+Primitive: **libsodium XChaCha20-Poly1305-IETF AEAD** (via PyNaCl). The reason to
+prefer it here is operational, not a claim of a stronger authenticator: its
+192-bit nonce makes independent RANDOM per-record nonces collision-safe with no
+counter/nonce-management state (AES-256-GCM's 96-bit nonce would require careful
+nonce management to reach the same margin). AES-GCM also authenticates AAD; the
+choice is about safe random nonces, not AAD support.
 
 Envelope shape (per record):
   * a fresh random 32-byte **DEK** encrypts the framed payload;
   * the active **KEK** wraps that DEK;
-  * the SAME canonical AAD (scope/ref/kind/version/algorithm) authenticates both
-    layers.
+  * the SAME canonical AAD authenticates both layers.
 
-Rotation rewraps the DEK under a new KEK (AAD unchanged) and leaves the payload
-ciphertext untouched — see :meth:`PlatformVaultBackend.rotate_kek`.
+The AAD binds the record's **immutable identity** — scope, ref, kind, version,
+and the immutable store identity (store_id, custody, daemon_id). Binding store
+identity into the AAD means a cross-store decrypt fails authentication outright.
+``key_id`` is deliberately excluded so KEK rotation can rewrap without touching
+payload ciphertext.
 
-The KEK source is injected via :class:`KeyProvider` so production reads a
-root-only key file while tests supply an in-memory key.
+The full **authoritative record** (identity PLUS mutable lifecycle: state,
+expiry, timestamps) lives INSIDE the sealed payload. Plaintext DB/sidecar columns
+are non-authoritative index hints; every authorization decision on read is taken
+from the decrypted record. This is why tampering a plaintext ``expires_at`` or
+``store_id`` column has zero effect.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from nacl import bindings as _sodium
 
@@ -84,17 +91,31 @@ class FileKeyProvider:
         <keys_dir>/<key_id>.bin      # 32 random bytes, mode 0400, root-owned
         <keys_dir>/active            # text file naming the active key_id
 
-    The active key id may be overridden by ``TINYASSETS_VAULT_ACTIVE_KEY_ID`` or
-    the constructor. Keys are cached in-process after first read; the custody
-    boundary is the host file mount, not this class.
+    Library-layer custody gates (fail loud on violation):
+      * the KEK file must NOT be a symlink (symlink-swap defense, all platforms);
+      * on POSIX, mode must be ``0400``/``0600`` (no group/other bits) and owned
+        by ``expected_uid`` (default ``0`` = root).
+
+    On Windows these POSIX bits are not meaningful; ACLs are the equivalent
+    control and are enforced by the installer, not this library. The active key
+    id may be overridden by ``TINYASSETS_VAULT_ACTIVE_KEY_ID`` or the constructor.
     """
 
     _ACTIVE_FILE = "active"
 
-    def __init__(self, keys_dir: str | Path, active_key_id: str | None = None) -> None:
+    def __init__(
+        self,
+        keys_dir: str | Path,
+        active_key_id: str | None = None,
+        *,
+        enforce_permissions: bool = True,
+        expected_uid: int | None = 0,
+    ) -> None:
         self._dir = Path(keys_dir)
         self._cache: dict[str, bytes] = {}
         self._active_override = active_key_id
+        self._enforce_permissions = enforce_permissions
+        self._expected_uid = expected_uid
 
     def active_key_id(self) -> str:
         if self._active_override:
@@ -111,6 +132,22 @@ class FileKeyProvider:
             raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE)
         return value
 
+    def _verify_key_file_security(self, path: Path) -> None:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE) from None
+        # Symlink-swap defense on every platform.
+        if stat.S_ISLNK(st.st_mode):
+            raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
+        if not self._enforce_permissions or os.name != "posix":
+            return
+        if stat.S_IMODE(st.st_mode) & 0o077:
+            # group/other have access → not a root-only key
+            raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
+        if self._expected_uid is not None and st.st_uid != self._expected_uid:
+            raise CredentialUnavailable(VaultErrorCode.KEK_INSECURE)
+
     def get_key(self, key_id: str) -> bytes:
         if not key_id or "/" in key_id or "\\" in key_id or key_id.startswith("."):
             raise CredentialUnavailable(VaultErrorCode.KEY_UNAVAILABLE)
@@ -118,6 +155,7 @@ class FileKeyProvider:
         if cached is not None:
             return cached
         path = self._dir / f"{key_id}.bin"
+        self._verify_key_file_security(path)
         try:
             raw = path.read_bytes()
         except OSError:
@@ -130,42 +168,61 @@ class FileKeyProvider:
 
 
 # ---------------------------------------------------------------------------
-# Canonical AAD + framing
+# Canonical AAD (immutable identity) + authoritative-record codec + framing
 # ---------------------------------------------------------------------------
 
 
-def canonical_aad(scope: SecretScope, ref: str, kind: str, version: int) -> bytes:
-    """Deterministic additional-authenticated-data for both envelope layers.
+def identity_aad(
+    scope: SecretScope,
+    ref: str,
+    kind: str,
+    version: int,
+    store_id: str,
+    custody: str,
+    daemon_id: str | None,
+) -> bytes:
+    """Additional-authenticated-data binding the record's IMMUTABLE identity.
 
-    Binds the ciphertext to (algorithm, kind, ref, scope, version). Any tamper
-    of these fields — including a cross-record swap — changes the AAD and fails
-    the Poly1305 tag on decrypt. ``key_id`` is deliberately NOT part of the AAD
-    so a KEK rotation can rewrap without touching the payload ciphertext.
+    Includes scope/ref/kind/version AND the immutable store identity
+    (store_id/custody/daemon_id). Any tamper — including a cross-record or
+    cross-store swap — changes the AAD and fails the Poly1305 tag on decrypt.
+    ``key_id`` is excluded so KEK rotation can rewrap without a payload rewrite.
     """
     payload = {
         "algorithm": XCHACHA20POLY1305_IETF,
+        "custody": custody,
+        "daemon_id": daemon_id,
         "kind": kind,
         "ref": ref,
         "scope": scope.as_dict(),
+        "store_id": store_id,
         "version": int(version),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def frame_payload(scope: SecretScope, ref: str, kind: str, version: int, value: bytes) -> bytes:
-    """Prefix the secret value with an embedded identity header.
-
-    The header repeats the canonical identity INSIDE the sealed payload so a
-    backend can verify-after-decrypt (belt-and-suspenders alongside the AAD, and
-    the sole binding for DPAPI which lacks AAD). Length-prefixed so the raw value
-    is never text-encoded.
-    """
-    header = canonical_aad(scope, ref, kind, version)
-    return len(header).to_bytes(4, "big") + header + value
+def encode_record(record: dict[str, Any]) -> bytes:
+    """Canonical JSON for the authoritative record embedded in the payload."""
+    return json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def unframe_payload(blob: bytes) -> tuple[bytes, bytes]:
-    """Split a framed payload into (identity_header, value). Raises on truncation."""
+def decode_record(raw: bytes) -> dict[str, Any]:
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from exc
+    if not isinstance(obj, dict):
+        raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
+    return obj
+
+
+def frame_record(record_json: bytes, value: bytes) -> bytes:
+    """Length-prefix the authoritative record ahead of the raw value bytes."""
+    return len(record_json).to_bytes(4, "big") + record_json + value
+
+
+def unframe_record(blob: bytes) -> tuple[bytes, bytes]:
+    """Split a framed payload into (record_json, value). Raises on truncation."""
     if len(blob) < 4:
         raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
     n = int.from_bytes(blob[:4], "big")
@@ -175,7 +232,7 @@ def unframe_payload(blob: bytes) -> tuple[bytes, bytes]:
 
 
 # ---------------------------------------------------------------------------
-# Two-layer AEAD envelope
+# Two-layer AEAD envelope (generic over payload/AAD)
 # ---------------------------------------------------------------------------
 
 
@@ -199,16 +256,11 @@ class Envelope:
         self.ciphertext = ciphertext
 
 
-def seal(
-    key_provider: KeyProvider,
-    scope: SecretScope,
-    ref: str,
-    kind: str,
-    version: int,
-    value: bytes,
-) -> Envelope:
-    """Encrypt ``value`` under a fresh DEK; wrap the DEK under the active KEK."""
-    aad = canonical_aad(scope, ref, kind, version)
+def seal(key_provider: KeyProvider, aad: bytes, payload: bytes) -> Envelope:
+    """Encrypt ``payload`` under a fresh DEK; wrap the DEK under the active KEK.
+
+    ``aad`` authenticates both the payload ciphertext and the wrapped DEK.
+    """
     key_id = key_provider.active_key_id()
     kek = key_provider.get_key(key_id)
 
@@ -216,7 +268,6 @@ def seal(
     data_nonce = _sodium.randombytes(NONCE_BYTES)
     wrap_nonce = _sodium.randombytes(NONCE_BYTES)
 
-    payload = frame_payload(scope, ref, kind, version, value)
     ciphertext = _sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
         payload, aad, data_nonce, dek
     )
@@ -227,24 +278,14 @@ def seal(
 
 
 def open_envelope(
-    key_provider: KeyProvider,
-    envelope: Envelope,
-    scope: SecretScope,
-    ref: str,
-    kind: str,
-    version: int,
+    key_provider: KeyProvider, envelope: Envelope, aad: bytes, ref: str | None = None
 ) -> bytes:
-    """Unwrap the DEK and decrypt the payload, verifying AAD + embedded identity.
+    """Unwrap the DEK and decrypt the payload, verifying the AAD on both layers.
 
-    Any authentication failure, or a mismatch between the embedded identity and
-    the expected (scope/ref/kind/version), raises ``CORRUPT_RECORD`` — never a
-    partial or plaintext leak.
+    Any authentication failure raises ``CORRUPT_RECORD`` — never a partial or
+    plaintext leak. Returns the framed payload bytes.
     """
-    aad = canonical_aad(scope, ref, kind, version)
-    try:
-        kek = key_provider.get_key(envelope.key_id)
-    except CredentialUnavailable:
-        raise
+    kek = key_provider.get_key(envelope.key_id)  # may raise KEY_UNAVAILABLE
     try:
         dek = _sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
             envelope.wrapped_dek, aad, envelope.wrap_nonce, kek
@@ -254,29 +295,18 @@ def open_envelope(
         )
     except Exception:  # noqa: BLE001 — libsodium raises CryptoError on tag fail
         raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from None
-
-    header, value = unframe_payload(payload)
-    if header != aad:
-        # Embedded identity disagrees with the expected identity → tampered row.
-        raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
-    return value
+    return payload
 
 
 def rewrap_dek(
-    key_provider: KeyProvider,
-    envelope: Envelope,
-    scope: SecretScope,
-    ref: str,
-    kind: str,
-    version: int,
-    new_key_id: str,
+    key_provider: KeyProvider, envelope: Envelope, aad: bytes, new_key_id: str,
+    ref: str | None = None,
 ) -> Envelope:
     """Unwrap the DEK with its current KEK and rewrap under ``new_key_id``.
 
     The payload ciphertext and data nonce are unchanged — only the wrap layer and
     ``key_id`` change. Used by KEK rotation.
     """
-    aad = canonical_aad(scope, ref, kind, version)
     old_kek = key_provider.get_key(envelope.key_id)
     try:
         dek = _sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
