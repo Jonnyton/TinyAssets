@@ -1224,11 +1224,14 @@ def _opaque_registry():
 
     saved = dict(dr._REGISTRY)
     saved_cap = dict(dr._CAPABILITY_REGISTRY)
+    saved_host = dict(dr._HOST_ONLY_REGISTRY)
     yield dr
     dr._REGISTRY.clear()
     dr._REGISTRY.update(saved)
     dr._CAPABILITY_REGISTRY.clear()
     dr._CAPABILITY_REGISTRY.update(saved_cap)
+    dr._HOST_ONLY_REGISTRY.clear()
+    dr._HOST_ONLY_REGISTRY.update(saved_host)
 
 
 def test_opaque_repo_read_adapter_fails_closed(_opaque_registry):
@@ -1335,3 +1338,104 @@ def test_kwargs_provider_carries_config():
     fn({"x": "1"})
     assert "config" in captured
     assert getattr(captured["config"], "closed_tool_surface", False) is True
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r13 #1 — HOST-ONLY vs COMMUNITY-CALLABLE trust boundary. A user-
+# authored (untrusted) branch cannot compile/queue/execute a host-only adapter;
+# only a trusted (daemon) compile may.
+# --------------------------------------------------------------------------- #
+
+
+def test_host_only_adapter_refused_for_user_branch(_opaque_registry):
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import branch_sandbox_status, effective_node_capability
+
+    _opaque_registry.register_domain_callable(
+        "hostdom", "danger", lambda s: {"ran": True}, host_only=True,
+    )
+    node = NodeDefinition(node_id="danger", display_name="Danger")
+    # Classifier reports it as host_only → blocked for user branches.
+    assert effective_node_capability(node, "hostdom") == "host_only"
+    assert branch_sandbox_status([node], "hostdom")[0] is True
+    # Untrusted (user) compile fails closed — never reaches the callable.
+    fn = _build_node(
+        node, provider_call=None, event_sink=None, domain_id="hostdom", trusted=False,
+    )
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+def test_host_only_adapter_allowed_for_trusted_compile(_opaque_registry):
+    from tinyassets.graph_compiler import _build_node
+
+    _opaque_registry.register_domain_callable(
+        "hostdom", "danger", lambda s: {"ran": True}, host_only=True,
+    )
+    node = NodeDefinition(node_id="danger", display_name="Danger", output_keys=["ran"])
+    # A trusted (daemon) compile is permitted to build + run the host-only adapter.
+    fn = _build_node(
+        node, provider_call=None, event_sink=None, domain_id="hostdom", trusted=True,
+    )
+    assert fn({}) == {"ran": True}
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r13 #2 — a typo'd / unknown capability at REGISTRATION is treated as
+# UNCLASSIFIED permanently (fail closed), never accepted.
+# --------------------------------------------------------------------------- #
+
+
+def test_unknown_capability_registration_fails_closed(_opaque_registry, monkeypatch):
+    import tinyassets.sandbox_policy as sp
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.sandbox_policy import effective_node_capability
+
+    # A repo_read typo — must NOT be accepted as some runnable repo capability.
+    _opaque_registry.register_domain_callable(
+        "typodom", "x", lambda s: {"ran": True}, capability="repo_raed",
+    )
+    assert _opaque_registry.resolve_domain_capability("typodom", "x") is None
+    node = NodeDefinition(node_id="x", display_name="X")
+    assert effective_node_capability(node, "typodom") == "opaque_unclassified"
+    # Even with a (simulated) runner present, an unclassified adapter refuses.
+    monkeypatch.setattr(sp, "coding_nodes_runnable", lambda: (True, "runner"))
+    fn = _build_node(node, provider_call=None, event_sink=None, domain_id="typodom")
+    with pytest.raises(SandboxUnavailableError):
+        fn({})
+
+
+# --------------------------------------------------------------------------- #
+# Codex S3 r13 #3 — no mock response in production (Hard Rule 8). A prompt node
+# with provider_call=None FAILS LOUD unless the explicit test-only force-mock
+# switch is on.
+# --------------------------------------------------------------------------- #
+
+
+def test_no_provider_fails_loud_in_production(monkeypatch):
+    from tinyassets.graph_compiler import CompilerError, _build_node
+    from tinyassets.providers import call as _call
+
+    # Simulate production: the test-only force-mock switch is OFF.
+    monkeypatch.setattr(_call, "_force_mock", False)
+    node = NodeDefinition(
+        node_id="t", display_name="T", prompt_template="hi", output_keys=["t_out"],
+    )
+    fn = _build_node(node, provider_call=None, event_sink=None)
+    with pytest.raises(CompilerError, match="no provider|fail loud|Mock|mock"):
+        fn({})
+
+
+def test_mock_still_works_behind_force_mock_switch():
+    """Sanity: with the force-mock switch ON (the conftest default), the mock
+    path is available for tests — it is a test-only affordance, not removed."""
+    from tinyassets.graph_compiler import _build_node
+    from tinyassets.providers.call import is_force_mock
+
+    assert is_force_mock() is True  # conftest sets it session-wide
+    node = NodeDefinition(
+        node_id="t", display_name="T", prompt_template="hi", output_keys=["t_out"],
+    )
+    fn = _build_node(node, provider_call=None, event_sink=None)
+    out = fn({})
+    assert "Mock response" in out["t_out"]

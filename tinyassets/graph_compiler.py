@@ -1257,6 +1257,22 @@ def _build_prompt_template_node(
             provider_served: str = "unknown"
             provider_meta: dict[str, Any] = {}
             if provider_call is None:
+                # Codex S3 r13 #3 (Hard Rule 8): a mock response is a TEST-ONLY
+                # affordance, never a production fallback. It fires ONLY behind the
+                # explicit force-mock switch (tests set it in conftest via
+                # providers.call.set_force_mock). In production, a missing provider
+                # (e.g. an import failure that left provider_call=None) FAILS LOUD
+                # — a silent "[Mock response …]" that looks real is worse than a
+                # crash.
+                from tinyassets.providers.call import is_force_mock
+                if not is_force_mock():
+                    raise CompilerError(
+                        f"Node '{node.node_id}' has no provider (provider_call is "
+                        "None) and mock responses are disabled outside tests. "
+                        "Refusing to emit fake output in production (Hard Rule 8, "
+                        "fail loud) — a missing/failed provider import must crash, "
+                        "not silently return a mock string."
+                    )
                 response = f"[Mock response for {node.node_id}]"
                 provider_served = "mock"
             elif effective_policy:
@@ -2654,6 +2670,7 @@ def _build_node(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    trusted: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2667,19 +2684,27 @@ def _build_node(
     own policy or the branch default; resolved by ``compile_branch``.
     ``concurrency_tracker`` limits concurrent LLM/sandbox calls via a
     semaphore acquired before the provider call and released after.
+
+    ``trusted`` marks a DAEMON-INTERNAL compile (Codex S3 r13 #1). Only a trusted
+    compile may build a HOST-ONLY opaque adapter (e.g. ``universe_cycle_wrapper``);
+    a user-authored branch (``trusted=False``, the default and the only value the
+    ``run_branch`` path ever passes) fails closed on a host-only adapter.
     """
     from tinyassets.domain_registry import resolve_domain_callable
 
-    # SECURITY (Codex S3 r9 #3 + r12 #1): the capability fail-closed gate lives at
-    # THIS single choke point — BEFORE the adapter fan-out — so source_code /
-    # opaque / invoke nodes cannot route AROUND it (they never reach the adapter
-    # that formerly held the only gate). Capability is the EFFECTIVE capability:
-    # source/metadata classification PLUS opaque-adapter resolution (a registered
-    # opaque callable's capability is its adapter type, invisible to node fields —
-    # a repo-reading `read_repo_files` node otherwise looks like plain text). A
-    # repo-touching node with no per-job runner, AND an UNCLASSIFIED opaque adapter
-    # (no declared capability), fail closed deterministically for EVERY adapter —
-    # matching what validate + get_status report.
+    # SECURITY (Codex S3 r9 #3 + r12 #1 + r13 #1): the capability fail-closed gate
+    # lives at THIS single choke point — BEFORE the adapter fan-out — so
+    # source_code / opaque / invoke nodes cannot route AROUND it. Capability is the
+    # EFFECTIVE capability: source/metadata classification PLUS opaque-adapter
+    # resolution (a registered opaque callable's capability is its adapter type,
+    # invisible to node fields — a repo-reading `read_repo_files` node otherwise
+    # looks like plain text). A repo-touching node with no per-job runner, an
+    # UNCLASSIFIED opaque adapter, and a HOST-ONLY adapter reached by an untrusted
+    # (user-authored) compile all fail closed deterministically — matching what
+    # validate + get_status report.
+    from tinyassets.sandbox_policy import (
+        _HOST_ONLY as _HOST_ONLY,
+    )
     from tinyassets.sandbox_policy import (
         _OPAQUE_UNCLASSIFIED as _OPAQUE_UNCLASSIFIED,
     )
@@ -2690,8 +2715,18 @@ def _build_node(
         effective_node_capability as _eff_cap,
     )
     _node_eff_cap = _eff_cap(node, domain_id)
+    # A HOST-ONLY adapter is allowed ONLY for a trusted (daemon) compile.
+    if _node_eff_cap == _HOST_ONLY and trusted:
+        _node_eff_cap = "text"  # trusted daemon path — proceed to opaque dispatch
     if _node_eff_cap != "text":
-        if _node_eff_cap == _OPAQUE_UNCLASSIFIED:
+        if _node_eff_cap == _HOST_ONLY:
+            # A user-authored branch selected a daemon-internal callable.
+            _refuse = True
+            _runner_reason = (
+                "it is a HOST-ONLY (daemon-internal) adapter that a user-authored "
+                "branch may not compile/queue/execute; refusing (fail closed)"
+            )
+        elif _node_eff_cap == _OPAQUE_UNCLASSIFIED:
             # An opaque adapter with no declared capability refuses unconditionally
             # — the Phase-2 runner cannot vouch for an adapter nobody classified.
             _refuse = True
@@ -2896,6 +2931,7 @@ def compile_branch(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    trusted: bool = False,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -3024,6 +3060,7 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            trusted=trusted,
         )
         graph.add_node(gn.id, fn)
 

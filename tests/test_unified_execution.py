@@ -50,12 +50,24 @@ def _sandbox_runner_present(monkeypatch):
 def clean_registry():
     """Reset the domain registry between tests so monkey-patches
     don't leak across test boundaries.
+
+    Snapshot/restore ALL three parallel registries (callable + capability +
+    host_only, Codex S3 r12/r13) together — restoring only ``_REGISTRY`` left the
+    capability/host_only entries out of sync (a callable present in ``_REGISTRY``
+    but missing from ``_CAPABILITY_REGISTRY`` classifies as ``opaque_unclassified``
+    and leaks into later tests).
     """
     from tinyassets import domain_registry
     saved = dict(domain_registry._REGISTRY)
+    saved_cap = dict(domain_registry._CAPABILITY_REGISTRY)
+    saved_host = dict(domain_registry._HOST_ONLY_REGISTRY)
     yield domain_registry
     domain_registry._REGISTRY.clear()
     domain_registry._REGISTRY.update(saved)
+    domain_registry._CAPABILITY_REGISTRY.clear()
+    domain_registry._CAPABILITY_REGISTRY.update(saved_cap)
+    domain_registry._HOST_ONLY_REGISTRY.clear()
+    domain_registry._HOST_ONLY_REGISTRY.update(saved_host)
 
 
 @pytest.fixture

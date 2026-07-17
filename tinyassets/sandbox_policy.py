@@ -197,11 +197,17 @@ def effective_node_capability(node: Any, domain_id: str = "") -> str:
         from tinyassets.domain_registry import (
             resolve_domain_callable,
             resolve_domain_capability,
+            resolve_domain_host_only,
         )
     except Exception:  # noqa: BLE001
         return base
     if resolve_domain_callable(dom, nid) is None:
         return base  # not an opaque adapter — a plain node in a domain branch
+    # Codex S3 r13 #1: a HOST-ONLY adapter is daemon-internal — a user branch may
+    # not run it. Report it as `host_only` (blocked for user branches); the graph
+    # choke point allows it ONLY for a trusted (daemon) compile.
+    if resolve_domain_host_only(dom, nid):
+        return _HOST_ONLY
     cap = resolve_domain_capability(dom, nid)
     if not cap:
         return _OPAQUE_UNCLASSIFIED
@@ -213,11 +219,17 @@ def effective_node_capability(node: Any, domain_id: str = "") -> str:
 # Phase-2 runner can vouch for an adapter whose capability nobody declared).
 _OPAQUE_UNCLASSIFIED = "opaque_unclassified"
 
+# A HOST-ONLY (daemon-internal) opaque adapter (Codex S3 r13 #1). A user-authored
+# branch may not run it; only a trusted (daemon) compile may. For any user-branch
+# classification surface (validate / enqueue) it is BLOCKED.
+_HOST_ONLY = "host_only"
+
 # Sandbox class ordering (least → most restricted). Used to detect a security
 # DOWNGRADE at the mutation surface (Codex S3 r11 #3): metadata may escalate a
 # node's sandbox class but never lower it. ``source_exec`` is the strongest
 # (in-process host code); ``text`` is the only runnable class in Phase 1. An
-# unclassified opaque adapter ranks at the maximum (fail closed).
+# unclassified opaque adapter, and a host-only adapter reached by a user branch,
+# rank at the maximum (fail closed).
 _CAPABILITY_RANK: dict[str, int] = {
     "text": 0,
     "repo_read": 1,
@@ -225,6 +237,7 @@ _CAPABILITY_RANK: dict[str, int] = {
     "coding": 3,
     _SOURCE_EXEC_CAPABILITY: 4,
     _OPAQUE_UNCLASSIFIED: 5,
+    _HOST_ONLY: 6,
 }
 
 
@@ -302,6 +315,7 @@ def branch_sandbox_status(
     try:
         repo_nodes: list[str] = []
         has_unclassified = False
+        has_host_only = False
         for nd in node_defs:
             cap = effective_node_capability(nd, domain_id)
             if cap == "text":
@@ -311,7 +325,16 @@ def branch_sandbox_status(
                 repo_nodes.append(nid)
             if cap == _OPAQUE_UNCLASSIFIED:
                 has_unclassified = True
+            if cap == _HOST_ONLY:
+                has_host_only = True
         repo_nodes = sorted(repo_nodes)
+        if has_host_only:
+            warnings.append(
+                f"This branch selects HOST-ONLY (daemon-internal) adapter node(s) "
+                f"({', '.join(repo_nodes)}) that a user-authored branch may not "
+                "run; refusing (fail closed)."
+            )
+            return True, repo_nodes, warnings
         if has_unclassified:
             warnings.append(
                 f"This branch has opaque adapter node(s) "

@@ -2389,6 +2389,26 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
 
+    # Codex S3 r13 #1: a user-authored branch may NOT select a HOST-ONLY
+    # (daemon-internal) opaque callable (e.g. universe_cycle_wrapper, which runs
+    # the full daemon graph). Reject at the authoring boundary — the runtime choke
+    # point + queue refusal also fail closed, but rejecting here gives the author
+    # immediate, actionable feedback and prevents a doomed branch from persisting.
+    try:
+        from tinyassets.domain_registry import resolve_domain_host_only
+        _host_only_nodes = sorted(
+            nd.node_id for nd in branch.node_defs
+            if resolve_domain_host_only(branch.domain_id, nd.node_id)
+        )
+    except Exception:  # noqa: BLE001 — resolution failure ⇒ defer to runtime gate
+        _host_only_nodes = []
+    if _host_only_nodes:
+        errors.append(
+            "Branch selects HOST-ONLY (daemon-internal) node(s): "
+            f"{', '.join(_host_only_nodes)}. A user-authored branch cannot select "
+            "or run these daemon-internal callables; remove them (fail closed)."
+        )
+
     # Validate fork_from points to a real branch_version_id.
     if branch.fork_from:
         from tinyassets.branch_versions import get_branch_version
