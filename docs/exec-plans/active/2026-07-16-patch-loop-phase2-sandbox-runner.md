@@ -34,12 +34,23 @@ against a user-bound repo without endangering the capacity host.
   `run_branch` / `resume_run` / `run_branch_version` enqueue refusal
   (`_sandbox_enqueue_refusal`), and the graph runtime choke point
   (`_build_node`). Readiness can never drift from runtime.
-- Every repo-touching node (classified by the stable `node_kind`, with node_id
-  backstops) fails closed deterministically at the FIRST gate in `_build_node`,
-  before any `ModelConfig` / provider / scratch / env code runs, and emits a
-  terminal `phase="failed"` node event.
-- The only node that RUNS is a plain TEXT node under a CLOSED tool surface
-  (`text_node_model_config` → claude `--tools ""`).
+- Every repo-touching node fails closed deterministically at the FIRST gate in
+  `_build_node`, before any `ModelConfig` / provider / scratch / env code runs,
+  and emits a terminal `phase="failed"` node event. Capability is classified by:
+  (a) the node's ACTUAL executable nature for a `source_code` node — it is
+  ALWAYS `source_exec` (in-process host code) regardless of user metadata
+  (Codex S3 r11); then (b) the stable `node_kind` (coding / repo_exec /
+  repo_read); with node_id backstops.
+- **`source_code` nodes are DISABLED in Phase 1.** A `source_code` adapter runs
+  arbitrary Python in-process with full builtins — a host-code-execution surface
+  stronger than a subprocess coding agent. It fails closed like any repo node.
+  This also disables the features DRIVEN THROUGH in-process node code —
+  **in-node MCP dispatch (`invoke_mcp_action`) and in-node enqueue** — until the
+  runner lands. Security metadata (`node_kind` / `requires_sandbox`) is
+  downgrade-locked and bound to source approval so it cannot spoof the classifier
+  (Codex S3 r11 #2/#3/#4).
+- The only node that RUNS is a plain TEXT (`prompt_template`) node under a CLOSED
+  tool surface (`text_node_model_config` → claude `--tools ""`).
 
 ## Phase-2 scope — what the runner MUST provide before `coding_nodes_runnable()`
 can return True
