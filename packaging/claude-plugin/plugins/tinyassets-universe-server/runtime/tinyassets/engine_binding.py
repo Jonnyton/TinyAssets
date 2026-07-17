@@ -253,16 +253,23 @@ def _byo_execution_enabled_uncached(universe_dir: str | Path | None = None) -> b
 
 
 @contextlib.contextmanager
-def pin_byo_execution_snapshot():
+def pin_byo_execution_snapshot(universe_dir: str | Path | None = None):
     """Pin ONE immutable ``byo_execution_enabled()`` reading for a routing call.
 
     The router enters this around its chain-selection + the awaited
     ``provider.complete`` so route-time and spawn-time reads can never disagree
     across a mid-call attestation flip (round-12 #3). A nested pin reuses the
     outermost value — the first decision governs the whole operation.
+
+    Round-15 #2: the snapshot is computed WITH the routing universe's record
+    context (``universe_dir``) so the per-record attestation (round-14 #4) is not
+    silently context-free inside the pin. The caller passes the resolved universe;
+    every read inside the pin then resolves to this ONE per-record decision.
     """
     current = _BYO_EXECUTION_SNAPSHOT.get()
-    value = _byo_execution_enabled_uncached() if current is None else current
+    value = (
+        _byo_execution_enabled_uncached(universe_dir) if current is None else current
+    )
     token = _BYO_EXECUTION_SNAPSHOT.set(value)
     try:
         yield value
@@ -377,11 +384,12 @@ def byo_lane_selected(universe_dir: str | Path) -> bool:
     still got ``ANTHROPIC_API_KEY`` injected. A retained vault key is injectable
     ONLY when the selected lane is BYO.
 
-    True for an undeclared universe (default lane) or ``engine_source=byo_api_key``;
-    False for a runtime-backed lane (``host_daemon`` / ``market_rented`` /
-    ``self_hosted_endpoint``) or the retired ``subscription`` lane. A config read
-    error FAILS CLOSED (returns False → no injection), matching the "never run a
-    BYO spawn on ambient/misconfigured state" discipline.
+    Round-15 #4 (FAIL CLOSED): the BYO lane is selected ONLY for an undeclared
+    universe (``""`` = default lane) or an EXPLICIT ``engine_source=byo_api_key``.
+    Every OTHER value — a runtime-backed lane, the retired ``subscription`` lane,
+    OR an unknown/typo'd value (``attacker_typo``) — is NOT BYO. An allowlist, not
+    a denylist: an unknown ``engine_source`` must never default into the
+    credential-injecting path. A config read error also fails closed.
     """
     udir = Path(universe_dir)
     try:
@@ -389,9 +397,7 @@ def byo_lane_selected(universe_dir: str | Path) -> bool:
     except Exception:  # noqa: BLE001 — a broken config must not enable injection
         return False
     declared = str(raw.get("engine_source") or "").strip()
-    if not declared:
-        return True  # undeclared → the default BYO lane
-    return declared not in _RUNTIME_BACKED_SOURCES and declared != "subscription"
+    return declared in ("", "byo_api_key")
 
 
 def _byo_row_usable(record: dict[str, Any], svc: str) -> bool:
@@ -545,7 +551,7 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
         #   (F3) the vault-encryption gate is on (else the path is DARK), AND
         #   (F1) the provider is BYO-executable (claude-code; codex BYO is idle), AND
         #   (F4) the key passes provider-specific auth-health (not just non-empty).
-        if not byo_execution_enabled():
+        if not byo_execution_enabled(udir):  # round-15 #2: per-record context
             reason = (
                 "a BYO API key is present but hosted BYO execution is not "
                 "enabled — vault encryption (KMS / external secret manager) is "

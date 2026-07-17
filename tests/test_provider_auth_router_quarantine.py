@@ -645,21 +645,29 @@ def test_r12_3_router_pins_one_byo_snapshot_across_spawn(
     whole call. A mid-call attestation flip (True→False) cannot let route
     selection constrain to the BYO writer while the spawn sees byo OFF (which
     would restore platform auth). The provider observes the pinned value at spawn."""
+    from pathlib import Path
+
     import tinyassets.engine_binding as eb
     from tinyassets.providers.base import UniverseContext
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
-    # Per-record attestation is True only on the FIRST read; every later read flips
-    # False (the TOCTOU race the pin must neutralize).
+    udir = _byo_claude_universe(tmp_path)
+    # Round-15 #2: the attestation is PER-RECORD — it succeeds ONLY for the routing
+    # universe (not arbitrary args). If the pin failed to thread the record context,
+    # the pin-time read would see universe_dir=None → dark → no constraint. It ALSO
+    # flips False after the first read (the round-12 TOCTOU race the pin neutralizes).
     calls = {"n": 0}
 
-    def _flip(*a, **k):
+    def _flip(universe_dir=None):
         calls["n"] += 1
-        return calls["n"] <= 1
+        return (
+            universe_dir is not None
+            and Path(universe_dir) == udir
+            and calls["n"] <= 1
+        )
 
     monkeypatch.setattr(eb, "_vault_encryption_capability_attested", _flip)
-    udir = _byo_claude_universe(tmp_path)
 
     observed: dict[str, bool] = {}
 
@@ -668,7 +676,7 @@ def test_r12_3_router_pins_one_byo_snapshot_across_spawn(
         family = "anthropic"
 
         async def complete(self, prompt, system, config, *, universe_dir=None):
-            observed["byo_at_spawn"] = eb.byo_execution_enabled()
+            observed["byo_at_spawn"] = eb.byo_execution_enabled(universe_dir)
             return ProviderResponse(
                 text="ok", provider="claude-code", model="m",
                 family="anthropic", latency_ms=0.0,
@@ -863,3 +871,80 @@ def test_r13_2_byo_lane_still_injects_after_the_guard(tmp_path, monkeypatch):
     udir = _byo_claude_universe(tmp_path)  # engine_source=byo_api_key + valid key
     monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
     assert "ANTHROPIC_API_KEY" in provider_auth_env_overrides(udir, "claude-code")
+
+
+# ---------------------------------------------------------------------------
+# Round-15 review regressions (Codex r15)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("engine_source", ["attacker_typo", "byoapikey", "BYO", "x"])
+def test_r15_4_unknown_engine_source_fails_closed_direct_spawn(
+    tmp_path, monkeypatch, engine_source,
+):
+    """Round-15 #4: an unknown/typo'd engine_source must NOT default into the BYO
+    credential-injection path. DIRECT-SPAWN coverage (not just router): even with a
+    valid key in the vault and executable BYO enabled, an unknown lane injects
+    NOTHING and is not byo-bound."""
+    import base64
+
+    import tinyassets.engine_binding as eb
+    from tinyassets.credential_vault import (
+        provider_auth_env_overrides,
+        provider_is_byo_bound,
+        write_credential_vault,
+    )
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    _enable_byo(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    udir = tmp_path / "u-unknown-lane"
+    udir.mkdir()
+    (udir / "config.yaml").write_text(
+        f"engine_source: {engine_source}\n", encoding="utf-8"
+    )
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": base64.b64encode(
+            ("sk-ant-api03-" + "A" * 40).encode()).decode("ascii"),
+    }])
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+
+    assert eb.byo_lane_selected(udir) is False
+    assert provider_is_byo_bound("claude-code", universe_dir=udir) is False
+    assert "ANTHROPIC_API_KEY" not in provider_auth_env_overrides(udir, "claude-code")
+    env = subprocess_env_for_provider("claude-code", universe_dir=udir)
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in env  # not byo-hardened
+
+
+def test_r15_2_pin_attestation_uses_routing_record_context(tmp_path, monkeypatch):
+    """Round-15 #2: the pinned snapshot carries THIS routing universe's record
+    context. An attestation that succeeds only for the target universe must make
+    byo_execution_enabled True inside a pin OPENED for that universe, and False
+    inside a pin opened for a different one — proving the pin threads the record."""
+    from pathlib import Path
+
+    import tinyassets.engine_binding as eb
+    from tinyassets.engine_binding import (
+        byo_execution_enabled,
+        pin_byo_execution_snapshot,
+    )
+
+    monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    target = tmp_path / "target"
+    target.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setattr(
+        eb, "_vault_encryption_capability_attested",
+        lambda universe_dir=None: universe_dir is not None
+        and Path(universe_dir) == target,
+    )
+    # Pin opened for the target → attestation succeeds inside it.
+    with pin_byo_execution_snapshot(target):
+        assert byo_execution_enabled(target) is True
+    # Pin opened for a DIFFERENT universe → the target reads False (record-scoped).
+    with pin_byo_execution_snapshot(other):
+        assert byo_execution_enabled(target) is False

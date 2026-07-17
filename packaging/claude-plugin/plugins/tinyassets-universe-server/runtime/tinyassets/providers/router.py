@@ -90,14 +90,13 @@ def _universe_provides_provider_auth(
         )
         from tinyassets.engine_binding import byo_execution_enabled
 
-        if not byo_execution_enabled():
-            return False  # F3: no direct BYO routing until vault encryption lands
-
         resolved = (
             universe_dir if universe_dir is not None else resolve_universe_from_env()
         )
         if resolved is None:
             return False
+        if not byo_execution_enabled(resolved):  # round-15 #2: per-record context
+            return False  # F3: no direct BYO routing until vault encryption lands
         return bool(resolve_llm_api_key(resolved, env_var))
     except Exception:  # noqa: BLE001 — vault-auth probe must never break routing
         return False
@@ -133,16 +132,14 @@ def _enforce_writer_binding(
     is_writer_route = role == "writer" or role not in FALLBACK_CHAINS
     if not is_writer_route:
         return chain
-    from tinyassets.engine_binding import byo_execution_enabled, resolve_engine_binding
-
-    if not byo_execution_enabled():
-        return chain  # DARK: no BYO is executable/bound; nothing to constrain.
-
     from tinyassets.credential_vault import resolve_universe_from_env
+    from tinyassets.engine_binding import byo_execution_enabled, resolve_engine_binding
 
     resolved = universe_dir if universe_dir is not None else resolve_universe_from_env()
     if resolved is None:
         return chain  # no bound-universe context.
+    if not byo_execution_enabled(resolved):  # round-15 #2: per-record context
+        return chain  # DARK: no BYO is executable/bound; nothing to constrain.
     try:
         binding = resolve_engine_binding(resolved)
     except AllProvidersExhaustedError:
@@ -248,13 +245,22 @@ def _pin_byo_snapshot(method):
     both run inside this ``with``, so a mid-call attestation flip can never let
     routing constrain to the BYO writer while the spawn restores platform auth. The
     contextvar is set for the entire awaited coroutine (same task context) and any
-    fan-out sub-tasks copy it at creation."""
+    fan-out sub-tasks copy it at creation.
+
+    Round-15 #2: the snapshot carries this call's per-record context — the routing
+    universe from ``universe_context`` (else the process-global ``TINYASSETS_UNIVERSE``)
+    — so the per-record attestation is not context-free inside the pin."""
 
     @functools.wraps(method)
     async def _wrapper(self, *args, **kwargs):
+        from tinyassets.credential_vault import resolve_universe_from_env
         from tinyassets.engine_binding import pin_byo_execution_snapshot
 
-        with pin_byo_execution_snapshot():
+        uctx = kwargs.get("universe_context")
+        udir = getattr(uctx, "universe_dir", None) if uctx is not None else None
+        if udir is None:
+            udir = resolve_universe_from_env()
+        with pin_byo_execution_snapshot(udir):
             return await method(self, *args, **kwargs)
 
     return _wrapper

@@ -371,8 +371,12 @@ def resolve_llm_api_key(
     return ""
 
 
-def _byo_injection_enabled() -> bool:
+def _byo_injection_enabled(universe_dir: str | Path | None = None) -> bool:
     """True iff a founder BYO key may be injected into a CLI subprocess.
+
+    Round-15 #2: threads the record locus (``universe_dir``) into the per-record
+    attestation so the byo-bound / injection decision is context-aware (under the
+    router pin the value is already fixed for the routing universe).
 
     Gated on the executable-BYO prerequisite (:func:`engine_binding.
     byo_execution_enabled` — KMS-attested, DEFAULT False). When False (this
@@ -383,7 +387,7 @@ def _byo_injection_enabled() -> bool:
     try:
         from tinyassets.engine_binding import byo_execution_enabled
 
-        return byo_execution_enabled()
+        return byo_execution_enabled(universe_dir)
     except Exception:  # noqa: BLE001 — a resolution problem must not enable BYO
         return False
 
@@ -448,7 +452,7 @@ def provider_auth_env_overrides(
     the child can't fall back to the host's ``~/.claude`` OAuth (round-12 #2).
     """
     if byo_enabled is None:
-        byo_enabled = _byo_injection_enabled()
+        byo_enabled = _byo_injection_enabled(universe_dir)
     provider = provider_name.strip()
     # Round-12 #1: a legacy per-universe subscription record is NEVER consumed —
     # fail loud (quarantine) rather than silently inject or skip it.
@@ -567,10 +571,6 @@ def provider_is_byo_bound(
     env_var = _PROVIDER_BYO_ENV_VAR.get(provider_name.strip())
     if not env_var:
         return False
-    if byo_enabled is None:
-        byo_enabled = _byo_injection_enabled()
-    if not byo_enabled:
-        return False  # BYO dark (C2/C4) — no BYO-bound spawn to fail closed on
     resolved = (
         Path(universe_dir)
         if universe_dir is not None
@@ -578,6 +578,12 @@ def provider_is_byo_bound(
     )
     if resolved is None:
         return False
+    # Round-15 #2: resolve the record locus FIRST so the per-record attestation
+    # sees this universe's context (not a context-free global read).
+    if byo_enabled is None:
+        byo_enabled = _byo_injection_enabled(resolved)
+    if not byo_enabled:
+        return False  # BYO dark (C2/C4) — no BYO-bound spawn to fail closed on
     # Round-13 #2: lane-aware. A universe switched AWAY from BYO (market/host/
     # self-hosted) is NOT byo-bound even if a stale key lingers in the vault —
     # otherwise the spawn would scrub+inject/harden for a non-BYO lane.

@@ -5211,11 +5211,14 @@ def _action_offer_engine(
     ``inputs_json``: ``{"action": "list"|"set"|"toggle", "service": "anthropic",
     "model": "…", "rate": 0.0, "cap": 0.0, "enabled": true, "key": "…" (toggle)}``.
     """
+    import math
+
+    from filelock import FileLock, Timeout
+
     from tinyassets.api.permissions import current_actor_id
 
     founder_id = current_actor_id()
     path = _founder_offers_path(founder_id)
-    offers = _read_founder_offers(path)
 
     raw = (inputs_json or "").strip()
     data: dict[str, Any] = {}
@@ -5230,7 +5233,7 @@ def _action_offer_engine(
     op = str(data.get("action", "list")).strip().lower()
     if op == "list":
         return json.dumps({"status": "offers", "founder_id": founder_id,
-                           "offers": offers})
+                           "offers": _read_founder_offers(path)})
     if op == "set":
         service = str(data.get("service", "")).strip().lower()
         model = str(data.get("model", "")).strip()
@@ -5241,28 +5244,48 @@ def _action_offer_engine(
             cap = float(data.get("cap", 0.0) or 0.0)
         except (TypeError, ValueError):
             return json.dumps({"error": "rate and cap must be numbers."})
+        # Round-15 #3: reject non-finite (NaN/Infinity) + negative — an inf/NaN
+        # cap silently disables the ceiling (same guard the adjacent market-rental
+        # declaration already applies).
+        for name, value in (("rate", rate), ("cap", cap)):
+            if not math.isfinite(value) or value < 0:
+                return json.dumps({
+                    "error": f"{name} must be a finite, non-negative number.",
+                })
         key = f"{service}:{model}"
-        offers = [o for o in offers if o.get("key") != key]
-        offers.append({"key": key, "service": service, "model": model,
-                       "rate": rate, "cap": cap,
-                       "enabled": bool(data.get("enabled", True))})
+        enabled = bool(data.get("enabled", True))
+        # Round-15 #3: the read-modify-write runs under a cross-process lock so
+        # concurrent offers can't lose each other (lost-update clobber).
+        lock = FileLock(str(path) + ".lock", timeout=30)
         try:
-            _write_founder_offers(path, offers)
+            with lock:
+                offers = [o for o in _read_founder_offers(path)
+                          if o.get("key") != key]
+                offers.append({"key": key, "service": service, "model": model,
+                               "rate": rate, "cap": cap, "enabled": enabled})
+                _write_founder_offers(path, offers)
+        except Timeout:
+            return json.dumps({"error": "could not acquire the offers lock (30s)."})
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"error": f"Failed to save offer: {exc}"})
         return json.dumps({"status": "offer_set", "founder_id": founder_id,
                            "offer_key": key, "offers": offers})
     if op == "toggle":
         key = str(data.get("key", "")).strip()
-        found = False
-        for o in offers:
-            if o.get("key") == key:
-                o["enabled"] = not o.get("enabled", True)
-                found = True
-        if not found:
-            return json.dumps({"error": f"no offer with key {key!r}."})
+        lock = FileLock(str(path) + ".lock", timeout=30)
         try:
-            _write_founder_offers(path, offers)
+            with lock:
+                offers = _read_founder_offers(path)
+                found = False
+                for o in offers:
+                    if o.get("key") == key:
+                        o["enabled"] = not o.get("enabled", True)
+                        found = True
+                if not found:
+                    return json.dumps({"error": f"no offer with key {key!r}."})
+                _write_founder_offers(path, offers)
+        except Timeout:
+            return json.dumps({"error": "could not acquire the offers lock (30s)."})
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"error": f"Failed to toggle offer: {exc}"})
         return json.dumps({"status": "offer_toggled", "founder_id": founder_id,

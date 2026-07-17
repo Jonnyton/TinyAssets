@@ -166,7 +166,7 @@ def subprocess_env_for_provider(
         # (engine_binding.pin_byo_execution_snapshot), so route-time and spawn-time
         # agree; bare callers recompute live. Thread it into BOTH the byo-bound
         # decision and the overlay so they can never disagree.
-        byo_enabled = _byo_injection_enabled()
+        byo_enabled = _byo_injection_enabled(universe_dir)
         byo_bound = provider_is_byo_bound(
             provider_name, env=env, universe_dir=universe_dir,
             byo_enabled=byo_enabled,

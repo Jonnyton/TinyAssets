@@ -73,9 +73,14 @@ access-token narrowing below).
 custodied by the platform and driven 24/7 server-side on their behalf — it is
 simultaneously (a) account-credential sharing, (b) OAuth-token-in-a-third-party-
 service, and (c) using a personal subscription to power a third-party service. This
-holds for both providers. So among the three host-floated sources, **only two are
-lawful device-independent 24/7 engines: API key and self-hosted OSS endpoint.** The
-subscription-CLI path survives **only** as the *platform's own* first-party engine
+holds for both providers. So among the three host-floated sources, **the two
+device-independent 24/7 engines are the API-key lane and the self-hosted OSS
+endpoint** — but the **API-key lane's lawfulness is PROVIDER-SPECIFIC** (round-15
+#1): OpenAI's Services Agreement bars transferring a key to a third party, so
+raw-OpenAI-key custody is NOT offered pending a provider-approved delegated path;
+Anthropic is conditional. See the per-provider verdict in §4.2b — do not read "API
+key" as a blanket sanctioned lane. The subscription-CLI path survives **only** as
+the *platform's own* first-party engine
 (host Jonathan's own account, on the host's own trusted infra, serialized — the
 current droplet model), never resold/shared per founder.
 
@@ -316,7 +321,7 @@ what a droplet compromise exposes.
 | Engine source | Where creds live | 24/7 no-device | Multi-tenant isolation | Blast radius (droplet pwned) | ToS / legal | Impl cost |
 |---|---|---|---|---|---|---|
 | **A. Founder subscription (Claude/ChatGPT CLI)** | would need per-universe `CODEX_HOME`/`CLAUDE_CONFIG_DIR` + OAuth tokens | **Yes technically** | per-universe auth home (exists) | one auth home per founder, cleartext OAuth | **BLOCKED** — §0 (account-sharing + OAuth-in-3rd-party + power-3rd-party-service, both providers) | n/a — don't build |
-| **B. Founder API key (Anthropic/OpenAI/etc.)** | per-universe vault, **KMS-wrapped** | **Yes** | per-tenant DEK + encryption context | one founder's key **iff** per-tenant key; all keys iff shared/base64 (today) | **CONDITIONAL** — API key is the *sanctioned* server path, but NOT categorically clean: OpenAI documents API-key sharing as unsupported/against terms and recommends **project-scoped** keys; Anthropic warns that uploading a key grants **account access**. Requires **dedicated project/service keys + explicit founder consent + spend limits + legal review** (see §4.2b) | Med — add write surface + envelope encryption; router already resolves per-universe |
+| **B. Founder API key** — verdict is PROVIDER-SPECIFIC (round-15 #1), not one blanket "sanctioned" claim | per-universe vault, **KMS-wrapped** | **Yes** | per-tenant DEK + encryption context | one founder's key **iff** per-tenant key; all keys iff shared/base64 (today) | **OpenAI: NOT-OFFERED.** The OpenAI **Services Agreement prohibits transferring API keys to/from third parties**; the project-key article (5008148) covers *intra-org* collaboration, NOT handing a key to TinyAssets. Consent+encryption+spend-limits do NOT cure this — it needs a **provider-approved delegated/service path** (an OpenAI-sanctioned OAuth/service-account flow) or explicit legal approval first. **Anthropic: CONDITIONAL** — a raw key grants account access (support 9767949); requires dedicated key + consent + spend limits + legal review (see §4.2b). Template = the GitHub App path (delegated, provider-sanctioned). | Med — Anthropic conditional lane; OpenAI raw-key deferred pending a delegated path |
 | **C. Self-hosted OSS endpoint (Ollama/vLLM/`ANTHROPIC_BASE_URL`)** | vault holds **endpoint URL + bearer token**, not model creds | **Depends on founder's host** being up | endpoint+token per universe | one endpoint token (low-value; founder's infra) | **CLEAN** — no provider account shared; provider-agnostic base-url already in PLAN | Low — endpoint+token is a thin vault record; router needs base-url binding per universe |
 | **D. BYO-cloud / Workload Identity Federation** | **no stored secret** — OIDC federation to founder's cloud LLM | **Yes** | per-founder OIDC trust | **nothing** — no long-lived secret at rest | **CLEANEST** — no key custody at all | High — federation plumbing; forward-looking, not MVP |
 | **E. Host's-own subscription (NOT a founder default)** | droplet `/data/.codex` + `/data/.claude` (exists) | **Yes** | host's own account, serving ONLY the host's own universe(s) — never a per-founder default | host's own account only | **OK** — first-party, host's own account/infra (§0) | Zero — already live |
@@ -345,33 +350,43 @@ provided default engine for founders (host correction 2026-07-02).**
    engine legally and gets paid. The platform never custodies the founder's creds —
    the clean sidestep to the whole ToS problem.
 
-2. **BYO-hosted lane — Option B (API key), the primary sanctioned 24/7 path.** Founder
-   deposits an **API key** (Anthropic/OpenAI/Gemini/Groq/xAI). Store it in the
-   per-universe vault **under envelope encryption** (§5), resolved per-request off the
-   universe's `credential_ref`. This is the lawful way to "host their engine 24/7
-   without their device." **Requires relaxing `TINYASSETS_ALLOW_API_KEY_PROVIDERS`
-   per-universe** — flagged in §6.
+2. **BYO-hosted lane — Option B (API key). The verdict is PROVIDER-SPECIFIC — there is
+   NO blanket "sanctioned" claim (round-15 #1 critical correction).** A founder-supplied
+   key would be stored in the per-universe vault **under envelope encryption** (§5),
+   resolved per-request off the universe's `credential_ref`, and **requires relaxing
+   `TINYASSETS_ALLOW_API_KEY_PROVIDERS` per-universe** (§6). But whether it is LAWFUL to
+   custody at all depends on the provider's own transfer terms — decide per provider,
+   below.
 
-2b. **Option B is CONDITIONAL, not categorically clean (round-12 #6 source correction).**
-   Founder API-key custody is the *sanctioned* server path, but "clean" overstated it —
-   the providers' own terms attach conditions:
-   - **OpenAI** documents API-key *sharing* as **unsupported / against its terms** and
-     recommends **project-scoped keys** with their own budgets. Cite the API-key +
-     project-key guidance DIRECTLY (round-13 #3 provenance fix — article `9793128`
-     is about ChatGPT **Pro subscription** limits, NOT project keys/budgets, so it
-     is dropped here): help.openai.com/en/articles/5112595 (API-key safety) and
-     help.openai.com/en/articles/5008148 (project-scoped keys). The clean personal-
-     *subscription* prohibition (§0) is unchanged, and the Business/Enterprise **Codex
-     access-token** exception (§0.1) remains a separate, current lawful org path.
-   - **Anthropic** warns that uploading an API key **grants the platform account
-     access** — cite Anthropic's precise API-key-safety support article (round-13 #3,
-     replacing the vague "anthropic.com legal + code.claude.com" attribution):
-     support.anthropic.com/en/articles/9767949-api-key-best-practices-keeping-your-keys-safe-and-secure.
-   Therefore Option B must require, before productionizing: **(a)** dedicated
-   **project/service** keys (never a personal all-scopes key), **(b)** explicit
-   founder **consent** at deposit, **(c)** per-key **spend limits**, and **(d) legal
-   review**. These are gating conditions, not nice-to-haves — the "CONDITIONAL"
-   verdict in the §3 matrix reflects them.
+2b. **Per-provider custody verdict (round-15 #1 rewrite — provider-by-provider, not one
+   blanket claim). The clean, provider-sanctioned template is the DELEGATED path
+   (GitHub App: the provider issues a scoped, revocable token to the platform — the
+   founder never hands over a raw key). Measure each provider against that.**
+   - **OpenAI — raw API-key custody is NOT OFFERED (pending a delegated/service path).**
+     The [OpenAI Services Agreement](https://openai.com/policies/services-agreement/)
+     **prohibits transferring API keys to or from third parties**. The project-key
+     article (help.openai.com/en/articles/5008148) covers **intra-organization**
+     collaboration — sharing a key *within* your own org — NOT handing a key to
+     TinyAssets, a third party. So consent + encryption + spend-limits do **not** cure
+     it: raw-OpenAI-key custody needs a **provider-approved delegated/service path**
+     (an OpenAI-sanctioned OAuth / service-account flow, the GitHub-App analogue) OR
+     explicit legal approval. **Mark it NOT-OFFERED until such a path exists; do not
+     build the raw-key lane for OpenAI.** (The personal-*subscription* prohibition in
+     §0 is unchanged; the Business/Enterprise **Codex access-token** path in §0.1 is a
+     separate, provider-sanctioned org flow — that IS a delegated-style path.)
+   - **Anthropic — CONDITIONAL.** Anthropic warns that an uploaded API key **grants
+     account access** ([API-key best practices](https://support.anthropic.com/en/articles/9767949-api-key-best-practices-keeping-your-keys-safe-and-secure)).
+     Not a categorical prohibition like OpenAI's transfer ban, but it requires, before
+     productionizing: **(a)** a dedicated key (never a personal all-scopes key),
+     **(b)** explicit founder **consent** at deposit, **(c)** per-key **spend limits**,
+     and **(d) legal review**. Label any "sanctioned" reading an INFERENCE from the
+     terms, not a provider endorsement.
+   - **Others (Gemini / Groq / xAI)** — state each per its own current terms before
+     offering; do not assume the Anthropic verdict transfers. (Not researched here.)
+   This converges with the credential vault's provider-generic model: the vault offers
+   only credential KINDS that are legal per provider, and each provider's registry entry
+   declares its own sanctioned custody path — raw-key where the provider permits it,
+   delegated-token where it doesn't.
 
 3. **BYO-endpoint lane — Option C, for OSS / privacy / cost.** Founder points the
    universe at their own `OLLAMA_HOST` / `ANTHROPIC_BASE_URL` + a bearer token. The
