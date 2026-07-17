@@ -58,6 +58,28 @@ def _make_wiki(tmp_path: Path) -> Path:
 
 
 class TestEnqueueInvestigationRequest:
+    @pytest.fixture(autouse=True)
+    def _register_handlers(self, tmp_path, monkeypatch):
+        # G4 (docs/design-notes/2026-07-15-user-patch-loop-reference-design.md):
+        # the enqueue boundary REFUSES a handler id that isn't in the registry
+        # (never queue a dead ref). Register the ids these tests enqueue against —
+        # resolved at TINYASSETS_DATA_DIR — so they exercise the enqueue path, not
+        # the dead-ref guard. (The empty-id / request-type tests fail their own
+        # validation before the handler check, so this is a no-op for them.)
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import (
+            initialize_author_server,
+            save_branch_definition,
+        )
+
+        initialize_author_server(tmp_path)
+        for bid in ("def-123", "def-abc-456"):
+            save_branch_definition(
+                tmp_path,
+                branch_def=BranchDefinition(branch_def_id=bid, name=bid).to_dict(),
+            )
+
     def _enqueue(self, tmp_path: Path, branch_def_id: str = "def-123") -> str:
         from tinyassets.bug_investigation import enqueue_investigation_request
 

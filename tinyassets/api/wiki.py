@@ -2252,6 +2252,8 @@ def _wiki_file_bug(
                 universe_id=target_universe_id,
                 resolved_branch_def_id=resolved_branch_def_id,
                 request_id=_stable_task_id,
+                # Codex r25 #2: persist the resolved goal on the task.
+                goal_id=(_handler_goal or ""),
             )
         except Exception as _enq_exc:
             # Trigger helper raised. Update receipt then re-raise into the outer

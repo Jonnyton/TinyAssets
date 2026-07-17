@@ -671,6 +671,103 @@ def test_retry_dedup_loser_keeps_winner_provenance(tmp_path, monkeypatch):
     assert rec.branch_def_id == "branch-A"   # receipt = winner (A), NOT the loser B
 
 
+def test_retry_corrupt_dedup_row_heals_never_queues_without_runnable_task(
+    tmp_path, monkeypatch,
+):
+    # Codex r25 #1: a queue row carrying ONLY the stable id (NOT a runnable task)
+    # must NEVER be treated as a valid dedup winner — that would mark the receipt
+    # queued while no runnable task exists (the user's request lost forever). The
+    # idempotent append HEALS the corrupt row into a runnable task; the receipt is
+    # queued against a REAL task.
+    import json as _json
+
+    from tinyassets.branch_tasks import queue_path, read_queue
+    from tinyassets.bug_investigation import (
+        investigation_task_id,
+        retry_pending_investigation_triggers,
+    )
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    receipt = _tr.create_pending(
+        request_id="BUG-CORRUPT", request_kind="bug", request_page="p",
+        branch_def_id="branch-canonical-abc", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-CORRUPT"}',
+    )
+    stable_id = investigation_task_id(receipt.trigger_attempt_id)
+    # Inject a CORRUPT dedup row — only the id, NO runnable task.
+    queue_path(tmp_path).write_text(
+        _json.dumps([{"branch_task_id": stable_id}]), encoding="utf-8",
+    )
+
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    # The corrupt row was HEALED into a runnable task, not left as a stub.
+    q = [t for t in read_queue(tmp_path) if t.branch_task_id == stable_id]
+    assert len(q) == 1, q
+    assert q[0].branch_def_id == "branch-canonical-abc"   # runnable, not a stub
+    assert q[0].request_type == "bug_investigation"
+    # The receipt is queued against a REAL task — never silently lost.
+    rec = next(
+        r for r in _tr.recent_attempts(limit=10) if r.request_id == "BUG-CORRUPT"
+    )
+    assert rec.status == "queued"
+    assert rec.branch_def_id == "branch-canonical-abc"
+
+
+def test_retry_same_handler_different_goal_dedup_records_winner_goal(
+    tmp_path, monkeypatch,
+):
+    # Codex r25 #2: the task carries goal_id, and on a SAME-handler/DIFFERENT-goal
+    # dedup the receipt records the WINNER's goal (task A's goal-A), NOT this
+    # retry's env "". Soul-guided dispatch (which reads task.goal_id) keeps context.
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import (
+        _enqueue_investigation_task,
+        investigation_task_id,
+        retry_pending_investigation_triggers,
+    )
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)  # retry via env
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+
+    receipt = _tr.create_pending(
+        request_id="BUG-SG", request_kind="bug", request_page="p",
+        branch_def_id="branch-canonical-abc", goal_id="goal-A",
+        universe_id=tmp_path.name, payload_json='{"bug_id": "BUG-SG"}',
+    )
+    stable_id = investigation_task_id(receipt.trigger_attempt_id)
+    # INITIAL enqueue: SAME handler, goal "goal-A" — the winner carries goal-A.
+    task_a = _enqueue_investigation_task(
+        bug_ref={"bug_id": "BUG-SG"}, canonical_branch_def_id="branch-canonical-abc",
+        base_path=tmp_path, request_id=stable_id, goal_id="goal-A",
+    )
+    assert task_a.goal_id == "goal-A"
+
+    # Retry resolves the SAME handler via env (goal="") -> dedup loser -> records
+    # the WINNER's goal-A, never the retry's "".
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    rec = next(
+        r for r in _tr.recent_attempts(limit=10) if r.request_id == "BUG-SG"
+    )
+    assert rec.branch_def_id == "branch-canonical-abc"
+    assert rec.goal_id == "goal-A"                    # WINNER's goal, not env ""
+    assert rec.resolution_source == "goal_canonical"  # inferred from winner's goal
+    # And the persisted task carries goal_id for soul-guided dispatch.
+    task = next(t for t in read_queue(tmp_path) if t.branch_task_id == stable_id)
+    assert task.goal_id == "goal-A"
+
+
 def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
     # Codex r14 #4 (G4 deletion race): a handler deleted between the upstream
     # existence check and the durable enqueue must NOT queue a dead reference —

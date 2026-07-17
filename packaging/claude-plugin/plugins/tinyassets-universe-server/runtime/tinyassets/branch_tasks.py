@@ -28,7 +28,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -276,18 +276,42 @@ def append_task(universe_path: Path, task: BranchTask) -> None:
         _write_raw(qp, raw)
 
 
-def append_task_if_absent(universe_path: Path, task: BranchTask) -> bool:
-    """IDEMPOTENT append keyed on ``branch_task_id`` (Codex r22 #1). Under the
-    queue file lock, check whether a task with this ``branch_task_id`` already
-    exists; append only if absent. Returns True if appended, False if a task with
-    that id was already present.
+def _valid_runnable_task(row: Any) -> "BranchTask | None":
+    """A queue row that deserializes to a RUNNABLE BranchTask (a real, non-empty
+    ``branch_def_id``), else None (Codex r25 #1). A row carrying only a
+    ``branch_task_id`` — or one that fails deserialization — is NOT a runnable
+    task and must never be treated as a valid dedup winner (that silently
+    consumes a trigger without a task to run)."""
+    if not isinstance(row, dict):
+        return None
+    try:
+        t = BranchTask.from_dict(row)
+    except Exception:  # noqa: BLE001 — a malformed row is not runnable
+        return None
+    if not (t.branch_def_id or "").strip():
+        return None
+    return t
 
-    This is the exactly-once primitive for the retry consumer: a STABLE
-    (deterministic) ``branch_task_id`` derived from the trigger receipt + this
-    check-and-append-UNDER-THE-LOCK means two concurrent pollers (or a crash +
-    re-poll) can NEVER double-enqueue one receipt — the file lock serializes the
-    check, so the second caller sees the first's task and skips. For a fresh
-    uuid4 id it always appends (no collision)."""
+
+def append_task_if_absent(
+    universe_path: Path, task: BranchTask,
+) -> "tuple[bool, BranchTask]":
+    """IDEMPOTENT append keyed on ``branch_task_id`` that ATOMICALLY VALIDATES and
+    RETURNS the winning task (Codex r22 #1 + r25 #1). Under the queue file lock:
+
+    - If a VALID, runnable task with this id already exists -> return
+      ``(False, that_task)`` (genuine dedup winner).
+    - If a row with this id exists but is NOT a valid runnable task (corrupt /
+      undeserializable / missing branch_def_id) -> HEAL it: replace with this
+      valid task and return ``(True, task)``. A malformed dedup row must NEVER
+      consume a trigger without leaving a runnable task.
+    - Else append and return ``(True, task)``.
+
+    The exactly-once primitive for the retry consumer: a STABLE
+    (deterministic) ``branch_task_id`` + this check-and-append-UNDER-THE-LOCK
+    means two concurrent pollers (or a crash + re-poll) can NEVER double-enqueue
+    one receipt; and the returned winner lets the caller derive receipt
+    provenance from the ACTUAL persisted task, never a dedup loser."""
     if task.trigger_source not in VALID_TRIGGER_SOURCES:
         raise ValueError(f"Invalid trigger_source: {task.trigger_source}")
     if task.status not in VALID_STATUSES:
@@ -297,12 +321,22 @@ def append_task_if_absent(universe_path: Path, task: BranchTask) -> bool:
     qp = queue_path(universe_path)
     with _file_lock(universe_path):
         raw = _read_raw(qp)
-        for row in raw:
+        for i, row in enumerate(raw):
             if isinstance(row, dict) and row.get("branch_task_id") == task.branch_task_id:
-                return False  # already enqueued — idempotent no-op
+                existing = _valid_runnable_task(row)
+                if existing is not None:
+                    return False, existing  # genuine dedup winner
+                # Corrupt / non-runnable row with our id — HEAL to a runnable task.
+                logger.warning(
+                    "append_task_if_absent | queue row for id %s is not a runnable "
+                    "task; replacing it with a valid task", task.branch_task_id,
+                )
+                raw[i] = task.to_dict()
+                _write_raw(qp, raw)
+                return True, task
         raw.append(task.to_dict())
         _write_raw(qp, raw)
-        return True
+        return True, task
 
 
 class QueueCapExceeded(RuntimeError):

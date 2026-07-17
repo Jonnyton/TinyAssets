@@ -12,6 +12,10 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tinyassets.branch_tasks import BranchTask
 
 _logger = logging.getLogger(__name__)
 
@@ -211,19 +215,25 @@ BUG_INVESTIGATION_BRANCH_DEF_ID = os.environ.get(
 )
 
 
-def enqueue_investigation_request(
+def _enqueue_investigation_task(
     bug_ref: dict,
     canonical_branch_def_id: str,
     base_path: "Path | str",
     universe_id: str = "",
     priority: int = 0,
     request_id: str = "",
-) -> str:
-    """Enqueue a bug-investigation dispatcher request.
+    goal_id: str = "",
+) -> "BranchTask":
+    """Enqueue a bug-investigation dispatcher request and return the ATOMICALLY
+    winning ``BranchTask`` (Codex r25 #1).
 
-    Creates a BranchTask with request_type=bug_investigation and appends it
-    to the universe's branch_tasks.json queue. Returns the request_id
-    (branch_task_id). Does NOT start a run — a daemon claims it later.
+    Creates a BranchTask with request_type=bug_investigation and idempotently
+    appends it to the universe's branch_tasks.json queue. Returns the WINNING
+    task actually in the queue — on a stable-id dedup that is the PRIOR task, so
+    the caller derives receipt provenance from the real persisted task, never a
+    dedup loser. ``goal_id`` is persisted on the task (Codex r25 #2) so
+    soul-guided dispatch + receipt provenance stay consistent. Does NOT start a
+    run — a daemon claims it later.
 
     Args:
         bug_ref: dict with at least bug_id; full frontmatter is passed as inputs.
@@ -231,12 +241,15 @@ def enqueue_investigation_request(
         base_path: universe directory (Path or str).
         universe_id: universe id; inferred from base_path.name if empty.
         priority: priority_weight for the task (higher = claimed sooner).
+        request_id: stable branch_task_id (retry) or "" for a fresh uuid4.
+        goal_id: the resolution's goal (persisted on the task).
 
     Raises:
         ValueError: if canonical_branch_def_id is empty.
         RuntimeError: if the dispatcher request type is not accepted by this
             process's TINYASSETS_REQUEST_TYPE_PRIORITIES config (so callers can
             fall back to direct run_branch in degraded mode).
+        HandlerDeletedError: if the handler was deleted before the append.
     """
     from datetime import datetime, timezone
 
@@ -272,6 +285,10 @@ def enqueue_investigation_request(
         branch_task_id=request_id,
         branch_def_id=canonical_branch_def_id,
         universe_id=uid,
+        # Codex r25 #2: persist the resolution's goal on the task so soul-guided
+        # dispatch (which reads task.goal_id) has goal context AND the receipt
+        # provenance derived from the persisted task cannot contradict it.
+        goal_id=goal_id or "",
         inputs=build_run_payload(bug_payload),
         trigger_source="owner_queued",
         priority_weight=float(priority),
@@ -299,15 +316,41 @@ def enqueue_investigation_request(
             f"investigation handler {canonical_branch_def_id!r} was deleted before "
             "enqueue (concurrent delete race); refusing to queue a dead reference"
         )
-    # IDEMPOTENT append (Codex r22 #1): dedup on branch_task_id under the queue
-    # lock so a stable-id re-enqueue is exactly-once. ``appended`` False means the
-    # task was already present (a prior poll / crash-recovery) — still success.
-    appended = append_task_if_absent(base, task)
+    # IDEMPOTENT append (Codex r22 #1) that ATOMICALLY validates + returns the
+    # WINNING task (Codex r25 #1): ``appended`` False means a valid prior task
+    # already owns this id; ``winner`` is the ACTUAL persisted task (prior on
+    # dedup, or ours / a healed replacement otherwise) — never a dedup loser.
+    appended, winner = append_task_if_absent(base, task)
     _logger.info(
-        "enqueue_investigation_request | %s | %s | appended=%s",
-        bug_ref.get("bug_id", "?"), request_id, appended,
+        "enqueue_investigation_request | %s | %s | appended=%s handler=%s goal=%s",
+        bug_ref.get("bug_id", "?"), winner.branch_task_id, appended,
+        winner.branch_def_id, winner.goal_id,
     )
-    return request_id
+    return winner
+
+
+def enqueue_investigation_request(
+    bug_ref: dict,
+    canonical_branch_def_id: str,
+    base_path: "Path | str",
+    universe_id: str = "",
+    priority: int = 0,
+    request_id: str = "",
+    goal_id: str = "",
+) -> str:
+    """Public wrapper over ``_enqueue_investigation_task`` returning the winning
+    task's ``branch_task_id`` (the dispatcher request id). Callers that need the
+    full winning task (the retry consumer, for atomic provenance) call
+    ``_enqueue_investigation_task`` directly."""
+    return _enqueue_investigation_task(
+        bug_ref=bug_ref,
+        canonical_branch_def_id=canonical_branch_def_id,
+        base_path=base_path,
+        universe_id=universe_id,
+        priority=priority,
+        request_id=request_id,
+        goal_id=goal_id,
+    ).branch_task_id
 
 
 def revalidate_investigation_handler(
@@ -356,6 +399,7 @@ def _maybe_enqueue_investigation(
     universe_id: str = "",
     resolved_branch_def_id: str | None = None,
     request_id: str = "",
+    goal_id: str = "",
 ) -> str | None:
     """Forward-trigger seam for `_wiki_file_bug` post-write.
 
@@ -413,6 +457,9 @@ def _maybe_enqueue_investigation(
             # Codex r23 #1: the caller threads the STABLE receipt-derived task id
             # so the INITIAL enqueue and any later retry produce ONE task.
             request_id=request_id,
+            # Codex r25 #2: persist the resolved goal on the task so the initial
+            # enqueue's task carries goal context (soul-guided dispatch + receipt).
+            goal_id=goal_id,
         )
     except (RuntimeError, ValueError) as exc:
         _logger.info(
@@ -614,7 +661,9 @@ def retry_pending_investigation_triggers(
 
     # Resolve ONCE (with provenance) — all pending receipts share the current
     # goal/env config; the retry REBINDS every receipt to this current handler.
-    resolved, reason, source, goal_id = (
+    # The receipt's recorded source is inferred from the WINNER's goal below, so
+    # the resolve's own ``source`` is unused here.
+    resolved, reason, _source, goal_id = (
         resolve_investigation_handler_with_provenance(base_path)
     )
     for receipt in pending:
@@ -626,45 +675,40 @@ def retry_pending_investigation_triggers(
             stable_id = investigation_task_id(receipt.trigger_attempt_id)
             bug_ref = _reconstruct_bug_ref(receipt, request_id)
             try:
-                enqueue_investigation_request(
+                # ATOMIC winner (Codex r24 #1 + r25 #1): the append validates +
+                # returns the ACTUAL persisted task. If the canonical changed
+                # during the crash window (or a concurrent poll resolved
+                # differently), a PRIOR task (handler A) already owns the stable id
+                # and this retry (handler B) is a dedup LOSER — the winner IS A, so
+                # the receipt records A, never B. append_if_absent HEALS a corrupt
+                # dedup row, so the winner is always a runnable task.
+                winner = _enqueue_investigation_task(
                     bug_ref=bug_ref,
                     canonical_branch_def_id=resolved,
                     base_path=base_path,
                     universe_id=universe_id,
                     request_id=stable_id,
+                    goal_id=goal_id,
                 )
-                # Codex r24 #1: derive receipt provenance from the ACTUAL PERSISTED
-                # task, NEVER from this retry's own resolution. If the canonical
-                # changed during the crash window (or a concurrent poll resolved
-                # differently), a PRIOR task (handler A) already owns the stable
-                # id and our enqueue DEDUP'd — so this retry (handler B) is a
-                # dedup LOSER and must record A, not overwrite it with B.
-                persisted_handler = _persisted_task_handler(base_path, stable_id)
-                if persisted_handler is None or persisted_handler == resolved:
-                    # We own the task (fresh append, or an identical resolution)
-                    # -> record full provenance incl. goal + source (r23 #3:
-                    # goal passed RAW so an env rebind CLEARS a stale goal).
-                    _tr.mark_queued(
-                        receipt,
-                        dispatcher_request_id=stable_id,
-                        branch_def_id=(persisted_handler or resolved),
-                        goal_id=goal_id,
-                        resolution_source=source,
-                    )
-                else:
-                    # Dedup LOSER: a prior task with a DIFFERENT handler already
-                    # exists. Record the WINNER's handler; do NOT overwrite the
-                    # winner's goal/source with ours.
-                    _tr.mark_queued(
-                        receipt,
-                        dispatcher_request_id=stable_id,
-                        branch_def_id=persisted_handler,
-                    )
+                # Provenance is the WINNER's (Codex r25 #2: goal_id lives on the
+                # task). Source is inferred from the winner's goal — a goal is set
+                # ONLY by goal-canonical resolution; env sets "". Passing the goal
+                # RAW ("" clears a stale goal on env rebind, r23 #3).
+                win_goal = winner.goal_id or ""
+                win_source = "goal_canonical" if win_goal else "env_fallback"
+                _tr.mark_queued(
+                    receipt,
+                    dispatcher_request_id=winner.branch_task_id,
+                    branch_def_id=winner.branch_def_id,
+                    goal_id=win_goal,
+                    resolution_source=win_source,
+                )
                 summary["queued"].append(request_id)
                 _logger.info(
                     "retry | pending trigger %s RECOVERED -> queued %s "
-                    "(handler=%s persisted=%s src=%s)",
-                    request_id, stable_id, resolved, persisted_handler, source,
+                    "(winner_handler=%s resolved=%s src=%s)",
+                    request_id, winner.branch_task_id, winner.branch_def_id,
+                    resolved, win_source,
                 )
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(
@@ -688,22 +732,6 @@ def retry_pending_investigation_triggers(
             # handler_unavailable / not_configured -> still retryable next sweep.
             summary["still_pending"].append(request_id)
     return summary
-
-
-def _persisted_task_handler(base_path: "Path | str", branch_task_id: str) -> str | None:
-    """The ``branch_def_id`` of the task CURRENTLY in the queue under
-    ``branch_task_id``, or None if absent (Codex r24 #1). The retry derives
-    receipt provenance from the ACTUAL persisted task so a dedup loser can never
-    overwrite the winner's handler."""
-    from tinyassets.branch_tasks import read_queue
-
-    try:
-        for t in read_queue(Path(base_path)):
-            if t.branch_task_id == branch_task_id:
-                return t.branch_def_id
-    except Exception:  # noqa: BLE001 — best-effort; fall back to our resolution
-        return None
-    return None
 
 
 def _reconstruct_bug_ref(receipt: object, request_id: str) -> dict:
