@@ -2,17 +2,27 @@
 
 For chatbot-only / 24×7 users. Ciphertext rows live in
 ``data_dir()/private/credential-vault/v1/vault.db``; the KEK is injected via a
-:class:`~tinyassets.credentials.crypto.KeyProvider` (a root-only file mount in
-production, an in-memory key in tests). A backup of the DB reveals nothing
-without the KEK.
+:class:`~tinyassets.credentials.crypto.KeyProvider`.
 
-Guarantees implemented here:
-  * per-record envelope encryption with canonical scope/ref/version AAD;
+Trust model: the plaintext DB columns (scope, store_id, kind, version, state,
+expires_at, ...) are **non-authoritative index hints**. The authoritative record
+lives inside the AEAD payload and the immutable identity is bound into the AAD.
+Every authorization decision on read/replace/delete is taken from the decrypted
+record — tampering a plaintext column has zero effect (a wrong hint just makes
+the AAD wrong and the decrypt fail closed).
+
+Guarantees:
+  * per-record envelope encryption; immutable store identity bound in the AAD;
   * atomic compare-and-swap ``put(replace=, expected_version=)``;
-  * a DB-backed **exclusive per-ref lease** that serializes one-time refresh
-    exchanges (closes the concurrent-refresh CVE class);
-  * KEK rotation that rewraps DEKs without touching payload ciphertext;
+  * **fenced** exclusive per-ref refresh lease (exactly-one-winner even when a
+    holder exceeds its TTL) — the concurrent-refresh CVE class, closed;
+  * KEK rotation that verifies every payload + record before committing;
   * fail-closed :class:`CredentialUnavailable` on every abnormal path.
+
+Note (scope): this is the LIBRARY custody layer. The design's separate
+vault-broker process / UID+capability drop / signed-capability / socket boundary
+is PRODUCTION DEPLOYMENT integration (infra/compose), a named follow-up that
+lands with the droplet integration — not provided or claimed by this library.
 """
 
 from __future__ import annotations
@@ -23,10 +33,11 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import crypto
+from . import crypto, leases, record
 from .attestation import AttestationResult, attest_store
 from .crypto import Envelope, KeyProvider
 from .errors import CredentialUnavailable, VaultErrorCode
+from .leases import RefreshLease, RefreshLeaseManager
 from .paths import platform_vault_db_path
 from .secret_bytes import SecretBytes, SecretLease
 from .types import (
@@ -38,6 +49,7 @@ from .types import (
     SecretKind,
     SecretScope,
     VaultStore,
+    is_secret_ref,
     new_secret_ref,
 )
 
@@ -64,23 +76,12 @@ CREATE TABLE IF NOT EXISTS vault_secrets (
     data_nonce   BLOB NOT NULL,
     ciphertext   BLOB NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS vault_refresh_leases (
-    ref         TEXT PRIMARY KEY,
-    holder      TEXT NOT NULL,
-    acquired_at REAL NOT NULL,
-    expires_at  REAL NOT NULL
-);
 """
 
 
-def _scope_from_row(row: sqlite3.Row) -> SecretScope:
-    return SecretScope(
-        founder_id=row["founder_id"],
-        universe_id=row["universe_id"],
-        provider=row["provider"],
-        destination=row["destination"],
-        purpose=row["purpose"],
+def _aad(scope: SecretScope, ref: str, kind: str, version: int, store: VaultStore) -> bytes:
+    return crypto.identity_aad(
+        scope, ref, kind, version, store.store_id, store.custody.value, store.daemon_id
     )
 
 
@@ -102,6 +103,7 @@ class PlatformVaultBackend:
         )
         self._attested: bool | None = None
         self._initialized = False
+        self._leases = RefreshLeaseManager(self._connect)
 
     # ------------------------------------------------------------------
     # connection + schema
@@ -121,6 +123,7 @@ class PlatformVaultBackend:
         conn = self._connect()
         try:
             conn.executescript(_SCHEMA)
+            conn.executescript(leases.LEASE_SCHEMA)
         finally:
             conn.close()
         self._initialized = True
@@ -147,7 +150,6 @@ class PlatformVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE)
 
     def attest(self) -> AttestationResult:
-        """Run (and cache) the per-store probe; return the structured result."""
         result = attest_store(self)
         self._attested = result.ok
         return result
@@ -165,10 +167,13 @@ class PlatformVaultBackend:
         replace: str | None = None,
         expected_version: int | None = None,
         expires_at: float | None = None,
+        fence: RefreshLease | None = None,
     ) -> SecretDescriptor:
         self._require_platform_store(store)
         self._ensure_attested()
-        return self._put(store, scope, kind, value, replace, expected_version, expires_at)
+        return self._put(
+            store, scope, kind, value, replace, expected_version, expires_at, fence
+        )
 
     def get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         self._require_platform_store(binding.store)
@@ -181,13 +186,48 @@ class PlatformVaultBackend:
         self._delete(binding, expected)
 
     # ------------------------------------------------------------------
-    # Internal (ungated) operations — used by attestation + gated surface
+    # Internal (ungated) operations
     # ------------------------------------------------------------------
     def _require_platform_store(self, store: VaultStore) -> None:
         if store.custody != Custody.PLATFORM_ENCRYPTED:
             raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
         if store.store_id != self._store_id:
             raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
+
+    @staticmethod
+    def _envelope_from_row(row: sqlite3.Row) -> Envelope:
+        return Envelope(
+            row["key_id"],
+            bytes(row["wrap_nonce"]),
+            bytes(row["wrapped_dek"]),
+            bytes(row["data_nonce"]),
+            bytes(row["ciphertext"]),
+        )
+
+    def _decrypt_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        ref: str,
+        kind: SecretKind,
+        scope: SecretScope,
+        store: VaultStore,
+    ) -> tuple[dict, bytes]:
+        """Decrypt + authenticate a row. Returns (authoritative_record, value).
+
+        The AAD is built from the caller-provided identity (binding), NOT the
+        plaintext columns; the version comes from the plaintext hint but a
+        tampered version makes the AAD wrong and the decrypt fail closed.
+        """
+        version = int(row["version"])
+        aad = _aad(scope, ref, kind.value, version, store)
+        payload = crypto.open_envelope(self._keys, self._envelope_from_row(row), aad, ref)
+        record_json, value = crypto.unframe_record(payload)
+        rec = crypto.decode_record(record_json)
+        record.verify_record_identity(
+            rec, ref=ref, kind=kind, scope=scope, store=store, version=version
+        )
+        return rec, value
 
     def _put(
         self,
@@ -198,6 +238,7 @@ class PlatformVaultBackend:
         replace: str | None,
         expected_version: int | None,
         expires_at: float | None,
+        fence: RefreshLease | None = None,
     ) -> SecretDescriptor:
         self.initialize()
         conn = self._connect()
@@ -208,7 +249,41 @@ class PlatformVaultBackend:
                 ref = new_secret_ref()
                 version = 1
                 created = now
-                env = crypto.seal(self._keys, scope, ref, kind.value, version, value.reveal())
+            else:
+                ref = replace
+                if not is_secret_ref(ref):
+                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
+                row = conn.execute(
+                    "SELECT * FROM vault_secrets WHERE ref = ?", (ref,)
+                ).fetchone()
+                if row is None:
+                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
+                # Authenticate the FULL existing record against the caller's
+                # scope/kind/store before allowing a replace (forged binding must
+                # not overwrite a valid credential).
+                existing, _existing_val = self._decrypt_row(
+                    row, ref=ref, kind=kind, scope=scope, store=store
+                )
+                if (
+                    expected_version is not None
+                    and int(existing["version"]) != expected_version
+                ):
+                    raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
+                if fence is not None:
+                    self._require_fence(conn, ref, fence, now)
+                version = int(existing["version"]) + 1
+                created = float(existing["created_at"])
+
+            rec = record.build_record(
+                ref=ref, kind=kind, scope=scope, store=store, version=version,
+                state=DescriptorState.ACTIVE, created_at=created, updated_at=now,
+                expires_at=expires_at,
+            )
+            aad = _aad(scope, ref, kind.value, version, store)
+            payload = crypto.frame_record(crypto.encode_record(rec), value.reveal())
+            env = crypto.seal(self._keys, aad, payload)
+
+            if replace is None:
                 conn.execute(
                     """INSERT INTO vault_secrets(
                         ref, store_id, custody, kind, founder_id, universe_id,
@@ -226,23 +301,6 @@ class PlatformVaultBackend:
                     ),
                 )
             else:
-                ref = replace
-                row = conn.execute(
-                    "SELECT * FROM vault_secrets WHERE ref = ?", (ref,)
-                ).fetchone()
-                if row is None:
-                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
-                if _scope_from_row(row) != scope:
-                    raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, ref)
-                if row["kind"] != kind.value:
-                    raise CredentialUnavailable(VaultErrorCode.KIND_MISMATCH, ref)
-                if row["store_id"] != store.store_id:
-                    raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN, ref)
-                if expected_version is not None and row["version"] != expected_version:
-                    raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
-                version = int(row["version"]) + 1
-                created = float(row["created_at"])
-                env = crypto.seal(self._keys, scope, ref, kind.value, version, value.reveal())
                 cur = conn.execute(
                     """UPDATE vault_secrets SET
                         version = ?, state = ?, updated_at = ?, expires_at = ?,
@@ -253,7 +311,7 @@ class PlatformVaultBackend:
                         version, DescriptorState.ACTIVE.value, now, expires_at,
                         XCHACHA20POLY1305_IETF, env.key_id, env.wrap_nonce,
                         env.wrapped_dek, env.data_nonce, env.ciphertext,
-                        ref, int(row["version"]),
+                        ref, version - 1,
                     ),
                 )
                 if cur.rowcount != 1:
@@ -268,13 +326,18 @@ class PlatformVaultBackend:
 
         binding = SecretBinding(ref=ref, kind=kind, scope=scope, store=store)
         return SecretDescriptor(
-            binding=binding,
-            version=version,
-            created_at=created,
-            updated_at=now,
-            state=DescriptorState.ACTIVE,
-            expires_at=expires_at,
+            binding=binding, version=version, created_at=created, updated_at=now,
+            state=DescriptorState.ACTIVE, expires_at=expires_at,
         )
+
+    @staticmethod
+    def _require_fence(
+        conn: sqlite3.Connection, ref: str, fence: RefreshLease, now: float
+    ) -> None:
+        if fence.ref != ref:
+            raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
+        if not leases.verify_fence(conn, ref, fence.holder, fence.fence, now):
+            raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
 
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         if binding.scope != expected:
@@ -289,49 +352,20 @@ class PlatformVaultBackend:
             conn.close()
         if row is None:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-        if (
-            row["store_id"] != binding.store.store_id
-            or row["custody"] != binding.store.custody.value
-        ):
-            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN, binding.ref)
-        if row["kind"] != binding.kind.value:
-            raise CredentialUnavailable(VaultErrorCode.KIND_MISMATCH, binding.ref)
-
-        self._check_state(row, binding.ref)
-
-        version = int(row["version"])
-        envelope = Envelope(
-            row["key_id"],
-            bytes(row["wrap_nonce"]),
-            bytes(row["wrapped_dek"]),
-            bytes(row["data_nonce"]),
-            bytes(row["ciphertext"]),
+        rec, value = self._decrypt_row(
+            row, ref=binding.ref, kind=binding.kind, scope=expected, store=binding.store
         )
-        value = crypto.open_envelope(
-            self._keys, envelope, expected, binding.ref, binding.kind.value, version
-        )
+        record.check_lifecycle(rec, binding.ref)
         return SecretLease(
-            SecretBytes(value),
-            ref=binding.ref,
-            kind=binding.kind.value,
-            scope=expected,
-            version=version,
+            SecretBytes(value), ref=binding.ref, kind=binding.kind.value,
+            scope=expected, version=int(rec["version"]),
         )
-
-    @staticmethod
-    def _check_state(row: sqlite3.Row, ref: str) -> None:
-        state = row["state"]
-        if state == DescriptorState.DISABLED.value:
-            raise CredentialUnavailable(VaultErrorCode.DISABLED, ref)
-        if state == DescriptorState.REVOCATION_PENDING.value:
-            raise CredentialUnavailable(VaultErrorCode.REVOKED, ref)
-        expires_at = row["expires_at"]
-        if expires_at is not None and float(expires_at) <= time.time():
-            raise CredentialUnavailable(VaultErrorCode.EXPIRED, ref)
 
     def _delete(self, binding: SecretBinding, expected: SecretScope) -> None:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        if not is_secret_ref(binding.ref):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
         self.initialize()
         conn = self._connect()
         try:
@@ -341,10 +375,12 @@ class PlatformVaultBackend:
             ).fetchone()
             if row is None:
                 raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-            if _scope_from_row(row) != expected:
-                raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-            if row["store_id"] != binding.store.store_id:
-                raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN, binding.ref)
+            # Authenticate the COMPLETE record (ref/kind/scope/custody/store)
+            # before removing — a forged/mismatched binding must not delete.
+            self._decrypt_row(
+                row, ref=binding.ref, kind=binding.kind, scope=expected,
+                store=binding.store,
+            )
             conn.execute("DELETE FROM vault_secrets WHERE ref = ?", (binding.ref,))
             conn.execute("COMMIT")
         except BaseException:
@@ -355,9 +391,8 @@ class PlatformVaultBackend:
             conn.close()
 
     # ------------------------------------------------------------------
-    # Exclusive per-ref refresh lease (serializes one-time refresh exchange)
+    # Fenced exclusive per-ref refresh lease
     # ------------------------------------------------------------------
-    @contextlib.contextmanager
     def refresh_lease(
         self,
         ref: str,
@@ -366,99 +401,61 @@ class PlatformVaultBackend:
         ttl: float = 30.0,
         wait: float = 30.0,
         poll: float = 0.02,
-    ) -> Iterator[None]:
-        """Block until this process exclusively holds the refresh lease for ``ref``.
+    ) -> Iterator[RefreshLease]:
+        """Acquire a fenced exclusive refresh lease for ``ref``.
 
-        Two workers cannot both hold the lease; the loser blocks until the holder
-        releases, then re-checks stored state and skips a redundant refresh. This
-        is the mandatory serialization for rotating-refresh providers.
+        Yields a :class:`RefreshLease`; pass it as ``put(..., fence=lease)`` so
+        the commit CAS-checks the fence and a lease that was stolen after a TTL
+        overrun cannot commit. Call ``lease.still_held()`` before the provider
+        exchange to skip a doomed refresh.
         """
         self.initialize()
-        deadline = time.monotonic() + wait
-        acquired = False
-        while True:
-            if self._try_acquire_lease(ref, holder, ttl):
-                acquired = True
-                break
-            if time.monotonic() >= deadline:
-                raise CredentialUnavailable(VaultErrorCode.LEASE_TIMEOUT, ref)
-            time.sleep(poll)
-        try:
-            yield
-        finally:
-            if acquired:
-                self._release_lease(ref, holder)
-
-    def _try_acquire_lease(self, ref: str, holder: str, ttl: float) -> bool:
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            now = time.time()
-            conn.execute(
-                "DELETE FROM vault_refresh_leases WHERE ref = ? AND expires_at < ?",
-                (ref, now),
-            )
-            try:
-                conn.execute(
-                    "INSERT INTO vault_refresh_leases(ref, holder, acquired_at, expires_at) "
-                    "VALUES(?,?,?,?)",
-                    (ref, holder, now, now + ttl),
-                )
-            except sqlite3.IntegrityError:
-                conn.execute("ROLLBACK")
-                return False
-            conn.execute("COMMIT")
-            return True
-        except BaseException:
-            with contextlib.suppress(sqlite3.Error):
-                conn.execute("ROLLBACK")
-            raise
-        finally:
-            conn.close()
-
-    def _release_lease(self, ref: str, holder: str) -> None:
-        conn = self._connect()
-        try:
-            conn.execute(
-                "DELETE FROM vault_refresh_leases WHERE ref = ? AND holder = ?",
-                (ref, holder),
-            )
-        finally:
-            conn.close()
+        return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
 
     # ------------------------------------------------------------------
-    # KEK rotation
+    # KEK rotation (verified)
     # ------------------------------------------------------------------
     def rotate_kek(self, new_key_id: str) -> int:
         """Rewrap every record's DEK under ``new_key_id``; payloads unchanged.
 
-        The :class:`KeyProvider` must still expose both the old and new KEKs.
-        Returns the number of rows rewrapped. Rows already on ``new_key_id`` are
-        skipped.
+        Every row is decrypted + its full record authenticated INSIDE the
+        transaction before rewrap; any corruption aborts the whole rotation
+        (no half-rotated or unreadable rows). Attestation gates entry + exit.
         """
         self.initialize()
-        # Validate the new key is available before touching any row.
-        self._keys.get_key(new_key_id)
+        gate = self.attest()
+        if not gate.ok:
+            raise CredentialUnavailable(VaultErrorCode.ATTESTATION_FAILED)
+        self._keys.get_key(new_key_id)  # fail loud before touching rows
         rewrapped = 0
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute("SELECT * FROM vault_secrets").fetchall()
             for row in rows:
+                scope = SecretScope(
+                    founder_id=row["founder_id"], universe_id=row["universe_id"],
+                    provider=row["provider"], destination=row["destination"],
+                    purpose=row["purpose"],
+                )
+                store = VaultStore(
+                    custody=Custody(row["custody"]), store_id=row["store_id"],
+                )
+                kind = SecretKind(row["kind"])
+                version = int(row["version"])
+                aad = _aad(scope, row["ref"], kind.value, version, store)
+                env = self._envelope_from_row(row)
+                # Verify payload + record integrity before rewrap.
+                payload = crypto.open_envelope(self._keys, env, aad, row["ref"])
+                rec_json, _value = crypto.unframe_record(payload)
+                rec = crypto.decode_record(rec_json)
+                record.verify_record_identity(
+                    rec, ref=row["ref"], kind=kind, scope=scope, store=store,
+                    version=version,
+                )
                 if row["key_id"] == new_key_id:
                     continue
-                scope = _scope_from_row(row)
-                version = int(row["version"])
-                envelope = Envelope(
-                    row["key_id"],
-                    bytes(row["wrap_nonce"]),
-                    bytes(row["wrapped_dek"]),
-                    bytes(row["data_nonce"]),
-                    bytes(row["ciphertext"]),
-                )
-                new_env = crypto.rewrap_dek(
-                    self._keys, envelope, scope, row["ref"], row["kind"], version, new_key_id
-                )
+                new_env = crypto.rewrap_dek(self._keys, env, aad, new_key_id, row["ref"])
                 conn.execute(
                     "UPDATE vault_secrets SET key_id = ?, wrap_nonce = ?, wrapped_dek = ? "
                     "WHERE ref = ?",
@@ -472,10 +469,13 @@ class PlatformVaultBackend:
             raise
         finally:
             conn.close()
+        post = self.attest()
+        if not post.ok:
+            raise CredentialUnavailable(VaultErrorCode.ATTESTATION_FAILED)
         return rewrapped
 
     # ------------------------------------------------------------------
-    # Attestation-support hooks (duck-typed by attestation.attest_store)
+    # Attestation-support hooks
     # ------------------------------------------------------------------
     def _probe_store(self) -> VaultStore:
         return VaultStore(custody=Custody.PLATFORM_ENCRYPTED, store_id=self._store_id)
@@ -494,11 +494,7 @@ class PlatformVaultBackend:
         self._delete(binding, expected)
 
     def inspect_persisted(self, ref: str, probe_value: bytes) -> dict[str, object]:
-        """Return evidence about the persisted bytes for ``ref`` (attestation).
-
-        Confirms AEAD algorithm + ciphertext + wrapped DEK + active key_id are
-        present and that the probe plaintext appears in NO stored column.
-        """
+        """Evidence about the persisted bytes for ``ref`` (attestation)."""
         self.initialize()
         conn = self._connect()
         try:

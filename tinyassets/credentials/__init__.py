@@ -36,9 +36,10 @@ from .crypto import (
     FileKeyProvider,
     InMemoryKeyProvider,
     KeyProvider,
-    canonical_aad,
+    identity_aad,
 )
 from .errors import CredentialUnavailable, VaultErrorCode
+from .leases import RefreshLease
 from .local_backend import DpapiVaultBackend
 from .platform_backend import PlatformVaultBackend
 from .secret_bytes import SecretBytes, SecretLease
@@ -86,11 +87,12 @@ __all__ = [
     "VaultBroker",
     "PlatformVaultBackend",
     "DpapiVaultBackend",
+    "RefreshLease",
     # crypto
     "KeyProvider",
     "InMemoryKeyProvider",
     "FileKeyProvider",
-    "canonical_aad",
+    "identity_aad",
     # attestation
     "AttestationResult",
     "attest_store",

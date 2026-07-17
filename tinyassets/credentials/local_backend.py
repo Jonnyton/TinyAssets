@@ -3,18 +3,29 @@
 For users who run a daemon. One immutable per-ref blob under
 ``%LOCALAPPDATA%\\TinyAssets\\credential-store\\v1``, outside any repository or
 universe directory. Protection is ALWAYS current-user DPAPI with
-``CRYPTPROTECT_UI_FORBIDDEN`` — NEVER ``CRYPTPROTECT_LOCAL_MACHINE`` (which any
-local principal could decrypt).
+``CRYPTPROTECT_UI_FORBIDDEN`` — NEVER ``CRYPTPROTECT_LOCAL_MACHINE``.
 
-The canonical scope/ref/kind/version identity is passed as DPAPI *entropy* (the
-AAD-equivalent, since DPAPI has no AAD) AND embedded inside the sealed payload
-for verify-after-decrypt. The DACL should be narrowed to the daemon SID + SYSTEM
-by the installer; this module writes the blob and relies on the LOCALAPPDATA
-per-user ACL for baseline isolation.
+Trust model mirrors the platform backend: the plaintext sidecar ``hint`` block is
+non-authoritative. The authoritative record lives INSIDE the DPAPI blob, and the
+canonical immutable identity (scope/ref/kind/version + store identity) is passed
+as DPAPI *entropy* (the AAD-equivalent, since DPAPI has no AAD). On read the
+entropy is rebuilt from the caller's binding, so a forged/cross-store/wrong-kind
+binding produces the wrong entropy and the unprotect fails closed; the decrypted
+record is then verified field-by-field.
+
+Concurrency: an exclusive control-DB mutation lock makes the file-backed CAS
+atomic, and a fenced refresh lease (shared with the platform backend) gives
+exactly-one-winner refresh semantics.
+
+Scope: this is the LIBRARY custody layer. Threat boundary = DPAPI current-user +
+the LOCALAPPDATA per-user ACL protecting OFFLINE copies and other Windows users;
+it does NOT isolate from code already running as the daemon principal. A narrowed
+DACL (daemon SID + SYSTEM), a dedicated least-privilege service account, and the
+design's separate-broker-process boundary are PRODUCTION DEPLOYMENT integration,
+named follow-ups — not claimed by this library.
 
 The module imports cross-platform; instantiating/using it off Windows raises
-``CredentialUnavailable(BACKEND_UNAVAILABLE)`` so callers fail loud. DPAPI tests
-skip on non-Windows.
+``CredentialUnavailable(BACKEND_UNAVAILABLE)``. DPAPI tests skip on non-Windows.
 """
 
 from __future__ import annotations
@@ -24,14 +35,17 @@ import contextlib
 import ctypes
 import json
 import os
+import sqlite3
 import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from .crypto import canonical_aad, frame_payload, unframe_payload
+from . import crypto, leases, record
+from .crypto import identity_aad
 from .errors import CredentialUnavailable, VaultErrorCode
+from .leases import RefreshLease, RefreshLeaseManager
 from .paths import local_store_dir
 from .secret_bytes import SecretBytes, SecretLease
 from .types import (
@@ -42,6 +56,7 @@ from .types import (
     SecretKind,
     SecretScope,
     VaultStore,
+    is_secret_ref,
     new_secret_ref,
 )
 
@@ -130,16 +145,23 @@ else:  # non-Windows: keep imports working, fail loud on use
 
 
 def _ref_filename(ref: str) -> str:
-    # ref = "secret:v1:<hex>"; the hex tail is filename-safe and unique.
-    tail = ref.rsplit(":", 1)[-1]
-    if not tail.isalnum():
+    if not is_secret_ref(ref):
         raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
-    return f"{tail}.json"
+    # ref = "secret:v1:<64 hex>"; the hex tail is filename-safe + unique (256-bit).
+    return f"{ref.rsplit(':', 1)[-1]}.json"
 
 
 def _chmod_best_effort(path: Path, mode: int) -> None:
     with contextlib.suppress(OSError):
         os.chmod(path, mode)
+
+
+def _entropy(
+    scope: SecretScope, ref: str, kind: SecretKind, version: int, store: VaultStore
+) -> bytes:
+    return identity_aad(
+        scope, ref, kind.value, version, store.store_id, store.custody.value, store.daemon_id
+    )
 
 
 class DpapiVaultBackend:
@@ -156,6 +178,8 @@ class DpapiVaultBackend:
         self._store_id = store_id
         self._dir = local_store_dir(base)
         self._attested: bool | None = None
+        self._control_db = self._dir / "_control.db"
+        self._leases = RefreshLeaseManager(self._control_connect)
 
     @property
     def store_id(self) -> str:
@@ -164,6 +188,17 @@ class DpapiVaultBackend:
     @property
     def custody(self) -> Custody:
         return Custody.DAEMON_LOCAL
+
+    # ------------------------------------------------------------------
+    # control DB (mutation lock + fenced leases)
+    # ------------------------------------------------------------------
+    def _control_connect(self) -> sqlite3.Connection:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self._control_db), timeout=30.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        return conn
 
     def _require_available(self) -> None:
         if not IS_WINDOWS:
@@ -213,11 +248,12 @@ class DpapiVaultBackend:
         replace: str | None = None,
         expected_version: int | None = None,
         expires_at: float | None = None,
+        fence: RefreshLease | None = None,
     ) -> SecretDescriptor:
         self._require_available()
         self._require_local_store(store)
         self._ensure_attested()
-        return self._put(store, scope, kind, value, replace, expected_version, expires_at)
+        return self._put(store, scope, kind, value, replace, expected_version, expires_at, fence)
 
     def get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         self._require_available()
@@ -236,9 +272,7 @@ class DpapiVaultBackend:
     # ------------------------------------------------------------------
     def _probe_store(self) -> VaultStore:
         return VaultStore(
-            custody=Custody.DAEMON_LOCAL,
-            store_id=self._store_id,
-            daemon_id=self._daemon_id,
+            custody=Custody.DAEMON_LOCAL, store_id=self._store_id, daemon_id=self._daemon_id
         )
 
     def _read_sidecar(self, ref: str) -> dict[str, Any] | None:
@@ -250,17 +284,17 @@ class DpapiVaultBackend:
         except (OSError, json.JSONDecodeError) as exc:
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from exc
 
-    def _write_sidecar(self, ref: str, record: dict[str, Any]) -> None:
+    def _write_sidecar(self, ref: str, record_dict: dict[str, Any]) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         _chmod_best_effort(self._dir, 0o700)
         path = self._blob_path(ref)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        tmp.write_text(json.dumps(record_dict, sort_keys=True), encoding="utf-8")
         _chmod_best_effort(tmp, 0o600)
         os.replace(tmp, path)  # atomic same-directory replace
         _chmod_best_effort(path, 0o600)
 
-    def _seal_record(
+    def _seal_sidecar(
         self,
         store: VaultStore,
         scope: SecretScope,
@@ -272,27 +306,53 @@ class DpapiVaultBackend:
         updated_at: float,
         expires_at: float | None,
     ) -> dict[str, Any]:
-        entropy = canonical_aad(scope, ref, kind.value, version)
-        payload = frame_payload(scope, ref, kind.value, version, value)
+        entropy = _entropy(scope, ref, kind, version, store)
+        rec = record.build_record(
+            ref=ref, kind=kind, scope=scope, store=store, version=version,
+            state=DescriptorState.ACTIVE, created_at=created_at, updated_at=updated_at,
+            expires_at=expires_at,
+        )
+        payload = crypto.frame_record(crypto.encode_record(rec), value)
         blob = dpapi_protect(payload, entropy)
         return {
             "protection": _PROTECTION,
             "blob_version": 1,
-            "descriptor": {
-                "ref": ref,
-                "store_id": store.store_id,
-                "custody": store.custody.value,
-                "daemon_id": store.daemon_id,
-                "kind": kind.value,
-                "scope": scope.as_dict(),
-                "version": version,
-                "state": DescriptorState.ACTIVE.value,
-                "created_at": created_at,
-                "updated_at": updated_at,
-                "expires_at": expires_at,
+            # Non-authoritative index hints (authoritative copy is inside the blob).
+            "hint": {
+                "ref": ref, "store_id": store.store_id, "custody": store.custody.value,
+                "daemon_id": store.daemon_id, "kind": kind.value,
+                "scope": scope.as_dict(), "version": version,
             },
             "dpapi_blob_b64": base64.b64encode(blob).decode("ascii"),
         }
+
+    def _decrypt_sidecar(
+        self,
+        sidecar: dict[str, Any],
+        *,
+        ref: str,
+        kind: SecretKind,
+        scope: SecretScope,
+        store: VaultStore,
+    ) -> tuple[dict[str, Any], bytes]:
+        """Unprotect + authenticate. Returns (authoritative_record, value)."""
+        hint = sidecar.get("hint") or {}
+        try:
+            version = int(hint["version"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from exc
+        entropy = _entropy(scope, ref, kind, version, store)
+        try:
+            blob = base64.b64decode(sidecar["dpapi_blob_b64"])
+        except Exception as exc:  # noqa: BLE001
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from exc
+        payload = dpapi_unprotect(blob, entropy)
+        record_json, secret_value = crypto.unframe_record(payload)
+        rec = crypto.decode_record(record_json)
+        record.verify_record_identity(
+            rec, ref=ref, kind=kind, scope=scope, store=store, version=version
+        )
+        return rec, secret_value
 
     def _put(
         self,
@@ -303,102 +363,93 @@ class DpapiVaultBackend:
         replace: str | None,
         expected_version: int | None,
         expires_at: float | None,
+        fence: RefreshLease | None = None,
     ) -> SecretDescriptor:
-        now = time.time()
-        if replace is None:
-            ref = new_secret_ref()
-            version = 1
-            created = now
-        else:
-            ref = replace
-            existing = self._read_sidecar(ref)
-            if existing is None:
-                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
-            desc = existing["descriptor"]
-            if desc["scope"] != scope.as_dict():
-                raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, ref)
-            if desc["kind"] != kind.value:
-                raise CredentialUnavailable(VaultErrorCode.KIND_MISMATCH, ref)
-            if desc["store_id"] != store.store_id or desc.get("daemon_id") != store.daemon_id:
-                raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN, ref)
-            if expected_version is not None and int(desc["version"]) != expected_version:
-                raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
-            version = int(desc["version"]) + 1
-            created = float(desc["created_at"])
+        # Whole mutation under an exclusive control-DB lock → atomic CAS.
+        with self._leases.mutation_lock() as conn:
+            now = time.time()
+            if replace is None:
+                ref = new_secret_ref()
+                version = 1
+                created = now
+            else:
+                ref = replace
+                if not is_secret_ref(ref):
+                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
+                existing_sidecar = self._read_sidecar(ref)
+                if existing_sidecar is None:
+                    raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
+                existing, _val = self._decrypt_sidecar(
+                    existing_sidecar, ref=ref, kind=kind, scope=scope, store=store
+                )
+                if (
+                    expected_version is not None
+                    and int(existing["version"]) != expected_version
+                ):
+                    raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
+                if fence is not None:
+                    self._require_fence(conn, ref, fence, now)
+                version = int(existing["version"]) + 1
+                created = float(existing["created_at"])
 
-        record = self._seal_record(
-            store, scope, kind, ref, version, value.reveal(), created, now, expires_at
-        )
-        self._write_sidecar(ref, record)
+            sidecar = self._seal_sidecar(
+                store, scope, kind, ref, version, value.reveal(), created, now, expires_at
+            )
+            self._write_sidecar(ref, sidecar)
 
         binding = SecretBinding(ref=ref, kind=kind, scope=scope, store=store)
         return SecretDescriptor(
-            binding=binding,
-            version=version,
-            created_at=created,
-            updated_at=now,
-            state=DescriptorState.ACTIVE,
-            expires_at=expires_at,
+            binding=binding, version=version, created_at=created, updated_at=now,
+            state=DescriptorState.ACTIVE, expires_at=expires_at,
         )
+
+    @staticmethod
+    def _require_fence(
+        conn: sqlite3.Connection, ref: str, fence: RefreshLease, now: float
+    ) -> None:
+        if fence.ref != ref or not leases.verify_fence(
+            conn, ref, fence.holder, fence.fence, now
+        ):
+            raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
 
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        record = self._read_sidecar(binding.ref)
-        if record is None:
+        if not is_secret_ref(binding.ref):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-        desc = record["descriptor"]
-        if desc["kind"] != binding.kind.value:
-            raise CredentialUnavailable(VaultErrorCode.KIND_MISMATCH, binding.ref)
-        if (
-            desc["store_id"] != binding.store.store_id
-            or desc.get("daemon_id") != binding.store.daemon_id
-        ):
-            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN, binding.ref)
-        self._check_state(desc, binding.ref)
-
-        version = int(desc["version"])
-        entropy = canonical_aad(expected, binding.ref, binding.kind.value, version)
-        blob = base64.b64decode(record["dpapi_blob_b64"])
-        payload = dpapi_unprotect(blob, entropy)
-        header, secret_value = unframe_payload(payload)
-        if header != entropy:
-            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, binding.ref)
-        return SecretLease(
-            SecretBytes(secret_value),
-            ref=binding.ref,
-            kind=binding.kind.value,
-            scope=expected,
-            version=version,
+        sidecar = self._read_sidecar(binding.ref)
+        if sidecar is None:
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+        rec, secret_value = self._decrypt_sidecar(
+            sidecar, ref=binding.ref, kind=binding.kind, scope=expected, store=binding.store
         )
-
-    @staticmethod
-    def _check_state(desc: dict[str, Any], ref: str) -> None:
-        state = desc.get("state")
-        if state == DescriptorState.DISABLED.value:
-            raise CredentialUnavailable(VaultErrorCode.DISABLED, ref)
-        if state == DescriptorState.REVOCATION_PENDING.value:
-            raise CredentialUnavailable(VaultErrorCode.REVOKED, ref)
-        expires_at = desc.get("expires_at")
-        if expires_at is not None and float(expires_at) <= time.time():
-            raise CredentialUnavailable(VaultErrorCode.EXPIRED, ref)
+        record.check_lifecycle(rec, binding.ref)
+        return SecretLease(
+            SecretBytes(secret_value), ref=binding.ref, kind=binding.kind.value,
+            scope=expected, version=int(rec["version"]),
+        )
 
     def _delete(self, binding: SecretBinding, expected: SecretScope) -> None:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        record = self._read_sidecar(binding.ref)
-        if record is None:
+        if not is_secret_ref(binding.ref):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
-        if record["descriptor"]["scope"] != expected.as_dict():
-            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
-        path = self._blob_path(binding.ref)
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(path)
+        with self._leases.mutation_lock():
+            sidecar = self._read_sidecar(binding.ref)
+            if sidecar is None:
+                raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            # Authenticate the COMPLETE record before removing — a forged/
+            # mismatched binding produces wrong entropy and fails here.
+            self._decrypt_sidecar(
+                sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
+                store=binding.store,
+            )
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(self._blob_path(binding.ref))
 
     # ------------------------------------------------------------------
-    # Exclusive per-ref refresh lease (file O_EXCL lock)
+    # Fenced exclusive per-ref refresh lease
     # ------------------------------------------------------------------
-    @contextlib.contextmanager
     def refresh_lease(
         self,
         ref: str,
@@ -407,33 +458,8 @@ class DpapiVaultBackend:
         ttl: float = 30.0,
         wait: float = 30.0,
         poll: float = 0.02,
-    ) -> Iterator[None]:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        lock_path = self._dir / (_ref_filename(ref) + ".lock")
-        deadline = time.monotonic() + wait
-        fd = None
-        while True:
-            try:
-                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, holder.encode("utf-8"))
-                break
-            except FileExistsError:
-                # Steal a stale lock past its ttl.
-                with contextlib.suppress(OSError):
-                    if time.time() - os.path.getmtime(lock_path) > ttl:
-                        os.remove(lock_path)
-                        continue
-                if time.monotonic() >= deadline:
-                    raise CredentialUnavailable(VaultErrorCode.LEASE_TIMEOUT, ref) from None
-                time.sleep(poll)
-        try:
-            yield
-        finally:
-            if fd is not None:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-            with contextlib.suppress(OSError):
-                os.remove(lock_path)
+    ) -> Iterator[RefreshLease]:
+        return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
 
     # ------------------------------------------------------------------
     # Attestation-support hooks
@@ -452,27 +478,60 @@ class DpapiVaultBackend:
         self._delete(binding, expected)
 
     def inspect_persisted(self, ref: str, probe_value: bytes) -> dict[str, object]:
-        record = self._read_sidecar(ref)
-        if record is None:
+        sidecar = self._read_sidecar(ref)
+        if sidecar is None:
             return {"present": False}
         raw_file = self._blob_path(ref).read_bytes()
-        desc = record["descriptor"]
-        # Attempt a real current-user unprotect to prove custody binding.
+        hint = sidecar.get("hint") or {}
+        # Prove current-user DPAPI custody by actually unprotecting the blob.
         current_user_bound = False
+        dacl_current_user_only = self._dacl_current_user_only(self._blob_path(ref))
         try:
-            entropy = canonical_aad(
-                SecretScope(**desc["scope"]), ref, desc["kind"], int(desc["version"])
+            store = VaultStore(
+                custody=Custody(hint["custody"]), store_id=hint["store_id"],
+                daemon_id=hint.get("daemon_id"),
             )
-            blob = base64.b64decode(record["dpapi_blob_b64"])
+            entropy = _entropy(
+                SecretScope(**hint["scope"]), ref, SecretKind(hint["kind"]),
+                int(hint["version"]), store,
+            )
+            blob = base64.b64decode(sidecar["dpapi_blob_b64"])
             payload = dpapi_unprotect(blob, entropy)
-            _header, value = unframe_payload(payload)
+            _rec_json, value = crypto.unframe_record(payload)
             current_user_bound = value == probe_value
         except Exception:  # noqa: BLE001
             current_user_bound = False
         return {
             "present": True,
-            "has_blob": len(record.get("dpapi_blob_b64", "")) > 0,
-            "protection_current_user": record.get("protection") == _PROTECTION,
+            "has_blob": len(sidecar.get("dpapi_blob_b64", "")) > 0,
+            "protection_current_user": sidecar.get("protection") == _PROTECTION,
             "current_user_bound": current_user_bound,
+            "dacl_current_user_only": dacl_current_user_only,
             "plaintext_absent": probe_value not in raw_file,
         }
+
+    @staticmethod
+    def _dacl_current_user_only(path: Path) -> bool | None:
+        """Best-effort DACL inspection: True iff no world/Everyone/Users ACE.
+
+        Returns None off Windows or when ACL inspection is unavailable. Used as
+        attestation evidence, not a hard gate — the installer sets the narrow
+        DACL; this only flags an obviously world-readable blob.
+        """
+        if not IS_WINDOWS:
+            return None
+        try:
+            import subprocess
+
+            out = subprocess.run(
+                ["icacls", str(path)], capture_output=True, text=True, timeout=10,
+            )
+            if out.returncode != 0:
+                return None
+            text = out.stdout
+            for token in ("Everyone:", "\\Users:", "BUILTIN\\Users", "Authenticated Users"):
+                if token in text:
+                    return False
+            return True
+        except Exception:  # noqa: BLE001
+            return None
