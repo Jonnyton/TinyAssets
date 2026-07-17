@@ -161,9 +161,9 @@ def _current_user_sid() -> Any:
 def set_restrictive_dacl(path: Path) -> None:
     """Set the file's DACL to current-user + SYSTEM ONLY, inheritance disabled.
 
-    Best-effort on failure (attestation independently verifies the result). The
-    owner of a file in their own profile may set its DACL without elevation.
-    No-op off Windows.
+    FAILS HARD: raises ``CredentialUnavailable`` if the restrictive DACL cannot be
+    applied AND verified — a credential blob must never be left world-readable on
+    a reported-success write. No-op off Windows (the backend is Windows-gated).
     """
     if not IS_WINDOWS:
         return
@@ -188,8 +188,22 @@ def set_restrictive_dacl(path: Path) -> None:
             | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
             None, None, dacl, None,
         )
-    except Exception:  # noqa: BLE001 — best effort; verifier is the gate
-        pass
+    except Exception:  # noqa: BLE001
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+    # Verify the DACL actually took — never trust the set call alone.
+    if not dacl_is_current_user_and_system_only(path):
+        raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE)
+
+
+def _fsync_dir(directory: Path) -> None:
+    """fsync a directory so a rename is durable (POSIX). No-op on Windows."""
+    if os.name != "posix":
+        return
+    dfd = os.open(str(directory), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def dacl_is_current_user_and_system_only(path: Path) -> bool:
@@ -281,11 +295,19 @@ class DpapiVaultBackend:
             conn = sqlite3.connect(str(self._control_db), timeout=30.0, isolation_level=None)
         except OSError:
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
-        # FULL: refresh claims must survive power loss (see platform backend note).
-        conn.execute("PRAGMA synchronous = FULL")
+        try:
+            conn.row_factory = sqlite3.Row
+            # Rollback-journal (NOT WAL) + FULL — same version-independent
+            # durability rationale as the platform backend (avoids the WAL-reset
+            # bug).
+            conn.execute("PRAGMA journal_mode = TRUNCATE")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA synchronous = FULL")
+        except sqlite3.DatabaseError:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
         return conn
 
     def _require_available(self) -> None:
@@ -378,17 +400,33 @@ class DpapiVaultBackend:
 
     def _write_sidecar(self, ref: str, record_dict: dict[str, Any]) -> None:
         path = self._blob_path(ref)
+        tmp = path.with_name(path.name + ".tmp")
+        data = json.dumps(record_dict, sort_keys=True).encode("utf-8")
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
             _chmod_best_effort(self._dir, 0o700)
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps(record_dict, sort_keys=True), encoding="utf-8")
-            _chmod_best_effort(tmp, 0o600)
+            # Durable write: write temp -> fsync(temp) -> atomic replace -> fsync(dir)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, data)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
             os.replace(tmp, path)  # atomic same-directory replace
+            _fsync_dir(self._dir)
             _chmod_best_effort(path, 0o600)
         except OSError:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
-        set_restrictive_dacl(path)  # narrow to current-user + SYSTEM (Windows)
+        # Narrow the DACL to current-user + SYSTEM; fail hard + clean up if it
+        # cannot be applied (never leave a world-readable credential blob).
+        try:
+            set_restrictive_dacl(path)
+        except CredentialUnavailable:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+            raise
 
     def _seal_sidecar(
         self,
@@ -460,6 +498,7 @@ class DpapiVaultBackend:
         expected_version: int | None,
         expires_at: float | None,
         fence: RefreshLease | None = None,
+        ticket: RefreshTicket | None = None,
     ) -> SecretDescriptor:
         # Whole mutation under an exclusive control-DB lock → atomic CAS.
         with self._leases.mutation_lock() as conn:
@@ -471,7 +510,7 @@ class DpapiVaultBackend:
             else:
                 ref = replace
                 if not is_secret_ref(ref):
-                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
+                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
                 existing_sidecar = self._read_sidecar(ref)
                 if existing_sidecar is None:
                     raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
@@ -485,6 +524,12 @@ class DpapiVaultBackend:
                     raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
                 if fence is not None:
                     self._require_fence(conn, ref, fence, now)
+                if ticket is not None and not (
+                    ticket.ref == ref
+                    and ticket.version == int(existing["version"])
+                    and leases.claim_held(conn, ref, ticket.version, ticket.holder)
+                ):
+                    raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
                 version = int(existing["version"]) + 1
                 created = float(existing["created_at"])
 
@@ -508,14 +553,25 @@ class DpapiVaultBackend:
         ):
             raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
 
+    def _require_record_dacl(self, ref: str) -> None:
+        """Verify THIS record's file DACL at access time (not a cached probe).
+
+        A DACL broadened after the boot probe must fail the access closed — never
+        return the secret from a world-readable blob.
+        """
+        if not dacl_is_current_user_and_system_only(self._blob_path(ref)):
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref)
+
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         if not is_secret_ref(binding.ref):
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            # Do not echo a malformed ref (newline/log injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         sidecar = self._read_sidecar(binding.ref)
         if sidecar is None:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+        self._require_record_dacl(binding.ref)  # per-record ACL isolation, verified now
         rec, secret_value = self._decrypt_sidecar(
             sidecar, ref=binding.ref, kind=binding.kind, scope=expected, store=binding.store
         )
@@ -529,7 +585,8 @@ class DpapiVaultBackend:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         if not is_secret_ref(binding.ref):
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            # Do not echo a malformed ref (newline/log injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         with self._leases.mutation_lock():
             sidecar = self._read_sidecar(binding.ref)
             if sidecar is None:
@@ -573,11 +630,13 @@ class DpapiVaultBackend:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         if not is_secret_ref(binding.ref):
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            # Do not echo a malformed ref (newline/log injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         with self._leases.mutation_lock() as conn:
             sidecar = self._read_sidecar(binding.ref)
             if sidecar is None:
                 raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            self._require_record_dacl(binding.ref)  # verify ACL isolation at access
             rec, _v = self._decrypt_sidecar(
                 sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
                 store=binding.store,
@@ -588,6 +647,28 @@ class DpapiVaultBackend:
                 conn, binding.ref, version, holder, time.time()
             )
         return RefreshTicket(ref=binding.ref, version=version, holder=holder) if won else None
+
+    def complete_refresh(
+        self,
+        binding: SecretBinding,
+        expected: SecretScope,
+        ticket: RefreshTicket,
+        value: SecretBytes,
+        *,
+        expires_at: float | None = None,
+    ) -> SecretDescriptor:
+        """Store the refreshed secret, bound to the ticket's durable claim."""
+        self._require_available()
+        self._require_local_store(binding.store)
+        self._ensure_attested()
+        if binding.scope != expected:
+            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        if ticket.ref != binding.ref:
+            raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, binding.ref)
+        return self._put(
+            binding.store, expected, binding.kind, value,
+            binding.ref, ticket.version, expires_at, None, ticket,
+        )
 
     # ------------------------------------------------------------------
     # Attestation-support hooks

@@ -115,14 +115,43 @@ class PlatformVaultBackend:
         except OSError:
             # Backend I/O unavailable — never leak the path in a traceback.
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
-        # FULL (not NORMAL): a refresh claim / vault row must survive power loss.
-        # WAL + NORMAL can roll back the last commit on power loss, which would
-        # lose a claim + keep the old token = a second one-time redemption.
-        conn.execute("PRAGMA synchronous = FULL")
+        try:
+            conn.row_factory = sqlite3.Row
+            # Rollback-journal (NOT WAL) + FULL: version-independent durability.
+            # WAL has a documented reset-corruption bug affecting CONCURRENT
+            # WRITERS through SQLite 3.51.2 (this env links 3.50.4); the
+            # credential workload is low-concurrency so rollback-journal sidesteps
+            # the bug entirely while FULL fsyncs every commit for power-loss
+            # durability of claims/rows.
+            conn.execute("PRAGMA journal_mode = TRUNCATE")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA synchronous = FULL")
+        except sqlite3.DatabaseError:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+            self._attested = None  # a corrupt DB invalidates the cached gate
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
         return conn
+
+    def _fetch_row(self, ref: str) -> sqlite3.Row | None:
+        """Look up a row by ref, normalizing SQLite corruption to a typed error.
+
+        A DB corrupted AFTER a cached attestation must not leak a raw
+        ``sqlite3.DatabaseError``; it becomes ``CORRUPT_RECORD`` and invalidates
+        the attestation gate so the next call re-probes instead of serving from a
+        stale pass.
+        """
+        conn = self._connect()
+        try:
+            return conn.execute(
+                "SELECT * FROM vault_secrets WHERE ref = ?", (ref,)
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
 
     def initialize(self) -> None:
         if self._initialized:
@@ -138,10 +167,11 @@ class PlatformVaultBackend:
     def durability_info(self) -> dict[str, str]:
         """Report the durability posture (for ops verification / the DR gate).
 
-        ``synchronous`` MUST be ``FULL`` for power-loss durability of claims. The
-        production image MUST pin a SQLite build outside the documented WAL-reset
-        affected range — this reports the linked version so a deploy check can
-        assert it; the library cannot prove the image's build by itself.
+        ``synchronous`` MUST be ``FULL`` and ``journal_mode`` MUST be a
+        rollback-journal (``TRUNCATE``/``DELETE``), NOT ``WAL``: WAL's
+        reset-corruption bug (SQLite ≤3.51.2, this env 3.50.4) hits concurrent
+        writers, which is exactly this workload. Rollback-journal is
+        version-independent and the low-concurrency workload tolerates it.
         """
         self.initialize()
         conn = self._connect()
@@ -272,6 +302,7 @@ class PlatformVaultBackend:
         expected_version: int | None,
         expires_at: float | None,
         fence: RefreshLease | None = None,
+        ticket: RefreshTicket | None = None,
     ) -> SecretDescriptor:
         self.initialize()
         conn = self._connect()
@@ -285,7 +316,7 @@ class PlatformVaultBackend:
             else:
                 ref = replace
                 if not is_secret_ref(ref):
-                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, ref)
+                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD)
                 row = conn.execute(
                     "SELECT * FROM vault_secrets WHERE ref = ?", (ref,)
                 ).fetchone()
@@ -304,6 +335,14 @@ class PlatformVaultBackend:
                     raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
                 if fence is not None:
                     self._require_fence(conn, ref, fence, now)
+                if ticket is not None and not (
+                    ticket.ref == ref
+                    and ticket.version == int(existing["version"])
+                    and leases.claim_held(conn, ref, ticket.version, ticket.holder)
+                ):
+                    # A refresh completion must present a ticket whose durable
+                    # claim is on record — no bypass of consume-before-mint.
+                    raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
                 version = int(existing["version"]) + 1
                 created = float(existing["created_at"])
 
@@ -375,14 +414,12 @@ class PlatformVaultBackend:
     def _get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        # Validate the canonical ref BEFORE any lookup or error echo — a malformed
+        # ref (e.g. embedded newline) must never reach a query or a log line.
+        if not is_secret_ref(binding.ref):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         self.initialize()
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT * FROM vault_secrets WHERE ref = ?", (binding.ref,)
-            ).fetchone()
-        finally:
-            conn.close()
+        row = self._fetch_row(binding.ref)
         if row is None:
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
         rec, value = self._decrypt_row(
@@ -398,7 +435,8 @@ class PlatformVaultBackend:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         if not is_secret_ref(binding.ref):
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            # Do not echo a malformed ref (newline/log injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         self.initialize()
         conn = self._connect()
         try:
@@ -474,7 +512,8 @@ class PlatformVaultBackend:
         if binding.scope != expected:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         if not is_secret_ref(binding.ref):
-            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
+            # Do not echo a malformed ref (newline/log injection defense).
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
         self.initialize()
         conn = self._connect()
         try:
@@ -500,6 +539,32 @@ class PlatformVaultBackend:
         finally:
             conn.close()
         return RefreshTicket(ref=binding.ref, version=version, holder=holder) if won else None
+
+    def complete_refresh(
+        self,
+        binding: SecretBinding,
+        expected: SecretScope,
+        ticket: RefreshTicket,
+        value: SecretBytes,
+        *,
+        expires_at: float | None = None,
+    ) -> SecretDescriptor:
+        """Store the refreshed secret, bound to the ticket's durable claim.
+
+        This is the ONLY sanctioned way to complete a refresh: the CAS advance
+        succeeds only if ``ticket``'s claim is on record for the current version,
+        so a completion cannot bypass consume-before-mint.
+        """
+        self._require_platform_store(binding.store)
+        self._ensure_attested()
+        if binding.scope != expected:
+            raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
+        if ticket.ref != binding.ref:
+            raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, binding.ref)
+        return self._put(
+            binding.store, expected, binding.kind, value,
+            binding.ref, ticket.version, expires_at, None, ticket,
+        )
 
     # ------------------------------------------------------------------
     # KEK rotation (verified)
