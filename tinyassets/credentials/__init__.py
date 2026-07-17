@@ -3,7 +3,7 @@
 One :class:`VaultBroker` seam over two custody backends:
 
 * :class:`PlatformVaultBackend` — XChaCha20-Poly1305-IETF envelope encryption in
-  SQLite (WAL) for chatbot-only / 24×7 users.
+  SQLite (rollback-journal + synchronous=EXTRA) for chatbot-only / 24×7 users.
 * :class:`DpapiVaultBackend` — Windows current-user DPAPI for users who run a
   daemon.
 

@@ -47,7 +47,7 @@ from .crypto import identity_aad
 from .errors import CredentialUnavailable, VaultErrorCode
 from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import local_store_dir
-from .secret_bytes import SecretBytes, SecretLease
+from .secret_bytes import SecretBytes, SecretLease, require_nonempty_bounded
 from .types import (
     ROTATING_TOKEN_KINDS,
     Custody,
@@ -387,6 +387,7 @@ class DpapiVaultBackend:
     ) -> SecretDescriptor:
         self._require_available()
         self._require_local_store(store)
+        require_nonempty_bounded(value)  # reject empty/oversized before any write
         leases.require_cas_pairing(replace, expected_version)
         self._ensure_attested()
         return self._put(store, scope, kind, value, replace, expected_version, expires_at, fence)
@@ -446,10 +447,20 @@ class DpapiVaultBackend:
             _chmod_best_effort(self._dir, 0o700)
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                os.write(fd, data)
+                # os.write() may write FEWER bytes than requested — loop until all
+                # are written, or a truncated temp would replace the old blob.
+                view = memoryview(data)
+                written = 0
+                while written < len(data):
+                    n = os.write(fd, view[written:])
+                    if n <= 0:
+                        raise OSError("short write: os.write made no progress")
+                    written += n
                 os.fsync(fd)
             finally:
                 os.close(fd)
+            if os.path.getsize(tmp) != len(data):
+                raise OSError("temp file size mismatch after write")
             _chmod_best_effort(tmp, 0o600)
             set_restrictive_dacl(tmp)  # apply + verify BEFORE replace; raises on fail
             _durable_replace(tmp, path)  # disk-flushed atomic replace
@@ -560,7 +571,8 @@ class DpapiVaultBackend:
                     ticket.ref == ref
                     and ticket.version == int(existing["version"])
                     and leases.capability_valid(
-                        conn, ref, ticket.version, ticket.holder, ticket.secret
+                        conn, ref, ticket.version, ticket.holder,
+                        ticket._reveal_capability(),
                     )
                 ):
                     raise CredentialUnavailable(VaultErrorCode.LEASE_LOST, ref)
@@ -701,6 +713,7 @@ class DpapiVaultBackend:
         """Store the refreshed secret, bound to the ticket's durable claim."""
         self._require_available()
         self._require_local_store(binding.store)
+        require_nonempty_bounded(value)  # reject empty/oversized before any write
         self._ensure_attested()
         if not is_secret_ref(binding.ref):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)

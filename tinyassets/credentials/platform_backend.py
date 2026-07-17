@@ -1,4 +1,4 @@
-"""Platform custody backend: SQLite (WAL) + XChaCha20-Poly1305-IETF envelopes.
+"""Platform custody backend: SQLite (rollback-journal) + XChaCha20-Poly1305-IETF.
 
 For chatbot-only / 24×7 users. Ciphertext rows live in
 ``data_dir()/private/credential-vault/v1/vault.db``; the KEK is injected via a
@@ -39,7 +39,7 @@ from .crypto import Envelope, KeyProvider
 from .errors import CredentialUnavailable, VaultErrorCode
 from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import platform_vault_db_path
-from .secret_bytes import SecretBytes, SecretLease
+from .secret_bytes import SecretBytes, SecretLease, require_nonempty_bounded
 from .types import (
     ROTATING_TOKEN_KINDS,
     XCHACHA20POLY1305_IETF,
@@ -234,6 +234,7 @@ class PlatformVaultBackend:
         fence: RefreshLease | None = None,
     ) -> SecretDescriptor:
         self._require_platform_store(store)
+        require_nonempty_bounded(value)  # reject empty/oversized before any write
         leases.require_cas_pairing(replace, expected_version)
         self._ensure_attested()
         return self._put(
@@ -350,7 +351,8 @@ class PlatformVaultBackend:
                     ticket.ref == ref
                     and ticket.version == int(existing["version"])
                     and leases.capability_valid(
-                        conn, ref, ticket.version, ticket.holder, ticket.secret
+                        conn, ref, ticket.version, ticket.holder,
+                        ticket._reveal_capability(),
                     )
                 ):
                     # The completion must present the UNFORGEABLE minted
@@ -576,6 +578,7 @@ class PlatformVaultBackend:
         so a completion cannot bypass consume-before-mint.
         """
         self._require_platform_store(binding.store)
+        require_nonempty_bounded(value)  # reject empty/oversized before any write
         self._ensure_attested()
         if not is_secret_ref(binding.ref):
             raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
@@ -616,16 +619,23 @@ class PlatformVaultBackend:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute("SELECT * FROM vault_secrets").fetchall()
             for row in rows:
-                scope = SecretScope(
-                    founder_id=row["founder_id"], universe_id=row["universe_id"],
-                    provider=row["provider"], destination=row["destination"],
-                    purpose=row["purpose"],
-                )
-                store = VaultStore(
-                    custody=Custody(row["custody"]), store_id=row["store_id"],
-                )
-                kind = SecretKind(row["kind"])
-                version = int(row["version"])
+                # Reconstruct identity from UNAUTHENTICATED plaintext hints — a
+                # forged custody/kind/version must become CORRUPT_RECORD, never a
+                # raw ValueError, and must invalidate the cached attestation.
+                try:
+                    scope = SecretScope(
+                        founder_id=row["founder_id"], universe_id=row["universe_id"],
+                        provider=row["provider"], destination=row["destination"],
+                        purpose=row["purpose"],
+                    )
+                    store = VaultStore(
+                        custody=Custody(row["custody"]), store_id=row["store_id"],
+                    )
+                    kind = SecretKind(row["kind"])
+                    version = int(row["version"])
+                except (ValueError, TypeError, KeyError):
+                    self._attested = None
+                    raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
                 aad = _aad(scope, row["ref"], kind.value, version, store)
                 env = self._envelope_from_row(row)
                 # Verify payload + record integrity before rewrap.
