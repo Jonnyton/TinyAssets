@@ -70,19 +70,21 @@ CREATE TABLE IF NOT EXISTS vault_refresh_leases (
 );
 
 -- Consume-before-mint, HIGH-WATER model: ONE row per ref holding the highest
--- version ever claimed + the hash of an UNFORGEABLE broker-minted capability.
--- A claim for version V succeeds only if V is strictly higher than the stored
--- ``claimed_version`` (monotonic), so a retired (lower) version can NEVER be
--- re-claimed — retirement (advance) can't reopen the re-redeem window, and the
--- table stays bounded to one row per ref (no unbounded growth). Only the caller
--- presenting the exact minted capability (checked against ``capability_hash``)
--- may complete the refresh.
+-- version ever claimed + the hash of an UNFORGEABLE broker-minted capability +
+-- a ``deleted`` TOMBSTONE flag. A claim for version V succeeds only if V is
+-- strictly higher than the stored ``claimed_version`` (monotonic) AND the ref is
+-- not tombstoned. This row is the AUTHORITATIVE, IRREVERSIBLE record of "this
+-- ref/version is consumed": it is durable in the control DB (DELETE+EXTRA) and
+-- is NEVER removed — a deleted ref keeps a ``deleted=1`` tombstone forever, so a
+-- sidecar that survives / reappears / is restored WITHOUT a matching high-water
+-- row is treated as consumed and refused. Bounded to one row per ref.
 CREATE TABLE IF NOT EXISTS vault_refresh_claims (
     ref             TEXT PRIMARY KEY,
     claimed_version INTEGER NOT NULL,
     capability_hash TEXT NOT NULL,
     holder          TEXT NOT NULL,
-    claimed_at      REAL NOT NULL
+    claimed_at      REAL NOT NULL,
+    deleted         INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -97,22 +99,24 @@ def claim_refresh(
 ) -> bool:
     """Atomically claim the redemption right for ``ref`` at ``version``.
 
-    Succeeds iff ``version`` is strictly higher than any previously-claimed
-    version for this ref (monotonic high-water) — a lower/equal version (a
-    straggler or a re-redeem attempt) is refused. On success the single per-ref
-    row advances to ``version`` and stores the capability hash. Must run in an
-    open transaction.
+    Succeeds iff the ref is not tombstoned AND ``version`` is strictly higher
+    than any previously-claimed version (monotonic high-water) — a lower/equal
+    version (a straggler or a re-redeem attempt) or a deleted ref is refused. On
+    success the single per-ref row advances to ``version``. Must run in an open
+    transaction.
     """
     row = conn.execute(
-        "SELECT claimed_version FROM vault_refresh_claims WHERE ref = ?", (ref,)
+        "SELECT claimed_version, deleted FROM vault_refresh_claims WHERE ref = ?", (ref,)
     ).fetchone()
     if row is None:
         conn.execute(
             "INSERT INTO vault_refresh_claims(ref, claimed_version, capability_hash, "
-            "holder, claimed_at) VALUES(?,?,?,?,?)",
+            "holder, claimed_at, deleted) VALUES(?,?,?,?,?,0)",
             (ref, int(version), cap_hash, holder, now),
         )
         return True
+    if int(row["deleted"]):
+        return False  # a deleted ref is consumed forever
     if int(version) > int(row["claimed_version"]):
         conn.execute(
             "UPDATE vault_refresh_claims SET claimed_version = ?, capability_hash = ?, "
@@ -130,29 +134,53 @@ def capability_valid(
 
     Binds a refresh COMPLETION to the unforgeable minted capability: a
     reconstructed ticket without the exact secret cannot pass. Constant-time
-    compare over the stored hash.
+    compare over the stored hash. A tombstoned ref never validates.
     """
     row = conn.execute(
-        "SELECT claimed_version, capability_hash, holder FROM vault_refresh_claims "
-        "WHERE ref = ?",
+        "SELECT claimed_version, capability_hash, holder, deleted FROM "
+        "vault_refresh_claims WHERE ref = ?",
         (ref,),
     ).fetchone()
-    if row is None:
+    if row is None or int(row["deleted"]):
         return False
     if int(row["claimed_version"]) != int(version) or row["holder"] != holder:
         return False
     return hmac.compare_digest(row["capability_hash"], capability_hash(secret))
 
 
-def retire_claim(conn: sqlite3.Connection, ref: str) -> None:
-    """Drop the claim row for a DELETED ref.
+def tombstone_ref(conn: sqlite3.Connection, ref: str, version: int, now: float) -> None:
+    """Durably mark ``ref`` DELETED — an irreversible high-water tombstone.
 
-    Safe because a SecretRef is a one-time 256-bit random value that is never
-    reused, so freeing the row cannot let a future ref re-redeem an old token.
-    Bounds the table; does NOT free a version slot for a live ref (that would
-    reopen the re-redeem window — see the high-water invariant).
+    Keeps (never removes) the claim row with ``deleted=1`` and a high-water at
+    least ``version``, so after deletion a surviving/restored sidecar can never
+    be re-claimed or read. This is the AUTHORITATIVE deletion state; the sidecar
+    removal is secondary and best-effort. Must run in an open transaction that
+    commits durably BEFORE the sidecar is removed.
     """
-    conn.execute("DELETE FROM vault_refresh_claims WHERE ref = ?", (ref,))
+    row = conn.execute(
+        "SELECT claimed_version FROM vault_refresh_claims WHERE ref = ?", (ref,)
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO vault_refresh_claims(ref, claimed_version, capability_hash, "
+            "holder, claimed_at, deleted) VALUES(?,?,?,?,?,1)",
+            (ref, int(version), "", "deleted", now),
+        )
+    else:
+        high = max(int(row["claimed_version"]), int(version))
+        conn.execute(
+            "UPDATE vault_refresh_claims SET claimed_version = ?, holder = 'deleted', "
+            "claimed_at = ?, deleted = 1 WHERE ref = ?",
+            (high, now, ref),
+        )
+
+
+def is_deleted(conn: sqlite3.Connection, ref: str) -> bool:
+    """True iff ``ref`` carries a deletion tombstone (consumed forever)."""
+    row = conn.execute(
+        "SELECT deleted FROM vault_refresh_claims WHERE ref = ?", (ref,)
+    ).fetchone()
+    return row is not None and bool(int(row["deleted"]))
 
 
 def acquire_fenced(
