@@ -338,12 +338,24 @@ def revalidate_investigation_handler(
     return "dead", f"handler_deleted:{branch_def_id}"
 
 
+def investigation_task_id(trigger_attempt_id: str) -> str:
+    """The STABLE, deterministic dispatcher task id for an investigation trigger
+    receipt (Codex r23 #1). BOTH the INITIAL file_bug enqueue AND the retry
+    consumer derive the task's ``branch_task_id`` from this, so an
+    initial-enqueue -> crash-before-mark_queued -> retry collapses to ONE task via
+    ``append_task_if_absent`` — exactly-once across the REAL crash window, not just
+    retry<->retry. Empty ``trigger_attempt_id`` (no receipt) -> "" so the caller
+    falls back to a fresh uuid4."""
+    return f"inv:{trigger_attempt_id}" if trigger_attempt_id else ""
+
+
 def _maybe_enqueue_investigation(
     bug_id: str,
     frontmatter: dict,
     base_path: "Path | str",
     universe_id: str = "",
     resolved_branch_def_id: str | None = None,
+    request_id: str = "",
 ) -> str | None:
     """Forward-trigger seam for `_wiki_file_bug` post-write.
 
@@ -398,6 +410,9 @@ def _maybe_enqueue_investigation(
             canonical_branch_def_id=canonical_branch_def_id,
             base_path=base_path,
             universe_id=universe_id,
+            # Codex r23 #1: the caller threads the STABLE receipt-derived task id
+            # so the INITIAL enqueue and any later retry produce ONE task.
+            request_id=request_id,
         )
     except (RuntimeError, ValueError) as exc:
         _logger.info(
@@ -608,7 +623,7 @@ def retry_pending_investigation_triggers(
             continue
         if resolved:
             # STABLE, deterministic task id (idempotency key) + ORIGINAL payload.
-            stable_id = f"retry:{receipt.trigger_attempt_id}"
+            stable_id = investigation_task_id(receipt.trigger_attempt_id)
             bug_ref = _reconstruct_bug_ref(receipt, request_id)
             try:
                 enqueue_investigation_request(
@@ -622,7 +637,11 @@ def retry_pending_investigation_triggers(
                     receipt,
                     dispatcher_request_id=stable_id,
                     branch_def_id=resolved,
-                    goal_id=(goal_id or None),
+                    # Codex r23 #3: pass the RESOLVED goal RAW (a str, "" for the
+                    # env handler) — NOT ``goal_id or None``, which would pass None
+                    # and mark_queued would PRESERVE a STALE goal. Rebinding an
+                    # old-goal receipt to the env handler must CLEAR the goal.
+                    goal_id=goal_id,
                     resolution_source=source,
                 )
                 summary["queued"].append(request_id)

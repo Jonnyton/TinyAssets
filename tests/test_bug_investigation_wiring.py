@@ -550,6 +550,81 @@ def test_retry_does_not_cross_universe_boundaries(tmp_path, monkeypatch):
     assert "BUG-LEGACY" in {r.request_id for r in _tr.orphan_universe_attempts()}
 
 
+def test_initial_enqueue_crash_then_retry_is_exactly_once(tmp_path, monkeypatch):
+    # Codex r23 #1: the REAL crash window. file_bug's INITIAL enqueue and the
+    # retry now derive the SAME stable task id from the receipt, so
+    # initial-enqueue -> crash-before-mark_queued -> retry yields EXACTLY ONE task
+    # (not two). (The r22 test only covered a retry-created receipt.)
+    import json as _json
+
+    from tinyassets.api import wiki as wiki_api
+    from tinyassets.branch_tasks import read_queue
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    wiki_root = tmp_path / "wiki"
+    data_root = tmp_path / "data"
+    wiki_api._ensure_wiki_scaffold(wiki_root)
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    _register_handler_branch(data_root, monkeypatch)   # DATA_DIR=data_root + registers
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+
+    # INITIAL enqueue via file_bug -> ONE task (stable id) + receipt marked queued.
+    out = _json.loads(wiki_api._wiki_file_bug(
+        component="engine", severity="minor", title="crash window", observed="boom",
+    ))
+    assert out["investigation"]["status"] == "queued", out
+    rec = _tr.recent_attempts(limit=5)[0]
+    upath = wiki_api._universe_dir(rec.universe_id)
+    q1 = [t for t in read_queue(upath) if t.request_type == "bug_investigation"]
+    assert len(q1) == 1, [t.branch_task_id for t in q1]
+    # The initial task id is the STABLE receipt-derived id (not a bare uuid4).
+    assert q1[0].branch_task_id == f"inv:{rec.trigger_attempt_id}"
+
+    # Simulate a crash BEFORE mark_queued: force the receipt back to pending.
+    with _tr._conn() as c:
+        c.execute(
+            "UPDATE wiki_trigger_attempts SET status='pending' "
+            "WHERE trigger_attempt_id=?", (rec.trigger_attempt_id,),
+        )
+    # Retry -> SAME stable id -> idempotent append -> STILL exactly one task.
+    retry_pending_investigation_triggers(upath, universe_id=rec.universe_id)
+    q2 = [t for t in read_queue(upath) if t.request_type == "bug_investigation"]
+    assert len(q2) == 1, [t.branch_task_id for t in q2]   # exactly ONE, not two
+
+
+def test_retry_clears_stale_goal_on_env_rebind(tmp_path, monkeypatch):
+    # Codex r23 #3: a receipt recorded with an OLD goal, rebound to the ENV handler
+    # on retry, must have its goal CLEARED — not preserved as a stale goal that
+    # contradicts the env-resolved task.
+    from tinyassets.bug_investigation import retry_pending_investigation_triggers
+    from tinyassets.wiki import trigger_receipts as _tr
+
+    _register_handler_branch(tmp_path, monkeypatch)
+    monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", raising=False)  # env path
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
+    )
+    monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "bug_investigation")
+    # A receipt carrying a STALE goal + stale handler.
+    _tr.create_pending(
+        request_id="BUG-GOAL", request_kind="bug", request_page="p",
+        branch_def_id="stale-A", goal_id="goal-old", universe_id=tmp_path.name,
+        payload_json='{"bug_id": "BUG-GOAL"}',
+    )
+    retry_pending_investigation_triggers(tmp_path, universe_id=tmp_path.name)
+
+    rec = next(
+        r for r in _tr.recent_attempts(limit=10) if r.request_id == "BUG-GOAL"
+    )
+    assert rec.branch_def_id == "branch-canonical-abc"   # rebound to env handler
+    assert rec.resolution_source == "env_fallback"
+    assert not rec.goal_id, rec.goal_id   # STALE "goal-old" CLEARED, not preserved
+
+
 def test_enqueue_revalidates_handler_at_durable_boundary(tmp_path, monkeypatch):
     # Codex r14 #4 (G4 deletion race): a handler deleted between the upstream
     # existence check and the durable enqueue must NOT queue a dead reference —

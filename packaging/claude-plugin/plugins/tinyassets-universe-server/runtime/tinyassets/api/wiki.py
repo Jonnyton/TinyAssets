@@ -2237,12 +2237,21 @@ def _wiki_file_bug(
             _receipt = None
 
         try:
+            # Codex r23 #1: the INITIAL enqueue uses the SAME stable task id the
+            # retry consumer will derive from this receipt, so an initial-enqueue
+            # -> crash-before-mark_queued -> retry collapses to ONE task (exactly
+            # once across the real crash window). No receipt -> "" -> fresh uuid4.
+            _stable_task_id = (
+                bug_investigation.investigation_task_id(_receipt.trigger_attempt_id)
+                if _receipt is not None else ""
+            )
             request_id = bug_investigation._maybe_enqueue_investigation(
                 bug_id=bug_id,
                 frontmatter=frontmatter,
                 base_path=universe_path,
                 universe_id=target_universe_id,
                 resolved_branch_def_id=resolved_branch_def_id,
+                request_id=_stable_task_id,
             )
         except Exception as _enq_exc:
             # Trigger helper raised. Update receipt then re-raise into the outer
@@ -2296,8 +2305,17 @@ def _wiki_file_bug(
                     )
             if _receipt is not None:
                 try:
+                    # Codex r23 #3: record provenance on the NORMAL success path
+                    # too (not just retry) — the actual handler + resolution
+                    # source + goal, so the receipt never contradicts the task.
+                    # ``or None`` on the handler PRESERVES the receipt's existing
+                    # (extracted) id when the resolve yielded no branch id — never
+                    # overwrite a recorded handler with "".
                     _receipt = _tr.mark_queued(
                         _receipt, dispatcher_request_id=request_id,
+                        branch_def_id=(resolved_branch_def_id or None),
+                        goal_id=_handler_goal,
+                        resolution_source=_handler_source,
                     )
                 except Exception:  # noqa: BLE001
                     pass

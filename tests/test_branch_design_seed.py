@@ -1351,6 +1351,47 @@ def test_empty_package_fails_loud_on_packaged_design(data_dir, tmp_path, monkeyp
     assert "<missing-packaged-design:patch_loop_reference>" in results["failed"], results
 
 
+def test_private_seed_reads_unhealthy_and_repairs_to_public(data_dir):
+    # Codex r23 #2: a PRIVATE reserved seed is UNDISCOVERABLE — health must read
+    # UNHEALTHY (fingerprint/published/author alone missed it) and the reconcile
+    # must REPAIR visibility to public.
+    import tinyassets.branch_designs as bd
+    from tinyassets.api.branches import _ext_branch_list
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        update_branch_definition,
+    )
+
+    seed_reference_designs(data_dir)
+    fixed_id = bd._reference_branch_id("patch_loop_reference", 1)
+    assert bd.reference_designs_live_health(data_dir)["healthy"]
+
+    # Force the seed PRIVATE via the internal path (the public API is guarded).
+    update_branch_definition(
+        data_dir, branch_def_id=fixed_id, updates={"visibility": "private"},
+        internal_seed_write=True,
+    )
+    assert get_branch_definition(
+        data_dir, branch_def_id=fixed_id
+    ).get("visibility") == "private"
+
+    # Health flags it AND published discovery drops it.
+    health = bd.reference_designs_live_health(data_dir)
+    assert not health["healthy"], health
+    assert "patch_loop_reference" in health["unhealthy"], health
+    listed = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id not in {b["branch_def_id"] for b in listed["branches"]}
+
+    # Reseed REPAIRS visibility -> healthy + discoverable again.
+    seed_reference_designs(data_dir)
+    assert get_branch_definition(
+        data_dir, branch_def_id=fixed_id
+    ).get("visibility") == "public"
+    assert bd.reference_designs_live_health(data_dir)["healthy"]
+    listed2 = json.loads(_ext_branch_list({"scope": "published"}))
+    assert fixed_id in {b["branch_def_id"] for b in listed2["branches"]}
+
+
 def test_packaged_version_mismatch_fails_health(data_dir, tmp_path, monkeypatch):
     # Codex r21 #4: health must compare EXACT (design_id, version) tuples. A
     # packaged design present at the WRONG version (not the manifest's) seeds a

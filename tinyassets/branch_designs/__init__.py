@@ -327,11 +327,27 @@ def _build_reference_branch(base_path: str | Path, artifact: dict, tag: str) -> 
     return out["branch_def_id"]
 
 
+def _reference_expected_meta(artifact: dict, tag: str) -> dict:
+    """The DISCOVERY metadata a healthy reserved-seed row MUST carry (Codex r23
+    #2). ``_content_fingerprint`` covers only node/edge/state content, so a
+    private seed (undiscoverable), or a drifted name/description/tags, passes the
+    fingerprint yet breaks discovery. The reference tags (REFERENCE_TAG +
+    design_tag) are added at build time, so they are part of the expected set."""
+    spec = artifact.get("spec") or {}
+    return {
+        "name": spec.get("name", ""),
+        "description": spec.get("description", ""),
+        "tags": sorted(set(list(spec.get("tags") or []) + [REFERENCE_TAG, tag])),
+        "visibility": "public",
+    }
+
+
 def _reference_row_is_healthy(
     base_path: str | Path,
     expected_fp: str,
     branch_def_id: str,
     authoritative_hash: str,
+    expected_meta: dict | None = None,
 ) -> bool:
     """Healthy = the row's content matches the authoritative build (fingerprint),
     ``published`` set, AND there is an ACTIVE branch version whose ``content_hash``
@@ -363,6 +379,19 @@ def _reference_row_is_healthy(
     # (re-overwrites with an empty goal + reserved author).
     if (full.get("goal_id") or "") or (full.get("author") or "") != RESERVED_SEED_AUTHOR:
         return False
+    # DISCOVERY metadata (Codex r23 #2): a private seed is UNDISCOVERABLE, and a
+    # drifted name/description/tags mislabels it in discovery — both must read
+    # UNHEALTHY so the reconcile repairs them (the overwrite restores the
+    # artifact-owned metadata + public visibility from the temp build).
+    if expected_meta is not None:
+        if (full.get("visibility") or "public") != expected_meta["visibility"]:
+            return False
+        if (full.get("name") or "") != expected_meta["name"]:
+            return False
+        if (full.get("description") or "") != expected_meta["description"]:
+            return False
+        if sorted(set(full.get("tags") or [])) != expected_meta["tags"]:
+            return False
     # DIRECT indexed lookup for the ACTIVE version at the authoritative hash, NOT
     # a bounded LIMIT-N history scan (Codex r20 #3): with >N versions a bounded
     # scan missed a restored older authoritative-hash version, so a healthy
@@ -518,7 +547,8 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 )
                 results["failed"].append(tag)
             elif existing is not None and _reference_row_is_healthy(
-                base_path, expected_fp, fixed_id, auth_hash
+                base_path, expected_fp, fixed_id, auth_hash,
+                expected_meta=_reference_expected_meta(artifact, tag),
             ):
                 results["present"].append(tag)
             elif _content_hash_quarantined(base_path, fixed_id, auth_hash):
@@ -542,7 +572,8 @@ def seed_reference_designs(base_path: str | Path) -> dict[str, list[str]]:
                 _overwrite_reference_content(base_path, fixed_id, correct_id)
                 _publish_reference(base_path, fixed_id, tag)
                 if _reference_row_is_healthy(
-                    base_path, expected_fp, fixed_id, auth_hash
+                    base_path, expected_fp, fixed_id, auth_hash,
+                    expected_meta=_reference_expected_meta(artifact, tag),
                 ):
                     logger.info("reference design seeded: %s -> %s", tag, fixed_id)
                     results["seeded"].append(tag)
@@ -689,6 +720,9 @@ def reference_designs_live_health(base_path: str | Path) -> dict[str, Any]:
                 and (row.get("author") or "") == RESERVED_SEED_AUTHOR
                 and _reference_row_is_healthy(
                     base_path, expected_fp, fixed_id, auth_hash,
+                    expected_meta=_reference_expected_meta(
+                        artifact, design_tag(design_id, version),
+                    ),
                 )
             )
         except Exception:  # noqa: BLE001 — a compute failure is unhealthy
