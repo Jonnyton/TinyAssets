@@ -32,14 +32,24 @@ def test_write_universe_config_fields_merges_and_preserves(tmp_path):
     assert cfg.preferred_judge == "gemini-free"
 
 
-def _enable_byo(monkeypatch):
+def _enable_byo(monkeypatch, *, sanction=True):
     """Simulate Phase-2: executable BYO on (flag + per-record encryption attestation
-    + sandbox-readiness attestation — round-14 #4 requires ALL)."""
+    + sandbox-readiness attestation — round-14 #4 requires ALL).
+
+    Round-18 #1: ALSO sanction the CLI-consumable custody targets by default (Phase-2
+    is when a provider's custody is approved). Pass ``sanction=False`` to prove
+    default-deny at consumption (an attested-but-unsanctioned key never binds/injects)."""
+    import tinyassets.credential_vault as cv
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
     monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    if sanction:
+        monkeypatch.setattr(
+            cv, "_SANCTIONED_CUSTODY_SERVICES",
+            frozenset({"anthropic", "claude", "claude-code", "openai", "codex"}),
+        )
 
 
 def test_byo_claude_injected_only_when_executable(tmp_path, monkeypatch):
@@ -80,10 +90,15 @@ def test_codex_byo_key_is_never_injected(tmp_path, monkeypatch):
 def test_attestation_toctou_uses_one_snapshot(tmp_path, monkeypatch):
     """#2: subprocess_env_for_provider takes ONE attestation snapshot — a mid-call
     True→False flip cannot leave ambient CLAUDE_CONFIG_DIR + omit the BYO key."""
+    import tinyassets.credential_vault as cv
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    # Round-18 #1: anthropic custody sanctioned so the key is a consumable target.
+    monkeypatch.setattr(
+        cv, "_SANCTIONED_CUSTODY_SERVICES", frozenset({"anthropic"}),
+    )
     # Per-record attestation flips True on the 1st read, then False on every later
     # read — a race that would fail-open WITHOUT a single-snapshot decision.
     calls = {"n": 0}

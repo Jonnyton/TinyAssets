@@ -92,10 +92,18 @@ def _write_byo_claude_universe(root: Path, api_key: str) -> Path:
 @pytest.fixture
 def _enable_byo(monkeypatch):
     """Enable the executable-BYO prerequisite (flag + attestation) for the test."""
+    import tinyassets.credential_vault as cv
+
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
     monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
     monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    # Round-18 #1: sanction the CLI-consumable custody targets so a Phase-2 key can
+    # actually be resolved for consumption (default-deny at consumption otherwise).
+    monkeypatch.setattr(
+        cv, "_SANCTIONED_CUSTODY_SERVICES",
+        frozenset({"anthropic", "claude", "claude-code", "openai", "codex"}),
+    )
 
 
 def test_subprocess_env_resolves_byo_key_per_universe_context(

@@ -242,6 +242,102 @@ def test_rollback_conditioned_on_failure():
 
 
 # ---------------------------------------------------------------------------
+# Round-18 #2 — retired-subscription migration is rollback-safe
+# ---------------------------------------------------------------------------
+
+
+def _deploy_step(wf: dict) -> dict:
+    step = next((s for s in _steps(wf) if s.get("id") == "deploy"), None)
+    assert step is not None, "deploy job must have a step with id: deploy"
+    return step
+
+
+def test_migration_runs_from_new_image_before_daemon_restart():
+    """The migration runs as a one-shot container from the NEW image against the
+    shared data volume, BEFORE the daemon restarts onto that image (round-17 #2)."""
+    wf = _load()
+    run_script = _deploy_step(wf).get("run", "") or ""
+    # The migration command is DRY'd into a MIGRATE_CMD shell var; the flags are
+    # appended (`${MIGRATE_CMD} --migrate`).
+    assert "-m tinyassets.migrations.retired_subscription_records" in run_script, (
+        "deploy must run the packaged migration module"
+    )
+    assert "${MIGRATE_CMD} --migrate" in run_script
+    assert "${MIGRATE_CMD} --inventory" in run_script
+    assert "--entrypoint python" in run_script, (
+        "migration must bypass the auth-seeding entrypoint shim (it only rewrites "
+        "vault files)"
+    )
+    assert "-v tinyassets-data:/data" in run_script, (
+        "migration must mount the shared credential data volume"
+    )
+    m_idx = run_script.find("${MIGRATE_CMD} --migrate")
+    r_idx = run_script.rfind("systemctl restart tinyassets-daemon")
+    assert m_idx != -1 and r_idx != -1 and m_idx < r_idx, (
+        "the migration must run BEFORE the daemon restart, so a migration failure "
+        "leaves the old image serving"
+    )
+
+
+def test_migration_failure_auto_rolls_back_credentials_and_aborts():
+    """Round-18 #2, failure path A: if `--migrate` fails (partial mutation of the
+    live volume), the deploy step must run `--rollback` to restore the quarantined
+    credentials and then abort (exit 1) BEFORE restarting onto the new image."""
+    wf = _load()
+    run_script = _deploy_step(wf).get("run", "") or ""
+
+    # The migrate is wrapped in an `if ! ... ; then` so failure is caught (not a
+    # bare `set -e` abort that would skip the rollback).
+    assert "if ! ${MIGRATE_CMD} --migrate" in run_script, (
+        "the migrate invocation must be guarded so its failure triggers rollback"
+    )
+    assert "${MIGRATE_CMD} --rollback" in run_script, (
+        "a migration failure must auto-run --rollback to restore credentials"
+    )
+    # Ordering: the failure-branch rollback must precede the `exit 1` abort.
+    fail_idx = run_script.find("if ! ${MIGRATE_CMD} --migrate")
+    rollback_idx = run_script.find("${MIGRATE_CMD} --rollback", fail_idx)
+    abort_idx = run_script.find("exit 1", rollback_idx)
+    assert fail_idx != -1 and rollback_idx != -1 and abort_idx != -1, (
+        "deploy must, on migrate failure: roll back credentials then exit 1"
+    )
+    assert rollback_idx < abort_idx, (
+        "credential rollback must run BEFORE the deploy aborts"
+    )
+
+
+def test_image_rollback_step_also_rolls_back_credentials():
+    """Round-18 #2, failure path B: when the image-rollback step fires (deploy
+    succeeded but a later step failed), it must ALSO restore the quarantined
+    credentials so credentials + image roll back together — using the NEW image's
+    migration module (the previous image may not ship it)."""
+    wf = _load()
+    rollback_step = next(
+        (s for s in _steps(wf) if "rollback on failure" in (s.get("name") or "").lower()),
+        None,
+    )
+    assert rollback_step is not None
+    run_script = rollback_step.get("run", "") or ""
+    step_env = rollback_step.get("env") or {}
+
+    assert "NEW_IMAGE_REF" in step_env, (
+        "the rollback step must import the new image ref to run its migration module"
+    )
+    assert (
+        "tinyassets.migrations.retired_subscription_records --rollback" in run_script
+    ), "the image-rollback step must couple a credential --rollback with the image rollback"
+    # The credential rollback must run BEFORE the previous image is pulled/restarted,
+    # so the old image boots against restored (pre-migration) credential state.
+    cred_idx = run_script.find(
+        "tinyassets.migrations.retired_subscription_records --rollback"
+    )
+    restart_idx = run_script.find("systemctl restart tinyassets-daemon")
+    assert cred_idx != -1 and restart_idx != -1 and cred_idx < restart_idx, (
+        "credential rollback must precede the previous-image restart"
+    )
+
+
+# ---------------------------------------------------------------------------
 # (i) Codex subscription auth sync
 # ---------------------------------------------------------------------------
 

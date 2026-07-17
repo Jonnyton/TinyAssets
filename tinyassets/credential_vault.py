@@ -391,14 +391,30 @@ def quarantine_legacy_subscription_records(
         qpath = universe / QUARANTINE_FILENAME
         prior: list[dict[str, Any]] = []
         if qpath.is_file():
+            # Round-18 #4: FAIL LOUD + PRESERVE a corrupt existing archive. The prior
+            # code converted a read/parse error into ``prior=[]`` and then OVERWROTE
+            # the file — destroying the corrupt bytes (which may still hold recoverable
+            # quarantined creds). Never overwrite unreadable state (same don't-destroy-
+            # on-corruption class as load_credential_vault). Raise so the operator
+            # investigates; the archive is left untouched on disk.
             try:
                 loaded = json.loads(qpath.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict) and isinstance(
-                    loaded.get("quarantined"), list
-                ):
-                    prior = loaded["quarantined"]
-            except (OSError, ValueError):
-                prior = []
+            except (OSError, ValueError) as exc:
+                raise ValueError(
+                    f"quarantine archive at {qpath} is unreadable/corrupt; refusing "
+                    "to overwrite it (preserved for recovery). Investigate + repair "
+                    f"or remove it before re-running the migration: {exc}"
+                ) from exc
+            if not (
+                isinstance(loaded, dict)
+                and isinstance(loaded.get("quarantined"), list)
+            ):
+                raise ValueError(
+                    f"quarantine archive at {qpath} has an unexpected shape; refusing "
+                    "to overwrite it (preserved for recovery). Investigate + repair "
+                    "or remove it before re-running the migration."
+                )
+            prior = loaded["quarantined"]
         # Round-17 #3: content-ID-DEDUPed union. A crash-then-retry re-reads the
         # still-present vault legacy AND the already-archived quarantine; the naive
         # ``prior + legacy`` append made TWO copies. Dedup collapses them to one.
@@ -464,12 +480,16 @@ def restore_quarantined_subscription_records(
         return {"restored": len(to_add), "quarantine_path": str(qpath)}
 
 
-#: SANCTIONED-CUSTODY registry (round-17 #5). DISTINCT from the transport mapping
-#: ``_LLM_API_KEY_ENV_BY_SERVICE`` (which providers the router CAN call once a key
-#: is present). This is the set of services the platform may accept as a credential
-#: DEPOSIT target. DEFAULT-DENY: EMPTY until a provider's custody path is EXPLICITLY
-#: approved (dedicated-key + founder consent + spend-limit + LEGAL review per the
-#: 2026-07-02 credential-custody research §2b). No provider is approved yet:
+#: SANCTIONED-CUSTODY registry (round-17 #5, extended to CONSUMPTION round-18 #1).
+#: DISTINCT from the transport mapping ``_LLM_API_KEY_ENV_BY_SERVICE`` (which
+#: providers the router CAN call once a key is present). This is the set of services
+#: whose custody the platform sanctions — gated at BOTH the DEPOSIT surface AND at
+#: CONSUMPTION (binding in engine_binding._vault_capacity + injection via
+#: resolve_llm_api_key). A service absent here can never be deposited, bound, or
+#: injected — including a legacy/manually-written record. DEFAULT-DENY: EMPTY until a
+#: provider's custody path is EXPLICITLY approved (dedicated-key + founder consent +
+#: spend-limit + LEGAL review per the 2026-07-02 credential-custody research §2b). No
+#: provider is approved yet:
 #:   - OpenAI: NOT-OFFERED — the Services Agreement prohibits transferring an API
 #:     key to a third party; consent + encryption + spend-limits do not cure it. It
 #:     needs a provider-approved delegated/service path (the GitHub-App analogue).
@@ -484,13 +504,17 @@ _SANCTIONED_CUSTODY_SERVICES: frozenset[str] = frozenset()
 
 
 def sanctioned_custody_services() -> frozenset[str]:
-    """Services whose custody path is EXPLICITLY approved as a deposit target.
+    """Services whose custody path is EXPLICITLY approved — the DEFAULT-DENY gate for
+    both deposit AND consumption (round-17 #5 / round-18 #1).
 
-    DEFAULT-DENY — empty until a provider's raw-key custody is approved (dedicated
-    key + consent + spend-limit + legal review; see the 2026-07-02 custody research
-    §2b). This is the deposit-sanction authority; it is deliberately SEPARATE from
-    the transport mapping (:func:`per_universe_byo_services`), which only says which
-    provider env var a key WOULD map to if one were present."""
+    Empty until a provider's raw-key custody is approved (dedicated key + consent +
+    spend-limit + legal review; see the 2026-07-02 custody research §2b). Enforced at
+    the deposit surface (:func:`supported_llm_api_key_services`), at binding
+    (:func:`tinyassets.engine_binding._vault_capacity`), and at injection/consumption
+    (:func:`resolve_llm_api_key`). Deliberately SEPARATE from the transport mapping
+    (:func:`per_universe_byo_services`), which only says which provider env var a key
+    WOULD map to if one were present — transport capability is NOT custody
+    sanction."""
     return _SANCTIONED_CUSTODY_SERVICES
 
 
@@ -543,14 +567,30 @@ def resolve_llm_api_key(
     var. This is the founder's BYO-engine path — the deposited key is injected
     into the CLI subprocess env so ``claude -p`` / ``codex exec`` authenticate
     with the founder's own key instead of the platform's subscription.
+
+    Round-18 #1 — DEFAULT-DENY AT CONSUMPTION: a record whose ``service`` is NOT in
+    the sanctioned-custody registry (:func:`sanctioned_custody_services`) is NEVER
+    returned, even if it is present, decodable, and transport-consumable — including
+    a LEGACY or MANUALLY-WRITTEN record. This is the single consumption chokepoint:
+    injection (the provider overlay), the routing snapshot (:func:`byo_credential_digest`),
+    the byo-bound decision (:func:`provider_is_byo_bound`) and the binding auth-health
+    probe all resolve the key HERE, so an unsanctioned key can never enter a child
+    environment or satisfy a binding. Enforcement is separate from the deposit surface
+    (which is refused entirely in Phase-1) — default-deny governs CONSUMPTION too.
     """
     if universe_dir is None:
         return ""
+    sanctioned = sanctioned_custody_services()
     for record in load_credential_vault(universe_dir):
         if record.get("credential_type") != "llm_api_key":
             continue
         service = _service(record)
         if _LLM_API_KEY_ENV_BY_SERVICE.get(service) != env_var:
+            continue
+        if service not in sanctioned:
+            # Unsanctioned custody target — never consumed (round-18 #1). A legacy /
+            # manually-written record for an unapproved provider is ignored, not
+            # injected, so consumption can never bypass the empty deposit registry.
             continue
         return _secret_value(record, "api_key", "key", "token")
     return ""

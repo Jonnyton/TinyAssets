@@ -44,7 +44,7 @@ import contextlib
 import logging
 import os
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -480,41 +480,63 @@ class _VaultScan:
     eligible_providers: set[str]
     vault_providers: set[str]
     has_unusable_vault_source: bool
+    #: Round-18 #1: the subset of ``eligible_providers`` whose vault service is in
+    #: the sanctioned-custody registry (default-deny at CONSUMPTION). ONLY these may
+    #: bind + inject; a usable-but-UNSANCTIONED key is present capacity that can never
+    #: become bound or enter a child env — including a legacy/manually-written record.
+    sanctioned_eligible_providers: set[str] = field(default_factory=set)
 
 
 def _vault_capacity(universe_dir: Path) -> _VaultScan:
-    """Scan the vault for USABLE founder BYO-API-key capacity.
+    """Scan the vault for USABLE founder BYO-API-key capacity + its SANCTIONED subset.
 
-    A BYO row counts only when it is per-universe-consumable with a decodable
+    A BYO row is USABLE capacity when it is per-universe-consumable with a decodable
     secret (:func:`_byo_row_usable`); an unusable-but-declared BYO row sets
-    ``has_unusable_vault_source`` so the caller can fail loud instead of silently
-    falling through to global auth.
+    ``has_unusable_vault_source`` so the caller can fail loud. Round-18 #1 tracks the
+    SANCTIONED-eligible providers separately (service in
+    :func:`credential_vault.sanctioned_custody_services`, default-deny): only these
+    may bind + inject, so an attested legacy/manual record for an UNAPPROVED provider
+    is present capacity that can never become bound (the caller reports it honestly,
+    without a fail-loud "broken" error). Keeping the usable-vs-sanctioned split lets
+    the caller report the accurate reason (execution-not-enabled vs custody-not-
+    sanctioned) instead of conflating an unsanctioned key with a missing/broken one.
 
     ``llm_subscription`` vault rows are DELIBERATELY ignored: founder subscription
     custody is a BLOCKED lane (2026-07-02 custody research §0/§4). A legacy
     subscription row therefore reads as NOT founder capacity and never fails loud.
     Propagates :class:`ValueError` (malformed vault) so the caller can fail loud.
     """
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import (
+        load_credential_vault,
+        sanctioned_custody_services,
+    )
 
     records = load_credential_vault(universe_dir)  # raises ValueError if malformed
+    sanctioned = sanctioned_custody_services()
     kinds: list[str] = []
     eligible: set[str] = set()
     vault_providers: set[str] = set()
+    sanctioned_eligible: set[str] = set()
     has_unusable = False
     for record in records:
         if record.get("credential_type") != "llm_api_key":
             continue  # llm_subscription (blocked lane), vcs, social → not engine capacity
         svc = str(record.get("service") or record.get("provider") or "").strip().lower()
-        if _byo_row_usable(record, svc):
-            kinds.append("byo_api_key")
-            provider = _SERVICE_TO_PROVIDER.get(svc)
-            if provider:
-                eligible.add(provider)
-                vault_providers.add(provider)
-        else:
+        if not _byo_row_usable(record, svc):
             has_unusable = True
-    return _VaultScan(kinds, eligible, vault_providers, has_unusable)
+            continue
+        kinds.append("byo_api_key")
+        provider = _SERVICE_TO_PROVIDER.get(svc)
+        if provider:
+            eligible.add(provider)
+            vault_providers.add(provider)
+            # Round-18 #1: sanctioned-eligible = usable AND custody-approved. Only
+            # these may bind/inject (matches the resolve_llm_api_key gate).
+            if svc in sanctioned:
+                sanctioned_eligible.add(provider)
+    return _VaultScan(
+        kinds, eligible, vault_providers, has_unusable, sanctioned_eligible,
+    )
 
 
 def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
@@ -608,10 +630,26 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
                 "required first; run the daemon on your own device to use your "
                 "key now"
             )
+        elif not scan.sanctioned_eligible_providers:
+            # Round-18 #1: execution is attested, but NO usable key's provider is a
+            # sanctioned custody target (default-deny at CONSUMPTION). The key is
+            # never bound and never injected (the resolve_llm_api_key gate mirrors
+            # this) — even a legacy/manually-written attested record. Honestly
+            # not-bound, NOT a fail-loud "broken key" (it may be perfectly valid,
+            # just for an unapproved provider).
+            reason = (
+                "a BYO API key is present but its provider's custody is not a "
+                "sanctioned target yet (default-deny) — the platform does not yet "
+                "custody and execute this provider's keys; run the daemon on your "
+                "own device to use your key now"
+            )
         else:
             healthy: set[str] = set()
             try:
-                for provider in scan.eligible_providers:
+                # Only SANCTIONED-eligible providers may bind (round-18 #1); an
+                # unsanctioned provider's key never resolves (resolve_llm_api_key
+                # gate) so it could never be healthy anyway.
+                for provider in scan.sanctioned_eligible_providers:
                     if provider not in _EXECUTABLE_BYO_PROVIDERS:
                         continue  # codex BYO is declared-not-executable (F1)
                     if _byo_key_auth_health(provider, udir) == "ok":
@@ -635,15 +673,15 @@ def resolve_engine_binding(universe_dir: str | Path) -> EngineBinding:
                 )
             # Round-12 #4: distinguish "lane DECLARED but BROKEN credential" from
             # "no lane declared" / "declared-not-executable idle". When the founder
-            # EXPLICITLY declared engine_source=byo_api_key AND an executable
-            # provider's key (claude-code) is PRESENT but failed auth-health
-            # (malformed / not a well-formed sk-ant- key), the declared lane is
-            # MISCONFIGURED — fail loud so the router FAILS CLOSED
+            # EXPLICITLY declared engine_source=byo_api_key AND a SANCTIONED
+            # executable provider's key (claude-code) is PRESENT but failed
+            # auth-health (malformed / not a well-formed sk-ant- key), the declared
+            # lane is MISCONFIGURED — fail loud so the router FAILS CLOSED
             # (AllProvidersExhausted) instead of silently borrowing the full
             # platform fallback chain. An UNDECLARED universe with a stray broken
             # key stays idle (ambient) — it never declared a BYO lane to honor.
             if declared_source == "byo_api_key" and (
-                scan.eligible_providers & _EXECUTABLE_BYO_PROVIDERS
+                scan.sanctioned_eligible_providers & _EXECUTABLE_BYO_PROVIDERS
             ):
                 raise EngineMisconfiguredError(
                     universe_id, declared_source,

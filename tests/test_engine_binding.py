@@ -29,12 +29,23 @@ _VALID_ANTHROPIC_KEY = "sk-ant-api03-" + "A" * 40
 def byo_enabled(monkeypatch):
     """Simulate Phase-2: enable the executable BYO path. This requires BOTH the
     operator flag AND the code-backed encryption-capability attestation (which is
-    False in this deploy — the flag alone cannot unlock plaintext, C4)."""
+    False in this deploy — the flag alone cannot unlock plaintext, C4).
+
+    Round-18 #1: also sanction the CLI-consumable custody targets (Phase-2 is when a
+    provider's custody is approved), so an attested valid key can actually bind. The
+    default-deny-at-consumption path is covered explicitly by
+    ``test_r18_1_attested_unsanctioned_key_is_never_bound`` (attestation on, sanction
+    OFF)."""
+    import tinyassets.credential_vault as cv
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
     monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
     monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    monkeypatch.setattr(
+        cv, "_SANCTIONED_CUSTODY_SERVICES",
+        frozenset({"anthropic", "claude", "claude-code", "openai", "codex"}),
+    )
 
 
 def test_r14_4_byo_execution_dark_until_sandbox_attested(tmp_path, monkeypatch):
@@ -121,6 +132,29 @@ def _valid_anthropic_vault(udir):
         "secret_b64": base64.b64encode(_VALID_ANTHROPIC_KEY.encode()).decode("ascii"),
     }])
     write_universe_config_fields(udir, engine_source="byo_api_key")
+
+
+def test_r18_1_attested_unsanctioned_key_is_never_bound(tmp_path, monkeypatch):
+    """Round-18 #1: DEFAULT-DENY AT CONSUMPTION. Even with the encryption + sandbox
+    attestation seams enabled (Phase-2 simulated), a valid BYO key whose provider is
+    NOT in the sanctioned-custody registry (empty by default) can NEVER become bound —
+    legacy/manually-written records included. It reads as honestly not-bound with a
+    custody-not-sanctioned reason, NOT a fail-loud broken-key error and NOT bound."""
+    import tinyassets.engine_binding as eb
+
+    # Attestation ON (Phase-2), but sanction OFF — the registry stays default-deny.
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+    monkeypatch.setattr(
+        eb, "_vault_encryption_capability_attested", lambda *a, **k: True,
+    )
+    monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    udir = tmp_path / "u-unsanctioned"
+    udir.mkdir()
+    _valid_anthropic_vault(udir)  # engine_source=byo_api_key + a valid sk-ant- key
+    binding = resolve_engine_binding(udir)  # must NOT raise (it isn't "broken")
+    assert binding.bound is False
+    assert "sanctioned" in binding.reason.lower()
+    assert binding.eligible_providers == frozenset()
 
 
 def test_byo_anthropic_key_is_bound_when_encryption_gate_on(tmp_path, byo_enabled):

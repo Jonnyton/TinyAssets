@@ -614,6 +614,12 @@ class ProviderRouter:
                 )
                 chain = auth_alive
 
+        # Round-18 #3: retired-lane / credential-integrity errors are TERMINAL — a
+        # universe holding a retired-lane credential must FAIL the whole routing op,
+        # never fall through to another provider on ambient auth. Imported here (lazy)
+        # to match the router's credential_vault import style.
+        from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
         for provider_name in chain:
             provider = self._providers.get(provider_name)
             if provider is None:
@@ -641,6 +647,19 @@ class ProviderRouter:
                     prompt, system, cfg, universe_dir=universe_dir,
                 )
                 self._quota.record_success(provider_name)
+            except RetiredSubscriptionLaneError:
+                # Round-18 #3: TERMINAL. The universe's vault holds a credential from a
+                # RETIRED lane the platform must never consume. Do NOT treat this as an
+                # ordinary provider failure and continue to the next provider (which
+                # would silently route, e.g., a legacy Claude record through ambient
+                # Codex). FAIL the whole routing operation closed (Hard Rule #8) — no
+                # later provider is tried. Re-raise so the caller surfaces it loudly.
+                logger.error(
+                    "Retired-lane credential encountered while routing role=%s via "
+                    "%s — TERMINAL routing failure (no fallback).",
+                    role, provider_name,
+                )
+                raise
             except ProviderUnavailableError as exc:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(

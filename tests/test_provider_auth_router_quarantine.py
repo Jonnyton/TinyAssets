@@ -231,13 +231,36 @@ def test_pinned_healthy_writer_runs(isolated_universe_config):
 # ---------------------------------------------------------------------------
 
 
-def _enable_byo(monkeypatch):
-    """Simulate Phase-2: executable BYO on (flag + code-backed attestation)."""
+#: CLI-consumable custody services a Phase-2 test-world sanctions (round-18 #1).
+_TEST_SANCTIONED_CLI_SERVICES = frozenset(
+    {"anthropic", "claude", "claude-code", "openai", "codex"}
+)
+
+
+def _sanction_cli_custody(monkeypatch, *services):
+    """Mark *services* (default: the CLI-consumable set) as sanctioned custody
+    targets — simulating a future host approval (round-18 #1). Auto-restored by
+    monkeypatch teardown, so default-deny stands in every other test."""
+    import tinyassets.credential_vault as cv
+
+    chosen = frozenset(services) if services else _TEST_SANCTIONED_CLI_SERVICES
+    monkeypatch.setattr(cv, "_SANCTIONED_CUSTODY_SERVICES", chosen)
+
+
+def _enable_byo(monkeypatch, *, sanction=True):
+    """Simulate Phase-2: executable BYO on (flag + code-backed attestation).
+
+    Round-18 #1: ALSO sanction the CLI-consumable custody targets by default, since
+    Phase-2 is when a provider's custody is approved. Pass ``sanction=False`` to
+    prove default-deny AT CONSUMPTION — an attested-but-UNSANCTIONED key must never
+    bind or enter a child environment."""
     import tinyassets.engine_binding as eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     monkeypatch.setattr(eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
     monkeypatch.setattr(eb, "_sandbox_execution_attested", lambda: True)
+    if sanction:
+        _sanction_cli_custody(monkeypatch)
 
 
 def _byo_claude_universe(tmp_path):
@@ -1146,3 +1169,72 @@ def test_r17_4_snapshot_lane_aware_byo_lane_still_pins(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
     with pin_byo_execution_snapshot(udir) as snap:
         assert snap.credential_digest is not None
+
+
+def test_r18_1_attested_unsanctioned_key_never_injected(tmp_path, monkeypatch):
+    """Round-18 #1: DEFAULT-DENY AT INJECTION. An attested BYO key on the byo lane
+    whose provider is UNSANCTIONED (default-deny registry) never resolves for
+    consumption — not byo-bound, never injected, ambient auth NOT scrubbed. Even a
+    legacy/manually-written record. Companion to the binding regression: enforce at
+    injection, not only the (nonexistent) deposit surface."""
+    import base64
+
+    from tinyassets.credential_vault import (
+        provider_auth_env_overrides,
+        resolve_llm_api_key,
+        write_credential_vault,
+    )
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    _enable_byo(monkeypatch, sanction=False)  # attestation ON, sanction OFF
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "platform-oauth")  # ambient login
+    udir = tmp_path / "u-unsanctioned-inject"
+    udir.mkdir()
+    (udir / "config.yaml").write_text(
+        "engine_source: byo_api_key\n", encoding="utf-8"
+    )
+    write_credential_vault(udir, [{
+        "credential_type": "llm_api_key", "service": "anthropic",
+        "secret_b64": base64.b64encode(
+            ("sk-ant-api03-" + "A" * 40).encode()).decode("ascii"),
+    }])
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+
+    # The consumption chokepoint: an unsanctioned service never resolves a key.
+    assert resolve_llm_api_key(udir, "ANTHROPIC_API_KEY") == ""
+    assert "ANTHROPIC_API_KEY" not in provider_auth_env_overrides(udir, "claude-code")
+    env = subprocess_env_for_provider("claude-code", universe_dir=udir)
+    # Not byo-bound → not hardened, and the key never entered the child env.
+    assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in env
+    assert env.get("ANTHROPIC_API_KEY") != "sk-ant-api03-" + "A" * 40
+    # Ambient auth is untouched (the unsanctioned key is simply ignored).
+    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "platform-oauth"
+
+
+def test_r18_3_retired_lane_error_is_terminal_no_fallback(isolated_universe_config):
+    """Round-18 #3: a RetiredSubscriptionLaneError raised by the first provider (its
+    env resolution hit a retired-lane vault record) is TERMINAL — the router FAILS the
+    whole routing operation and does NOT fall through to the next provider on ambient
+    auth (which would silently route, e.g., a legacy Claude record through ambient
+    Codex). No subsequent provider is invoked (the whole point of retiring the lane)."""
+    from tinyassets.credential_vault import RetiredSubscriptionLaneError
+
+    class _RetiredLaneProvider(_FakeProvider):
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            self.call_count += 1
+            raise RetiredSubscriptionLaneError("claude", "/u/legacy")
+
+    providers = {
+        "claude-code": _RetiredLaneProvider("claude-code"),
+        "codex": _FakeProvider("codex"),
+        "ollama-local": _FakeProvider("ollama-local"),
+    }
+    router = ProviderRouter(
+        providers=providers, quota=QuotaTracker(), auth_health=_auth_probe(set()),
+    )
+    with pytest.raises(RetiredSubscriptionLaneError):
+        _run(router.call("writer", "p", "s"))
+    assert providers["claude-code"].call_count == 1  # first provider was tried
+    assert providers["codex"].call_count == 0  # TERMINAL — no ambient-Codex fallback
+    assert providers["ollama-local"].call_count == 0

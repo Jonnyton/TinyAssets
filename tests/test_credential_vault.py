@@ -339,3 +339,51 @@ def test_r17_3_migration_creates_serializing_lock(tmp_path):
     ])
     cv.quarantine_legacy_subscription_records(tmp_path)
     assert (tmp_path / cv.VAULT_LOCK_FILENAME).exists()
+
+
+# ── Corrupt-quarantine preservation (round-18 #4) ────────────────────────────
+
+
+def test_r18_4_migration_preserves_corrupt_quarantine_archive(tmp_path):
+    """Round-18 #4: an UNREADABLE existing quarantine archive must be PRESERVED, not
+    overwritten. The migration FAILS LOUD (ValueError) and leaves the corrupt bytes
+    intact for recovery — the prior code silently converted the parse error to
+    ``prior=[]`` and then replaced the file, destroying recoverable creds."""
+    import tinyassets.credential_vault as cv
+
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": "legacy"},
+    ])
+    qpath = tmp_path / cv.QUARANTINE_FILENAME
+    corrupt = "{ this is NOT valid json <<< recoverable-cred-bytes"
+    qpath.write_text(corrupt, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unreadable|corrupt|refusing"):
+        cv.quarantine_legacy_subscription_records(tmp_path)
+
+    # The corrupt archive is PRESERVED byte-for-byte (never overwritten).
+    assert qpath.read_text(encoding="utf-8") == corrupt
+    # And the migration did NOT half-run: the vault still holds the legacy record.
+    assert cv.has_legacy_subscription_records(tmp_path) is True
+
+
+def test_r18_4_migration_preserves_wrong_shape_quarantine_archive(tmp_path):
+    """Round-18 #4: a quarantine archive that parses as JSON but has the WRONG SHAPE
+    (not a {quarantined: list} object) is also preserved + fails loud, not silently
+    treated as empty and overwritten."""
+    import tinyassets.credential_vault as cv
+
+    write_credential_vault(tmp_path, [
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": "legacy"},
+    ])
+    qpath = tmp_path / cv.QUARANTINE_FILENAME
+    wrong_shape = '{"quarantined": "not-a-list"}'
+    qpath.write_text(wrong_shape, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected shape|refusing"):
+        cv.quarantine_legacy_subscription_records(tmp_path)
+
+    assert qpath.read_text(encoding="utf-8") == wrong_shape
+    assert cv.has_legacy_subscription_records(tmp_path) is True

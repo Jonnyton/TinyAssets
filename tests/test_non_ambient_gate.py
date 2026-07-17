@@ -71,11 +71,18 @@ def _no_pinned_writer(monkeypatch):
     # Simulate Phase-2 so a bound universe can actually be bound: the executable
     # BYO path needs BOTH the flag AND the code-backed encryption attestation
     # (DARK by default — C4). Harmless for unbound-universe tests.
+    import tinyassets.credential_vault as _cv
     import tinyassets.engine_binding as _eb
 
     monkeypatch.setenv("TINYASSETS_BYO_VAULT_ENCRYPTED", "1")
     monkeypatch.setattr(_eb, "_vault_encryption_capability_attested", lambda *a, **k: True)
     monkeypatch.setattr(_eb, "_sandbox_execution_attested", lambda: True)
+    # Round-18 #1: sanction the CLI-consumable custody targets so a Phase-2 bound
+    # universe can actually consume its key (default-deny at consumption otherwise).
+    monkeypatch.setattr(
+        _cv, "_SANCTIONED_CUSTODY_SERVICES",
+        frozenset({"anthropic", "claude", "claude-code", "openai", "codex"}),
+    )
 
 
 def _unbound_universe(tmp_path):
