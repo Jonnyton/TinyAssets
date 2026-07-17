@@ -33,12 +33,14 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import crypto, leases, record
+from . import crypto, grants, leases, record
 from .attestation import AttestationResult, attest_store
 from .crypto import Envelope, KeyProvider
 from .errors import CredentialUnavailable, VaultErrorCode
+from .grants import JobGrant
 from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import platform_vault_db_path
+from .rollback import EpochMirror, mirror_filename
 from .secret_bytes import SecretBytes, SecretLease, require_nonempty_bounded
 from .types import (
     ROTATING_TOKEN_KINDS,
@@ -105,6 +107,28 @@ class PlatformVaultBackend:
         self._attested: bool | None = None
         self._initialized = False
         self._leases = RefreshLeaseManager(self._connect)
+        # Anti-rollback epoch mirror OUTSIDE the DB file (a sibling subdir of the
+        # DB's directory) so a restore of the DB file leaves the mirror ahead;
+        # kept under the DB's own directory so it is isolated per store location.
+        self._epoch = EpochMirror(
+            self._db_path.parent / ".credential-vault-epoch" / mirror_filename(store_id)
+        )
+
+    def _require_no_rollback(self, conn: sqlite3.Connection | None = None) -> None:
+        """Raise REAUTHORIZATION_REQUIRED if the store was restored from an older
+        snapshot (DB epoch behind the external mirror) — the honest guarantee."""
+        if conn is not None:
+            db_epoch = leases.read_epoch(conn)
+        else:
+            self.initialize()
+            c = self._connect()
+            try:
+                db_epoch = leases.read_epoch(c)
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    c.close()
+        if self._epoch.is_rolled_back(db_epoch):
+            raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED)
 
     # ------------------------------------------------------------------
     # connection + schema
@@ -176,6 +200,7 @@ class PlatformVaultBackend:
         try:
             conn.executescript(_SCHEMA)
             conn.executescript(leases.LEASE_SCHEMA)
+            conn.executescript(grants.GRANTS_SCHEMA)
         except sqlite3.Error:
             self._attested = None
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
@@ -258,6 +283,7 @@ class PlatformVaultBackend:
     def get(self, binding: SecretBinding, expected: SecretScope) -> SecretLease:
         self._require_platform_store(binding.store)
         self._ensure_attested()
+        self._require_no_rollback()  # restored (rolled-back) store → forced reauth
         return self._get(binding, expected)
 
     def delete(self, binding: SecretBinding, expected: SecretScope) -> None:
@@ -337,9 +363,11 @@ class PlatformVaultBackend:
         expires_at: float | None,
         fence: RefreshLease | None = None,
         ticket: RefreshTicket | None = None,
+        bump: bool = True,
     ) -> SecretDescriptor:
         self.initialize()
         conn = self._connect()
+        new_epoch: int | None = None
         try:
             conn.execute("BEGIN IMMEDIATE")
             now = time.time()
@@ -430,6 +458,8 @@ class PlatformVaultBackend:
                 )
                 if cur.rowcount != 1:
                     raise CredentialUnavailable(VaultErrorCode.VERSION_CONFLICT, ref)
+            if bump:
+                new_epoch = leases.bump_epoch(conn)  # anti-rollback (skipped by probes)
             conn.execute("COMMIT")
         except sqlite3.Error:
             with contextlib.suppress(sqlite3.Error):
@@ -442,6 +472,8 @@ class PlatformVaultBackend:
             raise
         finally:
             conn.close()
+        if new_epoch is not None:
+            self._epoch.advance(new_epoch)  # mirror the epoch outside the snapshot
 
         binding = SecretBinding(ref=ref, kind=kind, scope=scope, store=store)
         return SecretDescriptor(
@@ -492,6 +524,7 @@ class PlatformVaultBackend:
             raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
         self.initialize()
         conn = self._connect()
+        new_epoch: int | None = None
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -512,6 +545,7 @@ class PlatformVaultBackend:
                 # Ephemeral attestation probes pass tombstone=False so they do not
                 # accumulate permanent tombstone rows.
                 leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
+            new_epoch = leases.bump_epoch(conn) if tombstone else None
             conn.execute("COMMIT")
         except sqlite3.Error:
             with contextlib.suppress(sqlite3.Error):
@@ -524,6 +558,8 @@ class PlatformVaultBackend:
             raise
         finally:
             conn.close()
+        if new_epoch is not None:
+            self._epoch.advance(new_epoch)
 
     # ------------------------------------------------------------------
     # Fenced exclusive per-ref refresh lease
@@ -550,7 +586,9 @@ class PlatformVaultBackend:
                     ticket = be.begin_refresh(binding, scope, holder, at_version=current)
                     if ticket is not None:
                         new = provider_refresh(...)      # the ONE redemption
-                        be.put(replace=ref, expected_version=ticket.version, value=new)
+                        # complete_refresh — NOT put(replace); a rotating-token
+                        # kind is only advanceable through the ticket-bound path.
+                        be.complete_refresh(binding, scope, ticket, value=new)
         """
         self.initialize()
         return self._leases.acquire(ref, holder, ttl=ttl, wait=wait, poll=poll)
@@ -593,8 +631,10 @@ class PlatformVaultBackend:
         conn = self._connect()
         secret: bytes | None = None
         won = False
+        new_epoch: int | None = None
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._require_no_rollback(conn)  # restored store → forced reauth
             row = conn.execute(
                 "SELECT * FROM vault_secrets WHERE ref = ?", (binding.ref,)
             ).fetchone()
@@ -614,6 +654,8 @@ class PlatformVaultBackend:
                     conn, binding.ref, version, holder, time.time(),
                     leases.capability_hash(secret),
                 )
+                if won:
+                    new_epoch = leases.bump_epoch(conn)
             conn.execute("COMMIT")
         except sqlite3.Error:
             with contextlib.suppress(sqlite3.Error):
@@ -626,6 +668,8 @@ class PlatformVaultBackend:
             raise
         finally:
             conn.close()
+        if new_epoch is not None:
+            self._epoch.advance(new_epoch)
         if not won:
             return None
         return RefreshTicket(
@@ -662,6 +706,108 @@ class PlatformVaultBackend:
         )
 
     # ------------------------------------------------------------------
+    # Job-scoped grants (S3 executor-boundary primitive)
+    # ------------------------------------------------------------------
+    def mint_job_grant(
+        self,
+        binding: SecretBinding,
+        expected: SecretScope,
+        run_id: str,
+        *,
+        ttl: float = 3600.0,
+    ) -> JobGrant:
+        """Mint an OPAQUE, single job-scoped grant for an isolated worker (S3).
+
+        Derived from the authoritative run: the grant binds ``run_id`` and the
+        credential's ``universe_id`` so a worker can resolve the credential
+        without holding a raw, forgeable ``universe_id`` or the ``ref``.
+        Authenticates the record first (a grant is never minted for a
+        missing/invalid credential).
+        """
+        self._require_platform_store(binding.store)
+        self._ensure_attested()
+        self._require_no_rollback()
+        if not run_id or not isinstance(run_id, str) or "\n" in run_id:
+            raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
+        # Authenticate the credential exists + is active (zero the revealed value).
+        self._get(binding, expected).zero()
+        grant_id = grants.new_grant_id()
+        secret = grants.mint_capability()
+        self.initialize()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            grants.store_grant(
+                conn, grant_id=grant_id, cap_hash=grants.capability_hash(secret),
+                ref=binding.ref, founder_id=expected.founder_id,
+                universe_id=expected.universe_id, provider=expected.provider,
+                destination=expected.destination, purpose=expected.purpose,
+                kind=binding.kind.value, run_id=run_id, expires_at=time.time() + ttl,
+            )
+            conn.execute("COMMIT")
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return JobGrant(
+            grant_id=grant_id, run_id=run_id,
+            universe_id=expected.universe_id, secret=secret,
+        )
+
+    def resolve_job_grant(
+        self, grant: JobGrant, run_id: str, universe_id: str
+    ) -> SecretLease:
+        """Resolve a job grant to a credential lease, failing CLOSED.
+
+        The worker presents the opaque grant plus its OWN authoritative
+        ``run_id``/``universe_id`` (from the run record, not the grant). Rejects
+        (typed) a missing/malformed grant, a bad capability, a wrong run, a
+        cross-universe mismatch, or an expired grant.
+        """
+        self._ensure_attested()
+        self._require_no_rollback()
+        if not grants.is_grant_id(grant.grant_id):
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
+        self.initialize()
+        conn = self._connect()
+        try:
+            row = grants.read_grant(conn, grant.grant_id)
+        except sqlite3.Error:
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        if row is None:
+            raise CredentialUnavailable(VaultErrorCode.NOT_FOUND)
+        if not grants.capability_matches(row["capability_hash"], grant._reveal_capability()):
+            raise CredentialUnavailable(VaultErrorCode.LEASE_LOST)
+        if row["run_id"] != run_id or grant.run_id != run_id:
+            # wrong / forged run — a grant is usable only by its own job
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
+        if row["universe_id"] != universe_id:
+            # cross-universe resolution is forbidden
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
+        if float(row["expires_at"]) <= time.time():
+            raise CredentialUnavailable(VaultErrorCode.EXPIRED)
+        scope = SecretScope(
+            founder_id=row["founder_id"], universe_id=row["universe_id"],
+            provider=row["provider"], destination=row["destination"],
+            purpose=row["purpose"],
+        )
+        resolved = SecretBinding(
+            ref=row["ref"], kind=SecretKind(row["kind"]), scope=scope, store=self._probe_store()
+        )
+        return self._get(resolved, scope)
+
+    # ------------------------------------------------------------------
     # KEK rotation (verified)
     # ------------------------------------------------------------------
     def rotate_kek(self, new_key_id: str) -> int:
@@ -675,10 +821,9 @@ class PlatformVaultBackend:
         """
         self.initialize()
         if self._keys.active_key_id() != new_key_id:
-            raise ValueError(
-                "rotate_kek requires new_key_id to be the active write key; "
-                "mark it active before rotating"
-            )
+            # Typed: rotating to a non-active key would leave future writes on the
+            # old key (a false success). Mark it active before rotating.
+            raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
         gate = self.attest()
         if not gate.ok:
             raise CredentialUnavailable(VaultErrorCode.ATTESTATION_FAILED)
@@ -757,7 +902,7 @@ class PlatformVaultBackend:
     def _probe_put(self, scope: SecretScope, value: bytes) -> SecretDescriptor:
         return self._put(
             self._probe_store(), scope, SecretKind.API_KEY, SecretBytes(value),
-            None, None, None,
+            None, None, None, bump=False,  # ephemeral probe must not advance the epoch
         )
 
     def _probe_get(self, binding: SecretBinding, expected: SecretScope) -> bytes:

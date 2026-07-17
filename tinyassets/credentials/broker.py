@@ -14,8 +14,14 @@ Contract highlights:
     ``complete_refresh`` are the sanctioned consume-before-mint pair. Integrations
     (S4/S5) MUST refresh one-time tokens through them — a plain CAS cannot advance
     a refresh without the durable ticket, so bypass is structurally prevented.
-  * every failure is :class:`CredentialUnavailable`; ``""``/``None``/ambient
-    fallbacks are forbidden.
+  * every broker-METHOD failure is :class:`CredentialUnavailable` (invalid
+    arguments — empty/oversized payload, bad CAS pairing, inactive rotation key —
+    are ``INVALID_ARGUMENT``); ``""``/``None``/ambient fallbacks are forbidden.
+    Explicitly NARROWED: value-type CONSTRUCTION validates its own invariants —
+    ``VaultStore``/``SecretBytes`` raise ``ValueError``/``TypeError`` on malformed
+    construction, and the bearer-capability types (``RefreshTicket``/``JobGrant``)
+    raise ``TypeError`` on pickle/copy by design (non-observable). Those are not
+    broker calls.
   * the binding's discriminated ``store`` selects exactly ONE backend; the
     backend re-derives/verifies ref/kind/scope from protected contents.
 """

@@ -47,6 +47,7 @@ from .crypto import identity_aad
 from .errors import CredentialUnavailable, VaultErrorCode
 from .leases import RefreshLease, RefreshLeaseManager, RefreshTicket
 from .paths import local_store_dir
+from .rollback import EpochMirror, mirror_filename
 from .secret_bytes import SecretBytes, SecretLease, require_nonempty_bounded
 from .types import (
     ROTATING_TOKEN_KINDS,
@@ -307,6 +308,45 @@ class DpapiVaultBackend:
         self._attested: bool | None = None
         self._control_db = self._dir / "_control.db"
         self._leases = RefreshLeaseManager(self._control_connect)
+        # Anti-rollback epoch mirror OUTSIDE the credential-store directory so a
+        # full-directory restore leaves the control-DB epoch behind the mirror.
+        self._epoch = EpochMirror(
+            self._dir.parent.parent / ".credential-vault-epoch" / mirror_filename(store_id)
+        )
+
+    def _all_version_paths(self, ref: str) -> list[Path]:
+        """Every on-disk versioned sidecar for a ref (for durable GC)."""
+        try:
+            return sorted(self._dir.glob(f"{_ref_tail(ref)}.v*.json"))
+        except OSError:
+            return []
+
+    def _gc_versions(self, ref: str, keep: int | None) -> None:
+        """Remove EVERY versioned sidecar for ``ref`` except ``keep`` (best-effort).
+
+        Called on rotation (keep new) and deletion (keep None) so old encrypted
+        blobs do not survive; any that stay locked are retried on the next access.
+        """
+        keep_name = _ref_filename(ref, keep) if keep is not None else None
+        for path in self._all_version_paths(ref):
+            if keep_name is not None and path.name == keep_name:
+                continue
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+    def _require_no_rollback(self, conn: sqlite3.Connection | None = None) -> None:
+        if conn is not None:
+            db_epoch = leases.read_epoch(conn)
+        else:
+            self._leases.ensure_schema()
+            c = self._control_connect()
+            try:
+                db_epoch = leases.read_epoch(c)
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    c.close()
+        if self._epoch.is_rolled_back(db_epoch):
+            raise CredentialUnavailable(VaultErrorCode.REAUTHORIZATION_REQUIRED)
 
     @property
     def store_id(self) -> str:
@@ -415,6 +455,7 @@ class DpapiVaultBackend:
         self._require_available()
         self._require_local_store(binding.store)
         self._ensure_attested()
+        self._require_no_rollback()  # restored (rolled-back) store → forced reauth
         return self._get(binding, expected)
 
     def delete(self, binding: SecretBinding, expected: SecretScope) -> None:
@@ -559,8 +600,9 @@ class DpapiVaultBackend:
         expires_at: float | None,
         fence: RefreshLease | None = None,
         ticket: RefreshTicket | None = None,
+        bump: bool = True,
     ) -> SecretDescriptor:
-        old_version: int | None = None
+        new_epoch: int | None = None
         try:
             # Whole mutation under an exclusive control-DB lock. The versioned
             # sidecar write is SUBORDINATE; the control-DB commit (which advances
@@ -581,7 +623,6 @@ class DpapiVaultBackend:
                     live = leases.get_live_version(conn, ref)
                     if live is None:
                         raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
-                    old_version = live
                     existing_sidecar = self._read_sidecar(ref, live)
                     if existing_sidecar is None:
                         raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, ref)
@@ -614,17 +655,19 @@ class DpapiVaultBackend:
                 )
                 self._write_sidecar(ref, version, sidecar)  # inert until commit
                 leases.set_live_version(conn, ref, version)  # atomic commit point
+                if bump:
+                    new_epoch = leases.bump_epoch(conn)  # anti-rollback (skip on probe)
         except CredentialUnavailable:
             raise
         except sqlite3.Error:
             self._attested = None
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
 
-        # Commit succeeded — the new version is authoritative. Clean up the OLD
-        # versioned sidecar (best-effort; an orphan is harmless, never live).
-        if old_version is not None:
-            with contextlib.suppress(OSError):
-                os.remove(self._blob_path(ref, old_version))
+        # Commit succeeded — the new version is authoritative.
+        if new_epoch is not None:
+            self._epoch.advance(new_epoch)
+        # Durable GC: remove EVERY non-live versioned sidecar (not just old_version).
+        self._gc_versions(ref, keep=version)
 
         binding = SecretBinding(ref=ref, kind=kind, scope=scope, store=store)
         return SecretDescriptor(
@@ -686,7 +729,8 @@ class DpapiVaultBackend:
         # pointer + optional tombstone) FIRST, then remove the sidecar files. A
         # crash between leaves the ref not-live (control DB authoritative) and,
         # with the tombstone, never re-claimable.
-        removed_versions: list[int] = []
+        new_epoch: int | None = None
+        did_delete = False
         try:
             with self._leases.mutation_lock() as conn:
                 live = leases.get_live_version(conn, binding.ref)
@@ -703,17 +747,20 @@ class DpapiVaultBackend:
                 )
                 if tombstone:
                     leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
+                    new_epoch = leases.bump_epoch(conn)
                 leases.clear_live_version(conn, binding.ref)
-                removed_versions.append(live)
+                did_delete = True
         except CredentialUnavailable:
             raise
         except sqlite3.Error:
             self._attested = None
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
-        # control-DB state committed durably — sidecar removal is secondary
-        for v in removed_versions:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(self._blob_path(binding.ref, v))
+        # control-DB state committed durably — now GC EVERY versioned sidecar for
+        # the ref (durable, not just the live one), so no old encrypted blob stays.
+        if new_epoch is not None:
+            self._epoch.advance(new_epoch)
+        if did_delete:
+            self._gc_versions(binding.ref, keep=None)
 
     # ------------------------------------------------------------------
     # Fenced exclusive per-ref refresh lease
@@ -759,8 +806,10 @@ class DpapiVaultBackend:
             at_version = int(at_version)
         except (TypeError, ValueError):
             raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD, binding.ref) from None
+        new_epoch: int | None = None
         try:
             with self._leases.mutation_lock() as conn:
+                self._require_no_rollback(conn)  # restored store → forced reauth
                 if leases.is_deleted(conn, binding.ref):
                     # deleted ref — a restored sidecar cannot be refreshed
                     raise CredentialUnavailable(VaultErrorCode.NOT_FOUND, binding.ref)
@@ -791,11 +840,15 @@ class DpapiVaultBackend:
                     conn, binding.ref, version, holder, time.time(),
                     leases.capability_hash(secret),
                 )
+                if won:
+                    new_epoch = leases.bump_epoch(conn)
         except CredentialUnavailable:
             raise
         except sqlite3.Error:
             self._attested = None
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        if new_epoch is not None:
+            self._epoch.advance(new_epoch)
         if not won:
             return None
         return RefreshTicket(
@@ -833,7 +886,7 @@ class DpapiVaultBackend:
     def _probe_put(self, scope: SecretScope, value: bytes) -> SecretDescriptor:
         return self._put(
             self._probe_store(), scope, SecretKind.API_KEY, SecretBytes(value),
-            None, None, None,
+            None, None, None, bump=False,  # ephemeral probe must not advance the epoch
         )
 
     def _probe_get(self, binding: SecretBinding, expected: SecretScope) -> bytes:
