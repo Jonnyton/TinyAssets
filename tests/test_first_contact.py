@@ -619,11 +619,18 @@ def test_r22_3_create_failure_after_acl_grant_rolls_back_all_state(
 
     _login("founder-late")
 
-    def _boom(*_a, **_k):
-        raise RuntimeError("set_founder_home failed AFTER the ACL grant")
-
-    # set_founder_home runs AFTER ensure_universe_registered + grant_universe_access.
-    monkeypatch.setattr(ds, "set_founder_home", _boom)
+    ds.initialize_author_server(data_dir)
+    with ds._connect(data_dir) as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER fail_late_acl_insert
+            BEFORE INSERT ON universe_acl
+            WHEN NEW.universe_id = 'u-late-fail'
+            BEGIN
+                SELECT RAISE(FAIL, 'injected late create failure');
+            END
+            """
+        )
 
     with pytest.raises(RuntimeError):
         _action_create_universe(universe_id="u-late-fail")
@@ -635,3 +642,70 @@ def test_r22_3_create_failure_after_acl_grant_rolls_back_all_state(
         ds.get_universe(data_dir, universe_id="u-late-fail")
     # ACL grant rolled back (no orphan row).
     assert ds.list_universe_acl(data_dir, universe_id="u-late-fail") == []
+
+
+def test_r23_create_transaction_preserves_preexisting_orphan_rows(
+    data_dir,
+):
+    import tinyassets.daemon_server as ds
+    from tinyassets.api.universe import _action_create_universe
+
+    uid = "u-preexisting-orphan"
+    ds.ensure_universe_registered(
+        data_dir,
+        universe_id=uid,
+        universe_path=data_dir / "old-missing-path",
+        display_name="sentinel-display",
+        metadata={"owner": "preexisting"},
+    )
+    ds.grant_universe_access(
+        data_dir,
+        universe_id=uid,
+        actor_id="prior-owner",
+        permission="read",
+        granted_by="prior-owner",
+    )
+    with ds._connect(data_dir) as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER fail_new_owner_acl
+            BEFORE INSERT ON universe_acl
+            WHEN NEW.universe_id = 'u-preexisting-orphan'
+                 AND NEW.actor_id = 'founder-new'
+            BEGIN
+                SELECT RAISE(FAIL, 'injected ownership failure');
+            END
+            """
+        )
+
+    _login("founder-new")
+    with pytest.raises(ds.UniversePersistentStateError):
+        _action_create_universe(universe_id=uid)
+
+    record = ds.get_universe(data_dir, universe_id=uid)
+    assert record["display_name"] == "sentinel-display"
+    assert record["metadata"] == {"owner": "preexisting"}
+    acl = ds.list_universe_acl(data_dir, universe_id=uid)
+    assert len(acl) == 1
+    assert acl[0]["actor_id"] == "prior-owner"
+    assert acl[0]["permission"] == "read"
+    assert acl[0]["granted_by"] == "prior-owner"
+    assert not (data_dir / uid).exists()
+
+
+def test_r23_unconfirmed_sql_rollback_is_loud_and_retains_directory(
+    data_dir, monkeypatch,
+):
+    import tinyassets.daemon_server as ds
+    from tinyassets.api.universe import _action_create_universe
+
+    _login("founder-rollback")
+
+    def _rollback_failed(*_args, **_kwargs):
+        raise ds.UniversePersistentStateRollbackError("rollback unavailable")
+
+    monkeypatch.setattr(ds, "create_universe_persistent_state", _rollback_failed)
+
+    with pytest.raises(ds.UniversePersistentStateRollbackError):
+        _action_create_universe(universe_id="u-rollback-uncertain")
+    assert (data_dir / "u-rollback-uncertain" / "soul.md").is_file()

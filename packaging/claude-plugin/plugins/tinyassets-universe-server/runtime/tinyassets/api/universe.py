@@ -4703,6 +4703,9 @@ def _action_create_universe(
     # delete the WINNER's completed universe. ``created_here`` scopes the failure
     # cleanup to ONLY the dir THIS invocation created.
     created_here = False
+    marker_path: Path | None = None
+    marker_existed = False
+    previous_marker = ""
     try:
         try:
             udir.mkdir(parents=True, exist_ok=False)
@@ -4750,6 +4753,10 @@ def _action_create_universe(
         # last-created home and leaks it to other founders' omitted-scope reads.
         if not permissions.is_authenticated_request():
             marker = base / ".active_universe"
+            marker_path = marker
+            marker_existed = marker.is_file()
+            if marker_existed:
+                previous_marker = marker.read_text(encoding="utf-8")
             marker.write_text(uid, encoding="utf-8")
             result["note"] = (
                 f"Universe '{uid}' created. "
@@ -4758,33 +4765,12 @@ def _action_create_universe(
         else:
             result["note"] = f"Universe '{uid}' created."
 
-        # D0a founder-grant-on-create: the authenticated founder OWNS the
-        # universe they create (admin grant) — the mechanism that makes the
-        # per-universe write boundary real. Ownership is orthogonal to
-        # visibility: we do NOT touch public_read, so the universe stays
-        # publicly readable by default. A dev/no-auth (anonymous) create
-        # seeds no grant, so local dev-mode creates keep working.
-        # Register in the universes index so a founder universe has a
-        # universes + universe_rules row (not just an ACL grant) — home
-        # resolution + reset rely on a consistent registry.
-        try:
-            from tinyassets.daemon_server import ensure_universe_registered
-
-            ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-        except Exception:  # noqa: BLE001 - registry is best-effort at create
-            logger.warning("ensure_universe_registered failed for %s", uid, exc_info=True)
-
+        # Registry, defaults, ACL, and optional home binding commit together.
+        # A failed statement rolls back only this transaction, preserving any
+        # pre-existing orphan rows byte-for-byte instead of broadly deleting by uid.
         founder = permissions.current_actor_id()
+        bind_founder_home = False
         if permissions.is_authenticated_request():
-            from tinyassets.daemon_server import grant_universe_access, set_founder_home
-
-            grant_universe_access(
-                base,
-                universe_id=uid,
-                actor_id=founder,
-                permission="admin",
-                granted_by=founder,
-            )
             # Bind this as the founder's home when they don't already have a
             # LIVING one — no binding, or a binding to a removed/incomplete dir.
             # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
@@ -4794,11 +4780,22 @@ def _action_create_universe(
             from tinyassets.daemon_server import get_founder_home
 
             _home = get_founder_home(base, founder)
-            if not _home or not (base / _home / "soul.md").is_file():
-                set_founder_home(base, founder_sub=founder, universe_id=uid)
+            bind_founder_home = (
+                not _home or not (base / _home / "soul.md").is_file()
+            )
             result["founder_id"] = founder
         else:
             result["founder_id"] = ""
+
+        from tinyassets.daemon_server import create_universe_persistent_state
+
+        create_universe_persistent_state(
+            base,
+            universe_id=uid,
+            universe_path=udir,
+            founder_sub=founder if permissions.is_authenticated_request() else "",
+            bind_founder_home=bind_founder_home,
+        )
 
         return json.dumps(result)
     except Exception as exc:  # noqa: BLE001 - roll back a partial create
@@ -4817,29 +4814,27 @@ def _action_create_universe(
         import shutil
 
         if created_here:
-            try:
-                _founder_for_rollback = permissions.current_actor_id()
-            except Exception:  # noqa: BLE001
-                _founder_for_rollback = ""
-            try:
-                from tinyassets.daemon_server import (
-                    remove_universe_persistent_state,
-                )
+            from tinyassets.daemon_server import UniversePersistentStateRollbackError
 
-                remove_universe_persistent_state(
-                    _base_path(), universe_id=uid,
-                    founder_sub=_founder_for_rollback,
-                )
-            except Exception:  # noqa: BLE001 — compensating cleanup is best-effort.
-                logger.warning(
-                    "compensating universe-state rollback failed for %s", uid,
-                    exc_info=True,
-                )
-            try:
-                if udir.is_dir():
-                    shutil.rmtree(udir)
-            except OSError:
-                pass
+            # When SQLite cannot CONFIRM rollback, retain the directory so DB state
+            # never points at a path we knowingly deleted. The typed error stays loud.
+            if not isinstance(exc, UniversePersistentStateRollbackError):
+                try:
+                    if udir.is_dir():
+                        shutil.rmtree(udir)
+                except OSError:
+                    pass
+            if marker_path is not None:
+                try:
+                    if marker_existed:
+                        marker_path.write_text(previous_marker, encoding="utf-8")
+                    elif marker_path.is_file():
+                        marker_path.unlink()
+                except OSError:
+                    logger.warning(
+                        "active-universe marker rollback failed for %s", uid,
+                        exc_info=True,
+                    )
         if isinstance(exc, OSError):
             return json.dumps({"error": f"Failed to create universe: {exc}"})
         raise

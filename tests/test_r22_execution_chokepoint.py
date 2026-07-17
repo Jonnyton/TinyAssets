@@ -65,13 +65,15 @@ def test_r22_1_retired_universe_never_executes_via_production_run_path(
         "oauth_token": "legacy",
     }])
     quarantine_legacy_subscription_records(udir)  # → marker-only retired
-    # The active universe the run executes FOR (resolved from env, NOT threaded).
-    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+    fresh = tmp_path / "u-fresh-global"
+    fresh.mkdir()
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(fresh))
 
     calls = {"n": 0}
     outcome = execute_branch(
         tmp_path, branch=_min_branch(), inputs={"x": "hi"},
         provider_call=_counting_provider(calls),
+        _enqueue_universe_id=udir.name,
     )
     assert outcome.status == RUN_STATUS_FAILED
     assert "retired" in (outcome.error or "").lower()
@@ -91,12 +93,15 @@ def test_r22_2_malformed_vault_fails_closed_via_production_run_path(
     (udir / ".credential-vault.json").write_text(
         "{ not valid json <<< recoverable", encoding="utf-8",
     )
-    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(udir))
+    fresh = tmp_path / "u-fresh-global"
+    fresh.mkdir()
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(fresh))
 
     calls = {"n": 0}
     outcome = execute_branch(
         tmp_path, branch=_min_branch(), inputs={"x": "hi"},
         provider_call=_counting_provider(calls),
+        _enqueue_universe_id=udir.name,
     )
     assert outcome.status == RUN_STATUS_FAILED
     assert calls["n"] == 0, "an unreadable vault must block ALL providers (fail closed)"
@@ -118,6 +123,7 @@ def test_r22_1_fresh_universe_executes_normally(tmp_path, monkeypatch):
 
     outcome = execute_branch(
         tmp_path, branch=_min_branch(), inputs={"x": "hi"}, provider_call=_ok,
+        _enqueue_universe_id=udir.name,
     )
     assert outcome.status == RUN_STATUS_COMPLETED
     assert calls["n"] >= 1

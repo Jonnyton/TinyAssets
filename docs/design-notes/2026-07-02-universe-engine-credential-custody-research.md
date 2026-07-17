@@ -90,9 +90,15 @@ access-token narrowing below).
 custodied by the platform and driven 24/7 server-side on their behalf — it is
 simultaneously (a) account-credential sharing, (b) OAuth-token-in-a-third-party-
 service, and (c) using a personal subscription to power a third-party service. This
-holds for both providers. So among the three host-floated sources, **the two
+holds for both providers. Among the original three host-floated sources, the
 device-independent 24/7 engines are the API-key lane and the self-hosted OSS
-endpoint** — but the **API-key lane's lawfulness is PROVIDER-SPECIFIC** (round-15
+endpoint. Anthropic Routines now adds a separate **provider-hosted,
+subscription-backed cloud lane**: it can run while the founder's device is off,
+is currently a research preview subject to subscription usage caps, and exposes
+an API trigger protected by a per-routine scoped bearer token. That token invokes
+Anthropic's routine; it does **not** authorize TinyAssets to custody the founder's
+Claude login or subscription credential. The **API-key lane's lawfulness remains
+PROVIDER-SPECIFIC** (round-15
 #1): OpenAI's Services Agreement bars transferring a key to a third party, so
 raw-OpenAI-key custody is NOT offered pending a provider-approved delegated path;
 Anthropic is conditional. See the per-provider verdict in §4.2b — do not read "API
@@ -435,11 +441,14 @@ provided default engine for founders (host correction 2026-07-02).**
    explicitly the founder's responsibility (their host up = engine up); the platform
    surfaces "engine unreachable" honestly (Hard Rule #8, never fake success).
 
-4. **Do NOT build Option A (founder subscription custody).** It is ToS-blocked on both
-   providers. If a founder wants their *personal subscription* to power their universe,
-   the only lawful shape is the **local-app / on-device relay** (their machine runs the
-   engine when on) — which by definition is **not** 24/7-without-device and therefore
-   does not satisfy the hard requirement. Say this plainly to founders at engine-
+4. **Do NOT build Option A (founder subscription custody).** It remains ToS-blocked on
+   both providers. A founder may use a **local-app / on-device relay**, or—where
+   Anthropic Routines is available—configure a provider-hosted routine and delegate
+   only its per-routine scoped bearer trigger token. Routines are a research preview,
+   consume the founder's subscription allowance and are subject to plan caps; they are
+   device-independent because Anthropic executes them in its cloud. This is a distinct
+   delegated execution lane, **not permission for TinyAssets to store or drive the
+   founder's Claude login/OAuth credential**. Say that boundary plainly at engine-
    assignment time rather than silently degrading.
 
 5. **Put Option D (Workload Identity Federation) on the roadmap, not the MVP.** It is

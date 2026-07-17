@@ -4159,6 +4159,130 @@ def set_founder_home(
         )
 
 
+class UniversePersistentStateError(RuntimeError):
+    """Universe creation database work failed and was rolled back."""
+
+
+class UniversePersistentStateRollbackError(UniversePersistentStateError):
+    """Universe creation failed and SQLite could not confirm rollback."""
+
+
+def create_universe_persistent_state(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    universe_path: str | Path,
+    founder_sub: str = "",
+    bind_founder_home: bool = False,
+) -> None:
+    """Create registry, defaults, ownership, and home in one transaction.
+
+    SQLite rollback restores pre-existing orphan rows exactly; no broad DELETE
+    compensation is used. A rollback failure is a distinct loud error so the
+    caller retains the directory rather than manufacturing DB/filesystem split
+    brain.
+    """
+    uid = (universe_id or "").strip()
+    founder = (founder_sub or "").strip()
+    if not uid:
+        raise ValueError("universe_id is required")
+    initialize_author_server(base_path)
+    now = _now()
+    branch_id = _branch_id_for(uid, "free-roam")
+    conn = sqlite3.connect(db_path(base_path), timeout=30.0)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT created_at FROM universes WHERE universe_id = ?",
+            (uid,),
+        ).fetchone()
+        created_at = float(existing[0]) if existing is not None else now
+        conn.execute(
+            """
+            INSERT INTO universes (
+                universe_id, display_name, host_path, created_at, metadata_json
+            ) VALUES (?, ?, ?, ?, '{}')
+            ON CONFLICT(universe_id) DO UPDATE SET
+                display_name=excluded.display_name,
+                host_path=excluded.host_path,
+                metadata_json=excluded.metadata_json
+            """,
+            (uid, uid, str(Path(universe_path).resolve()), created_at),
+        )
+        conn.execute(
+            """
+            INSERT INTO universe_rules (
+                universe_id, public_read, public_fork, branch_mode,
+                quick_vote_seconds, updated_at, metadata_json
+            ) VALUES (?, 1, 1, ?, ?, ?, '{}')
+            ON CONFLICT(universe_id) DO NOTHING
+            """,
+            (uid, DEFAULT_BRANCH_MODE, DEFAULT_QUICK_VOTE_SECONDS, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO branches (
+                branch_id, universe_id, name, parent_branch_id, is_public,
+                status, created_by, created_at, updated_at, metadata_json
+            ) VALUES (?, ?, 'free-roam', NULL, 1, 'active', 'system', ?, ?, ?)
+            ON CONFLICT(branch_id) DO NOTHING
+            """,
+            (
+                branch_id,
+                uid,
+                now,
+                now,
+                _json_dumps({"default": True, "branch_mode": DEFAULT_BRANCH_MODE}),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO branch_heads (branch_id, snapshot_id, updated_at, metadata_json)
+            VALUES (?, NULL, ?, '{}')
+            ON CONFLICT(branch_id) DO NOTHING
+            """,
+            (branch_id, now),
+        )
+        if founder and founder != "anonymous":
+            conn.execute(
+                """
+                INSERT INTO universe_acl
+                  (universe_id, actor_id, permission, granted_at, granted_by)
+                VALUES (?, ?, 'admin', ?, ?)
+                ON CONFLICT(universe_id, actor_id) DO UPDATE SET
+                    permission = excluded.permission,
+                    granted_at = excluded.granted_at,
+                    granted_by = excluded.granted_by
+                """,
+                (uid, founder, now, founder),
+            )
+            if bind_founder_home:
+                conn.execute(
+                    """
+                    INSERT INTO founder_home (founder_sub, universe_id, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(founder_sub) DO UPDATE SET
+                        universe_id = excluded.universe_id
+                    """,
+                    (founder, uid, now),
+                )
+        conn.commit()
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error as rollback_exc:
+            raise UniversePersistentStateRollbackError(
+                f"universe state rollback failed for {uid}: {rollback_exc}"
+            ) from rollback_exc
+        raise UniversePersistentStateError(
+            f"universe state transaction failed for {uid}: {exc}"
+        ) from exc
+    finally:
+        conn.close()
+
+
 def get_founder_home(base_path: str | Path, founder_sub: str) -> str:
     """Return the founder's bound home universe id, or "" if none/anonymous."""
     founder = (founder_sub or "").strip()
@@ -4230,57 +4354,6 @@ def revoke_universe_access(
             (universe_id, actor_id),
         )
     return cursor.rowcount > 0
-
-
-def remove_universe_persistent_state(
-    base_path: str | Path,
-    *,
-    universe_id: str,
-    founder_sub: str = "",
-) -> None:
-    """Compensating rollback (round-22 #3): best-effort delete ALL persistent state for
-    a universe — the registry row, rules, branches (+ heads), ACL grants, and the
-    founder-home binding (ONLY when it points at THIS universe). Used to undo a FAILED
-    create so a partial create never leaves orphaned rows (``directory_exists=False``
-    but ``registry_row_exists=True`` + an orphaned ACL/home row when a LATE step such as
-    ``set_founder_home`` fails after registration + the ACL grant). Each delete is
-    independently guarded so a missing table/row never aborts the rest; never raises."""
-    uid = (universe_id or "").strip()
-    if not uid:
-        return
-    founder = (founder_sub or "").strip()
-    try:
-        initialize_author_server(base_path)
-    except Exception:  # noqa: BLE001
-        pass
-    statements: list[tuple[str, tuple[Any, ...]]] = []
-    if founder and founder != "anonymous":
-        # Only unbind the home if it still points at THIS universe (never clobber a
-        # founder's pre-existing home).
-        statements.append((
-            "DELETE FROM founder_home WHERE founder_sub = ? AND universe_id = ?",
-            (founder, uid),
-        ))
-    statements += [
-        ("DELETE FROM universe_acl WHERE universe_id = ?", (uid,)),
-        (
-            "DELETE FROM branch_heads WHERE branch_id IN "
-            "(SELECT branch_id FROM branches WHERE universe_id = ?)",
-            (uid,),
-        ),
-        ("DELETE FROM branches WHERE universe_id = ?", (uid,)),
-        ("DELETE FROM universe_rules WHERE universe_id = ?", (uid,)),
-        ("DELETE FROM universes WHERE universe_id = ?", (uid,)),
-    ]
-    try:
-        with _connect(base_path) as conn:
-            for stmt, params in statements:
-                try:
-                    conn.execute(stmt, params)
-                except Exception:  # noqa: BLE001 — table absent / best-effort undo.
-                    pass
-    except Exception:  # noqa: BLE001 — never let compensating cleanup raise.
-        pass
 
 
 def list_universe_acl(
