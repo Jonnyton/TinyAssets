@@ -73,7 +73,10 @@ def test_anthropic_key_isolated_and_injected(
     assert env["ANTHROPIC_API_KEY"].startswith("sk-ant-api03-")
     assert "HOST_AMBIENT_SECRET" not in env.values()
     assert "HOST_OAUTH" not in env.values()
-    assert "CLAUDE_CONFIG_DIR" not in env
+    assert env["CLAUDE_CONFIG_DIR"] == str(
+        universe / ".engine-auth" / "claude"
+    )
+    assert env["CLAUDE_CONFIG_DIR"] != "/host/claude"
     assert env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"
 
 

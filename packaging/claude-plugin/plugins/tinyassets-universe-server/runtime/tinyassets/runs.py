@@ -2918,12 +2918,6 @@ def _invoke_graph_inner(
         )
 
     output = dict(result) if isinstance(result, dict) else {"result": result}
-    output = _safe_private(output)
-
-    # Private binding values may flow through graph state while executing but
-    # must never be persisted in the public run output.
-    for field_name in binding_fields:
-        output.pop(field_name, None)
 
     # Emit concurrency_stats event so get_run can surface peak + budget.
     if compiled.concurrency_tracker is not None:
@@ -2963,18 +2957,27 @@ def _invoke_graph_inner(
     # is satisfied by the structured error fields on each evidence entry.
     _quarantine_branch_authored_external_write_keys(output)
     external_write_evidence = _run_external_write_effectors(
-        branch, output, base_path=base_path, run_id=run_id,
+        branch,
+        output,
+        base_path=_effector_base_path(base_path, execution_scope),
+        run_id=run_id,
     )
+
+    # Effectors need the real private binding values while executing.  Apply
+    # redaction only after that boundary, before any run output is persisted.
+    output = _safe_private(output)
+    for field_name in binding_fields:
+        output.pop(field_name, None)
     if external_write_evidence:
         # PR-122 Phase 1 round-2 (Codex finding #2): the receipt is
         # system-authoritative. Overwrite unconditionally — any branch
         # that tries to forge ``external_write_results`` /
         # ``external_write_errors`` has already been moved to
         # ``_branch_authored_*`` for forensics above.
-        output["external_write_results"] = external_write_evidence
+        output["external_write_results"] = _safe_private(external_write_evidence)
         errors = _collect_external_write_errors(external_write_evidence)
         if errors:
-            output["external_write_errors"] = errors
+            output["external_write_errors"] = _safe_private(errors)
 
     # S4 / E3 (Codex r12 #1 + #5): a present node that opened + projected a PR
     # for owner review installs a durable review CHECKPOINT and the run must NOT
@@ -3091,6 +3094,18 @@ def _run_external_write_effectors(
     except Exception:  # pragma: no cover — effectors are no-raise
         logger.exception("external-write effector dispatch crashed")
         return {}
+
+
+def _effector_base_path(
+    base_path: str | Path,
+    execution_scope: "ExecutionScope | None",
+) -> str | Path:
+    """Use the run's authoritative universe for universe-scoped effect state."""
+    if execution_scope is not None and execution_scope.is_bound:
+        universe_dir = (execution_scope.universe_dir or "").strip()
+        if universe_dir:
+            return universe_dir
+    return base_path
 
 
 def _collect_external_write_errors(
@@ -3345,6 +3360,19 @@ def _execute_review_directive(
     return {"confirmed": True, "state": "resumed", "effects": effects}
 
 
+def _review_run_storage_path(base_path: str | Path, run_id: str) -> Path:
+    """Resolve a review-queue universe path to its canonical run store."""
+    queue_path = Path(base_path)
+    if runs_db_path(queue_path).is_file() and get_run(queue_path, run_id) is not None:
+        return queue_path
+    parent = queue_path.parent
+    if parent != queue_path and runs_db_path(parent).is_file():
+        run = get_run(parent, run_id)
+        if run is not None and run.get("universe_id") == queue_path.name:
+            return parent
+    return queue_path
+
+
 def continue_reviewed_run(
     base_path: str | Path, *, run_id: str, decision: str,
     directive: dict[str, Any] | None = None,
@@ -3362,7 +3390,8 @@ def continue_reviewed_run(
 
     Only an INTERRUPTED run awaiting review transitions; anything else is a
     no-op (``applied=False``)."""
-    run = get_run(base_path, run_id)
+    run_base_path = _review_run_storage_path(base_path, run_id)
+    run = get_run(run_base_path, run_id)
     if run is None:
         return {"applied": False, "reason": "run_not_found"}
     if run.get("status") != RUN_STATUS_INTERRUPTED:
@@ -3399,7 +3428,7 @@ def continue_reviewed_run(
         output["review_continuation_effects"] = result["effects"]
     output.pop("awaiting_owner_review", None)
     update_run_status(
-        base_path, run_id,
+        run_base_path, run_id,
         status=RUN_STATUS_COMPLETED, output=output, finished_at=_now(),
     )
     # Ack the durable resume-pending marker ONLY after the canonical transition.
@@ -3425,7 +3454,8 @@ def supersede_stranded_review_runs(
     touched."""
     cancelled: list[str] = []
     for rid in run_ids or []:
-        run = get_run(base_path, rid)
+        run_base_path = _review_run_storage_path(base_path, rid)
+        run = get_run(run_base_path, rid)
         if run is None or run.get("status") != RUN_STATUS_INTERRUPTED:
             continue
         output = dict(run.get("output") or {})
@@ -3434,7 +3464,7 @@ def supersede_stranded_review_runs(
         output["review_workflow_state"] = "superseded"
         output.pop("awaiting_owner_review", None)
         update_run_status(
-            base_path, rid,
+            run_base_path, rid,
             status=RUN_STATUS_CANCELLED, output=output,
             error="superseded by a newer run on the same PR", finished_at=_now(),
         )
@@ -5113,7 +5143,10 @@ def _invoke_graph_resume_inner(
     # declared PR sinks. Same no-raise contract as the primary path.
     _quarantine_branch_authored_external_write_keys(output)
     external_write_evidence = _run_external_write_effectors(
-        branch, output, base_path=base_path, run_id=run_id,
+        branch,
+        output,
+        base_path=_effector_base_path(base_path, execution_scope),
+        run_id=run_id,
     )
     if external_write_evidence:
         # System-authoritative receipt — overwrite unconditionally

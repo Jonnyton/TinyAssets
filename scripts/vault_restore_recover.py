@@ -8,8 +8,6 @@ authorizer, and this module is not exposed through MCP or ``VaultBroker``.
 
 from __future__ import annotations
 
-import hmac
-import os
 import sys
 from pathlib import Path
 
@@ -17,7 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tinyassets.credentials import PlatformVaultBackend  # noqa: E402
 
-_TOKEN_ENV = "TINYASSETS_VAULT_RECOVERY_TOKEN"
+# ``PlatformVaultBackend`` keeps an injected-authorizer seam so normal callers
+# cannot recover a store. This script is the privileged adapter: invocation as
+# root in a one-shot container with BOTH volumes mounted is the authorization
+# boundary. The marker only satisfies the unchanged backend API; it is not a
+# caller credential and must never be described as one.
+_OPERATOR_BOUNDARY_MARKER = b"privileged-one-shot-operator-container"
 
 
 class _RecoveryOnlyKeyProvider:
@@ -31,21 +34,13 @@ class _RecoveryOnlyKeyProvider:
 
 
 def main() -> int:
-    token = os.environ.get(_TOKEN_ENV, "").encode("utf-8")
-    if len(token) < 32:
-        print(
-            f"vault-restore-recover: {_TOKEN_ENV} must contain at least 32 bytes",
-            file=sys.stderr,
-        )
-        return 2
-
     backend = PlatformVaultBackend(
         _RecoveryOnlyKeyProvider(),
-        operator_recovery_authorizer=lambda candidate: hmac.compare_digest(
-            candidate, token
+        operator_recovery_authorizer=lambda candidate: (
+            candidate is _OPERATOR_BOUNDARY_MARKER
         ),
     )
-    backend.recover_after_restore(operator_token=token)
+    backend.recover_after_restore(operator_token=_OPERATOR_BOUNDARY_MARKER)
     print(
         "vault-restore-recover: uncertain credentials and job grants erased; "
         "fresh founder-authorized deposits are now enabled."

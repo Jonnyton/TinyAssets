@@ -185,28 +185,28 @@ rerun the root one-shot `docker run --entrypoint /opt/venv/bin/python ...
 
 1. Stop the daemon. Leave the guard advanced; do not copy pre-restore
    ciphertext, delete the guard, or retry reads until one happens to work.
-2. From a root/operator shell, create a one-shot recovery token and run the
-   recovery command against both persistent volumes (replace the image value if
-   the daemon container is not present):
+2. From a root/operator shell, run the recovery command against both persistent
+   volumes (replace the image value if the daemon container is not present):
 
    ```bash
    DAEMON_IMAGE="$(sudo docker inspect tinyassets-daemon --format '{{.Config.Image}}')"
-   export TINYASSETS_VAULT_RECOVERY_TOKEN="$(openssl rand -hex 32)"
    sudo docker run --rm \
      --entrypoint /opt/venv/bin/python \
      -e TINYASSETS_DATA_DIR=/data \
      -e TINYASSETS_VAULT_ROLLBACK_GUARD=/vault-guard \
-     -e TINYASSETS_VAULT_RECOVERY_TOKEN \
      -v tinyassets-data:/data \
      -v tinyassets-vault-guard:/vault-guard \
      "${DAEMON_IMAGE}" /app/scripts/vault_restore_recover.py
-   unset TINYASSETS_VAULT_RECOVERY_TOKEN
    ```
 
-   The command is deliberately unavailable through MCP, workers, and normal
-   `VaultBroker` construction. It accepts only a guard-ahead restored store,
-   erases every uncertain credential and job grant, and atomically establishes
-   the guard's new clean epoch; a current store or wrong token fails closed.
+   **Authorization boundary:** root/admin access to the daemon image plus both
+   mounted volumes authorizes this destructive reset. There is no independent
+   recovery-token check. Protect that host access accordingly: anyone who can
+   run this command with both volumes can irreversibly erase every uncertain
+   credential and job grant. The command is deliberately unavailable through
+   MCP, workers, and normal `VaultBroker` construction, and it accepts only a
+   guard-ahead restored store before atomically establishing the guard's new
+   clean epoch; a current store fails closed.
 3. Restart the daemon. For every affected universe, have its founder repeat the
    same authenticated
    deposit flow that originally created each binding. Engine API keys are
