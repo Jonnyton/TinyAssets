@@ -86,8 +86,8 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
     try:
         yield conn
         conn.commit()
@@ -260,6 +260,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         inputs_json    TEXT NOT NULL DEFAULT '{}',
         invocation_depth INTEGER NOT NULL DEFAULT 0,
         enqueue_context_json TEXT NOT NULL DEFAULT '{}',
+        checkpoint_backend TEXT NOT NULL DEFAULT '',
         output_json    TEXT NOT NULL DEFAULT '{}',
         error          TEXT NOT NULL DEFAULT '',
         last_node_id   TEXT NOT NULL DEFAULT '',
@@ -443,6 +444,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             ("worker_id",     "TEXT"),
             ("invocation_depth", "INTEGER NOT NULL DEFAULT 0"),
             ("enqueue_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("checkpoint_backend", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in existing_runs:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
@@ -510,6 +512,11 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "enqueue_context": json.loads(
             row["enqueue_context_json"] or "{}"
         ) if "enqueue_context_json" in col_names else {},
+        "checkpoint_backend": (
+            row["checkpoint_backend"]
+            if "checkpoint_backend" in col_names
+            else ""
+        ),
         "output": json.loads(row["output_json"] or "{}"),
         "error": row["error"],
         "last_node_id": row["last_node_id"],
@@ -774,6 +781,7 @@ def create_run(
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    checkpoint_backend: str = "",
 ) -> str:
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
@@ -789,9 +797,10 @@ def create_run(
                 run_id, branch_def_id, run_name, thread_id,
                 status, actor, universe_id, owner_user_id, inputs_json, started_at,
                 invocation_depth, enqueue_context_json,
+                checkpoint_backend,
                 branch_version_id, daemon_id, runtime_instance_id,
                 worker_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, branch_def_id, run_name, thread_id,
@@ -807,6 +816,7 @@ def create_run(
                         "origin_branch_task_id": enqueue_context.origin_branch_task_id,
                     } if enqueue_context is not None else {}
                 ),
+                checkpoint_backend,
                 branch_version_id,
                 daemon_id,
                 runtime_instance_id,
@@ -2070,6 +2080,13 @@ def _prepare_run(
     (Phase A item 6, Task #65). Def-based runs leave it as None.
     """
     initialize_runs_db(base_path)
+    from tinyassets.branch_bindings import declared_binding_fields
+
+    checkpoint_backend = (
+        "memory"
+        if declared_binding_fields(getattr(branch, "state_schema", None))
+        else "sqlite"
+    )
     run_id = create_run(
         base_path,
         branch_def_id=branch.branch_def_id,
@@ -2084,6 +2101,7 @@ def _prepare_run(
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
+        checkpoint_backend=checkpoint_backend,
     )
     thread_id = run_id
     with _connect(base_path) as conn:
@@ -4822,30 +4840,17 @@ def resume_run(
             current_status=current_status,
         )
 
-    # Resolve the exact branch version before describing a missing checkpoint:
-    # bound runs intentionally use an in-memory saver so private values never
-    # enter SqliteSaver, which needs a distinct and accurate restart refusal.
-    lineage = get_lineage(base_path, run_id)
-    branch_version = int(
-        (lineage or {}).get("branch_version") or getattr(branch_lookup, "_fallback_version", 1)
-    )
-    branch_def_id = run["branch_def_id"]
-    branch = branch_lookup(branch_def_id, branch_version)
-
     # Checkpoint gate.
     thread_id = run.get("thread_id") or run_id
     if not _has_checkpoint(base_path, thread_id):
-        if branch is not None:
-            from tinyassets.branch_bindings import declared_binding_fields
-
-            if declared_binding_fields(getattr(branch, "state_schema", None)):
-                raise ResumeError(
-                    f"Run '{run_id}' used a memory-only checkpoint so private "
-                    "binding values were never written to durable storage. "
-                    "Bound runs cannot resume after restart; rerun from scratch "
-                    "with run_branch using the same inputs.",
-                    reason="bound_run_memory_only",
-                )
+        if run.get("checkpoint_backend") == "memory":
+            raise ResumeError(
+                f"Run '{run_id}' used a memory-only checkpoint so private "
+                "binding values were never written to durable storage. "
+                "Bound runs cannot resume after restart; rerun from scratch "
+                "with run_branch using the same inputs.",
+                reason="bound_run_memory_only",
+            )
         raise ResumeError(
             f"No SqliteSaver checkpoint found for run '{run_id}'. "
             "The run predates resume support or the checkpoint was evicted. "
@@ -4854,6 +4859,13 @@ def resume_run(
         )
 
     # Branch version gate: re-compile the exact version used in the original run.
+    lineage = get_lineage(base_path, run_id)
+    branch_version = int(
+        (lineage or {}).get("branch_version")
+        or getattr(branch_lookup, "_fallback_version", 1)
+    )
+    branch_def_id = run["branch_def_id"]
+    branch = branch_lookup(branch_def_id, branch_version)
     if branch is None:
         raise ResumeError(
             f"Branch '{branch_def_id}' version {branch_version} no longer exists. "

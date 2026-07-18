@@ -124,7 +124,12 @@ def run_env(tmp_path, monkeypatch):
     importlib.reload(us)
 
 
-def _setup_interrupted_run(tmp_path: Path, *, actor: str = "tester") -> str:
+def _setup_interrupted_run(
+    tmp_path: Path,
+    *,
+    actor: str = "tester",
+    checkpoint_backend: str = "",
+) -> str:
     """Create an INTERRUPTED run in the runs DB and return its run_id."""
     from tinyassets.runs import (
         RUN_STATUS_INTERRUPTED,
@@ -140,6 +145,7 @@ def _setup_interrupted_run(tmp_path: Path, *, actor: str = "tester") -> str:
         thread_id="",
         inputs={},
         actor=actor,
+        checkpoint_backend=checkpoint_backend,
     )
     update_run_status(tmp_path, rid, status=RUN_STATUS_INTERRUPTED)
     return rid
@@ -238,31 +244,21 @@ class TestResumeRunFunction:
         assert exc_info.value.reason == "no_checkpoint"
 
     def test_bound_run_missing_checkpoint_reports_memory_only_contract(self, tmp_path):
-        from tinyassets.branches import BranchDefinition, NodeDefinition
         from tinyassets.runs import ResumeError, resume_run
 
-        rid = _setup_interrupted_run(tmp_path)
-        bound_branch = BranchDefinition(
-            branch_def_id="branch-1",
-            name="bound",
-            domain_id="d",
-            state_schema=[
-                {"name": "target_repo", "type": "str", "is_binding": True},
-            ],
-            node_defs=[
-                NodeDefinition(
-                    node_id="n1", display_name="n1",
-                    prompt_template="patch {target_repo}",
-                ),
-            ],
-        )
+        rid = _setup_interrupted_run(tmp_path, checkpoint_backend="memory")
+
+        def mutable_branch_lookup(_bid, _version):
+            raise AssertionError(
+                "missing-checkpoint classification must not read mutable branch state"
+            )
 
         with pytest.raises(ResumeError) as exc_info:
             resume_run(
                 tmp_path,
                 run_id=rid,
                 actor="tester",
-                branch_lookup=lambda bid, version: bound_branch,
+                branch_lookup=mutable_branch_lookup,
             )
         assert exc_info.value.reason == "bound_run_memory_only"
         assert "private binding values" in str(exc_info.value)
