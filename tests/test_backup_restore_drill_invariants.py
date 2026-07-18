@@ -28,6 +28,7 @@ import pytest
 _REPO = Path(__file__).resolve().parent.parent
 _RESTORE = _REPO / "deploy" / "backup-restore.sh"
 _DR_DRILL = _REPO / ".github" / "workflows" / "dr-drill.yml"
+_DOCKERFILE = _REPO / "Dockerfile"
 
 
 # ---- (a) restore script: no start-daemon coupling ------------------------
@@ -35,6 +36,18 @@ _DR_DRILL = _REPO / ".github" / "workflows" / "dr-drill.yml"
 
 def test_restore_script_exists():
     assert _RESTORE.is_file()
+
+
+def test_daemon_image_contains_vault_restore_commands():
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    for script in ("vault_restore_bump.py", "vault_restore_recover.py"):
+        assert f"COPY scripts/{script} /app/scripts/{script}" in dockerfile
+
+
+def test_restore_guard_bump_bypasses_daemon_entrypoint_as_root_operator():
+    code = _restore_code()
+    assert "--entrypoint /opt/venv/bin/python" in code
+    assert "/app/scripts/vault_restore_bump.py" in code
 
 
 def _restore_code() -> str:

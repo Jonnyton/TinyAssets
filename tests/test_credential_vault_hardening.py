@@ -1561,3 +1561,292 @@ def test_delete_with_locked_sidecar_reports_pending_then_sweeps(tmp_path, monkey
     with pytest.raises(CredentialUnavailable):
         be.get(d.binding, SCOPE)  # still NOT_FOUND, but sweeps the pending GC first
     assert len(list(be._dir.glob(f"{tail}.v*.json"))) == 0  # bytes now gone
+
+
+# ===========================================================================
+# Final bundle sweep r13 — trusted grant authority + honest local I/O + restore
+# recovery + inert-sidecar rollback cleanup
+# ===========================================================================
+
+
+def test_job_grant_resolution_rechecks_live_authoritative_run(platform, store):
+    from tinyassets.credentials import JobContext
+
+    scope = SecretScope(
+        founder_id="founder:r13", universe_id="universe:r13", provider="github",
+        destination="octo/repo", purpose="external_write",
+    )
+    contexts = {
+        "run-r13": JobContext(
+            run_id="run-r13", universe_id=scope.universe_id,
+            founder_id=scope.founder_id,
+        )
+    }
+    platform._run_context_lookup = contexts.get
+    descriptor = platform.put(
+        store, scope, SecretKind.GITHUB_PAT, SecretBytes(b"live-run-only")
+    )
+    grant = platform.mint_job_grant(
+        descriptor.binding, scope, "run-r13", ttl=60.0
+    )
+
+    with platform.resolve_job_grant(
+        grant, verify_context=lambda _context: True
+    ) as lease:
+        assert lease.reveal() == b"live-run-only"
+
+    contexts.pop("run-r13")  # run stopped
+    with pytest.raises(CredentialUnavailable) as stopped:
+        platform.resolve_job_grant(grant, verify_context=lambda _context: True)
+    assert stopped.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+
+    contexts["run-r13"] = JobContext(  # run id reassigned to another authority
+        run_id="run-r13", universe_id="universe:other", founder_id="founder:other"
+    )
+    with pytest.raises(CredentialUnavailable) as reassigned:
+        platform.resolve_job_grant(grant, verify_context=lambda _context: True)
+    assert reassigned.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+
+
+@WINDOWS_ONLY
+def test_local_delete_enumeration_failure_is_typed_and_preserves_live_tracking(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    be = DpapiVaultBackend(
+        daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc"
+    )
+    be.attest()
+    local_store = VaultStore(
+        custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1"
+    )
+    descriptor = be.put(
+        local_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"must-stay-tracked")
+    )
+    real_glob = Path.glob
+
+    def _fail_enumeration(path, pattern):
+        if path == be._dir:
+            raise OSError("injected directory enumeration failure")
+        return real_glob(path, pattern)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "glob", _fail_enumeration)
+        with pytest.raises(CredentialUnavailable) as exc:
+            be.delete(descriptor.binding, SCOPE)
+    assert exc.value.code in {
+        VaultErrorCode.BACKEND_UNAVAILABLE, VaultErrorCode.DELETE_PENDING
+    }
+
+    conn = sqlite3.connect(str(be._control_db))
+    live = conn.execute(
+        "SELECT live_version FROM vault_local_live WHERE ref = ?",
+        (descriptor.binding.ref,),
+    ).fetchone()
+    conn.close()
+    assert live == (1,)
+    with be.get(descriptor.binding, SCOPE) as lease:
+        assert lease.reveal() == b"must-stay-tracked"
+
+
+def test_restore_recovery_invalidates_old_credentials_and_grants_then_allows_deposit(
+    tmp_path, monkeypatch,
+):
+    import hmac
+
+    from tinyassets.credentials import JobContext
+    from tinyassets.credentials import platform_backend as platform_module
+
+    monkeypatch.setattr(platform_module, "_is_operator_process", lambda: True)
+
+    token = b"r13-operator-recovery-token-32-bytes"
+    backend = PlatformVaultBackend(
+        _kp("k1"),
+        store_id="platform:default",
+        db_path=tmp_path / "vault.db",
+        guard_dir=tmp_path / "guard",
+        operator_recovery_authorizer=lambda candidate: hmac.compare_digest(
+            candidate, token
+        ),
+    )
+    backend.attest()
+    platform_store = VaultStore(
+        custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default"
+    )
+    contexts = {
+        "run-before-restore": JobContext(
+            run_id="run-before-restore", universe_id=SCOPE.universe_id,
+            founder_id=SCOPE.founder_id,
+        )
+    }
+    backend._run_context_lookup = contexts.get
+    old = backend.put(
+        platform_store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"pre-restore")
+    )
+    old_grant = backend.mint_job_grant(
+        old.binding, SCOPE, "run-before-restore", ttl=60.0
+    )
+    backend._epoch.bump_for_restore()
+
+    with pytest.raises(CredentialUnavailable) as wedged:
+        backend.put(
+            platform_store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"blocked")
+        )
+    assert wedged.value.code == VaultErrorCode.REAUTHORIZATION_REQUIRED
+    with pytest.raises(CredentialUnavailable) as unauthenticated:
+        backend.recover_after_restore(operator_token=b"wrong-token")
+    assert unauthenticated.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+
+    backend.recover_after_restore(operator_token=token)
+
+    with pytest.raises(CredentialUnavailable) as old_secret:
+        backend.get(old.binding, SCOPE)
+    assert old_secret.value.code == VaultErrorCode.NOT_FOUND
+    with pytest.raises(CredentialUnavailable) as old_capability:
+        backend.resolve_job_grant(
+            old_grant, verify_context=lambda _context: True
+        )
+    assert old_capability.value.code == VaultErrorCode.NOT_FOUND
+    fresh = backend.put(
+        platform_store, SCOPE, SecretKind.GITHUB_PAT, SecretBytes(b"post-restore")
+    )
+    with backend.get(fresh.binding, SCOPE) as lease:
+        assert lease.reveal() == b"post-restore"
+
+
+def test_restore_recovery_is_unavailable_to_normal_backend_and_current_store(
+    tmp_path, monkeypatch,
+):
+    from tinyassets.credentials import platform_backend as platform_module
+
+    monkeypatch.setattr(platform_module, "_is_operator_process", lambda: True)
+    token = b"r13-operator-recovery-token-32-bytes"
+    normal = PlatformVaultBackend(
+        _kp("k1"), db_path=tmp_path / "normal.db", guard_dir=tmp_path / "normal-guard"
+    )
+    normal.attest()
+    normal_store = VaultStore(
+        custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default"
+    )
+    normal.put(normal_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"invalidate"))
+    normal._epoch.bump_for_restore()
+    with pytest.raises(CredentialUnavailable) as unavailable:
+        normal.recover_after_restore(operator_token=token)
+    assert unavailable.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+
+    authorized = PlatformVaultBackend(
+        _kp("k1"),
+        db_path=tmp_path / "current.db",
+        guard_dir=tmp_path / "current-guard",
+        operator_recovery_authorizer=lambda candidate: candidate == token,
+    )
+    authorized.attest()
+    authorized.put(
+        normal_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"still-current")
+    )
+    with pytest.raises(CredentialUnavailable) as current:
+        authorized.recover_after_restore(operator_token=token)
+    assert current.value.code == VaultErrorCode.INVALID_ARGUMENT
+
+
+def test_restore_recovery_rejects_worker_process(tmp_path, monkeypatch):
+    from tinyassets.credentials import platform_backend as platform_module
+
+    token = b"r13-operator-recovery-token-32-bytes"
+    backend = PlatformVaultBackend(
+        _kp("k1"),
+        db_path=tmp_path / "vault.db",
+        guard_dir=tmp_path / "guard",
+        operator_recovery_authorizer=lambda candidate: candidate == token,
+    )
+    backend.attest()
+    platform_store = VaultStore(
+        custody=Custody.PLATFORM_ENCRYPTED, store_id="platform:default"
+    )
+    backend.put(
+        platform_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"pre-restore")
+    )
+    backend._epoch.bump_for_restore()
+    monkeypatch.setattr(
+        platform_module, "_is_operator_process", lambda: False, raising=False
+    )
+
+    with pytest.raises(CredentialUnavailable) as worker:
+        backend.recover_after_restore(operator_token=token)
+    assert worker.value.code == VaultErrorCode.CROSS_STORE_FORBIDDEN
+
+
+@WINDOWS_ONLY
+def test_local_reservation_failure_removes_exact_inert_sidecar(tmp_path, monkeypatch):
+    from tinyassets.credentials.rollback import EpochGuard, GuardUnavailable
+
+    be = DpapiVaultBackend(
+        daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc"
+    )
+    be.attest()
+    local_store = VaultStore(
+        custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1"
+    )
+    first = be.put(local_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v1"))
+
+    def _fail_reservation(self, expected_epoch):
+        raise GuardUnavailable("injected guard reservation failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(EpochGuard, "reserve", _fail_reservation)
+        with pytest.raises(CredentialUnavailable) as exc:
+            be.put(
+                local_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v2"),
+                replace=first.binding.ref, expected_version=1,
+            )
+    assert exc.value.code == VaultErrorCode.BACKEND_UNAVAILABLE
+    assert not be._blob_path(first.binding.ref, 2).exists()
+    with be.get(first.binding, SCOPE) as lease:
+        assert lease.reveal() == b"v1"
+
+
+@WINDOWS_ONLY
+def test_local_failed_write_cleanup_failure_is_durably_pending(tmp_path, monkeypatch):
+    from tinyassets.credentials import local_backend as local_module
+    from tinyassets.credentials.rollback import EpochGuard, GuardUnavailable
+
+    be = DpapiVaultBackend(
+        daemon_id="d1", store_id="daemon:default", base=tmp_path / "loc"
+    )
+    be.attest()
+    local_store = VaultStore(
+        custody=Custody.DAEMON_LOCAL, store_id="daemon:default", daemon_id="d1"
+    )
+    first = be.put(local_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v1"))
+    inert = be._blob_path(first.binding.ref, 2)
+    real_remove = os.remove
+
+    def _fail_reservation(self, expected_epoch):
+        raise GuardUnavailable("injected guard reservation failure")
+
+    def _locked_cleanup(path):
+        if os.fspath(path) == os.fspath(inert):
+            raise PermissionError("injected cleanup lock")
+        return real_remove(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(EpochGuard, "reserve", _fail_reservation)
+        patch.setattr(local_module.os, "remove", _locked_cleanup)
+        with pytest.raises(CredentialUnavailable):
+            be.put(
+                local_store, SCOPE, SecretKind.API_KEY, SecretBytes(b"v2"),
+                replace=first.binding.ref, expected_version=1,
+            )
+    assert inert.exists()
+    conn = sqlite3.connect(str(be._control_db))
+    pending = conn.execute(
+        "SELECT ref, version FROM vault_local_pending_gc WHERE ref = ? AND version = 2",
+        (first.binding.ref,),
+    ).fetchone()
+    conn.close()
+    assert pending == (first.binding.ref, 2)
+
+    with be.get(first.binding, SCOPE) as lease:
+        assert lease.reveal() == b"v1"
+    assert not inert.exists()

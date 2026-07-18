@@ -332,7 +332,7 @@ class DpapiVaultBackend:
         try:
             return sorted(self._dir.glob(f"{_ref_tail(ref)}.v*.json"))
         except OSError:
-            return []
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
 
     def _versions_on_disk(self, ref: str) -> list[int]:
         tail = _ref_tail(ref)
@@ -396,6 +396,30 @@ class DpapiVaultBackend:
         finally:
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
+
+    def _cleanup_failed_put_sidecar(self, ref: str, version: int) -> None:
+        """Remove an exact sidecar whose control-DB mutation rolled back.
+
+        Re-read the authoritative live pointer after rollback so an ambiguous
+        commit error can never delete a version that actually became live. A
+        locked inert file is durably queued before the original failure returns.
+        """
+        conn = self._control_connect()
+        try:
+            live = leases.get_live_version(conn, ref)
+        except sqlite3.Error:
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE, ref) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        if live == version:
+            return
+        try:
+            os.remove(self._blob_path(ref, version))
+        except FileNotFoundError:
+            return
+        except OSError:
+            self._record_pending_gc(ref, [version])
 
     def _require_no_rollback(self, conn: sqlite3.Connection | None = None) -> None:
         if conn is not None:
@@ -698,6 +722,7 @@ class DpapiVaultBackend:
         ticket: RefreshTicket | None = None,
         bump: bool = True,
     ) -> SecretDescriptor:
+        written: tuple[str, int] | None = None
         try:
             # Whole mutation under an exclusive control-DB lock. The versioned
             # sidecar write is SUBORDINATE; the control-DB commit (which advances
@@ -748,15 +773,24 @@ class DpapiVaultBackend:
                 sidecar = self._seal_sidecar(
                     store, scope, kind, ref, version, value.reveal(), created, now, expires_at
                 )
+                written = (ref, version)
                 self._write_sidecar(ref, version, sidecar)  # inert until commit
                 leases.set_live_version(conn, ref, version)  # atomic commit point
                 if bump:
                     self._reserve_epoch(conn)  # reserve externally before control-DB commit
         except CredentialUnavailable:
+            if written is not None:
+                self._cleanup_failed_put_sidecar(*written)
             raise
         except sqlite3.Error:
+            if written is not None:
+                self._cleanup_failed_put_sidecar(*written)
             self._attested = None
             raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        except BaseException:
+            if written is not None:
+                self._cleanup_failed_put_sidecar(*written)
+            raise
 
         # Commit succeeded — the new version is authoritative.
         # Durable GC: record EVERY non-live versioned sidecar as pending FIRST
@@ -841,6 +875,10 @@ class DpapiVaultBackend:
                     sidecar, ref=binding.ref, kind=binding.kind, scope=expected,
                     store=binding.store,
                 )
+                # Enumerate before advancing the external epoch or staging any
+                # tombstone. An I/O failure can then roll back cleanly without
+                # wedging the store behind an already-advanced guard.
+                versions = self._versions_on_disk(binding.ref)
                 if tombstone:
                     leases.tombstone_ref(conn, binding.ref, int(rec["version"]), time.time())
                     self._reserve_epoch(conn)
@@ -848,7 +886,7 @@ class DpapiVaultBackend:
                 # Record EVERY on-disk version as DURABLE pending GC in the SAME
                 # committed transaction as the tombstone — so a crash/lock after
                 # commit cannot leave an untracked encrypted blob on disk.
-                for version in self._versions_on_disk(binding.ref):
+                for version in versions:
                     leases.add_pending_gc(conn, binding.ref, version)
                 did_delete = True
         except CredentialUnavailable:

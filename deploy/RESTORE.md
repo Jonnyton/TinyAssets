@@ -167,8 +167,10 @@ Log the drill date + result in SUCCESSION.md acceptance criteria.
 `backup-restore.sh` advances the vault's anti-rollback guard
 (`scripts/vault_restore_bump.py`, run through the daemon image against the
 `tinyassets-vault-guard` volume) after every restore. From that moment every
-stored universe/founder credential raises `REAUTHORIZATION_REQUIRED` until
-its founder reconnects. **This is the intended contract, not a failure:**
+stored universe/founder credential raises `REAUTHORIZATION_REQUIRED` until an
+operator runs the authenticated recovery reset below; the reset erases the
+uncertain store, after which each founder reconnects. **This is the intended
+contract, not a failure:**
 a restored one-use refresh token may already have been redeemed at the
 provider, so serving restored credential state would be dishonest. The same
 applies to a failed vault mutation commit at runtime — the whole store fails
@@ -176,30 +178,53 @@ closed into re-authorization rather than guessing.
 
 Do NOT restore or delete the `tinyassets-vault-guard` volume itself: it is
 an independent recovery domain by design. If the bump step warned/failed,
-run `python scripts/vault_restore_bump.py` inside the daemon container.
+rerun the root one-shot `docker run --entrypoint /opt/venv/bin/python ...
+/app/scripts/vault_restore_bump.py` command from `backup-restore.sh`.
 
 ### Operator re-deposit path
 
-1. Leave the guard advanced. Do not copy pre-restore ciphertext, delete the
-   guard, or retry reads until one happens to work; those actions defeat the
-   rollback boundary.
-2. For every affected universe, have its founder repeat the same authenticated
+1. Stop the daemon. Leave the guard advanced; do not copy pre-restore
+   ciphertext, delete the guard, or retry reads until one happens to work.
+2. From a root/operator shell, create a one-shot recovery token and run the
+   recovery command against both persistent volumes (replace the image value if
+   the daemon container is not present):
+
+   ```bash
+   DAEMON_IMAGE="$(sudo docker inspect tinyassets-daemon --format '{{.Config.Image}}')"
+   export TINYASSETS_VAULT_RECOVERY_TOKEN="$(openssl rand -hex 32)"
+   sudo docker run --rm \
+     --entrypoint /opt/venv/bin/python \
+     -e TINYASSETS_DATA_DIR=/data \
+     -e TINYASSETS_VAULT_ROLLBACK_GUARD=/vault-guard \
+     -e TINYASSETS_VAULT_RECOVERY_TOKEN \
+     -v tinyassets-data:/data \
+     -v tinyassets-vault-guard:/vault-guard \
+     "${DAEMON_IMAGE}" /app/scripts/vault_restore_recover.py
+   unset TINYASSETS_VAULT_RECOVERY_TOKEN
+   ```
+
+   The command is deliberately unavailable through MCP, workers, and normal
+   `VaultBroker` construction. It accepts only a guard-ahead restored store,
+   erases every uncertain credential and job grant, and atomically establishes
+   the guard's new clean epoch; a current store or wrong token fails closed.
+3. Restart the daemon. For every affected universe, have its founder repeat the
+   same authenticated
    deposit flow that originally created each binding. Engine API keys are
    re-entered with `universe action=set_engine` and
    `inputs_json={"engine_source":"byo_api_key","service":"…","api_key":"…"}`.
    Connected GitHub/provider credentials are reconnected through their normal
    founder-authenticated connection or OAuth flow. Never paste credentials into
    branch bindings, run inputs, config files, logs, or the ledger.
-3. Repeat per universe and per provider/destination. A deposit in universe A
+4. Repeat per universe and per provider/destination. A deposit in universe A
    does not and must not repair universe B.
-4. Verify each replacement through the normal status/connection surface, then
+5. Verify each replacement through the normal status/connection surface, then
    run one clean universe-scoped operation. `REAUTHORIZATION_REQUIRED` should
-   disappear only for the re-deposited binding; any remaining occurrence means
-   another binding still needs its founder to reconnect.
+   be replaced by `NOT_FOUND` until that binding is re-deposited; any remaining
+   failure means another binding still needs its founder to reconnect.
 
-The restored records are intentionally not made usable again. Re-deposit writes
-fresh provider state and replaces the affected opaque binding while preserving
-the anti-rollback evidence.
+The restored records and pre-restore grants are intentionally erased, never made
+usable again. Re-deposit writes fresh provider state under new opaque bindings
+while preserving the anti-rollback evidence.
 
 **Grant GC (S3 seam):** expired `vault_job_grants` rows are inert (resolve
 fails `EXPIRED`) but need `revoke_grant` on job completion for tidy storage.

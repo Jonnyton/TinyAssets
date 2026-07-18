@@ -103,6 +103,17 @@ def test_run_context_lookup_returns_authoritative_context(platform_vault_env):
     assert context.founder_id == FOUNDER  # runs.owner_user_id, daemon-resolved
 
 
+def test_run_context_lookup_rejects_stopped_run(platform_vault_env):
+    from tinyassets.runs import RUN_STATUS_CANCELLED, update_run_status
+
+    data_root = platform_vault_env
+    run_id = _provision_run(data_root, founder=FOUNDER, universe_id="u-stopped")
+    update_run_status(data_root, run_id, status=RUN_STATUS_CANCELLED)
+
+    with pytest.raises(LookupError, match="not grant-authorized"):
+        run_context_lookup(data_root)(run_id)
+
+
 def test_run_context_lookup_missing_run_fails_loud(platform_vault_env):
     data_root = platform_vault_env
     _provision_run(data_root, founder=FOUNDER, universe_id="u-ctx")

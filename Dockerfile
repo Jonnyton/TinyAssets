@@ -216,6 +216,9 @@ COPY data/world_rules.lp /app/data/world_rules.lp
 # surface. Copied directly (not via the builder stage) because the
 # script is pure stdlib — no compilation needed.
 COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py
+# Operator-only DR commands invoked by deploy/backup-restore.sh and RESTORE.md.
+COPY scripts/vault_restore_bump.py /app/scripts/vault_restore_bump.py
+COPY scripts/vault_restore_recover.py /app/scripts/vault_restore_recover.py
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 ENV PATH=/opt/venv/bin:$PATH \

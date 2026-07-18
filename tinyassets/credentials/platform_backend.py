@@ -28,6 +28,7 @@ lands with the droplet integration — not provided or claimed by this library.
 from __future__ import annotations
 
 import contextlib
+import os
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -88,6 +89,20 @@ CREATE TABLE IF NOT EXISTS vault_secrets (
 """
 
 
+def _is_operator_process() -> bool:
+    """True for a host/operator process, never the UID-dropped daemon worker."""
+    if os.name == "posix":
+        return os.geteuid() == 0
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except (AttributeError, OSError):
+            return False
+    return False
+
+
 def _aad(scope: SecretScope, ref: str, kind: str, version: int, store: VaultStore) -> bytes:
     return crypto.identity_aad(
         scope, ref, kind, version, store.store_id, store.custody.value, store.daemon_id
@@ -106,6 +121,7 @@ class PlatformVaultBackend:
         base: str | Path | None = None,
         guard_dir: str | Path | None = None,
         run_context_lookup: Callable[[str], grants.JobContext | None] | None = None,
+        operator_recovery_authorizer: Callable[[bytes], bool] | None = None,
     ) -> None:
         self._keys = key_provider
         self._store_id = store_id
@@ -115,6 +131,7 @@ class PlatformVaultBackend:
         self._attested: bool | None = None
         self._initialized = False
         self._run_context_lookup = run_context_lookup
+        self._operator_recovery_authorizer = operator_recovery_authorizer
         self._leases = RefreshLeaseManager(self._connect)
         # Anti-rollback epoch guard in an INDEPENDENT recovery domain OUTSIDE
         # /data (so a full-volume restore does not carry it).
@@ -260,6 +277,66 @@ class PlatformVaultBackend:
         finally:
             conn.close()
         self._initialized = True
+
+    def recover_after_restore(self, *, operator_token: bytes) -> None:
+        """Discard a rolled-back store and align it to the guard's new epoch.
+
+        This is an operator-only disaster-recovery seam, deliberately absent
+        from :class:`VaultBroker` and normal backend construction. The injected
+        authorizer must explicitly approve the presented token, and recovery is
+        accepted only while the external guard is strictly ahead of the DB.
+        """
+        authorizer = self._operator_recovery_authorizer
+        if (
+            not _is_operator_process()
+            or authorizer is None
+            or not isinstance(operator_token, bytes)
+        ):
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
+        try:
+            approved = authorizer(operator_token)
+        except Exception:  # noqa: BLE001 - operator authentication fails closed
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN) from None
+        if approved is not True:
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
+
+        self.initialize()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            guard_epoch = self._epoch.read()
+            db_epoch = leases.read_epoch(conn)
+            if guard_epoch is None or guard_epoch <= db_epoch:
+                raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
+            for table in (
+                "vault_job_grants",
+                "vault_refresh_leases",
+                "vault_refresh_claims",
+                "vault_local_pending_gc",
+                "vault_local_live",
+                "vault_secrets",
+                "vault_meta",
+            ):
+                conn.execute(f"DELETE FROM {table}")
+            leases.set_epoch(conn, guard_epoch)
+            conn.execute("COMMIT")
+        except CredentialUnavailable:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+        except GuardUnavailable:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise CredentialUnavailable(VaultErrorCode.BACKEND_UNAVAILABLE) from None
+        except sqlite3.Error:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            self._attested = None
+            raise CredentialUnavailable(VaultErrorCode.CORRUPT_RECORD) from None
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        self._attested = None
 
     def durability_info(self) -> dict[str, str]:
         """Report the durability posture (for ops verification / the DR gate).
@@ -873,6 +950,14 @@ class PlatformVaultBackend:
             run_id=parsed.run_id, universe_id=parsed.universe_id,
             founder_id=parsed.founder_id,
         )
+        if self._run_context_lookup is None:
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
+        try:
+            live_context = self._run_context_lookup(parsed.run_id)
+        except Exception:  # noqa: BLE001 - authority lookup failure is fail-closed
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN) from None
+        if not isinstance(live_context, grants.JobContext) or live_context != context:
+            raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
         if verify_context is None:
             raise CredentialUnavailable(VaultErrorCode.CROSS_STORE_FORBIDDEN)
         try:

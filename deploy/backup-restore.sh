@@ -165,12 +165,13 @@ DAEMON_IMAGE="$(docker inspect tinyassets-daemon --format '{{.Config.Image}}' 2>
 if [[ -n "${DAEMON_IMAGE}" ]]; then
     log "advancing vault anti-rollback guard..."
     if docker run --rm \
+            --entrypoint /opt/venv/bin/python \
             -e TINYASSETS_DATA_DIR=/data \
             -e TINYASSETS_VAULT_ROLLBACK_GUARD=/vault-guard \
             -v "${BACKUP_VOLUME}:/data" \
             -v tinyassets-vault-guard:/vault-guard \
             "${DAEMON_IMAGE}" \
-            python /app/scripts/vault_restore_bump.py; then
+            /app/scripts/vault_restore_bump.py; then
         log "  vault guard advanced — credentials now require re-authorization (intended)"
     else
         log "ERROR: vault guard bump failed; restored credentials cannot be"

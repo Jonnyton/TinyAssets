@@ -236,6 +236,9 @@ def run_context_lookup(base_path: str | Path) -> Callable[[str], JobContext]:
     * ``universe_id`` <- the run's ``runtime_instance_id`` joined through
       ``daemon_server.get_runtime_instance`` — runs carry no universe column;
       the runtime-instance registry is the authoritative universe binding.
+    * failed/cancelled/interrupted runs are not grant-authorized. Queued/running
+      runs may execute, and completed runs remain authorized for their bounded
+      post-run review/merge effects.
 
     A run without an owner or without a runtime instance CANNOT anchor a
     credential grant: the lookup raises (fail loud), which the vault maps to
@@ -245,7 +248,13 @@ def run_context_lookup(base_path: str | Path) -> Callable[[str], JobContext]:
 
     def _lookup(run_id: str) -> JobContext:
         from tinyassets.daemon_server import get_runtime_instance
-        from tinyassets.runs import runs_db_path
+        from tinyassets.runs import (
+            RUN_STATUS_COMPLETED,
+            RUN_STATUS_QUEUED,
+            RUN_STATUS_RESUMED,
+            RUN_STATUS_RUNNING,
+            runs_db_path,
+        )
 
         db = runs_db_path(base)
         if not db.is_file():
@@ -254,7 +263,7 @@ def run_context_lookup(base_path: str | Path) -> Callable[[str], JobContext]:
         conn.row_factory = sqlite3.Row
         try:
             row = conn.execute(
-                "SELECT owner_user_id, runtime_instance_id FROM runs "
+                "SELECT owner_user_id, runtime_instance_id, status FROM runs "
                 "WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
@@ -263,6 +272,16 @@ def run_context_lookup(base_path: str | Path) -> Callable[[str], JobContext]:
                 conn.close()
         if row is None:
             raise LookupError(f"run {run_id!r} not found in the run store")
+        status = str(row["status"] or "").strip()
+        if status not in {
+            RUN_STATUS_QUEUED,
+            RUN_STATUS_RUNNING,
+            RUN_STATUS_COMPLETED,
+            RUN_STATUS_RESUMED,
+        }:
+            raise LookupError(
+                f"run {run_id!r} status {status!r} is not grant-authorized"
+            )
         founder_id = str(row["owner_user_id"] or "").strip()
         if not founder_id:
             raise LookupError(
