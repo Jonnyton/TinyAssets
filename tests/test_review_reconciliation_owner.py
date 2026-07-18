@@ -62,39 +62,61 @@ def test_reconcile_requires_matching_commit_and_state():
     ) is False
 
 
-def test_submit_review_reconciles_owner_and_writes_receipt(tmp_path):
-    """A crash after the owner's review landed on GitHub but before the receipt:
-    the submit reconciles (owner match), writes the receipt, and does NOT
-    re-submit."""
+def _queue_approval(tmp_path):
+    rq.project_pr(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        head_sha=_HEAD,
+        branch_def_id="bd",
+    )
+    return rq.decide_and_resume(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_APPROVE,
+        workflow_outcome=rq.WORKFLOW_APPROVED,
+        decided_by="owner",
+        expected_head_sha=_HEAD,
+        directive={
+            "action": "merge",
+            "github_call": _approve_call(),
+        },
+    )
+
+
+def test_submit_review_effect_reconciles_owner(tmp_path):
+    """A remote success before local effect completion is not resubmitted."""
+    decision = _queue_approval(tmp_path)
     api = InMemoryGitHubApi(reviews={_PR: [
         {"id": 6, "commit_id": _HEAD, "state": "APPROVED", "user_login": "owner"},
     ]})
-    effects: dict = {}
-    ok = runs._submit_github_review(
-        tmp_path, run_id="run-1", call_dict=_approve_call(),
-        effect_kind="submit_review_approve", github_api=api, effects=effects,
+    result = runs.execute_next_review_decision_effect(
+        tmp_path,
+        worker_id="review-worker",
+        github_api=api,
         expected_owner="owner",
     )
-    assert ok is True
-    assert effects["submit_review_approve"] == "already_submitted"
+    assert result["executed"] is True
+    assert result["decision_id"] == decision["decision_id"]
+    assert result["detail"] == "already_on_github"
     assert api.run_calls == []  # reconciled, never re-submitted
-    assert rq.has_effect_receipt(
-        tmp_path, run_id="run-1", effect_kind="submit_review_approve"
-    ) is not None
+    assert rq.list_decision_effects(tmp_path)[0]["status"] == "succeeded"
 
 
 def test_submit_review_resubmits_when_only_attacker_present(tmp_path):
+    _queue_approval(tmp_path)
     api = InMemoryGitHubApi(reviews={_PR: [
         {"id": 7, "commit_id": _HEAD, "state": "APPROVED", "user_login": "attacker"},
     ]}, actor_login="owner")
-    effects: dict = {}
-    ok = runs._submit_github_review(
-        tmp_path, run_id="run-2", call_dict=_approve_call(),
-        effect_kind="submit_review_approve", github_api=api, effects=effects,
+    result = runs.execute_next_review_decision_effect(
+        tmp_path,
+        worker_id="review-worker",
+        github_api=api,
         expected_owner="owner",
     )
-    assert ok is True
-    assert effects["submit_review_approve"] == "submitted"
+    assert result["executed"] is True
+    assert result["detail"] == "submitted"
     assert len(api.run_calls) == 1  # the attacker's review did not satisfy it
 
 

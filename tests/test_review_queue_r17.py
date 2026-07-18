@@ -6,7 +6,7 @@ lookup, head binding, and the autonomous ruleset gate:
 
 - #1 the manual merge is REFUSED without a CONFIRMED owner review on GitHub, and
   proceeds only with one (never trusting local WORKFLOW_APPROVED);
-- #1 the independent review-effect outbox submits the owner's review;
+- #1 the ordered decision executor submits the owner's review;
 - #3 the not_before timer worker fires through a per-destination VERIFIER client
   built from the vault (autonomous reachable in prod);
 - #4 the App-authored-PR invariant rejects an owner-authored PR before merge;
@@ -69,8 +69,10 @@ def _enqueue_review_effect(universe_dir):
         workflow_outcome=rq.WORKFLOW_APPROVED,
         decided_by="owner",
         expected_head_sha=_HEAD,
-        directive={"action": "merge"},
-        review_effect={"event": "APPROVE", "branch_def_id": "bd"},
+        directive={
+            "action": "merge",
+            "github_call": {"params": {"event": "APPROVE"}},
+        },
     )
 
 
@@ -175,7 +177,7 @@ def test_merge_refused_when_owner_authored_pr_real_client(tmp_path):
     assert all("/merge" not in s for _m, s in transport.calls)
 
 
-# ── #1: independent review-effect outbox submits the owner's review ───────────
+# ── #1: ordered decision effect submits the owner's review ───────────────────
 
 
 def test_review_effect_worker_submits_owner_review_real_client(tmp_path):
@@ -185,12 +187,16 @@ def test_review_effect_worker_submits_owner_review_real_client(tmp_path):
         ("GET", f"/pulls/{_PR}/reviews"): [(200, [])],                # not yet reviewed
         ("POST", f"/pulls/{_PR}/reviews"): [(200, {"id": 9, "state": "APPROVED"})],
     })
-    results = runs.execute_pending_review_effects(
-        tmp_path, github_api=_merge_client(transport), expected_owner="owner"
+    result = runs.execute_next_review_decision_effect(
+        tmp_path,
+        worker_id="review-worker",
+        github_api=_merge_client(transport),
+        expected_owner="owner",
     )
-    assert results[0]["submitted"] is True
+    assert result["executed"] is True
+    assert result["detail"] == "submitted"
     assert any(m == "POST" and s.endswith("/reviews") for m, s in transport.calls)
-    assert rq.list_pending_review_effects(tmp_path) == []
+    assert rq.list_decision_effects(tmp_path)[0]["status"] == "succeeded"
 
 
 def test_review_effect_worker_idempotent_when_already_on_github(tmp_path):
@@ -199,11 +205,14 @@ def test_review_effect_worker_idempotent_when_already_on_github(tmp_path):
         ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False))],
         ("GET", f"/pulls/{_PR}/reviews"): [(200, _owner_reviews())],  # already there
     })
-    results = runs.execute_pending_review_effects(
-        tmp_path, github_api=_merge_client(transport), expected_owner="owner"
+    result = runs.execute_next_review_decision_effect(
+        tmp_path,
+        worker_id="review-worker",
+        github_api=_merge_client(transport),
+        expected_owner="owner",
     )
-    assert results[0]["submitted"] is True
-    assert results[0]["detail"] == "already_on_github"
+    assert result["executed"] is True
+    assert result["detail"] == "already_on_github"
     # Reconciled — NEVER POSTed a duplicate review.
     assert all(m != "POST" for m, _s in transport.calls)
 
@@ -215,11 +224,14 @@ def test_review_effect_worker_rejects_owner_authored_pr(tmp_path):
             (200, _pull(merged=False, author_login="owner", author_type="User")),
         ],
     })
-    results = runs.execute_pending_review_effects(
-        tmp_path, github_api=_merge_client(transport), expected_owner="owner"
+    result = runs.execute_next_review_decision_effect(
+        tmp_path,
+        worker_id="review-worker",
+        github_api=_merge_client(transport),
+        expected_owner="owner",
     )
-    assert results[0]["submitted"] is False
-    assert results[0]["reason"] == "pr_authored_by_owner"
+    assert result["executed"] is False
+    assert result["reason"] == "pr_authored_by_owner"
     assert all(m != "POST" for m, _s in transport.calls)  # doomed call not made
 
 

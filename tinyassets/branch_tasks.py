@@ -136,6 +136,12 @@ class BranchTask:
     # dispatch context, never from branch-authored inputs.
     parent_branch_task_id: str = ""
     origin_branch_task_id: str = ""
+    # Review revisions are ordinary durable execution intents.  These fields
+    # carry only the trusted route identity; the consumer reloads source run
+    # state/identity instead of trusting branch-authored inputs.
+    review_decision_id: str = ""
+    source_run_id: str = ""
+    target_node: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

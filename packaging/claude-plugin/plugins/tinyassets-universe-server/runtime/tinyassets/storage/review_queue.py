@@ -15,13 +15,14 @@ What TinyAssets keeps (this module):
   decision / mergeability / merge commit), reread from GitHub, never authored
   here.
 - **Owner workflow intent + terminal outcome** — the owner's recorded chat
-  decision (approve / reshape / reject) and the exact GitHub call that decision
-  will run (Phase 1 records; Phase 2 executes), plus a TinyAssets-side workflow
+  decision (approve / reshape / reject), plus a TinyAssets-side workflow
   outcome + notes. This is coordination state, NOT merge authority.
+- **Decision effects** (``review_decision_effects``) — one ordered, leased,
+  replayable effect plan committed atomically with each owner decision. Remote
+  effects reconcile before mutation; revision effects enqueue canonical branch
+  work instead of running a second lifecycle here.
 - **Merge preference binding** (``merge_preference_bindings``) — the off-GitHub
   product preference (manual / auto / not_before) per remix design.
-- **Reshape outbox** (``reshape_outbox``) — the durable ``draft_patch`` resume
-  identity the loop's Phase-2 revision consumer will read.
 - **``not_before`` timers** (``not_before_timers``) — the single durable timer
   the ``not_before`` preference needs (GitHub has no PR-level "merge after T").
 
@@ -32,6 +33,7 @@ Per-universe (``${universe_dir}/.review_queue.db``), mirroring the
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -177,23 +179,6 @@ CREATE TABLE IF NOT EXISTS merge_preference_bindings (
     bound_at           REAL NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS reshape_outbox (
-    outbox_id     TEXT PRIMARY KEY,
-    destination   TEXT NOT NULL DEFAULT '',
-    pr_number     INTEGER NOT NULL DEFAULT 0,
-    target_node   TEXT NOT NULL DEFAULT 'draft_patch',
-    universe_id   TEXT NOT NULL DEFAULT '',
-    branch_def_id TEXT NOT NULL DEFAULT '',
-    run_id        TEXT NOT NULL DEFAULT '',
-    owner_notes   TEXT NOT NULL DEFAULT '',
-    recorded_call TEXT NOT NULL DEFAULT '',
-    created_at    REAL NOT NULL,
-    consumed_at   REAL
-);
-
-CREATE INDEX IF NOT EXISTS idx_reshape_outbox_pending
-    ON reshape_outbox(created_at) WHERE consumed_at IS NULL;
-
 CREATE TABLE IF NOT EXISTS not_before_timers (
     destination      TEXT NOT NULL,
     pr_number        INTEGER NOT NULL,
@@ -236,12 +221,34 @@ CREATE TABLE IF NOT EXISTS review_suspensions (
 CREATE INDEX IF NOT EXISTS idx_review_suspensions_pr
     ON review_suspensions(destination, pr_number, status);
 
--- Durable effect RECEIPTS (Codex r14 #7): each externally-visible GitHub effect
--- a continuation performs (submit_review / enable_auto_merge / create_revised_run
--- / merge) records a receipt keyed by (run_id, effect_kind). Replay checks the
--- receipt BEFORE re-executing, so a crash after GitHub succeeded but before the
--- local ack can't double-submit a review or double-create a revised run — the
--- real-world harm this store exists to prevent.
+-- One execution queue for every owner decision.  A decision is committed with
+-- its ordered effects; workers claim one ready effect under a renewable lease.
+-- Effect handlers contain policy/reconciliation only.  Queue ownership,
+-- retries, ordering, and terminalization live here once for every path.
+CREATE TABLE IF NOT EXISTS review_decision_effects (
+    effect_id       TEXT PRIMARY KEY,
+    decision_id     TEXT NOT NULL,
+    position        INTEGER NOT NULL,
+    kind            TEXT NOT NULL,
+    payload         TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    claimed_by      TEXT NOT NULL DEFAULT '',
+    claim_token     TEXT NOT NULL DEFAULT '',
+    lease_expires_at REAL,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    result          TEXT NOT NULL DEFAULT '',
+    last_error      TEXT NOT NULL DEFAULT '',
+    created_at      REAL NOT NULL,
+    updated_at      REAL NOT NULL,
+    UNIQUE(decision_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_decision_effects_ready
+    ON review_decision_effects(status, created_at, position);
+
+-- Receipts for the remaining non-decision workers (manual merge and delayed
+-- timer generations). Review decisions use leased effect rows plus remote-state
+-- reconciliation instead of this run-scoped receipt mechanism.
 CREATE TABLE IF NOT EXISTS effect_receipts (
     run_id      TEXT NOT NULL,
     effect_kind TEXT NOT NULL,
@@ -295,39 +302,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_merge_pending
     ON manual_merge_outbox(destination, pr_number, expected_head_sha)
     WHERE executed_at IS NULL;
 
--- Durable REVIEW-EFFECT outbox (Codex r17 #1): the owner's decision to submit a
--- GitHub review (APPROVE / REQUEST_CHANGES) at an exact head, recorded
--- INDEPENDENTLY of any run suspension. A daemon worker submits the owner's review
--- with the owner USER token — so a projection with NO suspension still gets its
--- owner review onto GitHub, and the manual-merge gate can require a CONFIRMED
--- owner review before merging (never trusting local WORKFLOW_APPROVED). One
--- pending review-effect per (destination, pr_number, head, event).
-CREATE TABLE IF NOT EXISTS review_effect_outbox (
-    review_effect_id  TEXT PRIMARY KEY,
-    destination       TEXT NOT NULL DEFAULT '',
-    pr_number         INTEGER NOT NULL DEFAULT 0,
-    expected_head_sha TEXT NOT NULL DEFAULT '',
-    event             TEXT NOT NULL DEFAULT 'APPROVE',
-    body              TEXT NOT NULL DEFAULT '',
-    branch_def_id     TEXT NOT NULL DEFAULT '',
-    decided_by        TEXT NOT NULL DEFAULT '',
-    created_at        REAL NOT NULL,
-    executed_at       REAL
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_review_effect_pending
-    ON review_effect_outbox(destination, pr_number, expected_head_sha, event)
-    WHERE executed_at IS NULL;
 """
 
 SUSPENSION_SUSPENDED = "suspended"
 #: Owner has DECIDED (decision + directive durably recorded) but the canonical
 #: run continuation has NOT yet been acknowledged. This is the durable
-#: resume-pending outbox marker (Codex r13 #1): a crash between the decision and
-#: the canonical-run transition leaves the suspension here, and idempotent
-#: startup replay (:func:`list_pending_continuations`) re-drives it — a decided
-#: run is never orphaned. Acked to ``resumed`` only AFTER the run transition
-#: succeeds.
+#: resume-pending marker: a crash between the decision and canonical-run
+#: transition leaves the suspension here while the leased decision plan remains
+#: replayable. Acked to ``resumed`` only after the finalization effect succeeds.
 SUSPENSION_DECIDED = "decided"
 SUSPENSION_RESUMED = "resumed"
 #: A prior suspension displaced because a newer run suspended on the same PR, or
@@ -636,98 +618,6 @@ def reconcile_projection(
                 (dest, pr_number),
             ).fetchone()
     return _projection_to_dict(updated)
-
-
-# ── Reshape outbox (durable draft_patch resume — Phase-2 consumer seam) ──────
-
-
-def enqueue_reshape(
-    universe_dir: str | Path,
-    *,
-    destination: str,
-    pr_number: int,
-    universe_id: str = "",
-    branch_def_id: str = "",
-    run_id: str = "",
-    owner_notes: str = "",
-    recorded_call: dict[str, Any] | None = None,
-    now: float | None = None,
-) -> dict[str, Any]:
-    """Persist a durable reshape resume row. The Phase-2 revision consumer (NOT
-    built here) reads this to re-run ``draft_patch`` with the owner's notes.
-    Returns the outbox row including a ``route_back`` resume identity."""
-    initialize_review_queue_db(universe_dir)
-    ts = _now(now)
-    outbox_id = f"rsh-{uuid.uuid4().hex[:16]}"
-    with _connect(universe_dir) as conn:
-        with _write(conn):
-            conn.execute(
-                """
-                INSERT INTO reshape_outbox (
-                    outbox_id, destination, pr_number, target_node,
-                    universe_id, branch_def_id, run_id, owner_notes,
-                    recorded_call, created_at
-                ) VALUES (?, ?, ?, 'draft_patch', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    outbox_id, (destination or "").strip(), pr_number,
-                    universe_id, branch_def_id, run_id, owner_notes,
-                    json.dumps(recorded_call) if recorded_call else "", ts,
-                ),
-            )
-    return {
-        "outbox_id": outbox_id,
-        "destination": (destination or "").strip(),
-        "pr_number": pr_number,
-        "route_back": {
-            "target_node": "draft_patch",
-            "universe_id": universe_id,
-            "branch_def_id": branch_def_id,
-            "run_id": run_id,
-            "owner_notes": owner_notes,
-        },
-        "recorded_call": recorded_call,
-        "created_at": ts,
-        "consumed_at": None,
-    }
-
-
-def mark_reshape_outbox_consumed(
-    universe_dir: str | Path, *, run_id: str, now: float | None = None
-) -> int:
-    """Mark the reshape outbox row(s) for ``run_id`` consumed once the revised run
-    is created (Codex r14 #4) — so a reshape can't leave a permanently pending
-    outbox. Returns the number of rows consumed."""
-    initialize_review_queue_db(universe_dir)
-    ts = _now(now)
-    with _connect(universe_dir) as conn:
-        with _write(conn):
-            cur = conn.execute(
-                "UPDATE reshape_outbox SET consumed_at = ? "
-                "WHERE run_id = ? AND consumed_at IS NULL",
-                (ts, (run_id or "").strip()),
-            )
-            return cur.rowcount
-
-
-def list_pending_reshapes(universe_dir: str | Path) -> list[dict[str, Any]]:
-    initialize_review_queue_db(universe_dir)
-    with _connect(universe_dir) as conn:
-        rows = conn.execute(
-            "SELECT * FROM reshape_outbox WHERE consumed_at IS NULL ORDER BY created_at",
-        ).fetchall()
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        d = dict(row)
-        d["route_back"] = {
-            "target_node": d.get("target_node") or "draft_patch",
-            "universe_id": d.get("universe_id") or "",
-            "branch_def_id": d.get("branch_def_id") or "",
-            "run_id": d.get("run_id") or "",
-            "owner_notes": d.get("owner_notes") or "",
-        }
-        out.append(d)
-    return out
 
 
 # ── Merge preference binding (off-GitHub product config) ─────────────────────
@@ -1134,42 +1024,6 @@ def suspension_for_pr(
     return _suspension_to_dict(row) if row is not None else None
 
 
-def resume_review_run(
-    universe_dir: str | Path,
-    *,
-    run_id: str,
-    decision: str,
-    directive: dict[str, Any] | None = None,
-    now: float | None = None,
-) -> dict[str, Any] | None:
-    """Resolve a suspended run: mark it RESUMED with the owner's ``decision`` and
-    the ``directive`` the loop follows next (merge / draft_patch resume /
-    terminal). Returns the updated suspension, or ``None`` if the run is not
-    suspended (already resumed / never suspended). Idempotent-safe: only a
-    ``suspended`` row transitions."""
-    rid = (run_id or "").strip()
-    initialize_review_queue_db(universe_dir)
-    ts = _now(now)
-    with _connect(universe_dir) as conn:
-        with _write(conn):
-            cur = conn.execute(
-                "UPDATE review_suspensions SET status = ?, resume_decision = ?, "
-                "resume_directive = ?, resumed_at = ? "
-                "WHERE run_id = ? AND status = ?",
-                (
-                    SUSPENSION_RESUMED, decision,
-                    json.dumps(directive) if directive else "", ts, rid,
-                    SUSPENSION_SUSPENDED,
-                ),
-            )
-            if cur.rowcount == 0:
-                return None
-            row = conn.execute(
-                "SELECT * FROM review_suspensions WHERE run_id = ?", (rid,)
-            ).fetchone()
-    return _suspension_to_dict(row)
-
-
 def decide_and_resume(
     universe_dir: str | Path,
     *,
@@ -1182,29 +1036,19 @@ def decide_and_resume(
     directive: dict[str, Any],
     recorded_call: dict[str, Any] | None = None,
     notes: str = "",
-    reshape: dict[str, Any] | None = None,
-    review_effect: dict[str, Any] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """ATOMICALLY record the owner's decision on the projection, optionally write
-    the reshape outbox row, AND move the suspended run to the durable
-    ``decided`` (resume-pending) state — ALL in ONE transaction.
+    """Atomically record an owner decision and its ordered execution plan.
 
-    - Codex r12 #3: the projection outcome + the recorded directive can never
-      disagree (single txn under the write lock).
-    - Codex r13 #4: the reshape outbox row is inserted in the SAME txn as the
-      head-bound decision, so a stale-head rejection can't leave an orphan
-      outbox row against an ``open`` projection.
-    - Codex r13 #1: the suspension goes to ``decided`` (NOT ``resumed``) — the
-      durable resume-pending marker. It is acked to ``resumed`` only after the
-      canonical run transition succeeds (:func:`ack_continuation`); a crash in
-      between is recovered by :func:`list_pending_continuations` replay.
+    The projection update, suspension transition, and every ordered effect are
+    one transaction.  A stale-head rejection therefore leaves no partial plan,
+    and a crash after commit is recovered through leased effect claims.  The
+    directive is input to plan construction only; workers execute typed effects
+    rather than interpreting a second lifecycle description.
 
     Head-bound: ``expected_head_sha`` must match the projection's current head or
     :class:`ReviewHeadChanged` is raised and NOTHING changes. Returns
-    ``{"projection": <dict|None>, "pending": <dict|None>, "reshape": <dict|None>,
-    "review_effect": <dict|None>}``
-    — ``pending`` is None when no run is suspended on the PR (fire-and-forget).
+    ``pending`` is None when no run is suspended on the PR (fire-and-forget).
     """
     if workflow_outcome not in VALID_WORKFLOW_OUTCOMES:
         raise ValueError(f"invalid workflow_outcome {workflow_outcome!r}")
@@ -1212,7 +1056,7 @@ def decide_and_resume(
     ts = _now(now)
     dest = (destination or "").strip()
     want_head = (expected_head_sha or "").strip()
-    reshape_row: dict[str, Any] | None = None
+    decision_id = f"decision-{uuid.uuid4().hex}"
     with _connect(universe_dir) as conn:
         with _write(conn):
             proj = conn.execute(
@@ -1223,8 +1067,7 @@ def decide_and_resume(
                 return {
                     "projection": None,
                     "pending": None,
-                    "reshape": None,
-                    "review_effect": None,
+                    "decision_id": decision_id,
                 }
             current_head = (proj["head_sha"] or "").strip()
             if want_head != current_head:
@@ -1232,6 +1075,25 @@ def decide_and_resume(
                     f"decision head {want_head[:8] or '(none)'} != current PR head "
                     f"{current_head[:8] or '(none)'} on {dest}#{pr_number}"
                 )
+            action = str((directive or {}).get("action") or "").strip()
+            route_back = dict((directive or {}).get("route_back") or {})
+            if action == "draft_patch":
+                required_route = (
+                    "target_node",
+                    "universe_id",
+                    "branch_def_id",
+                    "run_id",
+                )
+                missing = [
+                    field
+                    for field in required_route
+                    if not str(route_back.get(field) or "").strip()
+                ]
+                if missing:
+                    raise ValueError(
+                        "reshape decision has incomplete revision route: "
+                        + ", ".join(missing)
+                    )
             # IMMUTABLE first decision (Codex r14 #3): if a suspension for this PR
             # is already past `suspended` (decided/resumed), or — fire-and-forget
             # — the projection already carries a terminal owner decision on this
@@ -1272,73 +1134,6 @@ def decide_and_resume(
                 "SELECT * FROM pr_projection WHERE destination = ? AND pr_number = ?",
                 (dest, pr_number),
             ).fetchone()
-            review_effect_row: dict[str, Any] | None = None
-            if review_effect is not None:
-                effect_id = f"rve-{uuid.uuid4().hex[:16]}"
-                event = str(review_effect.get("event") or "APPROVE").strip().upper()
-                body = str(review_effect.get("body") or "")
-                branch_def_id = str(
-                    review_effect.get("branch_def_id") or proj["branch_def_id"] or ""
-                ).strip()
-                effect_decided_by = str(
-                    review_effect.get("decided_by") or decided_by
-                ).strip()
-                conn.execute(
-                    "INSERT OR IGNORE INTO review_effect_outbox "
-                    "(review_effect_id, destination, pr_number, expected_head_sha, "
-                    "event, body, branch_def_id, decided_by, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        effect_id,
-                        dest,
-                        pr_number,
-                        want_head,
-                        event,
-                        body,
-                        branch_def_id,
-                        effect_decided_by,
-                        ts,
-                    ),
-                )
-                review_effect_row = {
-                    "review_effect_id": effect_id,
-                    "destination": dest,
-                    "pr_number": pr_number,
-                    "expected_head_sha": want_head,
-                    "event": event,
-                }
-            # Reshape outbox row — SAME txn as the head-bound decision (r13 #4).
-            if reshape is not None:
-                outbox_id = f"rsh-{uuid.uuid4().hex[:16]}"
-                conn.execute(
-                    """
-                    INSERT INTO reshape_outbox (
-                        outbox_id, destination, pr_number, target_node,
-                        universe_id, branch_def_id, run_id, owner_notes,
-                        recorded_call, created_at
-                    ) VALUES (?, ?, ?, 'draft_patch', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        outbox_id, dest, pr_number,
-                        reshape.get("universe_id") or "",
-                        reshape.get("branch_def_id") or "",
-                        reshape.get("run_id") or "",
-                        reshape.get("owner_notes") or "",
-                        json.dumps(reshape.get("recorded_call"))
-                        if reshape.get("recorded_call") else "",
-                        ts,
-                    ),
-                )
-                reshape_row = {
-                    "outbox_id": outbox_id,
-                    "route_back": {
-                        "target_node": "draft_patch",
-                        "universe_id": reshape.get("universe_id") or "",
-                        "branch_def_id": reshape.get("branch_def_id") or "",
-                        "run_id": reshape.get("run_id") or "",
-                        "owner_notes": reshape.get("owner_notes") or "",
-                    },
-                }
             # Move the single active suspension to DECIDED (resume-pending).
             susp = conn.execute(
                 "SELECT run_id FROM review_suspensions "
@@ -1348,24 +1143,86 @@ def decide_and_resume(
             ).fetchone()
             pending: dict[str, Any] | None = None
             if susp is not None:
+                recorded_directive = dict(directive or {})
+                recorded_directive["decision_id"] = decision_id
                 conn.execute(
                     "UPDATE review_suspensions SET status = ?, resume_decision = ?, "
                     "resume_directive = ? WHERE run_id = ?",
                     (
                         SUSPENSION_DECIDED, intent,
-                        json.dumps(directive) if directive else "",
+                        json.dumps(recorded_directive),
                         susp["run_id"],
                     ),
                 )
                 pending = {
                     "run_id": susp["run_id"], "status": SUSPENSION_DECIDED,
-                    "decision": intent, "directive": directive,
+                    "decision": intent, "directive": recorded_directive,
+                    "decision_id": decision_id,
                 }
+            effect_specs: list[tuple[str, dict[str, Any]]] = []
+            github_call = dict((directive or {}).get("github_call") or {})
+            if github_call:
+                call_params = dict(github_call.get("params") or {})
+                effect_specs.append((
+                    "submit_review",
+                    {
+                        "destination": dest,
+                        "pr_number": pr_number,
+                        "expected_head_sha": want_head,
+                        "event": str(call_params.get("event") or "APPROVE").strip().upper(),
+                        "body": str(call_params.get("body") or ""),
+                        "branch_def_id": str(proj["branch_def_id"] or "").strip(),
+                        "decided_by": decided_by,
+                    },
+                ))
+            if action == "merge":
+                effect_specs.append((
+                    "apply_merge_preference",
+                    {
+                        "destination": dest,
+                        "pr_number": pr_number,
+                        "expected_head_sha": want_head,
+                        "branch_def_id": str(proj["branch_def_id"] or ""),
+                    },
+                ))
+            elif action == "draft_patch":
+                task_digest = hashlib.sha256(decision_id.encode("utf-8")).hexdigest()[:24]
+                effect_specs.append((
+                    "enqueue_revision",
+                    {
+                        "decision_id": decision_id,
+                        "branch_task_id": f"review-revision-{task_digest}",
+                        "route_back": route_back,
+                    },
+                ))
+            if susp is not None:
+                effect_specs.append((
+                    "finalize_run",
+                    {
+                        "run_id": susp["run_id"],
+                        "decision": intent,
+                    },
+                ))
+            for position, (kind, payload) in enumerate(effect_specs):
+                effect_id = f"{decision_id}:{position}:{kind}"
+                conn.execute(
+                    "INSERT INTO review_decision_effects "
+                    "(effect_id, decision_id, position, kind, payload, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        effect_id,
+                        decision_id,
+                        position,
+                        kind,
+                        json.dumps(payload),
+                        ts,
+                        ts,
+                    ),
+                )
     return {
+        "decision_id": decision_id,
         "projection": _projection_to_dict(updated_proj),
         "pending": pending,
-        "reshape": reshape_row,
-        "review_effect": review_effect_row,
     }
 
 
@@ -1393,20 +1250,159 @@ def ack_continuation(
     return _suspension_to_dict(row)
 
 
-def list_pending_continuations(universe_dir: str | Path) -> list[dict[str, Any]]:
-    """DECIDED-but-not-yet-acked suspensions — the durable resume-pending outbox
-    a daemon replays on startup (Codex r13 #1) so a decided-but-not-continued
-    run is re-driven, never orphaned."""
+# ── ordered decision effects ─────────────────────────────────────────────────
+
+
+def _decision_effect_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    effect = dict(row)
+    for field in ("payload", "result"):
+        raw = effect.get(field) or ""
+        try:
+            effect[field] = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            effect[field] = None
+    return effect
+
+
+def list_decision_effects(
+    universe_dir: str | Path, *, decision_id: str = ""
+) -> list[dict[str, Any]]:
+    """Return decision effects in execution order."""
     initialize_review_queue_db(universe_dir)
+    query = "SELECT * FROM review_decision_effects"
+    params: tuple[Any, ...] = ()
+    if decision_id:
+        query += " WHERE decision_id = ?"
+        params = ((decision_id or "").strip(),)
+    query += " ORDER BY created_at, decision_id, position"
     with _connect(universe_dir) as conn:
-        rows = conn.execute(
-            "SELECT * FROM review_suspensions WHERE status = ? ORDER BY suspended_at",
-            (SUSPENSION_DECIDED,),
-        ).fetchall()
-    return [_suspension_to_dict(r) for r in rows]
+        rows = conn.execute(query, params).fetchall()
+    return [_decision_effect_to_dict(row) for row in rows]
 
 
-# ── effect receipts (idempotent replay — Codex r14 #7) ───────────────────────
+def claim_next_decision_effect(
+    universe_dir: str | Path,
+    *,
+    worker_id: str,
+    lease_seconds: float = 1800,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Atomically claim the oldest ready effect across all decisions.
+
+    Only the first unfinished effect in a decision is eligible. Expired leases
+    are reclaimed in the same write transaction.
+    """
+    owner = (worker_id or "").strip()
+    if not owner:
+        raise ValueError("worker_id is required")
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    lease_until = ts + max(1.0, float(lease_seconds))
+    claim_token = uuid.uuid4().hex
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            conn.execute(
+                "UPDATE review_decision_effects SET status = 'pending', "
+                "claimed_by = '', claim_token = '', lease_expires_at = NULL, "
+                "updated_at = ? "
+                "WHERE status = 'running' AND lease_expires_at IS NOT NULL "
+                "AND lease_expires_at <= ?",
+                (ts, ts),
+            )
+            row = conn.execute(
+                """
+                SELECT candidate.*
+                FROM review_decision_effects AS candidate
+                WHERE candidate.status = 'pending'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM review_decision_effects AS prior
+                      WHERE prior.decision_id = candidate.decision_id
+                        AND prior.position < candidate.position
+                        AND prior.status != 'succeeded'
+                  )
+                ORDER BY candidate.created_at, candidate.decision_id,
+                         candidate.position
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            updated = conn.execute(
+                "UPDATE review_decision_effects SET status = 'running', "
+                "claimed_by = ?, claim_token = ?, lease_expires_at = ?, "
+                "attempt_count = attempt_count + 1, updated_at = ? "
+                "WHERE effect_id = ? AND status = 'pending'",
+                (owner, claim_token, lease_until, ts, row["effect_id"]),
+            )
+            if updated.rowcount != 1:
+                return None
+            claimed = conn.execute(
+                "SELECT * FROM review_decision_effects WHERE effect_id = ?",
+                (row["effect_id"],),
+            ).fetchone()
+    return _decision_effect_to_dict(claimed)
+
+
+def complete_decision_effect(
+    universe_dir: str | Path,
+    *,
+    effect_id: str,
+    worker_id: str,
+    claim_token: str,
+    result: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> bool:
+    """Complete a claimed effect; the unique lease token is part of the CAS."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            updated = conn.execute(
+                "UPDATE review_decision_effects SET status = 'succeeded', "
+                "result = ?, last_error = '', claimed_by = '', claim_token = '', "
+                "lease_expires_at = NULL, updated_at = ? "
+                "WHERE effect_id = ? AND status = 'running' AND claimed_by = ? "
+                "AND claim_token = ?",
+                (
+                    json.dumps(result) if result else "",
+                    ts,
+                    (effect_id or "").strip(),
+                    (worker_id or "").strip(),
+                    (claim_token or "").strip(),
+                ),
+            )
+            return updated.rowcount == 1
+
+
+def release_decision_effect(
+    universe_dir: str | Path,
+    *,
+    effect_id: str,
+    worker_id: str,
+    claim_token: str,
+    error: str,
+    now: float | None = None,
+) -> bool:
+    """Return a transiently-failed owned effect to pending for replay."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            updated = conn.execute(
+                "UPDATE review_decision_effects SET status = 'pending', "
+                "last_error = ?, claimed_by = '', claim_token = '', "
+                "lease_expires_at = NULL, "
+                "updated_at = ? WHERE effect_id = ? AND status = 'running' "
+                "AND claimed_by = ? AND claim_token = ?",
+                (
+                    (error or "")[:2000],
+                    ts,
+                    (effect_id or "").strip(),
+                    (worker_id or "").strip(),
+                    (claim_token or "").strip(),
+                ),
+            )
+            return updated.rowcount == 1
 
 
 def record_effect_receipt(
@@ -1681,31 +1677,6 @@ def mark_manual_merge_executed(
             return cur.rowcount > 0
 
 
-def list_pending_review_effects(universe_dir: str | Path) -> list[dict[str, Any]]:
-    initialize_review_queue_db(universe_dir)
-    with _connect(universe_dir) as conn:
-        rows = conn.execute(
-            "SELECT * FROM review_effect_outbox WHERE executed_at IS NULL "
-            "ORDER BY created_at",
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def mark_review_effect_executed(
-    universe_dir: str | Path, *, review_effect_id: str, now: float | None = None
-) -> bool:
-    initialize_review_queue_db(universe_dir)
-    ts = _now(now)
-    with _connect(universe_dir) as conn:
-        with _write(conn):
-            cur = conn.execute(
-                "UPDATE review_effect_outbox SET executed_at = ? "
-                "WHERE review_effect_id = ? AND executed_at IS NULL",
-                (ts, (review_effect_id or "").strip()),
-            )
-            return cur.rowcount > 0
-
-
 def has_effect_receipt(
     universe_dir: str | Path, *, run_id: str, effect_kind: str
 ) -> dict[str, Any] | None:
@@ -1752,9 +1723,6 @@ __all__ = [
     "list_projections",
     "record_owner_intent",
     "reconcile_projection",
-    "enqueue_reshape",
-    "list_pending_reshapes",
-    "mark_reshape_outbox_consumed",
     "set_merge_preference_binding",
     "resolve_merge_preference_binding",
     "schedule_not_before",
@@ -1767,10 +1735,12 @@ __all__ = [
     "get_suspension",
     "list_suspended_runs",
     "suspension_for_pr",
-    "resume_review_run",
     "decide_and_resume",
     "ack_continuation",
-    "list_pending_continuations",
+    "list_decision_effects",
+    "claim_next_decision_effect",
+    "complete_decision_effect",
+    "release_decision_effect",
     "record_effect_receipt",
     "has_effect_receipt",
     "enqueue_revocation",
@@ -1780,6 +1750,4 @@ __all__ = [
     "enqueue_manual_merge",
     "list_pending_manual_merges",
     "mark_manual_merge_executed",
-    "list_pending_review_effects",
-    "mark_review_effect_executed",
 ]

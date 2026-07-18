@@ -306,6 +306,7 @@ class HttpGitHubApi:
             "base_ref": base.get("ref") or "",
             "merge_commit_sha": pr.get("merge_commit_sha") or "",
             "node_id": pr.get("node_id") or "",
+            "auto_merge_enabled": bool(pr.get("auto_merge")),
             # PR author identity (Codex r17 #4): App-installation-authored PRs have
             # ``user.type == "Bot"``; the owner-review gate rejects a PR authored by
             # the connected owner (self-approval is impossible).

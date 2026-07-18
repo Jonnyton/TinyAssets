@@ -352,11 +352,13 @@ def test_full_manual_flow_end_to_end_via_daemon(monkeypatch, platform_vault_env)
     # Daemon tick 1: submits the owner's review (manual needs no verifier) and
     # completes the run.
     transport1 = ScriptedTransport({
+        ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False))],
         ("GET", f"/pulls/{_PR}/reviews"): [(200, [])],  # nothing yet → submit fresh
         ("POST", f"/pulls/{_PR}/reviews"): [(200, {"id": 5, "state": "APPROVED"})],
     })
     out1 = runs.run_review_recovery_for_universe(tmp_path, request_fn=transport1)
-    assert out1["replay_continuations"][0]["applied"] is True
+    assert out1["execute_decisions"][-1]["kind"] == "finalize_run"
+    assert all(row["executed"] for row in out1["execute_decisions"])
     assert runs.get_run(tmp_path, run_id)["status"] == runs.RUN_STATUS_COMPLETED
     assert any(m == "POST" and s.endswith(f"/pulls/{_PR}/reviews")
                for m, s in transport1.calls)

@@ -1,13 +1,13 @@
-"""E3: durable review suspend / resume on the projection store.
+"""E3: durable review suspension and decision planning on the projection store.
 
 The present node opens + projects the PR and the RUN SUSPENDS awaiting the
-owner's review; the owner verb (approve/reshape/reject) from any surface RESUMES
-the run with a directive (merge / re-enter draft_patch / terminal reject). The
+owner's review; the owner verb (approve/reshape/reject) atomically records an
+ordered decision plan (merge / re-enter draft_patch / terminal reject). The
 suspension is a durable SQLite checkpoint, so a paused run rehydrates across a
 restart rather than being lost.
 
-Scenarios: pause-at-present, resume-to-merge, resume-to-reshape (draft_patch),
-resume-to-reject (terminal), durability across a restart.
+Scenarios: pause-at-present, plan-to-merge, plan-to-reshape (draft_patch),
+plan-to-reject (terminal), durability across a restart.
 """
 
 from __future__ import annotations
@@ -108,8 +108,13 @@ def test_reshape_resumes_run_to_draft_patch(owner_env):
     assert directive["route_back"]["target_node"] == "draft_patch"
     assert directive["route_back"]["run_id"] == _RUN
     assert directive["route_back"]["owner_notes"] == "cover the empty case"
-    # The reshape outbox row was written atomically with the head-bound decision.
-    assert len(rq.list_pending_reshapes(owner_env)) == 1
+    # The ordered decision plan was written atomically with the head-bound decision.
+    effects = rq.list_decision_effects(
+        owner_env, decision_id=out["pending"]["decision_id"]
+    )
+    assert [effect["kind"] for effect in effects] == [
+        "submit_review", "enqueue_revision", "finalize_run",
+    ]
 
 
 # ── resume to reject (terminal) ──────────────────────────────────────────────
@@ -131,8 +136,8 @@ def test_reject_resumes_run_to_terminal(owner_env):
 
 def test_suspension_rehydrates_across_restart(owner_env):
     """The suspension is durable SQLite — a fresh process (new connection, and we
-    even drop the per-process init cache) sees the paused run and can resume it,
-    so a restart mid-review doesn't lose the pause."""
+    even drop the per-process init cache) sees the paused run and can atomically
+    commit its decision plan, so a restart mid-review doesn't lose the pause."""
     _present_projects_and_suspends(owner_env)
     # Simulate a restart: clear the module's per-process init cache so nothing
     # in-memory carries the state; only the on-disk DB does.
@@ -141,24 +146,27 @@ def test_suspension_rehydrates_across_restart(owner_env):
     rehydrated = rq.list_suspended_runs(owner_env)
     assert [s["run_id"] for s in rehydrated] == [_RUN]
 
-    resumed = rq.resume_review_run(
-        owner_env, run_id=_RUN, decision="approve",
-        directive={"action": "merge"},
+    decided = _call(
+        "review_queue_approve", universe_id="u1", pr_number=_PR,
+        destination=_DEST, expected_head_sha=_HEAD,
     )
-    assert resumed["status"] == "resumed"
+    assert decided["pending"]["status"] == "decided"
+    assert rq.list_decision_effects(
+        owner_env, decision_id=decided["pending"]["decision_id"]
+    )
     assert rq.list_suspended_runs(owner_env) == []
 
 
-def test_resume_is_idempotent_only_suspended_transitions(owner_env):
+def test_continuation_ack_is_idempotent_only_decided_transitions(owner_env):
     _present_projects_and_suspends(owner_env)
-    first = rq.resume_review_run(
-        owner_env, run_id=_RUN, decision="approve", directive={"action": "merge"},
+    _call(
+        "review_queue_approve", universe_id="u1", pr_number=_PR,
+        destination=_DEST, expected_head_sha=_HEAD,
     )
-    assert first is not None
-    # A second resume of an already-resumed run is a no-op (returns None).
-    second = rq.resume_review_run(
-        owner_env, run_id=_RUN, decision="reject", directive={"action": "terminal_reject"},
-    )
+    first = rq.ack_continuation(owner_env, run_id=_RUN)
+    assert first["status"] == "resumed"
+    # A second finalization of an already-resumed run is a no-op.
+    second = rq.ack_continuation(owner_env, run_id=_RUN)
     assert second is None
     # The original decision stands.
     assert rq.get_suspension(owner_env, run_id=_RUN)["resume_decision"] == "approve"
@@ -194,9 +202,11 @@ def test_retry_never_reopens_a_resumed_decision(owner_env):
     """Codex r12 #4: re-suspending the SAME run + SAME head after it resumed must
     NOT reopen the terminal decision."""
     _present_projects_and_suspends(owner_env)
-    rq.resume_review_run(
-        owner_env, run_id=_RUN, decision="approve", directive={"action": "merge"},
+    _call(
+        "review_queue_approve", universe_id="u1", pr_number=_PR,
+        destination=_DEST, expected_head_sha=_HEAD,
     )
+    rq.ack_continuation(owner_env, run_id=_RUN)
     # A retry of the present-node suspension (same run, same head).
     rq.suspend_run_for_review(
         owner_env, run_id=_RUN, destination=_DEST, pr_number=_PR,
@@ -211,9 +221,11 @@ def test_repush_new_head_creates_new_generation(owner_env):
     """A genuine re-push (new head) after a resume IS a new generation and may
     re-suspend."""
     _present_projects_and_suspends(owner_env)
-    rq.resume_review_run(
-        owner_env, run_id=_RUN, decision="approve", directive={"action": "merge"},
+    _call(
+        "review_queue_approve", universe_id="u1", pr_number=_PR,
+        destination=_DEST, expected_head_sha=_HEAD,
     )
+    rq.ack_continuation(owner_env, run_id=_RUN)
     rq.suspend_run_for_review(
         owner_env, run_id=_RUN, destination=_DEST, pr_number=_PR,
         branch_def_id="bd", head_sha="b" * 40, universe_id="u1",

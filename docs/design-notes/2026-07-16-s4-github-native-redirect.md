@@ -204,10 +204,9 @@ token handling (a static-token/self-refresh path now would be a Rule-11 dual-pat
   now refuses (`owner_review_unconfirmed`) unless GitHub holds an APPROVED review
   by the connected owner at the exact reviewed head — read via `list_pull_reviews`,
   NEVER local `WORKFLOW_APPROVED`. So even an unprotected repo can't merge without
-  a real owner approval. An **independent** durable `review_effect_outbox` (+
-  `execute_pending_review_effects` worker) submits the owner's review with the
-  owner USER token regardless of any run suspension — the enqueue happens in the
-  approve/reshape/reject verbs.
+  a real owner approval. Owner decisions now commit one ordered durable effect
+  plan; its `submit_review` effect uses the owner USER token regardless of whether
+  a run suspension exists.
 - **#3 Autonomous is reachable in prod.** `run_review_recovery_for_universe` now
   builds a per-destination ruleset-read **VERIFIER** client
   (`verifier_client_from_vault`), resolves the App bypass-actor id
@@ -233,6 +232,39 @@ token handling (a static-token/self-refresh path now would be a Rule-11 dual-pat
   glued-to-prose `cosign_bug`, an undocumented `goals.archive_consultation`) —
   fixed honestly (documented the real actions; the test now derives wiki keys from
   the authoritative dict).
+
+## Addendum (2026-07-17): decision execution is a plan, not a mini-lifecycle
+
+Six bundle sweeps showed that `_start_review_revision` and the inline auto-merge
+continuation were the wrong ownership boundary. Each path independently handled
+some combination of idempotency, recovery, terminal-run reuse, runtime
+validation, and concurrency. Fixing individual missing cells only extended that
+parallel lifecycle.
+
+The accepted execution shape is:
+
+1. `decide_and_resume` commits the head-bound projection update, suspension
+   transition, and a typed ordered effect plan in one SQLite transaction.
+2. `review_decision_effects` supplies cross-process claims, leases, strict
+   per-decision ordering, retry release, and completion ownership.
+3. Remote effects reconcile GitHub before mutation. In particular, review
+   submission checks the owner review at the exact head, and auto-merge checks
+   whether GitHub already enabled it, closing the remote-success/local-crash
+   window.
+4. A reshape effect emits a deterministic `BranchTask` with
+   `request_type=review_revision`. It does not create, resume, validate, or
+   recover a run.
+5. The ordinary branch-task dispatcher claims that task. The shared
+   `execute_claimed_branch_request` lifecycle owns deterministic run creation,
+   checkpoint resume, interrupted recovery, terminal reuse, and invocation from
+   the requested graph node.
+6. Predecessor graph nodes outside the selected start-node reachability set are
+   recorded as `skipped`, so partial execution cannot present them as pending.
+
+Deleted alternatives: the reshape outbox, independent review-effect outbox,
+inline continuation/replay worker, `_start_review_revision`, and receipt-based
+auto-merge continuation. They must not return as compatibility paths: there are
+no users to migrate, and a second execution authority recreates the defect class.
 
 **Landed in the integration branch (2026-07-17):** App ID / installation ID /
 App actor / owner login / OAuth client ID live in fixed non-secret broker

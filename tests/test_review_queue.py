@@ -177,21 +177,34 @@ def test_preference_binding_rejects_bad_delay(tmp_path):
         )
 
 
-# ── reshape outbox (durable draft_patch resume) ──────────────────────────────
+# ── reshape decision plan (canonical branch-task identity) ───────────────────
 
 
-def test_enqueue_reshape_persists_resume_identity(tmp_path):
+def test_reshape_decision_persists_revision_task_identity(tmp_path):
     _project(tmp_path)
-    row = rq.enqueue_reshape(
-        tmp_path, destination=_DEST, pr_number=_PR, universe_id="u-1",
-        branch_def_id="bd", run_id="run-1", owner_notes="cover empty case",
-        recorded_call={"kind": "submit_review_request_changes"},
+    route = {
+        "target_node": "draft_patch",
+        "universe_id": "u-1",
+        "branch_def_id": "bd",
+        "run_id": "run-1",
+        "owner_notes": "cover empty case",
+    }
+    decision = rq.decide_and_resume(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_RESHAPE,
+        workflow_outcome=rq.WORKFLOW_RESHAPED,
+        decided_by="owner",
+        expected_head_sha=_HEAD,
+        directive={"action": "draft_patch", "route_back": route},
     )
-    assert row["route_back"]["target_node"] == "draft_patch"
-    assert row["route_back"]["owner_notes"] == "cover empty case"
-    pending = rq.list_pending_reshapes(tmp_path)
-    assert len(pending) == 1
-    assert pending[0]["route_back"]["run_id"] == "run-1"
+    effect = rq.list_decision_effects(
+        tmp_path, decision_id=decision["decision_id"]
+    )[0]
+    assert effect["kind"] == "enqueue_revision"
+    assert effect["payload"]["route_back"] == route
+    assert effect["payload"]["branch_task_id"].startswith("review-revision-")
 
 
 # ── not_before timer (the single durable timer) ──────────────────────────────

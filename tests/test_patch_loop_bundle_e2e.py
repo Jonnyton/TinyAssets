@@ -97,6 +97,14 @@ class _FakeClient:
         self.submitted.append(call)
         return {"ok": True, "kind": call.kind, "status": 200, "result": {}}
 
+    def get_pull(self, **_kwargs):
+        return {
+            "head_sha": "a" * 40,
+            "author_login": "tinyassets-app[bot]",
+            "author_type": "Bot",
+            "auto_merge_enabled": False,
+        }
+
 
 def _scripted_reference_provider(prompt, *args, **kwargs):
     del args, kwargs
@@ -281,10 +289,13 @@ def test_runner_enabled_present_to_owner_resume(monkeypatch, tmp_path):
             "path": "/repos/Owner/Repo/pulls/7/reviews",
             "params": {"event": "APPROVE", "commit_id": "a" * 40}, "summary": "ok"}},
     )
-    cont = runs.continue_reviewed_run(
-        tmp_path, run_id=run_id, decision="approve", github_api=_FakeClient(),
+    executed = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="review-worker",
+        github_api=_FakeClient(),
+        expected_owner="owner",
     )
-    assert cont["applied"] is True
+    assert executed[-1]["kind"] == "finalize_run"
     assert runs.get_run(tmp_path, run_id)["status"] == runs.RUN_STATUS_COMPLETED
 
 
@@ -490,15 +501,13 @@ def test_public_trigger_dedup_run_http_review_and_merge_trace(
     github_api = gh.HttpGitHubApi(
         token_provider, request_fn=transport, sleep_fn=lambda _seconds: None
     )
-    continued = runs.continue_reviewed_run(
+    continued = runs.execute_pending_review_decisions(
         universe_dir,
-        run_id=run_id,
-        decision="approve",
-        directive=approved["pending"]["directive"],
+        worker_id="review-worker",
         github_api=github_api,
         expected_owner="owner",
     )
-    assert continued["applied"] is True, continued
+    assert continued[-1]["kind"] == "finalize_run", continued
     merge_queued = json.loads(
         extensions(
             action="review_queue_merge",

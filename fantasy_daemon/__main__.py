@@ -809,7 +809,7 @@ def _should_execute_claimed_branch_directly(claimed_task: Any) -> bool:
     if not branch_def_id or branch_def_id in _UNIVERSE_CYCLE_BRANCH_IDS:
         return False
     request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
-    return request_type in {"branch_run", "bug_investigation"}
+    return request_type in {"branch_run", "bug_investigation", "review_revision"}
 
 
 def _branch_task_inputs_for_execution(claimed_task: Any) -> dict[str, Any]:
@@ -907,21 +907,37 @@ def _try_execute_claimed_branch_task(
         from tinyassets.branches import BranchDefinition
         from tinyassets.daemon_server import get_branch_definition
         from tinyassets.runs import (
+            RUN_STATUS_CANCELLED,
             RUN_STATUS_COMPLETED,
+            RUN_STATUS_FAILED,
             execute_branch,
+            execute_claimed_branch_request,
             latest_run_by_name,
+            resolve_review_revision_request,
         )
         from tinyassets.storage import data_dir
 
         base_path = data_dir()
         requested = str(getattr(claimed_task, "branch_def_id", "") or "")
-        branch_def_id = _resolve_branch_id(requested, base_path)
+        request_type = str(
+            getattr(claimed_task, "request_type", "") or "branch_run"
+        )
+        definition_path = (
+            universe_path if request_type == "review_revision" else base_path
+        )
+        branch_def_id = (
+            requested
+            if request_type == "review_revision"
+            else _resolve_branch_id(requested, base_path)
+        )
         if not branch_def_id:
             return False, f"branch_not_found: {requested}", {
                 "requested_branch_def_id": requested,
             }
         try:
-            source_dict = get_branch_definition(base_path, branch_def_id=branch_def_id)
+            source_dict = get_branch_definition(
+                definition_path, branch_def_id=branch_def_id
+            )
         except KeyError:
             return False, f"branch_not_found: {branch_def_id}", {
                 "branch_def_id": branch_def_id,
@@ -940,18 +956,23 @@ def _try_execute_claimed_branch_task(
             run_name=run_name,
             branch_def_id=branch_def_id,
         )
-        if existing_run and existing_run.get("status") == RUN_STATUS_COMPLETED:
+        if existing_run and existing_run.get("status") in {
+            RUN_STATUS_COMPLETED,
+            RUN_STATUS_FAILED,
+            RUN_STATUS_CANCELLED,
+        }:
             output = existing_run.get("output", {})
+            run_status = str(existing_run["status"])
             metadata = {
                 "branch_def_id": branch_def_id,
                 "run_id": existing_run["run_id"],
-                "run_status": existing_run["status"],
+                "run_status": run_status,
                 "actor": existing_run.get("actor") or "",
                 "reused_existing_run": True,
             }
             attach_result = _maybe_attach_bug_investigation_patch_packet(
                 claimed_task,
-                existing_run["status"],
+                run_status,
                 output if isinstance(output, dict) else {},
             )
             if attach_result.get("status") != "skipped":
@@ -963,7 +984,13 @@ def _try_execute_claimed_branch_task(
                 branch_def_id,
                 existing_run["run_id"],
             )
-            return True, "", metadata
+            return (
+                run_status == RUN_STATUS_COMPLETED,
+                "" if run_status == RUN_STATUS_COMPLETED else str(
+                    existing_run.get("error") or f"run_{run_status}"
+                ),
+                metadata,
+            )
 
         provider_call: Any = None
         try:
@@ -980,33 +1007,49 @@ def _try_execute_claimed_branch_task(
         executor_runtime_id = str(
             getattr(claimed_task, "executor_runtime_id", "") or "",
         )
-        outcome = execute_branch(
-            base_path,
-            branch=branch,
-            inputs=_branch_task_inputs_for_execution(claimed_task),
-            run_name=run_name,
-            actor=actor,
-            daemon_id=daemon_id,
-            runtime_instance_id=executor_runtime_id,
-            worker_id=executor_worker_id,
-            provider_call=provider_call,
-            on_node_status=on_node_status,
-            # Carry spawn depth across the queue boundary so an in-node enqueue
-            # from this run is depth+1 and the depth cap can bound the chain.
-            _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
-            # Trusted enqueue context (Codex review 2026-05-30): the run's own
-            # universe + spawn lineage, server-set from the claimed task so an
-            # in-node enqueue targets THIS universe and the per-origin cap can
-            # bound the whole spawn chain. origin falls back to this task when
-            # it starts a new chain (resolved in the enqueue helper).
-            _enqueue_universe_id=str(getattr(claimed_task, "universe_id", "") or ""),
-            _parent_branch_task_id=str(
-                getattr(claimed_task, "branch_task_id", "") or ""
-            ),
-            _origin_branch_task_id=str(
-                getattr(claimed_task, "origin_branch_task_id", "") or ""
-            ),
-        )
+        if str(getattr(claimed_task, "request_type", "") or "") == "review_revision":
+            request = resolve_review_revision_request(
+                base_path,
+                universe_path,
+                task=claimed_task,
+                branch=branch,
+            )
+            outcome = execute_claimed_branch_request(
+                base_path,
+                branch=branch,
+                on_node_status=on_node_status,
+                **request,
+            )
+        else:
+            outcome = execute_branch(
+                base_path,
+                branch=branch,
+                inputs=_branch_task_inputs_for_execution(claimed_task),
+                run_name=run_name,
+                actor=actor,
+                daemon_id=daemon_id,
+                runtime_instance_id=executor_runtime_id,
+                worker_id=executor_worker_id,
+                provider_call=provider_call,
+                on_node_status=on_node_status,
+                # Carry spawn depth across the queue boundary so an in-node enqueue
+                # from this run is depth+1 and the depth cap can bound the chain.
+                _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
+                # Trusted enqueue context (Codex review 2026-05-30): the run's own
+                # universe + spawn lineage, server-set from the claimed task so an
+                # in-node enqueue targets THIS universe and the per-origin cap can
+                # bound the whole spawn chain. origin falls back to this task when
+                # it starts a new chain (resolved in the enqueue helper).
+                _enqueue_universe_id=str(
+                    getattr(claimed_task, "universe_id", "") or ""
+                ),
+                _parent_branch_task_id=str(
+                    getattr(claimed_task, "branch_task_id", "") or ""
+                ),
+                _origin_branch_task_id=str(
+                    getattr(claimed_task, "origin_branch_task_id", "") or ""
+                ),
+            )
         metadata = {
             "branch_def_id": branch_def_id,
             "run_id": outcome.run_id,

@@ -138,7 +138,7 @@ def test_approve_unknown_pr(owner_env):
     assert out["failure_class"] == "pr_not_projected"
 
 
-def test_owner_reshape_records_request_changes_and_outbox(owner_env):
+def test_owner_reshape_records_ordered_decision_effects(owner_env):
     _seed(owner_env)
     out = _call(
         "review_queue_reshape", universe_id="u1", pr_number=_PR, destination=_DEST,
@@ -149,10 +149,13 @@ def test_owner_reshape_records_request_changes_and_outbox(owner_env):
     assert out["github_call"]["params"]["event"] == "REQUEST_CHANGES"
     assert out["route_back"]["target_node"] == "draft_patch"
     assert out["route_back"]["owner_notes"] == "cover the empty case"
-    # Durable outbox row for the Phase-2 revision consumer.
-    pending = rq.list_pending_reshapes(owner_env)
-    assert len(pending) == 1
-    assert pending[0]["route_back"]["run_id"] == "run-1"
+    effects = rq.list_decision_effects(
+        owner_env, decision_id=out["decision_id"]
+    )
+    assert [effect["kind"] for effect in effects] == [
+        "submit_review", "enqueue_revision",
+    ]
+    assert effects[1]["payload"]["route_back"]["run_id"] == "run-1"
 
 
 def test_reshape_requires_notes(owner_env):

@@ -115,7 +115,7 @@ def test_patch_loop_bundle_concurrent_multi_universe_load(platform_vault_env):
     from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         _execute_branch_core,
-        execute_pending_review_effects,
+        execute_pending_review_decisions,
         get_run,
         initialize_runs_db,
         wait_for,
@@ -237,8 +237,10 @@ def test_patch_loop_bundle_concurrent_multi_universe_load(platform_vault_env):
             workflow_outcome=rq.WORKFLOW_APPROVED,
             decided_by=str(universe["founder"]),
             expected_head_sha=head_sha,
-            directive={"action": "merge"},
-            review_effect={"event": "APPROVE", "branch_def_id": _BRANCH_ID},
+            directive={
+                "action": "merge",
+                "github_call": {"params": {"event": "APPROVE"}},
+            },
         )
         try:
             grant = backend.mint_job_grant(
@@ -325,12 +327,19 @@ def test_patch_loop_bundle_concurrent_multi_universe_load(platform_vault_env):
             for result in results
             if result["universe_id"] == universe_id
         }
-        pending = rq.list_pending_review_effects(universe["dir"])
+        pending = [
+            row
+            for row in rq.list_decision_effects(universe["dir"])
+            if row["kind"] == "submit_review" and row["status"] == "pending"
+        ]
         assert {
-            (int(row["pr_number"]), str(row["expected_head_sha"]))
+            (
+                int(row["payload"]["pr_number"]),
+                str(row["payload"]["expected_head_sha"]),
+            )
             for row in pending
         } == expected
-        assert {str(row["decided_by"]) for row in pending} == {
+        assert {str(row["payload"]["decided_by"]) for row in pending} == {
             str(universe["founder"]),
         }
 
@@ -338,8 +347,9 @@ def test_patch_loop_bundle_concurrent_multi_universe_load(platform_vault_env):
 
     def drain(universe_id: str):
         universe = universes[universe_id]
-        return execute_pending_review_effects(
+        return execute_pending_review_decisions(
             universe["dir"],
+            worker_id=f"review-worker-{universe_id}",
             github_api=review_apis[universe_id],
             expected_owner=str(universe["founder"]),
         )
@@ -353,11 +363,10 @@ def test_patch_loop_bundle_concurrent_multi_universe_load(platform_vault_env):
             for result in results
             if result["universe_id"] == universe_id
         }
-        assert {
-            int(item["pr_number"])
+        assert sum(
+            item["kind"] == "submit_review" and item["executed"]
             for item in drained[universe_id]
-            if item["submitted"]
-        } == {pr_number for pr_number, _head in expected}
+        ) == len(expected)
         assert {
             (
                 int(str(call["path"]).split("/")[-2]),
@@ -365,5 +374,8 @@ def test_patch_loop_bundle_concurrent_multi_universe_load(platform_vault_env):
             )
             for call in review_apis[universe_id].calls
         } == expected
-        assert rq.list_pending_review_effects(universe["dir"]) == []
+        assert all(
+            row["status"] == "succeeded"
+            for row in rq.list_decision_effects(universe["dir"])
+        )
         assert len(universe["runs"]) == _RUN_COUNT // _UNIVERSE_COUNT

@@ -163,37 +163,38 @@ def test_manual_merge_reconciles_already_merged(owner_env):
 
 
 def test_review_not_resubmitted_when_already_on_github(owner_env):
-    """Codex r15 #3 + REJECT #3: the crash window — the OWNER's review succeeded,
-    receipt NOT yet written. Reconciliation sees the OWNER's review already on
-    GitHub (by commit_id + owner login) and does NOT re-submit; it records the
-    receipt + confirms. A different actor's review at the same commit would NOT
-    satisfy it."""
+    """A remote review success is reconciled before effect replay mutates."""
     rq.project_pr(owner_env, destination=_DEST, pr_number=_PR, head_sha=_HEAD,
                   branch_def_id="bd", universe_id="u1", run_id="run-x")
-    rq.suspend_run_for_review(owner_env, run_id="run-x", destination=_DEST,
-                              pr_number=_PR, branch_def_id="bd", head_sha=_HEAD)
-    # A real run is required for continue; drive one to interrupted via the store
-    # state the continuation reads (get_run). Use the run executor helper.
-    effects: dict = {}
     call = {"kind": "submit_review_approve", "transport": "rest", "method": "POST",
             "path": f"/repos/{_DEST}/pulls/{_PR}/reviews",
             "params": {"event": "APPROVE", "commit_id": _HEAD}, "summary": "ok"}
+    decision = rq.decide_and_resume(
+        owner_env,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_APPROVE,
+        workflow_outcome=rq.WORKFLOW_APPROVED,
+        decided_by="owner",
+        expected_head_sha=_HEAD,
+        directive={"action": "merge", "github_call": call},
+    )
     # GitHub ALREADY has the OWNER's APPROVE review at this commit (crash window).
     client = FakeClient(reviews=[
         {"commit_id": _HEAD, "state": "APPROVED", "user_login": "owner"},
     ])
-    ok = runs._submit_github_review(
-        owner_env, run_id="run-x", call_dict=call,
-        effect_kind="submit_review_approve", github_api=client, effects=effects,
+    result = runs.execute_next_review_decision_effect(
+        owner_env,
+        worker_id="review-worker",
+        github_api=client,
         expected_owner="owner",
     )
-    assert ok is True
-    assert effects["submit_review_approve"] == "already_submitted"
+    assert result["executed"] is True
+    assert result["decision_id"] == decision["decision_id"]
+    assert result["detail"] == "already_on_github"
     # NOT re-submitted.
     assert all(c.kind != "submit_review_approve" for c in client.submitted)
-    # Receipt now recorded so a later replay is also a no-op.
-    assert rq.has_effect_receipt(owner_env, run_id="run-x",
-                                 effect_kind="submit_review_approve") is not None
+    assert rq.list_decision_effects(owner_env)[0]["status"] == "succeeded"
 
 
 # ── #2 executed revocations ──────────────────────────────────────────────────
@@ -238,8 +239,8 @@ def test_register_review_workers_entrypoint(owner_env):
     client = FakeClient()
     workers = runs.register_review_workers(base_path=owner_env, github_api=client)
     assert set(workers) == {
-        "replay_continuations", "submit_review_effects", "drain_manual_merges",
-        "execute_revocations", "fire_timers",
+        "execute_decisions", "drain_manual_merges", "execute_revocations",
+        "fire_timers",
     }
     # Each is callable and returns a list (drives its store queue).
     for name, fn in workers.items():

@@ -65,8 +65,10 @@ def test_s1_retry_survives_credential_failure_while_s4_rows_stay_queued(
         workflow_outcome=rq.WORKFLOW_APPROVED,
         decided_by="owner",
         expected_head_sha=_HEAD,
-        directive={"action": "merge"},
-        review_effect={"event": "APPROVE"},
+        directive={
+            "action": "merge",
+            "github_call": {"params": {"event": "APPROVE"}},
+        },
     )
     rq.enqueue_manual_merge(
         tmp_path,
@@ -104,13 +106,13 @@ def test_s1_retry_survives_credential_failure_while_s4_rows_stay_queued(
     assert retry_result["queued"] == ["BUG-COMPOSED"]
     assert len(read_queue(tmp_path)) == 1
     assert trigger_receipts.pending_attempts(universe_id=tmp_path.name) == []
-    assert [row["reason"] for row in review_result["submit_review_effects"]] == [
+    assert [row["reason"] for row in review_result["execute_decisions"]] == [
         "no_client"
     ]
     assert [row["reason"] for row in review_result["drain_manual_merges"]] == [
         "no_client"
     ]
-    assert len(rq.list_pending_review_effects(tmp_path)) == 1
+    assert rq.list_decision_effects(tmp_path)[0]["status"] == "pending"
     assert len(rq.list_pending_manual_merges(tmp_path)) == 1
     expected_marker = (
         "retired credential state"

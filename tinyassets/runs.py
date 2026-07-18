@@ -68,6 +68,7 @@ NODE_STATUS_PENDING = "pending"
 NODE_STATUS_RUNNING = "running"
 NODE_STATUS_RAN = "ran"
 NODE_STATUS_FAILED = "failed"
+NODE_STATUS_SKIPPED = "skipped"
 
 
 class RunCancelledError(Exception):
@@ -2079,6 +2080,32 @@ def _graph_node_order(branch: BranchDefinition) -> list[str]:
     return [gn.id for gn in branch.graph_nodes]
 
 
+def _nodes_reachable_from(branch: BranchDefinition, start_node: str) -> set[str]:
+    if not start_node:
+        return set(_graph_node_order(branch))
+    adjacency: dict[str, set[str]] = {}
+    for edge in branch.edges:
+        source = str(edge.from_node or "")
+        target = str(edge.to_node or "")
+        if source and target and target != "END":
+            adjacency.setdefault(source, set()).add(target)
+    for edge in branch.conditional_edges:
+        source = str(edge.from_node or "")
+        for target_value in edge.conditions.values():
+            target = str(target_value or "")
+            if source and target and target != "END":
+                adjacency.setdefault(source, set()).add(target)
+    reachable: set[str] = set()
+    frontier = [start_node]
+    while frontier:
+        node_id = frontier.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        frontier.extend(adjacency.get(node_id, ()))
+    return reachable
+
+
 def _prepare_run(
     base_path: str | Path,
     *,
@@ -2096,6 +2123,7 @@ def _prepare_run(
     worker_id: str | None = None,
     owner_user_id: str | None = None,
     lineage_parent_run_id: str = "",
+    start_node: str = "",
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
 
@@ -2173,6 +2201,7 @@ def _prepare_run(
             "UPDATE runs SET thread_id = ? WHERE run_id = ?",
             (run_id, run_id),
         )
+        reachable_nodes = _nodes_reachable_from(branch, start_node)
         for step, node_id in enumerate(_graph_node_order(branch)):
             record_event(
                 base_path,
@@ -2180,7 +2209,11 @@ def _prepare_run(
                     run_id=run_id,
                     step_index=step,
                     node_id=node_id,
-                    status=NODE_STATUS_PENDING,
+                    status=(
+                        NODE_STATUS_PENDING
+                        if node_id in reachable_nodes
+                        else NODE_STATUS_SKIPPED
+                    ),
                     started_at=_now(),
                 ),
                 _conn=conn,
@@ -2707,7 +2740,10 @@ def _invoke_graph_inner(
     # Emit recursion_limit_applied event so get_run can surface the cap used.
     record_event(base_path, RunStepEvent(
         run_id=run_id,
-        step_index=0,
+        # Prepared node-state rows occupy the low cursor range.  Keep the
+        # synthetic run event immediately before live execution events so it
+        # cannot overwrite the first node (including a skipped predecessor).
+        step_index=_PENDING_OFFSET - 1,
         node_id="__system__",
         status="recursion_limit_applied",
         started_at=_now(),
@@ -3029,7 +3065,7 @@ def _invoke_graph_inner(
     #                un-checkpointed gate.
     #   - suspended: the checkpoint persisted → the canonical run stays
     #                INTERRUPTED (awaiting the owner's decision), NOT completed;
-    #                the owner verb resumes it via ``continue_reviewed_run``.
+    #                the owner's durable decision-effect plan finalizes it.
     #   - complete:  no review checkpoint → normal completion.
     disposition, detail = _review_gate_disposition(external_write_evidence)
     if disposition == "failed":
@@ -3256,150 +3292,308 @@ def _review_already_on_github(
     return False
 
 
-def _submit_github_review(
-    base_path: str | Path, *, run_id: str, call_dict: dict[str, Any] | None,
-    effect_kind: str, github_api: Any, effects: dict[str, Any],
+def execute_next_review_decision_effect(
+    base_path: str | Path,
+    *,
+    worker_id: str,
+    github_api: Any = None,
+    verifier_api: Any = None,
+    app_actor_id: Any = None,
     expected_owner: str = "",
-) -> bool:
-    """Submit a HEAD-BOUND GitHub review (APPROVE / REQUEST_CHANGES), idempotent
-    via a receipt AND GitHub-state reconciliation bound to the CONNECTED OWNER
-    (Codex r15 #3 + REJECT #3). Returns True only when the review is CONFIRMED
-    submitted (or a prior receipt / GitHub state by the owner proves it). Without
-    a client → False (the run stays interrupted — no false success)."""
+    client_factory: Any = None,
+    verifier_factory: Any = None,
+    owner_resolver: Any = None,
+    app_actor_resolver: Any = None,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Claim and execute one ordered review-decision effect.
+
+    Queue lifecycle (ordering, leases, retry ownership) belongs to
+    ``storage.review_queue``.  This function contains only effect policy and
+    reconciliation.  Reshape emits a canonical ``BranchTask``; it never starts
+    or recovers a run here.
+    """
+    from tinyassets import github_native as _gn
+    from tinyassets.branch_tasks import BranchTask, append_task_if_absent
     from tinyassets.github_native import GitHubCall
     from tinyassets.storage import review_queue as _rq
 
-    if _rq.has_effect_receipt(base_path, run_id=run_id, effect_kind=effect_kind):
-        effects[effect_kind] = "already_submitted"
-        return True
-    if github_api is None or not call_dict:
-        return False
-    # Reconcile FIRST: if GitHub already has the OWNER's review at this commit
-    # (crash between remote success and receipt write), record the receipt + do
-    # NOT re-submit. A different actor's review at the same commit does NOT match.
-    if _review_already_on_github(github_api, call_dict, expected_owner=expected_owner):
-        _rq.record_effect_receipt(
-            base_path, run_id=run_id, effect_kind=effect_kind,
-            detail={"reconciled": True},
-        )
-        effects[effect_kind] = "already_submitted"
-        return True
-    res = github_api.run_call(GitHubCall(**{
-        k: call_dict[k] for k in _GH_CALL_KEYS if k in call_dict
-    }))
-    if not res.get("ok"):
-        effects[effect_kind] = "failed"
-        return False
-    _rq.record_effect_receipt(
-        base_path, run_id=run_id, effect_kind=effect_kind,
-        detail={"status": res.get("status")},
+    effect = _rq.claim_next_decision_effect(
+        base_path, worker_id=worker_id, now=now
     )
-    effects[effect_kind] = "submitted"
-    return True
-
-
-def _execute_review_directive(
-    base_path: str | Path, *, run_id: str, suspension: dict[str, Any],
-    directive: dict[str, Any], github_api: Any = None, verifier_api: Any = None,
-    run_starter: Callable[[dict[str, Any]], str] | None = None,
-    app_actor_id: Any = None, expected_owner: str = "", now: float | None = None,
-) -> dict[str, Any]:
-    """EXECUTE a resume directive with NO FALSE SUCCESS (Codex r14 #1/#2/#4/#5).
-
-    Returns ``{"confirmed": bool, "state": str, "effects": dict, "reason"?: str}``.
-    ``confirmed`` is True ONLY when every REQUIRED external effect actually
-    executed (or a durable receipt proves a prior run did). Without a client — or
-    on any gate/effect failure — ``confirmed`` is False and the caller leaves the
-    run INTERRUPTED for replay. Every autonomous action re-runs the shared
-    fail-closed merge executor (fresh gate + verifier). All effects are
-    idempotent via receipts, so replay can't double-submit or double-create.
-    """
-    from tinyassets.effectors import github_merge as _gm
-    from tinyassets.storage import review_queue as _rq
-
-    action = (directive or {}).get("action")
-    destination = (suspension or {}).get("destination") or ""
-    pr_number = (suspension or {}).get("pr_number")
-    branch_def_id = (suspension or {}).get("branch_def_id") or ""
-    head = (suspension or {}).get("head_sha") or ""
-    effects: dict[str, Any] = {}
-
-    if action == "merge":
-        if not _submit_github_review(
-            base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
-            effect_kind="submit_review_approve", github_api=github_api, effects=effects,
-            expected_owner=expected_owner,
-        ):
-            return {"confirmed": False, "state": "approve_awaiting_execution",
-                    "effects": effects, "reason": "review_not_submitted"}
-        # Merge path via THE ONE shared fail-closed executor (fresh gate + verifier).
-        merge = _gm.run_autonomous_merge(
-            base_path, destination=destination, pr_number=pr_number,
-            branch_def_id=branch_def_id, expected_head_sha=head,
-            github_api=github_api, verifier_api=verifier_api,
-            app_actor_id=app_actor_id, expected_owner=expected_owner, now=now,
-        )
-        if not merge.get("ok"):
-            return {"confirmed": False, "state": "autonomous_gate_failed",
-                    "effects": effects, "reason": merge.get("error_kind")}
-        if merge.get("action") == "enable_auto_merge":
-            if not _rq.has_effect_receipt(
-                base_path, run_id=run_id, effect_kind="enable_auto_merge"
-            ):
-                from tinyassets.github_native import GitHubCall
-                call = merge.get("github_call") or {}
-                res = github_api.run_call(GitHubCall(**{
-                    k: call[k] for k in _GH_CALL_KEYS if k in call
-                }))
-                if not res.get("ok"):
-                    return {"confirmed": False, "state": "auto_merge_enable_failed",
-                            "effects": effects, "reason": "enable_auto_merge_failed"}
-                _rq.record_effect_receipt(
-                    base_path, run_id=run_id, effect_kind="enable_auto_merge",
-                    detail={"status": res.get("status")},
-                )
-            effects["auto_merge_enabled"] = True
-        return {"confirmed": True, "state": merge.get("state"), "effects": effects}
-
-    if action == "draft_patch":
-        if not _submit_github_review(
-            base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
-            effect_kind="submit_review_request_changes", github_api=github_api,
-            effects=effects, expected_owner=expected_owner,
-        ):
-            return {"confirmed": False, "state": "reshape_awaiting_execution",
-                    "effects": effects, "reason": "request_changes_not_submitted"}
-        # Create the revised run — idempotent via receipt (Codex r14 #7: replay
-        # must not double-create).
-        existing = _rq.has_effect_receipt(
-            base_path, run_id=run_id, effect_kind="revised_run"
-        )
-        if existing is not None:
-            effects["revised_run"] = "already_created"
-        elif run_starter is not None:
-            revised = run_starter((directive or {}).get("route_back") or {})
-            _rq.record_effect_receipt(
-                base_path, run_id=run_id, effect_kind="revised_run",
-                detail={"revised_run_id": revised},
+    if effect is None:
+        return None
+    effect_id = effect["effect_id"]
+    decision_id = effect["decision_id"]
+    kind = effect["kind"]
+    payload = effect.get("payload") or {}
+    destination = str(payload.get("destination") or "").strip()
+    effect_api = github_api
+    effect_verifier = verifier_api
+    effect_owner = expected_owner
+    effect_actor_id = app_actor_id
+    try:
+        if kind in {"submit_review", "apply_merge_preference"}:
+            effect_api = _resolve_worker_client(
+                github_api, client_factory, destination
             )
-            effects["revised_run_id"] = revised
+            effect_verifier = _resolve_worker_client(
+                verifier_api, verifier_factory, destination
+            )
+            if not effect_owner and owner_resolver is not None:
+                effect_owner = owner_resolver(destination) or ""
+            if effect_actor_id in (None, "") and app_actor_resolver is not None:
+                effect_actor_id = app_actor_resolver(destination)
+    except Exception as exc:  # noqa: BLE001 -- client resolution is retryable
+        _rq.release_decision_effect(
+            base_path,
+            effect_id=effect_id,
+            worker_id=worker_id,
+            claim_token=effect["claim_token"],
+            error=f"client_error:{exc}",
+            now=now,
+        )
+        return {
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": kind,
+            "executed": False,
+            "reason": f"client_error:{exc}",
+        }
+    result: dict[str, Any]
+    try:
+        if kind == "submit_review":
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
+            event = str(payload.get("event") or "APPROVE").strip().upper()
+            if event == "APPROVE":
+                pull = effect_api.get_pull(
+                    destination=destination, pr_number=pr_number
+                )
+                app_ok, app_reason = _app_authored_pr(
+                    pull, expected_owner=effect_owner
+                )
+                if not app_ok:
+                    raise RuntimeError(app_reason)
+                call = _gn.review_approve(
+                    destination=destination, pr_number=pr_number, head_sha=head
+                )
+            else:
+                call = _gn.review_request_changes(
+                    destination=destination,
+                    pr_number=pr_number,
+                    head_sha=head,
+                    body=str(payload.get("body") or ""),
+                )
+            call_dict = call.to_dict()
+            if _review_already_on_github(
+                effect_api, call_dict, expected_owner=effect_owner
+            ):
+                result = {"detail": "already_on_github"}
+            else:
+                response = effect_api.run_call(call)
+                if not response.get("ok"):
+                    raise RuntimeError("review_call_failed")
+                result = {"detail": "submitted", "status": response.get("status")}
+
+        elif kind == "apply_merge_preference":
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            live_head = str(pull.get("head_sha") or "").strip()
+            if head and live_head and head != live_head:
+                raise RuntimeError("head_moved")
+            if pull.get("auto_merge_enabled"):
+                result = {"detail": "already_enabled"}
+            else:
+                from tinyassets.effectors import github_merge as _gm
+
+                merge = _gm.run_autonomous_merge(
+                    base_path,
+                    destination=destination,
+                    pr_number=pr_number,
+                    branch_def_id=str(payload.get("branch_def_id") or ""),
+                    expected_head_sha=head,
+                    github_api=effect_api,
+                    verifier_api=effect_verifier,
+                    app_actor_id=effect_actor_id,
+                    expected_owner=effect_owner,
+                    now=now,
+                )
+                if not merge.get("ok"):
+                    raise RuntimeError(
+                        str(merge.get("error_kind") or "merge_preference_failed")
+                    )
+                if merge.get("action") == "enable_auto_merge":
+                    call_dict = merge.get("github_call") or {}
+                    response = effect_api.run_call(GitHubCall(**{
+                        key: call_dict[key]
+                        for key in _GH_CALL_KEYS
+                        if key in call_dict
+                    }))
+                    if not response.get("ok"):
+                        raise RuntimeError("enable_auto_merge_failed")
+                result = {
+                    "detail": str(merge.get("action") or "merge_preference_applied"),
+                    "state": str(merge.get("state") or ""),
+                }
+
+        elif kind == "enqueue_revision":
+            route = payload.get("route_back") or {}
+            branch_task_id = str(payload.get("branch_task_id") or "").strip()
+            source_run_id = str(route.get("run_id") or "").strip()
+            branch_def_id = str(route.get("branch_def_id") or "").strip()
+            universe_id = str(route.get("universe_id") or "").strip()
+            target_node = str(route.get("target_node") or "").strip()
+            if not all((branch_task_id, source_run_id, branch_def_id, universe_id,
+                        target_node)):
+                raise RuntimeError("invalid_revision_route")
+            _created, task = append_task_if_absent(
+                Path(base_path),
+                BranchTask(
+                    branch_task_id=branch_task_id,
+                    branch_def_id=branch_def_id,
+                    universe_id=universe_id,
+                    trigger_source="owner_queued",
+                    request_type="review_revision",
+                    inputs={
+                        "reshape_notes": str(route.get("owner_notes") or "").strip()
+                    },
+                    review_decision_id=decision_id,
+                    source_run_id=source_run_id,
+                    target_node=target_node,
+                ),
+            )
+            result = {"branch_task_id": task.branch_task_id}
+
+        elif kind == "finalize_run":
+            source_run_id = str(payload.get("run_id") or "").strip()
+            run_base_path = _review_run_storage_path(base_path, source_run_id)
+            source = get_run(run_base_path, source_run_id)
+            if source is None:
+                raise RuntimeError("run_not_found")
+            decision = str(payload.get("decision") or "").strip()
+            output = dict(source.get("output") or {})
+            if source.get("status") != RUN_STATUS_COMPLETED:
+                if source.get("status") != RUN_STATUS_INTERRUPTED:
+                    raise RuntimeError(
+                        f"run_not_awaiting_review:{source.get('status')}"
+                    )
+                if "awaiting_owner_review" not in output:
+                    raise RuntimeError("not_a_review_suspension")
+                prior = _rq.list_decision_effects(
+                    base_path, decision_id=decision_id
+                )
+                prior_results = {
+                    row["kind"]: row.get("result") or {}
+                    for row in prior
+                    if row["position"] < effect["position"]
+                }
+                state = {
+                    _rq.INTENT_APPROVE: (
+                        prior_results.get("apply_merge_preference", {}).get("state")
+                        or "await_owner_merge"
+                    ),
+                    _rq.INTENT_RESHAPE: "reshaped_revising",
+                    _rq.INTENT_REJECT: "rejected",
+                }.get(decision, "resumed")
+                output["review_decision"] = decision
+                output["review_workflow_state"] = state
+                output["review_continuation_effects"] = prior_results
+                output.pop("awaiting_owner_review", None)
+                update_run_status(
+                    run_base_path,
+                    source_run_id,
+                    status=RUN_STATUS_COMPLETED,
+                    output=output,
+                    finished_at=_now(),
+                )
+            _rq.ack_continuation(base_path, run_id=source_run_id)
+            result = {"run_id": source_run_id, "decision": decision}
+
         else:
-            return {"confirmed": False, "state": "reshape_awaiting_revision",
-                    "effects": effects, "reason": "no_run_starter"}
-        _rq.mark_reshape_outbox_consumed(base_path, run_id=run_id)
-        return {"confirmed": True, "state": "reshaped_revising", "effects": effects}
+            raise RuntimeError(f"unknown_decision_effect:{kind}")
+    except Exception as exc:  # noqa: BLE001 -- durable row remains replayable
+        _rq.release_decision_effect(
+            base_path,
+            effect_id=effect_id,
+            worker_id=worker_id,
+            claim_token=effect["claim_token"],
+            error=str(exc),
+            now=now,
+        )
+        return {
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": kind,
+            "executed": False,
+            "reason": str(exc),
+        }
 
-    if action == "terminal_reject":
-        if not _submit_github_review(
-            base_path, run_id=run_id, call_dict=(directive or {}).get("github_call"),
-            effect_kind="submit_review_request_changes", github_api=github_api,
-            effects=effects, expected_owner=expected_owner,
-        ):
-            return {"confirmed": False, "state": "reject_awaiting_execution",
-                    "effects": effects, "reason": "request_changes_not_submitted"}
-        return {"confirmed": True, "state": "rejected", "effects": effects}
+    if not _rq.complete_decision_effect(
+        base_path,
+        effect_id=effect_id,
+        worker_id=worker_id,
+        claim_token=effect["claim_token"],
+        result=result,
+        now=now,
+    ):
+        return {
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": kind,
+            "executed": False,
+            "reason": "claim_lost",
+        }
+    response = {
+        "decision_id": decision_id,
+        "effect_id": effect_id,
+        "kind": kind,
+        "executed": True,
+    }
+    response.update(result)
+    return response
 
-    return {"confirmed": True, "state": "resumed", "effects": effects}
+
+def execute_pending_review_decisions(
+    base_path: str | Path,
+    *,
+    worker_id: str,
+    github_api: Any = None,
+    verifier_api: Any = None,
+    app_actor_id: Any = None,
+    expected_owner: str = "",
+    client_factory: Any = None,
+    verifier_factory: Any = None,
+    owner_resolver: Any = None,
+    app_actor_resolver: Any = None,
+) -> list[dict[str, Any]]:
+    """Drain ready effects until the queue is empty or one must retry later."""
+    results: list[dict[str, Any]] = []
+    while True:
+        result = execute_next_review_decision_effect(
+            base_path,
+            worker_id=worker_id,
+            github_api=github_api,
+            verifier_api=verifier_api,
+            app_actor_id=app_actor_id,
+            expected_owner=expected_owner,
+            client_factory=client_factory,
+            verifier_factory=verifier_factory,
+            owner_resolver=owner_resolver,
+            app_actor_resolver=app_actor_resolver,
+        )
+        if result is None:
+            return results
+        results.append(result)
+        if not result.get("executed"):
+            return results
 
 
 def _review_run_storage_path(base_path: str | Path, run_id: str) -> Path:
@@ -3413,77 +3607,6 @@ def _review_run_storage_path(base_path: str | Path, run_id: str) -> Path:
         if run is not None and run.get("universe_id") == queue_path.name:
             return parent
     return queue_path
-
-
-def continue_reviewed_run(
-    base_path: str | Path, *, run_id: str, decision: str,
-    directive: dict[str, Any] | None = None,
-    github_api: Any = None, verifier_api: Any = None,
-    run_starter: Callable[[dict[str, Any]], str] | None = None,
-    app_actor_id: Any = None, expected_owner: str = "",
-) -> dict[str, Any]:
-    """Runtime consumer that resumes an interrupted run once the owner decided —
-    with NO FALSE SUCCESS (Codex r14 #1). It EXECUTES the directive and moves the
-    run to COMPLETED **only after the required GitHub effect is CONFIRMED** (and,
-    for reshape, the revised run is created). If the effect can't execute (no
-    client) or the autonomous gate fails, the run STAYS INTERRUPTED and the
-    suspension stays ``decided`` for idempotent replay — the decision is durable
-    and never lost, but the run never falsely completes.
-
-    Only an INTERRUPTED run awaiting review transitions; anything else is a
-    no-op (``applied=False``)."""
-    run_base_path = _review_run_storage_path(base_path, run_id)
-    run = get_run(run_base_path, run_id)
-    if run is None:
-        return {"applied": False, "reason": "run_not_found"}
-    if run.get("status") != RUN_STATUS_INTERRUPTED:
-        return {"applied": False, "reason": f"run_not_awaiting_review:{run.get('status')}"}
-    output = dict(run.get("output") or {})
-    if "awaiting_owner_review" not in output:
-        return {"applied": False, "reason": "not_a_review_suspension"}
-    from tinyassets.storage.review_queue import get_suspension
-    susp = get_suspension(base_path, run_id=run_id) or {}
-    if directive is None:
-        directive = susp.get("resume_directive") or {}
-    try:
-        result = _execute_review_directive(
-            base_path, run_id=run_id, suspension=susp, directive=directive,
-            github_api=github_api, verifier_api=verifier_api,
-            run_starter=run_starter, app_actor_id=app_actor_id,
-            expected_owner=expected_owner,
-        )
-    except Exception as exc:  # noqa: BLE001 — leave pending for replay, fail loud
-        logger.exception("review directive execution failed for run %s", run_id)
-        return {"applied": False, "reason": f"directive_failed:{exc}"}
-
-    if not result["confirmed"]:
-        # NO FALSE SUCCESS: the effect didn't execute → the run STAYS interrupted
-        # and the suspension stays `decided` for replay when a client is wired.
-        return {
-            "applied": False, "reason": result.get("reason") or "awaiting_execution",
-            "state": result["state"], "effects": result.get("effects", {}),
-        }
-
-    output["review_decision"] = decision
-    output["review_workflow_state"] = result["state"]
-    if result.get("effects"):
-        output["review_continuation_effects"] = result["effects"]
-    output.pop("awaiting_owner_review", None)
-    update_run_status(
-        run_base_path, run_id,
-        status=RUN_STATUS_COMPLETED, output=output, finished_at=_now(),
-    )
-    # Ack the durable resume-pending marker ONLY after the canonical transition.
-    try:
-        from tinyassets.storage.review_queue import ack_continuation
-        ack_continuation(base_path, run_id=run_id)
-    except Exception:  # noqa: BLE001 — run already completed; ack is idempotent
-        logger.exception("ack_continuation failed for run %s", run_id)
-    return {
-        "applied": True, "run_id": run_id, "decision": decision,
-        "review_workflow_state": result["state"],
-        "effects": result.get("effects", {}),
-    }
 
 
 def supersede_stranded_review_runs(
@@ -3512,32 +3635,6 @@ def supersede_stranded_review_runs(
         )
         cancelled.append(rid)
     return cancelled
-
-
-def replay_pending_continuations(
-    base_path: str | Path, *, github_api: Any = None, verifier_api: Any = None,
-    run_starter: Callable[[dict[str, Any]], str] | None = None,
-    app_actor_id: Any = None, expected_owner: str = "",
-) -> list[dict[str, Any]]:
-    """RECOVERY WORKER — idempotent startup replay (Codex r13 #1 / r14 #7):
-    re-drive every DECIDED-but-not-acked suspension so a decision made just
-    before a crash still continues its run. Effects are receipt-guarded, so a
-    replay never double-submits a review or double-creates a revised run. Safe to
-    call repeatedly — each already-continued run is a no-op. Daemon-loop
-    registration is the integration seam (the host wires the real client)."""
-    from tinyassets.storage.review_queue import list_pending_continuations
-
-    results: list[dict[str, Any]] = []
-    for susp in list_pending_continuations(base_path):
-        results.append(continue_reviewed_run(
-            base_path, run_id=susp["run_id"],
-            decision=susp.get("resume_decision") or "",
-            directive=susp.get("resume_directive") or {},
-            github_api=github_api, verifier_api=verifier_api,
-            run_starter=run_starter, app_actor_id=app_actor_id,
-            expected_owner=expected_owner,
-        ))
-    return results
 
 
 def _app_authored_pr(pull: dict[str, Any], *, expected_owner: str) -> tuple[bool, str]:
@@ -3782,95 +3879,6 @@ def execute_pending_manual_merges(
     return results
 
 
-def execute_pending_review_effects(
-    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
-    expected_owner: str = "", owner_resolver: Any = None,
-) -> list[dict[str, Any]]:
-    """RECOVERY WORKER — submit the owner's queued GitHub reviews (Codex r17 #1),
-    INDEPENDENT of any run suspension, so a projection with NO suspension still
-    gets its owner review onto GitHub (which the manual-merge gate then requires).
-
-    For each queued review-effect it resolves the client + connected owner,
-    reconciles against GitHub (already the OWNER's review at this head+event? →
-    skip), else submits the review with the owner USER token, and marks the row
-    executed. Idempotent — a replay never double-submits. Without a client the row
-    stays queued (honest)."""
-    from tinyassets import github_native as _gn
-    from tinyassets.github_native import GitHubCall
-    from tinyassets.storage import review_queue as _rq
-
-    results: list[dict[str, Any]] = []
-    for row in _rq.list_pending_review_effects(base_path):
-        rid = row["review_effect_id"]
-        dest = (row.get("destination") or "").strip()
-        pr = row.get("pr_number")
-        head = (row.get("expected_head_sha") or "").strip()
-        event = (row.get("event") or "APPROVE").strip().upper()
-        body = row.get("body") or ""
-        try:
-            client = _resolve_worker_client(github_api, client_factory, dest)
-        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
-            results.append({"review_effect_id": rid, "submitted": False,
-                            "reason": f"client_error:{exc}"})
-            continue
-        if client is None:
-            results.append({"review_effect_id": rid, "submitted": False,
-                            "reason": "no_client"})
-            continue
-        owner = expected_owner
-        if not owner and owner_resolver is not None:
-            try:
-                owner = owner_resolver(dest) or ""
-            except Exception:  # noqa: BLE001 — unresolvable owner ⇒ submit fresh
-                owner = ""
-        # App-authored-PR invariant (Codex r17 #4): reject submitting an owner
-        # APPROVE on a PR the owner authored (GitHub blocks self-approval) BEFORE
-        # the doomed call. The row stays queued so the authorship problem surfaces.
-        if event == "APPROVE":
-            try:
-                pull = client.get_pull(destination=dest, pr_number=pr)
-                app_ok, app_reason = _app_authored_pr(pull, expected_owner=owner)
-            except Exception as exc:  # noqa: BLE001 — unreadable ⇒ retry later
-                results.append({"review_effect_id": rid, "submitted": False,
-                                "reason": f"pull_unreadable:{exc}"})
-                continue
-            if not app_ok:
-                results.append({"review_effect_id": rid, "submitted": False,
-                                "reason": app_reason})
-                continue
-        if event == "APPROVE":
-            call = _gn.review_approve(destination=dest, pr_number=pr, head_sha=head)
-        else:
-            call = _gn.review_request_changes(
-                destination=dest, pr_number=pr, head_sha=head, body=body,
-            )
-        cd = call.to_dict()
-        # Reconcile: the OWNER's review at this head+event already on GitHub (crash
-        # window)? → do NOT re-submit; mark done.
-        if _review_already_on_github(client, cd, expected_owner=owner):
-            _rq.mark_review_effect_executed(base_path, review_effect_id=rid)
-            results.append({"review_effect_id": rid, "submitted": True,
-                            "detail": "already_on_github", "pr_number": pr})
-            continue
-        try:
-            res = client.run_call(GitHubCall(**{
-                k: cd[k] for k in _GH_CALL_KEYS if k in cd
-            }))
-        except Exception as exc:  # noqa: BLE001 — leave queued for retry
-            logger.exception("review-effect submit failed for %s#%s", dest, pr)
-            results.append({"review_effect_id": rid, "submitted": False,
-                            "reason": f"error:{exc}"})
-            continue
-        if not res.get("ok"):
-            results.append({"review_effect_id": rid, "submitted": False,
-                            "reason": "call_failed"})
-            continue
-        _rq.mark_review_effect_executed(base_path, review_effect_id=rid)
-        results.append({"review_effect_id": rid, "submitted": True, "event": event,
-                        "pr_number": pr})
-    return results
-
-
 def _resolve_owner_approval_id(
     reviews: list[dict[str, Any]] | None, *, owner: str, head: str
 ) -> int | None:
@@ -4040,6 +4048,15 @@ def fire_due_not_before_timers(
             fired.append({"pr_number": pr, "fired": False,
                           "reason": merge.get("error_kind") or merge.get("action")})
             continue
+        # Reconcile the remote goal before mutating.  If the prior process died
+        # after GitHub accepted enablePullRequestAutoMerge but before local ack,
+        # REST already reports the feature enabled and replay only repairs local
+        # state.
+        current_pull = github_api_dest.get_pull(destination=dest, pr_number=pr)
+        if current_pull.get("auto_merge_enabled"):
+            _rq.mark_timer_fired(base_path, destination=dest, pr_number=pr, now=ts)
+            fired.append({"pr_number": pr, "fired": True, "detail": "reconciled"})
+            continue
         receipt_key = (
             f"timer_enable_auto_merge:{pr}:"
             f"{(timer.get('expected_head_sha') or '')[:12]}:"
@@ -4064,16 +4081,14 @@ def fire_due_not_before_timers(
 
 def register_review_workers(
     *, base_path: str | Path, github_api: Any = None, verifier_api: Any = None,
-    run_starter: Callable[[dict[str, Any]], str] | None = None,
     app_actor_id: Any = None, expected_owner: str = "", client_factory: Any = None,
     verifier_factory: Any = None, owner_resolver: Any = None,
     app_actor_resolver: Any = None,
 ) -> dict[str, Callable[[], list[dict[str, Any]]]]:
-    """THE single daemon-registration ENTRYPOINT (Codex r15 #1c) for the S4
-    review-recovery workers. Returns a dict of ``name -> zero-arg callable`` the
-    daemon loop invokes on each tick: continuation replay, the owner REVIEW-EFFECT
-    submitter (Codex r17 #1), the MANUAL-MERGE drain (owner-review-gated), the
-    revocation executor, and the not_before timer-watcher (Codex r17 #3) — each
+    """Register the review-decision and related recovery workers.
+
+    The daemon invokes the leased ordered decision executor, manual-merge drain,
+    revocation executor, and not-before timer watcher on each tick — each
     bound to the credentialed client (``github_api`` directly, or
     ``client_factory(destination)`` / ``verifier_factory(destination)`` built from
     the vault per destination), with the owner + App-actor resolved per
@@ -4083,14 +4098,20 @@ def register_review_workers(
     resolvers from the per-universe vault and the daemon loop calls it each cycle
     (:func:`fantasy_daemon.__main__._dispatcher_startup`)."""
     return {
-        "replay_continuations": lambda: replay_pending_continuations(
-            base_path, github_api=github_api, verifier_api=verifier_api,
-            run_starter=run_starter, app_actor_id=app_actor_id,
+        "execute_decisions": lambda: execute_pending_review_decisions(
+            base_path,
+            worker_id=(
+                os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+                or f"review-worker-{os.getpid()}"
+            ),
+            github_api=github_api,
+            verifier_api=verifier_api,
+            app_actor_id=app_actor_id,
             expected_owner=expected_owner,
-        ),
-        "submit_review_effects": lambda: execute_pending_review_effects(
-            base_path, github_api=github_api, client_factory=client_factory,
-            expected_owner=expected_owner, owner_resolver=owner_resolver,
+            client_factory=client_factory,
+            verifier_factory=verifier_factory,
+            owner_resolver=owner_resolver,
+            app_actor_resolver=app_actor_resolver,
         ),
         "drain_manual_merges": lambda: execute_pending_manual_merges(
             base_path, github_api=github_api, client_factory=client_factory,
@@ -4108,103 +4129,74 @@ def register_review_workers(
     }
 
 
-def _start_review_revision(
-    universe_dir: str | Path, route_back: dict[str, Any]
-) -> str:
-    """Start or recover the revised run requested by an owner reshape decision."""
+def resolve_review_revision_request(
+    base_path: str | Path,
+    universe_dir: str | Path,
+    *,
+    task: Any,
+    branch: BranchDefinition,
+) -> dict[str, Any]:
+    """Resolve trusted inputs/identity for a claimed review-revision task.
+
+    This is decision policy only. The BranchTask queue owns execution lifecycle,
+    and :func:`execute_claimed_branch_request` owns run lifecycle.
+    """
     from tinyassets.api.runs import (
         _bind_universe_context,
         _resolve_runtime_bindings,
         _run_execution_scope,
     )
-    from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_registry import get_daemon
-    from tinyassets.daemon_server import get_branch_definition, get_runtime_instance
+    from tinyassets.daemon_server import get_runtime_instance
 
-    source_run_id = str(route_back.get("run_id") or "").strip()
-    run_base_path = _review_run_storage_path(universe_dir, source_run_id)
-    source = get_run(run_base_path, source_run_id)
+    source_run_id = str(getattr(task, "source_run_id", "") or "").strip()
+    source = get_run(base_path, source_run_id)
     if source is None:
         raise LookupError("reshape source run was not found")
-    source_branch_def_id = str(source.get("branch_def_id") or "").strip()
-    branch_def_id = str(
-        route_back.get("branch_def_id") or source_branch_def_id
-    ).strip()
-    if not branch_def_id:
-        raise LookupError("reshape route has no branch definition")
-    if source_branch_def_id and branch_def_id != source_branch_def_id:
-        raise RuntimeError("reshape route does not match its source branch")
-    source_universe_id = str(source.get("universe_id") or "").strip()
-    universe_id = str(
-        route_back.get("universe_id")
-        or source_universe_id
-        or Path(universe_dir).name
-    ).strip()
-    if source_universe_id and universe_id != source_universe_id:
-        raise RuntimeError("reshape route does not match its source universe")
-    target_node = str(route_back.get("target_node") or "").strip()
-    if not target_node:
-        raise LookupError("reshape route has no target node")
-    branch = BranchDefinition.from_dict(
-        get_branch_definition(universe_dir, branch_def_id=branch_def_id)
-    )
-    errors = branch.validate()
-    if errors:
-        raise ValueError("reshape branch definition is invalid")
+    branch_def_id = str(getattr(task, "branch_def_id", "") or "").strip()
+    if branch_def_id != str(source.get("branch_def_id") or "").strip():
+        raise RuntimeError("reshape task does not match its source branch")
+    universe_id = str(getattr(task, "universe_id", "") or "").strip()
+    if universe_id != str(source.get("universe_id") or "").strip():
+        raise RuntimeError("reshape task does not match its source universe")
+    target_node = str(getattr(task, "target_node", "") or "").strip()
     if target_node not in {node.id for node in branch.graph_nodes}:
         raise LookupError("reshape target node was not found in the branch")
+
     runtime_bindings, refusal = _resolve_runtime_bindings(branch, universe_id)
     if refusal is not None:
         raise RuntimeError("reshape runtime bindings are unavailable")
-
     owner_user_id = str(source.get("owner_user_id") or "").strip()
     runtime_instance_id = str(source.get("runtime_instance_id") or "").strip()
     if not owner_user_id or not runtime_instance_id:
         raise RuntimeError("reshape source has no trusted owner or live runtime")
     try:
-        runtime = get_runtime_instance(
-            run_base_path, instance_id=runtime_instance_id,
-        )
+        runtime = get_runtime_instance(base_path, instance_id=runtime_instance_id)
     except KeyError as exc:
         raise RuntimeError("reshape source has no live runtime") from exc
     if (
         str(runtime.get("status") or "").strip() != "provisioned"
         or str(runtime.get("universe_id") or "").strip() != universe_id
     ):
-        raise RuntimeError(
-            "reshape source has no live runtime for this universe; "
-            "executable runtime status is required"
-        )
+        raise RuntimeError("reshape source has no executable runtime")
     runtime_metadata = runtime.get("metadata") or {}
-    source_daemon_id = str(source.get("daemon_id") or "").strip()
-    runtime_daemon_id = str(runtime_metadata.get("daemon_id") or "").strip()
-    daemon_id = source_daemon_id or runtime_daemon_id
-    if daemon_id and runtime_daemon_id and daemon_id != runtime_daemon_id:
-        raise RuntimeError("reshape source runtime identity does not match its daemon")
-    try:
-        daemon = get_daemon(run_base_path, daemon_id=daemon_id)
-    except KeyError as exc:
-        raise RuntimeError("reshape source runtime identity has no daemon") from exc
+    daemon_id = str(source.get("daemon_id") or "").strip()
+    if daemon_id != str(runtime_metadata.get("daemon_id") or "").strip():
+        raise RuntimeError("reshape runtime identity does not match its daemon")
+    daemon = get_daemon(base_path, daemon_id=daemon_id)
     if str(runtime.get("author_id") or "").strip() != str(
         daemon.get("legacy_author_id") or ""
     ).strip():
-        raise RuntimeError("reshape source runtime identity does not match its daemon")
-    runtime_owner_user_id = str(
-        runtime_metadata.get("owner_user_id") or ""
-    ).strip()
-    daemon_owner_user_id = str(daemon.get("owner_user_id") or "").strip()
-    if (
-        (runtime_owner_user_id and owner_user_id != runtime_owner_user_id)
-        or owner_user_id != daemon_owner_user_id
-    ):
-        raise RuntimeError("reshape source runtime identity does not match its owner")
-    source_worker_id = str(source.get("worker_id") or "").strip()
-    runtime_worker_id = str(runtime_metadata.get("worker_id") or "").strip()
-    worker_id = source_worker_id or runtime_worker_id
-    if source_worker_id and runtime_worker_id and source_worker_id != runtime_worker_id:
-        raise RuntimeError("reshape source runtime identity does not match its worker")
-    if not daemon_id or not worker_id:
-        raise RuntimeError("reshape source has no complete live runtime identity")
+        raise RuntimeError("reshape runtime identity does not match its daemon")
+    if owner_user_id != str(daemon.get("owner_user_id") or "").strip():
+        raise RuntimeError("reshape runtime identity does not match its owner")
+    runtime_owner = str(runtime_metadata.get("owner_user_id") or "").strip()
+    if runtime_owner and runtime_owner != owner_user_id:
+        raise RuntimeError("reshape runtime identity does not match its owner")
+    worker_id = str(source.get("worker_id") or "").strip()
+    runtime_worker = str(runtime_metadata.get("worker_id") or "").strip()
+    if not worker_id or (runtime_worker and runtime_worker != worker_id):
+        raise RuntimeError("reshape runtime identity does not match its worker")
 
     source_state = {
         **dict(source.get("inputs") or {}),
@@ -4215,247 +4207,49 @@ def _start_review_revision(
         for field in branch.state_schema
         if str(field.get("name") or "")
     }
-    inputs = {
-        key: value for key, value in source_state.items()
-        if key in state_fields
-    }
-    inputs["reshape_notes"] = str(route_back.get("owner_notes") or "").strip()
-    revision_key = "\0".join(
-        ("owner-reshape", source_run_id, branch_def_id, target_node)
-    )
-    revised_run_id = hashlib.sha256(revision_key.encode("utf-8")).hexdigest()[:32]
-    expected_actor = str(source.get("actor") or "anonymous")
-
-    def recover_existing_revision() -> dict[str, Any] | None:
-        existing = get_run(run_base_path, revised_run_id)
-        if existing is None:
-            return None
-        expected = {
-            "branch_def_id": branch_def_id,
-            "run_name": "Owner-requested revision",
-            "thread_id": revised_run_id,
-            "actor": expected_actor,
-            "universe_id": universe_id,
-            "owner_user_id": owner_user_id,
-            "inputs": inputs,
-            "daemon_id": daemon_id,
-            "runtime_instance_id": runtime_instance_id,
-            "worker_id": worker_id,
-        }
-        mismatched = [
-            field for field, value in expected.items()
-            if existing.get(field) != value
-        ]
-        lineage = get_lineage(run_base_path, revised_run_id)
-        if (
-            lineage is None
-            or lineage.get("parent_run_id") != source_run_id
-            or lineage.get("branch_def_id") != branch_def_id
-        ):
-            mismatched.append("lineage")
-        if mismatched:
-            raise RuntimeError(
-                "existing reshape revision does not match its deterministic request"
-            )
-        return existing
-
-    terminal_statuses = {
-        RUN_STATUS_COMPLETED,
-        RUN_STATUS_FAILED,
-        RUN_STATUS_CANCELLED,
-    }
-
-    def revision_has_execution_owner() -> bool:
-        if get_future(revised_run_id) is not None:
-            return True
-        current = get_run(run_base_path, revised_run_id)
-        return current is not None and current.get("status") in terminal_statuses
-
-    existing_revision = recover_existing_revision()
+    inputs = {key: value for key, value in source_state.items() if key in state_fields}
+    inputs["reshape_notes"] = str(
+        (getattr(task, "inputs", {}) or {}).get("reshape_notes") or ""
+    ).strip()
+    task_id = str(getattr(task, "branch_task_id", "") or "").strip()
+    revised_run_id = hashlib.sha256(
+        f"claimed-branch-task\0{task_id}".encode("utf-8")
+    ).hexdigest()[:32]
     try:
         from tinyassets.providers.call import call_provider as provider_call
     except ImportError:
         provider_call = None
-    provider_call = _bind_universe_context(provider_call, universe_id)
-    execution_scope = _run_execution_scope(universe_id)
-    if existing_revision is not None:
-        existing_status = str(existing_revision.get("status") or "").strip()
-        if existing_status in terminal_statuses:
-            return revised_run_id
-        if existing_status in {RUN_STATUS_QUEUED, RUN_STATUS_RUNNING}:
-            if revision_has_execution_owner():
-                return revised_run_id
-            raise RuntimeError(
-                "existing reshape revision has no active execution owner"
-            )
-        if existing_status != RUN_STATUS_INTERRUPTED:
-            raise RuntimeError(
-                "existing reshape revision is not recoverable from its status"
-            )
-
-        has_checkpoint = _has_checkpoint(run_base_path, revised_run_id)
-        existing_lineage = get_lineage(run_base_path, revised_run_id)
-        if has_checkpoint and int(
-            (existing_lineage or {}).get("branch_version") or 0
-        ) != int(getattr(branch, "version", 1) or 1):
-            raise RuntimeError(
-                "interrupted reshape revision checkpoint does not match "
-                "the current branch version"
-            )
-        made_node_progress = any(
-            event.get("status") in {
-                NODE_STATUS_RUNNING,
-                NODE_STATUS_RAN,
-                NODE_STATUS_FAILED,
-            }
-            and not str(event.get("node_id") or "").startswith("__")
-            for event in list_events(run_base_path, revised_run_id)
-        )
-        if made_node_progress and not has_checkpoint:
-            raise RuntimeError(
-                "interrupted reshape revision cannot be safely replayed "
-                "without a durable checkpoint"
-            )
-        with _connect(run_base_path) as conn:
-            claimed = conn.execute(
-                """
-                UPDATE runs
-                SET status = ?, error = '', finished_at = NULL
-                WHERE run_id = ? AND status = ?
-                """,
-                (RUN_STATUS_QUEUED, revised_run_id, RUN_STATUS_INTERRUPTED),
-            )
-            conn.execute(
-                "DELETE FROM run_cancels WHERE run_id = ?",
-                (revised_run_id,),
-            )
-        if claimed.rowcount != 1:
-            raise RuntimeError("interrupted reshape revision recovery lost its claim")
-
-        enqueue_context = NodeEnqueueContext(
-            universe_id=universe_id,
-            actor=expected_actor,
-        )
-
-        def recovery_worker() -> RunOutcome:
-            try:
-                if has_checkpoint:
-                    return _invoke_graph_resume(
-                        run_base_path,
-                        run_id=revised_run_id,
-                        branch=branch,
-                        thread_id=revised_run_id,
-                        provider_call=provider_call,
-                        execution_scope=execution_scope,
-                    )
-                return _invoke_graph(
-                    run_base_path,
-                    run_id=revised_run_id,
-                    branch=branch,
-                    inputs=inputs,
-                    provider_call=provider_call,
-                    runtime_bindings=runtime_bindings,
-                    recursion_limit=DEFAULT_RECURSION_LIMIT,
-                    invocation_depth=int(
-                        existing_revision.get("invocation_depth") or 0
-                    ),
-                    enqueue_context=enqueue_context,
-                    execution_scope=execution_scope,
-                    start_node=target_node,
-                )
-            except Exception:
-                logger.exception(
-                    "Background recovery worker for run %s crashed",
-                    revised_run_id,
-                )
-                update_run_status(
-                    run_base_path,
-                    revised_run_id,
-                    status=RUN_STATUS_FAILED,
-                    error="Background recovery worker crashed; see server logs.",
-                    finished_at=_now(),
-                )
-                return RunOutcome(
-                    run_id=revised_run_id,
-                    status=RUN_STATUS_FAILED,
-                    output={},
-                    error="Background recovery worker crashed.",
-                )
-
-        executor = _get_executor(
-            invocation_depth=int(existing_revision.get("invocation_depth") or 0)
-        )
-        try:
-            future = executor.submit(recovery_worker)
-        except Exception:
-            with _connect(run_base_path) as conn:
-                conn.execute(
-                    """
-                    UPDATE runs
-                    SET status = ?, error = ?, finished_at = ?
-                    WHERE run_id = ? AND status = ?
-                    """,
-                    (
-                        RUN_STATUS_INTERRUPTED,
-                        "Review revision recovery could not submit its worker.",
-                        _now(),
-                        revised_run_id,
-                        RUN_STATUS_QUEUED,
-                    ),
-                )
-            raise
-        _track_future(revised_run_id, future)
-        return revised_run_id
-    try:
-        outcome = execute_branch_async(
-            run_base_path,
-            run_id=revised_run_id,
-            branch=branch,
-            inputs=inputs,
-            run_name="Owner-requested revision",
-            actor=expected_actor,
-            provider_call=provider_call,
-            runtime_bindings=runtime_bindings,
-            owner_user_id=owner_user_id,
-            daemon_id=daemon_id,
-            runtime_instance_id=runtime_instance_id,
-            worker_id=worker_id,
-            lineage_parent_run_id=source_run_id,
-            start_node=target_node,
-            _enqueue_universe_id=universe_id,
-            execution_scope=execution_scope,
-        )
-    except sqlite3.IntegrityError:
-        # The run_id is the deterministic unique revision key. A concurrent
-        # replay that lost the insert race recovers only a fully matching winner.
-        existing_revision = recover_existing_revision()
-        if existing_revision is None:
-            raise
-        winner_status = str(existing_revision.get("status") or "").strip()
-        if winner_status in terminal_statuses:
-            return revised_run_id
-        if not revision_has_execution_owner():
-            raise RuntimeError(
-                "concurrent reshape revision winner has no active execution owner"
-            )
-        return revised_run_id
-    return outcome.run_id
+    return {
+        "run_id": revised_run_id,
+        "inputs": inputs,
+        "run_name": f"branch-task-{task_id}",
+        "actor": str(source.get("actor") or "anonymous"),
+        "provider_call": _bind_universe_context(provider_call, universe_id),
+        "runtime_bindings": runtime_bindings,
+        "owner_user_id": owner_user_id,
+        "daemon_id": daemon_id,
+        "runtime_instance_id": runtime_instance_id,
+        "worker_id": worker_id,
+        "lineage_parent_run_id": source_run_id,
+        "start_node": target_node,
+        "universe_id": universe_id,
+        "execution_scope": _run_execution_scope(universe_id),
+    }
 
 
 def run_review_recovery_for_universe(
     universe_dir: str | Path, *, request_fn: Any = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """LIVE DAEMON CALLER (Codex REJECT #1 / r17 #1 + #3) — drive the S4
-    review-recovery workers for ONE universe with REAL vault-built clients.
+    """Drive review recovery for one universe with vault-built clients.
 
     Builds, from the platform credential vault BY DESTINATION: the merge/read
     client (:func:`github_http.github_client_from_vault`), the ruleset-read
     VERIFIER client (:func:`github_http.verifier_client_from_vault`), the connected
     owner login and App bypass-actor id from the non-secret connection metadata.
-    Then,
-    in order: submits queued owner REVIEW-EFFECTS, drives manual-flow continuations,
-    drains owner-review-GATED manual merges, executes revocations, and fires due
-    not_before timers (autonomous) through the verifier.
+    The ordered decision executor owns review submission, merge-preference
+    application, revision-task enqueue, and source-run finalization. Related
+    workers drain explicit manual merges, execute revocations, and fire due
+    not-before timers through the verifier.
 
     Fail-closed everywhere: a destination with no connected credential yields no
     client, so its rows stay queued; a manual merge with no CONFIRMED owner review
@@ -4468,8 +4262,6 @@ def run_review_recovery_for_universe(
         github_client_from_vault,
         verifier_client_from_vault,
     )
-    from tinyassets.storage import review_queue as _rq
-
     _client_cache: dict[str, Any] = {}
     _verifier_cache: dict[str, Any] = {}
     universe_id = Path(universe_dir).name
@@ -4508,40 +4300,21 @@ def run_review_recovery_for_universe(
             universe_id, destination
         ).get("app_actor_id", "")
 
-    def run_starter(route_back: dict[str, Any]) -> str:
-        return _start_review_revision(universe_dir, route_back)
-
-    # 1) Submit the owner's queued reviews (independent of any suspension) so the
-    #    merge gate can find a CONFIRMED owner review on GitHub.
-    review_effects = execute_pending_review_effects(
-        universe_dir, client_factory=client_factory, owner_resolver=owner_resolver,
+    worker_id = (
+        os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+        or f"review-worker-{os.getpid()}"
+    )
+    decisions = execute_pending_review_decisions(
+        universe_dir,
+        worker_id=worker_id,
+        client_factory=client_factory,
+        verifier_factory=verifier_factory,
+        owner_resolver=owner_resolver,
+        app_actor_resolver=app_actor_resolver,
     )
 
-    # 2) Drive manual-flow continuations (submit the owner's review + complete the
-    #    run; manual merge needs no verifier). Owner resolved for owner-bound
-    #    reconciliation; no verifier, so an autonomous decision fails closed.
-    continuations: list[dict[str, Any]] = []
-    for susp in _rq.list_pending_continuations(universe_dir):
-        dest = (susp.get("destination") or "").strip()
-        client = client_factory(dest)
-        if client is None:
-            continuations.append({"run_id": susp.get("run_id"), "applied": False,
-                                  "reason": "no_client"})
-            continue
-        continuations.append(continue_reviewed_run(
-            universe_dir, run_id=susp["run_id"],
-            decision=susp.get("resume_decision") or "",
-            directive=susp.get("resume_directive") or {},
-            github_api=client,
-            verifier_api=verifier_factory(dest),
-            run_starter=run_starter,
-            app_actor_id=app_actor_resolver(dest),
-            expected_owner=owner_resolver(dest),
-        ))
-
     return {
-        "submit_review_effects": review_effects,
-        "replay_continuations": continuations,
+        "execute_decisions": decisions,
         "drain_manual_merges": execute_pending_manual_merges(
             universe_dir, client_factory=client_factory, owner_resolver=owner_resolver,
         ),
@@ -4714,6 +4487,145 @@ def execute_branch(
 # `event_sink` check unwinds the graph. Restart recovery marks in-flight
 # runs as `interrupted` so clients see a clean terminal state and can
 # choose to rerun.
+
+def execute_claimed_branch_request(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    branch: BranchDefinition,
+    inputs: dict[str, Any],
+    run_name: str,
+    actor: str,
+    provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    owner_user_id: str = "",
+    daemon_id: str = "",
+    runtime_instance_id: str = "",
+    worker_id: str = "",
+    lineage_parent_run_id: str = "",
+    start_node: str = "",
+    universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
+) -> RunOutcome:
+    """Execute one request already owned by a durable queue claim.
+
+    The queue owns cross-process exclusivity and retry leases. This adapter owns
+    deterministic run identity and crash recovery, so queue consumers do not
+    recreate run lifecycle handling.
+    """
+    request_run_id = (run_id or "").strip()
+    if not request_run_id:
+        raise ValueError("run_id is required for a claimed branch request")
+    enqueue_context = NodeEnqueueContext(universe_id=universe_id, actor=actor)
+    scope = _coherent_execution_scope(base_path, universe_id, execution_scope)
+    existing = get_run(base_path, request_run_id)
+    if existing is not None:
+        expected = {
+            "branch_def_id": branch.branch_def_id,
+            "run_name": run_name,
+            "actor": actor,
+            "universe_id": universe_id,
+            "owner_user_id": owner_user_id,
+            "daemon_id": daemon_id,
+            "runtime_instance_id": runtime_instance_id,
+            "worker_id": worker_id,
+            "inputs": inputs,
+        }
+        if any(existing.get(field) != value for field, value in expected.items()):
+            raise RuntimeError("existing claimed-request run does not match request")
+        lineage = get_lineage(base_path, request_run_id)
+        if (
+            lineage is None
+            or lineage.get("parent_run_id") != lineage_parent_run_id
+            or lineage.get("branch_def_id") != branch.branch_def_id
+        ):
+            raise RuntimeError("existing claimed-request run lineage does not match")
+        status = str(existing.get("status") or "")
+        if status in {
+            RUN_STATUS_COMPLETED,
+            RUN_STATUS_FAILED,
+            RUN_STATUS_CANCELLED,
+        }:
+            return RunOutcome(
+                run_id=request_run_id,
+                status=status,
+                output=dict(existing.get("output") or {}),
+                error=str(existing.get("error") or ""),
+            )
+        if status in {RUN_STATUS_QUEUED, RUN_STATUS_RUNNING}:
+            update_run_status(
+                base_path,
+                request_run_id,
+                status=RUN_STATUS_INTERRUPTED,
+                error="Durable request reclaimed after its execution lease ended.",
+                finished_at=_now(),
+            )
+            status = RUN_STATUS_INTERRUPTED
+        if status not in {RUN_STATUS_INTERRUPTED, RUN_STATUS_RESUMED}:
+            raise RuntimeError(f"claimed-request run has invalid status: {status}")
+        if _has_checkpoint(base_path, request_run_id):
+            update_run_status(base_path, request_run_id, status=RUN_STATUS_RESUMED)
+            return _invoke_graph_resume(
+                base_path,
+                run_id=request_run_id,
+                branch=branch,
+                thread_id=request_run_id,
+                provider_call=provider_call,
+                execution_scope=scope,
+            )
+        made_progress = any(
+            event.get("status") in {
+                NODE_STATUS_RUNNING,
+                NODE_STATUS_RAN,
+                NODE_STATUS_FAILED,
+            }
+            for event in list_events(base_path, request_run_id)
+        )
+        if made_progress:
+            raise RuntimeError(
+                "interrupted claimed-request run has progress but no checkpoint"
+            )
+        with _connect(base_path) as conn:
+            conn.execute(
+                "UPDATE runs SET status = ?, error = '', finished_at = NULL "
+                "WHERE run_id = ?",
+                (RUN_STATUS_QUEUED, request_run_id),
+            )
+            conn.execute(
+                "DELETE FROM run_cancels WHERE run_id = ?", (request_run_id,)
+            )
+    else:
+        _prepare_run(
+            base_path,
+            run_id=request_run_id,
+            branch=branch,
+            inputs=inputs,
+            run_name=run_name,
+            actor=actor,
+            universe_id=universe_id,
+            enqueue_context=enqueue_context,
+            owner_user_id=owner_user_id,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            lineage_parent_run_id=lineage_parent_run_id,
+            start_node=start_node,
+        )
+    return _invoke_graph(
+        base_path,
+        run_id=request_run_id,
+        branch=branch,
+        inputs=inputs,
+        provider_call=provider_call,
+        runtime_bindings=runtime_bindings,
+        recursion_limit=DEFAULT_RECURSION_LIMIT,
+        on_node_status=on_node_status,
+        execution_scope=scope,
+        enqueue_context=enqueue_context,
+        start_node=start_node,
+    )
+
 
 _DEFAULT_MAX_WORKERS = 4
 # Phase A item 5 / Task #76c — two-pool model. Top-level runs (depth=0)
@@ -4900,6 +4812,7 @@ def _execute_branch_core(
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
         lineage_parent_run_id=lineage_parent_run_id,
+        start_node=start_node,
     )
 
     executor = _get_executor(invocation_depth=_invocation_depth)
@@ -6163,6 +6076,7 @@ __all__ = [
     "NODE_STATUS_RUNNING",
     "NODE_STATUS_RAN",
     "NODE_STATUS_FAILED",
+    "NODE_STATUS_SKIPPED",
     "ACTIONABLE_BY",
     "ChildRunAttachmentError",
     "ChildRunAwaitTimeout",
@@ -6177,6 +6091,9 @@ __all__ = [
     "create_run",
     "execute_branch",
     "execute_branch_async",
+    "execute_claimed_branch_request",
+    "execute_next_review_decision_effect",
+    "execute_pending_review_decisions",
     "find_node_snapshot",
     "get_future",
     "get_lineage",
@@ -6198,6 +6115,7 @@ __all__ = [
     "record_run_receipt",
     "recover_in_flight_runs",
     "request_cancel",
+    "resolve_review_revision_request",
     "runs_db_path",
     "shutdown_executor",
     "update_run_status",

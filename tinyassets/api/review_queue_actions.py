@@ -177,30 +177,19 @@ def _not_projected(action: str, destination: str, pr_number: int) -> str:
     })
 
 
-def _continue_run(universe_dir, pending: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Drive the runtime continuation: if the owner's decision put a run in the
-    durable ``decided`` (resume-pending) state, EXECUTE its directive and move
-    the canonical interrupted run to a terminal status (Codex r13 #2). The
-    decision + directive are already durably recorded by ``decide_and_resume``,
-    so a failure here is safe — the suspension stays ``decided`` and startup
-    replay re-drives it (Codex r13 #1).
+def _decision_handoff(pending: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Report the durable handoff; daemon workers own execution.
 
-    ``github_api`` is None on the MCP path today (the daemon injects a live E4
-    client where credentials exist); without it the recorded GitHub review/merge
-    calls are marked pending, never silently executed."""
+    The MCP request commits the decision plan and returns.  It never executes a
+    partial lifecycle without credentials or a cross-process lease.
+    """
     if not pending or not pending.get("run_id"):
         return None
-    try:
-        from tinyassets.runs import continue_reviewed_run
-
-        return continue_reviewed_run(
-            universe_dir, run_id=pending["run_id"],
-            decision=pending.get("decision") or "",
-            directive=pending.get("directive"),
-        )
-    except Exception:  # noqa: BLE001 — the decision is durable; replay recovers it
-        logger.exception("continue_reviewed_run failed")
-        return {"applied": False, "reason": "continue_error"}
+    return {
+        "applied": False,
+        "reason": "decision_queued",
+        "decision_id": pending.get("decision_id") or "",
+    }
 
 
 # ── list ────────────────────────────────────────────────────────────────────
@@ -276,7 +265,6 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
             decided_by=_current_actor(), expected_head_sha=head,
             directive={"action": "merge", "github_call": call.to_dict()},
             recorded_call=call.to_dict(), notes=kwargs.get("notes") or "",
-            review_effect={"event": "APPROVE"},
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
@@ -291,7 +279,7 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_approve", destination, pr_number)
-    run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
+    run_continued = _decision_handoff(result["pending"])
     confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
         # HONEST (Codex r15 #1a): the owner's DECISION is durably recorded, but
@@ -300,6 +288,7 @@ def _action_review_queue_approve(kwargs: dict[str, Any]) -> str:
         # the effect is confirmed.
         "status": "approved" if confirmed else "pending",
         "owner_decision": "approve",
+        "decision_id": result["decision_id"],
         "github_effect": "confirmed" if confirmed else "pending",
         "pending": result["pending"],
         "projection": result["projection"],
@@ -344,9 +333,8 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
         )
 
         universe_dir = _universe_dir_for(target_universe)
-        # Read the resume identity to build route_back; decide_and_resume
-        # inserts the outbox row + records the decision + moves the suspension to
-        # DECIDED in ONE head-bound transaction (Codex r13 #4 — no orphan outbox).
+        # Read the resume identity used by the decision plan's canonical branch
+        # task.  The plan and suspension transition commit in one transaction.
         existing = get_projection(
             universe_dir, destination=destination, pr_number=pr_number
         )
@@ -367,13 +355,6 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
             directive={"action": "draft_patch", "route_back": route_back,
                        "github_call": call.to_dict()},
             recorded_call=call.to_dict(), notes=notes,
-            reshape={
-                "universe_id": existing.get("universe_id") or "",
-                "branch_def_id": existing.get("branch_def_id") or "",
-                "run_id": existing.get("run_id") or "",
-                "owner_notes": notes, "recorded_call": call.to_dict(),
-            },
-            review_effect={"event": "REQUEST_CHANGES", "body": notes},
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
@@ -388,11 +369,12 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_reshape", destination, pr_number)
-    run_continued = _continue_run(universe_dir, result["pending"])
+    run_continued = _decision_handoff(result["pending"])
     confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
         "status": "reshaped" if confirmed else "pending",
         "owner_decision": "reshape",
+        "decision_id": result["decision_id"],
         "github_effect": "confirmed" if confirmed else "pending",
         "pending": result["pending"],
         "projection": result["projection"],
@@ -400,9 +382,9 @@ def _action_review_queue_reshape(kwargs: dict[str, Any]) -> str:
         "github_call": call.to_dict(),
         "run_continued": run_continued,
         "note": (
-            "Reshape recorded a REQUEST_CHANGES review call + a durable "
-            "draft_patch resume row; the suspended run resumes into draft_patch "
-            "with the owner's notes."
+            "Reshape committed an ordered decision plan. The review is submitted "
+            "first, then canonical branch work resumes at draft_patch with the "
+            "owner's notes."
         ),
     })
 
@@ -438,7 +420,6 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
             decided_by=_current_actor(), expected_head_sha=head,
             directive={"action": "terminal_reject", "github_call": call.to_dict()},
             recorded_call=call.to_dict(), notes=notes,
-            review_effect={"event": "REQUEST_CHANGES", "body": notes},
         )
     except ReviewHeadChanged as exc:
         return _head_changed(exc)
@@ -453,11 +434,12 @@ def _action_review_queue_reject(kwargs: dict[str, Any]) -> str:
         })
     if result["projection"] is None:
         return _not_projected("review_queue_reject", destination, pr_number)
-    run_continued = _continue_run(_universe_dir_for(target_universe), result["pending"])
+    run_continued = _decision_handoff(result["pending"])
     confirmed = bool(run_continued and run_continued.get("applied"))
     return json.dumps({
         "status": "rejected" if confirmed else "pending",
         "owner_decision": "reject",
+        "decision_id": result["decision_id"],
         "github_effect": "confirmed" if confirmed else "pending",
         "pending": result["pending"],
         "projection": result["projection"],
