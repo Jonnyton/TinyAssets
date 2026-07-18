@@ -2437,6 +2437,7 @@ def _invoke_graph(
     enqueue_context: "NodeEnqueueContext | None" = None,
     execution_scope: "ExecutionScope | None" = None,
     start_node: str = "",
+    execution_guard: Callable[[], None] | None = None,
 ) -> RunOutcome:
     """Authorize and pin a prepared run under its immutable tenant scope."""
     scope = _authoritative_execution_scope(base_path, run_id, execution_scope)
@@ -2478,6 +2479,7 @@ def _invoke_graph(
             enqueue_context=enqueue_context,
             execution_scope=scope,
             start_node=start_node,
+            execution_guard=execution_guard,
         )
 
 
@@ -2496,6 +2498,7 @@ def _invoke_graph_inner(
     enqueue_context: "NodeEnqueueContext | None" = None,
     execution_scope: "ExecutionScope | None" = None,
     start_node: str = "",
+    execution_guard: Callable[[], None] | None = None,
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
@@ -3033,6 +3036,14 @@ def _invoke_graph_inner(
     # the run output's ``external_write_errors`` metadata; they never
     # raise into the user-facing run status. Hard-rule #8 (fail loudly)
     # is satisfied by the structured error fields on each evidence entry.
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_external_writes",
+    )
+    if guarded is not None:
+        return guarded
     _quarantine_branch_authored_external_write_keys(output)
     external_write_evidence = _run_external_write_effectors(
         branch,
@@ -3092,6 +3103,14 @@ def _invoke_graph_inner(
             error="awaiting_owner_review",
         )
 
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_completion",
+    )
+    if guarded is not None:
+        return guarded
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -3104,6 +3123,43 @@ def _invoke_graph_inner(
         run_id=run_id, status=RUN_STATUS_COMPLETED,
         output=output, error="",
     )
+
+
+def _fail_run_if_execution_guard_rejects(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    execution_guard: Callable[[], None] | None,
+    stage: str,
+) -> RunOutcome | None:
+    """Terminalize a run when its authoritative execution generation moved."""
+    if execution_guard is None:
+        return None
+    try:
+        execution_guard()
+    except Exception as exc:  # noqa: BLE001 -- the guard is fail-closed
+        error = str(exc) or type(exc).__name__
+        logger.error(
+            "Run %s execution guard rejected at %s: %s",
+            run_id,
+            stage,
+            error,
+        )
+        update_run_status(
+            base_path,
+            run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=error,
+            finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=error,
+        )
+    return None
 
 
 # PR-122 Phase 1 round-2 (Codex finding #2): reserved system keys
@@ -3728,28 +3784,45 @@ def _surface_terminal_review_failure(
     run_id = str(((finalize or {}).get("payload") or {}).get("run_id") or "")
     if not run_id:
         return False
+    generation_terminalized = _rq.terminalize_failed_decision_generation(
+        base_path,
+        run_id=run_id,
+        decision_id=decision_id,
+    )
     run_base_path = _review_run_storage_path(base_path, run_id)
     source = get_run(run_base_path, run_id)
-    if source is None or source.get("status") != RUN_STATUS_INTERRUPTED:
-        return False
+    if source is None:
+        return generation_terminalized
     output = dict(source.get("output") or {})
-    if "awaiting_owner_review" not in output:
-        return False
     if (
         output.get("review_decision_id") == decision_id
         and output.get("review_decision_status") == "failed"
     ):
-        return False
+        return generation_terminalized
+    if (
+        source.get("status") != RUN_STATUS_INTERRUPTED
+        or "awaiting_owner_review" not in output
+    ):
+        return generation_terminalized
     output.update({
         "review_decision_id": decision_id,
         "review_decision_status": "failed",
+        "review_workflow_state": "decision_failed",
         "review_decision_failure": {
             "effect_id": effect_id,
             "kind": kind,
             "reason": reason,
         },
     })
-    update_run_status(run_base_path, run_id, output=output)
+    output.pop("awaiting_owner_review", None)
+    update_run_status(
+        run_base_path,
+        run_id,
+        status=RUN_STATUS_FAILED,
+        output=output,
+        error=f"review decision failed: {reason}",
+        finished_at=_now(),
+    )
     return True
 
 
@@ -4732,6 +4805,7 @@ def execute_claimed_branch_request(
     start_node: str = "",
     universe_id: str = "",
     execution_scope: "ExecutionScope | None" = None,
+    execution_guard: Callable[[], None] | None = None,
 ) -> RunOutcome:
     """Execute one request already owned by a durable queue claim.
 
@@ -4798,6 +4872,7 @@ def execute_claimed_branch_request(
                 thread_id=request_run_id,
                 provider_call=provider_call,
                 execution_scope=scope,
+                execution_guard=execution_guard,
             )
         made_progress = any(
             event.get("status") in {
@@ -4849,6 +4924,7 @@ def execute_claimed_branch_request(
         execution_scope=scope,
         enqueue_context=enqueue_context,
         start_node=start_node,
+        execution_guard=execution_guard,
     )
 
 
@@ -5427,6 +5503,7 @@ def _invoke_graph_resume(
     thread_id: str,
     provider_call: Callable[..., str] | None,
     execution_scope: "ExecutionScope | None" = None,
+    execution_guard: Callable[[], None] | None = None,
 ) -> RunOutcome:
     """Authorize and pin a resumed run under its persisted tenant scope."""
     run = get_run(base_path, run_id)
@@ -5465,6 +5542,7 @@ def _invoke_graph_resume(
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
             execution_scope=scope,
+            execution_guard=execution_guard,
         )
 
 
@@ -5478,6 +5556,7 @@ def _invoke_graph_resume_inner(
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     execution_scope: "ExecutionScope | None" = None,
+    execution_guard: Callable[[], None] | None = None,
 ) -> RunOutcome:
     """Compile branch + invoke with None inputs to resume from checkpoint.
 
@@ -5615,6 +5694,14 @@ def _invoke_graph_resume_inner(
         )
 
     output = dict(result) if isinstance(result, dict) else {}
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_external_writes",
+    )
+    if guarded is not None:
+        return guarded
     # PR-122 Phase 1 — also fire external-write effectors on resume
     # completion so a re-run that finishes via resume_run still emits
     # declared PR sinks. Same no-raise contract as the primary path.
@@ -5632,6 +5719,14 @@ def _invoke_graph_resume_inner(
         errors = _collect_external_write_errors(external_write_evidence)
         if errors:
             output["external_write_errors"] = errors
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_completion",
+    )
+    if guarded is not None:
+        return guarded
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,

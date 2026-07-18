@@ -1053,6 +1053,10 @@ def _try_execute_claimed_branch_task(
                 base_path,
                 branch=branch,
                 on_node_status=on_node_status,
+                execution_guard=lambda: require_review_revision_task_head(
+                    universe_path,
+                    task=claimed_task,
+                ),
                 **request,
             )
         else:

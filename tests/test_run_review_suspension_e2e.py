@@ -202,7 +202,9 @@ def test_unavailable_client_releases_effect_for_replay(monkeypatch, tmp_path):
     assert runs.get_run(tmp_path, run_id)["status"] == runs.RUN_STATUS_COMPLETED
 
 
-def test_terminal_effect_failure_is_durable_on_suspended_run(monkeypatch, tmp_path):
+def test_terminal_effect_cap_opens_a_recoverable_decision_generation(
+    monkeypatch, tmp_path
+):
     run_id = _suspend_a_real_run(tmp_path, monkeypatch)
     decision = _approve(tmp_path)
 
@@ -217,7 +219,7 @@ def test_terminal_effect_failure_is_durable_on_suspended_run(monkeypatch, tmp_pa
 
     assert result["terminal"] is True
     record = runs.get_run(tmp_path, run_id)
-    assert record["status"] == runs.RUN_STATUS_INTERRUPTED
+    assert record["status"] == runs.RUN_STATUS_FAILED
     assert record["output"]["review_decision_status"] == "failed"
     assert record["output"]["review_decision_id"] == decision["decision_id"]
     assert record["output"]["review_decision_failure"] == {
@@ -225,6 +227,37 @@ def test_terminal_effect_failure_is_durable_on_suspended_run(monkeypatch, tmp_pa
         "kind": "submit_review",
         "reason": "credential unavailable",
     }
+    assert record["output"]["review_workflow_state"] == "decision_failed"
+    assert "awaiting_owner_review" not in record["output"]
+    assert rq.get_suspension(tmp_path, run_id=run_id)["status"] == (
+        rq.SUSPENSION_SUPERSEDED
+    )
+
+    recovery = _approve(tmp_path)
+    assert recovery["decision_id"] != decision["decision_id"]
+    recovered = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="recovery-worker",
+        github_api=FakeApi(),
+        expected_owner="owner",
+        now=220,
+    )
+    assert recovered
+    assert all(row["executed"] for row in recovered)
+    assert all(row["decision_id"] == recovery["decision_id"] for row in recovered)
+
+    reemitted = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="report-recovery-worker",
+        now=10_000,
+    )
+    assert any(row.get("effect_id") == result["effect_id"] for row in reemitted)
+    projection = rq.get_projection(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+    )
+    assert projection["owner_intent"] == rq.INTENT_APPROVE
 
 
 def test_expired_lease_terminalization_is_surfaced_by_production_drain(

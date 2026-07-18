@@ -43,3 +43,11 @@ What surprised me: a successful post-mutation head check still left a race becau
 Pattern worth capturing: close remote-state TOCTOU at durable consumption boundaries. Bind the expected generation into every effect and task, then revalidate immediately before each downstream mutation or execution.
 
 One thing I would do differently: model externally visible failure reporting as an at-least-once leased outbox from the start; a permanent acknowledgment cannot also serve as the pre-emission concurrency claim.
+
+---
+
+What surprised me: terminalizing a failed decision is only recoverable if replaying its leased failure report cannot erase the replacement decision.
+
+Pattern worth capturing: generation failure and projection reopening must be one atomic first-transition operation; later failure-report deliveries are observability replays, not state transitions.
+
+One thing I would do differently: include “recover, then replay the old terminal report” in the initial cap-out regression, alongside the ordinary `DecisionLocked` check.

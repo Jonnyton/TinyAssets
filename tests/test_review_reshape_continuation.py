@@ -339,6 +339,118 @@ def test_review_revision_terminalizes_if_head_moves_before_consumption(
     )
 
 
+def test_review_revision_terminalizes_if_head_moves_during_execution(
+    tmp_path, monkeypatch
+):
+    universe_dir, source_run_id, route, daemon, _runtime, _prompts = _source_run(
+        tmp_path, monkeypatch,
+    )
+    rq.project_pr(
+        universe_dir,
+        destination="Owner/Repo",
+        pr_number=7,
+        head_sha="a" * 40,
+        branch_def_id=_BRANCH_ID,
+        universe_id=_UNIVERSE_ID,
+        run_id=source_run_id,
+    )
+    rq.suspend_run_for_review(
+        universe_dir,
+        run_id=source_run_id,
+        destination="Owner/Repo",
+        pr_number=7,
+        branch_def_id=_BRANCH_ID,
+        head_sha="a" * 40,
+        universe_id=_UNIVERSE_ID,
+    )
+    rq.decide_and_resume(
+        universe_dir,
+        destination="Owner/Repo",
+        pr_number=7,
+        intent=rq.INTENT_RESHAPE,
+        workflow_outcome=rq.WORKFLOW_RESHAPED,
+        decided_by=_OWNER_ID,
+        expected_head_sha="a" * 40,
+        directive={
+            "action": "draft_patch",
+            "route_back": route,
+            "github_call": {
+                "params": {"event": "REQUEST_CHANGES", "body": "revise"}
+            },
+        },
+    )
+    api = _MutableHeadApi()
+
+    executed = runs.execute_pending_review_decisions(
+        universe_dir,
+        worker_id="decision-worker",
+        github_api=api,
+    )
+    assert [row["kind"] for row in executed] == [
+        "submit_review",
+        "enqueue_revision",
+        "finalize_run",
+    ]
+
+    from tinyassets.branch_tasks import claim_task, read_queue
+
+    [queued] = read_queue(universe_dir)
+    claimed = claim_task(
+        universe_dir,
+        queued.branch_task_id,
+        "revision-daemon",
+        executor_worker_id=_WORKER_ID,
+    )
+    assert claimed is not None
+
+    def move_head_during_revision(
+        _prompt, _system, *, role, config=None, universe_context=None,
+    ):
+        api.head = "b" * 40
+        return "STALE PATCH MUST NOT PERSIST"
+
+    external_writes = []
+
+    def record_external_write(*args, **kwargs):
+        external_writes.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(
+        "tinyassets.providers.call.call_provider",
+        move_head_during_revision,
+    )
+    monkeypatch.setattr(runs, "_run_external_write_effectors", record_external_write)
+    monkeypatch.setattr(
+        "tinyassets.github_http.github_client_from_vault",
+        lambda *_args, **_kwargs: api,
+    )
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+
+    from fantasy_daemon.__main__ import (
+        _finalize_claimed_task,
+        _try_execute_claimed_branch_task,
+    )
+
+    success, error, metadata = _try_execute_claimed_branch_task(
+        universe_dir, claimed, daemon["daemon_id"],
+    )
+    _finalize_claimed_task(
+        universe_dir, claimed, success=success, error=error,
+    )
+
+    assert success is False
+    assert "head_moved" in error
+    assert metadata["run_status"] == runs.RUN_STATUS_FAILED
+    assert external_writes == []
+    revised = runs.get_run(tmp_path, metadata["run_id"])
+    assert revised["status"] == runs.RUN_STATUS_FAILED
+    assert "head_moved" in revised["error"]
+    assert "STALE PATCH MUST NOT PERSIST" not in str(revised["output"])
+    [terminal] = read_queue(universe_dir)
+    assert terminal.status == "failed"
+    assert "head_moved" in terminal.error
+
+
 def test_review_revision_runs_through_branch_task_lifecycle(tmp_path, monkeypatch):
     universe_dir, source_run_id, route, daemon, runtime, prompts = _source_run(
         tmp_path, monkeypatch,

@@ -1378,6 +1378,62 @@ def ack_continuation(
 # ── ordered decision effects ─────────────────────────────────────────────────
 
 
+def terminalize_failed_decision_generation(
+    universe_dir: str | Path,
+    *,
+    run_id: str,
+    decision_id: str,
+    now: float | None = None,
+) -> bool:
+    """Close a capped decision generation so the owner can decide again."""
+    rid = (run_id or "").strip()
+    did = (decision_id or "").strip()
+    if not rid or not did:
+        return False
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            suspension = conn.execute(
+                "SELECT * FROM review_suspensions WHERE run_id = ?",
+                (rid,),
+            ).fetchone()
+            if suspension is None or suspension["status"] not in {
+                SUSPENSION_DECIDED,
+                SUSPENSION_SUPERSEDED,
+            }:
+                return False
+            try:
+                directive = json.loads(suspension["resume_directive"] or "{}")
+            except (TypeError, ValueError):
+                return False
+            if str(directive.get("decision_id") or "").strip() != did:
+                return False
+            if suspension["status"] == SUSPENSION_SUPERSEDED:
+                return True
+            conn.execute(
+                "UPDATE review_suspensions SET status = ? "
+                "WHERE run_id = ? AND status = ?",
+                (SUSPENSION_SUPERSEDED, rid, SUSPENSION_DECIDED),
+            )
+            conn.execute(
+                "UPDATE pr_projection SET owner_intent = '', recorded_call = '', "
+                "workflow_outcome = ?, notes = '', decided_by = '', "
+                "decided_at = NULL, updated_at = ? "
+                "WHERE destination = ? AND pr_number = ? AND head_sha = ? "
+                "AND run_id = ?",
+                (
+                    WORKFLOW_OPEN,
+                    ts,
+                    suspension["destination"],
+                    suspension["pr_number"],
+                    suspension["head_sha"],
+                    rid,
+                ),
+            )
+    return True
+
+
 def _decision_effect_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     effect = dict(row)
     for field in ("payload", "result"):
