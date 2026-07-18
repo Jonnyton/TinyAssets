@@ -248,7 +248,15 @@ def test_expired_lease_terminalization_is_surfaced_by_production_drain(
         now=193,
     )
 
-    assert results == [{
+    assert [{key: result[key] for key in (
+        "decision_id",
+        "effect_id",
+        "kind",
+        "executed",
+        "reason",
+        "terminal",
+        "decision_status",
+    )} for result in results] == [{
         "decision_id": decision["decision_id"],
         "effect_id": effect["effect_id"],
         "kind": "submit_review",
@@ -257,6 +265,8 @@ def test_expired_lease_terminalization_is_surfaced_by_production_drain(
         "terminal": True,
         "decision_status": "failed",
     }]
+    assert results[0]["report_claim_token"]
+    assert results[0]["report_claimed_by"] == "recovery-worker"
     record = runs.get_run(tmp_path, run_id)
     assert record["output"]["review_decision_status"] == "failed"
     assert record["output"]["review_decision_failure"]["reason"] == "lease_expired"
@@ -264,6 +274,26 @@ def test_expired_lease_terminalization_is_surfaced_by_production_drain(
         tmp_path,
         worker_id="recovery-worker",
         now=194,
+    ) == []
+    reemitted = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="recovery-worker",
+        now=1994,
+    )
+    assert len(reemitted) == 1
+    assert reemitted[0]["effect_id"] == effect["effect_id"]
+    assert reemitted[0]["report_claim_token"] != results[0]["report_claim_token"]
+    assert rq.ack_decision_effect_reported(
+        tmp_path,
+        effect_id=reemitted[0]["effect_id"],
+        worker_id=reemitted[0]["report_claimed_by"],
+        claim_token=reemitted[0]["report_claim_token"],
+        now=1995,
+    )
+    assert runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="recovery-worker",
+        now=4000,
     ) == []
 
 
@@ -286,22 +316,17 @@ def test_concurrent_drains_emit_one_expired_lease_terminal_failure(
         now=193,
     )
     barrier = Barrier(2)
-    original = runs._surface_terminal_review_failure
 
-    def synchronized_surface(*args, **kwargs):
+    def synchronized_drain(worker):
         barrier.wait(timeout=5)
-        return original(*args, **kwargs)
+        return runs.execute_pending_review_decisions(
+            tmp_path,
+            worker_id=worker,
+            now=194,
+        )
 
-    monkeypatch.setattr(runs, "_surface_terminal_review_failure", synchronized_surface)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        batches = list(pool.map(
-            lambda worker: runs.execute_pending_review_decisions(
-                tmp_path,
-                worker_id=worker,
-                now=194,
-            ),
-            ("worker-a", "worker-b"),
-        ))
+        batches = list(pool.map(synchronized_drain, ("worker-a", "worker-b")))
 
     terminal_results = [
         result
@@ -315,7 +340,7 @@ def test_concurrent_drains_emit_one_expired_lease_terminal_failure(
 def test_daemon_logs_structured_terminal_decision_failure(
     monkeypatch, tmp_path, caplog
 ):
-    from fantasy_daemon.__main__ import _run_review_recovery
+    import fantasy_daemon.__main__ as daemon_main
 
     rq.initialize_review_queue_db(tmp_path)
     terminal = {
@@ -324,15 +349,41 @@ def test_daemon_logs_structured_terminal_decision_failure(
         "kind": "submit_review",
         "reason": "head_moved",
         "terminal": True,
+        "report_claim_token": "report-token",
+        "report_claimed_by": "review-worker",
     }
     monkeypatch.setattr(
         runs,
         "run_review_recovery_for_universe",
         lambda _path: {"execute_decisions": [terminal]},
     )
+    acknowledged = []
+    monkeypatch.setattr(
+        rq,
+        "ack_decision_effect_reported",
+        lambda *args, **kwargs: acknowledged.append((args, kwargs)) or True,
+        raising=False,
+    )
+    real_error = daemon_main.logger.error
+    crashed = False
+
+    def crash_before_emit(*args, **kwargs):
+        nonlocal crashed
+        if not crashed:
+            crashed = True
+            raise RuntimeError("crash before terminal log emission")
+        return real_error(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_main.logger, "error", crash_before_emit)
+
+    daemon_main._run_review_recovery(tmp_path)
+
+    assert acknowledged == []
 
     with caplog.at_level("ERROR", logger="fantasy_author"):
-        _run_review_recovery(tmp_path)
+        daemon_main._run_review_recovery(tmp_path)
+
+    assert len(acknowledged) == 1
 
     [message] = [
         record.getMessage()

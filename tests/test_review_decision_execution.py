@@ -134,6 +134,80 @@ def test_decision_records_one_ordered_execution_plan(tmp_path):
         "tighten the empty case"
     )
     assert effects[1]["payload"]["decision_id"] == decided["decision_id"]
+    for effect in effects[1:]:
+        assert effect["payload"]["destination"] == _DEST
+        assert effect["payload"]["pr_number"] == _PR
+        assert effect["payload"]["expected_head_sha"] == _HEAD
+
+
+def test_claim_lost_result_keeps_the_standard_result_shape(tmp_path, monkeypatch):
+    _seed(tmp_path)
+    decided = rq.decide_and_resume(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_RESHAPE,
+        workflow_outcome=rq.WORKFLOW_RESHAPED,
+        decided_by="owner",
+        expected_head_sha=_HEAD,
+        directive={
+            "action": "draft_patch",
+            "route_back": {
+                "target_node": "draft_patch",
+                "universe_id": "u1",
+                "branch_def_id": "patch-loop",
+                "run_id": _RUN,
+                "owner_notes": "revise",
+            },
+        },
+    )
+    monkeypatch.setattr(rq, "complete_decision_effect", lambda *_a, **_k: False)
+
+    result = runs.execute_next_review_decision_effect(
+        tmp_path,
+        worker_id="worker",
+        github_api=type(
+            "StableHeadApi",
+            (),
+            {"get_pull": lambda self, **_kwargs: {"head_sha": _HEAD}},
+        )(),
+    )
+
+    assert result["decision_id"] == decided["decision_id"]
+    assert result.get("terminal") is False
+    assert result.get("decision_status") == "running"
+
+
+def test_postflight_head_move_blocks_revision_enqueue_in_production_drain(tmp_path):
+    class HeadMovesAfterPostflightApi:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def get_pull(self, **_kwargs):
+            self.reads += 1
+            return {"head_sha": _HEAD if self.reads <= 2 else _NEW_HEAD}
+
+        def run_call(self, _call):
+            return {"ok": True, "status": 200}
+
+    _seed(tmp_path)
+    decided = _decide_reshape(tmp_path)
+
+    results = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="worker",
+        github_api=HeadMovesAfterPostflightApi(),
+    )
+
+    assert [result["kind"] for result in results] == [
+        "submit_review",
+        "enqueue_revision",
+    ]
+    assert results[-1]["executed"] is False
+    assert results[-1]["reason"] == "head_moved"
+    assert results[-1]["terminal"] is True
+    assert results[-1]["decision_id"] == decided["decision_id"]
+    assert read_queue(tmp_path) == []
 
 
 def test_incomplete_revision_route_rolls_back_decision(tmp_path):
@@ -273,7 +347,13 @@ def test_revision_effect_enqueues_canonical_branch_task(tmp_path):
     )
 
     result = runs.execute_next_review_decision_effect(
-        tmp_path, worker_id="worker"
+        tmp_path,
+        worker_id="worker",
+        github_api=type(
+            "StableHeadApi",
+            (),
+            {"get_pull": lambda self, **_kwargs: {"head_sha": _HEAD}},
+        )(),
     )
 
     assert result["executed"] is True
@@ -563,22 +643,30 @@ def test_terminal_failure_reporting_is_bounded_and_cas_owned(tmp_path):
         )
 
     [candidate] = rq.list_unreported_terminal_decision_effects(
-        tmp_path, limit=1
+        tmp_path, limit=1,
     )
     with ThreadPoolExecutor(max_workers=2) as pool:
         claims = list(pool.map(
-            lambda worker: rq.mark_decision_effect_reported(
+            lambda worker: rq.claim_terminal_decision_effect_reports(
                 tmp_path,
-                effect_id=candidate["effect_id"],
-                reported_by=worker,
+                worker_id=worker,
+                effect_ids=[candidate["effect_id"]],
+                limit=1,
             ),
             ("worker-a", "worker-b"),
         ))
 
-    assert sorted(claims) == [False, True]
+    assert sorted(len(claim) for claim in claims) == [0, 1]
+    [claimed] = next(claim for claim in claims if claim)
+    assert rq.ack_decision_effect_reported(
+        tmp_path,
+        effect_id=claimed["effect_id"],
+        worker_id=claimed["report_claimed_by"],
+        claim_token=claimed["report_claim_token"],
+    )
     remaining = rq.list_unreported_terminal_decision_effects(tmp_path, limit=1)
     assert len(remaining) == 1
-    assert remaining[0]["effect_id"] != candidate["effect_id"]
+    assert remaining[0]["effect_id"] != claimed["effect_id"]
 
 
 class _AlreadyEnabledApi:
@@ -896,6 +984,15 @@ def test_existing_decision_effect_table_migrates_retry_schedule(tmp_path):
             );
             CREATE INDEX idx_review_decision_effects_ready
                 ON review_decision_effects(status, created_at, position);
+            INSERT INTO review_decision_effects (
+                effect_id, decision_id, position, kind, payload,
+                created_at, updated_at
+            ) VALUES (
+                'legacy:0:submit_review', 'legacy', 0, 'submit_review',
+                '{"destination":"Owner/Repo","pr_number":7,
+                  "expected_head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}',
+                1, 1
+            );
             """
         )
 
@@ -911,6 +1008,17 @@ def test_existing_decision_effect_table_migrates_retry_schedule(tmp_path):
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'index' AND name = 'idx_review_decision_effects_ready'"
         ).fetchone()[0]
+        projection_index_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_review_decision_effects_projection'"
+        ).fetchone()[0]
+        legacy = conn.execute(
+            "SELECT destination, pr_number, expected_head_sha "
+            "FROM review_decision_effects WHERE decision_id = 'legacy'"
+        ).fetchone()
     assert "retry_at" in columns
     assert "reported_at" in columns
+    assert "report_claim_token" in columns
     assert "retry_at" in index_sql
+    assert "destination" in projection_index_sql
+    assert legacy == (_DEST, _PR, _HEAD)

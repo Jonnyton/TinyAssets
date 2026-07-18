@@ -120,6 +120,32 @@ def test_owner_list_surfaces_terminal_decision_failure(owner_env):
     }
 
 
+def test_owner_list_queries_only_decisions_on_projection_page(
+    owner_env, monkeypatch
+):
+    _seed(owner_env)
+    _call(
+        "review_queue_reject",
+        universe_id="u1",
+        pr_number=_PR,
+        destination=_DEST,
+        expected_head_sha=_HEAD,
+    )
+    monkeypatch.setattr(
+        rq,
+        "list_decision_effects",
+        lambda *_args, **_kwargs: pytest.fail(
+            "review_queue_list must not scan all historical decision effects"
+        ),
+    )
+
+    out = _call("review_queue_list", universe_id="u1", limit=1)
+
+    assert out["status"] == "ok"
+    assert out["count"] == 1
+    assert out["items"][0]["decision_status"] == "pending"
+
+
 def test_owner_approve_records_github_review_call(owner_env):
     _seed(owner_env)
     out = _call(

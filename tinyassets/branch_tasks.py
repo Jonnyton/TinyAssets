@@ -142,6 +142,9 @@ class BranchTask:
     review_decision_id: str = ""
     source_run_id: str = ""
     target_node: str = ""
+    review_destination: str = ""
+    review_pr_number: int = 0
+    expected_head_sha: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

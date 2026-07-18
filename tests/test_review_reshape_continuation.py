@@ -17,6 +17,17 @@ _OWNER_ID = "owner-reshape"
 _WORKER_ID = "worker-reshape"
 
 
+class _MutableHeadApi:
+    def __init__(self, head: str = "a" * 40) -> None:
+        self.head = head
+
+    def get_pull(self, **_kwargs):
+        return {"head_sha": self.head}
+
+    def run_call(self, _call):
+        return {"ok": True, "status": 200}
+
+
 def test_partial_run_reachability_includes_conditional_targets():
     from tinyassets.branches import (
         BranchDefinition,
@@ -129,6 +140,10 @@ def _source_run(tmp_path, monkeypatch):
         "tinyassets.providers.call.call_provider",
         provider_call,
     )
+    monkeypatch.setattr(
+        "tinyassets.github_http.github_client_from_vault",
+        lambda *_args, **_kwargs: _MutableHeadApi(),
+    )
 
     daemon = create_daemon(
         tmp_path,
@@ -212,7 +227,9 @@ def _enqueue_revision_task(universe_dir, source_run_id, route):
         directive={"action": "draft_patch", "route_back": route},
     )
     result = runs.execute_next_review_decision_effect(
-        universe_dir, worker_id="decision-worker"
+        universe_dir,
+        worker_id="decision-worker",
+        github_api=_MutableHeadApi(),
     )
     assert result["kind"] == "enqueue_revision"
     assert result["executed"] is True
@@ -226,6 +243,100 @@ def _enqueue_revision_task(universe_dir, source_run_id, route):
     )
     assert claimed is not None
     return decision, claimed
+
+
+def test_review_revision_terminalizes_if_head_moves_before_consumption(
+    tmp_path, monkeypatch
+):
+    universe_dir, source_run_id, route, daemon, _runtime, _prompts = _source_run(
+        tmp_path, monkeypatch,
+    )
+    rq.project_pr(
+        universe_dir,
+        destination="Owner/Repo",
+        pr_number=7,
+        head_sha="a" * 40,
+        branch_def_id=_BRANCH_ID,
+        universe_id=_UNIVERSE_ID,
+        run_id=source_run_id,
+    )
+    rq.suspend_run_for_review(
+        universe_dir,
+        run_id=source_run_id,
+        destination="Owner/Repo",
+        pr_number=7,
+        branch_def_id=_BRANCH_ID,
+        head_sha="a" * 40,
+        universe_id=_UNIVERSE_ID,
+    )
+    rq.decide_and_resume(
+        universe_dir,
+        destination="Owner/Repo",
+        pr_number=7,
+        intent=rq.INTENT_RESHAPE,
+        workflow_outcome=rq.WORKFLOW_RESHAPED,
+        decided_by=_OWNER_ID,
+        expected_head_sha="a" * 40,
+        directive={
+            "action": "draft_patch",
+            "route_back": route,
+            "github_call": {
+                "params": {"event": "REQUEST_CHANGES", "body": "revise"}
+            },
+        },
+    )
+    api = _MutableHeadApi()
+
+    executed = runs.execute_pending_review_decisions(
+        universe_dir,
+        worker_id="decision-worker",
+        github_api=api,
+    )
+    assert [row["kind"] for row in executed] == [
+        "submit_review",
+        "enqueue_revision",
+        "finalize_run",
+    ]
+
+    from tinyassets.branch_tasks import claim_task, read_queue
+
+    [queued] = read_queue(universe_dir)
+    claimed = claim_task(
+        universe_dir,
+        queued.branch_task_id,
+        "revision-daemon",
+        executor_worker_id=_WORKER_ID,
+    )
+    assert claimed is not None
+    api.head = "b" * 40
+    monkeypatch.setattr(
+        "tinyassets.github_http.github_client_from_vault",
+        lambda *_args, **_kwargs: api,
+    )
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+
+    from fantasy_daemon.__main__ import (
+        _finalize_claimed_task,
+        _try_execute_claimed_branch_task,
+    )
+
+    success, error, metadata = _try_execute_claimed_branch_task(
+        universe_dir, claimed, daemon["daemon_id"],
+    )
+    _finalize_claimed_task(
+        universe_dir, claimed, success=success, error=error,
+    )
+
+    assert success is False
+    assert "head_moved" in error
+    assert metadata.get("run_id") is None
+    [terminal] = read_queue(universe_dir)
+    assert terminal.status == "failed"
+    assert "head_moved" in terminal.error
+    assert not any(
+        run["run_name"] == f"branch-task-{claimed.branch_task_id}"
+        for run in runs.list_recent_runs(tmp_path, limit=20)
+    )
 
 
 def test_review_revision_runs_through_branch_task_lifecycle(tmp_path, monkeypatch):

@@ -35,3 +35,11 @@ What surprised me: making terminal failures visible also needs durable ownership
 Pattern worth capturing: bounded workers need one shared budget across primary execution and recovery scans, plus a storage compare-and-set for externally emitted terminal events.
 
 One thing I would do differently: include concurrent recovery workers and more-than-one-batch terminal history in the first observability regressions, alongside the ordinary head-of-line fairness test.
+
+---
+
+What surprised me: a successful post-mutation head check still left a race because the reviewed generation was not carried into the durable work that ran afterward.
+
+Pattern worth capturing: close remote-state TOCTOU at durable consumption boundaries. Bind the expected generation into every effect and task, then revalidate immediately before each downstream mutation or execution.
+
+One thing I would do differently: model externally visible failure reporting as an at-least-once leased outbox from the start; a permanent acknowledgment cannot also serve as the pre-emission concurrency claim.

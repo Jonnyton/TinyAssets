@@ -3344,7 +3344,12 @@ def execute_next_review_decision_effect(
     effect_owner = expected_owner
     effect_actor_id = app_actor_id
     try:
-        if kind in {"submit_review", "apply_merge_preference"}:
+        if kind in {
+            "submit_review",
+            "apply_merge_preference",
+            "enqueue_revision",
+            "finalize_run",
+        }:
             effect_api = _resolve_worker_client(
                 github_api, client_factory, destination
             )
@@ -3478,6 +3483,8 @@ def execute_next_review_decision_effect(
 
         elif kind == "enqueue_revision":
             route = payload.get("route_back") or {}
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
             branch_task_id = str(payload.get("branch_task_id") or "").strip()
             source_run_id = str(route.get("run_id") or "").strip()
             branch_def_id = str(route.get("branch_def_id") or "").strip()
@@ -3486,6 +3493,12 @@ def execute_next_review_decision_effect(
             if not all((branch_task_id, source_run_id, branch_def_id, universe_id,
                         target_node)):
                 raise RuntimeError("invalid_revision_route")
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(pull, head)
             _created, task = append_task_if_absent(
                 Path(base_path),
                 BranchTask(
@@ -3500,11 +3513,22 @@ def execute_next_review_decision_effect(
                     review_decision_id=decision_id,
                     source_run_id=source_run_id,
                     target_node=target_node,
+                    review_destination=destination,
+                    review_pr_number=pr_number,
+                    expected_head_sha=head,
                 ),
             )
             result = {"branch_task_id": task.branch_task_id}
 
         elif kind == "finalize_run":
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(pull, head)
             source_run_id = str(payload.get("run_id") or "").strip()
             run_base_path = _review_run_storage_path(base_path, source_run_id)
             source = get_run(run_base_path, source_run_id)
@@ -3595,12 +3619,17 @@ def execute_next_review_decision_effect(
         result=result,
         now=now,
     ):
+        decision_status = _rq.get_decision_status(
+            base_path, decision_id=decision_id
+        )
         return {
             "decision_id": decision_id,
             "effect_id": effect_id,
             "kind": kind,
             "executed": False,
             "reason": "claim_lost",
+            "terminal": decision_status == "failed",
+            "decision_status": decision_status,
         }
     response = {
         "decision_id": decision_id,
@@ -3648,13 +3677,19 @@ def execute_pending_review_decisions(
         )
         if result is None:
             break
-        if result.get("terminal") and not _rq.mark_decision_effect_reported(
-            base_path,
-            effect_id=str(result.get("effect_id") or ""),
-            reported_by=worker_id,
-            now=now,
-        ):
-            continue
+        if result.get("terminal"):
+            claimed_reports = _rq.claim_terminal_decision_effect_reports(
+                base_path,
+                worker_id=worker_id,
+                effect_ids=[str(result.get("effect_id") or "")],
+                limit=1,
+                now=now,
+            )
+            if not claimed_reports:
+                continue
+            report = claimed_reports[0]
+            result["report_claim_token"] = report["report_claim_token"]
+            result["report_claimed_by"] = report["report_claimed_by"]
         results.append(result)
     remaining = _REVIEW_DECISION_DRAIN_LIMIT - attempts
     if remaining:
@@ -3729,8 +3764,11 @@ def _surface_unreported_terminal_review_failures(
     from tinyassets.storage import review_queue as _rq
 
     surfaced: list[dict[str, Any]] = []
-    for effect in _rq.list_unreported_terminal_decision_effects(
-        base_path, limit=limit
+    for effect in _rq.claim_terminal_decision_effect_reports(
+        base_path,
+        worker_id=worker_id,
+        limit=limit,
+        now=now,
     ):
         decision_id = str(effect.get("decision_id") or "")
         effect_id = str(effect.get("effect_id") or "")
@@ -3742,13 +3780,6 @@ def _surface_unreported_terminal_review_failures(
             kind=str(effect.get("kind") or ""),
             reason=reason,
         )
-        if not _rq.mark_decision_effect_reported(
-            base_path,
-            effect_id=effect_id,
-            reported_by=worker_id,
-            now=now,
-        ):
-            continue
         surfaced.append({
             "decision_id": decision_id,
             "effect_id": effect_id,
@@ -3757,6 +3788,8 @@ def _surface_unreported_terminal_review_failures(
             "reason": reason,
             "terminal": True,
             "decision_status": "failed",
+            "report_claim_token": effect["report_claim_token"],
+            "report_claimed_by": effect["report_claimed_by"],
         })
     return surfaced
 
@@ -4292,6 +4325,33 @@ def register_review_workers(
             owner_resolver=owner_resolver, app_actor_resolver=app_actor_resolver,
         ),
     }
+
+
+def require_review_revision_task_head(
+    universe_dir: str | Path,
+    *,
+    task: Any,
+    github_api: Any = None,
+) -> None:
+    """Fail closed unless a revision task still targets its reviewed PR head."""
+    destination = str(
+        getattr(task, "review_destination", "") or ""
+    ).strip()
+    pr_number = int(getattr(task, "review_pr_number", 0) or 0)
+    expected_head = str(
+        getattr(task, "expected_head_sha", "") or ""
+    ).strip()
+    if not destination or pr_number <= 0 or not expected_head:
+        raise _TerminalDecisionEffect("invalid_revision_head_binding")
+    client = github_api
+    if client is None:
+        from tinyassets.github_http import github_client_from_vault
+
+        client = github_client_from_vault(universe_dir, destination)
+    if client is None:
+        raise RuntimeError("no_client")
+    pull = client.get_pull(destination=destination, pr_number=pr_number)
+    _require_review_effect_head(pull, expected_head)
 
 
 def resolve_review_revision_request(

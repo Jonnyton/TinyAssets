@@ -259,6 +259,20 @@ def _run_review_recovery(universe_path: Path) -> None:
                 "review_decision_terminal_failure %s",
                 json.dumps(payload, sort_keys=True),
             )
+            from tinyassets.storage.review_queue import (
+                ack_decision_effect_reported,
+            )
+
+            if not ack_decision_effect_reported(
+                universe_path,
+                effect_id=str(result.get("effect_id") or ""),
+                worker_id=str(result.get("report_claimed_by") or ""),
+                claim_token=str(result.get("report_claim_token") or ""),
+            ):
+                logger.warning(
+                    "review decision terminal-report acknowledgment lost for %s",
+                    result.get("effect_id") or "",
+                )
     except Exception:  # noqa: BLE001 — recovery is best-effort; never wedge startup
         logger.exception(
             "S4 review-recovery drain failed for %s", universe_path,
@@ -928,6 +942,7 @@ def _try_execute_claimed_branch_task(
             execute_branch,
             execute_claimed_branch_request,
             latest_run_by_name,
+            require_review_revision_task_head,
             resolve_review_revision_request,
         )
         from tinyassets.storage import data_dir
@@ -964,6 +979,11 @@ def _try_execute_claimed_branch_task(
                 "branch_def_id": branch_def_id,
                 "validation_errors": errors,
             }
+        if request_type == "review_revision":
+            require_review_revision_task_head(
+                universe_path,
+                task=claimed_task,
+            )
 
         run_name = f"branch-task-{claimed_task.branch_task_id}"
         existing_run = latest_run_by_name(

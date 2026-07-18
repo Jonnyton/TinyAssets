@@ -238,6 +238,9 @@ CREATE TABLE IF NOT EXISTS review_decision_effects (
     decision_id     TEXT NOT NULL,
     position        INTEGER NOT NULL,
     kind            TEXT NOT NULL,
+    destination     TEXT NOT NULL DEFAULT '',
+    pr_number       INTEGER NOT NULL DEFAULT 0,
+    expected_head_sha TEXT NOT NULL DEFAULT '',
     payload         TEXT NOT NULL DEFAULT '{}',
     status          TEXT NOT NULL DEFAULT 'pending',
     claimed_by      TEXT NOT NULL DEFAULT '',
@@ -249,6 +252,8 @@ CREATE TABLE IF NOT EXISTS review_decision_effects (
     last_error      TEXT NOT NULL DEFAULT '',
     reported_at     REAL,
     reported_by     TEXT NOT NULL DEFAULT '',
+    report_claim_token TEXT NOT NULL DEFAULT '',
+    report_lease_expires_at REAL,
     created_at      REAL NOT NULL,
     updated_at      REAL NOT NULL,
     UNIQUE(decision_id, position)
@@ -348,6 +353,11 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("retry_at", "REAL NOT NULL DEFAULT 0"),
         ("reported_at", "REAL"),
         ("reported_by", "TEXT NOT NULL DEFAULT ''"),
+        ("destination", "TEXT NOT NULL DEFAULT ''"),
+        ("pr_number", "INTEGER NOT NULL DEFAULT 0"),
+        ("expected_head_sha", "TEXT NOT NULL DEFAULT ''"),
+        ("report_claim_token", "TEXT NOT NULL DEFAULT ''"),
+        ("report_lease_expires_at", "REAL"),
     ],
 }
 
@@ -366,6 +376,29 @@ def _apply_column_migrations(conn: sqlite3.Connection) -> None:
         for name, decl in columns:
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+def _backfill_decision_effect_projection_keys(conn: sqlite3.Connection) -> None:
+    """Populate indexed projection keys for effects created before the columns."""
+    rows = conn.execute(
+        "SELECT effect_id, payload FROM review_decision_effects "
+        "WHERE kind = 'submit_review' AND destination = ''"
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        conn.execute(
+            "UPDATE review_decision_effects SET destination = ?, pr_number = ?, "
+            "expected_head_sha = ? WHERE effect_id = ?",
+            (
+                str(payload.get("destination") or ""),
+                int(payload.get("pr_number") or 0),
+                str(payload.get("expected_head_sha") or ""),
+                row["effect_id"],
+            ),
+        )
 
 
 def _warn_pending_legacy_outboxes(conn: sqlite3.Connection) -> None:
@@ -404,10 +437,16 @@ def initialize_review_queue_db(universe_dir: str | Path) -> Path:
         with _connect(universe_dir) as conn:
             conn.executescript(_SCHEMA)
             _apply_column_migrations(conn)
+            _backfill_decision_effect_projection_keys(conn)
             conn.execute("DROP INDEX IF EXISTS idx_review_decision_effects_ready")
             conn.execute(
                 "CREATE INDEX idx_review_decision_effects_ready ON "
                 "review_decision_effects(status, retry_at, created_at, position)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_review_decision_effects_projection "
+                "ON review_decision_effects(destination, pr_number, "
+                "expected_head_sha, kind, created_at DESC, decision_id DESC)"
             )
             _warn_pending_legacy_outboxes(conn)
         _INITIALIZED.add(key)
@@ -1268,6 +1307,9 @@ def decide_and_resume(
                     {
                         "decision_id": decision_id,
                         "branch_task_id": f"review-revision-{task_digest}",
+                        "destination": dest,
+                        "pr_number": pr_number,
+                        "expected_head_sha": want_head,
                         "route_back": route_back,
                     },
                 ))
@@ -1277,19 +1319,26 @@ def decide_and_resume(
                     {
                         "run_id": susp["run_id"],
                         "decision": intent,
+                        "destination": dest,
+                        "pr_number": pr_number,
+                        "expected_head_sha": want_head,
                     },
                 ))
             for position, (kind, payload) in enumerate(effect_specs):
                 effect_id = f"{decision_id}:{position}:{kind}"
                 conn.execute(
                     "INSERT INTO review_decision_effects "
-                    "(effect_id, decision_id, position, kind, payload, "
-                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "(effect_id, decision_id, position, kind, destination, "
+                    "pr_number, expected_head_sha, payload, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         effect_id,
                         decision_id,
                         position,
                         kind,
+                        dest,
+                        pr_number,
+                        want_head,
                         json.dumps(payload),
                         ts,
                         ts,
@@ -1356,6 +1405,90 @@ def list_decision_effects(
     return [_decision_effect_to_dict(row) for row in rows]
 
 
+def decision_summaries_for_projections(
+    universe_dir: str | Path,
+    projections: list[dict[str, Any]],
+) -> dict[tuple[str, int, str], dict[str, Any]]:
+    """Aggregate the latest decision for only the bounded projection page."""
+    keys = list(dict.fromkeys(
+        (
+            str(item.get("destination") or ""),
+            int(item.get("pr_number") or 0),
+            str(item.get("head_sha") or ""),
+        )
+        for item in projections
+    ))
+    if not keys:
+        return {}
+    initialize_review_queue_db(universe_dir)
+    values = ", ".join("(?, ?, ?)" for _ in keys)
+    params = tuple(value for key in keys for value in key)
+    query = f"""
+        WITH requested(destination, pr_number, expected_head_sha) AS (
+            VALUES {values}
+        ), candidates AS (
+            SELECT e.destination, e.pr_number, e.expected_head_sha,
+                   e.decision_id, e.created_at,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.destination, e.pr_number,
+                                    e.expected_head_sha
+                       ORDER BY e.created_at DESC, e.decision_id DESC
+                   ) AS candidate_rank
+            FROM review_decision_effects AS e
+            JOIN requested AS r
+              ON r.destination = e.destination
+             AND r.pr_number = e.pr_number
+             AND r.expected_head_sha = e.expected_head_sha
+            WHERE e.kind = 'submit_review'
+        ), latest AS (
+            SELECT destination, pr_number, expected_head_sha, decision_id
+            FROM candidates
+            WHERE candidate_rank = 1
+        ), failures AS (
+            SELECT e.decision_id, e.effect_id, e.kind, e.last_error,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.decision_id ORDER BY e.position
+                   ) AS failure_rank
+            FROM review_decision_effects AS e
+            JOIN latest AS l ON l.decision_id = e.decision_id
+            WHERE e.status = 'failed'
+        )
+        SELECT l.destination, l.pr_number, l.expected_head_sha, l.decision_id,
+               CASE
+                   WHEN MAX(e.status = 'failed') THEN 'failed'
+                   WHEN MIN(e.status = 'succeeded') THEN 'succeeded'
+                   WHEN MAX(e.status = 'running') THEN 'running'
+                   ELSE 'pending'
+               END AS decision_status,
+               f.effect_id AS failure_effect_id,
+               f.kind AS failure_kind,
+               f.last_error AS failure_reason
+        FROM latest AS l
+        JOIN review_decision_effects AS e ON e.decision_id = l.decision_id
+        LEFT JOIN failures AS f
+          ON f.decision_id = l.decision_id AND f.failure_rank = 1
+        GROUP BY l.destination, l.pr_number, l.expected_head_sha, l.decision_id,
+                 f.effect_id, f.kind, f.last_error
+    """
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(query, params).fetchall()
+    summaries: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row["destination"], row["pr_number"], row["expected_head_sha"])
+        summary = {
+            "decision_id": row["decision_id"],
+            "decision_status": row["decision_status"],
+        }
+        if row["decision_status"] == "failed":
+            summary["decision_failure"] = {
+                "effect_id": row["failure_effect_id"],
+                "kind": row["failure_kind"],
+                "reason": row["failure_reason"] or "",
+            }
+        summaries[key] = summary
+    return summaries
+
+
 def list_unreported_terminal_decision_effects(
     universe_dir: str | Path, *, limit: int = 100
 ) -> list[dict[str, Any]]:
@@ -1372,26 +1505,90 @@ def list_unreported_terminal_decision_effects(
     return [_decision_effect_to_dict(row) for row in rows]
 
 
-def mark_decision_effect_reported(
+def claim_terminal_decision_effect_reports(
+    universe_dir: str | Path,
+    *,
+    worker_id: str,
+    effect_ids: list[str] | None = None,
+    limit: int = 100,
+    lease_seconds: float = 1800,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Lease a bounded terminal-report batch for at-least-once emission."""
+    owner = (worker_id or "").strip()
+    if not owner:
+        raise ValueError("worker_id is required")
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    lease_until = ts + max(1.0, float(lease_seconds))
+    bounded_limit = max(1, min(int(limit), 100))
+    requested = [str(effect_id or "").strip() for effect_id in (effect_ids or [])]
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            where = (
+                "status = 'failed' AND reported_at IS NULL AND "
+                "(report_lease_expires_at IS NULL OR report_lease_expires_at <= ?)"
+            )
+            params: list[Any] = [ts]
+            if requested:
+                where += " AND effect_id IN (" + ", ".join("?" for _ in requested) + ")"
+                params.extend(requested)
+            params.append(bounded_limit)
+            rows = conn.execute(
+                "SELECT effect_id FROM review_decision_effects WHERE " + where
+                + " ORDER BY updated_at, effect_id LIMIT ?",
+                tuple(params),
+            ).fetchall()
+            claimed: list[dict[str, Any]] = []
+            for row in rows:
+                token = uuid.uuid4().hex
+                updated = conn.execute(
+                    "UPDATE review_decision_effects SET reported_by = ?, "
+                    "report_claim_token = ?, report_lease_expires_at = ?, "
+                    "updated_at = ? WHERE effect_id = ? AND status = 'failed' "
+                    "AND reported_at IS NULL AND (report_lease_expires_at IS NULL "
+                    "OR report_lease_expires_at <= ?)",
+                    (owner, token, lease_until, ts, row["effect_id"], ts),
+                )
+                if updated.rowcount != 1:
+                    continue
+                effect = conn.execute(
+                    "SELECT * FROM review_decision_effects WHERE effect_id = ?",
+                    (row["effect_id"],),
+                ).fetchone()
+                item = _decision_effect_to_dict(effect)
+                item["report_claim_token"] = token
+                item["report_claimed_by"] = owner
+                claimed.append(item)
+    return claimed
+
+
+def ack_decision_effect_reported(
     universe_dir: str | Path,
     *,
     effect_id: str,
-    reported_by: str,
+    worker_id: str,
+    claim_token: str,
     now: float | None = None,
 ) -> bool:
-    """Atomically claim external reporting ownership for one failed effect."""
-    reporter = (reported_by or "").strip()
-    if not reporter:
-        raise ValueError("reported_by is required")
+    """Acknowledge a terminal report only after its external emission."""
     initialize_review_queue_db(universe_dir)
     ts = _now(now)
     with _connect(universe_dir) as conn:
         with _write(conn):
             updated = conn.execute(
                 "UPDATE review_decision_effects SET reported_at = ?, "
-                "reported_by = ?, updated_at = ? WHERE effect_id = ? "
-                "AND status = 'failed' AND reported_at IS NULL",
-                (ts, reporter, ts, (effect_id or "").strip()),
+                "report_claim_token = '', report_lease_expires_at = NULL, "
+                "updated_at = ? WHERE effect_id = ? AND status = 'failed' "
+                "AND reported_at IS NULL AND reported_by = ? "
+                "AND report_claim_token = ?",
+                (
+                    ts,
+                    ts,
+                    (effect_id or "").strip(),
+                    (worker_id or "").strip(),
+                    (claim_token or "").strip(),
+                ),
             )
             return updated.rowcount == 1
 
@@ -1945,8 +2142,10 @@ __all__ = [
     "decide_and_resume",
     "ack_continuation",
     "list_decision_effects",
+    "decision_summaries_for_projections",
     "list_unreported_terminal_decision_effects",
-    "mark_decision_effect_reported",
+    "claim_terminal_decision_effect_reports",
+    "ack_decision_effect_reported",
     "get_decision_status",
     "claim_next_decision_effect",
     "complete_decision_effect",
