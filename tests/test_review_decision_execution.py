@@ -7,6 +7,7 @@ the canonical BranchTask queue; GitHub effects reconcile before mutation.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
@@ -1028,12 +1029,22 @@ def _seed_legacy_projection_owner(
     tmp_path,
     *,
     decided_at: float,
-    effects: list[tuple[str, float, str]],
+    effects: list[tuple[str, float, str, str]],
 ) -> None:
     db_path = rq.review_queue_db_path(tmp_path)
     legacy_schema = rq._SCHEMA.replace(
         "    decision_id      TEXT NOT NULL DEFAULT '',\n",
         "",
+        1,
+    )
+    legacy_schema = legacy_schema.replace(
+        "    kind            TEXT NOT NULL,\n"
+        "    destination     TEXT NOT NULL DEFAULT '',\n"
+        "    pr_number       INTEGER NOT NULL DEFAULT 0,\n"
+        "    expected_head_sha TEXT NOT NULL DEFAULT '',\n"
+        "    payload         TEXT NOT NULL DEFAULT '{}',\n",
+        "    kind            TEXT NOT NULL,\n"
+        "    payload         TEXT NOT NULL DEFAULT '{}',\n",
         1,
     )
     with sqlite3.connect(db_path) as conn:
@@ -1054,21 +1065,23 @@ def _seed_legacy_projection_owner(
                 decided_at,
             ),
         )
-        for decision_id, created_at, status in effects:
+        for decision_id, created_at, status, kind in effects:
             conn.execute(
                 "INSERT INTO review_decision_effects "
-                "(effect_id, decision_id, position, kind, destination, "
-                "pr_number, expected_head_sha, payload, status, created_at, "
-                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(effect_id, decision_id, position, kind, payload, status, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    f"{decision_id}:0:submit_review",
+                    f"{decision_id}:0:{kind}",
                     decision_id,
                     0,
-                    "submit_review",
-                    _DEST,
-                    _PR,
-                    _HEAD,
-                    "{}",
+                    kind,
+                    json.dumps(
+                        {
+                            "destination": _DEST,
+                            "pr_number": _PR,
+                            "expected_head_sha": _HEAD,
+                        }
+                    ),
                     status,
                     created_at,
                     created_at,
@@ -1080,7 +1093,7 @@ def test_existing_projection_table_migrates_decision_owner(tmp_path):
     _seed_legacy_projection_owner(
         tmp_path,
         decided_at=1,
-        effects=[("legacy-decision", 1, "pending")],
+        effects=[("legacy-decision", 1, "pending", "submit_review")],
     )
 
     rq.initialize_review_queue_db(tmp_path)
@@ -1097,12 +1110,29 @@ def test_existing_projection_table_migrates_decision_owner(tmp_path):
 def test_legacy_projection_owner_backfill_leaves_exact_time_tie_unbound(
     tmp_path,
 ):
-    failed_a = "decision-ffffffffffffffffffffffffffffffff"
+    live_a = "decision-ffffffffffffffffffffffffffffffff"
     live_b = "decision-00000000000000000000000000000000"
     _seed_legacy_projection_owner(
         tmp_path,
         decided_at=100,
-        effects=[(failed_a, 100, "failed"), (live_b, 100, "pending")],
+        effects=[
+            (live_a, 100, "pending", "submit_review"),
+            (live_b, 100, "pending", "submit_review"),
+        ],
+    )
+
+    rq.initialize_review_queue_db(tmp_path)
+
+    before = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
+    assert before["decision_id"] == ""
+
+
+def test_legacy_zero_effect_owner_never_binds_stale_failed_decision(tmp_path):
+    failed_a = "decision-failed-a"
+    _seed_legacy_projection_owner(
+        tmp_path,
+        decided_at=100,
+        effects=[(failed_a, 100, "failed", "submit_review")],
     )
 
     rq.initialize_review_queue_db(tmp_path)
@@ -1112,14 +1142,15 @@ def test_legacy_projection_owner_backfill_leaves_exact_time_tie_unbound(
         tmp_path, decision_id=failed_a
     )
     after = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
+
     assert after["owner_intent"] == rq.INTENT_APPROVE, (
         f"ERASED: backfill bound {before['decision_id']!r} and failed-A replay "
-        "wiped the live decision"
+        "wiped the live zero-effect decision"
     )
+    assert after["decided_at"] == 100
     assert replayed is False
     assert before["decision_id"] == ""
-    assert after["decision_id"] == before["decision_id"]
-    assert after["decided_at"] == before["decided_at"]
+    assert after["decision_id"] == ""
 
 
 def test_legacy_projection_owner_backfill_uses_decision_time_after_clock_rollback(
@@ -1130,7 +1161,10 @@ def test_legacy_projection_owner_backfill_uses_decision_time_after_clock_rollbac
     _seed_legacy_projection_owner(
         tmp_path,
         decided_at=100,
-        effects=[(failed_a, 101, "failed"), (live_b, 100, "pending")],
+        effects=[
+            (failed_a, 101, "failed", "submit_review"),
+            (live_b, 100, "pending", "submit_review"),
+        ],
     )
 
     rq.initialize_review_queue_db(tmp_path)
@@ -1157,16 +1191,36 @@ def test_legacy_projection_owner_backfill_keeps_single_wedge_recoverable(
     _seed_legacy_projection_owner(
         tmp_path,
         decided_at=100,
-        effects=[(failed, 100, "failed")],
+        effects=[(failed, 100, "failed", "submit_review")],
     )
 
     rq.initialize_review_queue_db(tmp_path)
 
     projection = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
-    assert projection["decision_id"] == failed
+    assert projection["decision_id"] == ""
     assert rq.terminalize_failed_decision_generation(
         tmp_path, decision_id=failed
-    ) is True
+    ) is False
+    with pytest.raises(rq.DecisionLocked):
+        rq.decide_and_resume(
+            tmp_path,
+            destination=_DEST,
+            pr_number=_PR,
+            intent=rq.INTENT_REJECT,
+            workflow_outcome=rq.WORKFLOW_REJECTED,
+            decided_by="owner",
+            expected_head_sha=_HEAD,
+            directive={"action": "terminal_reject"},
+            now=150,
+        )
+
+    rq.project_pr(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        head_sha=_NEW_HEAD,
+        now=175,
+    )
 
     decided = rq.decide_and_resume(
         tmp_path,
@@ -1175,7 +1229,7 @@ def test_legacy_projection_owner_backfill_keeps_single_wedge_recoverable(
         intent=rq.INTENT_REJECT,
         workflow_outcome=rq.WORKFLOW_REJECTED,
         decided_by="owner",
-        expected_head_sha=_HEAD,
+        expected_head_sha=_NEW_HEAD,
         directive={
             "action": "terminal_reject",
             "github_call": {
@@ -1188,3 +1242,89 @@ def test_legacy_projection_owner_backfill_keeps_single_wedge_recoverable(
     assert decided["decision_id"] != failed
     assert after["decision_id"] == decided["decision_id"]
     assert after["owner_intent"] == rq.INTENT_REJECT
+
+
+def test_legacy_live_non_submit_effect_binds_and_can_terminalize(tmp_path):
+    live = "decision-live-merge"
+    _seed_legacy_projection_owner(
+        tmp_path,
+        decided_at=100,
+        effects=[(live, 100, "pending", "apply_merge_preference")],
+    )
+
+    rq.initialize_review_queue_db(tmp_path)
+
+    projection = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
+    assert projection["decision_id"] == live
+
+    with sqlite3.connect(rq.review_queue_db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE review_decision_effects SET status = 'failed' "
+            "WHERE decision_id = ?",
+            (live,),
+        )
+    assert rq.terminalize_failed_decision_generation(
+        tmp_path, decision_id=live
+    ) is True
+
+    decided = rq.decide_and_resume(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_REJECT,
+        workflow_outcome=rq.WORKFLOW_REJECTED,
+        decided_by="owner",
+        expected_head_sha=_HEAD,
+        directive={"action": "terminal_reject"},
+        now=200,
+    )
+    assert decided["decision_id"] != live
+
+
+def test_legacy_failed_non_submit_effect_stays_unbound_until_repush(tmp_path):
+    failed = "decision-failed-merge"
+    _seed_legacy_projection_owner(
+        tmp_path,
+        decided_at=100,
+        effects=[(failed, 100, "failed", "apply_merge_preference")],
+    )
+
+    rq.initialize_review_queue_db(tmp_path)
+
+    projection = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
+    assert projection["decision_id"] == ""
+    assert rq.terminalize_failed_decision_generation(
+        tmp_path, decision_id=failed
+    ) is False
+    with pytest.raises(rq.DecisionLocked):
+        rq.decide_and_resume(
+            tmp_path,
+            destination=_DEST,
+            pr_number=_PR,
+            intent=rq.INTENT_REJECT,
+            workflow_outcome=rq.WORKFLOW_REJECTED,
+            decided_by="owner",
+            expected_head_sha=_HEAD,
+            directive={"action": "terminal_reject"},
+            now=150,
+        )
+
+    rq.project_pr(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        head_sha=_NEW_HEAD,
+        now=175,
+    )
+    decided = rq.decide_and_resume(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_REJECT,
+        workflow_outcome=rq.WORKFLOW_REJECTED,
+        decided_by="owner",
+        expected_head_sha=_NEW_HEAD,
+        directive={"action": "terminal_reject"},
+        now=200,
+    )
+    assert decided["decision_id"] != failed

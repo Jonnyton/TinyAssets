@@ -383,10 +383,10 @@ def _apply_column_migrations(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_decision_effect_projection_keys(conn: sqlite3.Connection) -> None:
-    """Populate indexed projection keys for effects created before the columns."""
+    """Populate indexed projection keys for every legacy effect that carries them."""
     rows = conn.execute(
         "SELECT effect_id, payload FROM review_decision_effects "
-        "WHERE kind = 'submit_review' AND destination = ''"
+        "WHERE destination = ''"
     ).fetchall()
     for row in rows:
         try:
@@ -406,29 +406,29 @@ def _backfill_decision_effect_projection_keys(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_projection_decision_owners(conn: sqlite3.Connection) -> None:
-    """Bind pre-column projections only to one causally matching generation.
+    """Bind pre-column projections only to one live causal generation.
 
     ``decide_and_resume`` records the projection decision and its effects with
-    the same timestamp.  No match or multiple decisions at that timestamp is
-    left unbound: a recoverable decision lock is safer than erasing a live owner
-    generation through a false migration binding.
+    the same timestamp.  A decision with any failed effect is terminally failed
+    and is never eligible: replaying its terminal report can clear the bound
+    projection.  Only one distinct non-failed decision at that timestamp proves
+    erase-safe ownership.  Failed-only, ambiguous, zero-effect-owner, and
+    unmatched projections stay unbound; a re-push-recoverable decision lock is
+    safer than migration ever erasing a live owner decision.
     """
     conn.execute(
-        "UPDATE pr_projection AS projection SET decision_id = ("
+        "UPDATE pr_projection AS projection SET decision_id = COALESCE(("
         "SELECT MIN(effect.decision_id) FROM review_decision_effects AS effect "
         "WHERE effect.destination = projection.destination "
         "AND effect.pr_number = projection.pr_number "
         "AND effect.expected_head_sha = projection.head_sha "
         "AND effect.created_at = projection.decided_at "
+        "AND NOT EXISTS (SELECT 1 FROM review_decision_effects AS failed "
+        "WHERE failed.decision_id = effect.decision_id "
+        "AND failed.status = 'failed') "
         "HAVING COUNT(DISTINCT effect.decision_id) = 1"
-        ") WHERE projection.decision_id = '' "
-        "AND projection.owner_intent != '' "
-        "AND (SELECT COUNT(DISTINCT effect.decision_id) "
-        "FROM review_decision_effects AS effect "
-        "WHERE effect.destination = projection.destination "
-        "AND effect.pr_number = projection.pr_number "
-        "AND effect.expected_head_sha = projection.head_sha "
-        "AND effect.created_at = projection.decided_at) = 1"
+        "), '') WHERE projection.decision_id = '' "
+        "AND projection.owner_intent != ''"
     )
 
 
