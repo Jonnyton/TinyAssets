@@ -9,7 +9,7 @@
 
 # Research report: standard answers for patch-loop review, sandboxing, and secrets
 
-All web sources were accessed 2026-07-16. Repository findings refer to `origin/feat/patch-loop-s4` at `3beb9f2224d0877683eb91cb121b136e62b3c280` and the 2026-07-15 reference design.
+Web sources were accessed 2026-07-16; the GitHub App authentication source was repaired and revalidated 2026-07-17. Repository findings refer to `origin/feat/patch-loop-s4` at `3beb9f2224d0877683eb91cb121b136e62b3c280` and the 2026-07-15 reference design.
 
 ## 1. GitHub-native review and merge primitives vs. the S4 queue
 

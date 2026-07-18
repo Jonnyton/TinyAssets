@@ -195,6 +195,57 @@ def _decision_handoff(pending: dict[str, Any] | None) -> dict[str, Any] | None:
 # ── list ────────────────────────────────────────────────────────────────────
 
 
+def _attach_decision_status(universe_dir: Any, items: list[dict[str, Any]]) -> None:
+    """Add the latest current-head decision state to projected PR rows."""
+    from tinyassets.storage.review_queue import (
+        get_decision_status,
+        list_decision_effects,
+    )
+
+    effects = list_decision_effects(universe_dir)
+    by_decision: dict[str, list[dict[str, Any]]] = {}
+    latest: dict[tuple[str, int, str], tuple[float, str]] = {}
+    for effect in effects:
+        decision_id = str(effect.get("decision_id") or "")
+        by_decision.setdefault(decision_id, []).append(effect)
+        if effect.get("kind") != "submit_review":
+            continue
+        payload = effect.get("payload") or {}
+        key = (
+            str(payload.get("destination") or ""),
+            int(payload.get("pr_number") or 0),
+            str(payload.get("expected_head_sha") or ""),
+        )
+        candidate = (float(effect.get("created_at") or 0), decision_id)
+        if candidate > latest.get(key, (-1.0, "")):
+            latest[key] = candidate
+
+    for item in items:
+        key = (
+            str(item.get("destination") or ""),
+            int(item.get("pr_number") or 0),
+            str(item.get("head_sha") or ""),
+        )
+        selected = latest.get(key)
+        if selected is None:
+            continue
+        decision_id = selected[1]
+        status = get_decision_status(universe_dir, decision_id=decision_id)
+        item["decision_id"] = decision_id
+        item["decision_status"] = status
+        if status == "failed":
+            failed = next(
+                effect
+                for effect in by_decision[decision_id]
+                if effect.get("status") == "failed"
+            )
+            item["decision_failure"] = {
+                "effect_id": failed["effect_id"],
+                "kind": failed["kind"],
+                "reason": failed.get("last_error") or "",
+            }
+
+
 def _action_review_queue_list(kwargs: dict[str, Any]) -> str:
     universe_id = (kwargs.get("universe_id") or "").strip()
     target_universe, err = _owner_gate("review_queue_list", universe_id)
@@ -207,13 +258,15 @@ def _action_review_queue_list(kwargs: dict[str, Any]) -> str:
     try:
         from tinyassets.storage.review_queue import list_projections
 
+        universe_dir = _universe_dir_for(target_universe)
         items = list_projections(
-            _universe_dir_for(target_universe),
+            universe_dir,
             destination=destination,
             workflow_outcome=workflow_outcome,
             limit=limit,
             offset=offset,
         )
+        _attach_decision_status(universe_dir, items)
     except Exception as exc:
         logger.exception("review_queue_list failed")
         return json.dumps({

@@ -247,6 +247,8 @@ CREATE TABLE IF NOT EXISTS review_decision_effects (
     retry_at        REAL NOT NULL DEFAULT 0,
     result          TEXT NOT NULL DEFAULT '',
     last_error      TEXT NOT NULL DEFAULT '',
+    reported_at     REAL,
+    reported_by     TEXT NOT NULL DEFAULT '',
     created_at      REAL NOT NULL,
     updated_at      REAL NOT NULL,
     UNIQUE(decision_id, position)
@@ -344,6 +346,8 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     ],
     "review_decision_effects": [
         ("retry_at", "REAL NOT NULL DEFAULT 0"),
+        ("reported_at", "REAL"),
+        ("reported_by", "TEXT NOT NULL DEFAULT ''"),
     ],
 }
 
@@ -1352,6 +1356,46 @@ def list_decision_effects(
     return [_decision_effect_to_dict(row) for row in rows]
 
 
+def list_unreported_terminal_decision_effects(
+    universe_dir: str | Path, *, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Return a bounded batch of terminal effects awaiting external reporting."""
+    initialize_review_queue_db(universe_dir)
+    bounded_limit = max(1, min(int(limit), 100))
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT * FROM review_decision_effects "
+            "WHERE status = 'failed' AND reported_at IS NULL "
+            "ORDER BY updated_at, effect_id LIMIT ?",
+            (bounded_limit,),
+        ).fetchall()
+    return [_decision_effect_to_dict(row) for row in rows]
+
+
+def mark_decision_effect_reported(
+    universe_dir: str | Path,
+    *,
+    effect_id: str,
+    reported_by: str,
+    now: float | None = None,
+) -> bool:
+    """Atomically claim external reporting ownership for one failed effect."""
+    reporter = (reported_by or "").strip()
+    if not reporter:
+        raise ValueError("reported_by is required")
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            updated = conn.execute(
+                "UPDATE review_decision_effects SET reported_at = ?, "
+                "reported_by = ?, updated_at = ? WHERE effect_id = ? "
+                "AND status = 'failed' AND reported_at IS NULL",
+                (ts, reporter, ts, (effect_id or "").strip()),
+            )
+            return updated.rowcount == 1
+
+
 def get_decision_status(
     universe_dir: str | Path, *, decision_id: str
 ) -> str | None:
@@ -1901,6 +1945,8 @@ __all__ = [
     "decide_and_resume",
     "ack_continuation",
     "list_decision_effects",
+    "list_unreported_terminal_decision_effects",
+    "mark_decision_effect_reported",
     "get_decision_status",
     "claim_next_decision_effect",
     "complete_decision_effect",

@@ -3250,6 +3250,7 @@ _GH_CALL_KEYS = ("kind", "transport", "method", "path", "params", "summary")
 
 
 _REVIEW_EVENT_STATE = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}
+_REVIEW_DECISION_DRAIN_LIMIT = 100
 
 
 class _TerminalDecisionEffect(RuntimeError):
@@ -3366,6 +3367,14 @@ def execute_next_review_decision_effect(
         decision_status = _rq.get_decision_status(
             base_path, decision_id=decision_id
         )
+        if decision_status == "failed":
+            _surface_terminal_review_failure(
+                base_path,
+                decision_id=decision_id,
+                effect_id=effect_id,
+                kind=kind,
+                reason=f"client_error:{exc}",
+            )
         return {
             "decision_id": decision_id,
             "effect_id": effect_id,
@@ -3413,6 +3422,10 @@ def execute_next_review_decision_effect(
                 if not response.get("ok"):
                     raise RuntimeError("review_call_failed")
                 result = {"detail": "submitted", "status": response.get("status")}
+            confirmed_pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(confirmed_pull, head)
 
         elif kind == "apply_merge_preference":
             if effect_api is None:
@@ -3556,6 +3569,14 @@ def execute_next_review_decision_effect(
         decision_status = _rq.get_decision_status(
             base_path, decision_id=decision_id
         )
+        if decision_status == "failed":
+            _surface_terminal_review_failure(
+                base_path,
+                decision_id=decision_id,
+                effect_id=effect_id,
+                kind=kind,
+                reason=str(exc),
+            )
         return {
             "decision_id": decision_id,
             "effect_id": effect_id,
@@ -3605,9 +3626,13 @@ def execute_pending_review_decisions(
     app_actor_resolver: Any = None,
     now: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Drain ready effects until the queue is empty or one must retry later."""
+    """Drain a bounded batch of ready effects across independent decisions."""
+    from tinyassets.storage import review_queue as _rq
+
     results: list[dict[str, Any]] = []
-    while True:
+    attempts = 0
+    for _ in range(_REVIEW_DECISION_DRAIN_LIMIT):
+        attempts += 1
         result = execute_next_review_decision_effect(
             base_path,
             worker_id=worker_id,
@@ -3622,10 +3647,118 @@ def execute_pending_review_decisions(
             now=now,
         )
         if result is None:
-            return results
+            break
+        if result.get("terminal") and not _rq.mark_decision_effect_reported(
+            base_path,
+            effect_id=str(result.get("effect_id") or ""),
+            reported_by=worker_id,
+            now=now,
+        ):
+            continue
         results.append(result)
-        if not result.get("executed"):
-            return results
+    remaining = _REVIEW_DECISION_DRAIN_LIMIT - attempts
+    if remaining:
+        results.extend(
+            _surface_unreported_terminal_review_failures(
+                base_path,
+                worker_id=worker_id,
+                limit=remaining,
+                now=now,
+            )
+        )
+    return results
+
+
+def _surface_terminal_review_failure(
+    base_path: str | Path,
+    *,
+    decision_id: str,
+    effect_id: str,
+    kind: str,
+    reason: str,
+) -> bool:
+    """Persist a terminal effect failure on its suspended source run."""
+    from tinyassets.storage import review_queue as _rq
+
+    finalize = next(
+        (
+            effect
+            for effect in _rq.list_decision_effects(
+                base_path, decision_id=decision_id
+            )
+            if effect["kind"] == "finalize_run"
+        ),
+        None,
+    )
+    run_id = str(((finalize or {}).get("payload") or {}).get("run_id") or "")
+    if not run_id:
+        return False
+    run_base_path = _review_run_storage_path(base_path, run_id)
+    source = get_run(run_base_path, run_id)
+    if source is None or source.get("status") != RUN_STATUS_INTERRUPTED:
+        return False
+    output = dict(source.get("output") or {})
+    if "awaiting_owner_review" not in output:
+        return False
+    if (
+        output.get("review_decision_id") == decision_id
+        and output.get("review_decision_status") == "failed"
+    ):
+        return False
+    output.update({
+        "review_decision_id": decision_id,
+        "review_decision_status": "failed",
+        "review_decision_failure": {
+            "effect_id": effect_id,
+            "kind": kind,
+            "reason": reason,
+        },
+    })
+    update_run_status(run_base_path, run_id, output=output)
+    return True
+
+
+def _surface_unreported_terminal_review_failures(
+    base_path: str | Path,
+    *,
+    worker_id: str,
+    limit: int,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Surface lease-expiry terminalizations that produced no worker result."""
+    from tinyassets.storage import review_queue as _rq
+
+    surfaced: list[dict[str, Any]] = []
+    for effect in _rq.list_unreported_terminal_decision_effects(
+        base_path, limit=limit
+    ):
+        decision_id = str(effect.get("decision_id") or "")
+        effect_id = str(effect.get("effect_id") or "")
+        reason = str(effect.get("last_error") or "effect_failed")
+        _surface_terminal_review_failure(
+            base_path,
+            decision_id=decision_id,
+            effect_id=effect_id,
+            kind=str(effect.get("kind") or ""),
+            reason=reason,
+        )
+        if not _rq.mark_decision_effect_reported(
+            base_path,
+            effect_id=effect_id,
+            reported_by=worker_id,
+            now=now,
+        ):
+            continue
+        surfaced.append({
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": str(effect.get("kind") or ""),
+            "executed": False,
+            "reason": reason,
+            "terminal": True,
+            "decision_status": "failed",
+        })
+    return surfaced
 
 
 def _review_run_storage_path(base_path: str | Path, run_id: str) -> Path:

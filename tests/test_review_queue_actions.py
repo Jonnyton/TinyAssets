@@ -90,6 +90,36 @@ def test_owner_can_list(owner_env):
     assert out["items"][0]["pr_number"] == _PR
 
 
+def test_owner_list_surfaces_terminal_decision_failure(owner_env):
+    _seed(owner_env)
+    decided = _call(
+        "review_queue_reject",
+        universe_id="u1",
+        pr_number=_PR,
+        destination=_DEST,
+        expected_head_sha=_HEAD,
+    )
+    effect = rq.claim_next_decision_effect(owner_env, worker_id="worker")
+    assert rq.fail_decision_effect(
+        owner_env,
+        effect_id=effect["effect_id"],
+        worker_id="worker",
+        claim_token=effect["claim_token"],
+        error="head_moved",
+    )
+
+    out = _call("review_queue_list", universe_id="u1")
+
+    item = out["items"][0]
+    assert item["decision_id"] == decided["decision_id"]
+    assert item["decision_status"] == "failed"
+    assert item["decision_failure"] == {
+        "effect_id": effect["effect_id"],
+        "kind": "submit_review",
+        "reason": "head_moved",
+    }
+
+
 def test_owner_approve_records_github_review_call(owner_env):
     _seed(owner_env)
     out = _call(

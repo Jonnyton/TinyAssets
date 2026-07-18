@@ -243,7 +243,22 @@ def _run_review_recovery(universe_path: Path) -> None:
             return
         from tinyassets.runs import run_review_recovery_for_universe
 
-        run_review_recovery_for_universe(universe_path)
+        recovery = run_review_recovery_for_universe(universe_path)
+        for result in recovery.get("execute_decisions", []):
+            if not result.get("terminal"):
+                continue
+            payload = {
+                "event": "review_decision_terminal_failure",
+                "universe_path": str(universe_path),
+                "decision_id": result.get("decision_id") or "",
+                "effect_id": result.get("effect_id") or "",
+                "kind": result.get("kind") or "",
+                "reason": result.get("reason") or "",
+            }
+            logger.error(
+                "review_decision_terminal_failure %s",
+                json.dumps(payload, sort_keys=True),
+            )
     except Exception:  # noqa: BLE001 — recovery is best-effort; never wedge startup
         logger.exception(
             "S4 review-recovery drain failed for %s", universe_path,

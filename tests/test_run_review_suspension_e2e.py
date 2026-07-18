@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import tinyassets.runs as runs
 from tinyassets.storage import review_queue as rq
 
@@ -51,6 +55,12 @@ class AlreadyMergedApi:
     def run_call(self, call):
         self.submitted.append(call)
         raise AssertionError("merged replay must not mutate GitHub")
+
+
+class FailingApi(FakeApi):
+    def run_call(self, call):
+        self.submitted.append(call)
+        raise RuntimeError("credential unavailable")
 
 
 def _simple_branch():
@@ -190,6 +200,154 @@ def test_unavailable_client_releases_effect_for_replay(monkeypatch, tmp_path):
     assert replayed[-1]["kind"] == "finalize_run"
     assert all(row["decision_id"] == decision["decision_id"] for row in replayed)
     assert runs.get_run(tmp_path, run_id)["status"] == runs.RUN_STATUS_COMPLETED
+
+
+def test_terminal_effect_failure_is_durable_on_suspended_run(monkeypatch, tmp_path):
+    run_id = _suspend_a_real_run(tmp_path, monkeypatch)
+    decision = _approve(tmp_path)
+
+    for now in (100, 130, 190):
+        [result] = runs.execute_pending_review_decisions(
+            tmp_path,
+            worker_id="review-worker",
+            github_api=FailingApi(),
+            expected_owner="owner",
+            now=now,
+        )
+
+    assert result["terminal"] is True
+    record = runs.get_run(tmp_path, run_id)
+    assert record["status"] == runs.RUN_STATUS_INTERRUPTED
+    assert record["output"]["review_decision_status"] == "failed"
+    assert record["output"]["review_decision_id"] == decision["decision_id"]
+    assert record["output"]["review_decision_failure"] == {
+        "effect_id": result["effect_id"],
+        "kind": "submit_review",
+        "reason": "credential unavailable",
+    }
+
+
+def test_expired_lease_terminalization_is_surfaced_by_production_drain(
+    monkeypatch, tmp_path
+):
+    run_id = _suspend_a_real_run(tmp_path, monkeypatch)
+    decision = _approve(tmp_path)
+    effect = None
+    for now in (100, 131, 192):
+        effect = rq.claim_next_decision_effect(
+            tmp_path,
+            worker_id="crashed-worker",
+            lease_seconds=1,
+            now=now,
+        )
+        assert effect is not None
+
+    results = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="recovery-worker",
+        now=193,
+    )
+
+    assert results == [{
+        "decision_id": decision["decision_id"],
+        "effect_id": effect["effect_id"],
+        "kind": "submit_review",
+        "executed": False,
+        "reason": "lease_expired",
+        "terminal": True,
+        "decision_status": "failed",
+    }]
+    record = runs.get_run(tmp_path, run_id)
+    assert record["output"]["review_decision_status"] == "failed"
+    assert record["output"]["review_decision_failure"]["reason"] == "lease_expired"
+    assert runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="recovery-worker",
+        now=194,
+    ) == []
+
+
+def test_concurrent_drains_emit_one_expired_lease_terminal_failure(
+    monkeypatch, tmp_path
+):
+    _suspend_a_real_run(tmp_path, monkeypatch)
+    _approve(tmp_path)
+    for now in (100, 131, 192):
+        assert rq.claim_next_decision_effect(
+            tmp_path,
+            worker_id="crashed-worker",
+            lease_seconds=1,
+            now=now,
+        ) is not None
+    rq.claim_next_decision_effect(
+        tmp_path,
+        worker_id="terminalizer",
+        lease_seconds=1,
+        now=193,
+    )
+    barrier = Barrier(2)
+    original = runs._surface_terminal_review_failure
+
+    def synchronized_surface(*args, **kwargs):
+        barrier.wait(timeout=5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runs, "_surface_terminal_review_failure", synchronized_surface)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        batches = list(pool.map(
+            lambda worker: runs.execute_pending_review_decisions(
+                tmp_path,
+                worker_id=worker,
+                now=194,
+            ),
+            ("worker-a", "worker-b"),
+        ))
+
+    terminal_results = [
+        result
+        for batch in batches
+        for result in batch
+        if result.get("terminal")
+    ]
+    assert len(terminal_results) == 1
+
+
+def test_daemon_logs_structured_terminal_decision_failure(
+    monkeypatch, tmp_path, caplog
+):
+    from fantasy_daemon.__main__ import _run_review_recovery
+
+    rq.initialize_review_queue_db(tmp_path)
+    terminal = {
+        "decision_id": "decision-1",
+        "effect_id": "effect-1",
+        "kind": "submit_review",
+        "reason": "head_moved",
+        "terminal": True,
+    }
+    monkeypatch.setattr(
+        runs,
+        "run_review_recovery_for_universe",
+        lambda _path: {"execute_decisions": [terminal]},
+    )
+
+    with caplog.at_level("ERROR", logger="fantasy_author"):
+        _run_review_recovery(tmp_path)
+
+    [message] = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("review_decision_terminal_failure ")
+    ]
+    payload = json.loads(message.split(" ", 1)[1])
+    assert payload == {
+        "decision_id": "decision-1",
+        "effect_id": "effect-1",
+        "event": "review_decision_terminal_failure",
+        "kind": "submit_review",
+        "reason": "head_moved",
+        "universe_path": str(tmp_path),
+    }
 
 
 def test_immediate_merge_replay_finalizes_with_truthful_merged_state(

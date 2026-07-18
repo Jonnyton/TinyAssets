@@ -989,6 +989,15 @@ def _compose_run_snapshot(
         [f"  - {s['node_id']}: {s['status']}" for s in node_statuses]
         or ["  (no nodes reported)"]
     )
+    output = run_record.get("output")
+    review_lines: list[str] = []
+    if isinstance(output, dict) and output.get("review_decision_status") == "failed":
+        failure = output.get("review_decision_failure") or {}
+        review_lines = [
+            "",
+            "Review decision execution failed: "
+            f"{failure.get('reason') or 'unknown error'}",
+        ]
     # Phone-legible header — name first, IDs only in structuredContent.
     header_branch = branch_name or "(branch)"
     summary = "\n".join([
@@ -998,6 +1007,7 @@ def _compose_run_snapshot(
         "",
         "Nodes:",
         *node_lines,
+        *review_lines,
         "",
         "Graph:",
         mermaid,
@@ -1028,9 +1038,14 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
-    output = run_record.get("output")
     if isinstance(output, dict):
-        for key in ("external_write_results", "external_write_errors"):
+        for key in (
+            "external_write_results",
+            "external_write_errors",
+            "review_decision_id",
+            "review_decision_status",
+            "review_decision_failure",
+        ):
             if key in output:
                 snapshot[key] = output[key]
     # INTERRUPTED runs are terminal in v1 (durability guarantee — see

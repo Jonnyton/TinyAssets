@@ -27,3 +27,11 @@ What surprised me: replacing a synthetic concurrency proof with real branch orch
 Pattern worth capturing: load proofs should enter through the canonical orchestration boundary and assert exact persisted identities and effects; aggregate counts and hand-built rows can conceal integration gaps.
 
 One thing I would do differently: make the first §14 test execute real bound runs and drain the real outbox, then audit whether every migration fixture targets the production path.
+
+---
+
+What surprised me: making terminal failures visible also needs durable ownership of the visibility event; idempotently annotating the run alone does not prevent duplicate daemon logs under concurrent drains.
+
+Pattern worth capturing: bounded workers need one shared budget across primary execution and recovery scans, plus a storage compare-and-set for externally emitted terminal events.
+
+One thing I would do differently: include concurrent recovery workers and more-than-one-batch terminal history in the first observability regressions, alongside the ordinary head-of-line fairness test.

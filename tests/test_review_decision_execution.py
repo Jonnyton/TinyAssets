@@ -8,6 +8,7 @@ the canonical BranchTask queue; GitHub effects reconcile before mutation.
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -337,6 +338,50 @@ def test_review_effect_refuses_stale_live_head_without_advancing_plan(
     assert all(effect["status"] == "pending" for effect in effects[1:])
 
 
+class _HeadMovesAfterReviewApi:
+    def __init__(self) -> None:
+        self.head = _HEAD
+        self.calls = []
+
+    def get_pull(self, **_kwargs) -> dict:
+        return {
+            "head_sha": self.head,
+            "author_login": "tinyassets-app[bot]",
+            "author_type": "Bot",
+            "auto_merge_enabled": False,
+            "merged": False,
+        }
+
+    def run_call(self, call):
+        self.calls.append(call)
+        self.head = _NEW_HEAD
+        return {"ok": True, "status": 200}
+
+
+@pytest.mark.parametrize("intent", [rq.INTENT_RESHAPE, rq.INTENT_REJECT])
+def test_production_drain_stops_plan_when_head_moves_during_review(
+    tmp_path, intent
+):
+    _seed(tmp_path)
+    decision = _decide_review_intent(tmp_path, intent)
+    api = _HeadMovesAfterReviewApi()
+
+    results = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="worker",
+        github_api=api,
+        expected_owner="owner",
+    )
+
+    assert len(results) == 1
+    assert results[0]["reason"] == "head_moved"
+    assert results[0]["terminal"] is True
+    assert rq.get_decision_status(
+        tmp_path, decision_id=decision["decision_id"]
+    ) == "failed"
+    assert read_queue(tmp_path) == []
+
+
 def _seed_fire_and_forget_review(
     tmp_path, *, destination: str, pr_number: int, head: str
 ) -> dict:
@@ -413,6 +458,55 @@ def test_retry_backoff_skips_failed_decision_without_reordering_its_plan(
     assert retried["attempt_count"] == 2
 
 
+class _OneDestinationFailsApi:
+    def __init__(self) -> None:
+        self.destination = ""
+        self.calls = []
+
+    def get_pull(self, *, destination: str, pr_number: int) -> dict:
+        self.destination = destination
+        return {
+            "head_sha": _HEAD if destination == "Owner/First" else _NEW_HEAD,
+            "author_login": "tinyassets-app[bot]",
+            "author_type": "Bot",
+            "auto_merge_enabled": False,
+            "merged": False,
+        }
+
+    def run_call(self, call):
+        self.calls.append(call)
+        if self.destination == "Owner/First":
+            raise RuntimeError("credential unavailable")
+        return {"ok": True, "status": 200}
+
+
+def test_production_drain_continues_after_one_decision_backs_off(tmp_path):
+    first = _seed_fire_and_forget_review(
+        tmp_path, destination="Owner/First", pr_number=1, head=_HEAD
+    )
+    second = _seed_fire_and_forget_review(
+        tmp_path, destination="Owner/Second", pr_number=2, head=_NEW_HEAD
+    )
+    api = _OneDestinationFailsApi()
+
+    results = runs.execute_pending_review_decisions(
+        tmp_path, worker_id="worker", github_api=api, now=100
+    )
+
+    assert [(row["decision_id"], row["executed"]) for row in results] == [
+        (first["decision_id"], False),
+        (second["decision_id"], True),
+    ]
+    first_effect = rq.list_decision_effects(
+        tmp_path, decision_id=first["decision_id"]
+    )[0]
+    second_effect = rq.list_decision_effects(
+        tmp_path, decision_id=second["decision_id"]
+    )[0]
+    assert first_effect["retry_at"] == 130
+    assert second_effect["status"] == "succeeded"
+
+
 def test_retry_attempt_cap_terminalizes_and_surfaces_failed_decision(tmp_path):
     decision = _seed_fire_and_forget_review(
         tmp_path, destination="Owner/First", pr_number=1, head=_HEAD
@@ -443,6 +537,48 @@ def test_retry_attempt_cap_terminalizes_and_surfaces_failed_decision(tmp_path):
     assert rq.claim_next_decision_effect(
         tmp_path, worker_id="worker", now=10_000
     ) is None
+
+
+def test_terminal_failure_reporting_is_bounded_and_cas_owned(tmp_path):
+    decisions = [
+        _seed_fire_and_forget_review(
+            tmp_path,
+            destination=f"Owner/Repo-{index}",
+            pr_number=index,
+            head=_HEAD,
+        )
+        for index in (1, 2)
+    ]
+    for index, decision in enumerate(decisions, start=1):
+        effect = rq.claim_next_decision_effect(
+            tmp_path, worker_id=f"worker-{index}"
+        )
+        assert effect["decision_id"] == decision["decision_id"]
+        assert rq.fail_decision_effect(
+            tmp_path,
+            effect_id=effect["effect_id"],
+            worker_id=f"worker-{index}",
+            claim_token=effect["claim_token"],
+            error="terminal",
+        )
+
+    [candidate] = rq.list_unreported_terminal_decision_effects(
+        tmp_path, limit=1
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(
+            lambda worker: rq.mark_decision_effect_reported(
+                tmp_path,
+                effect_id=candidate["effect_id"],
+                reported_by=worker,
+            ),
+            ("worker-a", "worker-b"),
+        ))
+
+    assert sorted(claims) == [False, True]
+    remaining = rq.list_unreported_terminal_decision_effects(tmp_path, limit=1)
+    assert len(remaining) == 1
+    assert remaining[0]["effect_id"] != candidate["effect_id"]
 
 
 class _AlreadyEnabledApi:
@@ -776,4 +912,5 @@ def test_existing_decision_effect_table_migrates_retry_schedule(tmp_path):
             "WHERE type = 'index' AND name = 'idx_review_decision_effects_ready'"
         ).fetchone()[0]
     assert "retry_at" in columns
+    assert "reported_at" in columns
     assert "retry_at" in index_sql
