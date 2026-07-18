@@ -2566,13 +2566,19 @@ def test_resume_rejects_legacy_scope_downgrade(tmp_path, monkeypatch):
 
 
 def test_resume_threads_persisted_compile_context(tmp_path, monkeypatch):
-    """Resume dispatches with the original depth and trusted enqueue context."""
+    """Resume overlays its live review guard on legacy persisted context."""
     from tinyassets import runs
     from tinyassets.graph_compiler import NodeEnqueueContext
 
     context = NodeEnqueueContext(
         universe_id="tenant-A", actor="tester",
         parent_branch_task_id="parent-task", origin_branch_task_id="origin-task",
+    )
+    guard = runs.ReviewRevisionExecutionGuard(
+        universe_dir=tmp_path,
+        review_destination="Owner/Repo",
+        review_pr_number=7,
+        expected_head_sha="a" * 40,
     )
     run_id = runs.create_run(
         tmp_path, branch_def_id="resume-context", thread_id="resume-context",
@@ -2589,10 +2595,19 @@ def test_resume_threads_persisted_compile_context(tmp_path, monkeypatch):
     outcome = runs._invoke_graph_resume(
         tmp_path, run_id=run_id, branch=None, thread_id=run_id,
         provider_call=None, execution_scope=ExecutionScope.legacy_unbound(),
+        execution_guard=guard,
     )
     assert outcome.status == "completed"
     assert captured["invocation_depth"] == 3
-    assert captured["enqueue_context"] == context
+    assert captured["enqueue_context"] == NodeEnqueueContext(
+        universe_id="tenant-A",
+        actor="tester",
+        parent_branch_task_id="parent-task",
+        origin_branch_task_id="origin-task",
+        review_destination="Owner/Repo",
+        review_pr_number=7,
+        expected_head_sha="a" * 40,
+    )
 
 
 def test_resume_dispatches_persisted_context_in_executor_request(tmp_path, monkeypatch):
@@ -2612,6 +2627,8 @@ def test_resume_dispatches_persisted_context_in_executor_request(tmp_path, monke
     context = NodeEnqueueContext(
         universe_id="tenant-A", actor="tester",
         parent_branch_task_id="parent-task", origin_branch_task_id="origin-task",
+        review_destination="Owner/Repo", review_pr_number=7,
+        expected_head_sha="a" * 40,
     )
     branch = BranchDefinition(branch_def_id="resume-dispatch", name="resume")
     run_id = runs.create_run(
@@ -2669,6 +2686,9 @@ def test_resume_dispatches_persisted_context_in_executor_request(tmp_path, monke
         "universe_id": "tenant-A", "actor": "tester",
         "parent_branch_task_id": "parent-task",
         "origin_branch_task_id": "origin-task",
+        "review_destination": "Owner/Repo",
+        "review_pr_number": 7,
+        "expected_head_sha": "a" * 40,
     }
     assert resolved_during_dispatch == [str(tmp_path)]
     assert sp.resolve_workspace_ref(

@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS pr_projection (
     synced_at              REAL NOT NULL DEFAULT 0,
     -- Owner workflow intent + the exact GitHub call it will run + outcome:
     owner_intent     TEXT NOT NULL DEFAULT '',
+    decision_id      TEXT NOT NULL DEFAULT '',
     recorded_call    TEXT NOT NULL DEFAULT '',
     workflow_outcome TEXT NOT NULL DEFAULT 'open',
     notes            TEXT NOT NULL DEFAULT '',
@@ -345,6 +346,9 @@ _DECISION_EFFECT_MAX_BACKOFF_SECONDS = 1800.0
 #: this is safe to run on every init. NEW tables (e.g. ``manual_merge_outbox``)
 #: need no entry — ``CREATE TABLE IF NOT EXISTS`` creates them whole.
 _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "pr_projection": [
+        ("decision_id", "TEXT NOT NULL DEFAULT ''"),
+    ],
     "revocation_outbox": [
         ("expected_head_sha", "TEXT NOT NULL DEFAULT ''"),
         ("founder_handle", "TEXT NOT NULL DEFAULT ''"),
@@ -401,6 +405,24 @@ def _backfill_decision_effect_projection_keys(conn: sqlite3.Connection) -> None:
         )
 
 
+def _backfill_projection_decision_owners(conn: sqlite3.Connection) -> None:
+    """Bind pre-column decided projections to their recorded generation."""
+    conn.execute(
+        "UPDATE pr_projection AS projection SET decision_id = ("
+        "SELECT effect.decision_id FROM review_decision_effects AS effect "
+        "WHERE effect.destination = projection.destination "
+        "AND effect.pr_number = projection.pr_number "
+        "AND effect.expected_head_sha = projection.head_sha "
+        "ORDER BY effect.created_at DESC, effect.decision_id DESC LIMIT 1"
+        ") WHERE projection.decision_id = '' "
+        "AND projection.owner_intent != '' "
+        "AND EXISTS (SELECT 1 FROM review_decision_effects AS effect "
+        "WHERE effect.destination = projection.destination "
+        "AND effect.pr_number = projection.pr_number "
+        "AND effect.expected_head_sha = projection.head_sha)"
+    )
+
+
 def _warn_pending_legacy_outboxes(conn: sqlite3.Connection) -> None:
     tables = {
         row["name"]
@@ -438,6 +460,7 @@ def initialize_review_queue_db(universe_dir: str | Path) -> Path:
             conn.executescript(_SCHEMA)
             _apply_column_migrations(conn)
             _backfill_decision_effect_projection_keys(conn)
+            _backfill_projection_decision_owners(conn)
             conn.execute("DROP INDEX IF EXISTS idx_review_decision_effects_ready")
             conn.execute(
                 "CREATE INDEX idx_review_decision_effects_ready ON "
@@ -532,7 +555,7 @@ def project_pr(
                 conn.execute(
                     """
                     UPDATE pr_projection SET
-                        owner_intent = '', recorded_call = '',
+                        owner_intent = '', decision_id = '', recorded_call = '',
                         workflow_outcome = ?, decided_by = '', decided_at = NULL
                     WHERE destination = ? AND pr_number = ?
                     """,
@@ -1240,12 +1263,13 @@ def decide_and_resume(
             conn.execute(
                 """
                 UPDATE pr_projection SET
-                    owner_intent = ?, workflow_outcome = ?, recorded_call = ?,
+                    owner_intent = ?, decision_id = ?, workflow_outcome = ?,
+                    recorded_call = ?,
                     notes = ?, decided_by = ?, decided_at = ?, updated_at = ?
                 WHERE destination = ? AND pr_number = ?
                 """,
                 (
-                    intent, workflow_outcome,
+                    intent, decision_id, workflow_outcome,
                     json.dumps(recorded_call) if recorded_call else "",
                     notes, decided_by, ts, ts, dest, pr_number,
                 ),
@@ -1381,54 +1405,54 @@ def ack_continuation(
 def terminalize_failed_decision_generation(
     universe_dir: str | Path,
     *,
-    run_id: str,
     decision_id: str,
     now: float | None = None,
 ) -> bool:
-    """Close a capped decision generation so the owner can decide again."""
-    rid = (run_id or "").strip()
+    """Close the projection generation owned by one capped decision."""
     did = (decision_id or "").strip()
-    if not rid or not did:
+    if not did:
         return False
     initialize_review_queue_db(universe_dir)
     ts = _now(now)
     with _connect(universe_dir) as conn:
         with _write(conn):
-            suspension = conn.execute(
-                "SELECT * FROM review_suspensions WHERE run_id = ?",
-                (rid,),
+            projection = conn.execute(
+                "SELECT * FROM pr_projection WHERE decision_id = ?",
+                (did,),
             ).fetchone()
-            if suspension is None or suspension["status"] not in {
-                SUSPENSION_DECIDED,
-                SUSPENSION_SUPERSEDED,
-            }:
+            if projection is None:
                 return False
-            try:
-                directive = json.loads(suspension["resume_directive"] or "{}")
-            except (TypeError, ValueError):
-                return False
-            if str(directive.get("decision_id") or "").strip() != did:
-                return False
-            if suspension["status"] == SUSPENSION_SUPERSEDED:
-                return True
+            rid = str(projection["run_id"] or "").strip()
+            if rid:
+                suspension = conn.execute(
+                    "SELECT * FROM review_suspensions WHERE run_id = ?",
+                    (rid,),
+                ).fetchone()
+                if suspension is not None:
+                    try:
+                        directive = json.loads(
+                            suspension["resume_directive"] or "{}"
+                        )
+                    except (TypeError, ValueError):
+                        directive = {}
+                    if str(directive.get("decision_id") or "").strip() == did:
+                        conn.execute(
+                            "UPDATE review_suspensions SET status = ? "
+                            "WHERE run_id = ? AND status = ?",
+                            (SUSPENSION_SUPERSEDED, rid, SUSPENSION_DECIDED),
+                        )
             conn.execute(
-                "UPDATE review_suspensions SET status = ? "
-                "WHERE run_id = ? AND status = ?",
-                (SUSPENSION_SUPERSEDED, rid, SUSPENSION_DECIDED),
-            )
-            conn.execute(
-                "UPDATE pr_projection SET owner_intent = '', recorded_call = '', "
+                "UPDATE pr_projection SET owner_intent = '', decision_id = '', "
+                "recorded_call = '', "
                 "workflow_outcome = ?, notes = '', decided_by = '', "
                 "decided_at = NULL, updated_at = ? "
-                "WHERE destination = ? AND pr_number = ? AND head_sha = ? "
-                "AND run_id = ?",
+                "WHERE destination = ? AND pr_number = ? AND decision_id = ?",
                 (
                     WORKFLOW_OPEN,
                     ts,
-                    suspension["destination"],
-                    suspension["pr_number"],
-                    suspension["head_sha"],
-                    rid,
+                    projection["destination"],
+                    projection["pr_number"],
+                    did,
                 ),
             )
     return True

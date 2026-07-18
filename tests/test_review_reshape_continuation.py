@@ -117,11 +117,11 @@ def _branch():
     )
 
 
-def _source_run(tmp_path, monkeypatch):
+def _source_run(tmp_path, monkeypatch, *, branch=None):
     from tests._executor_sim import install_worker_sim
     from tinyassets.api import runs as api_runs
 
-    branch = _branch()
+    branch = branch or _branch()
     universe_dir = tmp_path / _UNIVERSE_ID
     universe_dir.mkdir()
     install_worker_sim(monkeypatch)
@@ -449,6 +449,148 @@ def test_review_revision_terminalizes_if_head_moves_during_execution(
     [terminal] = read_queue(universe_dir)
     assert terminal.status == "failed"
     assert "head_moved" in terminal.error
+
+
+def test_review_revision_head_move_blocks_in_node_enqueue(
+    tmp_path, monkeypatch
+):
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+
+    enqueue_node = NodeDefinition(
+        node_id="draft_patch",
+        display_name="Draft and enqueue",
+        source_code=(
+            "def run(state):\n"
+            "    invoke_mcp_action('enqueue_branch_run', "
+            f"branch_def_id='{_BRANCH_ID}', inputs={{}})\n"
+            "    return {'draft_patch_output': 'stale child requested'}\n"
+        ),
+        output_keys=["draft_patch_output"],
+        tools_allowed=["enqueue_branch_run"],
+    ).mark_approved()
+    branch = BranchDefinition(
+        branch_def_id=_BRANCH_ID,
+        name="Review revision enqueue race",
+        graph_nodes=[GraphNodeRef(id="draft_patch", node_def_id="draft_patch")],
+        edges=[
+            EdgeDefinition(from_node="START", to_node="draft_patch"),
+            EdgeDefinition(from_node="draft_patch", to_node="END"),
+        ],
+        entry_point="draft_patch",
+        node_defs=[enqueue_node],
+        state_schema=[
+            {"name": "reshape_notes", "type": "str"},
+            {"name": "draft_patch_output", "type": "str"},
+        ],
+    )
+    universe_dir, source_run_id, route, daemon, _runtime, _prompts = _source_run(
+        tmp_path, monkeypatch, branch=branch,
+    )
+    # The enqueue verb validates its target against the worker workspace.
+    # Persist the same branch there so the test reaches the durable append.
+    initialize_author_server(tmp_path)
+    save_branch_definition(tmp_path, branch_def=branch.to_dict(), _trusted=True)
+
+    rq.project_pr(
+        universe_dir,
+        destination="Owner/Repo",
+        pr_number=7,
+        head_sha="a" * 40,
+        branch_def_id=_BRANCH_ID,
+        universe_id=_UNIVERSE_ID,
+        run_id=source_run_id,
+    )
+    rq.suspend_run_for_review(
+        universe_dir,
+        run_id=source_run_id,
+        destination="Owner/Repo",
+        pr_number=7,
+        branch_def_id=_BRANCH_ID,
+        head_sha="a" * 40,
+        universe_id=_UNIVERSE_ID,
+    )
+    rq.decide_and_resume(
+        universe_dir,
+        destination="Owner/Repo",
+        pr_number=7,
+        intent=rq.INTENT_RESHAPE,
+        workflow_outcome=rq.WORKFLOW_RESHAPED,
+        decided_by=_OWNER_ID,
+        expected_head_sha="a" * 40,
+        directive={
+            "action": "draft_patch",
+            "route_back": route,
+            "github_call": {
+                "params": {"event": "REQUEST_CHANGES", "body": "revise"}
+            },
+        },
+    )
+    api = _MutableHeadApi()
+    executed = runs.execute_pending_review_decisions(
+        universe_dir,
+        worker_id="decision-worker",
+        github_api=api,
+    )
+    assert [row["kind"] for row in executed] == [
+        "submit_review",
+        "enqueue_revision",
+        "finalize_run",
+    ]
+
+    from tinyassets.branch_tasks import claim_task, read_queue
+
+    [queued] = read_queue(universe_dir)
+    claimed = claim_task(
+        universe_dir,
+        queued.branch_task_id,
+        "revision-daemon",
+        executor_worker_id=_WORKER_ID,
+    )
+    assert claimed is not None
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tinyassets.github_http.github_client_from_vault",
+        lambda *_args, **_kwargs: api,
+    )
+
+    from tinyassets import daemon_server
+
+    real_get_branch_definition = daemon_server.get_branch_definition
+
+    def move_head_immediately_before_enqueue(base_path, *, branch_def_id):
+        result = real_get_branch_definition(
+            base_path, branch_def_id=branch_def_id,
+        )
+        if str(base_path) == str(tmp_path):
+            api.head = "b" * 40
+        return result
+
+    monkeypatch.setattr(
+        daemon_server,
+        "get_branch_definition",
+        move_head_immediately_before_enqueue,
+    )
+
+    from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
+
+    success, error, metadata = _try_execute_claimed_branch_task(
+        universe_dir, claimed, daemon["daemon_id"],
+    )
+
+    assert success is False
+    assert "head_moved" in error
+    assert metadata["run_status"] == runs.RUN_STATUS_FAILED
+    child_count = sum(
+        task.branch_task_id != claimed.branch_task_id
+        for task in read_queue(universe_dir)
+    )
+    assert child_count == 0
 
 
 def test_review_revision_runs_through_branch_task_lifecycle(tmp_path, monkeypatch):

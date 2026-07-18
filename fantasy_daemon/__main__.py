@@ -939,6 +939,7 @@ def _try_execute_claimed_branch_task(
             RUN_STATUS_CANCELLED,
             RUN_STATUS_COMPLETED,
             RUN_STATUS_FAILED,
+            ReviewRevisionExecutionGuard,
             execute_branch,
             execute_claimed_branch_request,
             latest_run_by_name,
@@ -1053,9 +1054,8 @@ def _try_execute_claimed_branch_task(
                 base_path,
                 branch=branch,
                 on_node_status=on_node_status,
-                execution_guard=lambda: require_review_revision_task_head(
-                    universe_path,
-                    task=claimed_task,
+                execution_guard=ReviewRevisionExecutionGuard.from_task(
+                    universe_path, claimed_task,
                 ),
                 **request,
             )

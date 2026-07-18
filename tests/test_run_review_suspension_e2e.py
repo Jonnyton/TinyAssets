@@ -258,6 +258,62 @@ def test_terminal_effect_cap_opens_a_recoverable_decision_generation(
         pr_number=_PR,
     )
     assert projection["owner_intent"] == rq.INTENT_APPROVE
+    assert projection["decision_id"] == recovery["decision_id"]
+
+
+def test_terminal_effect_cap_without_suspension_opens_new_decision_generation(
+    tmp_path,
+):
+    rq.project_pr(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        head_sha=_HEAD,
+        branch_def_id=_BID,
+        universe_id="u1",
+    )
+    failed_decision = _approve(tmp_path)
+
+    for now in (100, 130, 190):
+        [failed_result] = runs.execute_pending_review_decisions(
+            tmp_path,
+            worker_id="review-worker",
+            github_api=FailingApi(),
+            expected_owner="owner",
+            now=now,
+        )
+
+    assert failed_result["terminal"] is True
+    assert rq.get_suspension(tmp_path, run_id="missing") is None
+    recovery = _approve(tmp_path)
+    assert recovery["decision_id"] != failed_decision["decision_id"]
+    recovered = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="recovery-worker",
+        github_api=FakeApi(),
+        expected_owner="owner",
+        now=220,
+    )
+    assert recovered
+    assert all(row["executed"] for row in recovered)
+    assert all(row["decision_id"] == recovery["decision_id"] for row in recovered)
+
+    replayed_old_report = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="report-recovery-worker",
+        now=10_000,
+    )
+    assert any(
+        row.get("effect_id") == failed_result["effect_id"]
+        for row in replayed_old_report
+    )
+    projection = rq.get_projection(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+    )
+    assert projection["decision_id"] == recovery["decision_id"]
+    assert projection["owner_intent"] == rq.INTENT_APPROVE
 
 
 def test_expired_lease_terminalization_is_surfaced_by_production_drain(

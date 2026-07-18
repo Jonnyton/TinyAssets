@@ -823,6 +823,9 @@ def create_run(
                         "actor": enqueue_context.actor,
                         "parent_branch_task_id": enqueue_context.parent_branch_task_id,
                         "origin_branch_task_id": enqueue_context.origin_branch_task_id,
+                        "review_destination": enqueue_context.review_destination,
+                        "review_pr_number": enqueue_context.review_pr_number,
+                        "expected_head_sha": enqueue_context.expected_head_sha,
                     } if enqueue_context is not None else {}
                 ),
                 checkpoint_backend,
@@ -2327,6 +2330,9 @@ def _persisted_execution_context(
         actor=str(raw.get("actor") or ""),
         parent_branch_task_id=str(raw.get("parent_branch_task_id") or ""),
         origin_branch_task_id=str(raw.get("origin_branch_task_id") or ""),
+        review_destination=str(raw.get("review_destination") or ""),
+        review_pr_number=int(raw.get("review_pr_number") or 0),
+        expected_head_sha=str(raw.get("expected_head_sha") or ""),
     )
 
 
@@ -3768,9 +3774,13 @@ def _surface_terminal_review_failure(
     kind: str,
     reason: str,
 ) -> bool:
-    """Persist a terminal effect failure on its suspended source run."""
+    """Close the failed decision generation and surface its source run."""
     from tinyassets.storage import review_queue as _rq
 
+    generation_terminalized = _rq.terminalize_failed_decision_generation(
+        base_path,
+        decision_id=decision_id,
+    )
     finalize = next(
         (
             effect
@@ -3783,12 +3793,7 @@ def _surface_terminal_review_failure(
     )
     run_id = str(((finalize or {}).get("payload") or {}).get("run_id") or "")
     if not run_id:
-        return False
-    generation_terminalized = _rq.terminalize_failed_decision_generation(
-        base_path,
-        run_id=run_id,
-        decision_id=decision_id,
-    )
+        return generation_terminalized
     run_base_path = _review_run_storage_path(base_path, run_id)
     source = get_run(run_base_path, run_id)
     if source is None:
@@ -4400,6 +4405,50 @@ def register_review_workers(
     }
 
 
+@dataclass(frozen=True)
+class ReviewRevisionExecutionGuard:
+    """One review head binding used before, during, and after execution."""
+
+    universe_dir: str | Path
+    review_destination: str
+    review_pr_number: int
+    expected_head_sha: str
+
+    @classmethod
+    def from_task(
+        cls, universe_dir: str | Path, task: Any,
+    ) -> "ReviewRevisionExecutionGuard":
+        return cls(
+            universe_dir=universe_dir,
+            review_destination=str(
+                getattr(task, "review_destination", "") or ""
+            ).strip(),
+            review_pr_number=int(
+                getattr(task, "review_pr_number", 0) or 0
+            ),
+            expected_head_sha=str(
+                getattr(task, "expected_head_sha", "") or ""
+            ).strip(),
+        )
+
+    def __call__(self) -> None:
+        require_review_revision_task_head(self.universe_dir, task=self)
+
+    def bind_enqueue_context(
+        self, context: NodeEnqueueContext,
+    ) -> NodeEnqueueContext:
+        """Carry this guard into the graph's sole durable node verb."""
+        return NodeEnqueueContext(
+            universe_id=context.universe_id,
+            actor=context.actor,
+            parent_branch_task_id=context.parent_branch_task_id,
+            origin_branch_task_id=context.origin_branch_task_id,
+            review_destination=self.review_destination,
+            review_pr_number=self.review_pr_number,
+            expected_head_sha=self.expected_head_sha,
+        )
+
+
 def require_review_revision_task_head(
     universe_dir: str | Path,
     *,
@@ -4816,7 +4865,14 @@ def execute_claimed_branch_request(
     request_run_id = (run_id or "").strip()
     if not request_run_id:
         raise ValueError("run_id is required for a claimed branch request")
+    guard_binding = (
+        execution_guard
+        if isinstance(execution_guard, ReviewRevisionExecutionGuard)
+        else None
+    )
     enqueue_context = NodeEnqueueContext(universe_id=universe_id, actor=actor)
+    if guard_binding is not None:
+        enqueue_context = guard_binding.bind_enqueue_context(enqueue_context)
     scope = _coherent_execution_scope(base_path, universe_id, execution_scope)
     existing = get_run(base_path, request_run_id)
     if existing is not None:
@@ -5509,6 +5565,8 @@ def _invoke_graph_resume(
     run = get_run(base_path, run_id)
     scope = _authoritative_execution_scope(base_path, run_id, execution_scope)
     invocation_depth, enqueue_context = _persisted_execution_context(run)
+    if isinstance(execution_guard, ReviewRevisionExecutionGuard):
+        enqueue_context = execution_guard.bind_enqueue_context(enqueue_context)
     universe_dir, block_reason = _scope_universe_dir(base_path, scope)
     if block_reason is not None:
         logger.error(

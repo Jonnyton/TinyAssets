@@ -1631,6 +1631,9 @@ class NodeEnqueueContext:
     actor: str = ""
     parent_branch_task_id: str = ""
     origin_branch_task_id: str = ""
+    review_destination: str = ""
+    review_pr_number: int = 0
+    expected_head_sha: str = ""
 
 
 def _node_enqueue_branch_run(
@@ -1773,6 +1776,15 @@ def _node_enqueue_branch_run(
         parent_branch_task_id=parent,
         origin_branch_task_id=origin,
     )
+    # A review-revision run is head-bound for its whole execution generation.
+    # Reuse that SAME authoritative guard at the first in-graph durable effect,
+    # immediately before the queue append.  The binding travels in the trusted,
+    # serializable enqueue context so fresh and resumed isolated executions
+    # cannot enable this dark verb without carrying the guard with it.
+    if str(ctx.expected_head_sha or "").strip():
+        from tinyassets.runs import require_review_revision_task_head
+
+        require_review_revision_task_head(_universe_dir(uid), task=ctx)
     # Fix 2 — global active-queue cap + per-origin lineage cap, enforced
     # atomically under one lock (no read-then-append race).
     try:
@@ -2712,7 +2724,9 @@ def _build_await_branch_run_node(
 # breaking change to the request shape so the runner build has a stable contract.
 # v2 (Codex S3 r19): opaque workspace_ref (no host path) + opaque credential_grant
 # (no forgeable universe_id) + a JSON-validated request/response contract.
-EXECUTION_REQUEST_SCHEMA_VERSION = 2
+# v3: the trusted enqueue context carries the review-revision head binding so
+# an isolated in-node queue write can re-run the execution-generation guard.
+EXECUTION_REQUEST_SCHEMA_VERSION = 3
 
 _REQUEST_KIND = "isolated_execution_request"
 _RESPONSE_KIND = "isolated_execution_response"
@@ -2854,12 +2868,16 @@ def validate_execution_request(request: "dict[str, Any]") -> "dict[str, Any]":
     context = request["enqueue_context"]
     if context is not None:
         expected_context = {
-            "universe_id", "actor", "parent_branch_task_id", "origin_branch_task_id"
+            "universe_id", "actor", "parent_branch_task_id", "origin_branch_task_id",
+            "review_destination", "review_pr_number", "expected_head_sha",
         }
         if type(context) is not dict or set(context) != expected_context:
             raise CompilerError("execution request 'enqueue_context' has invalid fields")
-        if any(type(value) is not str for value in context.values()):
-            raise CompilerError("execution request 'enqueue_context' values must be str")
+        string_fields = expected_context - {"review_pr_number"}
+        if any(type(context[field]) is not str for field in string_fields):
+            raise CompilerError("execution request 'enqueue_context' string values must be str")
+        if type(context["review_pr_number"]) is not int:
+            raise CompilerError("execution request 'enqueue_context' review_pr_number must be int")
     state_schema = request["state_schema"]
     if type(state_schema) is not list or any(type(item) is not dict for item in state_schema):
         raise CompilerError("execution request 'state_schema' must be a list of dicts")

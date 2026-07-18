@@ -1022,3 +1022,48 @@ def test_existing_decision_effect_table_migrates_retry_schedule(tmp_path):
     assert "retry_at" in index_sql
     assert "destination" in projection_index_sql
     assert legacy == (_DEST, _PR, _HEAD)
+
+
+def test_existing_projection_table_migrates_decision_owner(tmp_path):
+    db_path = rq.review_queue_db_path(tmp_path)
+    legacy_schema = rq._SCHEMA.replace(
+        "    decision_id      TEXT NOT NULL DEFAULT '',\n",
+        "",
+        1,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(legacy_schema)
+        conn.execute(
+            "INSERT INTO pr_projection "
+            "(destination, pr_number, head_sha, owner_intent, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (_DEST, _PR, _HEAD, rq.INTENT_APPROVE, 1, 1),
+        )
+        conn.execute(
+            "INSERT INTO review_decision_effects "
+            "(effect_id, decision_id, position, kind, destination, pr_number, "
+            "expected_head_sha, payload, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy-decision:0:submit_review",
+                "legacy-decision",
+                0,
+                "submit_review",
+                _DEST,
+                _PR,
+                _HEAD,
+                "{}",
+                1,
+                1,
+            ),
+        )
+
+    rq.initialize_review_queue_db(tmp_path)
+
+    projection = rq.get_projection(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+    )
+    assert projection["head_sha"] == _HEAD
+    assert projection["decision_id"] == "legacy-decision"
