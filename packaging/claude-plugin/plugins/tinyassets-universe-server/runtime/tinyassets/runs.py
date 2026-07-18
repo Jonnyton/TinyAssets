@@ -3252,6 +3252,16 @@ _GH_CALL_KEYS = ("kind", "transport", "method", "path", "params", "summary")
 _REVIEW_EVENT_STATE = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}
 
 
+class _TerminalDecisionEffect(RuntimeError):
+    """A replay that is permanently unsafe and must not be retried."""
+
+
+def _require_review_effect_head(pull: dict[str, Any], expected_head: str) -> None:
+    live_head = str(pull.get("head_sha") or "").strip()
+    if live_head != expected_head:
+        raise _TerminalDecisionEffect("head_moved")
+
+
 def _review_already_on_github(
     github_api: Any, call_dict: dict[str, Any], *, expected_owner: str = "",
 ) -> bool:
@@ -3353,12 +3363,17 @@ def execute_next_review_decision_effect(
             error=f"client_error:{exc}",
             now=now,
         )
+        decision_status = _rq.get_decision_status(
+            base_path, decision_id=decision_id
+        )
         return {
             "decision_id": decision_id,
             "effect_id": effect_id,
             "kind": kind,
             "executed": False,
             "reason": f"client_error:{exc}",
+            "terminal": decision_status == "failed",
+            "decision_status": decision_status,
         }
     result: dict[str, Any]
     try:
@@ -3368,10 +3383,11 @@ def execute_next_review_decision_effect(
             pr_number = int(payload.get("pr_number") or 0)
             head = str(payload.get("expected_head_sha") or "").strip()
             event = str(payload.get("event") or "APPROVE").strip().upper()
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(pull, head)
             if event == "APPROVE":
-                pull = effect_api.get_pull(
-                    destination=destination, pr_number=pr_number
-                )
                 app_ok, app_reason = _app_authored_pr(
                     pull, expected_owner=effect_owner
                 )
@@ -3406,11 +3422,14 @@ def execute_next_review_decision_effect(
             pull = effect_api.get_pull(
                 destination=destination, pr_number=pr_number
             )
-            live_head = str(pull.get("head_sha") or "").strip()
-            if head and live_head and head != live_head:
-                raise RuntimeError("head_moved")
-            if pull.get("auto_merge_enabled"):
-                result = {"detail": "already_enabled"}
+            _require_review_effect_head(pull, head)
+            if pull.get("merged"):
+                result = {"detail": "already_merged", "state": "merged"}
+            elif pull.get("auto_merge_enabled"):
+                result = {
+                    "detail": "already_enabled",
+                    "state": "approved_auto_merge_enabled",
+                }
             else:
                 from tinyassets.effectors import github_merge as _gm
 
@@ -3519,8 +3538,14 @@ def execute_next_review_decision_effect(
 
         else:
             raise RuntimeError(f"unknown_decision_effect:{kind}")
-    except Exception as exc:  # noqa: BLE001 -- durable row remains replayable
-        _rq.release_decision_effect(
+    except Exception as exc:  # noqa: BLE001 -- storage decides retry vs terminal
+        permanently_unsafe = isinstance(exc, _TerminalDecisionEffect)
+        settle = (
+            _rq.fail_decision_effect
+            if permanently_unsafe
+            else _rq.release_decision_effect
+        )
+        settle(
             base_path,
             effect_id=effect_id,
             worker_id=worker_id,
@@ -3528,12 +3553,17 @@ def execute_next_review_decision_effect(
             error=str(exc),
             now=now,
         )
+        decision_status = _rq.get_decision_status(
+            base_path, decision_id=decision_id
+        )
         return {
             "decision_id": decision_id,
             "effect_id": effect_id,
             "kind": kind,
             "executed": False,
             "reason": str(exc),
+            "terminal": decision_status == "failed",
+            "decision_status": decision_status,
         }
 
     if not _rq.complete_decision_effect(
@@ -3573,6 +3603,7 @@ def execute_pending_review_decisions(
     verifier_factory: Any = None,
     owner_resolver: Any = None,
     app_actor_resolver: Any = None,
+    now: float | None = None,
 ) -> list[dict[str, Any]]:
     """Drain ready effects until the queue is empty or one must retry later."""
     results: list[dict[str, Any]] = []
@@ -3588,6 +3619,7 @@ def execute_pending_review_decisions(
             verifier_factory=verifier_factory,
             owner_resolver=owner_resolver,
             app_actor_resolver=app_actor_resolver,
+            now=now,
         )
         if result is None:
             return results

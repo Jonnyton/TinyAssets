@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -42,6 +43,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 _DB_FILENAME = ".review_queue.db"
 
@@ -83,6 +86,11 @@ class ReviewHeadChanged(Exception):
     reviewed one commit and the PR head is now another. GitHub also enforces this
     (review ``commit_id`` + latest-push-approval rules); recording it here keeps
     the projection honest before the Phase-2 call runs."""
+
+
+class ReviewGenerationChanged(ReviewHeadChanged):
+    """Raised when projection, suspension, and revision route name different
+    review generations. The decision transaction remains untouched."""
 
 
 class DecisionLocked(Exception):
@@ -236,6 +244,7 @@ CREATE TABLE IF NOT EXISTS review_decision_effects (
     claim_token     TEXT NOT NULL DEFAULT '',
     lease_expires_at REAL,
     attempt_count   INTEGER NOT NULL DEFAULT 0,
+    retry_at        REAL NOT NULL DEFAULT 0,
     result          TEXT NOT NULL DEFAULT '',
     last_error      TEXT NOT NULL DEFAULT '',
     created_at      REAL NOT NULL,
@@ -316,6 +325,10 @@ SUSPENSION_RESUMED = "resumed"
 #: a re-push created a new generation. Terminal — never reopened by a retry.
 SUSPENSION_SUPERSEDED = "superseded"
 
+DECISION_EFFECT_MAX_ATTEMPTS = 3
+_DECISION_EFFECT_BACKOFF_SECONDS = 30.0
+_DECISION_EFFECT_MAX_BACKOFF_SECONDS = 1800.0
+
 
 #: Idempotent column migrations for tables that gained columns after they first
 #: shipped (Codex r17 #5). ``CREATE TABLE IF NOT EXISTS`` never alters an existing
@@ -328,6 +341,9 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "revocation_outbox": [
         ("expected_head_sha", "TEXT NOT NULL DEFAULT ''"),
         ("founder_handle", "TEXT NOT NULL DEFAULT ''"),
+    ],
+    "review_decision_effects": [
+        ("retry_at", "REAL NOT NULL DEFAULT 0"),
     ],
 }
 
@@ -348,6 +364,30 @@ def _apply_column_migrations(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
+def _warn_pending_legacy_outboxes(conn: sqlite3.Connection) -> None:
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    pending = 0
+    for table, terminal_column in (
+        ("reshape_outbox", "consumed_at"),
+        ("review_effect_outbox", "executed_at"),
+    ):
+        if table in tables:
+            pending += int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {terminal_column} IS NULL"
+                ).fetchone()[0]
+            )
+    if pending:
+        logger.warning(
+            "%d pending legacy review outbox rows will not be replayed; "
+            "operator inspection is required",
+            pending,
+        )
+
+
 def initialize_review_queue_db(universe_dir: str | Path) -> Path:
     """Ensure the projection DB exists + is at the current schema. Idempotent +
     cached per db path; a DB from a preceding schema is migrated forward
@@ -360,6 +400,12 @@ def initialize_review_queue_db(universe_dir: str | Path) -> Path:
         with _connect(universe_dir) as conn:
             conn.executescript(_SCHEMA)
             _apply_column_migrations(conn)
+            conn.execute("DROP INDEX IF EXISTS idx_review_decision_effects_ready")
+            conn.execute(
+                "CREATE INDEX idx_review_decision_effects_ready ON "
+                "review_decision_effects(status, retry_at, created_at, position)"
+            )
+            _warn_pending_legacy_outboxes(conn)
         _INITIALIZED.add(key)
     return path
 
@@ -1094,6 +1140,37 @@ def decide_and_resume(
                         "reshape decision has incomplete revision route: "
                         + ", ".join(missing)
                     )
+            active_suspension = conn.execute(
+                "SELECT * FROM review_suspensions "
+                "WHERE destination = ? AND pr_number = ? AND status = ? "
+                "ORDER BY suspended_at DESC LIMIT 1",
+                (dest, pr_number, SUSPENSION_SUSPENDED),
+            ).fetchone()
+            if active_suspension is not None:
+                generation_fields = (
+                    "run_id",
+                    "head_sha",
+                    "branch_def_id",
+                    "universe_id",
+                )
+                mismatched = [
+                    field
+                    for field in generation_fields
+                    if str(active_suspension[field] or "").strip()
+                    != str(proj[field] or "").strip()
+                ]
+                if action == "draft_patch":
+                    mismatched.extend(
+                        field
+                        for field in ("run_id", "branch_def_id", "universe_id")
+                        if str(route_back.get(field) or "").strip()
+                        != str(active_suspension[field] or "").strip()
+                    )
+                if mismatched:
+                    raise ReviewGenerationChanged(
+                        f"review generation changed on {dest}#{pr_number}: "
+                        + ", ".join(sorted(set(mismatched)))
+                    )
             # IMMUTABLE first decision (Codex r14 #3): if a suspension for this PR
             # is already past `suspended` (decided/resumed), or — fire-and-forget
             # — the projection already carries a terminal owner decision on this
@@ -1135,12 +1212,7 @@ def decide_and_resume(
                 (dest, pr_number),
             ).fetchone()
             # Move the single active suspension to DECIDED (resume-pending).
-            susp = conn.execute(
-                "SELECT run_id FROM review_suspensions "
-                "WHERE destination = ? AND pr_number = ? AND status = ? "
-                "ORDER BY suspended_at DESC LIMIT 1",
-                (dest, pr_number, SUSPENSION_SUSPENDED),
-            ).fetchone()
+            susp = active_suspension
             pending: dict[str, Any] | None = None
             if susp is not None:
                 recorded_directive = dict(directive or {})
@@ -1280,6 +1352,31 @@ def list_decision_effects(
     return [_decision_effect_to_dict(row) for row in rows]
 
 
+def get_decision_status(
+    universe_dir: str | Path, *, decision_id: str
+) -> str | None:
+    """Aggregate one effect plan into its externally visible decision status."""
+    effects = list_decision_effects(universe_dir, decision_id=decision_id)
+    if not effects:
+        return None
+    statuses = {str(effect["status"]) for effect in effects}
+    if "failed" in statuses:
+        return "failed"
+    if statuses == {"succeeded"}:
+        return "succeeded"
+    if "running" in statuses:
+        return "running"
+    return "pending"
+
+
+def _decision_effect_retry_delay(attempt_count: int) -> float:
+    exponent = max(0, min(int(attempt_count) - 1, 6))
+    return min(
+        _DECISION_EFFECT_MAX_BACKOFF_SECONDS,
+        _DECISION_EFFECT_BACKOFF_SECONDS * (2**exponent),
+    )
+
+
 def claim_next_decision_effect(
     universe_dir: str | Path,
     *,
@@ -1301,19 +1398,34 @@ def claim_next_decision_effect(
     claim_token = uuid.uuid4().hex
     with _connect(universe_dir) as conn:
         with _write(conn):
-            conn.execute(
-                "UPDATE review_decision_effects SET status = 'pending', "
-                "claimed_by = '', claim_token = '', lease_expires_at = NULL, "
-                "updated_at = ? "
+            expired = conn.execute(
+                "SELECT effect_id, attempt_count, lease_expires_at "
+                "FROM review_decision_effects "
                 "WHERE status = 'running' AND lease_expires_at IS NOT NULL "
                 "AND lease_expires_at <= ?",
-                (ts, ts),
-            )
+                (ts,),
+            ).fetchall()
+            for stale in expired:
+                terminal = stale["attempt_count"] >= DECISION_EFFECT_MAX_ATTEMPTS
+                conn.execute(
+                    "UPDATE review_decision_effects SET status = ?, "
+                    "claimed_by = '', claim_token = '', lease_expires_at = NULL, "
+                    "retry_at = ?, last_error = 'lease_expired', updated_at = ? "
+                    "WHERE effect_id = ? AND status = 'running'",
+                    (
+                        "failed" if terminal else "pending",
+                        0.0 if terminal else float(stale["lease_expires_at"])
+                        + _decision_effect_retry_delay(stale["attempt_count"]),
+                        ts,
+                        stale["effect_id"],
+                    ),
+                )
             row = conn.execute(
                 """
                 SELECT candidate.*
                 FROM review_decision_effects AS candidate
                 WHERE candidate.status = 'pending'
+                  AND candidate.retry_at <= ?
                   AND NOT EXISTS (
                       SELECT 1 FROM review_decision_effects AS prior
                       WHERE prior.decision_id = candidate.decision_id
@@ -1323,7 +1435,8 @@ def claim_next_decision_effect(
                 ORDER BY candidate.created_at, candidate.decision_id,
                          candidate.position
                 LIMIT 1
-                """
+                """,
+                (ts,),
             ).fetchone()
             if row is None:
                 return None
@@ -1331,8 +1444,8 @@ def claim_next_decision_effect(
                 "UPDATE review_decision_effects SET status = 'running', "
                 "claimed_by = ?, claim_token = ?, lease_expires_at = ?, "
                 "attempt_count = attempt_count + 1, updated_at = ? "
-                "WHERE effect_id = ? AND status = 'pending'",
-                (owner, claim_token, lease_until, ts, row["effect_id"]),
+                "WHERE effect_id = ? AND status = 'pending' AND retry_at <= ?",
+                (owner, claim_token, lease_until, ts, row["effect_id"], ts),
             )
             if updated.rowcount != 1:
                 return None
@@ -1360,7 +1473,7 @@ def complete_decision_effect(
             updated = conn.execute(
                 "UPDATE review_decision_effects SET status = 'succeeded', "
                 "result = ?, last_error = '', claimed_by = '', claim_token = '', "
-                "lease_expires_at = NULL, updated_at = ? "
+                "lease_expires_at = NULL, retry_at = 0, updated_at = ? "
                 "WHERE effect_id = ? AND status = 'running' AND claimed_by = ? "
                 "AND claim_token = ?",
                 (
@@ -1383,17 +1496,65 @@ def release_decision_effect(
     error: str,
     now: float | None = None,
 ) -> bool:
-    """Return a transiently-failed owned effect to pending for replay."""
+    """Back off a transient failure, terminalizing at the finite attempt cap."""
+    initialize_review_queue_db(universe_dir)
+    ts = _now(now)
+    with _connect(universe_dir) as conn:
+        with _write(conn):
+            claimed = conn.execute(
+                "SELECT attempt_count FROM review_decision_effects "
+                "WHERE effect_id = ? AND status = 'running' AND claimed_by = ? "
+                "AND claim_token = ?",
+                (
+                    (effect_id or "").strip(),
+                    (worker_id or "").strip(),
+                    (claim_token or "").strip(),
+                ),
+            ).fetchone()
+            if claimed is None:
+                return False
+            terminal = claimed["attempt_count"] >= DECISION_EFFECT_MAX_ATTEMPTS
+            updated = conn.execute(
+                "UPDATE review_decision_effects SET status = ?, "
+                "last_error = ?, claimed_by = '', claim_token = '', "
+                "lease_expires_at = NULL, retry_at = ?, "
+                "updated_at = ? WHERE effect_id = ? AND status = 'running' "
+                "AND claimed_by = ? AND claim_token = ?",
+                (
+                    "failed" if terminal else "pending",
+                    (error or "")[:2000],
+                    0.0 if terminal else ts + _decision_effect_retry_delay(
+                        claimed["attempt_count"]
+                    ),
+                    ts,
+                    (effect_id or "").strip(),
+                    (worker_id or "").strip(),
+                    (claim_token or "").strip(),
+                ),
+            )
+            return updated.rowcount == 1
+
+
+def fail_decision_effect(
+    universe_dir: str | Path,
+    *,
+    effect_id: str,
+    worker_id: str,
+    claim_token: str,
+    error: str,
+    now: float | None = None,
+) -> bool:
+    """Terminally fail a permanently unsafe effect under its lease CAS."""
     initialize_review_queue_db(universe_dir)
     ts = _now(now)
     with _connect(universe_dir) as conn:
         with _write(conn):
             updated = conn.execute(
-                "UPDATE review_decision_effects SET status = 'pending', "
+                "UPDATE review_decision_effects SET status = 'failed', "
                 "last_error = ?, claimed_by = '', claim_token = '', "
-                "lease_expires_at = NULL, "
-                "updated_at = ? WHERE effect_id = ? AND status = 'running' "
-                "AND claimed_by = ? AND claim_token = ?",
+                "lease_expires_at = NULL, retry_at = 0, updated_at = ? "
+                "WHERE effect_id = ? AND status = 'running' AND claimed_by = ? "
+                "AND claim_token = ?",
                 (
                     (error or "")[:2000],
                     ts,
@@ -1705,6 +1866,7 @@ __all__ = [
     "SUSPENSION_DECIDED",
     "SUSPENSION_RESUMED",
     "SUSPENSION_SUPERSEDED",
+    "DECISION_EFFECT_MAX_ATTEMPTS",
     "WORKFLOW_OPEN",
     "WORKFLOW_APPROVED",
     "WORKFLOW_RESHAPED",
@@ -1715,6 +1877,7 @@ __all__ = [
     "INTENT_RESHAPE",
     "INTENT_REJECT",
     "ReviewHeadChanged",
+    "ReviewGenerationChanged",
     "DecisionLocked",
     "review_queue_db_path",
     "initialize_review_queue_db",
@@ -1738,9 +1901,11 @@ __all__ = [
     "decide_and_resume",
     "ack_continuation",
     "list_decision_effects",
+    "get_decision_status",
     "claim_next_decision_effect",
     "complete_decision_effect",
     "release_decision_effect",
+    "fail_decision_effect",
     "record_effect_receipt",
     "has_effect_receipt",
     "enqueue_revocation",

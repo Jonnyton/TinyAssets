@@ -36,6 +36,23 @@ class FakeApi:
         return {"ok": True, "kind": call.kind, "status": 200, "result": {}}
 
 
+class AlreadyMergedApi:
+    def __init__(self) -> None:
+        self.submitted = []
+
+    def get_pull(self, **_kwargs):
+        return {
+            "head_sha": _HEAD,
+            "auto_merge_enabled": False,
+            "merged": True,
+            "state": "closed",
+        }
+
+    def run_call(self, call):
+        self.submitted.append(call)
+        raise AssertionError("merged replay must not mutate GitHub")
+
+
 def _simple_branch():
     from tinyassets.branches import (
         BranchDefinition,
@@ -157,7 +174,7 @@ def test_unavailable_client_releases_effect_for_replay(monkeypatch, tmp_path):
     decision = _approve(tmp_path)
 
     blocked = runs.execute_next_review_decision_effect(
-        tmp_path, worker_id="worker-without-client"
+        tmp_path, worker_id="worker-without-client", now=100
     )
     assert blocked["executed"] is False
     assert blocked["reason"] == "no_client"
@@ -168,10 +185,44 @@ def test_unavailable_client_releases_effect_for_replay(monkeypatch, tmp_path):
         worker_id="recovery-worker",
         github_api=FakeApi(),
         expected_owner="owner",
+        now=130,
     )
     assert replayed[-1]["kind"] == "finalize_run"
     assert all(row["decision_id"] == decision["decision_id"] for row in replayed)
     assert runs.get_run(tmp_path, run_id)["status"] == runs.RUN_STATUS_COMPLETED
+
+
+def test_immediate_merge_replay_finalizes_with_truthful_merged_state(
+    monkeypatch, tmp_path
+):
+    run_id = _suspend_a_real_run(tmp_path, monkeypatch)
+    _approve(tmp_path)
+    review = rq.claim_next_decision_effect(tmp_path, worker_id="review-worker")
+    assert review["kind"] == "submit_review"
+    assert rq.complete_decision_effect(
+        tmp_path,
+        effect_id=review["effect_id"],
+        worker_id="review-worker",
+        claim_token=review["claim_token"],
+    )
+    api = AlreadyMergedApi()
+
+    executed = runs.execute_pending_review_decisions(
+        tmp_path,
+        worker_id="recovery-worker",
+        github_api=api,
+    )
+
+    assert [row["kind"] for row in executed] == [
+        "apply_merge_preference",
+        "finalize_run",
+    ]
+    assert executed[0]["detail"] == "already_merged"
+    final = runs.get_run(tmp_path, run_id)
+    assert final["status"] == runs.RUN_STATUS_COMPLETED
+    assert final["output"]["review_workflow_state"] == "merged"
+    assert rq.get_suspension(tmp_path, run_id=run_id)["status"] == "resumed"
+    assert api.submitted == []
 
 
 def test_required_review_checkpoint_failure_fails_the_run(monkeypatch, tmp_path):

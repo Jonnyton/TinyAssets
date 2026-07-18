@@ -95,6 +95,7 @@ class _ReviewApi:
         assert destination == _DESTINATION
         return {
             "number": pr_number,
+            "head_sha": f"{pr_number:040x}",
             "author_login": "tinyassets-app[bot]",
             "author_type": "Bot",
         }
