@@ -406,20 +406,29 @@ def _backfill_decision_effect_projection_keys(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_projection_decision_owners(conn: sqlite3.Connection) -> None:
-    """Bind pre-column decided projections to their recorded generation."""
+    """Bind pre-column projections only to one causally matching generation.
+
+    ``decide_and_resume`` records the projection decision and its effects with
+    the same timestamp.  No match or multiple decisions at that timestamp is
+    left unbound: a recoverable decision lock is safer than erasing a live owner
+    generation through a false migration binding.
+    """
     conn.execute(
         "UPDATE pr_projection AS projection SET decision_id = ("
-        "SELECT effect.decision_id FROM review_decision_effects AS effect "
+        "SELECT MIN(effect.decision_id) FROM review_decision_effects AS effect "
         "WHERE effect.destination = projection.destination "
         "AND effect.pr_number = projection.pr_number "
         "AND effect.expected_head_sha = projection.head_sha "
-        "ORDER BY effect.created_at DESC, effect.decision_id DESC LIMIT 1"
+        "AND effect.created_at = projection.decided_at "
+        "HAVING COUNT(DISTINCT effect.decision_id) = 1"
         ") WHERE projection.decision_id = '' "
         "AND projection.owner_intent != '' "
-        "AND EXISTS (SELECT 1 FROM review_decision_effects AS effect "
+        "AND (SELECT COUNT(DISTINCT effect.decision_id) "
+        "FROM review_decision_effects AS effect "
         "WHERE effect.destination = projection.destination "
         "AND effect.pr_number = projection.pr_number "
-        "AND effect.expected_head_sha = projection.head_sha)"
+        "AND effect.expected_head_sha = projection.head_sha "
+        "AND effect.created_at = projection.decided_at) = 1"
     )
 
 
