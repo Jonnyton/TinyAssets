@@ -783,15 +783,22 @@ def create_run(
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
     checkpoint_backend: str = "",
+    _conn: sqlite3.Connection | None = None,
 ) -> str:
-    initialize_runs_db(base_path)
+    if _conn is None:
+        initialize_runs_db(base_path)
     resolved_run_id = (run_id or "").strip() or uuid.uuid4().hex[:16]
     resolved_owner_user_id = (
         str(owner_user_id or "")
         if owner_user_id is not None
         else _resolve_owner_user_id(base_path, daemon_id)
     )
-    with _connect(base_path) as conn:
+    connection = (
+        contextlib.nullcontext(_conn)
+        if _conn is not None
+        else _connect(base_path)
+    )
+    with connection as conn:
         conn.execute(
             """
             INSERT INTO runs (
@@ -1469,9 +1476,17 @@ def latest_run_by_name(
 
 
 def record_event(
-    base_path: str | Path, event: RunStepEvent,
+    base_path: str | Path,
+    event: RunStepEvent,
+    *,
+    _conn: sqlite3.Connection | None = None,
 ) -> None:
-    with _connect(base_path) as conn:
+    connection = (
+        contextlib.nullcontext(_conn)
+        if _conn is not None
+        else _connect(base_path)
+    )
+    with connection as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO run_events (
@@ -1699,12 +1714,19 @@ def record_lineage(
     branch_def_id: str,
     branch_version: int,
     edits_since_parent: list[str] | None = None,
+    _conn: sqlite3.Connection | None = None,
 ) -> None:
     """Store a lineage row at run start. ``parent_run_id`` is resolved by
     the caller (usually: most recent terminal run on the same branch by
     the same actor)."""
-    initialize_runs_db(base_path)
-    with _connect(base_path) as conn:
+    if _conn is None:
+        initialize_runs_db(base_path)
+    connection = (
+        contextlib.nullcontext(_conn)
+        if _conn is not None
+        else _connect(base_path)
+    )
+    with connection as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO run_lineage (
@@ -2091,39 +2113,6 @@ def _prepare_run(
         if declared_binding_fields(getattr(branch, "state_schema", None))
         else "sqlite"
     )
-    run_id = create_run(
-        base_path,
-        run_id=run_id,
-        branch_def_id=branch.branch_def_id,
-        thread_id="",
-        inputs=inputs,
-        run_name=run_name,
-        actor=actor,
-        universe_id=universe_id,
-        invocation_depth=invocation_depth,
-        enqueue_context=enqueue_context,
-        branch_version_id=branch_version_id,
-        owner_user_id=owner_user_id,
-        daemon_id=daemon_id,
-        runtime_instance_id=runtime_instance_id,
-        worker_id=worker_id,
-        checkpoint_backend=checkpoint_backend,
-    )
-    thread_id = run_id
-    with _connect(base_path) as conn:
-        conn.execute(
-            "UPDATE runs SET thread_id = ? WHERE run_id = ?",
-            (thread_id, run_id),
-        )
-    for step, node_id in enumerate(_graph_node_order(branch)):
-        record_event(base_path, RunStepEvent(
-            run_id=run_id,
-            step_index=step,
-            node_id=node_id,
-            status=NODE_STATUS_PENDING,
-            started_at=_now(),
-        ))
-
     # Phase 4: record lineage so `compare_runs` and "what changed since
     # the last run" work. Parent is the most recent terminal run on this
     # branch by the same actor (best-effort — falls back to branch-wide
@@ -2156,14 +2145,55 @@ def _prepare_run(
                         edits_since_parent.extend(a.get("nodes_changed", []))
             except Exception:
                 logger.exception("lineage edit summary failed for %s", run_id)
-    record_lineage(
-        base_path,
-        run_id=run_id,
-        parent_run_id=parent,
-        branch_def_id=branch.branch_def_id,
-        branch_version=branch_version,
-        edits_since_parent=edits_since_parent,
-    )
+
+    # A caller-supplied deterministic run_id is the revision idempotency key.
+    # Commit its row, initial event timeline, and lineage as one unit so a crash
+    # cannot leave a winner that replay mistakes for a fully prepared run.
+    with _connect(base_path) as conn:
+        run_id = create_run(
+            base_path,
+            run_id=run_id,
+            branch_def_id=branch.branch_def_id,
+            thread_id="",
+            inputs=inputs,
+            run_name=run_name,
+            actor=actor,
+            universe_id=universe_id,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
+            branch_version_id=branch_version_id,
+            owner_user_id=owner_user_id,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            checkpoint_backend=checkpoint_backend,
+            _conn=conn,
+        )
+        conn.execute(
+            "UPDATE runs SET thread_id = ? WHERE run_id = ?",
+            (run_id, run_id),
+        )
+        for step, node_id in enumerate(_graph_node_order(branch)):
+            record_event(
+                base_path,
+                RunStepEvent(
+                    run_id=run_id,
+                    step_index=step,
+                    node_id=node_id,
+                    status=NODE_STATUS_PENDING,
+                    started_at=_now(),
+                ),
+                _conn=conn,
+            )
+        record_lineage(
+            base_path,
+            run_id=run_id,
+            parent_run_id=parent,
+            branch_def_id=branch.branch_def_id,
+            branch_version=branch_version,
+            edits_since_parent=edits_since_parent,
+            _conn=conn,
+        )
     return run_id
 
 
@@ -4088,6 +4118,7 @@ def _start_review_revision(
         _run_execution_scope,
     )
     from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_registry import get_daemon
     from tinyassets.daemon_server import get_branch_definition, get_runtime_instance
 
     source_run_id = str(route_back.get("run_id") or "").strip()
@@ -4137,20 +4168,35 @@ def _start_review_revision(
     except KeyError as exc:
         raise RuntimeError("reshape source has no live runtime") from exc
     if (
-        str(runtime.get("status") or "").strip() == "retired"
+        str(runtime.get("status") or "").strip() != "provisioned"
         or str(runtime.get("universe_id") or "").strip() != universe_id
     ):
-        raise RuntimeError("reshape source has no live runtime for this universe")
+        raise RuntimeError(
+            "reshape source has no live runtime for this universe; "
+            "executable runtime status is required"
+        )
     runtime_metadata = runtime.get("metadata") or {}
     source_daemon_id = str(source.get("daemon_id") or "").strip()
     runtime_daemon_id = str(runtime_metadata.get("daemon_id") or "").strip()
     daemon_id = source_daemon_id or runtime_daemon_id
     if daemon_id and runtime_daemon_id and daemon_id != runtime_daemon_id:
         raise RuntimeError("reshape source runtime identity does not match its daemon")
+    try:
+        daemon = get_daemon(run_base_path, daemon_id=daemon_id)
+    except KeyError as exc:
+        raise RuntimeError("reshape source runtime identity has no daemon") from exc
+    if str(runtime.get("author_id") or "").strip() != str(
+        daemon.get("legacy_author_id") or ""
+    ).strip():
+        raise RuntimeError("reshape source runtime identity does not match its daemon")
     runtime_owner_user_id = str(
         runtime_metadata.get("owner_user_id") or ""
     ).strip()
-    if runtime_owner_user_id and owner_user_id != runtime_owner_user_id:
+    daemon_owner_user_id = str(daemon.get("owner_user_id") or "").strip()
+    if (
+        (runtime_owner_user_id and owner_user_id != runtime_owner_user_id)
+        or owner_user_id != daemon_owner_user_id
+    ):
         raise RuntimeError("reshape source runtime identity does not match its owner")
     source_worker_id = str(source.get("worker_id") or "").strip()
     runtime_worker_id = str(runtime_metadata.get("worker_id") or "").strip()
@@ -4178,13 +4224,188 @@ def _start_review_revision(
         ("owner-reshape", source_run_id, branch_def_id, target_node)
     )
     revised_run_id = hashlib.sha256(revision_key.encode("utf-8")).hexdigest()[:32]
-    if get_run(run_base_path, revised_run_id) is not None:
-        return revised_run_id
+    expected_actor = str(source.get("actor") or "anonymous")
+
+    def recover_existing_revision() -> dict[str, Any] | None:
+        existing = get_run(run_base_path, revised_run_id)
+        if existing is None:
+            return None
+        expected = {
+            "branch_def_id": branch_def_id,
+            "run_name": "Owner-requested revision",
+            "thread_id": revised_run_id,
+            "actor": expected_actor,
+            "universe_id": universe_id,
+            "owner_user_id": owner_user_id,
+            "inputs": inputs,
+            "daemon_id": daemon_id,
+            "runtime_instance_id": runtime_instance_id,
+            "worker_id": worker_id,
+        }
+        mismatched = [
+            field for field, value in expected.items()
+            if existing.get(field) != value
+        ]
+        lineage = get_lineage(run_base_path, revised_run_id)
+        if (
+            lineage is None
+            or lineage.get("parent_run_id") != source_run_id
+            or lineage.get("branch_def_id") != branch_def_id
+        ):
+            mismatched.append("lineage")
+        if mismatched:
+            raise RuntimeError(
+                "existing reshape revision does not match its deterministic request"
+            )
+        return existing
+
+    terminal_statuses = {
+        RUN_STATUS_COMPLETED,
+        RUN_STATUS_FAILED,
+        RUN_STATUS_CANCELLED,
+    }
+
+    def revision_has_execution_owner() -> bool:
+        if get_future(revised_run_id) is not None:
+            return True
+        current = get_run(run_base_path, revised_run_id)
+        return current is not None and current.get("status") in terminal_statuses
+
+    existing_revision = recover_existing_revision()
     try:
         from tinyassets.providers.call import call_provider as provider_call
     except ImportError:
         provider_call = None
     provider_call = _bind_universe_context(provider_call, universe_id)
+    execution_scope = _run_execution_scope(universe_id)
+    if existing_revision is not None:
+        existing_status = str(existing_revision.get("status") or "").strip()
+        if existing_status in terminal_statuses:
+            return revised_run_id
+        if existing_status in {RUN_STATUS_QUEUED, RUN_STATUS_RUNNING}:
+            if revision_has_execution_owner():
+                return revised_run_id
+            raise RuntimeError(
+                "existing reshape revision has no active execution owner"
+            )
+        if existing_status != RUN_STATUS_INTERRUPTED:
+            raise RuntimeError(
+                "existing reshape revision is not recoverable from its status"
+            )
+
+        has_checkpoint = _has_checkpoint(run_base_path, revised_run_id)
+        existing_lineage = get_lineage(run_base_path, revised_run_id)
+        if has_checkpoint and int(
+            (existing_lineage or {}).get("branch_version") or 0
+        ) != int(getattr(branch, "version", 1) or 1):
+            raise RuntimeError(
+                "interrupted reshape revision checkpoint does not match "
+                "the current branch version"
+            )
+        made_node_progress = any(
+            event.get("status") in {
+                NODE_STATUS_RUNNING,
+                NODE_STATUS_RAN,
+                NODE_STATUS_FAILED,
+            }
+            and not str(event.get("node_id") or "").startswith("__")
+            for event in list_events(run_base_path, revised_run_id)
+        )
+        if made_node_progress and not has_checkpoint:
+            raise RuntimeError(
+                "interrupted reshape revision cannot be safely replayed "
+                "without a durable checkpoint"
+            )
+        with _connect(run_base_path) as conn:
+            claimed = conn.execute(
+                """
+                UPDATE runs
+                SET status = ?, error = '', finished_at = NULL
+                WHERE run_id = ? AND status = ?
+                """,
+                (RUN_STATUS_QUEUED, revised_run_id, RUN_STATUS_INTERRUPTED),
+            )
+            conn.execute(
+                "DELETE FROM run_cancels WHERE run_id = ?",
+                (revised_run_id,),
+            )
+        if claimed.rowcount != 1:
+            raise RuntimeError("interrupted reshape revision recovery lost its claim")
+
+        enqueue_context = NodeEnqueueContext(
+            universe_id=universe_id,
+            actor=expected_actor,
+        )
+
+        def recovery_worker() -> RunOutcome:
+            try:
+                if has_checkpoint:
+                    return _invoke_graph_resume(
+                        run_base_path,
+                        run_id=revised_run_id,
+                        branch=branch,
+                        thread_id=revised_run_id,
+                        provider_call=provider_call,
+                        execution_scope=execution_scope,
+                    )
+                return _invoke_graph(
+                    run_base_path,
+                    run_id=revised_run_id,
+                    branch=branch,
+                    inputs=inputs,
+                    provider_call=provider_call,
+                    runtime_bindings=runtime_bindings,
+                    recursion_limit=DEFAULT_RECURSION_LIMIT,
+                    invocation_depth=int(
+                        existing_revision.get("invocation_depth") or 0
+                    ),
+                    enqueue_context=enqueue_context,
+                    execution_scope=execution_scope,
+                    start_node=target_node,
+                )
+            except Exception:
+                logger.exception(
+                    "Background recovery worker for run %s crashed",
+                    revised_run_id,
+                )
+                update_run_status(
+                    run_base_path,
+                    revised_run_id,
+                    status=RUN_STATUS_FAILED,
+                    error="Background recovery worker crashed; see server logs.",
+                    finished_at=_now(),
+                )
+                return RunOutcome(
+                    run_id=revised_run_id,
+                    status=RUN_STATUS_FAILED,
+                    output={},
+                    error="Background recovery worker crashed.",
+                )
+
+        executor = _get_executor(
+            invocation_depth=int(existing_revision.get("invocation_depth") or 0)
+        )
+        try:
+            future = executor.submit(recovery_worker)
+        except Exception:
+            with _connect(run_base_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = ?, error = ?, finished_at = ?
+                    WHERE run_id = ? AND status = ?
+                    """,
+                    (
+                        RUN_STATUS_INTERRUPTED,
+                        "Review revision recovery could not submit its worker.",
+                        _now(),
+                        revised_run_id,
+                        RUN_STATUS_QUEUED,
+                    ),
+                )
+            raise
+        _track_future(revised_run_id, future)
+        return revised_run_id
     try:
         outcome = execute_branch_async(
             run_base_path,
@@ -4192,7 +4413,7 @@ def _start_review_revision(
             branch=branch,
             inputs=inputs,
             run_name="Owner-requested revision",
-            actor=str(source.get("actor") or "anonymous"),
+            actor=expected_actor,
             provider_call=provider_call,
             runtime_bindings=runtime_bindings,
             owner_user_id=owner_user_id,
@@ -4202,13 +4423,21 @@ def _start_review_revision(
             lineage_parent_run_id=source_run_id,
             start_node=target_node,
             _enqueue_universe_id=universe_id,
-            execution_scope=_run_execution_scope(universe_id),
+            execution_scope=execution_scope,
         )
     except sqlite3.IntegrityError:
         # The run_id is the deterministic unique revision key. A concurrent
-        # replay that lost the insert race recovers the winner.
-        if get_run(run_base_path, revised_run_id) is None:
+        # replay that lost the insert race recovers only a fully matching winner.
+        existing_revision = recover_existing_revision()
+        if existing_revision is None:
             raise
+        winner_status = str(existing_revision.get("status") or "").strip()
+        if winner_status in terminal_statuses:
+            return revised_run_id
+        if not revision_has_execution_owner():
+            raise RuntimeError(
+                "concurrent reshape revision winner has no active execution owner"
+            )
         return revised_run_id
     return outcome.run_id
 
