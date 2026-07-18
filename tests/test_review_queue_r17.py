@@ -287,6 +287,30 @@ def test_dead_dual_path_exports_are_removed():
     assert not hasattr(rq, "enqueue_review_effect")
 
 
+def test_not_before_timer_refuses_head_moved_on_github(tmp_path):
+    """The shared autonomous gate must fetch GitHub and reject a moved head."""
+    rq.set_merge_preference_binding(
+        tmp_path, branch_def_id="bd", merge_preference="not_before",
+        not_before_delay_s=3600.0, founder_github_handle="owner", bound_by="owner",
+    )
+    binding = rq.resolve_merge_preference_binding(tmp_path, branch_def_id="bd")
+    rq.schedule_not_before(
+        tmp_path, destination=_DEST, pr_number=_PR, not_before=100.0,
+        expected_head_sha=_HEAD, branch_def_id="bd",
+        binding_revision=int(binding["revision"]),
+    )
+    transport = ScriptedTransport({
+        ("GET", f"/pulls/{_PR}"): [(200, _pull(merged=False, head="b" * 40))],
+    })
+    client = _merge_client(transport)
+    fired = runs.fire_due_not_before_timers(
+        tmp_path, github_api=client, verifier_api=client,
+        app_actor_id=4242, expected_owner="owner", now=1000.0,
+    )
+    assert fired == [{"pr_number": _PR, "fired": False, "reason": "head_moved"}]
+    assert len(rq.due_not_before_timers(tmp_path, now=5000.0)) == 1
+
+
 def test_not_before_timer_stays_due_without_verifier(tmp_path):
     """No opt-in ruleset-verify grant → the autonomous gate fails closed and the
     timer stays due (never merges without the gate)."""

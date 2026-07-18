@@ -299,7 +299,7 @@ echo 1
     }
     result = _run(RESTORE_SH, env)
 
-    assert result.returncode != 0
+    assert result.returncode == 6
     assert "vault guard" in (result.stdout + result.stderr).lower()
     assert "restore complete" not in result.stdout.lower()
 

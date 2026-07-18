@@ -3922,7 +3922,6 @@ def fire_due_not_before_timers(
         binding = _rq.resolve_merge_preference_binding(base_path, branch_def_id=bdid)
         ok, reason = _rq.authorize_timer_fire(
             timer, current_revision=int(binding.get("revision") or 0),
-            current_head_sha=timer.get("expected_head_sha") or "",
         )
         if not ok:
             fired.append({"pr_number": pr, "fired": False, "reason": reason})
@@ -4025,8 +4024,8 @@ def _start_review_revision(
     """Start the revised workflow run requested by an owner reshape decision."""
     from tinyassets.api.runs import (
         _bind_universe_context,
-        _default_run_execution_scope,
         _resolve_runtime_bindings,
+        _run_execution_scope,
     )
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
@@ -4073,7 +4072,7 @@ def _start_review_revision(
         provider_call=provider_call,
         runtime_bindings=runtime_bindings,
         _enqueue_universe_id=universe_id,
-        execution_scope=_default_run_execution_scope(universe_dir, universe_id),
+        execution_scope=_run_execution_scope(universe_id),
     )
     return outcome.run_id
 
@@ -4823,9 +4822,30 @@ def resume_run(
             current_status=current_status,
         )
 
+    # Resolve the exact branch version before describing a missing checkpoint:
+    # bound runs intentionally use an in-memory saver so private values never
+    # enter SqliteSaver, which needs a distinct and accurate restart refusal.
+    lineage = get_lineage(base_path, run_id)
+    branch_version = int(
+        (lineage or {}).get("branch_version") or getattr(branch_lookup, "_fallback_version", 1)
+    )
+    branch_def_id = run["branch_def_id"]
+    branch = branch_lookup(branch_def_id, branch_version)
+
     # Checkpoint gate.
     thread_id = run.get("thread_id") or run_id
     if not _has_checkpoint(base_path, thread_id):
+        if branch is not None:
+            from tinyassets.branch_bindings import declared_binding_fields
+
+            if declared_binding_fields(getattr(branch, "state_schema", None)):
+                raise ResumeError(
+                    f"Run '{run_id}' used a memory-only checkpoint so private "
+                    "binding values were never written to durable storage. "
+                    "Bound runs cannot resume after restart; rerun from scratch "
+                    "with run_branch using the same inputs.",
+                    reason="bound_run_memory_only",
+                )
         raise ResumeError(
             f"No SqliteSaver checkpoint found for run '{run_id}'. "
             "The run predates resume support or the checkpoint was evicted. "
@@ -4834,12 +4854,6 @@ def resume_run(
         )
 
     # Branch version gate: re-compile the exact version used in the original run.
-    lineage = get_lineage(base_path, run_id)
-    branch_version = int(
-        (lineage or {}).get("branch_version") or getattr(branch_lookup, "_fallback_version", 1)
-    )
-    branch_def_id = run["branch_def_id"]
-    branch = branch_lookup(branch_def_id, branch_version)
     if branch is None:
         raise ResumeError(
             f"Branch '{branch_def_id}' version {branch_version} no longer exists. "

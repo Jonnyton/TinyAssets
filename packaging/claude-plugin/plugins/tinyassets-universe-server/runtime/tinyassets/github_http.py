@@ -330,8 +330,8 @@ class HttpGitHubApi:
                 f"/repos/{destination}/pulls/{pr_number}/reviews"
                 f"?per_page={per_page}&page={page}"
             )
-            if status == 404:
-                return reviews
+            if status == 404 and page == 1:
+                return []
             if status >= 400 or not isinstance(payload, list):
                 raise GitHubHttpError(
                     f"could not list reviews for {destination}#{pr_number}",

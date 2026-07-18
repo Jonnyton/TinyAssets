@@ -253,3 +253,74 @@ def test_live_recovery_wires_verifier_actor_and_revision_starter(
     assert captured["app_actor_id"] == "4242"
     assert captured["expected_owner"] == "owner"
     assert captured["run_starter"]({"run_id": "source"}) == "revised:source"
+
+
+def test_start_review_revision_loads_registry_branch_and_starts_real_body(
+    tmp_path, monkeypatch,
+):
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    data_root = tmp_path / "data"
+    universe_dir = data_root / "u1"
+    universe_dir.mkdir(parents=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    initialize_author_server(universe_dir)
+    node = NodeDefinition(
+        node_id="draft", display_name="Draft", prompt_template="revise {request}",
+    )
+    branch = BranchDefinition(
+        branch_def_id="patch-loop",
+        name="Patch loop",
+        graph_nodes=[GraphNodeRef(id="draft", node_def_id="draft")],
+        edges=[EdgeDefinition(from_node="draft", to_node="END")],
+        entry_point="draft",
+        node_defs=[node],
+        state_schema=[{"name": "request", "type": "str"}],
+    )
+    save_branch_definition(universe_dir, branch_def=branch.to_dict())
+    source_run = runs.create_run(
+        universe_dir,
+        branch_def_id=branch.branch_def_id,
+        thread_id="source-thread",
+        inputs={"request": "fix it"},
+        actor="owner",
+        universe_id="u1",
+    )
+    captured: dict[str, object] = {}
+
+    def execute_spy(base_path, **kwargs):
+        captured["base_path"] = base_path
+        captured.update(kwargs)
+        return runs.RunOutcome(
+            run_id="revision-run", status=runs.RUN_STATUS_QUEUED,
+            output={}, error="",
+        )
+
+    monkeypatch.setattr(runs, "execute_branch_async", execute_spy)
+
+    result = runs._start_review_revision(
+        universe_dir,
+        {
+            "run_id": source_run,
+            "branch_def_id": branch.branch_def_id,
+            "universe_id": "u1",
+            "owner_notes": "tighten the fix",
+        },
+    )
+
+    assert result == "revision-run"
+    assert captured["base_path"] == universe_dir
+    assert captured["branch"].branch_def_id == branch.branch_def_id
+    assert captured["inputs"] == {
+        "request": "fix it",
+        "owner_notes": "tighten the fix",
+    }
+    assert captured["runtime_bindings"] == {}
+    assert captured["_enqueue_universe_id"] == "u1"
+    assert captured["execution_scope"].universe_dir == str(universe_dir)

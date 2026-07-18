@@ -192,6 +192,24 @@ def test_get_pull_maps_state():
     assert pull["node_id"] == "PR_kwABC"
 
 
+def test_list_pull_reviews_page_two_404_raises_instead_of_returning_partial_list():
+    first_page = [
+        {"id": i, "commit_id": "a" * 40, "state": "APPROVED",
+         "user": {"login": f"reviewer-{i}"}}
+        for i in range(100)
+    ]
+    transport = ScriptedTransport({
+        ("GET", "/pulls/7/reviews"): [
+            (200, first_page),
+            (404, {"message": "page disappeared"}),
+        ],
+    })
+    with pytest.raises(gh.GitHubHttpError) as exc_info:
+        _api(transport).list_pull_reviews(destination=_DEST, pr_number=7)
+    assert exc_info.value.status == 404
+    assert exc_info.value.error_class == "reviews_read_failed"
+
+
 # ── executor: token selection ────────────────────────────────────────────────
 
 

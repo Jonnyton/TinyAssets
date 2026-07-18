@@ -159,7 +159,9 @@ design version id so drift is detectable.
 - **S5 — Engine/daemon onboarding + platform-daemon reshape** (G7): the user
   setup flow for binding engines/daemon capacity to a universe; retire
   platform-global daemon work (host-gated production change — decided
-  explicitly, not slipped into another slice).
+  explicitly, not slipped into another slice). `LEGACY_UNBOUND` runs retain
+  retired-credential protection through the router's preflight environment
+  fallback; bound runs carry their universe directory explicitly.
 - **S6 — Dogfood proof:** Jonathan's chatbot imports/remixes the reference,
   binds the TinyAssets repo + his engines, and **PR-181 flows through his
   loop** to a founder-OAuth-approved merge. Friction found is product signal,

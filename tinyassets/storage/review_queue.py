@@ -984,21 +984,16 @@ def cancel_timers_for_branch(
 
 
 def authorize_timer_fire(
-    timer: dict[str, Any], *, current_revision: int, current_head_sha: str
+    timer: dict[str, Any], *, current_revision: int
 ) -> tuple[bool, str]:
     """Re-authorize a due timer against CURRENT truth before it acts (Codex r11
     #2). Returns ``(ok, reason)``. Refuses when the owner tightened the binding
-    after scheduling (``binding_revision`` moved) or when GitHub's current PR
-    head differs from the head the timer was authorized for. GitHub state is the
-    authority — this is the GitHub-native analog of the deleted policy-generation
-    race, solved with GitHub head + binding revision rather than local tokens."""
+    after scheduling (``binding_revision`` moved). GitHub head truth is checked
+    immediately afterward by the shared autonomous-merge gate; this local queue
+    predicate cannot attest remote state."""
     scheduled_rev = int(timer.get("binding_revision") or 0)
     if scheduled_rev != int(current_revision or 0):
         return False, "binding_changed"
-    want_head = (timer.get("expected_head_sha") or "").strip()
-    got_head = (current_head_sha or "").strip()
-    if want_head and want_head != got_head:
-        return False, "head_moved"
     return True, "authorized"
 
 

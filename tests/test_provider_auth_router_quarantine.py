@@ -161,6 +161,61 @@ def test_dead_auth_writer_skipped_routes_to_next(isolated_universe_config):
     assert providers["claude-code"].call_count == 0
 
 
+def test_call_with_policy_skips_dead_auth_before_provider_entrypoint(
+    isolated_universe_config,
+):
+    router, providers = _router({"claude-code"})
+    text, provider, _meta = _run(router.call_with_policy(
+        "writer", "p", "s",
+        {
+            "preferred": {"provider": "claude-code"},
+            "fallback_chain": [{"provider": "codex"}],
+        },
+    ))
+    assert text == "content"
+    assert provider == "codex"
+    assert providers["claude-code"].call_count == 0
+    assert providers["codex"].call_count == 1
+
+
+def test_judge_ensemble_skips_dead_auth_before_provider_entrypoint(
+    isolated_universe_config,
+):
+    router, providers = _router({"codex"})
+    results = _run(router.call_judge_ensemble("p", "s"))
+    assert providers["codex"].call_count == 0
+    assert all(result.provider != "codex" for result in results)
+    assert results
+
+
+def test_universe_context_forwards_directory_to_provider_complete(
+    isolated_universe_config, tmp_path,
+):
+    seen: list[object] = []
+
+    class _ContextProvider(_FakeProvider):
+        async def complete(
+            self, prompt, system, config, *, universe_dir=None,
+        ) -> ProviderResponse:
+            seen.append(universe_dir)
+            return await super().complete(
+                prompt, system, config, universe_dir=universe_dir,
+            )
+
+    provider = _ContextProvider("claude-code")
+    router = ProviderRouter(
+        providers={"claude-code": provider},
+        quota=QuotaTracker(),
+        auth_health=_auth_probe(set()),
+    )
+    context = UniverseContext(universe_dir=tmp_path)
+
+    response = _run(router.call("writer", "p", "s", universe_context=context))
+
+    assert response.provider == "claude-code"
+    assert seen == [tmp_path]
+
+
 def test_healthy_writer_not_skipped(isolated_universe_config):
     router, providers = _router(set())
     assert _run(router.call("writer", "p", "s")).provider == "claude-code"
@@ -268,7 +323,8 @@ def test_broker_subprocess_env_scrubs_all_host_auth(
     env = subprocess_env_for_provider("claude-code", universe_dir=universe)
     assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-bound"
     assert env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"
-    for name in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "OPENAI_API_KEY"):
+    assert env["CLAUDE_CONFIG_DIR"] == str(universe / ".engine-auth" / "claude")
+    for name in ("CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"):
         assert name not in env
 
 

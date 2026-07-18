@@ -656,26 +656,21 @@ def test_remixed_reference_coding_node_fails_closed_integration(data_dir, monkey
     parent = _reference_bid(data_dir)
     child = json.loads(write_graph(target="remix", branch_id=parent))["branch_def_id"]
     write_graph(target="branch", branch_id=child, changes_json=json.dumps([
-        {"op": "set_state_field_default", "name": "target_repo",
-         "default_value": "github.com/example/repo"},
+        {"op": "remove_state_field", "name": "target_repo"},
+        {"op": "remove_state_field", "name": "merge_policy"},
+        {"op": "add_state_field", "name": "target_repo", "type": "str",
+         "default": "github.com/example/repo"},
+        {"op": "add_state_field", "name": "merge_policy", "type": "str",
+         "default": "manual"},
     ]))
 
     result = json.loads(_run_graph(
         branch_def_id=child,
         inputs_json=json.dumps({"request_payload": "fix a bug"}),
     ))
-    blob = json.dumps(result).lower()
-    # The coding node must fail closed: either an explicit sandbox/attestation
-    # refusal surfaces, or the run does not reach clean success (it never
-    # completes an unattested coding step).
-    failed_closed = (
-        "sandbox" in blob or "attest" in blob
-        or result.get("status") not in ("completed", "succeeded", "success")
-    )
-    assert failed_closed, (
-        "remixed reference coding node must fail closed without "
-        f"TINYASSETS_OS_SANDBOX_ATTESTED; got {result}"
-    )
+    assert result.get("sandbox_blocked") is True, result
+    assert "run_id" not in result, result
+    assert "sandbox" in result.get("error", "").lower(), result
 
 
 # ── Binding privacy: values never travel / leak (Codex latest-model F1) ─────

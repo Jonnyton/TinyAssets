@@ -178,6 +178,29 @@ Do NOT restore or delete the `tinyassets-vault-guard` volume itself: it is
 an independent recovery domain by design. If the bump step warned/failed,
 run `python scripts/vault_restore_bump.py` inside the daemon container.
 
+### Operator re-deposit path
+
+1. Leave the guard advanced. Do not copy pre-restore ciphertext, delete the
+   guard, or retry reads until one happens to work; those actions defeat the
+   rollback boundary.
+2. For every affected universe, have its founder repeat the same authenticated
+   deposit flow that originally created each binding. Engine API keys are
+   re-entered with `universe action=set_engine` and
+   `inputs_json={"engine_source":"byo_api_key","service":"…","api_key":"…"}`.
+   Connected GitHub/provider credentials are reconnected through their normal
+   founder-authenticated connection or OAuth flow. Never paste credentials into
+   branch bindings, run inputs, config files, logs, or the ledger.
+3. Repeat per universe and per provider/destination. A deposit in universe A
+   does not and must not repair universe B.
+4. Verify each replacement through the normal status/connection surface, then
+   run one clean universe-scoped operation. `REAUTHORIZATION_REQUIRED` should
+   disappear only for the re-deposited binding; any remaining occurrence means
+   another binding still needs its founder to reconnect.
+
+The restored records are intentionally not made usable again. Re-deposit writes
+fresh provider state and replaces the affected opaque binding while preserving
+the anti-rollback evidence.
+
 **Grant GC (S3 seam):** expired `vault_job_grants` rows are inert (resolve
 fails `EXPIRED`) but need `revoke_grant` on job completion for tidy storage.
 The daemon-side completion hook lands with the S3 executor merge — until

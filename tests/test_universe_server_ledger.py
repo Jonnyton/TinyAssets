@@ -129,6 +129,33 @@ def test_bind_design_ledger_extractor_never_leaks_values() -> None:
     }
 
 
+def test_set_engine_ledger_extractor_never_leaks_deposited_value() -> None:
+    secret = "sk-private-founder-deposit"
+    target, summary, payload = us._extract_set_engine(
+        {"inputs_json": json.dumps({
+            "engine_source": "byo_api_key",
+            "service": "anthropic",
+            "api_key": secret,
+        })},
+        {
+            "universe_id": "u1",
+            "engine_source": "byo_api_key",
+            "service": "anthropic",
+            "preferred_writer": "claude-code",
+            "status": "engine_configured",
+        },
+    )
+
+    rendered = json.dumps({"target": target, "summary": summary, "payload": payload})
+    assert secret not in rendered
+    assert payload == {
+        "engine_source": "byo_api_key",
+        "service": "anthropic",
+        "preferred_writer": "claude-code",
+        "status": "engine_configured",
+    }
+
+
 def test_set_premise_appends_ledger(universe: str) -> None:
     out = _call("set_premise", text="A tower of bones.")
     assert out["status"] == "updated"

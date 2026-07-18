@@ -2357,6 +2357,7 @@ def test_two_universe_credential_isolation_across_run_paths(tmp_path, monkeypatc
         src = inspect.getsource(getattr(runs_api, name))
         assert "_bind_universe_context(" in src, name
         assert "_run_execution_scope(" in src, name
+        assert "execution_scope=_exec_scope" in src, name
 
 
 # --------------------------------------------------------------------------- #

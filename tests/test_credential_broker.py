@@ -445,6 +445,7 @@ def test_subprocess_env_for_provider_end_to_end(platform_vault_env, monkeypatch)
     monkeypatch.setattr(engine_binding, "_sandbox_execution_attested", lambda: True)
     env = subprocess_env_for_provider("claude-code", universe_dir=udir)
     assert env.get("ANTHROPIC_API_KEY") == "sk-ant-e2e"
+    assert env.get("CLAUDE_CONFIG_DIR") == str(udir / ".engine-auth" / "claude")
 
 
 def test_universe_has_bindings_counts_all_statuses(platform_vault_env):

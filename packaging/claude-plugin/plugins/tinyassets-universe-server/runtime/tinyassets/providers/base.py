@@ -316,6 +316,15 @@ def subprocess_env_for_provider(
     env = os.environ.copy()
     for name in HOST_AUTH_ENV_VARS:
         env.pop(name, None)
+    # A bare-host CLI must never fall back to the daemon user's default config
+    # directory after ambient auth is scrubbed. Pin each supported CLI to an
+    # empty/universe-owned home; OAuth materialization may populate the same path.
+    if provider == "codex":
+        env["CODEX_HOME"] = str(resolved_universe / ".engine-auth" / "codex")
+    elif provider == "claude-code":
+        env["CLAUDE_CONFIG_DIR"] = str(
+            resolved_universe / ".engine-auth" / "claude"
+        )
     # A retained credential is not authority to use it after the universe
     # switches to another engine lane. Only an executable, attested BYO
     # binding may materialize broker-held auth into a child process.

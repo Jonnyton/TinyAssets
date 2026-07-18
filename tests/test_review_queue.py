@@ -264,13 +264,8 @@ def test_authorize_timer_fire_refuses_stale_binding(tmp_path):
         branch_def_id="bd", expected_head_sha=_HEAD, binding_revision=1,
     )
     # Same revision + same head → authorized.
-    ok, reason = rq.authorize_timer_fire(timer, current_revision=1, current_head_sha=_HEAD)
+    ok, reason = rq.authorize_timer_fire(timer, current_revision=1)
     assert ok is True and reason == "authorized"
     # Owner tightened (revision moved) → refused.
-    ok, reason = rq.authorize_timer_fire(timer, current_revision=2, current_head_sha=_HEAD)
+    ok, reason = rq.authorize_timer_fire(timer, current_revision=2)
     assert ok is False and reason == "binding_changed"
-    # Head moved on GitHub → refused.
-    ok, reason = rq.authorize_timer_fire(
-        timer, current_revision=1, current_head_sha="b" * 40
-    )
-    assert ok is False and reason == "head_moved"

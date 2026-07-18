@@ -120,13 +120,6 @@ def _run_universe_id(record: dict[str, Any]) -> str:
     return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
 
 
-def _default_run_execution_scope(base_path: Any, universe_id: str) -> Any:
-    """Build the authoritative S3/S5 scope without consulting globals."""
-    from tinyassets.runs import _default_execution_scope
-
-    return _default_execution_scope(base_path, universe_id)
-
-
 def _run_read_allowed(record: dict[str, Any]) -> bool:
     """Whether the current caller may READ a run's data.
 
@@ -699,6 +692,10 @@ def _resolve_runtime_bindings(
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
 
+    Internal dispatch handler: external callers enter through
+    :func:`_dispatch_run_action`, which applies the universe access gate before
+    this function receives arguments. This function is not a trust boundary.
+
     Durability guarantee (v1): runs are *terminal-on-restart*. If the
     daemon exits while a run is in flight, the row is marked
     ``interrupted`` on next startup (see
@@ -879,7 +876,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             recursion_limit_override=recursion_limit_override,
             runtime_bindings=runtime_bindings,
             _enqueue_universe_id=universe_id,
-            execution_scope=_default_run_execution_scope(base_path, universe_id),
+            execution_scope=_exec_scope,
         )
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)
@@ -1475,14 +1472,7 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
             actor=actor,
             branch_lookup=_branch_lookup,
             provider_call=provider_call,
-            execution_scope=(
-                _default_run_execution_scope(
-                    _base_path(),
-                    _run_universe_id(_resume_record),
-                )
-                if _resume_record is not None
-                else None
-            ),
+            execution_scope=_exec_scope,
         )
     except ResumeError as exc:
         return json.dumps({
@@ -2000,7 +1990,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
             _enqueue_universe_id=universe_id,
-            execution_scope=_default_run_execution_scope(base_path, universe_id),
+            execution_scope=_exec_scope,
         )
     except KeyError as exc:
         return json.dumps({"error": str(exc).strip("'\"")})
