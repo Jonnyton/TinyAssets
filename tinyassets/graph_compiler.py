@@ -3537,6 +3537,7 @@ class CompiledBranch:
 def compile_branch(
     branch: BranchDefinition,
     *,
+    start_node: str = "",
     provider_call: Callable[..., str] | None = None,
     event_sink: Callable[..., None] | None = None,
     concurrency_budget_override: int | None = None,
@@ -3553,6 +3554,9 @@ def compile_branch(
     ----------
     branch
         The branch to compile. Must have passed ``branch.validate()``.
+    start_node
+        Optional graph node that replaces the branch's normal ``START``
+        routing for a continuation run.
     provider_call
         Synchronous, CAPABILITY-BEARING LLM caller. Enforced signature (matches
         ``tinyassets.providers.call.call_provider``)::
@@ -3645,6 +3649,11 @@ def compile_branch(
     graph_node_by_id: dict[str, GraphNodeRef] = {
         gn.id: gn for gn in branch.graph_nodes
     }
+    continuation_start = (start_node or "").strip()
+    if continuation_start and continuation_start not in graph_node_by_id:
+        raise CompilerError(
+            f"Continuation start node '{continuation_start}' is not a graph node."
+        )
 
     node_ids_in_order = [gn.id for gn in branch.graph_nodes]
 
@@ -3679,21 +3688,28 @@ def compile_branch(
         )
         graph.add_node(gn.id, fn)
 
-    # Entry point: connect START to the declared entry node.
-    if branch.entry_point:
-        graph.add_edge(START, branch.entry_point)
+    # Entry point: a continuation may deliberately skip predecessor nodes.
+    effective_entry = continuation_start or branch.entry_point
+    if effective_entry:
+        graph.add_edge(START, effective_entry)
 
     # Simple edges.
     for edge in branch.edges:
         src = START if edge.from_node == "START" else edge.from_node
         dst = END if edge.to_node == "END" else edge.to_node
-        if src == START and branch.entry_point == edge.to_node:
-            # Already wired via add_edge(START, entry_point) above.
-            continue
+        if src == START:
+            if continuation_start:
+                # A target-node continuation has exactly one entry edge.
+                continue
+            if branch.entry_point == edge.to_node:
+                # Already wired via add_edge(START, entry_point) above.
+                continue
         graph.add_edge(src, dst)
 
     # Conditional edges.
     for cedge in branch.conditional_edges:
+        if continuation_start and cedge.from_node == "START":
+            continue
         source_ref = graph_node_by_id.get(cedge.from_node)
         source_def_id = source_ref.node_def_id if source_ref else cedge.from_node
         source_def = node_by_id.get(source_def_id or cedge.from_node)

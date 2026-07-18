@@ -768,6 +768,7 @@ def _row_to_receipt(row: sqlite3.Row) -> dict[str, Any]:
 def create_run(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch_def_id: str,
     thread_id: str,
     inputs: dict[str, Any],
@@ -784,7 +785,7 @@ def create_run(
     checkpoint_backend: str = "",
 ) -> str:
     initialize_runs_db(base_path)
-    run_id = uuid.uuid4().hex[:16]
+    resolved_run_id = (run_id or "").strip() or uuid.uuid4().hex[:16]
     resolved_owner_user_id = (
         str(owner_user_id or "")
         if owner_user_id is not None
@@ -803,7 +804,7 @@ def create_run(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                run_id, branch_def_id, run_name, thread_id,
+                resolved_run_id, branch_def_id, run_name, thread_id,
                 RUN_STATUS_QUEUED, actor, (universe_id or "").strip(),
                 resolved_owner_user_id,
                 json.dumps(inputs, default=str), _now(),
@@ -823,7 +824,7 @@ def create_run(
                 worker_id,
             ),
         )
-    return run_id
+    return resolved_run_id
 
 
 def update_run_status(
@@ -2059,6 +2060,7 @@ def _graph_node_order(branch: BranchDefinition) -> list[str]:
 def _prepare_run(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str,
@@ -2070,6 +2072,8 @@ def _prepare_run(
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    owner_user_id: str | None = None,
+    lineage_parent_run_id: str = "",
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
 
@@ -2089,6 +2093,7 @@ def _prepare_run(
     )
     run_id = create_run(
         base_path,
+        run_id=run_id,
         branch_def_id=branch.branch_def_id,
         thread_id="",
         inputs=inputs,
@@ -2098,6 +2103,7 @@ def _prepare_run(
         invocation_depth=invocation_depth,
         enqueue_context=enqueue_context,
         branch_version_id=branch_version_id,
+        owner_user_id=owner_user_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
@@ -2122,13 +2128,15 @@ def _prepare_run(
     # the last run" work. Parent is the most recent terminal run on this
     # branch by the same actor (best-effort — falls back to branch-wide
     # latest if no same-actor match).
-    parent = latest_terminal_run(
-        base_path, branch_def_id=branch.branch_def_id, actor=actor,
-    )
+    parent = (lineage_parent_run_id or "").strip() or None
     if parent is None:
         parent = latest_terminal_run(
-            base_path, branch_def_id=branch.branch_def_id,
+            base_path, branch_def_id=branch.branch_def_id, actor=actor,
         )
+        if parent is None:
+            parent = latest_terminal_run(
+                base_path, branch_def_id=branch.branch_def_id,
+            )
     branch_version = int(getattr(branch, "version", 1) or 1)
     edits_since_parent: list[str] = []
     if parent is not None:
@@ -2365,6 +2373,7 @@ def _invoke_graph(
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     execution_scope: "ExecutionScope | None" = None,
+    start_node: str = "",
 ) -> RunOutcome:
     """Authorize and pin a prepared run under its immutable tenant scope."""
     scope = _authoritative_execution_scope(base_path, run_id, execution_scope)
@@ -2405,6 +2414,7 @@ def _invoke_graph(
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
             execution_scope=scope,
+            start_node=start_node,
         )
 
 
@@ -2422,6 +2432,7 @@ def _invoke_graph_inner(
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     execution_scope: "ExecutionScope | None" = None,
+    start_node: str = "",
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
@@ -2626,6 +2637,7 @@ def _invoke_graph_inner(
     try:
         compiled = compile_branch(
             branch,
+            start_node=start_node,
             provider_call=provider_call,
             event_sink=_on_node,
             concurrency_budget_override=concurrency_budget_override,
@@ -4069,60 +4081,135 @@ def register_review_workers(
 def _start_review_revision(
     universe_dir: str | Path, route_back: dict[str, Any]
 ) -> str:
-    """Start the revised workflow run requested by an owner reshape decision."""
+    """Start or recover the revised run requested by an owner reshape decision."""
     from tinyassets.api.runs import (
         _bind_universe_context,
         _resolve_runtime_bindings,
         _run_execution_scope,
     )
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.daemon_server import get_branch_definition, get_runtime_instance
 
     source_run_id = str(route_back.get("run_id") or "").strip()
     run_base_path = _review_run_storage_path(universe_dir, source_run_id)
     source = get_run(run_base_path, source_run_id)
     if source is None:
         raise LookupError("reshape source run was not found")
+    source_branch_def_id = str(source.get("branch_def_id") or "").strip()
     branch_def_id = str(
-        route_back.get("branch_def_id") or source.get("branch_def_id") or ""
+        route_back.get("branch_def_id") or source_branch_def_id
     ).strip()
     if not branch_def_id:
         raise LookupError("reshape route has no branch definition")
+    if source_branch_def_id and branch_def_id != source_branch_def_id:
+        raise RuntimeError("reshape route does not match its source branch")
+    source_universe_id = str(source.get("universe_id") or "").strip()
     universe_id = str(
         route_back.get("universe_id")
-        or source.get("universe_id")
+        or source_universe_id
         or Path(universe_dir).name
     ).strip()
+    if source_universe_id and universe_id != source_universe_id:
+        raise RuntimeError("reshape route does not match its source universe")
+    target_node = str(route_back.get("target_node") or "").strip()
+    if not target_node:
+        raise LookupError("reshape route has no target node")
     branch = BranchDefinition.from_dict(
         get_branch_definition(universe_dir, branch_def_id=branch_def_id)
     )
     errors = branch.validate()
     if errors:
         raise ValueError("reshape branch definition is invalid")
+    if target_node not in {node.id for node in branch.graph_nodes}:
+        raise LookupError("reshape target node was not found in the branch")
     runtime_bindings, refusal = _resolve_runtime_bindings(branch, universe_id)
     if refusal is not None:
         raise RuntimeError("reshape runtime bindings are unavailable")
 
-    inputs = dict(source.get("inputs") or {})
-    owner_notes = str(route_back.get("owner_notes") or "").strip()
-    if owner_notes:
-        inputs["owner_notes"] = owner_notes
+    owner_user_id = str(source.get("owner_user_id") or "").strip()
+    runtime_instance_id = str(source.get("runtime_instance_id") or "").strip()
+    if not owner_user_id or not runtime_instance_id:
+        raise RuntimeError("reshape source has no trusted owner or live runtime")
+    try:
+        runtime = get_runtime_instance(
+            run_base_path, instance_id=runtime_instance_id,
+        )
+    except KeyError as exc:
+        raise RuntimeError("reshape source has no live runtime") from exc
+    if (
+        str(runtime.get("status") or "").strip() == "retired"
+        or str(runtime.get("universe_id") or "").strip() != universe_id
+    ):
+        raise RuntimeError("reshape source has no live runtime for this universe")
+    runtime_metadata = runtime.get("metadata") or {}
+    source_daemon_id = str(source.get("daemon_id") or "").strip()
+    runtime_daemon_id = str(runtime_metadata.get("daemon_id") or "").strip()
+    daemon_id = source_daemon_id or runtime_daemon_id
+    if daemon_id and runtime_daemon_id and daemon_id != runtime_daemon_id:
+        raise RuntimeError("reshape source runtime identity does not match its daemon")
+    runtime_owner_user_id = str(
+        runtime_metadata.get("owner_user_id") or ""
+    ).strip()
+    if runtime_owner_user_id and owner_user_id != runtime_owner_user_id:
+        raise RuntimeError("reshape source runtime identity does not match its owner")
+    source_worker_id = str(source.get("worker_id") or "").strip()
+    runtime_worker_id = str(runtime_metadata.get("worker_id") or "").strip()
+    worker_id = source_worker_id or runtime_worker_id
+    if source_worker_id and runtime_worker_id and source_worker_id != runtime_worker_id:
+        raise RuntimeError("reshape source runtime identity does not match its worker")
+    if not daemon_id or not worker_id:
+        raise RuntimeError("reshape source has no complete live runtime identity")
+
+    source_state = {
+        **dict(source.get("inputs") or {}),
+        **dict(source.get("output") or {}),
+    }
+    state_fields = {
+        str(field.get("name") or "")
+        for field in branch.state_schema
+        if str(field.get("name") or "")
+    }
+    inputs = {
+        key: value for key, value in source_state.items()
+        if key in state_fields
+    }
+    inputs["reshape_notes"] = str(route_back.get("owner_notes") or "").strip()
+    revision_key = "\0".join(
+        ("owner-reshape", source_run_id, branch_def_id, target_node)
+    )
+    revised_run_id = hashlib.sha256(revision_key.encode("utf-8")).hexdigest()[:32]
+    if get_run(run_base_path, revised_run_id) is not None:
+        return revised_run_id
     try:
         from tinyassets.providers.call import call_provider as provider_call
     except ImportError:
         provider_call = None
     provider_call = _bind_universe_context(provider_call, universe_id)
-    outcome = execute_branch_async(
-        run_base_path,
-        branch=branch,
-        inputs=inputs,
-        run_name="Owner-requested revision",
-        actor=str(source.get("actor") or "anonymous"),
-        provider_call=provider_call,
-        runtime_bindings=runtime_bindings,
-        _enqueue_universe_id=universe_id,
-        execution_scope=_run_execution_scope(universe_id),
-    )
+    try:
+        outcome = execute_branch_async(
+            run_base_path,
+            run_id=revised_run_id,
+            branch=branch,
+            inputs=inputs,
+            run_name="Owner-requested revision",
+            actor=str(source.get("actor") or "anonymous"),
+            provider_call=provider_call,
+            runtime_bindings=runtime_bindings,
+            owner_user_id=owner_user_id,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            lineage_parent_run_id=source_run_id,
+            start_node=target_node,
+            _enqueue_universe_id=universe_id,
+            execution_scope=_run_execution_scope(universe_id),
+        )
+    except sqlite3.IntegrityError:
+        # The run_id is the deterministic unique revision key. A concurrent
+        # replay that lost the insert race recovers the winner.
+        if get_run(run_base_path, revised_run_id) is None:
+            raise
+        return revised_run_id
     return outcome.run_id
 
 
@@ -4519,6 +4606,7 @@ def wait_for(run_id: str, timeout: float | None = None) -> None:
 def _execute_branch_core(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
@@ -4532,6 +4620,9 @@ def _execute_branch_core(
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    owner_user_id: str | None = None,
+    lineage_parent_run_id: str = "",
+    start_node: str = "",
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     execution_scope: "ExecutionScope | None" = None,
@@ -4568,15 +4659,18 @@ def _execute_branch_core(
     )
     run_id = _prepare_run(
         base_path,
+        run_id=run_id,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
         universe_id=persisted_universe_id,
         invocation_depth=_invocation_depth,
         enqueue_context=enqueue_context,
         branch_version_id=branch_version_id,
+        owner_user_id=owner_user_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
+        lineage_parent_run_id=lineage_parent_run_id,
     )
 
     executor = _get_executor(invocation_depth=_invocation_depth)
@@ -4595,6 +4689,7 @@ def _execute_branch_core(
                 invocation_depth=_invocation_depth,
                 enqueue_context=enqueue_context,
                 execution_scope=execution_scope,
+                start_node=start_node,
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -4624,6 +4719,7 @@ def _execute_branch_core(
 def execute_branch_async(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
@@ -4633,6 +4729,12 @@ def execute_branch_async(
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
+    owner_user_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
+    lineage_parent_run_id: str = "",
+    start_node: str = "",
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     execution_scope: "ExecutionScope | None" = None,
@@ -4665,6 +4767,7 @@ def execute_branch_async(
     """
     return _execute_branch_core(
         base_path,
+        run_id=run_id,
         branch=branch,
         inputs=inputs,
         run_name=run_name,
@@ -4674,6 +4777,12 @@ def execute_branch_async(
         recursion_limit_override=recursion_limit_override,
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
+        owner_user_id=owner_user_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
+        lineage_parent_run_id=lineage_parent_run_id,
+        start_node=start_node,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
         _enqueue_universe_id=_enqueue_universe_id,

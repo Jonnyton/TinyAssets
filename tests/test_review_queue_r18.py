@@ -264,6 +264,7 @@ def test_start_review_revision_uses_canonical_split_run_store(
         GraphNodeRef,
         NodeDefinition,
     )
+    from tinyassets.daemon_registry import create_daemon, summon_daemon
     from tinyassets.daemon_server import initialize_author_server, save_branch_definition
 
     data_root = tmp_path / "data"
@@ -281,9 +282,27 @@ def test_start_review_revision_uses_canonical_split_run_store(
         edges=[EdgeDefinition(from_node="draft", to_node="END")],
         entry_point="draft",
         node_defs=[node],
-        state_schema=[{"name": "request", "type": "str"}],
+        state_schema=[
+            {"name": "request", "type": "str"},
+            {"name": "reshape_notes", "type": "str"},
+        ],
     )
     save_branch_definition(universe_dir, branch_def=branch.to_dict())
+    daemon = create_daemon(
+        data_root,
+        display_name="Patch owner",
+        created_by="owner",
+        soul_mode="soulless",
+    )
+    runtime = summon_daemon(
+        data_root,
+        daemon_id=daemon["daemon_id"],
+        universe_id="u1",
+        provider_name="claude-code",
+        model_name="test-model",
+        created_by="owner",
+        metadata={"worker_id": "worker-1"},
+    )
     source_run = runs.create_run(
         data_root,
         branch_def_id=branch.branch_def_id,
@@ -291,6 +310,10 @@ def test_start_review_revision_uses_canonical_split_run_store(
         inputs={"request": "fix it"},
         actor="owner",
         universe_id="u1",
+        owner_user_id="owner",
+        daemon_id=daemon["daemon_id"],
+        runtime_instance_id=runtime["runtime_instance_id"],
+        worker_id="worker-1",
     )
     rq.project_pr(
         universe_dir,
@@ -312,6 +335,7 @@ def test_start_review_revision_uses_canonical_split_run_store(
             "run_id": source_run,
             "branch_def_id": branch.branch_def_id,
             "universe_id": "u1",
+            "target_node": "draft",
             "owner_notes": "tighten the fix",
         },
     )
@@ -323,7 +347,7 @@ def test_start_review_revision_uses_canonical_split_run_store(
     assert revised["branch_def_id"] == branch.branch_def_id
     assert revised["inputs"] == {
         "request": "fix it",
-        "owner_notes": "tighten the fix",
+        "reshape_notes": "tighten the fix",
     }
     assert revised["universe_id"] == "u1"
     assert not runs.runs_db_path(universe_dir).exists()
