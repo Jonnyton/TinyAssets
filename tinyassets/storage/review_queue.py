@@ -405,33 +405,6 @@ def _backfill_decision_effect_projection_keys(conn: sqlite3.Connection) -> None:
         )
 
 
-def _backfill_projection_decision_owners(conn: sqlite3.Connection) -> None:
-    """Bind pre-column projections only to one live causal generation.
-
-    ``decide_and_resume`` records the projection decision and its effects with
-    the same timestamp.  A decision with any failed effect is terminally failed
-    and is never eligible: replaying its terminal report can clear the bound
-    projection.  Only one distinct non-failed decision at that timestamp proves
-    erase-safe ownership.  Failed-only, ambiguous, zero-effect-owner, and
-    unmatched projections stay unbound; a re-push-recoverable decision lock is
-    safer than migration ever erasing a live owner decision.
-    """
-    conn.execute(
-        "UPDATE pr_projection AS projection SET decision_id = COALESCE(("
-        "SELECT MIN(effect.decision_id) FROM review_decision_effects AS effect "
-        "WHERE effect.destination = projection.destination "
-        "AND effect.pr_number = projection.pr_number "
-        "AND effect.expected_head_sha = projection.head_sha "
-        "AND effect.created_at = projection.decided_at "
-        "AND NOT EXISTS (SELECT 1 FROM review_decision_effects AS failed "
-        "WHERE failed.decision_id = effect.decision_id "
-        "AND failed.status = 'failed') "
-        "HAVING COUNT(DISTINCT effect.decision_id) = 1"
-        "), '') WHERE projection.decision_id = '' "
-        "AND projection.owner_intent != ''"
-    )
-
-
 def _warn_pending_legacy_outboxes(conn: sqlite3.Connection) -> None:
     tables = {
         row["name"]
@@ -468,8 +441,14 @@ def initialize_review_queue_db(universe_dir: str | Path) -> Path:
         with _connect(universe_dir) as conn:
             conn.executescript(_SCHEMA)
             _apply_column_migrations(conn)
+            # Pre-column projections intentionally keep decision_id=''.  Effects
+            # cannot prove ownership because the real legacy owner may have
+            # emitted none; a coincidental decision could later fail and erase
+            # the owner's projection.  An unbound row never matches a real
+            # decision UUID, prioritizing never-erase over automatic recovery.
+            # A new-head re-push resets the generation, and only the unchanged
+            # runtime decide_and_resume transaction establishes fresh ownership.
             _backfill_decision_effect_projection_keys(conn)
-            _backfill_projection_decision_owners(conn)
             conn.execute("DROP INDEX IF EXISTS idx_review_decision_effects_ready")
             conn.execute(
                 "CREATE INDEX idx_review_decision_effects_ready ON "

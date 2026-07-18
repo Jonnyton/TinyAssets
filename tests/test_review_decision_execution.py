@@ -1089,7 +1089,47 @@ def _seed_legacy_projection_owner(
             )
 
 
-def test_existing_projection_table_migrates_decision_owner(tmp_path):
+def _assert_legacy_projection_recovers_after_repush(
+    tmp_path, *, prior_decision_ids: set[str]
+) -> None:
+    with pytest.raises(rq.DecisionLocked):
+        rq.decide_and_resume(
+            tmp_path,
+            destination=_DEST,
+            pr_number=_PR,
+            intent=rq.INTENT_REJECT,
+            workflow_outcome=rq.WORKFLOW_REJECTED,
+            decided_by="owner",
+            expected_head_sha=_HEAD,
+            directive={"action": "terminal_reject"},
+            now=150,
+        )
+
+    rq.project_pr(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        head_sha=_NEW_HEAD,
+        now=175,
+    )
+    decided = rq.decide_and_resume(
+        tmp_path,
+        destination=_DEST,
+        pr_number=_PR,
+        intent=rq.INTENT_REJECT,
+        workflow_outcome=rq.WORKFLOW_REJECTED,
+        decided_by="owner",
+        expected_head_sha=_NEW_HEAD,
+        directive={"action": "terminal_reject"},
+        now=200,
+    )
+    after = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
+    assert decided["decision_id"] not in prior_decision_ids
+    assert after["decision_id"] == decided["decision_id"]
+    assert after["owner_intent"] == rq.INTENT_REJECT
+
+
+def test_existing_projection_table_migrates_owner_unbound_until_repush(tmp_path):
     _seed_legacy_projection_owner(
         tmp_path,
         decided_at=1,
@@ -1104,10 +1144,13 @@ def test_existing_projection_table_migrates_decision_owner(tmp_path):
         pr_number=_PR,
     )
     assert projection["head_sha"] == _HEAD
-    assert projection["decision_id"] == "legacy-decision"
+    assert projection["decision_id"] == ""
+    _assert_legacy_projection_recovers_after_repush(
+        tmp_path, prior_decision_ids={"legacy-decision"}
+    )
 
 
-def test_legacy_projection_owner_backfill_leaves_exact_time_tie_unbound(
+def test_legacy_projection_exact_time_tie_stays_unbound_until_repush(
     tmp_path,
 ):
     live_a = "decision-ffffffffffffffffffffffffffffffff"
@@ -1125,6 +1168,9 @@ def test_legacy_projection_owner_backfill_leaves_exact_time_tie_unbound(
 
     before = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
     assert before["decision_id"] == ""
+    _assert_legacy_projection_recovers_after_repush(
+        tmp_path, prior_decision_ids={live_a, live_b}
+    )
 
 
 def test_legacy_zero_effect_owner_never_binds_stale_failed_decision(tmp_path):
@@ -1151,9 +1197,12 @@ def test_legacy_zero_effect_owner_never_binds_stale_failed_decision(tmp_path):
     assert replayed is False
     assert before["decision_id"] == ""
     assert after["decision_id"] == ""
+    _assert_legacy_projection_recovers_after_repush(
+        tmp_path, prior_decision_ids={failed_a}
+    )
 
 
-def test_legacy_projection_owner_backfill_uses_decision_time_after_clock_rollback(
+def test_legacy_projection_clock_rollback_effects_stay_unbound_until_repush(
     tmp_path,
 ):
     failed_a = "decision-ffffffffffffffffffffffffffffffff"
@@ -1179,12 +1228,15 @@ def test_legacy_projection_owner_backfill_uses_decision_time_after_clock_rollbac
         "wiped the live decision"
     )
     assert replayed is False
-    assert before["decision_id"] == live_b
-    assert after["decision_id"] == live_b
+    assert before["decision_id"] == ""
+    assert after["decision_id"] == ""
     assert after["decided_at"] == before["decided_at"]
+    _assert_legacy_projection_recovers_after_repush(
+        tmp_path, prior_decision_ids={failed_a, live_b}
+    )
 
 
-def test_legacy_projection_owner_backfill_keeps_single_wedge_recoverable(
+def test_legacy_projection_single_wedge_stays_unbound_until_repush(
     tmp_path,
 ):
     failed = "decision-failed"
@@ -1201,84 +1253,47 @@ def test_legacy_projection_owner_backfill_keeps_single_wedge_recoverable(
     assert rq.terminalize_failed_decision_generation(
         tmp_path, decision_id=failed
     ) is False
-    with pytest.raises(rq.DecisionLocked):
-        rq.decide_and_resume(
-            tmp_path,
-            destination=_DEST,
-            pr_number=_PR,
-            intent=rq.INTENT_REJECT,
-            workflow_outcome=rq.WORKFLOW_REJECTED,
-            decided_by="owner",
-            expected_head_sha=_HEAD,
-            directive={"action": "terminal_reject"},
-            now=150,
-        )
-
-    rq.project_pr(
-        tmp_path,
-        destination=_DEST,
-        pr_number=_PR,
-        head_sha=_NEW_HEAD,
-        now=175,
+    _assert_legacy_projection_recovers_after_repush(
+        tmp_path, prior_decision_ids={failed}
     )
 
-    decided = rq.decide_and_resume(
-        tmp_path,
-        destination=_DEST,
-        pr_number=_PR,
-        intent=rq.INTENT_REJECT,
-        workflow_outcome=rq.WORKFLOW_REJECTED,
-        decided_by="owner",
-        expected_head_sha=_NEW_HEAD,
-        directive={
-            "action": "terminal_reject",
-            "github_call": {
-                "params": {"event": "REQUEST_CHANGES", "body": "reject"}
-            },
-        },
-        now=200,
-    )
-    after = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
-    assert decided["decision_id"] != failed
-    assert after["decision_id"] == decided["decision_id"]
-    assert after["owner_intent"] == rq.INTENT_REJECT
 
-
-def test_legacy_live_non_submit_effect_binds_and_can_terminalize(tmp_path):
-    live = "decision-live-merge"
+def test_legacy_zero_effect_owner_never_binds_live_non_owner_that_later_fails(
+    tmp_path,
+):
+    live_a = "decision-live-non-owner"
     _seed_legacy_projection_owner(
         tmp_path,
         decided_at=100,
-        effects=[(live, 100, "pending", "apply_merge_preference")],
+        effects=[(live_a, 100, "pending", "submit_review")],
     )
 
     rq.initialize_review_queue_db(tmp_path)
 
-    projection = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
-    assert projection["decision_id"] == live
+    before = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
 
     with sqlite3.connect(rq.review_queue_db_path(tmp_path)) as conn:
         conn.execute(
             "UPDATE review_decision_effects SET status = 'failed' "
             "WHERE decision_id = ?",
-            (live,),
+            (live_a,),
         )
-    assert rq.terminalize_failed_decision_generation(
-        tmp_path, decision_id=live
-    ) is True
-
-    decided = rq.decide_and_resume(
-        tmp_path,
-        destination=_DEST,
-        pr_number=_PR,
-        intent=rq.INTENT_REJECT,
-        workflow_outcome=rq.WORKFLOW_REJECTED,
-        decided_by="owner",
-        expected_head_sha=_HEAD,
-        directive={"action": "terminal_reject"},
-        now=200,
+    replayed = rq.terminalize_failed_decision_generation(
+        tmp_path, decision_id=live_a
     )
-    assert decided["decision_id"] != live
+    after = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
+
+    assert after["owner_intent"] == rq.INTENT_APPROVE, (
+        f"ERASED: migration bound live non-owner {before['decision_id']!r}; "
+        "its later failed replay wiped the zero-effect owner's decision"
+    )
+    assert after["decided_at"] == 100
+    assert replayed is False
+    assert before["decision_id"] == ""
+    assert after["decision_id"] == ""
+    _assert_legacy_projection_recovers_after_repush(
+        tmp_path, prior_decision_ids={live_a}
+    )
 
 
 def test_legacy_failed_non_submit_effect_stays_unbound_until_repush(tmp_path):
@@ -1328,3 +1343,6 @@ def test_legacy_failed_non_submit_effect_stays_unbound_until_repush(tmp_path):
         now=200,
     )
     assert decided["decision_id"] != failed
+    after = rq.get_projection(tmp_path, destination=_DEST, pr_number=_PR)
+    assert after["decision_id"] == decided["decision_id"]
+    assert after["owner_intent"] == rq.INTENT_REJECT
