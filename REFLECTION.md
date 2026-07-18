@@ -19,3 +19,11 @@ What surprised me: S4's isolated tests hid two integration contracts—the retir
 Pattern worth capturing: credential integration is complete only when production factories consume rotating broker bindings and cross-slice contract probes exercise the same factories; static-token test helpers are not evidence of live wiring.
 
 One thing I would do differently: add the broker-backed live-client and no-universe effector probes before resolving the larger merge, so those architectural mismatches become the first red tests.
+
+---
+
+What surprised me: replacing a synthetic concurrency proof with real branch orchestration exposed both an SQLite connection-order race and a migration test pointed at the wrong database filename.
+
+Pattern worth capturing: load proofs should enter through the canonical orchestration boundary and assert exact persisted identities and effects; aggregate counts and hand-built rows can conceal integration gaps.
+
+One thing I would do differently: make the first §14 test execute real bound runs and drain the real outbox, then audit whether every migration fixture targets the production path.
