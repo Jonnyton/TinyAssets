@@ -4079,7 +4079,8 @@ def _start_review_revision(
     from tinyassets.daemon_server import get_branch_definition
 
     source_run_id = str(route_back.get("run_id") or "").strip()
-    source = get_run(universe_dir, source_run_id)
+    run_base_path = _review_run_storage_path(universe_dir, source_run_id)
+    source = get_run(run_base_path, source_run_id)
     if source is None:
         raise LookupError("reshape source run was not found")
     branch_def_id = str(
@@ -4112,7 +4113,7 @@ def _start_review_revision(
         provider_call = None
     provider_call = _bind_universe_context(provider_call, universe_id)
     outcome = execute_branch_async(
-        universe_dir,
+        run_base_path,
         branch=branch,
         inputs=inputs,
         run_name="Owner-requested revision",
