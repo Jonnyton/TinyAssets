@@ -12,6 +12,7 @@ import binascii
 import copy
 import hashlib
 import hmac
+import json
 import math
 import re
 import uuid
@@ -29,6 +30,10 @@ CAPSULE_SCHEMA_VERSION = "execution-capsule/v1"
 SUPPORTED_CAPSULE_SCHEMA_VERSIONS = frozenset({CAPSULE_SCHEMA_VERSION})
 CAPSULE_DOMAIN_SEPARATOR = b"tinyassets.execution-capsule.v1\0"
 MAX_INLINE_REQUEST_BYTES = 4_000_000
+MAX_CAPSULE_NESTING_DEPTH = 64
+MAX_CAPSULE_WIRE_BYTES = 8 * 1024 * 1024
+_MAX_CAPSULE_MEMBERS = 500_000
+_MAX_CAPSULE_SCALAR_BYTES = 8 * 1024 * 1024
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -49,6 +54,37 @@ _PERMISSIONS = frozenset(
 )
 _SANDBOX_CLASSES = frozenset({"repo", "source_exec"})
 _REPO_MODES = frozenset({"repo_read", "repo_exec", "coding"})
+_UNBOUND_CAPABILITY_SENTINELS = frozenset(
+    {"UNBOUND", "LEGACY_UNBOUND", "cap:unbound:1", "cap:legacy_unbound:1"}
+)
+_UNBOUND_SENTINELS_CASEFOLDED = frozenset(
+    sentinel.casefold() for sentinel in _UNBOUND_CAPABILITY_SENTINELS
+)
+_UNBOUND_SENTINELS_NORMALIZED = frozenset(
+    re.sub(r"[^a-z0-9]", "", sentinel.casefold())
+    for sentinel in _UNBOUND_CAPABILITY_SENTINELS
+)
+# Section 5.2 names the modes and permissions but leaves incompatible cells
+# implicit.  Keep common read/artifact permissions, and fail closed for every
+# executor permission outside the one mode that authorizes it.
+_CAPABILITY_PERMISSION_POLICY = {
+    ("repo", "repo_read"): (
+        frozenset({"read_source"}),
+        frozenset({"execute_repo", "execute_source", "produce_patch"}),
+    ),
+    ("repo", "repo_exec"): (
+        frozenset({"execute_repo"}),
+        frozenset({"execute_source", "produce_patch"}),
+    ),
+    ("repo", "coding"): (
+        frozenset({"execute_repo", "produce_patch"}),
+        frozenset({"execute_source"}),
+    ),
+    ("source_exec", None): (
+        frozenset({"execute_source"}),
+        frozenset({"execute_repo", "produce_patch"}),
+    ),
+}
 _POLICY_MAXIMUMS = {
     "cpu_millis": 1_000,
     "memory_bytes": 2 * 1024**3,
@@ -261,6 +297,139 @@ class CapsuleTimeError(ExecutionCapsuleError):
     """Raised when capsule, route, or lease timestamps are invalid or inactive."""
 
 
+class _DuplicateJsonMemberError(ValueError):
+    pass
+
+
+def _preflight_json_value(
+    value: Any,
+    *,
+    path: str,
+    error_type: type[ExecutionCapsuleError] = CapsuleSchemaError,
+) -> None:
+    """Bound JSON-shaped values before deepcopy or recursive validation."""
+    stack: list[tuple[Any, int, bool]] = [(value, 0, False)]
+    active_containers: set[int] = set()
+    members = 0
+    scalar_bytes = 0
+
+    while stack:
+        item, depth, exiting = stack.pop()
+        if exiting:
+            active_containers.remove(id(item))
+            continue
+        if depth > MAX_CAPSULE_NESTING_DEPTH:
+            raise error_type(
+                f"{path} exceeds maximum JSON depth {MAX_CAPSULE_NESTING_DEPTH}"
+            )
+        members += 1
+        if members > _MAX_CAPSULE_MEMBERS:
+            raise error_type(f"{path} exceeds maximum JSON member count")
+
+        if type(item) is dict:
+            container_id = id(item)
+            if container_id in active_containers:
+                raise error_type(f"{path} contains a cyclic JSON object")
+            active_containers.add(container_id)
+            stack.append((item, depth, True))
+            for key, child in item.items():
+                if type(key) is not str:
+                    raise error_type(f"{path} contains a non-string object key")
+                if len(key) > _MAX_CAPSULE_SCALAR_BYTES:
+                    raise error_type(f"{path} exceeds maximum decoded JSON scalar size")
+                try:
+                    scalar_bytes += len(key.encode("utf-8"))
+                except UnicodeEncodeError as exc:
+                    raise error_type(
+                        f"{path} contains a lone Unicode surrogate"
+                    ) from exc
+                stack.append((child, depth + 1, False))
+        elif type(item) is list:
+            container_id = id(item)
+            if container_id in active_containers:
+                raise error_type(f"{path} contains a cyclic JSON array")
+            active_containers.add(container_id)
+            stack.append((item, depth, True))
+            stack.extend((child, depth + 1, False) for child in reversed(item))
+        elif type(item) is str:
+            if len(item) > _MAX_CAPSULE_SCALAR_BYTES:
+                raise error_type(f"{path} exceeds maximum decoded JSON scalar size")
+            try:
+                scalar_bytes += len(item.encode("utf-8"))
+            except UnicodeEncodeError as exc:
+                raise error_type(f"{path} contains a lone Unicode surrogate") from exc
+        elif item is None or type(item) in {bool, int, float}:
+            scalar_bytes += 32
+        else:
+            raise error_type(
+                f"{path} contains non-JSON type {type(item).__name__}"
+            )
+
+        if scalar_bytes > _MAX_CAPSULE_SCALAR_BYTES:
+            raise error_type(f"{path} exceeds maximum decoded JSON scalar size")
+
+
+def _preflight_json_wire(raw_capsule: bytes) -> None:
+    if len(raw_capsule) > MAX_CAPSULE_WIRE_BYTES:
+        raise CapsuleSchemaError(
+            f"capsule wire document exceeds {MAX_CAPSULE_WIRE_BYTES} bytes"
+        )
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in raw_capsule:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            continue
+        if byte == 0x22:
+            in_string = True
+        elif byte in {0x5B, 0x7B}:
+            depth += 1
+            if depth > MAX_CAPSULE_NESTING_DEPTH:
+                raise CapsuleSchemaError(
+                    "capsule wire document exceeds maximum JSON depth "
+                    f"{MAX_CAPSULE_NESTING_DEPTH}"
+                )
+        elif byte in {0x5D, 0x7D}:
+            depth -= 1
+
+
+def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonMemberError(key)
+        result[key] = value
+    return result
+
+
+def _decode_execution_capsule_wire(raw_capsule: bytes) -> dict[str, Any]:
+    if type(raw_capsule) is not bytes:
+        raise CapsuleSchemaError(
+            "verify_execution_capsule requires raw JSON bytes from the wire"
+        )
+    _preflight_json_wire(raw_capsule)
+    try:
+        decoded = json.loads(
+            raw_capsule,
+            object_pairs_hook=_reject_duplicate_json_members,
+        )
+    except _DuplicateJsonMemberError as exc:
+        raise CapsuleSchemaError(f"duplicate JSON member {exc.args[0]!r}") from exc
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise CapsuleSchemaError("capsule wire document is not valid JSON") from exc
+    _preflight_json_value(decoded, path="capsule")
+    if type(decoded) is not dict:
+        raise CapsuleSchemaError("capsule wire document must decode to a JSON object")
+    return decoded
+
+
 def _write_jcs_string(value: str, sink: BinaryIO) -> None:
     def replace(match: re.Match[str]) -> str:
         return _ESCAPES[match.group(0)]
@@ -383,6 +552,11 @@ def _write_jcs(value: Any, sink: BinaryIO) -> None:
 
 def canonicalize_jcs(value: Any) -> bytes:
     """Return RFC 8785/JCS canonical UTF-8 bytes for a JSON-native value."""
+    _preflight_json_value(
+        value,
+        path="JCS input",
+        error_type=CapsuleCanonicalizationError,
+    )
     sink = BytesIO()
     _write_jcs(value, sink)
     return sink.getvalue()
@@ -465,19 +639,38 @@ def _looks_like_host_path(value: str) -> bool:
     )
 
 
-def _reject_path_material(value: Any, path: str = "payload") -> None:
-    if type(value) is dict:
+def _reject_path_material(
+    value: Any,
+    path: str = "payload",
+    *,
+    validate_b64: bool = True,
+) -> None:
+    if type(value) is str:
+        if _looks_like_host_path(value):
+            raise CapsulePolicyError(f"{path} contains a forbidden host path")
+    elif type(value) is dict:
         for key, item in value.items():
             if type(key) is not str:
                 raise CapsuleSchemaError(f"{path} contains a non-string key")
             if _path_field_name(key):
                 raise CapsulePolicyError(f"{path}.{key} is a forbidden path field")
-            if not key.endswith("_b64") and type(item) is str and _looks_like_host_path(item):
-                raise CapsulePolicyError(f"{path}.{key} contains a forbidden host path")
-            _reject_path_material(item, f"{path}.{key}")
+            item_path = f"{path}.{key}"
+            if key.casefold().endswith("_b64"):
+                if validate_b64:
+                    if type(item) is not str:
+                        raise CapsuleSchemaError(
+                            f"{item_path} must be canonical base64"
+                        )
+                    _decode_b64(item, item_path)
+            else:
+                _reject_path_material(item, item_path, validate_b64=validate_b64)
     elif type(value) is list:
         for index, item in enumerate(value):
-            _reject_path_material(item, f"{path}[{index}]")
+            _reject_path_material(
+                item,
+                f"{path}[{index}]",
+                validate_b64=validate_b64,
+            )
 
 
 def _assert_capsule_json_domain(value: Any, path: str = "payload") -> None:
@@ -572,7 +765,14 @@ def _decode_b64(value: str, path: str, *, exact_bytes: int | None = None) -> byt
 
 
 def _is_unbound_capability(value: str) -> bool:
-    return "unbound" in re.findall(r"[a-z0-9]+", value.casefold())
+    # S0's scope layer is authoritative.  This secondary capsule guard matches
+    # only known sentinels, including separator variants, without substring
+    # rejection of legitimate identifiers that merely contain similar text.
+    folded = value.casefold()
+    if folded in _UNBOUND_SENTINELS_CASEFOLDED:
+        return True
+    normalized = re.sub(r"[^a-z0-9]", "", folded)
+    return normalized in _UNBOUND_SENTINELS_NORMALIZED
 
 
 def _validate_payload_semantics(payload: dict[str, Any]) -> None:
@@ -701,6 +901,22 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
             raise CapsuleSchemaError("repo capability requires a valid repo_mode")
     elif repo_mode is not None:
         raise CapsuleSchemaError("source_exec capability requires repo_mode null")
+    required_permissions, forbidden_permissions = _CAPABILITY_PERMISSION_POLICY[
+        (capability_class, repo_mode)
+    ]
+    permission_set = frozenset(permissions)
+    missing_permissions = required_permissions - permission_set
+    incompatible_permissions = forbidden_permissions & permission_set
+    if missing_permissions or incompatible_permissions:
+        details = []
+        if missing_permissions:
+            details.append(f"missing {sorted(missing_permissions)}")
+        if incompatible_permissions:
+            details.append(f"incompatible {sorted(incompatible_permissions)}")
+        raise CapsulePolicyError(
+            "payload.universe_scope.permissions do not match "
+            f"{capability_class}/{repo_mode}: {', '.join(details)}"
+        )
     for key in ("action_policy_id",):
         _text(capability, key, "payload.allowed_capability")
     for key in ("action_policy_sha256", "runner_policy_sha256"):
@@ -777,6 +993,7 @@ def create_execution_capsule(
     signing_key_id: str,
 ) -> ExecutionCapsuleV1:
     """Validate and sign an immutable V1 payload with an Ed25519 platform key."""
+    _preflight_json_value(payload, path="payload")
     payload_copy = copy.deepcopy(payload)
     payload_object = _validate_payload_structure(payload_copy)
     _reject_path_material(payload_object)
@@ -805,7 +1022,7 @@ def create_execution_capsule(
     return cast(ExecutionCapsuleV1, capsule)
 
 
-def verify_execution_capsule(
+def _verify_execution_capsule_trusted(
     capsule: ExecutionCapsuleV1 | dict[str, Any],
     *,
     verify_key: VerifyKey,
@@ -817,14 +1034,16 @@ def verify_execution_capsule(
     supported_request_schema_versions: Collection[int],
     now: datetime | None = None,
 ) -> ExecutionCapsuleV1:
-    """Verify integrity, policy, time, schema, audience, job, and lease bindings.
+    """Verify an already-trusted decoded object.
 
-    Every contextual binding is required.  There is intentionally no legacy,
-    unbound, compatibility, or override path.
+    This private path exists only for locally created in-memory capsules and
+    objects returned by the duplicate-rejecting wire parser below.  Network
+    callers must use ``verify_execution_capsule`` with raw bytes.
     """
+    _preflight_json_value(capsule, path="capsule")
     capsule_copy = copy.deepcopy(capsule)
     payload, integrity = _validate_capsule_structure(capsule_copy)
-    _reject_path_material(payload)
+    _reject_path_material(payload, validate_b64=False)
     signature = _validate_integrity(integrity)
 
     canonical_payload = canonicalize_jcs(payload)
@@ -844,6 +1063,7 @@ def verify_execution_capsule(
     except (BadSignatureError, ValueError) as exc:
         raise CapsuleIntegrityError("Ed25519 capsule signature verification failed") from exc
 
+    _reject_path_material(payload)
     _validate_payload_semantics(payload)
     try:
         supported_versions = frozenset(supported_request_schema_versions)
@@ -884,3 +1104,35 @@ def verify_execution_capsule(
     if checked_at >= _timestamp(route, "expires_at", "payload.model_broker_route"):
         raise CapsuleTimeError("capsule model broker route has expired")
     return cast(ExecutionCapsuleV1, capsule_copy)
+
+
+def verify_execution_capsule(
+    raw_capsule: bytes,
+    *,
+    verify_key: VerifyKey,
+    expected_signing_key_id: str,
+    signing_key_active: bool,
+    expected_audience_daemon_id: str,
+    expected_job_id: str,
+    expected_lease_fence: int,
+    supported_request_schema_versions: Collection[int],
+    now: datetime | None = None,
+) -> ExecutionCapsuleV1:
+    """Decode raw wire bytes and verify every V1 integrity and binding rule.
+
+    Raw bytes are mandatory so duplicate JSON members are rejected before a
+    decoder can collapse them.  There is intentionally no public decoded-dict,
+    legacy, unbound, compatibility, or override path.
+    """
+    capsule = _decode_execution_capsule_wire(raw_capsule)
+    return _verify_execution_capsule_trusted(
+        capsule,
+        verify_key=verify_key,
+        expected_signing_key_id=expected_signing_key_id,
+        signing_key_active=signing_key_active,
+        expected_audience_daemon_id=expected_audience_daemon_id,
+        expected_job_id=expected_job_id,
+        expected_lease_fence=expected_lease_fence,
+        supported_request_schema_versions=supported_request_schema_versions,
+        now=now,
+    )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import json
 import struct
 from datetime import UTC, datetime
 from typing import Any
@@ -248,7 +249,7 @@ def test_valid_capsule_is_stably_hashed_signed_bound_and_accepted() -> None:
     )
 
     verified = verify_execution_capsule(
-        capsule,
+        _wire_bytes(capsule),
         verify_key=signing_key.verify_key,
         expected_signing_key_id="platform-key:1",
         signing_key_active=True,
@@ -269,6 +270,21 @@ def _signed_capsule(signing_key: SigningKey) -> dict[str, Any]:
     )
 
 
+def _wire_bytes(capsule: dict[str, Any]) -> bytes:
+    return json.dumps(
+        capsule, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _sync_inline_request(capsule: dict[str, Any]) -> None:
+    from tinyassets.runtime.execution_capsule import canonicalize_jcs
+
+    request = capsule["payload"]["execution_request"]
+    request_bytes = canonicalize_jcs(request["inline"])
+    request["sha256"] = hashlib.sha256(request_bytes).hexdigest()
+    request["size_bytes"] = len(request_bytes)
+
+
 def _resign(capsule: dict[str, Any], signing_key: SigningKey) -> dict[str, Any]:
     from tinyassets.runtime.execution_capsule import (
         CAPSULE_DOMAIN_SEPARATOR,
@@ -284,10 +300,10 @@ def _resign(capsule: dict[str, Any], signing_key: SigningKey) -> dict[str, Any]:
     return signed
 
 
-def _verify(capsule: dict[str, Any], signing_key: SigningKey, **overrides: Any) -> Any:
-    from tinyassets.runtime.execution_capsule import verify_execution_capsule
-
-    arguments = {
+def _verification_arguments(
+    signing_key: SigningKey, **overrides: Any
+) -> dict[str, Any]:
+    arguments: dict[str, Any] = {
         "verify_key": signing_key.verify_key,
         "expected_signing_key_id": "platform-key:1",
         "signing_key_active": True,
@@ -298,7 +314,14 @@ def _verify(capsule: dict[str, Any], signing_key: SigningKey, **overrides: Any) 
         "now": datetime(2026, 7, 19, 0, 30, tzinfo=UTC),
     }
     arguments.update(overrides)
-    return verify_execution_capsule(capsule, **arguments)
+    return arguments
+
+
+def _verify(capsule: dict[str, Any], signing_key: SigningKey, **overrides: Any) -> Any:
+    from tinyassets.runtime.execution_capsule import verify_execution_capsule
+
+    arguments = _verification_arguments(signing_key, **overrides)
+    return verify_execution_capsule(_wire_bytes(capsule), **arguments)
 
 
 def _leaf_paths(value: Any, prefix: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -334,6 +357,53 @@ def _replace_at_path(root: Any, path: tuple[Any, ...], value: Any) -> None:
     for component in path[:-1]:
         target = target[component]
     target[path[-1]] = value
+
+
+@pytest.mark.parametrize(
+    ("member", "duplicate"),
+    [
+        (
+            b'"audience_daemon_id":"daemon:builder-1"',
+            b'"audience_daemon_id":"daemon:first-wins",'
+            b'"audience_daemon_id":"daemon:builder-1"',
+        ),
+        (
+            b'"owner_user_id":"user:owner-1"',
+            b'"owner_user_id":"user:first-wins",'
+            b'"owner_user_id":"user:owner-1"',
+        ),
+    ],
+    ids=["audience", "owner"],
+)
+def test_raw_wire_duplicate_members_are_rejected_before_semantic_decoding(
+    member: bytes, duplicate: bytes
+) -> None:
+    from tinyassets.runtime.execution_capsule import (
+        CapsuleSchemaError,
+        verify_execution_capsule,
+    )
+
+    signing_key = SigningKey.generate()
+    wire = _wire_bytes(_signed_capsule(signing_key))
+    assert wire.count(member) == 1
+    ambiguous_wire = wire.replace(member, duplicate, 1)
+
+    with pytest.raises(CapsuleSchemaError, match="duplicate JSON member"):
+        verify_execution_capsule(
+            ambiguous_wire, **_verification_arguments(signing_key)
+        )
+
+
+def test_public_verifier_rejects_decoded_dicts_to_force_raw_wire_parsing() -> None:
+    from tinyassets.runtime.execution_capsule import (
+        CapsuleSchemaError,
+        verify_execution_capsule,
+    )
+
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    with pytest.raises(CapsuleSchemaError, match="raw JSON bytes"):
+        verify_execution_capsule(capsule, **_verification_arguments(signing_key))
 
 
 def test_mutating_every_signed_payload_field_fails_ed25519_verification() -> None:
@@ -404,7 +474,16 @@ def test_replay_to_another_daemon_job_or_fence_is_rejected(
 
 @pytest.mark.parametrize("capability_class", ["repo", "source_exec"])
 @pytest.mark.parametrize(
-    "capability_id", ["LEGACY_UNBOUND", "UNBOUND", "cap:legacy_unbound:1"]
+    "capability_id",
+    [
+        "LEGACY_UNBOUND",
+        "UNBOUND",
+        "cap:legacy_unbound:1",
+        "cap:un-bound:1",
+        "cap:un_bound:1",
+        "cap:un.bound:1",
+        "LEGACYUNBOUND",
+    ],
 )
 def test_unbound_capability_is_permanently_rejected_for_every_sandbox_class(
     capability_class: str, capability_id: str
@@ -418,10 +497,26 @@ def test_unbound_capability_is_permanently_rejected_for_every_sandbox_class(
     capsule["payload"]["allowed_capability"]["repo_mode"] = (
         "coding" if capability_class == "repo" else None
     )
+    capsule["payload"]["universe_scope"]["permissions"] = (
+        ["read_source", "execute_repo", "produce_patch", "produce_artifact"]
+        if capability_class == "repo"
+        else ["read_source", "execute_source", "produce_artifact"]
+    )
     capsule = _resign(capsule, signing_key)
 
     with pytest.raises(CapsulePolicyError, match="permanently forbidden"):
         _verify(capsule, signing_key)
+
+
+def test_legitimate_capability_merely_containing_unbound_text_is_allowed() -> None:
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["universe_scope"]["capability_id"] = (
+        "cap:boundary-unbounded-work:1"
+    )
+    capsule = _resign(capsule, signing_key)
+
+    assert _verify(capsule, signing_key) == capsule
 
 
 def test_path_field_and_absolute_path_value_are_rejected_even_when_signed() -> None:
@@ -448,6 +543,61 @@ def test_path_field_and_absolute_path_value_are_rejected_even_when_signed() -> N
     with_path_value = _resign(with_path_value, signing_key)
     with pytest.raises(CapsulePolicyError, match="host path"):
         _verify(with_path_value, signing_key)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda capsule: capsule["payload"]["execution_request"]["inline"].update(
+            {"nested": {"inputs": ["/etc/passwd"]}}
+        ),
+        lambda capsule: capsule["payload"]["model_broker_route"].update(
+            {"allowed_model_classes": ["/etc/passwd"]}
+        ),
+    ],
+    ids=["inline-array", "typed-list"],
+)
+def test_path_strings_in_every_array_shape_are_rejected(
+    mutate: Any,
+) -> None:
+    from tinyassets.runtime.execution_capsule import CapsulePolicyError
+
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    mutate(capsule)
+    _sync_inline_request(capsule)
+    capsule = _resign(capsule, signing_key)
+
+    with pytest.raises(CapsulePolicyError, match="host path"):
+        _verify(capsule, signing_key)
+
+
+@pytest.mark.parametrize("path_value", ["/etc/shadow", "file:///etc/passwd"])
+def test_path_bearing_b64_fields_must_be_canonical_base64(path_value: str) -> None:
+    from tinyassets.runtime.execution_capsule import CapsuleSchemaError
+
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["execution_request"]["inline"]["nested"] = {
+        "payload_b64": path_value
+    }
+    _sync_inline_request(capsule)
+    capsule = _resign(capsule, signing_key)
+
+    with pytest.raises(CapsuleSchemaError, match="canonical.*base64"):
+        _verify(capsule, signing_key)
+
+
+def test_legitimate_b64_blob_in_inline_request_is_accepted() -> None:
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["execution_request"]["inline"]["nested"] = {
+        "payload_b64": base64.b64encode(b"legitimate opaque blob").decode("ascii")
+    }
+    _sync_inline_request(capsule)
+    capsule = _resign(capsule, signing_key)
+
+    assert _verify(capsule, signing_key) == capsule
 
 
 @pytest.mark.parametrize(
@@ -561,3 +711,120 @@ def test_request_reference_union_and_safe_integer_domain_are_strict() -> None:
     negative = _resign(negative, signing_key)
     with pytest.raises(CapsuleSchemaError, match="integer"):
         _verify(negative, signing_key)
+
+
+def _deep_object(depth: int) -> dict[str, Any]:
+    root: dict[str, Any] = {}
+    cursor = root
+    for _ in range(depth):
+        child: dict[str, Any] = {}
+        cursor["nested"] = child
+        cursor = child
+    return root
+
+
+@pytest.mark.parametrize("depth", [100, 500, 1_000, 5_000])
+def test_deep_create_input_raises_typed_capsule_error(depth: int) -> None:
+    from tinyassets.runtime.execution_capsule import (
+        ExecutionCapsuleError,
+        create_execution_capsule,
+    )
+
+    payload = _payload()
+    payload["execution_request"]["inline"] = _deep_object(depth)
+
+    with pytest.raises(ExecutionCapsuleError, match="depth"):
+        create_execution_capsule(
+            payload,
+            signing_key=SigningKey.generate(),
+            signing_key_id="platform-key:1",
+        )
+
+
+@pytest.mark.parametrize("depth", [100, 500, 1_000, 5_000])
+def test_deep_raw_wire_verification_raises_typed_capsule_error(depth: int) -> None:
+    from tinyassets.runtime.execution_capsule import (
+        ExecutionCapsuleError,
+        verify_execution_capsule,
+    )
+
+    signing_key = SigningKey.generate()
+    wire = b'{"nested":' * depth + b"null" + b"}" * depth
+
+    with pytest.raises(ExecutionCapsuleError, match="depth"):
+        verify_execution_capsule(wire, **_verification_arguments(signing_key))
+
+
+@pytest.mark.parametrize("depth", [100, 500, 1_000, 5_000])
+def test_deep_direct_canonicalization_raises_typed_capsule_error(depth: int) -> None:
+    from tinyassets.runtime.execution_capsule import (
+        ExecutionCapsuleError,
+        canonicalize_jcs,
+    )
+
+    with pytest.raises(ExecutionCapsuleError, match="depth"):
+        canonicalize_jcs(_deep_object(depth))
+
+
+@pytest.mark.parametrize(
+    ("capability_class", "repo_mode", "permissions"),
+    [
+        ("repo", "repo_read", []),
+        ("repo", "repo_read", ["read_source", "execute_repo"]),
+        ("repo", "repo_read", ["read_source", "execute_source"]),
+        ("repo", "repo_read", ["read_source", "produce_patch"]),
+        ("repo", "repo_exec", ["read_source"]),
+        ("repo", "repo_exec", ["execute_repo", "execute_source"]),
+        ("repo", "repo_exec", ["execute_repo", "produce_patch"]),
+        ("repo", "coding", ["read_source", "produce_patch"]),
+        ("repo", "coding", ["read_source", "execute_repo"]),
+        ("repo", "coding", ["execute_repo", "produce_patch", "execute_source"]),
+        ("source_exec", None, ["read_source"]),
+        ("source_exec", None, ["execute_source", "execute_repo"]),
+        ("source_exec", None, ["execute_source", "produce_patch"]),
+    ],
+)
+def test_executor_class_and_mode_reject_incompatible_permissions(
+    capability_class: str,
+    repo_mode: str | None,
+    permissions: list[str],
+) -> None:
+    from tinyassets.runtime.execution_capsule import CapsulePolicyError
+
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["allowed_capability"]["class"] = capability_class
+    capsule["payload"]["allowed_capability"]["repo_mode"] = repo_mode
+    capsule["payload"]["universe_scope"]["permissions"] = permissions
+    capsule = _resign(capsule, signing_key)
+
+    with pytest.raises(CapsulePolicyError, match="permissions"):
+        _verify(capsule, signing_key)
+
+
+@pytest.mark.parametrize(
+    ("capability_class", "repo_mode", "permissions"),
+    [
+        ("repo", "repo_read", ["read_source", "produce_artifact"]),
+        ("repo", "repo_exec", ["read_source", "execute_repo", "produce_artifact"]),
+        (
+            "repo",
+            "coding",
+            ["read_source", "execute_repo", "produce_patch", "produce_artifact"],
+        ),
+        ("source_exec", None, ["read_source", "execute_source", "produce_artifact"]),
+    ],
+)
+def test_executor_class_and_mode_accept_matching_permissions(
+    capability_class: str,
+    repo_mode: str | None,
+    permissions: list[str],
+) -> None:
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["allowed_capability"]["class"] = capability_class
+    capsule["payload"]["allowed_capability"]["repo_mode"] = repo_mode
+    capsule["payload"]["universe_scope"]["permissions"] = permissions
+    capsule = _resign(capsule, signing_key)
+
+    assert _verify(capsule, signing_key) == capsule
