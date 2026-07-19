@@ -65,3 +65,19 @@ orphan cleanup.
 One thing I would do differently: begin with a repository-wide inventory of
 executor credentials and executor-green alarms alongside the worker entrypoint
 search, then write the absence contract before touching compose.
+
+---
+
+What surprised me: the retired cloud worker was both production machinery and
+a test driver for surviving engine-binding invariants, so deleting the driver
+silently deleted coverage that still belonged at the binding and launch seams.
+
+Pattern worth capturing: when retiring an execution harness, classify every
+test assertion by invariant owner and rewrite surviving contracts at their
+lowest stable boundary. Also patch shared process state once outside concurrent
+workers; overlapping thread-local mock contexts can restore out of order and
+pollute an otherwise unrelated full suite.
+
+One thing I would do differently: inventory deleted test names before accepting
+the removal diff, then run mutation checks against the surviving boundary as
+the first proof that replacement coverage is load-bearing.

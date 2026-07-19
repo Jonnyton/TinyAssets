@@ -1265,8 +1265,9 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
     # bind next-step so a founder is offered "bind an engine so your universe
     # can run". Additive + best-effort — a status read must never FAIL on this,
     # so a misconfigured binding is *reported*, never raised here. The
-    # non_ambient_gate field echoes the flag state so the note is honest about
-    # whether ambient work still runs (flag off) or not (flag on).
+    # non_ambient_gate remains visible as rollout history, but S0 retired the
+    # platform worker that could consume an unbound universe. Workability is
+    # therefore derived only from the resolved binding, never from this flag.
     from tinyassets.engine_binding import (
         EngineMisconfiguredError,
         non_ambient_work_enabled,
@@ -1289,13 +1290,10 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
             binding = resolve_engine_binding(udir)
             engine_binding = binding.as_dict()
             engine_binding["non_ambient_gate"] = gate_on
-            # workable = will the daemon work this universe? Bound universes
-            # always; unbound universes only while the gate is off (ambient).
-            # A needs-migration universe is NEVER workable — every spawn would
-            # raise until its legacy subscription record is migrated out (#3).
-            engine_binding["workable"] = (
-                binding.bound or (not gate_on and not binding.needs_migration)
-            )
+            # S0 removed the platform coding-worker fleet. An unbound or
+            # retired universe has no executable route regardless of the old
+            # rollout flag; only a resolved binding is workable.
+            engine_binding["workable"] = binding.bound
             if binding.needs_record_migration:
                 # A RAW subscription record is still present → run the migration.
                 engine_binding["status"] = "misconfigured"
@@ -1338,21 +1336,12 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                 )
             elif not binding.bound:
                 engine_binding["note"] = (
-                    "This universe has no engine bound to it and will stay idle "
-                    "until you bind one — no ambient work runs for it."
-                    if gate_on
-                    else "This universe has no engine bound to it. Bind one so "
-                    "it runs on capacity you control (your own engine, a hosted "
-                    "daemon, or market-daemon capacity)."
+                    "This universe has no executable engine bound to it and will "
+                    "stay idle until you bind one — no ambient work runs for it."
                 )
                 caveats.append(
                     "engine_binding.bound is false — no engine/daemon capacity "
                     "is bound to this universe. It is idle-until-bound."
-                    if gate_on
-                    else "engine_binding.bound is false — no engine/daemon "
-                    "capacity is bound to this universe, but it is currently "
-                    "workable via ambient legacy execution (non-ambient gate "
-                    "off)."
                 )
                 actionable_next_steps.append(
                     "Bind a sanctioned engine. A founder can deposit a BYO API "
@@ -1370,7 +1359,7 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                 "capacity_kinds": [],
                 "misconfigured": True,
                 "non_ambient_gate": gate_on,
-                "workable": not gate_on,
+                "workable": False,
                 "detail": exc.detail,
                 "note": (
                     "This universe declares an engine but its capacity is "
