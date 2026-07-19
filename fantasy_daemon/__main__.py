@@ -204,16 +204,10 @@ def _dispatcher_startup(universe_path: Path) -> None:
         # our own worker_id is that predecessor's orphan — reclaim it in seconds
         # instead of waiting out the TTL. Scoped to our own id, so unlike the
         # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
-        # Require a genuinely UNIQUE worker id: when TINYASSETS_WORKER_ID is unset,
-        # cloud_worker materializes the shared DEFAULT_HOST_USER ("cloud-droplet")
-        # into the child env, which several manually-started supervisors could
-        # share — and reclaiming "our own" non-unique id would steal a live
-        # twin's task (Codex review). The compose fleet assigns unique ids
-        # (claude-1/codex-2/...), so this only excludes the un-configured default.
-        from tinyassets.cloud_worker import DEFAULT_HOST_USER
-
+        # Only an explicitly assigned process identity is safe to reclaim. An
+        # unset id cannot prove ownership of predecessor leases.
         worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
-        if worker_id and worker_id != DEFAULT_HOST_USER:
+        if worker_id:
             reclaim_predecessor_tasks(universe_path, worker_id=worker_id)
         # reclaim_leaseless=True: startup is the one safe place to also reset
         # running rows that carry no lease (pre-lease-era / corrupt orphans),
@@ -1963,7 +1957,7 @@ class DaemonController:
                         self._paused.wait(timeout=1.0)
 
                     # Activity/status handling must run even in --no-tray
-                    # cloud-worker mode; dashboard emission is gated inside
+                    # headless local-daemon mode; dashboard emission is gated inside
                     # _handle_node_output.
                     if isinstance(event, dict):
                         for node_name, node_output in event.items():

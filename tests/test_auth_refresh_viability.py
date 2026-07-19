@@ -349,22 +349,3 @@ def test_unparseable_last_refresh_field_is_suspicious(tmp_path):
 
 def test_unreadable_auth_json_returns_none(tmp_path):
     assert base._codex_last_refresh_age_s(tmp_path / "nope") is None
-
-
-# ---- supervisor wiring ----------------------------------------------------------
-
-
-def test_dead_probe_verdict_flows_into_worker_quarantine(tmp_path, monkeypatch):
-    """cloud_worker gates on subscription_auth_health; a present-but-dead
-    token must now read not_logged_in end-to-end (the 2026-06-25 class)."""
-    import tinyassets.cloud_worker as cw
-
-    _make_stale(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        base, "_codex_live_auth_probe",
-        lambda timeout_s: {"status": "not_logged_in",
-                           "detail": "refresh-viability probe FAILED"},
-    )
-    health = cw._worker_auth_health(["--provider", "codex"])
-    assert health is not None
-    assert health["status"] == "not_logged_in"

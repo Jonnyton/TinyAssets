@@ -1,14 +1,11 @@
-"""Idle-cycle single-flight — dedupe the no-claim heartbeat across workers.
+"""Idle-cycle single-flight — dedupe no-claim heartbeats across local daemons.
 
-Why this exists (root-caused live 2026-07-14): every healthy cloud worker
-supervises a ``fantasy_daemon`` subprocess that, when the dispatcher claims
-nothing, runs the per-universe idle heartbeat tail (soul-loop driver or the
-fantasy universe cycle). Task claims are file-locked
+Why this exists (root-caused live 2026-07-14): multiple daemon processes can
+run the per-universe idle heartbeat tail when the dispatcher claims nothing.
+Task claims are file-locked
 (``branch_tasks.claim_task``) but the idle cycle was not, so N healthy
-workers produced N duplicate cycles — observed as exact duplicate
-``activity.log`` pairs every ~5min, 0–2s apart, from ``worker-claude-1`` /
-``worker-claude-2`` (both settled at the supervisor backoff ceiling with a
-~1s phase offset from simultaneous compose-up).
+daemons produced N duplicate cycles — observed as exact duplicate
+``activity.log`` pairs every ~5min, 0–2s apart.
 
 Mechanism — two layers, one lock file (Codex adversarial review 2026-07-14
 required the first):

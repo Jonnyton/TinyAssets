@@ -51,3 +51,17 @@ What surprised me: terminalizing a failed decision is only recoverable if replay
 Pattern worth capturing: generation failure and projection reopening must be one atomic first-transition operation; later failure-report deliveries are observability replays, not state transitions.
 
 One thing I would do differently: include “recover, then replay the old terminal report” in the initial cap-out regression, alongside the ordinary `DecisionLocked` check.
+
+---
+
+What surprised me: deleting the compose workers was not sufficient; the
+provider-auth keepalives, deployment credential seeding, and LLM-binding canary
+still encoded platform compute as an uptime requirement.
+
+Pattern worth capturing: compute ownership must be verified negatively at every
+production boundary: service topology, credentials, health checks, alarms, and
+orphan cleanup.
+
+One thing I would do differently: begin with a repository-wide inventory of
+executor credentials and executor-green alarms alongside the worker entrypoint
+search, then write the absence contract before touching compose.

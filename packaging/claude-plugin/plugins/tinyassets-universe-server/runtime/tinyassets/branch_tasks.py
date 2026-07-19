@@ -768,9 +768,9 @@ def reclaim_predecessor_tasks(
 
     No-op when ``worker_id`` is blank: a blank id can't be scoped to "ours"
     without risking a peer's lease, so the lease TTL remains the fallback. The
-    CALLER must pass a uniquely-assigned id — a shared fallback id (e.g. the
-    ``cloud-droplet`` host-user default) could be held by multiple live
-    supervisors, so the caller excludes it (see ``_dispatcher_startup``).
+    CALLER must pass a uniquely-assigned id; shared fallback identities could
+    be held by multiple live daemons and must not be used for predecessor
+    reclamation.
     """
     clean = (worker_id or "").strip()
     if not clean:

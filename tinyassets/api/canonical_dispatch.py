@@ -651,8 +651,7 @@ def _resolve_actor_for_history() -> str:
 
     Auto-refresh writes are system-driven, not user-driven; tagging
     them with a synthetic ``auto-canonical-refresh`` author keeps the
-    audit trail honest (matches the ``cloud-droplet`` identity pattern
-    documented in AGENTS.md for system-driven writes).
+    audit trail honest by keeping automation distinct from a user identity.
     """
     return "auto-canonical-refresh"
 

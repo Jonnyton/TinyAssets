@@ -82,7 +82,7 @@ def _enforce_writer_binding(
 
     Covers BOTH identity paths — an explicit ``universe_dir`` AND the
     process-global ``TINYASSETS_UNIVERSE`` env fallback (mirrors how the
-    auth-health KEEP bypass resolves) — so a cloud-worker child with only
+    auth-health KEEP bypass resolves) — so an external-daemon child with only
     ``TINYASSETS_UNIVERSE`` set is still constrained. **FAILS CLOSED:** any
     binding/resolution error raises ``AllProvidersExhaustedError`` (never
     swallowed → never leaks to a platform-auth provider).

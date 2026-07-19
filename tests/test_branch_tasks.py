@@ -395,20 +395,3 @@ def test_dispatcher_startup_no_predecessor_reclaim_without_worker_id(
     _dispatcher_startup(tmp_path)
 
     assert read_queue(tmp_path)[0].status == "running"
-
-
-def test_dispatcher_startup_skips_shared_default_worker_id(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    """The shared 'cloud-droplet' fallback id is NOT predecessor-reclaimed —
-    several manually-started supervisors could share it, so reclaiming it would
-    risk stealing a live twin's task (Codex review). Falls back to TTL."""
-    from fantasy_daemon.__main__ import _dispatcher_startup
-    from tinyassets.cloud_worker import DEFAULT_HOST_USER
-
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", DEFAULT_HOST_USER)
-    _claim_running(tmp_path, worker=DEFAULT_HOST_USER)  # fresh lease under default id
-
-    _dispatcher_startup(tmp_path)
-
-    assert read_queue(tmp_path)[0].status == "running"

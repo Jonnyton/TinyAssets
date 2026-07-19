@@ -591,8 +591,7 @@ def _codex_refresh_viability(
     an MCP request must never block on a probe subprocess): it serves the
     freshness fast path and any cached verdict, and reports stale creds as
     "ok" with a probe-deferred detail instead of probing inline. The
-    quarantine decision itself lives in the cloud_worker gate, which always
-    probes.
+    execution-gate decision belongs to the external daemon, which may probe.
     """
     import time as _time
 
@@ -618,8 +617,7 @@ def _codex_refresh_viability(
         "TINYASSETS_AUTH_PROBE_TTL_S", DEFAULT_AUTH_PROBE_TTL_S,
     )
     now = _time.time()
-    # Disk cache first (cross-process/container truth: the worker's probe
-    # verdict must be visible to the daemon's get_status), then the
+    # Disk cache first (cross-process truth for an external daemon fleet), then the
     # in-memory layer (covers read-only CODEX_HOMEs).
     cached = _read_probe_cache_file(codex_home)
     if cached is None:
@@ -631,7 +629,7 @@ def _codex_refresh_viability(
         presence_ok["detail"] = (
             f"auth.json present at {codex_home}; last_refresh stale "
             f"(age {'unknown' if age is None else f'{age:.0f}s'}) — live "
-            "probe deferred to the worker gate"
+            "probe deferred to the external daemon"
         )
         return presence_ok
 
@@ -653,13 +651,12 @@ def _codex_refresh_viability(
     return health
 
 
-# Subscription-auth health. The 2026-06-25 loop-wedge root cause was a worker
+# Subscription-auth health. The 2026-06-25 loop-wedge root cause was an executor
 # whose claude-code auth was dead (no credentials) that kept claiming tasks
 # and failing every one, poisoning the queue for ~3 weeks undetected.
 # ``is_available()`` only checks the binary is on PATH (``shutil.which``); it
-# does NOT check login state. This helper checks login state so workers can
-# self-quarantine (cloud_worker) and get_status can surface dead writer auth
-# instead of leaving it buried in worker logs.
+# does NOT check login state. This helper lets an external daemon fail closed
+# before claiming work instead of leaving the failure buried in executor logs.
 #
 # Returns ``{"provider", "status", "detail"}`` where status is one of:
 #   "ok"            — subscription credentials are present (and, for codex,

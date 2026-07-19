@@ -98,8 +98,8 @@ RUN mkdir -p /opt/codex-install && \
     npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
     /opt/codex-install/node_modules/.bin/codex --version
 
-# Install Claude Code CLI next to Codex so the daemon can register the
-# subscription-backed claude-code provider when CLAUDE_CONFIG_DIR is present.
+# Install Claude Code CLI next to Codex so the same OSS image can support
+# separately operated daemon runtimes outside the production control plane.
 RUN mkdir -p /opt/claude-code-install && \
     npm install --prefix /opt/claude-code-install "@anthropic-ai/claude-code@${CLAUDE_CODE_CLI_VERSION}" && \
     /opt/claude-code-install/node_modules/.bin/claude --version
@@ -111,9 +111,7 @@ COPY pyproject.toml ./
 COPY PLAN.md ./
 COPY tinyassets/ ./tinyassets/
 COPY domains/ ./domains/
-# fantasy_daemon is the node-execution runtime invoked by
-# tinyassets.cloud_worker. Without it in the image, the cloud worker
-# supervisor crash-loops with `No module named fantasy_daemon`.
+# Keep the legacy local daemon package importable for non-production OSS use.
 COPY fantasy_daemon/ ./fantasy_daemon/
 
 # Install into a venv that we'll copy to the final stage. Keeps the

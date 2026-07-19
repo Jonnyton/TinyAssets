@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Codex CLI cross-container serialization wrapper.
 #
-# deploy/compose.yml sets CODEX_HOME=/data/.codex in the
-# tinyassets-daemon and Codex worker-fleet containers so Codex's in-place
-# refresh chain survives container restarts on the shared tinyassets-data
-# volume. Codex's official CI/CD
+# Separately operated daemon fleets may share one CODEX_HOME and use this
+# wrapper to serialize refresh-token writes. Codex's official CI/CD
 # auth guide warns that one auth.json must NOT be shared across
 # concurrent runners — concurrent refresh attempts race the rotation
 # and trigger the exact `refresh_token_reused` class we are fixing
