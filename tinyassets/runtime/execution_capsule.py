@@ -60,16 +60,11 @@ _PERMISSIONS = frozenset(
 )
 _SANDBOX_CLASSES = frozenset({"repo", "source_exec"})
 _REPO_MODES = frozenset({"repo_read", "repo_exec", "coding"})
-_UNBOUND_CAPABILITY_SENTINELS = frozenset(
-    {
-        "unbound",
-        "legacy_unbound",
-        "cap:unbound",
-        "cap:legacy:unbound",
-        "cap:unbound:1",
-        "cap:legacy:unbound:1",
-    }
-)
+# S0's authoritative binding state is ScopeKind.LEGACY_UNBOUND, whose platform
+# wire value is exactly ``legacy_unbound`` (sandbox_policy.py).  The capsule
+# check is only a defense-in-depth tripwire for that known platform sentinel;
+# it must not guess that otherwise legitimate capability IDs are "unbound".
+_UNBOUND_CAPABILITY_SENTINELS = frozenset({"legacy_unbound"})
 _UNBOUND_SENTINELS_NORMALIZED = frozenset(
     re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", sentinel).casefold())
     for sentinel in _UNBOUND_CAPABILITY_SENTINELS
@@ -822,9 +817,10 @@ def _decode_b64(value: str, path: str, *, exact_bytes: int | None = None) -> byt
 
 
 def _is_unbound_capability(value: str) -> bool:
-    # S0's resolved scope binding is authoritative.  This secondary capsule
-    # guard compares complete sentinels after the opaque-ID ASCII gate, never
-    # substrings of legitimate identifiers such as "unbounded-work".
+    # The opaque-ID gate has already enforced ASCII.  NFKC + casefold + removal
+    # of the permitted separators prevents spelling evasions of the one exact
+    # platform sentinel.  S0's resolved scope binding remains authoritative;
+    # arbitrary "unbound-like" capability IDs are intentionally not rejected.
     folded = unicodedata.normalize("NFKC", value).casefold()
     normalized = re.sub(r"[^a-z0-9]", "", folded)
     return normalized in _UNBOUND_SENTINELS_NORMALIZED
@@ -980,7 +976,7 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
         raise CapsuleSchemaError("payload.allowed_capability.image_digest must be immutable")
     if _is_unbound_capability(capability_id):
         raise CapsulePolicyError(
-            "LEGACY_UNBOUND and all unbound capabilities are permanently forbidden "
+            "the LEGACY_UNBOUND platform sentinel is permanently forbidden "
             f"for sandbox execution class {capability_class!r}"
         )
 
@@ -1078,6 +1074,7 @@ def create_execution_capsule(
         },
     }
     _preflight_json_value(capsule, path="capsule")
+    _preflight_json_wire(canonicalize_jcs(capsule))
     return cast(ExecutionCapsuleV1, capsule)
 
 

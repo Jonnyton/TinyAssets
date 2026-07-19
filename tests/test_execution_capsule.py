@@ -472,20 +472,28 @@ def test_replay_to_another_daemon_job_or_fence_is_rejected(
         _verify(capsule, signing_key, **overrides)
 
 
+def test_capsule_unbound_tripwire_matches_the_authoritative_scope_sentinel() -> None:
+    from tinyassets.runtime.execution_capsule import _UNBOUND_CAPABILITY_SENTINELS
+    from tinyassets.sandbox_policy import ScopeKind
+
+    assert _UNBOUND_CAPABILITY_SENTINELS == frozenset(
+        {ScopeKind.LEGACY_UNBOUND.value}
+    )
+
+
 @pytest.mark.parametrize("capability_class", ["repo", "source_exec"])
 @pytest.mark.parametrize(
     "capability_id",
     [
+        "legacy_unbound",
         "LEGACY_UNBOUND",
-        "UNBOUND",
-        "cap:legacy_unbound:1",
-        "cap:un-bound:1",
-        "cap:un_bound:1",
-        "cap:un.bound:1",
+        "legacy-unbound",
+        "legacy.unbound",
+        "legacy:unbound",
         "LEGACYUNBOUND",
     ],
 )
-def test_unbound_capability_is_permanently_rejected_for_every_sandbox_class(
+def test_platform_unbound_sentinel_and_ascii_evasions_are_rejected(
     capability_class: str, capability_id: str
 ) -> None:
     from tinyassets.runtime.execution_capsule import CapsulePolicyError
@@ -508,12 +516,25 @@ def test_unbound_capability_is_permanently_rejected_for_every_sandbox_class(
         _verify(capsule, signing_key)
 
 
-def test_legitimate_capability_merely_containing_unbound_text_is_allowed() -> None:
+@pytest.mark.parametrize(
+    "capability_id",
+    [
+        "unboundv1",
+        "unbounded",
+        "cap:boundary-unbounded-work:1",
+        "unbound",
+        "cap:unbound",
+        "cap:legacy:unbound",
+        "cap:unbound:1",
+        "cap:legacy:unbound:1",
+    ],
+)
+def test_non_sentinel_capability_ids_are_left_to_authoritative_scope_binding(
+    capability_id: str,
+) -> None:
     signing_key = SigningKey.generate()
     capsule = _signed_capsule(signing_key)
-    capsule["payload"]["universe_scope"]["capability_id"] = (
-        "cap:boundary-unbounded-work:1"
-    )
+    capsule["payload"]["universe_scope"]["capability_id"] = capability_id
     capsule = _resign(capsule, signing_key)
 
     assert _verify(capsule, signing_key) == capsule
@@ -522,29 +543,11 @@ def test_legitimate_capability_merely_containing_unbound_text_is_allowed() -> No
 @pytest.mark.parametrize(
     "capability_id",
     [
-        "unbound",
-        "legacy_unbound",
-        "cap:unbound",
-        "cap:legacy:unbound",
-        "legacyunbound",
+        "ＬＥＧＡＣＹ＿ＵＮＢＯＵＮＤ",
+        "legacy_unbоund",
     ],
 )
-def test_bare_unbound_capability_sentinels_are_rejected(
-    capability_id: str,
-) -> None:
-    from tinyassets.runtime.execution_capsule import CapsulePolicyError
-
-    signing_key = SigningKey.generate()
-    capsule = _signed_capsule(signing_key)
-    capsule["payload"]["universe_scope"]["capability_id"] = capability_id
-    capsule = _resign(capsule, signing_key)
-
-    with pytest.raises(CapsulePolicyError, match="permanently forbidden"):
-        _verify(capsule, signing_key)
-
-
-@pytest.mark.parametrize("capability_id", ["ＵＮＢＯＵＮＤ", "unbоund"])
-def test_non_ascii_capability_ids_are_rejected_as_malformed(
+def test_non_ascii_platform_sentinel_evasions_are_rejected_as_malformed(
     capability_id: str,
 ) -> None:
     from tinyassets.runtime.execution_capsule import CapsuleSchemaError
@@ -905,6 +908,57 @@ def test_create_and_public_verify_share_the_same_maximum_token_count() -> None:
             payload,
             signing_key=signing_key,
             signing_key_id="platform-key:1",
+        )
+
+
+def test_create_and_public_verify_share_the_same_maximum_wire_bytes() -> None:
+    from tinyassets.runtime.execution_capsule import (
+        MAX_CAPSULE_WIRE_BYTES,
+        CapsuleSchemaError,
+        create_execution_capsule,
+        verify_execution_capsule,
+    )
+
+    signing_key = SigningKey.generate()
+    payload = _payload()
+    escaped_prefix = "\u0001" * 1_000
+    payload["model_broker_route"]["grant_ref"] = escaped_prefix
+    baseline_capsule = create_execution_capsule(
+        payload,
+        signing_key=signing_key,
+        signing_key_id="platform-key:1",
+    )
+    payload["model_broker_route"]["grant_ref"] = escaped_prefix + "g" * (
+        MAX_CAPSULE_WIRE_BYTES - len(_wire_bytes(baseline_capsule))
+    )
+
+    capsule = create_execution_capsule(
+        payload,
+        signing_key=signing_key,
+        signing_key_id="platform-key:1",
+    )
+    wire = _wire_bytes(capsule)
+    assert len(wire) == MAX_CAPSULE_WIRE_BYTES
+    assert _verify(capsule, signing_key) == capsule
+
+    byte_limit_error = (
+        f"capsule wire document exceeds {MAX_CAPSULE_WIRE_BYTES} bytes"
+    )
+    payload["model_broker_route"]["grant_ref"] += "g"
+    with pytest.raises(CapsuleSchemaError, match=byte_limit_error):
+        create_execution_capsule(
+            payload,
+            signing_key=signing_key,
+            signing_key_id="platform-key:1",
+        )
+
+    capsule["payload"]["model_broker_route"]["grant_ref"] += "g"
+    over_limit_wire = _wire_bytes(capsule)
+    assert len(over_limit_wire) == MAX_CAPSULE_WIRE_BYTES + 1
+    with pytest.raises(CapsuleSchemaError, match=byte_limit_error):
+        verify_execution_capsule(
+            over_limit_wire,
+            **_verification_arguments(signing_key),
         )
 
 
