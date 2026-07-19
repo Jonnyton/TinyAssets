@@ -477,6 +477,10 @@ def _validate_semantics(body: dict[str, Any], *, repo_mode: str | None) -> None:
     _timestamp_value(body["completed_at"], "result.completed_at")
 
     if outcome == "succeeded":
+        if capability_class == "repo" and repo_mode == "coding" and patch is None:
+            raise ResultPolicyError("successful repo/coding result requires repo_patch")
+        if capability_class == "source_exec" and output is None:
+            raise ResultPolicyError("successful source_exec result requires source_output")
         if not all(
             revalidation[key]
             for key in (

@@ -228,6 +228,55 @@ def test_repo_read_cannot_smuggle_patch_and_success_requires_cleanup() -> None:
         create_result(body)
 
 
+def test_successful_coding_requires_repo_patch() -> None:
+    from tinyassets.runtime.execution_result import ResultPolicyError
+
+    body = result_body()
+    body["repo_patch"] = None
+    body["logs"] = []
+    body["revalidation"]["resulting_tree"] = None
+    with pytest.raises(ResultPolicyError, match="requires repo_patch"):
+        create_result(body)
+
+
+def test_successful_source_exec_requires_source_output() -> None:
+    from tinyassets.runtime.execution_result import (
+        ResultPolicyError,
+        create_execution_result,
+    )
+
+    body = result_body()
+    body["executor"]["capability_class"] = "source_exec"
+    body["repo_patch"] = None
+    body["source_output"] = None
+    body["revalidation"]["resulting_tree"] = None
+    with pytest.raises(ResultPolicyError, match="requires source_output"):
+        create_execution_result(
+            body,
+            signing_key=SigningKey.generate(),
+            device_key_id="device-key:builder-1",
+            repo_mode=None,
+        )
+
+
+def test_successful_repo_read_may_omit_output() -> None:
+    from tinyassets.runtime.execution_result import create_execution_result
+
+    body = result_body()
+    body["repo_patch"] = None
+    body["source_output"] = None
+    body["logs"] = []
+    body["revalidation"]["resulting_tree"] = None
+    result = create_execution_result(
+        body,
+        signing_key=SigningKey.generate(),
+        device_key_id="device-key:builder-1",
+        repo_mode="repo_read",
+    )
+    assert result["repo_patch"] is None
+    assert result["source_output"] is None
+
+
 def test_source_exec_artifact_candidate_is_typed_and_patch_free() -> None:
     from tinyassets.runtime.execution_result import create_execution_result
 
