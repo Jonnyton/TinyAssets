@@ -7,6 +7,7 @@ import inspect
 import json
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
@@ -259,6 +260,66 @@ def test_enrollment_and_owner_wrong_code_attempts_lock_out(tmp_path):
     assert locked_owner.value.code == "ENROLLMENT_APPROVAL_LOCKED"
 
 
+def test_pending_enrollment_capacity_is_per_device_identity(tmp_path):
+    daemon_auth, daemon_api = _contracts()
+    service = daemon_api.DaemonEnrollmentService(db_path=tmp_path / "enrollment-cap.sqlite3")
+    signer = daemon_auth.DaemonSigner("enrollment-cap-device", key_store=_MemoryKeyStore())
+
+    for _ in range(daemon_api._MAX_PENDING_ENROLLMENTS_PER_IDENTITY):
+        service.create_enrollment(signer.identity)
+    with pytest.raises(daemon_api.DaemonApiError) as capped:
+        service.create_enrollment(signer.identity)
+
+    assert capped.value.status == 429
+    assert capped.value.code == "DAEMON_ENROLLMENT_CAPACITY"
+    assert capped.value.retryable is True
+    other = daemon_auth.DaemonSigner("honest-other-device", key_store=_MemoryKeyStore())
+    assert service.create_enrollment(other.identity).enrollment_id
+
+
+def test_enrollment_creation_rate_is_per_device_identity(tmp_path, monkeypatch):
+    daemon_auth, daemon_api = _contracts()
+    monkeypatch.setattr(daemon_api, "_MAX_PENDING_ENROLLMENTS_PER_IDENTITY", 10, raising=False)
+    monkeypatch.setattr(daemon_api, "_ENROLLMENT_CREATION_LIMIT_PER_MINUTE", 2, raising=False)
+    service = daemon_api.DaemonEnrollmentService(db_path=tmp_path / "enrollment-rate.sqlite3")
+    signer = daemon_auth.DaemonSigner("enrollment-rate-device", key_store=_MemoryKeyStore())
+
+    service.create_enrollment(signer.identity)
+    service.create_enrollment(signer.identity)
+    with pytest.raises(daemon_api.DaemonApiError) as rate_limited:
+        service.create_enrollment(signer.identity)
+
+    assert rate_limited.value.status == 429
+    assert rate_limited.value.code == "DAEMON_ENROLLMENT_RATE_LIMITED"
+    assert rate_limited.value.retryable is True
+
+
+def test_concurrent_enrollment_creation_serializes_capacity_across_instances(
+    tmp_path, monkeypatch
+):
+    daemon_auth, daemon_api = _contracts()
+    monkeypatch.setattr(daemon_api, "_MAX_PENDING_ENROLLMENTS_PER_IDENTITY", 1, raising=False)
+    monkeypatch.setattr(daemon_api, "_ENROLLMENT_CREATION_LIMIT_PER_MINUTE", 10, raising=False)
+    db_path = tmp_path / "concurrent-enrollment-cap.sqlite3"
+    first = daemon_api.DaemonEnrollmentService(db_path=db_path)
+    second = daemon_api.DaemonEnrollmentService(db_path=db_path)
+    signer = daemon_auth.DaemonSigner("concurrent-enrollment-device", key_store=_MemoryKeyStore())
+    barrier = threading.Barrier(2)
+
+    def create(service):
+        barrier.wait()
+        try:
+            service.create_enrollment(signer.identity)
+            return "accepted"
+        except daemon_api.DaemonApiError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(create, (first, second)))
+
+    assert sorted(results) == ["DAEMON_ENROLLMENT_CAPACITY", "accepted"]
+
+
 def test_stale_pending_enrollments_are_reaped(tmp_path):
     daemon_auth, daemon_api = _contracts()
     now = [time.time()]
@@ -384,6 +445,75 @@ def test_access_token_issuance_purges_expired_rows_and_caps_outstanding(tmp_path
         issue()
     assert capped.value.status == 429
     assert capped.value.code == "DAEMON_TOKEN_CAPACITY"
+
+
+def test_challenge_capacity_bounds_unconsumed_rows_and_allows_honest_flow(auth_harness):
+    _, daemon_api, service, signer, completed, _, _ = auth_harness
+    first = service.create_challenge(completed.daemon_id)
+    for _ in range(daemon_api._MAX_OUTSTANDING_CHALLENGES_PER_DAEMON - 1):
+        service.create_challenge(completed.daemon_id)
+
+    with pytest.raises(daemon_api.DaemonApiError) as capped:
+        service.create_challenge(completed.daemon_id)
+
+    assert capped.value.status == 429
+    assert capped.value.code == "DAEMON_CHALLENGE_CAPACITY"
+    assert capped.value.retryable is True
+    service.issue_access_token(
+        completed.daemon_id,
+        first.challenge,
+        signer.sign_challenge(completed.daemon_id, first.challenge),
+    )
+    assert service.create_challenge(completed.daemon_id).challenge
+
+
+def test_challenge_creation_rate_is_per_daemon(tmp_path, monkeypatch):
+    daemon_auth, daemon_api = _contracts()
+    monkeypatch.setattr(daemon_api, "_MAX_OUTSTANDING_CHALLENGES_PER_DAEMON", 10, raising=False)
+    monkeypatch.setattr(daemon_api, "_CHALLENGE_CREATION_LIMIT_PER_MINUTE", 2, raising=False)
+    service = daemon_api.DaemonEnrollmentService(db_path=tmp_path / "challenge-rate.sqlite3")
+    signer = daemon_auth.DaemonSigner("challenge-rate-device", key_store=_MemoryKeyStore())
+    enrollment = service.create_enrollment(signer.identity)
+    service.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
+    completed = _complete_enrollment(service, signer, enrollment.enrollment_id)
+
+    service.create_challenge(completed.daemon_id)
+    service.create_challenge(completed.daemon_id)
+    with pytest.raises(daemon_api.DaemonApiError) as rate_limited:
+        service.create_challenge(completed.daemon_id)
+
+    assert rate_limited.value.status == 429
+    assert rate_limited.value.code == "DAEMON_CHALLENGE_RATE_LIMITED"
+    assert rate_limited.value.retryable is True
+
+
+def test_concurrent_challenge_creation_serializes_capacity_across_instances(
+    tmp_path, monkeypatch
+):
+    daemon_auth, daemon_api = _contracts()
+    monkeypatch.setattr(daemon_api, "_MAX_OUTSTANDING_CHALLENGES_PER_DAEMON", 1, raising=False)
+    monkeypatch.setattr(daemon_api, "_CHALLENGE_CREATION_LIMIT_PER_MINUTE", 10, raising=False)
+    db_path = tmp_path / "concurrent-challenge-cap.sqlite3"
+    first = daemon_api.DaemonEnrollmentService(db_path=db_path)
+    signer = daemon_auth.DaemonSigner("concurrent-challenge-device", key_store=_MemoryKeyStore())
+    enrollment = first.create_enrollment(signer.identity)
+    first.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
+    completed = _complete_enrollment(first, signer, enrollment.enrollment_id)
+    second = daemon_api.DaemonEnrollmentService(db_path=db_path)
+    barrier = threading.Barrier(2)
+
+    def create(service):
+        barrier.wait()
+        try:
+            service.create_challenge(completed.daemon_id)
+            return "accepted"
+        except daemon_api.DaemonApiError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(create, (first, second)))
+
+    assert sorted(results) == ["DAEMON_CHALLENGE_CAPACITY", "accepted"]
 
 
 def test_request_rate_and_outstanding_nonce_caps_are_per_daemon(auth_harness, monkeypatch):
@@ -1003,6 +1133,29 @@ def test_auth_session_rejects_supplied_token_over_five_minutes(monkeypatch):
         session.sign_headers("GET", "/v1/jobs", "", None)
 
 
+@pytest.mark.parametrize(
+    "expires_at",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "positive-infinity", "negative-infinity"],
+)
+def test_auth_session_rejects_non_finite_supplied_token_expiry(monkeypatch, expires_at):
+    daemon_auth = _daemon_auth()
+    now = 1_800_000_000.0
+    monkeypatch.setattr(daemon_auth.time, "time", lambda: now)
+    signer = daemon_auth.DaemonSigner("non-finite-session-token", key_store=_MemoryKeyStore())
+    token = daemon_auth.AccessToken(
+        value="non-finite",
+        daemon_id="daemon-1",
+        key_thumbprint=signer.identity.key_thumbprint,
+        credential_epoch=1,
+        expires_at=expires_at,
+    )
+    session = daemon_auth.DaemonAuthSession(signer, token_supplier=lambda: token)
+
+    with pytest.raises(ValueError, match="finite"):
+        session.sign_headers("GET", "/v1/jobs", "", None)
+
+
 def test_enrollment_client_rejects_issued_token_over_five_minutes(monkeypatch):
     daemon_auth = _daemon_auth()
     registration = importlib.import_module("tinyassets.host_pool.registration")
@@ -1022,6 +1175,45 @@ def test_enrollment_client_rejects_issued_token_over_five_minutes(monkeypatch):
                     "key_thumbprint": signer.identity.key_thumbprint,
                     "credential_epoch": 1,
                     "expires_at": now + 301,
+                },
+            ),
+        ]
+
+        def request(self, method, url, headers, body, timeout):
+            status, payload = self.responses.pop(0)
+            return status, json.dumps(payload)
+
+    client = registration.DaemonEnrollmentClient("https://control.example", http=FakeHttp())
+    with pytest.raises(registration.DaemonEnrollmentError) as rejected:
+        client.issue_access_token(signer, "daemon-1")
+
+    assert rejected.value.code == "TOKEN_LIFETIME_INVALID"
+
+
+@pytest.mark.parametrize(
+    "expires_at",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "positive-infinity", "negative-infinity"],
+)
+def test_enrollment_client_rejects_non_finite_issued_token_expiry(monkeypatch, expires_at):
+    daemon_auth = _daemon_auth()
+    registration = importlib.import_module("tinyassets.host_pool.registration")
+    now = 1_800_000_000.0
+    monkeypatch.setattr(registration.time, "time", lambda: now)
+    signer = daemon_auth.DaemonSigner("non-finite-issued-token", key_store=_MemoryKeyStore())
+
+    class FakeHttp:
+        responses = [
+            (201, {"challenge": "challenge-1"}),
+            (
+                201,
+                {
+                    "access_token": "non-finite",
+                    "token_type": "Bearer",
+                    "daemon_id": "daemon-1",
+                    "key_thumbprint": signer.identity.key_thumbprint,
+                    "credential_epoch": 1,
+                    "expires_at": expires_at,
                 },
             ),
         ]
@@ -1135,7 +1327,7 @@ def test_enrollment_transport_failure_is_typed_retryable_and_sanitized():
 
     class FailingHttp:
         def request(self, method, url, headers, body, timeout):
-            raise OSError("transport_secret_in_string")
+            raise OSError("TRANSPORT_SECRET_SENTINEL")
 
     client = registration.DaemonEnrollmentClient("https://control.example", http=FailingHttp())
     with pytest.raises(registration.DaemonEnrollmentError) as failed:
@@ -1144,7 +1336,29 @@ def test_enrollment_transport_failure_is_typed_retryable_and_sanitized():
     assert failed.value.status == 0
     assert failed.value.code == "CONTROL_PLANE_UNAVAILABLE"
     assert failed.value.retryable is True
-    assert "transport_secret_in_string" not in str(failed.value)
+    assert "TRANSPORT_SECRET_SENTINEL" not in str(failed.value)
+    assert failed.value.__cause__ is None
+    assert failed.value.__context__ is None
+    assert "TRANSPORT_SECRET_SENTINEL" not in "".join(traceback.format_exception(failed.value))
+
+
+def test_enrollment_malformed_json_body_is_unreachable_from_sanitized_error():
+    daemon_auth = _daemon_auth()
+    registration = importlib.import_module("tinyassets.host_pool.registration")
+    signer = daemon_auth.DaemonSigner("malformed-response", key_store=_MemoryKeyStore())
+
+    class MalformedHttp:
+        def request(self, method, url, headers, body, timeout):
+            return 200, '{"body":"TRANSPORT_SECRET_SENTINEL"'
+
+    client = registration.DaemonEnrollmentClient("https://control.example", http=MalformedHttp())
+    with pytest.raises(registration.DaemonEnrollmentError) as failed:
+        client.begin(signer)
+
+    assert "TRANSPORT_SECRET_SENTINEL" not in str(failed.value)
+    assert failed.value.__cause__ is None
+    assert failed.value.__context__ is None
+    assert "TRANSPORT_SECRET_SENTINEL" not in "".join(traceback.format_exception(failed.value))
 
 
 def test_error_contract_is_typed_and_fail_closed():

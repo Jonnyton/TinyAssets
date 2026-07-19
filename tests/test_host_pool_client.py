@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import traceback
 
 import pytest
 
@@ -200,6 +201,18 @@ def test_non_contract_error_body_is_not_exposed(client):
 
     assert failed.value.code == "CONTROL_PLANE_ERROR"
     assert "response_secret_in_string" not in str(failed.value)
+
+
+def test_malformed_success_body_is_unreachable_from_sanitized_error(client):
+    client._fake.push(200, '{"body":"TRANSPORT_SECRET_SENTINEL"')
+
+    with pytest.raises(HostPoolError) as failed:
+        client.get("host-1")
+
+    assert "TRANSPORT_SECRET_SENTINEL" not in str(failed.value)
+    assert failed.value.__cause__ is None
+    assert failed.value.__context__ is None
+    assert "TRANSPORT_SECRET_SENTINEL" not in "".join(traceback.format_exception(failed.value))
 
 
 def test_heartbeat_posts_to_daemon_resource(client):

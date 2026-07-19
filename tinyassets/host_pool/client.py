@@ -247,11 +247,16 @@ class HostPoolClient:
         if not text:
             return None
         try:
-            return json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise HostPoolError(
+            response = json.loads(text)
+        except json.JSONDecodeError:
+            response_error = HostPoolError(
                 status, "INVALID_RESPONSE", "Control plane returned invalid JSON"
-            ) from exc
+            )
+        else:
+            response_error = None
+        if response_error is not None:
+            raise response_error
+        return response
 
     # -- host_pool CRUD ----------------------------------------------------
 

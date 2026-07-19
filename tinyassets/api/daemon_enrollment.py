@@ -34,12 +34,18 @@ from tinyassets.storage import data_dir
 
 _CHALLENGE_LIFETIME_SECONDS = 60
 _ENROLLMENT_LIFETIME_SECONDS = 300
+# These public pre-auth creation surfaces need DB-serialized ceilings. S4 must
+# preserve them when it adds the rest of B2; it must not relax or bypass them.
+_MAX_PENDING_ENROLLMENTS_PER_IDENTITY = 8
+_ENROLLMENT_CREATION_LIMIT_PER_MINUTE = 16
+_MAX_OUTSTANDING_CHALLENGES_PER_DAEMON = 16
+_CHALLENGE_CREATION_LIMIT_PER_MINUTE = 30
 _ENROLLMENT_APPROVAL_ATTEMPT_LIMIT = 5
 _OWNER_ATTEMPT_WINDOW_SECONDS = 300
 _TOKEN_ISSUANCE_LIMIT_PER_MINUTE = 8
 _MAX_OUTSTANDING_ACCESS_TOKENS = 8
 _REQUEST_RATE_LIMIT_PER_MINUTE = 120
-_MAX_OUTSTANDING_NONCES = 512
+_MAX_OUTSTANDING_NONCES = 600
 _VERIFICATION_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _VERIFICATION_CODE_LENGTH = 12
 
@@ -179,6 +185,10 @@ class DaemonEnrollmentService:
                 );
                 CREATE INDEX IF NOT EXISTS daemon_nonce_expiry
                     ON daemon_request_nonces(expires_at);
+                CREATE INDEX IF NOT EXISTS daemon_enrollment_identity_created
+                    ON daemon_enrollments(key_thumbprint, created_at);
+                CREATE INDEX IF NOT EXISTS daemon_challenge_capacity
+                    ON daemon_challenges(daemon_id, used_at, expires_at);
                 CREATE TABLE IF NOT EXISTS daemon_enrollment_owner_attempts (
                     owner_user_id TEXT PRIMARY KEY,
                     failed_attempts INTEGER NOT NULL,
@@ -273,7 +283,7 @@ class DaemonEnrollmentService:
                 secrets.choice(_VERIFICATION_ALPHABET) for _ in range(_VERIFICATION_CODE_LENGTH)
             )
             try:
-                with self._lock, self._connection:
+                with self._lock, self._immediate_transaction():
                     self._connection.execute(
                         """
                         DELETE FROM daemon_enrollments
@@ -281,6 +291,34 @@ class DaemonEnrollmentService:
                         """,
                         (created_at,),
                     )
+                    pending = self._connection.execute(
+                        """
+                        SELECT COUNT(*) FROM daemon_enrollments
+                        WHERE key_thumbprint = ? AND status = 'pending' AND expires_at > ?
+                        """,
+                        (identity.key_thumbprint, created_at),
+                    ).fetchone()[0]
+                    if pending >= _MAX_PENDING_ENROLLMENTS_PER_IDENTITY:
+                        raise DaemonApiError(
+                            429,
+                            "DAEMON_ENROLLMENT_CAPACITY",
+                            "Device identity has too many pending enrollments",
+                            retryable=True,
+                        )
+                    created_recently = self._connection.execute(
+                        """
+                        SELECT COUNT(*) FROM daemon_enrollments
+                        WHERE key_thumbprint = ? AND created_at > ?
+                        """,
+                        (identity.key_thumbprint, created_at - 60),
+                    ).fetchone()[0]
+                    if created_recently >= _ENROLLMENT_CREATION_LIMIT_PER_MINUTE:
+                        raise DaemonApiError(
+                            429,
+                            "DAEMON_ENROLLMENT_RATE_LIMITED",
+                            "Device enrollment creation rate exceeded",
+                            retryable=True,
+                        )
                     self._connection.execute(
                         """
                         INSERT INTO daemon_enrollments (
@@ -574,7 +612,7 @@ class DaemonEnrollmentService:
         now = self._clock()
         challenge = secrets.token_urlsafe(32)
         expires_at = now + _CHALLENGE_LIFETIME_SECONDS
-        with self._lock, self._connection:
+        with self._lock, self._immediate_transaction():
             daemon = self._connection.execute(
                 "SELECT revoked_at FROM enrolled_daemons WHERE daemon_id = ?",
                 (daemon_id,),
@@ -584,9 +622,39 @@ class DaemonEnrollmentService:
             if daemon["revoked_at"] is not None:
                 raise DaemonApiError(410, "CREDENTIAL_REVOKED", "Device credential is revoked")
             self._connection.execute(
-                "DELETE FROM daemon_challenges WHERE expires_at < ?",
+                "DELETE FROM daemon_challenges WHERE expires_at <= ?",
                 (now,),
             )
+            outstanding = self._connection.execute(
+                """
+                SELECT COUNT(*) FROM daemon_challenges
+                WHERE daemon_id = ? AND used_at IS NULL AND expires_at > ?
+                """,
+                (daemon_id, now),
+            ).fetchone()[0]
+            if outstanding >= _MAX_OUTSTANDING_CHALLENGES_PER_DAEMON:
+                raise DaemonApiError(
+                    429,
+                    "DAEMON_CHALLENGE_CAPACITY",
+                    "Daemon has too many outstanding access-token challenges",
+                    retryable=True,
+                )
+            # Challenge expiry is exactly one minute after creation, so active
+            # rows (used or unused) are the per-minute creation ledger.
+            created_recently = self._connection.execute(
+                """
+                SELECT COUNT(*) FROM daemon_challenges
+                WHERE daemon_id = ? AND expires_at > ?
+                """,
+                (daemon_id, now),
+            ).fetchone()[0]
+            if created_recently >= _CHALLENGE_CREATION_LIMIT_PER_MINUTE:
+                raise DaemonApiError(
+                    429,
+                    "DAEMON_CHALLENGE_RATE_LIMITED",
+                    "Daemon access-token challenge creation rate exceeded",
+                    retryable=True,
+                )
             self._connection.execute(
                 """
                 INSERT INTO daemon_challenges (challenge_hash, daemon_id, expires_at)

@@ -14,6 +14,7 @@ import base64
 import ctypes
 import hashlib
 import json
+import math
 import platform
 import secrets
 import threading
@@ -286,6 +287,8 @@ class DaemonAuthSession:
             now = time.time()
             if self._token is None or self._token.expires_at <= now + _TOKEN_REFRESH_LEEWAY_SECONDS:
                 supplied = self._token_supplier()
+                if not math.isfinite(supplied.expires_at):
+                    raise ValueError("token supplier returned a non-finite access-token expiry")
                 if supplied.expires_at <= now:
                     raise ValueError("token supplier returned an expired access token")
                 # Client clock is authoritative for acceptance: no positive skew

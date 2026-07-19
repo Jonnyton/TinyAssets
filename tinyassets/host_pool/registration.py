@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -102,21 +103,29 @@ class DaemonEnrollmentClient:
                 body,
                 self._timeout,
             )
-        except Exception as exc:
-            raise DaemonEnrollmentError(
+        except Exception:
+            transport_error = DaemonEnrollmentError(
                 0,
                 "CONTROL_PLANE_UNAVAILABLE",
                 "Control plane is unavailable",
                 retryable=True,
-            ) from exc
+            )
+        else:
+            transport_error = None
+        if transport_error is not None:
+            raise transport_error
         try:
             response = json.loads(text) if text else {}
-        except json.JSONDecodeError as exc:
-            raise DaemonEnrollmentError(
+        except json.JSONDecodeError:
+            response_error = DaemonEnrollmentError(
                 status,
                 "INVALID_RESPONSE",
                 "Invalid control-plane JSON",
-            ) from exc
+            )
+        else:
+            response_error = None
+        if response_error is not None:
+            raise response_error
         if status < 200 or status >= 300:
             error = response.get("error", {}) if isinstance(response, dict) else {}
             raise DaemonEnrollmentError(
@@ -215,7 +224,10 @@ class DaemonEnrollmentClient:
             raise DaemonEnrollmentError(0, "TOKEN_BINDING_MISMATCH", "Credential epoch is invalid")
         now = time.time()
         # Do not use clock skew to extend the five-minute bearer lifetime.
-        if token.expires_at <= now or token.expires_at > now + MAX_ACCESS_TOKEN_LIFETIME_SECONDS:
+        if not math.isfinite(token.expires_at) or (
+            token.expires_at <= now
+            or token.expires_at > now + MAX_ACCESS_TOKEN_LIFETIME_SECONDS
+        ):
             raise DaemonEnrollmentError(
                 0,
                 "TOKEN_LIFETIME_INVALID",
