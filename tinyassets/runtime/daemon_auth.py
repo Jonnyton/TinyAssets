@@ -32,6 +32,7 @@ MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 300
 MAX_CLOCK_SKEW_SECONDS = 60
 _REQUEST_DOMAIN = b"tinyassets.daemon-request.v1\0"
 _CHALLENGE_DOMAIN = b"tinyassets.daemon-challenge.v1\0"
+_CHALLENGE_CREATION_DOMAIN = b"tinyassets.daemon-challenge-creation.v1\0"
 _ENROLLMENT_COMPLETION_DOMAIN = b"tinyassets.daemon-enrollment-completion.v1\0"
 _THUMBPRINT_DOMAIN = b"tinyassets.daemon-ed25519.v1\0"
 _TOKEN_REFRESH_LEEWAY_SECONDS = 30
@@ -222,6 +223,26 @@ def canonical_challenge(daemon_id: str, challenge: str) -> bytes:
     ).encode("ascii")
 
 
+def canonical_challenge_creation(daemon_id: str, timestamp: int, nonce: str) -> bytes:
+    if not daemon_id:
+        raise ValueError("daemon_id is required")
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+        raise ValueError("challenge creation timestamp must be an integer")
+    if not isinstance(nonce, str) or not nonce or len(nonce) > 256:
+        raise ValueError("challenge creation nonce must contain 1 to 256 characters")
+    payload = {
+        "daemon_id": daemon_id,
+        "nonce": nonce,
+        "timestamp": timestamp,
+    }
+    return _CHALLENGE_CREATION_DOMAIN + json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+
+
 def canonical_enrollment_completion(enrollment_id: str, installation_nonce: bytes) -> bytes:
     if not enrollment_id or len(installation_nonce) < 32:
         raise ValueError("enrollment_id and installation nonce are required")
@@ -254,6 +275,29 @@ class DaemonSigner:
 
     def sign_challenge(self, daemon_id: str, challenge: str) -> str:
         return _b64encode(self.sign(canonical_challenge(daemon_id, challenge)))
+
+    def challenge_creation_proof(
+        self,
+        daemon_id: str,
+        *,
+        timestamp: int | None = None,
+        nonce: str | None = None,
+    ) -> dict[str, int | str]:
+        request_timestamp = int(time.time()) if timestamp is None else int(timestamp)
+        request_nonce = nonce or secrets.token_urlsafe(24)
+        return {
+            "timestamp": request_timestamp,
+            "nonce": request_nonce,
+            "signature": _b64encode(
+                self.sign(
+                    canonical_challenge_creation(
+                        daemon_id,
+                        request_timestamp,
+                        request_nonce,
+                    )
+                )
+            ),
+        }
 
     def enrollment_completion_proof(self, enrollment_id: str) -> dict[str, str]:
         nonce = self.identity.installation_nonce
@@ -569,6 +613,7 @@ __all__ = [
     "action_affecting_headers",
     "b64decode",
     "canonical_challenge",
+    "canonical_challenge_creation",
     "canonical_enrollment_completion",
     "canonical_request",
     "default_device_keystore",

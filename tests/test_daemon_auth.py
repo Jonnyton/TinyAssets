@@ -41,6 +41,16 @@ def _complete_enrollment(service, signer, enrollment_id):
     )
 
 
+def _create_challenge(service, signer, daemon_id):
+    return service.create_challenge(
+        daemon_id,
+        **signer.challenge_creation_proof(
+            daemon_id,
+            timestamp=int(service._clock()),
+        ),
+    )
+
+
 class _MemoryKeyStore:
     """Test-only key custody; production must use an OS keystore."""
 
@@ -87,7 +97,7 @@ def auth_harness(tmp_path):
     enrollment = service.create_enrollment(signer.identity)
     service.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
     completed = _complete_enrollment(service, signer, enrollment.enrollment_id)
-    challenge = service.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(service, signer, completed.daemon_id)
     token = service.issue_access_token(
         completed.daemon_id,
         challenge.challenge,
@@ -395,7 +405,7 @@ def test_server_refuses_access_token_lifetime_over_five_minutes(tmp_path):
     enrollment = service.create_enrollment(signer.identity)
     service.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
     completed = _complete_enrollment(service, signer, enrollment.enrollment_id)
-    challenge = service.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(service, signer, completed.daemon_id)
 
     with pytest.raises(daemon_api.DaemonApiError) as denied:
         service.issue_access_token(
@@ -421,7 +431,7 @@ def test_access_token_issuance_purges_expired_rows_and_caps_outstanding(tmp_path
     completed = _complete_enrollment(service, signer, enrollment.enrollment_id)
 
     def issue(lifetime=300):
-        challenge = service.create_challenge(completed.daemon_id)
+        challenge = _create_challenge(service, signer, completed.daemon_id)
         return service.issue_access_token(
             completed.daemon_id,
             challenge.challenge,
@@ -449,12 +459,12 @@ def test_access_token_issuance_purges_expired_rows_and_caps_outstanding(tmp_path
 
 def test_challenge_capacity_bounds_unconsumed_rows_and_allows_honest_flow(auth_harness):
     _, daemon_api, service, signer, completed, _, _ = auth_harness
-    first = service.create_challenge(completed.daemon_id)
+    first = _create_challenge(service, signer, completed.daemon_id)
     for _ in range(daemon_api._MAX_OUTSTANDING_CHALLENGES_PER_DAEMON - 1):
-        service.create_challenge(completed.daemon_id)
+        _create_challenge(service, signer, completed.daemon_id)
 
     with pytest.raises(daemon_api.DaemonApiError) as capped:
-        service.create_challenge(completed.daemon_id)
+        _create_challenge(service, signer, completed.daemon_id)
 
     assert capped.value.status == 429
     assert capped.value.code == "DAEMON_CHALLENGE_CAPACITY"
@@ -464,7 +474,7 @@ def test_challenge_capacity_bounds_unconsumed_rows_and_allows_honest_flow(auth_h
         first.challenge,
         signer.sign_challenge(completed.daemon_id, first.challenge),
     )
-    assert service.create_challenge(completed.daemon_id).challenge
+    assert _create_challenge(service, signer, completed.daemon_id).challenge
 
 
 def test_challenge_creation_rate_is_per_daemon(tmp_path, monkeypatch):
@@ -477,10 +487,10 @@ def test_challenge_creation_rate_is_per_daemon(tmp_path, monkeypatch):
     service.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
     completed = _complete_enrollment(service, signer, enrollment.enrollment_id)
 
-    service.create_challenge(completed.daemon_id)
-    service.create_challenge(completed.daemon_id)
+    _create_challenge(service, signer, completed.daemon_id)
+    _create_challenge(service, signer, completed.daemon_id)
     with pytest.raises(daemon_api.DaemonApiError) as rate_limited:
-        service.create_challenge(completed.daemon_id)
+        _create_challenge(service, signer, completed.daemon_id)
 
     assert rate_limited.value.status == 429
     assert rate_limited.value.code == "DAEMON_CHALLENGE_RATE_LIMITED"
@@ -505,7 +515,7 @@ def test_concurrent_challenge_creation_serializes_capacity_across_instances(
     def create(service):
         barrier.wait()
         try:
-            service.create_challenge(completed.daemon_id)
+            _create_challenge(service, signer, completed.daemon_id)
             return "accepted"
         except daemon_api.DaemonApiError as exc:
             return exc.code
@@ -514,6 +524,114 @@ def test_concurrent_challenge_creation_serializes_capacity_across_instances(
         results = list(executor.map(create, (first, second)))
 
     assert sorted(results) == ["DAEMON_CHALLENGE_CAPACITY", "accepted"]
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning"
+)
+def test_wrong_device_cannot_fill_honest_daemon_challenge_capacity(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    daemon_auth, daemon_api = _contracts()
+    challenge_capacity = daemon_api._MAX_OUTSTANDING_CHALLENGES_PER_DAEMON
+    now = [1_800_000_000.0]
+    service = daemon_api.DaemonEnrollmentService(
+        db_path=tmp_path / "challenge-pop.sqlite3", clock=lambda: now[0]
+    )
+    honest = daemon_auth.DaemonSigner("honest-challenge-device", key_store=_MemoryKeyStore())
+    attacker = daemon_auth.DaemonSigner("attacker-challenge-device", key_store=_MemoryKeyStore())
+    enrollment = service.create_enrollment(honest.identity)
+    service.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
+    completed = _complete_enrollment(service, honest, enrollment.enrollment_id)
+    app = FastAPI()
+    app.include_router(daemon_api.create_router(service, owner_resolver=lambda request: "owner-a"))
+    client = TestClient(app)
+
+    attacker_responses = []
+    for index in range(challenge_capacity):
+        attacker_responses.append(
+            client.post(
+                "/v1/daemon-access-tokens/challenge",
+                json={
+                    "daemon_id": completed.daemon_id,
+                    **attacker.challenge_creation_proof(
+                        completed.daemon_id,
+                        timestamp=int(now[0]),
+                        nonce=f"attacker-{index}",
+                    ),
+                },
+            )
+        )
+
+    rows_after_attack = service._connection.execute(
+        "SELECT COUNT(*) FROM daemon_challenges"
+    ).fetchone()[0]
+    proof_rows_after_attack = service._connection.execute(
+        "SELECT COUNT(*) FROM daemon_challenge_creation_nonces"
+    ).fetchone()[0]
+    accepted = client.post(
+        "/v1/daemon-access-tokens/challenge",
+        json={
+            "daemon_id": completed.daemon_id,
+            **honest.challenge_creation_proof(
+                completed.daemon_id,
+                timestamp=int(now[0]),
+                nonce="honest-after-attack",
+            ),
+        },
+    )
+    challenge_rows = service._connection.execute(
+        "SELECT COUNT(*) FROM daemon_challenges"
+    ).fetchone()[0]
+
+    assert (
+        [response.status_code for response in attacker_responses],
+        [response.json().get("error", {}).get("code") for response in attacker_responses],
+        rows_after_attack,
+        proof_rows_after_attack,
+        challenge_rows,
+        accepted.status_code,
+    ) == (
+        [401] * challenge_capacity,
+        ["INVALID_SIGNATURE"] * challenge_capacity,
+        0,
+        0,
+        1,
+        201,
+    )
+
+
+def test_challenge_creation_proof_replay_is_rejected(auth_harness):
+    _, daemon_api, service, signer, completed, _, now = auth_harness
+    proof = signer.challenge_creation_proof(
+        completed.daemon_id,
+        timestamp=int(now[0]),
+        nonce="challenge-create-replay",
+    )
+
+    service.create_challenge(completed.daemon_id, **proof)
+    with pytest.raises(daemon_api.DaemonApiError) as replayed:
+        service.create_challenge(completed.daemon_id, **proof)
+
+    assert replayed.value.status == 401
+    assert replayed.value.code == "REPLAY_DETECTED"
+
+
+@pytest.mark.parametrize("offset", [-61, 61])
+def test_challenge_creation_proof_rejects_clock_skew(auth_harness, offset):
+    _, daemon_api, service, signer, completed, _, now = auth_harness
+    proof = signer.challenge_creation_proof(
+        completed.daemon_id,
+        timestamp=int(now[0]) + offset,
+        nonce=f"challenge-create-skew-{offset}",
+    )
+
+    with pytest.raises(daemon_api.DaemonApiError) as skewed:
+        service.create_challenge(completed.daemon_id, **proof)
+
+    assert skewed.value.status == 401
+    assert skewed.value.code == "CLOCK_SKEW"
 
 
 def test_request_rate_and_outstanding_nonce_caps_are_per_daemon(auth_harness, monkeypatch):
@@ -548,6 +666,12 @@ def test_request_rate_and_outstanding_nonce_caps_are_per_daemon(auth_harness, mo
     assert capacity.value.code == "DAEMON_NONCE_CAPACITY"
 
 
+def test_request_nonce_capacity_has_five_minute_rate_headroom():
+    _, daemon_api = _contracts()
+
+    assert daemon_api._MAX_OUTSTANDING_NONCES >= 660
+
+
 def test_positive_fresh_signed_request_succeeds(auth_harness):
     daemon_auth, _, service, signer, completed, token, now = auth_harness
     signed = _signed_request(daemon_auth, signer, token, now=now[0])
@@ -580,7 +704,7 @@ def test_replay_is_rejected_after_access_token_renewal(auth_harness):
     daemon_auth, daemon_api, service, signer, completed, token, now = auth_harness
     signed = _signed_request(daemon_auth, signer, token, now=now[0], nonce="cross-token")
     service.verify_request(token.value, signed, b"{}", expected_owner_user_id="owner-a")
-    challenge = service.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(service, signer, completed.daemon_id)
     renewed = service.issue_access_token(
         completed.daemon_id,
         challenge.challenge,
@@ -602,7 +726,7 @@ def test_concurrent_replay_across_service_instances_allows_exactly_one(tmp_path)
     enrollment = first.create_enrollment(signer.identity)
     first.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
     completed = _complete_enrollment(first, signer, enrollment.enrollment_id)
-    challenge = first.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(first, signer, completed.daemon_id)
     token = first.issue_access_token(
         completed.daemon_id,
         challenge.challenge,
@@ -649,7 +773,7 @@ def test_revocation_cannot_commit_between_request_validation_and_nonce_consume(
     enrollment = verifier.create_enrollment(signer.identity)
     verifier.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
     completed = _complete_enrollment(verifier, signer, enrollment.enrollment_id)
-    challenge = verifier.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(verifier, signer, completed.daemon_id)
     token = verifier.issue_access_token(
         completed.daemon_id,
         challenge.challenge,
@@ -721,7 +845,7 @@ def test_revocation_cannot_commit_between_challenge_validation_and_token_mint(
     enrollment = issuer.create_enrollment(signer.identity)
     issuer.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
     completed = _complete_enrollment(issuer, signer, enrollment.enrollment_id)
-    challenge = issuer.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(issuer, signer, completed.daemon_id)
     challenge_signature = signer.sign_challenge(completed.daemon_id, challenge.challenge)
     signature_entered = threading.Event()
     release_signature = threading.Event()
@@ -850,7 +974,7 @@ def test_epoch_increment_immediately_rejects_existing_token(auth_harness):
 
 def test_revoked_daemon_cannot_exchange_fresh_access_token(auth_harness):
     _, daemon_api, service, signer, completed, _, _ = auth_harness
-    challenge = service.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(service, signer, completed.daemon_id)
     service.revoke_daemon("owner-a", completed.daemon_id)
 
     with pytest.raises(daemon_api.DaemonApiError) as revoked:
@@ -978,7 +1102,7 @@ def test_real_asgi_dependency_binds_verbatim_target_body_and_headers(tmp_path):
     enrollment = service.create_enrollment(signer.identity)
     service.approve_enrollment(enrollment.enrollment_id, owner_user_id="owner-a")
     completed = _complete_enrollment(service, signer, enrollment.enrollment_id)
-    challenge = service.create_challenge(completed.daemon_id)
+    challenge = _create_challenge(service, signer, completed.daemon_id)
     token = service.issue_access_token(
         completed.daemon_id,
         challenge.challenge,
@@ -1282,6 +1406,15 @@ def test_enrollment_client_posts_start_complete_and_signed_challenge():
     assert http.calls[1][1].endswith("/v1/daemon-enrollments/enr-1:complete")
     assert http.calls[2][1].endswith("/v1/daemon-access-tokens/challenge")
     assert http.calls[3][1].endswith("/v1/daemon-access-tokens")
+    challenge_request = json.loads(http.calls[2][3])
+    VerifyKey(signer.identity.ed25519_public_key).verify(
+        daemon_auth.canonical_challenge_creation(
+            challenge_request["daemon_id"],
+            challenge_request["timestamp"],
+            challenge_request["nonce"],
+        ),
+        base64.urlsafe_b64decode(challenge_request["signature"] + "=="),
+    )
     token_request = json.loads(http.calls[3][3])
     assert token_request["daemon_id"] == "daemon-1"
     assert base64.urlsafe_b64decode(token_request["signature"] + "==")
@@ -1424,9 +1557,18 @@ def test_http_enrollment_routes_complete_owner_approved_token_flow(tmp_path):
     assert "owner_user_id" not in completed.json()
     owner_resolution_disabled[0] = False
     daemon_id = completed.json()["daemon_id"]
-    challenge = client.post(
+    unsigned_challenge = client.post(
         "/v1/daemon-access-tokens/challenge",
         json={"daemon_id": daemon_id},
+    )
+    assert unsigned_challenge.status_code == 401
+    assert unsigned_challenge.json()["error"]["code"] == "INVALID_AUTHENTICATION"
+    challenge = client.post(
+        "/v1/daemon-access-tokens/challenge",
+        json={
+            "daemon_id": daemon_id,
+            **signer.challenge_creation_proof(daemon_id),
+        },
     )
     assert challenge.status_code == 201
     challenge_value = challenge.json()["challenge"]
@@ -1447,7 +1589,13 @@ def test_http_enrollment_routes_complete_owner_approved_token_flow(tmp_path):
 
     revoked_challenge = client.post(
         "/v1/daemon-access-tokens/challenge",
-        json={"daemon_id": daemon_id},
+        json={
+            "daemon_id": daemon_id,
+            **signer.challenge_creation_proof(
+                daemon_id,
+                nonce="challenge-after-revocation",
+            ),
+        },
     )
     assert revoked_challenge.status_code == 410
     assert revoked_challenge.json()["error"]["code"] == "CREDENTIAL_REVOKED"

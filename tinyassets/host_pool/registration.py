@@ -180,7 +180,10 @@ class DaemonEnrollmentClient:
     def issue_access_token(self, signer: DaemonSigner, daemon_id: str) -> AccessToken:
         challenge_response = self._post(
             "/v1/daemon-access-tokens/challenge",
-            {"daemon_id": daemon_id},
+            {
+                "daemon_id": daemon_id,
+                **signer.challenge_creation_proof(daemon_id),
+            },
         )
         try:
             challenge = str(challenge_response["challenge"])

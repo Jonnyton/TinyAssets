@@ -26,6 +26,7 @@ from tinyassets.runtime.daemon_auth import (
     action_affecting_headers,
     b64decode,
     canonical_challenge,
+    canonical_challenge_creation,
     canonical_enrollment_completion,
     canonical_request,
     request_body_hash,
@@ -34,8 +35,11 @@ from tinyassets.storage import data_dir
 
 _CHALLENGE_LIFETIME_SECONDS = 60
 _ENROLLMENT_LIFETIME_SECONDS = 300
-# These public pre-auth creation surfaces need DB-serialized ceilings. S4 must
-# preserve them when it adds the rest of B2; it must not relax or bypass them.
+# Enrollment creation is inherently unauthenticated. Its per-key ceilings stop
+# single-identity amplification, while global flood protection is a REQUIRED
+# S4/infra edge rate-limit (gateway/Cloudflare). A global app-layer cap is
+# deliberately not used because an attacker could fill it and lock out every
+# legitimate new daemon.
 _MAX_PENDING_ENROLLMENTS_PER_IDENTITY = 8
 _ENROLLMENT_CREATION_LIMIT_PER_MINUTE = 16
 _MAX_OUTSTANDING_CHALLENGES_PER_DAEMON = 16
@@ -45,7 +49,8 @@ _OWNER_ATTEMPT_WINDOW_SECONDS = 300
 _TOKEN_ISSUANCE_LIMIT_PER_MINUTE = 8
 _MAX_OUTSTANDING_ACCESS_TOKENS = 8
 _REQUEST_RATE_LIMIT_PER_MINUTE = 120
-_MAX_OUTSTANDING_NONCES = 600
+# Five minutes at 120/min is 600; retain ten percent scheduling headroom.
+_MAX_OUTSTANDING_NONCES = 660
 _VERIFICATION_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _VERIFICATION_CODE_LENGTH = 12
 
@@ -168,6 +173,13 @@ class DaemonEnrollmentService:
                     expires_at REAL NOT NULL,
                     used_at REAL
                 );
+                CREATE TABLE IF NOT EXISTS daemon_challenge_creation_nonces (
+                    daemon_id TEXT NOT NULL REFERENCES enrolled_daemons(daemon_id),
+                    nonce TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    used_at REAL NOT NULL,
+                    PRIMARY KEY (daemon_id, nonce)
+                );
                 CREATE TABLE IF NOT EXISTS daemon_access_tokens (
                     token_hash BLOB PRIMARY KEY,
                     daemon_id TEXT NOT NULL REFERENCES enrolled_daemons(daemon_id),
@@ -189,6 +201,8 @@ class DaemonEnrollmentService:
                     ON daemon_enrollments(key_thumbprint, created_at);
                 CREATE INDEX IF NOT EXISTS daemon_challenge_capacity
                     ON daemon_challenges(daemon_id, used_at, expires_at);
+                CREATE INDEX IF NOT EXISTS daemon_challenge_creation_nonce_expiry
+                    ON daemon_challenge_creation_nonces(expires_at);
                 CREATE TABLE IF NOT EXISTS daemon_enrollment_owner_attempts (
                     owner_user_id TEXT PRIMARY KEY,
                     failed_attempts INTEGER NOT NULL,
@@ -607,20 +621,61 @@ class DaemonEnrollmentService:
             credential_epoch=int(daemon["credential_epoch"]),
         )
 
-    def create_challenge(self, daemon_id: str) -> DaemonChallenge:
+    def create_challenge(
+        self,
+        daemon_id: str,
+        *,
+        timestamp: int,
+        nonce: str,
+        signature: str,
+    ) -> DaemonChallenge:
         daemon_id = self._require_identifier(daemon_id, "daemon_id")
         now = self._clock()
-        challenge = secrets.token_urlsafe(32)
-        expires_at = now + _CHALLENGE_LIFETIME_SECONDS
         with self._lock, self._immediate_transaction():
             daemon = self._connection.execute(
-                "SELECT revoked_at FROM enrolled_daemons WHERE daemon_id = ?",
+                "SELECT ed25519_public_key, revoked_at FROM enrolled_daemons WHERE daemon_id = ?",
                 (daemon_id,),
             ).fetchone()
             if daemon is None:
                 raise DaemonApiError(404, "DAEMON_NOT_FOUND", "Daemon not found")
             if daemon["revoked_at"] is not None:
                 raise DaemonApiError(410, "CREDENTIAL_REVOKED", "Device credential is revoked")
+            if (
+                not isinstance(timestamp, int)
+                or isinstance(timestamp, bool)
+                or abs(now - timestamp) > MAX_CLOCK_SKEW_SECONDS
+            ):
+                raise DaemonApiError(
+                    401, "CLOCK_SKEW", "Challenge request timestamp is outside allowed skew"
+                )
+            try:
+                VerifyKey(daemon["ed25519_public_key"]).verify(
+                    canonical_challenge_creation(daemon_id, timestamp, nonce),
+                    b64decode(signature),
+                )
+            except (BadSignatureError, ValueError, TypeError):
+                raise DaemonApiError(
+                    401,
+                    "INVALID_SIGNATURE",
+                    "Challenge request signature is invalid",
+                )
+            self._connection.execute(
+                "DELETE FROM daemon_challenge_creation_nonces WHERE expires_at <= ?",
+                (now,),
+            )
+            replayed = self._connection.execute(
+                """
+                SELECT 1 FROM daemon_challenge_creation_nonces
+                WHERE daemon_id = ? AND nonce = ?
+                """,
+                (daemon_id, nonce),
+            ).fetchone()
+            if replayed is not None:
+                raise DaemonApiError(
+                    401,
+                    "REPLAY_DETECTED",
+                    "Challenge request nonce was already used",
+                )
             self._connection.execute(
                 "DELETE FROM daemon_challenges WHERE expires_at <= ?",
                 (now,),
@@ -655,6 +710,21 @@ class DaemonEnrollmentService:
                     "Daemon access-token challenge creation rate exceeded",
                     retryable=True,
                 )
+            challenge = secrets.token_urlsafe(32)
+            expires_at = now + _CHALLENGE_LIFETIME_SECONDS
+            self._connection.execute(
+                """
+                INSERT INTO daemon_challenge_creation_nonces (
+                    daemon_id, nonce, expires_at, used_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    daemon_id,
+                    nonce,
+                    now + MAX_ACCESS_TOKEN_LIFETIME_SECONDS,
+                    now,
+                ),
+            )
             self._connection.execute(
                 """
                 INSERT INTO daemon_challenges (challenge_hash, daemon_id, expires_at)
@@ -1122,7 +1192,12 @@ def create_router(
     async def create_access_challenge(request: Request):
         try:
             payload = await body_object(request)
-            value = service.create_challenge(payload["daemon_id"])
+            value = service.create_challenge(
+                payload["daemon_id"],
+                timestamp=payload["timestamp"],
+                nonce=payload["nonce"],
+                signature=payload["signature"],
+            )
             return JSONResponse(
                 {
                     "daemon_id": value.daemon_id,
@@ -1132,7 +1207,11 @@ def create_router(
                 status_code=201,
             )
         except (KeyError, TypeError):
-            error = _malformed("daemon_id is required")
+            error = DaemonApiError(
+                401,
+                "INVALID_AUTHENTICATION",
+                "Device proof-of-possession is required",
+            )
             return JSONResponse(error.as_dict(), status_code=error.status)
         except DaemonApiError as exc:
             return JSONResponse(exc.as_dict(), status_code=exc.status)
