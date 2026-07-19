@@ -244,6 +244,43 @@ def test_corrupted_platform_object_is_never_referenceable(tmp_path: Path) -> Non
         )
 
 
+def test_commit_rejects_same_size_corrupt_existing_object_and_preserves_staging(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.blob_refs import BlobHashMismatchError
+
+    blob_store = store(tmp_path)
+    content = b"verified staging bytes"
+    declared = declaration(content)
+    upload = init_write(blob_store, declared, content)
+    object_path = (
+        tmp_path
+        / "blob-store"
+        / "objects"
+        / declared["sha256"][:2]
+        / declared["sha256"]
+    )
+    object_path.parent.mkdir(parents=True)
+    object_path.write_bytes(b"x" * len(content))
+    staging_path = tmp_path / "blob-store" / "uploads" / f"{upload.upload_id}.part"
+
+    with pytest.raises(BlobHashMismatchError):
+        blob_store.commit_blob(
+            upload.upload_id,
+            owner_user_id="user:owner-1",
+            daemon_id="daemon:builder-1",
+        )
+    assert staging_path.read_bytes() == content
+
+    object_path.unlink()
+    ref = blob_store.commit_blob(
+        upload.upload_id,
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+    )
+    assert ref.sha256 == declared["sha256"]
+
+
 @pytest.mark.parametrize(
     "binding_override",
     [

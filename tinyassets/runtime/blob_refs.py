@@ -406,7 +406,11 @@ class BlobStore:
                 os.fsync(handle.fileno())
 
     def commit_blob(self, upload_id: str, *, owner_user_id: str, daemon_id: str) -> BlobReference:
-        """Verify size and hash, then atomically make the content referenceable."""
+        """Verify size and hash, then atomically make the content referenceable.
+
+        A corrupt existing CAS object fails closed without deleting the verified
+        staging upload, allowing a safe retry after the object is repaired.
+        """
         _canonical_uuid(upload_id, "upload_id")
         owner = _opaque_id(owner_user_id, "owner_user_id")
         daemon = _opaque_id(daemon_id, "daemon_id")
@@ -446,8 +450,7 @@ class BlobStore:
             object_path = self._object_path(upload["sha256"])
             object_path.parent.mkdir(parents=True, exist_ok=True)
             if object_path.exists():
-                if object_path.stat().st_size != upload["size_bytes"]:
-                    raise BlobStateError("existing CAS object has contradictory size")
+                self._verify_platform_object(upload["sha256"], upload["size_bytes"])
                 staging.unlink()
             else:
                 os.replace(staging, object_path)
