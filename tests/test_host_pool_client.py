@@ -45,7 +45,7 @@ class _FakeHttp:
     def request(self, method, url, headers, body, timeout):  # noqa: ARG002 — timeout
         self.calls.append((method, url, dict(headers), body))
         if not self.responses:
-            raise HostPoolError(0, "fake: no scripted response")
+            raise HostPoolError(0, "TEST_TRANSPORT_EMPTY", "No scripted response")
         status, resp_body = self.responses.pop(0)
         if isinstance(resp_body, (dict, list)):
             resp_body = json.dumps(resp_body)
@@ -53,7 +53,7 @@ class _FakeHttp:
 
 
 class _FakeAuth:
-    def sign_headers(self, method, path, body):
+    def sign_headers(self, method, path, query, body, *, action_headers):
         return {
             "Authorization": "Bearer daemon-token",
             "X-TinyAssets-Body-SHA256": "0" * 64,
@@ -164,6 +164,42 @@ def test_register_error_raises_host_pool_error(client):
             provider="local", capability_id="c",
         )
     assert ctx.value.status == 400
+
+
+def test_standard_error_envelope_is_typed_without_raw_body(client):
+    client._fake.push(
+        429,
+        {
+            "error": {
+                "code": "DAEMON_RATE_LIMITED",
+                "message": "Try later",
+                "retryable": True,
+                "request_id": "req-rate",
+                "details": {"retry_after": 10},
+            }
+        },
+    )
+
+    with pytest.raises(HostPoolError) as failed:
+        client.get("host-1")
+
+    assert failed.value.status == 429
+    assert failed.value.code == "DAEMON_RATE_LIMITED"
+    assert failed.value.message == "Try later"
+    assert failed.value.retryable is True
+    assert failed.value.request_id == "req-rate"
+    assert failed.value.details == {"retry_after": 10}
+    assert not hasattr(failed.value, "body")
+
+
+def test_non_contract_error_body_is_not_exposed(client):
+    client._fake.push(500, "response_secret_in_string")
+
+    with pytest.raises(HostPoolError) as failed:
+        client.get("host-1")
+
+    assert failed.value.code == "CONTROL_PLANE_ERROR"
+    assert "response_secret_in_string" not in str(failed.value)
 
 
 def test_heartbeat_posts_to_daemon_resource(client):

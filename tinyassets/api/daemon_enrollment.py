@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,15 +23,25 @@ from tinyassets.runtime.daemon_auth import (
     AccessToken,
     DevicePublicIdentity,
     SignedRequest,
+    action_affecting_headers,
     b64decode,
     canonical_challenge,
+    canonical_enrollment_completion,
     canonical_request,
     request_body_hash,
 )
 from tinyassets.storage import data_dir
 
 _CHALLENGE_LIFETIME_SECONDS = 60
+_ENROLLMENT_LIFETIME_SECONDS = 300
+_ENROLLMENT_APPROVAL_ATTEMPT_LIMIT = 5
+_OWNER_ATTEMPT_WINDOW_SECONDS = 300
+_TOKEN_ISSUANCE_LIMIT_PER_MINUTE = 8
+_MAX_OUTSTANDING_ACCESS_TOKENS = 8
+_REQUEST_RATE_LIMIT_PER_MINUTE = 120
+_MAX_OUTSTANDING_NONCES = 512
 _VERIFICATION_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_VERIFICATION_CODE_LENGTH = 12
 
 
 class DaemonApiError(Exception):
@@ -130,14 +141,17 @@ class DaemonEnrollmentService:
                     status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'completed')),
                     owner_user_id TEXT,
                     daemon_id TEXT UNIQUE,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    expires_at REAL,
+                    failed_attempts INTEGER NOT NULL DEFAULT 0,
+                    locked_at REAL
                 );
                 CREATE TABLE IF NOT EXISTS enrolled_daemons (
                     daemon_id TEXT PRIMARY KEY,
                     owner_user_id TEXT NOT NULL,
                     ed25519_public_key BLOB NOT NULL,
                     x25519_public_key BLOB NOT NULL,
-                    key_thumbprint TEXT NOT NULL,
+                    key_thumbprint TEXT NOT NULL UNIQUE,
                     credential_epoch INTEGER NOT NULL CHECK (credential_epoch >= 1),
                     revoked_at REAL,
                     created_at REAL NOT NULL
@@ -160,12 +174,78 @@ class DaemonEnrollmentService:
                     daemon_id TEXT NOT NULL REFERENCES enrolled_daemons(daemon_id),
                     nonce TEXT NOT NULL,
                     expires_at REAL NOT NULL,
+                    used_at REAL NOT NULL,
                     PRIMARY KEY (daemon_id, nonce)
                 );
                 CREATE INDEX IF NOT EXISTS daemon_nonce_expiry
                     ON daemon_request_nonces(expires_at);
+                CREATE TABLE IF NOT EXISTS daemon_enrollment_owner_attempts (
+                    owner_user_id TEXT PRIMARY KEY,
+                    failed_attempts INTEGER NOT NULL,
+                    window_started_at REAL NOT NULL,
+                    locked_until REAL
+                );
                 """
             )
+            columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(daemon_enrollments)")
+            }
+            if "expires_at" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE daemon_enrollments ADD COLUMN expires_at REAL"
+                )
+            if "failed_attempts" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE daemon_enrollments "
+                    "ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0"
+                )
+            if "locked_at" not in columns:
+                self._connection.execute("ALTER TABLE daemon_enrollments ADD COLUMN locked_at REAL")
+            self._connection.execute(
+                """
+                UPDATE daemon_enrollments
+                SET expires_at = created_at + ?
+                WHERE expires_at IS NULL
+                """,
+                (_ENROLLMENT_LIFETIME_SECONDS,),
+            )
+            self._connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS enrolled_daemon_key_thumbprint
+                ON enrolled_daemons(key_thumbprint)
+                """
+            )
+            nonce_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(daemon_request_nonces)")
+            }
+            if "used_at" not in nonce_columns:
+                self._connection.execute(
+                    "ALTER TABLE daemon_request_nonces ADD COLUMN used_at REAL"
+                )
+                self._connection.execute(
+                    "UPDATE daemon_request_nonces SET used_at = expires_at - ?",
+                    (MAX_ACCESS_TOKEN_LIFETIME_SECONDS,),
+                )
+            self._connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS daemon_token_expiry
+                ON daemon_access_tokens(expires_at)
+                """
+            )
+
+    @contextmanager
+    def _immediate_transaction(self):
+        """Serialize an auth decision with revocation across SQLite connections."""
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._connection.rollback()
+            raise
+        else:
+            self._connection.commit()
 
     @staticmethod
     def _token_hash(value: str) -> bytes:
@@ -187,19 +267,28 @@ class DaemonEnrollmentService:
             raise DaemonApiError(400, "MALFORMED_REQUEST", "device identity is required")
         enrollment_id = f"enr_{uuid.uuid4().hex}"
         created_at = self._clock()
+        expires_at = created_at + _ENROLLMENT_LIFETIME_SECONDS
         for _ in range(8):
             verification_code = "".join(
-                secrets.choice(_VERIFICATION_ALPHABET) for _ in range(8)
+                secrets.choice(_VERIFICATION_ALPHABET) for _ in range(_VERIFICATION_CODE_LENGTH)
             )
             try:
                 with self._lock, self._connection:
                     self._connection.execute(
                         """
+                        DELETE FROM daemon_enrollments
+                        WHERE status = 'pending' AND expires_at <= ?
+                        """,
+                        (created_at,),
+                    )
+                    self._connection.execute(
+                        """
                         INSERT INTO daemon_enrollments (
                             enrollment_id, verification_code, installation_id,
                             installation_nonce_hash, ed25519_public_key,
-                            x25519_public_key, key_thumbprint, status, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                            x25519_public_key, key_thumbprint, status, created_at,
+                            expires_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                         """,
                         (
                             enrollment_id,
@@ -210,6 +299,7 @@ class DaemonEnrollmentService:
                             identity.x25519_public_key,
                             identity.key_thumbprint,
                             created_at,
+                            expires_at,
                         ),
                     )
                 return EnrollmentHandoff(enrollment_id, verification_code)
@@ -227,11 +317,20 @@ class DaemonEnrollmentService:
         owner_user_id = self._require_identifier(owner_user_id, "owner_user_id")
         with self._lock, self._connection:
             row = self._connection.execute(
-                "SELECT status, owner_user_id FROM daemon_enrollments WHERE enrollment_id = ?",
+                """
+                SELECT status, owner_user_id, expires_at
+                FROM daemon_enrollments WHERE enrollment_id = ?
+                """,
                 (enrollment_id,),
             ).fetchone()
             if row is None:
                 raise DaemonApiError(404, "ENROLLMENT_NOT_FOUND", "Enrollment not found")
+            if row["status"] == "pending" and row["expires_at"] <= self._clock():
+                self._connection.execute(
+                    "DELETE FROM daemon_enrollments WHERE enrollment_id = ?",
+                    (enrollment_id,),
+                )
+                raise DaemonApiError(410, "ENROLLMENT_EXPIRED", "Enrollment has expired")
             if row["status"] == "completed":
                 if row["owner_user_id"] == owner_user_id:
                     return
@@ -247,71 +346,221 @@ class DaemonEnrollmentService:
                 (owner_user_id, enrollment_id),
             )
 
-    def approve_verification_code(self, verification_code: str, *, owner_user_id: str) -> None:
+    def _owner_approval_state(self, owner_user_id: str, now: float) -> sqlite3.Row | None:
+        row = self._connection.execute(
+            """
+            SELECT failed_attempts, window_started_at, locked_until
+            FROM daemon_enrollment_owner_attempts WHERE owner_user_id = ?
+            """,
+            (owner_user_id,),
+        ).fetchone()
+        if row is not None and row["locked_until"] is not None and row["locked_until"] > now:
+            raise DaemonApiError(
+                429,
+                "ENROLLMENT_APPROVAL_LOCKED",
+                "Too many enrollment approval attempts",
+                retryable=True,
+            )
+        if row is not None and row["window_started_at"] <= now - _OWNER_ATTEMPT_WINDOW_SECONDS:
+            self._connection.execute(
+                "DELETE FROM daemon_enrollment_owner_attempts WHERE owner_user_id = ?",
+                (owner_user_id,),
+            )
+            return None
+        return row
+
+    def _record_owner_approval_failure(
+        self, owner_user_id: str, now: float, state: sqlite3.Row | None
+    ) -> bool:
+        attempts = 1 if state is None else int(state["failed_attempts"]) + 1
+        locked_until = (
+            now + _OWNER_ATTEMPT_WINDOW_SECONDS
+            if attempts >= _ENROLLMENT_APPROVAL_ATTEMPT_LIMIT
+            else None
+        )
+        self._connection.execute(
+            """
+            INSERT INTO daemon_enrollment_owner_attempts (
+                owner_user_id, failed_attempts, window_started_at, locked_until
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(owner_user_id) DO UPDATE SET
+                failed_attempts = excluded.failed_attempts,
+                locked_until = excluded.locked_until
+            """,
+            (owner_user_id, attempts, now, locked_until),
+        )
+        return locked_until is not None
+
+    def approve_verification_code(
+        self,
+        enrollment_id: str,
+        verification_code: str,
+        *,
+        owner_user_id: str,
+    ) -> None:
+        enrollment_id = self._require_identifier(enrollment_id, "enrollment_id")
+        owner_user_id = self._require_identifier(owner_user_id, "owner_user_id")
         if not isinstance(verification_code, str):
             raise DaemonApiError(400, "MALFORMED_REQUEST", "verification_code is required")
         normalized_code = verification_code.strip().upper()
-        if len(normalized_code) != 8:
+        if len(normalized_code) != _VERIFICATION_CODE_LENGTH:
             raise DaemonApiError(400, "MALFORMED_REQUEST", "verification_code is invalid")
-        with self._lock:
+        now = self._clock()
+        with self._lock, self._immediate_transaction():
+            owner_state = self._owner_approval_state(owner_user_id, now)
             row = self._connection.execute(
-                "SELECT enrollment_id FROM daemon_enrollments WHERE verification_code = ?",
-                (normalized_code,),
-            ).fetchone()
-        if row is None:
-            raise DaemonApiError(404, "ENROLLMENT_NOT_FOUND", "Enrollment not found")
-        self.approve_enrollment(row["enrollment_id"], owner_user_id=owner_user_id)
-
-    def complete_enrollment(self, enrollment_id: str) -> CompletedEnrollment:
-        enrollment_id = self._require_identifier(enrollment_id, "enrollment_id")
-        with self._lock, self._connection:
-            row = self._connection.execute(
-                "SELECT * FROM daemon_enrollments WHERE enrollment_id = ?",
+                """
+                SELECT enrollment_id, verification_code, status, owner_user_id,
+                       expires_at, failed_attempts, locked_at
+                FROM daemon_enrollments WHERE enrollment_id = ?
+                """,
                 (enrollment_id,),
             ).fetchone()
             if row is None:
+                owner_locked = self._record_owner_approval_failure(owner_user_id, now, owner_state)
+                self._connection.commit()
+                if owner_locked:
+                    raise DaemonApiError(
+                        429,
+                        "ENROLLMENT_APPROVAL_LOCKED",
+                        "Too many enrollment approval attempts",
+                        retryable=True,
+                    )
                 raise DaemonApiError(404, "ENROLLMENT_NOT_FOUND", "Enrollment not found")
-            if row["status"] == "pending":
-                raise DaemonApiError(
-                    403,
-                    "OWNER_APPROVAL_REQUIRED",
-                    "The device owner has not approved this enrollment",
-                )
-            if row["status"] == "completed":
-                daemon = self._connection.execute(
-                    "SELECT * FROM enrolled_daemons WHERE daemon_id = ?",
-                    (row["daemon_id"],),
-                ).fetchone()
-            else:
-                daemon_id = f"daemon_{uuid.uuid4().hex}"
+            if row["status"] == "pending" and row["expires_at"] <= now:
                 self._connection.execute(
-                    """
-                    INSERT INTO enrolled_daemons (
-                        daemon_id, owner_user_id, ed25519_public_key,
-                        x25519_public_key, key_thumbprint, credential_epoch, created_at
-                    ) VALUES (?, ?, ?, ?, ?, 1, ?)
-                    """,
-                    (
-                        daemon_id,
-                        row["owner_user_id"],
-                        row["ed25519_public_key"],
-                        row["x25519_public_key"],
-                        row["key_thumbprint"],
-                        self._clock(),
-                    ),
+                    "DELETE FROM daemon_enrollments WHERE enrollment_id = ?",
+                    (enrollment_id,),
                 )
+                self._connection.commit()
+                raise DaemonApiError(410, "ENROLLMENT_EXPIRED", "Enrollment has expired")
+            if row["locked_at"] is not None:
+                raise DaemonApiError(
+                    429,
+                    "ENROLLMENT_APPROVAL_LOCKED",
+                    "Too many enrollment approval attempts",
+                )
+            if not hmac.compare_digest(normalized_code, row["verification_code"]):
+                attempts = int(row["failed_attempts"]) + 1
+                enrollment_locked = attempts >= _ENROLLMENT_APPROVAL_ATTEMPT_LIMIT
                 self._connection.execute(
                     """
                     UPDATE daemon_enrollments
-                    SET status = 'completed', daemon_id = ?
+                    SET failed_attempts = ?, locked_at = ?
                     WHERE enrollment_id = ?
                     """,
-                    (daemon_id, enrollment_id),
+                    (attempts, now if enrollment_locked else None, enrollment_id),
                 )
-                daemon = self._connection.execute(
-                    "SELECT * FROM enrolled_daemons WHERE daemon_id = ?",
-                    (daemon_id,),
+                owner_locked = self._record_owner_approval_failure(owner_user_id, now, owner_state)
+                self._connection.commit()
+                if enrollment_locked or owner_locked:
+                    raise DaemonApiError(
+                        429,
+                        "ENROLLMENT_APPROVAL_LOCKED",
+                        "Too many enrollment approval attempts",
+                        retryable=owner_locked,
+                    )
+                raise DaemonApiError(404, "ENROLLMENT_NOT_FOUND", "Enrollment not found")
+            if row["status"] == "completed":
+                if row["owner_user_id"] == owner_user_id:
+                    return
+                raise DaemonApiError(409, "ENROLLMENT_ALREADY_BOUND", "Enrollment is already bound")
+            if row["owner_user_id"] not in (None, owner_user_id):
+                raise DaemonApiError(409, "ENROLLMENT_ALREADY_BOUND", "Enrollment is already bound")
+            self._connection.execute(
+                """
+                UPDATE daemon_enrollments
+                SET status = 'approved', owner_user_id = ?
+                WHERE enrollment_id = ?
+                """,
+                (owner_user_id, enrollment_id),
+            )
+            self._connection.execute(
+                "DELETE FROM daemon_enrollment_owner_attempts WHERE owner_user_id = ?",
+                (owner_user_id,),
+            )
+
+    def complete_enrollment(
+        self,
+        enrollment_id: str,
+        *,
+        installation_nonce: str,
+        signature: str,
+    ) -> CompletedEnrollment:
+        enrollment_id = self._require_identifier(enrollment_id, "enrollment_id")
+        try:
+            nonce = b64decode(installation_nonce)
+            proof = b64decode(signature)
+        except (TypeError, ValueError):
+            raise DaemonApiError(401, "INVALID_DEVICE_PROOF", "Device proof is invalid")
+        try:
+            with self._lock, self._connection:
+                row = self._connection.execute(
+                    "SELECT * FROM daemon_enrollments WHERE enrollment_id = ?",
+                    (enrollment_id,),
                 ).fetchone()
+                if row is None:
+                    raise DaemonApiError(404, "ENROLLMENT_NOT_FOUND", "Enrollment not found")
+                if row["status"] == "pending":
+                    raise DaemonApiError(
+                        403,
+                        "OWNER_APPROVAL_REQUIRED",
+                        "The device owner has not approved this enrollment",
+                    )
+                if not hmac.compare_digest(
+                    hashlib.sha256(nonce).digest(), row["installation_nonce_hash"]
+                ):
+                    raise DaemonApiError(401, "INVALID_DEVICE_PROOF", "Device proof is invalid")
+                try:
+                    VerifyKey(row["ed25519_public_key"]).verify(
+                        canonical_enrollment_completion(enrollment_id, nonce),
+                        proof,
+                    )
+                except (BadSignatureError, ValueError, TypeError):
+                    raise DaemonApiError(401, "INVALID_DEVICE_PROOF", "Device proof is invalid")
+                if row["status"] == "completed":
+                    daemon = self._connection.execute(
+                        "SELECT * FROM enrolled_daemons WHERE daemon_id = ?",
+                        (row["daemon_id"],),
+                    ).fetchone()
+                else:
+                    daemon_id = f"daemon_{uuid.uuid4().hex}"
+                    self._connection.execute(
+                        """
+                        INSERT INTO enrolled_daemons (
+                            daemon_id, owner_user_id, ed25519_public_key,
+                            x25519_public_key, key_thumbprint, credential_epoch, created_at
+                        ) VALUES (?, ?, ?, ?, ?, 1, ?)
+                        """,
+                        (
+                            daemon_id,
+                            row["owner_user_id"],
+                            row["ed25519_public_key"],
+                            row["x25519_public_key"],
+                            row["key_thumbprint"],
+                            self._clock(),
+                        ),
+                    )
+                    self._connection.execute(
+                        """
+                        UPDATE daemon_enrollments
+                        SET status = 'completed', daemon_id = ?
+                        WHERE enrollment_id = ?
+                        """,
+                        (daemon_id, enrollment_id),
+                    )
+                    daemon = self._connection.execute(
+                        "SELECT * FROM enrolled_daemons WHERE daemon_id = ?",
+                        (daemon_id,),
+                    ).fetchone()
+        except sqlite3.IntegrityError as exc:
+            if "key_thumbprint" not in str(exc):
+                raise
+            raise DaemonApiError(
+                409,
+                "DEVICE_ALREADY_ENROLLED",
+                "Device identity is already enrolled",
+            ) from exc
         return CompletedEnrollment(
             enrollment_id=enrollment_id,
             daemon_id=daemon["daemon_id"],
@@ -367,7 +616,7 @@ class DaemonEnrollmentService:
             )
         now = self._clock()
         challenge_hash = self._challenge_hash(challenge)
-        with self._lock, self._connection:
+        with self._lock, self._immediate_transaction():
             challenge_row = self._connection.execute(
                 """
                 SELECT daemon_id, expires_at, used_at FROM daemon_challenges
@@ -394,6 +643,49 @@ class DaemonEnrollmentService:
                 )
             except (BadSignatureError, ValueError, TypeError):
                 raise DaemonApiError(401, "INVALID_SIGNATURE", "Challenge signature is invalid")
+            current_daemon = self._connection.execute(
+                """
+                SELECT key_thumbprint, credential_epoch, revoked_at
+                FROM enrolled_daemons WHERE daemon_id = ?
+                """,
+                (daemon_id,),
+            ).fetchone()
+            if (
+                current_daemon is None
+                or current_daemon["revoked_at"] is not None
+                or current_daemon["credential_epoch"] != daemon["credential_epoch"]
+                or current_daemon["key_thumbprint"] != daemon["key_thumbprint"]
+            ):
+                raise DaemonApiError(410, "CREDENTIAL_REVOKED", "Device credential is revoked")
+            self._connection.execute(
+                "DELETE FROM daemon_access_tokens WHERE expires_at <= ?",
+                (now,),
+            )
+            issued_recently = self._connection.execute(
+                """
+                SELECT COUNT(*) FROM daemon_access_tokens
+                WHERE daemon_id = ? AND issued_at > ?
+                """,
+                (daemon_id, now - 60),
+            ).fetchone()[0]
+            if issued_recently >= _TOKEN_ISSUANCE_LIMIT_PER_MINUTE:
+                raise DaemonApiError(
+                    429,
+                    "DAEMON_RATE_LIMITED",
+                    "Daemon access-token issuance rate exceeded",
+                    retryable=True,
+                )
+            outstanding_tokens = self._connection.execute(
+                "SELECT COUNT(*) FROM daemon_access_tokens WHERE daemon_id = ?",
+                (daemon_id,),
+            ).fetchone()[0]
+            if outstanding_tokens >= _MAX_OUTSTANDING_ACCESS_TOKENS:
+                raise DaemonApiError(
+                    429,
+                    "DAEMON_TOKEN_CAPACITY",
+                    "Daemon has too many outstanding access tokens",
+                    retryable=True,
+                )
             claimed = self._connection.execute(
                 """
                 UPDATE daemon_challenges SET used_at = ?
@@ -415,8 +707,8 @@ class DaemonEnrollmentService:
                 (
                     self._token_hash(raw_token),
                     daemon_id,
-                    daemon["key_thumbprint"],
-                    daemon["credential_epoch"],
+                    current_daemon["key_thumbprint"],
+                    current_daemon["credential_epoch"],
                     expires_at,
                     now,
                 ),
@@ -424,8 +716,8 @@ class DaemonEnrollmentService:
         return AccessToken(
             value=raw_token,
             daemon_id=daemon_id,
-            key_thumbprint=daemon["key_thumbprint"],
-            credential_epoch=int(daemon["credential_epoch"]),
+            key_thumbprint=current_daemon["key_thumbprint"],
+            credential_epoch=int(current_daemon["credential_epoch"]),
             expires_at=expires_at,
         )
 
@@ -461,63 +753,106 @@ class DaemonEnrollmentService:
         if not isinstance(signed_request, SignedRequest):
             raise DaemonApiError(400, "MALFORMED_REQUEST", "Signed-request fields are required")
         now = self._clock()
-        with self._lock:
-            token = self._token_record(access_token)
-            if token["expires_at"] <= now:
-                raise DaemonApiError(401, "TOKEN_EXPIRED", "Access token has expired")
-            if (
-                token["revoked_at"] is not None
-                or token["token_epoch"] != token["current_epoch"]
-                or token["token_thumbprint"] != token["current_thumbprint"]
-            ):
-                raise DaemonApiError(410, "CREDENTIAL_REVOKED", "Device credential is revoked")
-            if abs(now - signed_request.timestamp) > MAX_CLOCK_SKEW_SECONDS:
-                raise DaemonApiError(401, "CLOCK_SKEW", "Request timestamp is outside allowed skew")
-            actual_body_hash = request_body_hash(body)
-            if not hmac.compare_digest(actual_body_hash, signed_request.body_hash):
-                raise DaemonApiError(401, "BODY_HASH_MISMATCH", "Request body hash is invalid")
-            try:
-                message = canonical_request(
-                    signed_request.method,
-                    signed_request.path,
-                    signed_request.body_hash,
-                    signed_request.timestamp,
-                    signed_request.nonce,
-                )
-                VerifyKey(token["ed25519_public_key"]).verify(
-                    message,
-                    b64decode(signed_request.signature),
-                )
-            except (BadSignatureError, ValueError, TypeError):
-                raise DaemonApiError(401, "INVALID_SIGNATURE", "Request signature is invalid")
-            if token["owner_user_id"] != expected_owner_user_id:
-                raise DaemonApiError(
-                    403,
-                    "OWNER_SCOPE_DENIED",
-                    "Authenticated device lacks authorization for this owner",
-                )
-            try:
-                with self._connection:
-                    self._connection.execute(
-                        "DELETE FROM daemon_request_nonces WHERE expires_at < ?",
-                        (now,),
+        try:
+            with self._lock, self._immediate_transaction():
+                token = self._token_record(access_token)
+                if token["expires_at"] <= now:
+                    raise DaemonApiError(401, "TOKEN_EXPIRED", "Access token has expired")
+                if (
+                    token["revoked_at"] is not None
+                    or token["token_epoch"] != token["current_epoch"]
+                    or token["token_thumbprint"] != token["current_thumbprint"]
+                ):
+                    raise DaemonApiError(410, "CREDENTIAL_REVOKED", "Device credential is revoked")
+                if abs(now - signed_request.timestamp) > MAX_CLOCK_SKEW_SECONDS:
+                    raise DaemonApiError(
+                        401, "CLOCK_SKEW", "Request timestamp is outside allowed skew"
                     )
-                    self._connection.execute(
-                        """
-                        INSERT INTO daemon_request_nonces (daemon_id, nonce, expires_at)
-                        VALUES (?, ?, ?)
-                        """,
-                        (
-                            token["daemon_id"],
-                            signed_request.nonce,
-                            max(
-                                token["expires_at"],
-                                now + MAX_ACCESS_TOKEN_LIFETIME_SECONDS,
-                            ),
+                actual_body_hash = request_body_hash(body)
+                if not hmac.compare_digest(actual_body_hash, signed_request.body_hash):
+                    raise DaemonApiError(401, "BODY_HASH_MISMATCH", "Request body hash is invalid")
+                try:
+                    message = canonical_request(
+                        signed_request.method,
+                        signed_request.path,
+                        signed_request.query,
+                        dict(signed_request.signed_headers),
+                        signed_request.body_hash,
+                        signed_request.timestamp,
+                        signed_request.nonce,
+                    )
+                    VerifyKey(token["ed25519_public_key"]).verify(
+                        message,
+                        b64decode(signed_request.signature),
+                    )
+                except (BadSignatureError, ValueError, TypeError):
+                    raise DaemonApiError(401, "INVALID_SIGNATURE", "Request signature is invalid")
+                if token["owner_user_id"] != expected_owner_user_id:
+                    raise DaemonApiError(
+                        403,
+                        "OWNER_SCOPE_DENIED",
+                        "Authenticated device lacks authorization for this owner",
+                    )
+                current_daemon = self._connection.execute(
+                    """
+                    SELECT key_thumbprint, credential_epoch, revoked_at
+                    FROM enrolled_daemons WHERE daemon_id = ?
+                    """,
+                    (token["daemon_id"],),
+                ).fetchone()
+                if (
+                    current_daemon is None
+                    or current_daemon["revoked_at"] is not None
+                    or current_daemon["credential_epoch"] != token["token_epoch"]
+                    or current_daemon["key_thumbprint"] != token["token_thumbprint"]
+                ):
+                    raise DaemonApiError(410, "CREDENTIAL_REVOKED", "Device credential is revoked")
+                self._connection.execute(
+                    "DELETE FROM daemon_request_nonces WHERE expires_at <= ?",
+                    (now,),
+                )
+                requests_recently = self._connection.execute(
+                    """
+                    SELECT COUNT(*) FROM daemon_request_nonces
+                    WHERE daemon_id = ? AND used_at > ?
+                    """,
+                    (token["daemon_id"], now - 60),
+                ).fetchone()[0]
+                if requests_recently >= _REQUEST_RATE_LIMIT_PER_MINUTE:
+                    raise DaemonApiError(
+                        429,
+                        "DAEMON_RATE_LIMITED",
+                        "Daemon request rate exceeded",
+                        retryable=True,
+                    )
+                outstanding_nonces = self._connection.execute(
+                    "SELECT COUNT(*) FROM daemon_request_nonces WHERE daemon_id = ?",
+                    (token["daemon_id"],),
+                ).fetchone()[0]
+                if outstanding_nonces >= _MAX_OUTSTANDING_NONCES:
+                    raise DaemonApiError(
+                        429,
+                        "DAEMON_NONCE_CAPACITY",
+                        "Daemon has too many outstanding request nonces",
+                        retryable=True,
+                    )
+                self._connection.execute(
+                    """
+                    INSERT INTO daemon_request_nonces (daemon_id, nonce, expires_at, used_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        token["daemon_id"],
+                        signed_request.nonce,
+                        max(
+                            token["expires_at"],
+                            now + MAX_ACCESS_TOKEN_LIFETIME_SECONDS,
                         ),
-                    )
-            except sqlite3.IntegrityError:
-                raise DaemonApiError(401, "REPLAY_DETECTED", "Request nonce was already used")
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            raise DaemonApiError(401, "REPLAY_DETECTED", "Request nonce was already used")
         return AuthenticatedDaemon(
             daemon_id=token["daemon_id"],
             owner_user_id=token["owner_user_id"],
@@ -529,22 +864,26 @@ class DaemonEnrollmentService:
         self,
         method: str,
         path: str,
+        query: str,
         headers: Mapping[str, str],
         body: bytes | None,
         *,
         expected_owner_user_id: str,
     ) -> AuthenticatedDaemon:
         try:
-            authorization = headers["Authorization"]
+            normalized_headers = {str(name).lower(): value for name, value in headers.items()}
+            authorization = normalized_headers["authorization"]
             if not authorization.startswith("Bearer "):
                 raise KeyError("Authorization")
             signed = SignedRequest(
                 method=method,
                 path=path,
-                body_hash=headers["X-TinyAssets-Body-SHA256"],
-                timestamp=int(headers["X-TinyAssets-Timestamp"]),
-                nonce=headers["X-TinyAssets-Nonce"],
-                signature=headers["X-TinyAssets-Signature"],
+                query=query,
+                signed_headers=tuple(action_affecting_headers(normalized_headers).items()),
+                body_hash=normalized_headers["x-tinyassets-body-sha256"],
+                timestamp=int(normalized_headers["x-tinyassets-timestamp"]),
+                nonce=normalized_headers["x-tinyassets-nonce"],
+                signature=normalized_headers["x-tinyassets-signature"],
             )
         except (KeyError, TypeError, ValueError):
             raise DaemonApiError(401, "INVALID_AUTHENTICATION", "Authentication failed")
@@ -664,12 +1003,13 @@ def create_router(
             payload = await body_object(request)
             owner_user_id = await owner_for(request)
             service.approve_verification_code(
+                payload["enrollment_id"],
                 payload["verification_code"],
                 owner_user_id=owner_user_id,
             )
             return JSONResponse({"status": "approved"})
         except (KeyError, TypeError):
-            error = _malformed("verification_code is required")
+            error = _malformed("enrollment_id and verification_code are required")
             return JSONResponse(error.as_dict(), status_code=error.status)
         except DaemonApiError as exc:
             return JSONResponse(exc.as_dict(), status_code=exc.status)
@@ -677,18 +1017,27 @@ def create_router(
             return unavailable_response()
 
     @router.post("/v1/daemon-enrollments/{enrollment_id}:complete")
-    async def complete_enrollment(enrollment_id: str):
-        def complete() -> dict[str, Any]:
-            value = service.complete_enrollment(enrollment_id)
+    async def complete_enrollment(enrollment_id: str, request: Request):
+        try:
+            payload = await body_object(request)
+            value = service.complete_enrollment(
+                enrollment_id,
+                installation_nonce=payload["installation_nonce"],
+                signature=payload["signature"],
+            )
             return {
                 "enrollment_id": value.enrollment_id,
                 "daemon_id": value.daemon_id,
-                "owner_user_id": value.owner_user_id,
                 "key_thumbprint": value.key_thumbprint,
                 "credential_epoch": value.credential_epoch,
             }
-
-        return response(complete)
+        except (KeyError, TypeError):
+            error = _malformed("installation_nonce and signature are required")
+            return JSONResponse(error.as_dict(), status_code=error.status)
+        except DaemonApiError as exc:
+            return JSONResponse(exc.as_dict(), status_code=exc.status)
+        except Exception:
+            return unavailable_response()
 
     @router.post("/v1/daemons/{daemon_id}:revoke")
     async def revoke_daemon(daemon_id: str, request: Request):

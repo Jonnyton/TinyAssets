@@ -1,9 +1,9 @@
 """Signed control-plane client for daemon host-pool operations.
 
 Every operation uses a short-lived daemon bearer token plus an Ed25519
-proof-of-possession signature over the exact method, path (including query),
-body hash, timestamp, and replay nonce.  There is no administrative credential
-or unsigned fallback path.
+proof-of-possession signature over the exact method, raw path, raw query,
+action-affecting headers, body hash, timestamp, and replay nonce. There is no
+administrative credential or unsigned fallback path.
 
 The transport remains stdlib-only and injectable for focused tests.
 """
@@ -23,17 +23,43 @@ from tinyassets.runtime.daemon_auth import DaemonAuthSession
 
 
 class HostPoolError(Exception):
-    """Raised when a host_pool REST call fails.
+    """Typed, sanitized distributed-execution API failure."""
 
-    ``status`` is the HTTP code (0 if the request never completed, e.g.
-    DNS / TLS / socket error). ``body`` is the response body or the
-    underlying error message.
-    """
-
-    def __init__(self, status: int, body: str) -> None:
-        super().__init__(f"host_pool control-plane error (status={status}): {body[:200]}")
+    def __init__(
+        self,
+        status: int,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        request_id: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(f"host_pool control-plane error ({code}, status={status}): {message}")
         self.status = status
-        self.body = body
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+        self.request_id = request_id
+        self.details = details or {}
+
+    @classmethod
+    def from_response(cls, status: int, text: str) -> HostPoolError:
+        try:
+            response = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            response = None
+        error = response.get("error") if isinstance(response, dict) else None
+        if not isinstance(error, dict):
+            return cls(status, "CONTROL_PLANE_ERROR", "Control-plane request failed")
+        return cls(
+            status,
+            str(error.get("code", "CONTROL_PLANE_ERROR")),
+            str(error.get("message", "Control-plane request failed")),
+            retryable=error.get("retryable") is True,
+            request_id=str(error.get("request_id", "")),
+            details=error.get("details") if isinstance(error.get("details"), dict) else {},
+        )
 
 
 @dataclass
@@ -106,9 +132,19 @@ class _UrllibClient:
                 body_text = str(exc)
             return exc.code, body_text
         except urllib.error.URLError as exc:
-            raise HostPoolError(0, f"unreachable: {exc.reason}") from exc
+            raise HostPoolError(
+                0,
+                "CONTROL_PLANE_UNAVAILABLE",
+                "Control plane is unavailable",
+                retryable=True,
+            ) from exc
         except (TimeoutError, ssl.SSLError, OSError) as exc:
-            raise HostPoolError(0, f"transport error: {exc!r}") from exc
+            raise HostPoolError(
+                0,
+                "CONTROL_PLANE_UNAVAILABLE",
+                "Control plane is unavailable",
+                retryable=True,
+            ) from exc
 
 
 class HostPoolClient:
@@ -138,11 +174,17 @@ class HostPoolClient:
     ) -> None:
         url = control_plane_url or os.environ.get("TINYASSETS_CONTROL_PLANE_URL", "").strip()
         if not url:
-            raise HostPoolError(0, "TINYASSETS_CONTROL_PLANE_URL not configured")
+            raise HostPoolError(
+                0, "CONTROL_PLANE_URL_REQUIRED", "TINYASSETS_CONTROL_PLANE_URL not configured"
+            )
         if not url.startswith("https://"):
-            raise HostPoolError(0, "TINYASSETS_CONTROL_PLANE_URL must use HTTPS")
+            raise HostPoolError(
+                0, "CONTROL_PLANE_URL_INVALID", "TINYASSETS_CONTROL_PLANE_URL must use HTTPS"
+            )
         if auth is None:
-            raise HostPoolError(0, "enrolled daemon authentication is required")
+            raise HostPoolError(
+                0, "DAEMON_AUTH_REQUIRED", "enrolled daemon authentication is required"
+            )
         self._base = url.rstrip("/")
         self._auth = auth
         self._http = http or _UrllibClient()
@@ -154,6 +196,7 @@ class HostPoolClient:
         self,
         method: str,
         path: str,
+        query: str,
         body: bytes | None,
         *,
         prefer: str | None = None,
@@ -162,9 +205,17 @@ class HostPoolClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        headers.update(self._auth.sign_headers(method, path, body))
         if prefer:
             headers["Prefer"] = prefer
+        headers.update(
+            self._auth.sign_headers(
+                method,
+                path,
+                query,
+                body,
+                action_headers=headers,
+            )
+        )
         return headers
 
     def _request(
@@ -176,9 +227,9 @@ class HostPoolClient:
         params: dict[str, str] | None = None,
         prefer: str | None = None,
     ) -> Any:
-        query = f"?{urllib.parse.urlencode(params)}" if params else ""
-        signed_path = f"/v1/{path.lstrip('/')}{query}"
-        url = f"{self._base}{signed_path}"
+        query = urllib.parse.urlencode(params) if params else ""
+        signed_path = f"/v1/{path.lstrip('/')}"
+        url = f"{self._base}{signed_path}{f'?{query}' if query else ''}"
         encoded = (
             json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
             if body is not None
@@ -187,18 +238,20 @@ class HostPoolClient:
         status, text = self._http.request(
             method,
             url,
-            self._headers(method, signed_path, encoded, prefer=prefer),
+            self._headers(method, signed_path, query, encoded, prefer=prefer),
             encoded,
             self._timeout,
         )
         if status < 200 or status >= 300:
-            raise HostPoolError(status, text)
+            raise HostPoolError.from_response(status, text)
         if not text:
             return None
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
-            raise HostPoolError(status, f"invalid JSON: {exc}; body={text[:200]}") from exc
+            raise HostPoolError(
+                status, "INVALID_RESPONSE", "Control plane returned invalid JSON"
+            ) from exc
 
     # -- host_pool CRUD ----------------------------------------------------
 
@@ -234,7 +287,7 @@ class HostPoolClient:
             prefer="return=representation",
         )
         if not isinstance(rows, list) or not rows:
-            raise HostPoolError(0, f"register returned no row: {rows!r}")
+            raise HostPoolError(0, "INVALID_RESPONSE", "Registration response is incomplete")
         return HostPoolRow.from_api(rows[0])
 
     def heartbeat(self, host_id: str) -> None:
@@ -295,7 +348,11 @@ class HostPoolClient:
     # -- capabilities ------------------------------------------------------
 
     def ensure_capability(
-        self, capability_id: str, *, node_type: str, llm_model: str,
+        self,
+        capability_id: str,
+        *,
+        node_type: str,
+        llm_model: str,
         description: str | None = None,
     ) -> None:
         """Insert the capability row if absent; no-op if present.

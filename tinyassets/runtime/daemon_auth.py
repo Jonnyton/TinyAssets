@@ -18,6 +18,7 @@ import platform
 import secrets
 import threading
 import time
+from collections.abc import Mapping
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -30,8 +31,19 @@ MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 300
 MAX_CLOCK_SKEW_SECONDS = 60
 _REQUEST_DOMAIN = b"tinyassets.daemon-request.v1\0"
 _CHALLENGE_DOMAIN = b"tinyassets.daemon-challenge.v1\0"
+_ENROLLMENT_COMPLETION_DOMAIN = b"tinyassets.daemon-enrollment-completion.v1\0"
 _THUMBPRINT_DOMAIN = b"tinyassets.daemon-ed25519.v1\0"
 _TOKEN_REFRESH_LEEWAY_SECONDS = 30
+ACTION_AFFECTING_HEADERS = frozenset(
+    {
+        "content-encoding",
+        "content-type",
+        "idempotency-key",
+        "if-match",
+        "if-none-match",
+        "prefer",
+    }
+)
 
 
 class KeystoreUnavailableError(RuntimeError):
@@ -107,6 +119,8 @@ class DevicePublicIdentity:
 class SignedRequest:
     method: str
     path: str
+    query: str
+    signed_headers: tuple[tuple[str, str], ...]
     body_hash: str
     timestamp: int
     nonce: str
@@ -135,24 +149,56 @@ def request_body_hash(body: bytes | None) -> str:
     return hashlib.sha256(body or b"").hexdigest()
 
 
+def action_affecting_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Return the fixed, case-normalized set of request headers covered by PoP."""
+    normalized: dict[str, str] = {}
+    for raw_name, raw_value in headers.items():
+        name = raw_name.strip().lower() if isinstance(raw_name, str) else ""
+        if name not in ACTION_AFFECTING_HEADERS:
+            continue
+        if name in normalized:
+            raise ValueError(f"duplicate action-affecting header: {name}")
+        if not isinstance(raw_value, str) or "\r" in raw_value or "\n" in raw_value:
+            raise ValueError(f"invalid action-affecting header: {name}")
+        normalized[name] = raw_value
+    return dict(sorted(normalized.items()))
+
+
 def canonical_request(
     method: str,
     path: str,
+    query: str,
+    headers: Mapping[str, str],
     body_hash: str,
     timestamp: int,
     nonce: str,
 ) -> bytes:
-    if not method or not path.startswith("/"):
+    if (
+        not isinstance(method, str)
+        or not method
+        or method != method.upper()
+        or not method.isascii()
+    ):
+        raise ValueError("signed request method must use canonical uppercase spelling")
+    if not isinstance(path, str) or not path.startswith("/"):
         raise ValueError("signed request requires a method and absolute path")
+    if "?" in path:
+        raise ValueError("query must be separate from the signed request path")
+    if not isinstance(query, str) or query.startswith("?"):
+        raise ValueError("signed request query must omit the leading question mark")
+    if any(character in path or character in query for character in ("\r", "\n", "\0")):
+        raise ValueError("signed request target contains an invalid character")
     if len(body_hash) != 64 or any(char not in "0123456789abcdef" for char in body_hash):
         raise ValueError("body_hash must be a lowercase SHA-256 hex digest")
     if not nonce or len(nonce) > 256:
         raise ValueError("request nonce must contain 1 to 256 characters")
     payload = {
         "body_sha256": body_hash,
-        "method": method.upper(),
+        "headers": action_affecting_headers(headers),
+        "method": method,
         "nonce": nonce,
         "path": path,
+        "query": query,
         "timestamp": int(timestamp),
     }
     return _REQUEST_DOMAIN + json.dumps(
@@ -168,6 +214,21 @@ def canonical_challenge(daemon_id: str, challenge: str) -> bytes:
         raise ValueError("daemon_id and challenge are required")
     payload = {"challenge": challenge, "daemon_id": daemon_id}
     return _CHALLENGE_DOMAIN + json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+
+
+def canonical_enrollment_completion(enrollment_id: str, installation_nonce: bytes) -> bytes:
+    if not enrollment_id or len(installation_nonce) < 32:
+        raise ValueError("enrollment_id and installation nonce are required")
+    payload = {
+        "enrollment_id": enrollment_id,
+        "installation_nonce_sha256": hashlib.sha256(installation_nonce).hexdigest(),
+    }
+    return _ENROLLMENT_COMPLETION_DOMAIN + json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
@@ -193,6 +254,15 @@ class DaemonSigner:
     def sign_challenge(self, daemon_id: str, challenge: str) -> str:
         return _b64encode(self.sign(canonical_challenge(daemon_id, challenge)))
 
+    def enrollment_completion_proof(self, enrollment_id: str) -> dict[str, str]:
+        nonce = self.identity.installation_nonce
+        return {
+            "installation_nonce": _b64encode(nonce),
+            "signature": _b64encode(
+                self.sign(canonical_enrollment_completion(enrollment_id, nonce))
+            ),
+        }
+
     def exchange(self, peer_public_key: bytes) -> bytes:
         return self._key_store.exchange(self.identity.installation_id, peer_public_key)
 
@@ -214,13 +284,14 @@ class DaemonAuthSession:
     def _access_token(self) -> AccessToken:
         with self._token_lock:
             now = time.time()
-            if (
-                self._token is None
-                or self._token.expires_at <= now + _TOKEN_REFRESH_LEEWAY_SECONDS
-            ):
+            if self._token is None or self._token.expires_at <= now + _TOKEN_REFRESH_LEEWAY_SECONDS:
                 supplied = self._token_supplier()
                 if supplied.expires_at <= now:
                     raise ValueError("token supplier returned an expired access token")
+                # Client clock is authoritative for acceptance: no positive skew
+                # allowance may extend the server's five-minute issuance ceiling.
+                if supplied.expires_at > now + MAX_ACCESS_TOKEN_LIFETIME_SECONDS:
+                    raise ValueError("token supplier returned a token over the five-minute limit")
                 if supplied.key_thumbprint != self._signer.identity.key_thumbprint:
                     raise ValueError("access token is bound to a different device key")
                 self._token = supplied
@@ -230,8 +301,10 @@ class DaemonAuthSession:
         self,
         method: str,
         path: str,
+        query: str,
         body: bytes | None,
         *,
+        action_headers: Mapping[str, str] | None = None,
         timestamp: int | None = None,
         nonce: str | None = None,
     ) -> SignedRequest:
@@ -240,7 +313,9 @@ class DaemonAuthSession:
             token,
             method,
             path,
+            query,
             body,
+            action_headers=action_headers,
             timestamp=timestamp,
             nonce=nonce,
         )
@@ -250,8 +325,10 @@ class DaemonAuthSession:
         token: AccessToken,
         method: str,
         path: str,
+        query: str,
         body: bytes | None,
         *,
+        action_headers: Mapping[str, str] | None,
         timestamp: int | None,
         nonce: str | None,
     ) -> SignedRequest:
@@ -260,10 +337,21 @@ class DaemonAuthSession:
         request_timestamp = int(time.time()) if timestamp is None else int(timestamp)
         request_nonce = nonce or secrets.token_urlsafe(24)
         body_hash = request_body_hash(body)
-        message = canonical_request(method, path, body_hash, request_timestamp, request_nonce)
+        normalized_headers = action_affecting_headers(action_headers or {})
+        message = canonical_request(
+            method,
+            path,
+            query,
+            normalized_headers,
+            body_hash,
+            request_timestamp,
+            request_nonce,
+        )
         return SignedRequest(
-            method=method.upper(),
+            method=method,
             path=path,
+            query=query,
+            signed_headers=tuple(normalized_headers.items()),
             body_hash=body_hash,
             timestamp=request_timestamp,
             nonce=request_nonce,
@@ -274,8 +362,10 @@ class DaemonAuthSession:
         self,
         method: str,
         path: str,
+        query: str,
         body: bytes | None,
         *,
+        action_headers: Mapping[str, str] | None = None,
         timestamp: int | None = None,
         nonce: str | None = None,
     ) -> dict[str, str]:
@@ -284,7 +374,9 @@ class DaemonAuthSession:
             token,
             method,
             path,
+            query,
             body,
+            action_headers=action_headers,
             timestamp=timestamp,
             nonce=nonce,
         )
@@ -460,6 +552,7 @@ def default_device_keystore(*, platform_name: str | None = None) -> DeviceKeySto
 
 
 __all__ = [
+    "ACTION_AFFECTING_HEADERS",
     "AccessToken",
     "DaemonAuthSession",
     "DaemonSigner",
@@ -470,8 +563,10 @@ __all__ = [
     "MAX_CLOCK_SKEW_SECONDS",
     "SignedRequest",
     "WindowsCredentialKeyStore",
+    "action_affecting_headers",
     "b64decode",
     "canonical_challenge",
+    "canonical_enrollment_completion",
     "canonical_request",
     "default_device_keystore",
     "device_key_thumbprint",

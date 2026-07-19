@@ -13,11 +13,16 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from tinyassets.host_pool.client import HostPoolClient, HostPoolRow, _UrllibClient
-from tinyassets.runtime.daemon_auth import AccessToken, DaemonSigner
+from tinyassets.runtime.daemon_auth import (
+    MAX_ACCESS_TOKEN_LIFETIME_SECONDS,
+    AccessToken,
+    DaemonSigner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,6 @@ class EnrollmentVerificationHandoff:
 @dataclass(frozen=True)
 class EnrolledDaemon:
     daemon_id: str
-    owner_user_id: str
     key_thumbprint: str
     credential_epoch: int
 
@@ -90,13 +94,21 @@ class DaemonEnrollmentClient:
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        status, text = self._http.request(
-            "POST",
-            f"{self._base}{path}",
-            {"Content-Type": "application/json", "Accept": "application/json"},
-            body,
-            self._timeout,
-        )
+        try:
+            status, text = self._http.request(
+                "POST",
+                f"{self._base}{path}",
+                {"Content-Type": "application/json", "Accept": "application/json"},
+                body,
+                self._timeout,
+            )
+        except Exception as exc:
+            raise DaemonEnrollmentError(
+                0,
+                "CONTROL_PLANE_UNAVAILABLE",
+                "Control plane is unavailable",
+                retryable=True,
+            ) from exc
         try:
             response = json.loads(text) if text else {}
         except json.JSONDecodeError as exc:
@@ -136,14 +148,16 @@ class DaemonEnrollmentClient:
                 "Enrollment handoff is incomplete",
             ) from exc
 
-    def complete(self, enrollment_id: str) -> EnrolledDaemon:
+    def complete(self, signer: DaemonSigner, enrollment_id: str) -> EnrolledDaemon:
         if not enrollment_id:
             raise DaemonEnrollmentError(0, "ENROLLMENT_ID_REQUIRED", "enrollment_id is required")
-        response = self._post(f"/v1/daemon-enrollments/{enrollment_id}:complete", {})
+        response = self._post(
+            f"/v1/daemon-enrollments/{enrollment_id}:complete",
+            signer.enrollment_completion_proof(enrollment_id),
+        )
         try:
             return EnrolledDaemon(
                 daemon_id=str(response["daemon_id"]),
-                owner_user_id=str(response["owner_user_id"]),
                 key_thumbprint=str(response["key_thumbprint"]),
                 credential_epoch=int(response["credential_epoch"]),
             )
@@ -199,6 +213,14 @@ class DaemonEnrollmentClient:
             )
         if token.credential_epoch < 1:
             raise DaemonEnrollmentError(0, "TOKEN_BINDING_MISMATCH", "Credential epoch is invalid")
+        now = time.time()
+        # Do not use clock skew to extend the five-minute bearer lifetime.
+        if token.expires_at <= now or token.expires_at > now + MAX_ACCESS_TOKEN_LIFETIME_SECONDS:
+            raise DaemonEnrollmentError(
+                0,
+                "TOKEN_LIFETIME_INVALID",
+                "Access token lifetime must be between 1 and 300 seconds",
+            )
         return token
 
 
