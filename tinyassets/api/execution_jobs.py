@@ -8,6 +8,7 @@ store protocol makes the lease store's lock/transaction the atomicity boundary.
 from __future__ import annotations
 
 import copy
+import hmac
 import re
 import uuid
 from dataclasses import asdict, dataclass
@@ -28,6 +29,7 @@ from nacl.signing import VerifyKey
 
 from tinyassets.runtime.blob_refs import BlobError, BlobStore
 from tinyassets.runtime.execution_capsule import (
+    CapsuleCanonicalizationError,
     CapsulePolicyError,
     hash_canonical_jcs,
     reject_host_path_material,
@@ -318,11 +320,28 @@ def complete_job(
         _assert_completion_bindings(state, parsed, now=now)
         candidate_hash = state.get("candidate_result_sha256")
         candidate = state.get("candidate_result")
+        signature = candidate.get("signature") if isinstance(candidate, dict) else None
         if (
-            candidate_hash is None
+            type(candidate_hash) is not str
+            or not _SHA256_RE.fullmatch(candidate_hash)
             or not isinstance(candidate, dict)
-            or candidate.get("signature", {}).get("result_sha256") != candidate_hash
-            or parsed["result_sha256"] != candidate_hash
+            or not isinstance(signature, dict)
+        ):
+            raise CompletionConflictError(
+                "completion result hash is not the stored candidate content hash"
+            )
+        try:
+            recomputed_hash = hash_canonical_jcs(
+                {key: value for key, value in candidate.items() if key != "signature"}
+            ).hex()
+        except CapsuleCanonicalizationError as exc:
+            raise CompletionConflictError("stored candidate body is not canonicalizable") from exc
+        signature_hash = signature.get("result_sha256")
+        if (
+            type(signature_hash) is not str
+            or not hmac.compare_digest(recomputed_hash, candidate_hash)
+            or not hmac.compare_digest(recomputed_hash, signature_hash)
+            or not hmac.compare_digest(parsed["result_sha256"], candidate_hash)
         ):
             raise CompletionConflictError(
                 "completion result hash is not the stored candidate content hash"

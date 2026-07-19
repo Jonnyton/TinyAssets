@@ -159,6 +159,41 @@ def test_valid_current_fence_committed_blob_completes_exactly_once(tmp_path: Pat
     assert "effect" not in vars(first)
 
 
+def test_completion_rejects_stored_candidate_body_tamper(tmp_path: Path) -> None:
+    from tinyassets.api.execution_jobs import (
+        CompletionConflictError,
+        complete_job,
+        submit_candidate_result,
+    )
+
+    blob_store, body = blob_store_with_result_blobs(tmp_path)
+    body["outcome"] = "job_failed"
+    key = SigningKey.generate()
+    result, _ = create_result(body, key)
+    job_store = MemoryAtomicJobStore(leased_state())
+    submit_candidate_result(
+        job_store,
+        job_id=JOB_ID,
+        raw_result=json.dumps(result, separators=(",", ":")).encode(),
+        verify_key=key.verify_key,
+        device_key_active=True,
+        blob_store=blob_store,
+        now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+    )
+    job_store.state["candidate_result"]["outcome"] = "succeeded"
+    before = copy.deepcopy(job_store.state)
+
+    with pytest.raises(CompletionConflictError) as exc_info:
+        complete_job(
+            job_store,
+            complete_request(result),
+            now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
+        )
+    assert exc_info.value.code == "completion_conflict"
+    assert exc_info.value.status_code == 409
+    assert job_store.state == before
+
+
 def test_completion_rejects_stale_fence_even_when_every_other_binding_matches(
     tmp_path: Path,
 ) -> None:
