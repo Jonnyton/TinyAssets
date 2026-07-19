@@ -15,6 +15,7 @@ import hmac
 import json
 import math
 import re
+import unicodedata
 import uuid
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime
@@ -32,11 +33,16 @@ CAPSULE_DOMAIN_SEPARATOR = b"tinyassets.execution-capsule.v1\0"
 MAX_INLINE_REQUEST_BYTES = 4_000_000
 MAX_CAPSULE_NESTING_DEPTH = 64
 MAX_CAPSULE_WIRE_BYTES = 8 * 1024 * 1024
-_MAX_CAPSULE_MEMBERS = 500_000
+_MAX_CAPSULE_TOKENS = 500_000
+_MAX_CAPSULE_CONTAINERS = 500_000
 _MAX_CAPSULE_SCALAR_BYTES = 8 * 1024 * 1024
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9:_.-]+$", re.ASCII)
+_ENCODED_FIELD_SUFFIX_RE = re.compile(
+    r"(?:_(?:b16|b32|b64|b85|base16|base32|base64|base85|hex|bytes|encoded))+$"
+)
 _TIMESTAMP_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})T"
     r"(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d+)?)Z$"
@@ -55,13 +61,17 @@ _PERMISSIONS = frozenset(
 _SANDBOX_CLASSES = frozenset({"repo", "source_exec"})
 _REPO_MODES = frozenset({"repo_read", "repo_exec", "coding"})
 _UNBOUND_CAPABILITY_SENTINELS = frozenset(
-    {"UNBOUND", "LEGACY_UNBOUND", "cap:unbound:1", "cap:legacy_unbound:1"}
-)
-_UNBOUND_SENTINELS_CASEFOLDED = frozenset(
-    sentinel.casefold() for sentinel in _UNBOUND_CAPABILITY_SENTINELS
+    {
+        "unbound",
+        "legacy_unbound",
+        "cap:unbound",
+        "cap:legacy:unbound",
+        "cap:unbound:1",
+        "cap:legacy:unbound:1",
+    }
 )
 _UNBOUND_SENTINELS_NORMALIZED = frozenset(
-    re.sub(r"[^a-z0-9]", "", sentinel.casefold())
+    re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", sentinel).casefold())
     for sentinel in _UNBOUND_CAPABILITY_SENTINELS
 )
 # Section 5.2 names the modes and permissions but leaves incompatible cells
@@ -306,11 +316,13 @@ def _preflight_json_value(
     *,
     path: str,
     error_type: type[ExecutionCapsuleError] = CapsuleSchemaError,
+    initial_depth: int = 1,
 ) -> None:
     """Bound JSON-shaped values before deepcopy or recursive validation."""
-    stack: list[tuple[Any, int, bool]] = [(value, 0, False)]
+    stack: list[tuple[Any, int, bool]] = [(value, initial_depth, False)]
     active_containers: set[int] = set()
-    members = 0
+    tokens = 0
+    containers = 0
     scalar_bytes = 0
 
     while stack:
@@ -322,11 +334,14 @@ def _preflight_json_value(
             raise error_type(
                 f"{path} exceeds maximum JSON depth {MAX_CAPSULE_NESTING_DEPTH}"
             )
-        members += 1
-        if members > _MAX_CAPSULE_MEMBERS:
-            raise error_type(f"{path} exceeds maximum JSON member count")
+        tokens += 1
+        if tokens > _MAX_CAPSULE_TOKENS:
+            raise error_type(f"{path} exceeds maximum JSON token count")
 
         if type(item) is dict:
+            containers += 1
+            if containers > _MAX_CAPSULE_CONTAINERS:
+                raise error_type(f"{path} exceeds maximum JSON container count")
             container_id = id(item)
             if container_id in active_containers:
                 raise error_type(f"{path} contains a cyclic JSON object")
@@ -335,6 +350,9 @@ def _preflight_json_value(
             for key, child in item.items():
                 if type(key) is not str:
                     raise error_type(f"{path} contains a non-string object key")
+                tokens += 1
+                if tokens > _MAX_CAPSULE_TOKENS:
+                    raise error_type(f"{path} exceeds maximum JSON token count")
                 if len(key) > _MAX_CAPSULE_SCALAR_BYTES:
                     raise error_type(f"{path} exceeds maximum decoded JSON scalar size")
                 try:
@@ -345,6 +363,9 @@ def _preflight_json_value(
                     ) from exc
                 stack.append((child, depth + 1, False))
         elif type(item) is list:
+            containers += 1
+            if containers > _MAX_CAPSULE_CONTAINERS:
+                raise error_type(f"{path} exceeds maximum JSON container count")
             container_id = id(item)
             if container_id in active_containers:
                 raise error_type(f"{path} contains a cyclic JSON array")
@@ -376,8 +397,11 @@ def _preflight_json_wire(raw_capsule: bytes) -> None:
         )
 
     depth = 0
+    tokens = 0
+    containers = 0
     in_string = False
     escaped = False
+    in_atom = False
     for byte in raw_capsule:
         if in_string:
             if escaped:
@@ -388,16 +412,36 @@ def _preflight_json_wire(raw_capsule: bytes) -> None:
                 in_string = False
             continue
         if byte == 0x22:
+            in_atom = False
             in_string = True
+            tokens += 1
         elif byte in {0x5B, 0x7B}:
+            in_atom = False
             depth += 1
+            tokens += 1
+            containers += 1
             if depth > MAX_CAPSULE_NESTING_DEPTH:
                 raise CapsuleSchemaError(
                     "capsule wire document exceeds maximum JSON depth "
                     f"{MAX_CAPSULE_NESTING_DEPTH}"
                 )
+            if containers > _MAX_CAPSULE_CONTAINERS:
+                raise CapsuleSchemaError(
+                    "capsule wire document exceeds maximum JSON container count"
+                )
         elif byte in {0x5D, 0x7D}:
+            in_atom = False
             depth -= 1
+        elif byte in {0x2C, 0x3A, 0x20, 0x09, 0x0A, 0x0D}:
+            in_atom = False
+        elif not in_atom:
+            in_atom = True
+            tokens += 1
+
+        if tokens > _MAX_CAPSULE_TOKENS:
+            raise CapsuleSchemaError(
+                "capsule wire document exceeds maximum JSON token count"
+            )
 
 
 def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -622,11 +666,15 @@ def _validate_capsule_structure(value: Any) -> tuple[dict[str, Any], dict[str, A
 
 def _path_field_name(key: str) -> bool:
     normalized = re.sub(r"[-\s]+", "_", key).casefold()
+    base_name = _ENCODED_FIELD_SUFFIX_RE.sub("", normalized)
+    # Defense in depth over the authoritative Layer-A/S6 sandbox: encoded
+    # path fields are rejected by their declared meaning, not by guessing at
+    # every possible path spelling in their value.
     return (
-        normalized in {"path", "cwd", "directory", "worktree", "mount", "mounts"}
-        or normalized.endswith("_path")
-        or normalized.endswith("_dir")
-        or normalized.endswith("_directory")
+        base_name in {"path", "cwd", "directory", "worktree", "mount", "mounts"}
+        or base_name.endswith("_path")
+        or base_name.endswith("_dir")
+        or base_name.endswith("_directory")
     )
 
 
@@ -706,6 +754,15 @@ def _text(obj: dict[str, Any], key: str, path: str) -> str:
     return value
 
 
+def _opaque_id(obj: dict[str, Any], key: str, path: str) -> str:
+    value = _text(obj, key, path)
+    if not _OPAQUE_ID_RE.fullmatch(value):
+        raise CapsuleSchemaError(
+            f"{path}.{key} must be an ASCII opaque identifier"
+        )
+    return value
+
+
 def _integer(obj: dict[str, Any], key: str, path: str) -> int:
     value = obj[key]
     if type(value) is not int or not 0 <= value <= _JSON_SAFE_INTEGER_MAX:
@@ -765,12 +822,10 @@ def _decode_b64(value: str, path: str, *, exact_bytes: int | None = None) -> byt
 
 
 def _is_unbound_capability(value: str) -> bool:
-    # S0's scope layer is authoritative.  This secondary capsule guard matches
-    # only known sentinels, including separator variants, without substring
-    # rejection of legitimate identifiers that merely contain similar text.
-    folded = value.casefold()
-    if folded in _UNBOUND_SENTINELS_CASEFOLDED:
-        return True
+    # S0's resolved scope binding is authoritative.  This secondary capsule
+    # guard compares complete sentinels after the opaque-ID ASCII gate, never
+    # substrings of legitimate identifiers such as "unbounded-work".
+    folded = unicodedata.normalize("NFKC", value).casefold()
     normalized = re.sub(r"[^a-z0-9]", "", folded)
     return normalized in _UNBOUND_SENTINELS_NORMALIZED
 
@@ -786,12 +841,12 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
     _uuid(payload, "capsule_id", "payload")
     _uuid(payload, "job_id", "payload")
     _integer(payload, "attempt", "payload")
-    _text(payload, "audience_daemon_id", "payload")
-    _text(payload, "owner_user_id", "payload")
+    _opaque_id(payload, "audience_daemon_id", "payload")
+    _opaque_id(payload, "owner_user_id", "payload")
 
     scope = payload["universe_scope"]
-    _text(scope, "universe_id", "payload.universe_scope")
-    capability_id = _text(scope, "capability_id", "payload.universe_scope")
+    _opaque_id(scope, "universe_id", "payload.universe_scope")
+    capability_id = _opaque_id(scope, "capability_id", "payload.universe_scope")
     _integer(scope, "scope_version", "payload.universe_scope")
     permissions = scope["permissions"]
     if type(permissions) is not list or any(
@@ -801,11 +856,11 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
         raise CapsuleSchemaError("payload.universe_scope.permissions is invalid")
 
     branch = payload["branch"]
-    _text(branch, "branch_definition_id", "payload.branch")
+    _opaque_id(branch, "branch_definition_id", "payload.branch")
     _sha256(branch, "branch_version_sha256", "payload.branch")
 
     node = payload["node"]
-    _text(node, "node_id", "payload.node")
+    _opaque_id(node, "node_id", "payload.node")
     _sha256(node, "node_version_sha256", "payload.node")
     _text(node, "node_kind", "payload.node")
 
@@ -845,7 +900,7 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
             {"x25519-chacha20poly1305-v1"},
             "payload.source_blob.encryption",
         )
-        _text(
+        _opaque_id(
             encryption,
             "recipient_device_key_id",
             "payload.source_blob.encryption",
@@ -855,8 +910,8 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
         )
         _decode_b64(wrapped, "payload.source_blob.encryption.wrapped_content_key_b64")
     producer = source["producer"]
-    _text(producer, "daemon_id", "payload.source_blob.producer")
-    _text(producer, "device_key_id", "payload.source_blob.producer")
+    _opaque_id(producer, "daemon_id", "payload.source_blob.producer")
+    _opaque_id(producer, "device_key_id", "payload.source_blob.producer")
     producer_signature = _text(
         producer, "signature_b64", "payload.source_blob.producer"
     )
@@ -917,8 +972,7 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
             "payload.universe_scope.permissions do not match "
             f"{capability_class}/{repo_mode}: {', '.join(details)}"
         )
-    for key in ("action_policy_id",):
-        _text(capability, key, "payload.allowed_capability")
+    _opaque_id(capability, "action_policy_id", "payload.allowed_capability")
     for key in ("action_policy_sha256", "runner_policy_sha256"):
         _sha256(capability, key, "payload.allowed_capability")
     image_digest = _text(capability, "image_digest", "payload.allowed_capability")
@@ -931,7 +985,7 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
         )
 
     route = payload["model_broker_route"]
-    _text(route, "route_id", "payload.model_broker_route")
+    _opaque_id(route, "route_id", "payload.model_broker_route")
     _integer(route, "route_version", "payload.model_broker_route")
     _sha256(route, "policy_sha256", "payload.model_broker_route")
     _text(route, "grant_ref", "payload.model_broker_route")
@@ -954,7 +1008,7 @@ def _validate_payload_semantics(payload: dict[str, Any]) -> None:
                 f"payload.resource_limits.{key} exceeds initial maximum {maximum}"
             )
     _literal(limits, "network", {"none", "model_broker_only"}, "payload.resource_limits")
-    _text(limits, "egress_policy_id", "payload.resource_limits")
+    _opaque_id(limits, "egress_policy_id", "payload.resource_limits")
     _sha256(limits, "egress_policy_sha256", "payload.resource_limits")
 
     lease = payload["lease"]
@@ -979,7 +1033,7 @@ def _validate_integrity(integrity: dict[str, Any]) -> bytes:
     _literal(integrity, "hash_algorithm", {"sha256"}, "integrity")
     _sha256(integrity, "capsule_sha256", "integrity")
     _literal(integrity, "signature_algorithm", {"ed25519"}, "integrity")
-    signing_key_id = _text(integrity, "signing_key_id", "integrity")
+    signing_key_id = _opaque_id(integrity, "signing_key_id", "integrity")
     if _looks_like_host_path(signing_key_id):
         raise CapsulePolicyError("integrity.signing_key_id cannot be a host path")
     signature_b64 = _text(integrity, "signature_b64", "integrity")
@@ -993,7 +1047,9 @@ def create_execution_capsule(
     signing_key_id: str,
 ) -> ExecutionCapsuleV1:
     """Validate and sign an immutable V1 payload with an Ed25519 platform key."""
-    _preflight_json_value(payload, path="payload")
+    # Account for the capsule object that will wrap this payload so creation
+    # enforces the same root-relative depth as public wire verification.
+    _preflight_json_value(payload, path="payload", initial_depth=2)
     payload_copy = copy.deepcopy(payload)
     payload_object = _validate_payload_structure(payload_copy)
     _reject_path_material(payload_object)
@@ -1002,6 +1058,8 @@ def create_execution_capsule(
         raise CapsuleKeyError("signing_key must be a PyNaCl Ed25519 SigningKey")
     if type(signing_key_id) is not str or not signing_key_id:
         raise CapsuleKeyError("signing_key_id must be a non-empty string")
+    if not _OPAQUE_ID_RE.fullmatch(signing_key_id):
+        raise CapsuleKeyError("signing_key_id must be an ASCII opaque identifier")
     if _looks_like_host_path(signing_key_id):
         raise CapsulePolicyError("signing_key_id cannot be a host path")
 
@@ -1019,6 +1077,7 @@ def create_execution_capsule(
             "signature_b64": base64.b64encode(signature).decode("ascii"),
         },
     }
+    _preflight_json_value(capsule, path="capsule")
     return cast(ExecutionCapsuleV1, capsule)
 
 
@@ -1052,6 +1111,10 @@ def _verify_execution_capsule_trusted(
         raise CapsuleIntegrityError("capsule_sha256 does not match canonical payload")
     if type(expected_signing_key_id) is not str or not expected_signing_key_id:
         raise CapsuleKeyError("expected_signing_key_id must be a non-empty string")
+    if not _OPAQUE_ID_RE.fullmatch(expected_signing_key_id):
+        raise CapsuleKeyError(
+            "expected_signing_key_id must be an ASCII opaque identifier"
+        )
     if integrity["signing_key_id"] != expected_signing_key_id:
         raise CapsuleKeyError("capsule signing key id is not the expected key")
     if signing_key_active is not True:

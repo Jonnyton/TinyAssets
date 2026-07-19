@@ -519,6 +519,45 @@ def test_legitimate_capability_merely_containing_unbound_text_is_allowed() -> No
     assert _verify(capsule, signing_key) == capsule
 
 
+@pytest.mark.parametrize(
+    "capability_id",
+    [
+        "unbound",
+        "legacy_unbound",
+        "cap:unbound",
+        "cap:legacy:unbound",
+        "legacyunbound",
+    ],
+)
+def test_bare_unbound_capability_sentinels_are_rejected(
+    capability_id: str,
+) -> None:
+    from tinyassets.runtime.execution_capsule import CapsulePolicyError
+
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["universe_scope"]["capability_id"] = capability_id
+    capsule = _resign(capsule, signing_key)
+
+    with pytest.raises(CapsulePolicyError, match="permanently forbidden"):
+        _verify(capsule, signing_key)
+
+
+@pytest.mark.parametrize("capability_id", ["ＵＮＢＯＵＮＤ", "unbоund"])
+def test_non_ascii_capability_ids_are_rejected_as_malformed(
+    capability_id: str,
+) -> None:
+    from tinyassets.runtime.execution_capsule import CapsuleSchemaError
+
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["universe_scope"]["capability_id"] = capability_id
+    capsule = _resign(capsule, signing_key)
+
+    with pytest.raises(CapsuleSchemaError, match="ASCII opaque identifier"):
+        _verify(capsule, signing_key)
+
+
 def test_path_field_and_absolute_path_value_are_rejected_even_when_signed() -> None:
     from tinyassets.runtime.execution_capsule import CapsulePolicyError
 
@@ -543,6 +582,35 @@ def test_path_field_and_absolute_path_value_are_rejected_even_when_signed() -> N
     with_path_value = _resign(with_path_value, signing_key)
     with pytest.raises(CapsulePolicyError, match="host path"):
         _verify(with_path_value, signing_key)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "encoded_path"),
+    [
+        (
+            "workspace_path_b64",
+            base64.b64encode(b"/etc/passwd").decode("ascii"),
+        ),
+        (
+            "workspace_path_base64",
+            base64.b64encode(b"/etc/passwd").decode("ascii"),
+        ),
+        ("workspace_path_hex", b"/etc/passwd".hex()),
+    ],
+)
+def test_encoded_path_field_names_are_rejected_by_their_base_name(
+    field_name: str, encoded_path: str
+) -> None:
+    from tinyassets.runtime.execution_capsule import CapsulePolicyError
+
+    signing_key = SigningKey.generate()
+    capsule = _signed_capsule(signing_key)
+    capsule["payload"]["execution_request"]["inline"][field_name] = encoded_path
+    _sync_inline_request(capsule)
+    capsule = _resign(capsule, signing_key)
+
+    with pytest.raises(CapsulePolicyError, match="path field"):
+        _verify(capsule, signing_key)
 
 
 @pytest.mark.parametrize(
@@ -721,6 +789,167 @@ def _deep_object(depth: int) -> dict[str, Any]:
         cursor["nested"] = child
         cursor = child
     return root
+
+
+def _json_token_count(value: Any) -> int:
+    stack = [value]
+    tokens = 0
+    while stack:
+        item = stack.pop()
+        tokens += 1
+        if type(item) is dict:
+            tokens += len(item)
+            stack.extend(item.values())
+        elif type(item) is list:
+            stack.extend(item)
+    return tokens
+
+
+def test_create_and_public_verify_share_the_same_maximum_depth() -> None:
+    from tinyassets.runtime.execution_capsule import (
+        MAX_CAPSULE_NESTING_DEPTH,
+        CapsuleSchemaError,
+        canonicalize_jcs,
+        create_execution_capsule,
+    )
+
+    signing_key = SigningKey.generate()
+    # capsule -> payload -> execution_request -> inline consumes four levels.
+    max_inline_depth = MAX_CAPSULE_NESTING_DEPTH - 4
+
+    payload = _payload()
+    payload["execution_request"]["inline"] = _deep_object(max_inline_depth)
+    request_bytes = canonicalize_jcs(payload["execution_request"]["inline"])
+    payload["execution_request"]["sha256"] = hashlib.sha256(request_bytes).hexdigest()
+    payload["execution_request"]["size_bytes"] = len(request_bytes)
+    capsule = create_execution_capsule(
+        payload,
+        signing_key=signing_key,
+        signing_key_id="platform-key:1",
+    )
+
+    assert _verify(capsule, signing_key) == capsule
+
+    too_deep_payload = _payload()
+    too_deep_payload["execution_request"]["inline"] = _deep_object(
+        max_inline_depth + 1
+    )
+    request_bytes = canonicalize_jcs(
+        too_deep_payload["execution_request"]["inline"]
+    )
+    too_deep_payload["execution_request"]["sha256"] = hashlib.sha256(
+        request_bytes
+    ).hexdigest()
+    too_deep_payload["execution_request"]["size_bytes"] = len(request_bytes)
+    with pytest.raises(CapsuleSchemaError, match="depth"):
+        create_execution_capsule(
+            too_deep_payload,
+            signing_key=signing_key,
+            signing_key_id="platform-key:1",
+        )
+
+    too_deep_capsule = copy.deepcopy(capsule)
+    too_deep_capsule["payload"]["execution_request"]["inline"] = _deep_object(
+        max_inline_depth + 1
+    )
+    _sync_inline_request(too_deep_capsule)
+    too_deep_capsule = _resign(too_deep_capsule, signing_key)
+    with pytest.raises(CapsuleSchemaError, match="depth"):
+        _verify(too_deep_capsule, signing_key)
+
+
+def test_create_and_public_verify_share_the_same_maximum_token_count() -> None:
+    from tinyassets.runtime.execution_capsule import (
+        CapsuleSchemaError,
+        canonicalize_jcs,
+        create_execution_capsule,
+    )
+
+    signing_key = SigningKey.generate()
+    max_capsule_tokens = 500_000
+    payload = _payload()
+    payload["execution_request"]["inline"] = {}
+    request_bytes = canonicalize_jcs(payload["execution_request"]["inline"])
+    payload["execution_request"]["sha256"] = hashlib.sha256(request_bytes).hexdigest()
+    payload["execution_request"]["size_bytes"] = len(request_bytes)
+    baseline_capsule = create_execution_capsule(
+        payload,
+        signing_key=signing_key,
+        signing_key_id="platform-key:1",
+    )
+    baseline_tokens = _json_token_count(baseline_capsule)
+    max_inline_members = (max_capsule_tokens - baseline_tokens) // 2
+
+    inline = {f"k{index}": "" for index in range(max_inline_members)}
+    boundary_value = [0]
+    inline["k0"] = boundary_value
+    payload["execution_request"]["inline"] = inline
+    request_bytes = canonicalize_jcs(inline)
+    payload["execution_request"]["sha256"] = hashlib.sha256(request_bytes).hexdigest()
+    payload["execution_request"]["size_bytes"] = len(request_bytes)
+    capsule = create_execution_capsule(
+        payload,
+        signing_key=signing_key,
+        signing_key_id="platform-key:1",
+    )
+
+    assert _json_token_count(capsule) == max_capsule_tokens
+    assert _verify(capsule, signing_key) == capsule
+
+    boundary_value.append(1)
+    request_bytes = canonicalize_jcs(inline)
+    payload["execution_request"]["sha256"] = hashlib.sha256(request_bytes).hexdigest()
+    payload["execution_request"]["size_bytes"] = len(request_bytes)
+    with pytest.raises(CapsuleSchemaError, match="token count"):
+        create_execution_capsule(
+            payload,
+            signing_key=signing_key,
+            signing_key_id="platform-key:1",
+        )
+
+
+def test_raw_wire_member_limit_is_enforced_before_json_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tinyassets.runtime.execution_capsule as execution_capsule
+
+    signing_key = SigningKey.generate()
+    raw_capsule = b"[" + b"{}," * 500_000 + b"{}]"
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("json.loads must not run for an oversized token stream")
+
+    monkeypatch.setattr(execution_capsule.json, "loads", fail_if_called)
+    with pytest.raises(
+        execution_capsule.CapsuleSchemaError,
+        match="(?:token|container) count",
+    ):
+        execution_capsule.verify_execution_capsule(
+            raw_capsule,
+            **_verification_arguments(signing_key),
+        )
+
+
+def test_raw_wire_scalar_token_limit_is_enforced_before_json_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tinyassets.runtime.execution_capsule as execution_capsule
+
+    signing_key = SigningKey.generate()
+    raw_capsule = b"[" + b"0," * 500_000 + b"0]"
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("json.loads must not run for an oversized token stream")
+
+    monkeypatch.setattr(execution_capsule.json, "loads", fail_if_called)
+    with pytest.raises(
+        execution_capsule.CapsuleSchemaError,
+        match="token count",
+    ):
+        execution_capsule.verify_execution_capsule(
+            raw_capsule,
+            **_verification_arguments(signing_key),
+        )
 
 
 @pytest.mark.parametrize("depth", [100, 500, 1_000, 5_000])
