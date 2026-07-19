@@ -601,6 +601,29 @@ def canonicalize_jcs(value: Any) -> bytes:
     return sink.getvalue()
 
 
+def hash_canonical_jcs(value: Any) -> bytes:
+    """Return SHA-256 over the shared RFC 8785/JCS representation."""
+    return hashlib.sha256(canonicalize_jcs(value)).digest()
+
+
+def sign_domain_separated_ed25519(
+    digest: bytes, *, domain_separator: bytes, signing_key: SigningKey
+) -> bytes:
+    """Sign a canonical content digest under a pinned protocol domain."""
+    return signing_key.sign(domain_separator + digest).signature
+
+
+def verify_domain_separated_ed25519(
+    digest: bytes,
+    signature: bytes,
+    *,
+    domain_separator: bytes,
+    verify_key: VerifyKey,
+) -> None:
+    """Verify a canonical content digest under a pinned protocol domain."""
+    verify_key.verify(domain_separator + digest, signature)
+
+
 def _schema_keys(schema: type) -> frozenset[str]:
     return cast(frozenset[str], schema.__required_keys__)
 
@@ -714,6 +737,16 @@ def _reject_path_material(
                 f"{path}[{index}]",
                 validate_b64=validate_b64,
             )
+
+
+def reject_host_path_material(
+    value: Any,
+    path: str = "payload",
+    *,
+    validate_b64: bool = True,
+) -> None:
+    """Reject host-path fields and values using the capsule's policy rules."""
+    _reject_path_material(value, path, validate_b64=validate_b64)
 
 
 def _assert_capsule_json_domain(value: Any, path: str = "payload") -> None:
@@ -1059,9 +1092,12 @@ def create_execution_capsule(
     if _looks_like_host_path(signing_key_id):
         raise CapsulePolicyError("signing_key_id cannot be a host path")
 
-    canonical_payload = canonicalize_jcs(payload_object)
-    digest = hashlib.sha256(canonical_payload).digest()
-    signature = signing_key.sign(CAPSULE_DOMAIN_SEPARATOR + digest).signature
+    digest = hash_canonical_jcs(payload_object)
+    signature = sign_domain_separated_ed25519(
+        digest,
+        domain_separator=CAPSULE_DOMAIN_SEPARATOR,
+        signing_key=signing_key,
+    )
     capsule: dict[str, Any] = {
         "payload": payload_object,
         "integrity": {
@@ -1102,8 +1138,7 @@ def _verify_execution_capsule_trusted(
     _reject_path_material(payload, validate_b64=False)
     signature = _validate_integrity(integrity)
 
-    canonical_payload = canonicalize_jcs(payload)
-    digest = hashlib.sha256(canonical_payload).digest()
+    digest = hash_canonical_jcs(payload)
     if not hmac.compare_digest(integrity["capsule_sha256"], digest.hex()):
         raise CapsuleIntegrityError("capsule_sha256 does not match canonical payload")
     if type(expected_signing_key_id) is not str or not expected_signing_key_id:
@@ -1119,7 +1154,12 @@ def _verify_execution_capsule_trusted(
     if not isinstance(verify_key, VerifyKey):
         raise CapsuleKeyError("verify_key must be a PyNaCl Ed25519 VerifyKey")
     try:
-        verify_key.verify(CAPSULE_DOMAIN_SEPARATOR + digest, signature)
+        verify_domain_separated_ed25519(
+            digest,
+            signature,
+            domain_separator=CAPSULE_DOMAIN_SEPARATOR,
+            verify_key=verify_key,
+        )
     except (BadSignatureError, ValueError) as exc:
         raise CapsuleIntegrityError("Ed25519 capsule signature verification failed") from exc
 
