@@ -126,6 +126,61 @@ def test_per_daemon_quota_counts_pending_reservations(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("owner_quota_bytes", "daemon_quota_bytes", "message"),
+    [(10, 100, "per-owner"), (100, 10, "per-daemon")],
+)
+def test_same_hash_pending_uploads_each_consume_quota(
+    tmp_path: Path,
+    owner_quota_bytes: int,
+    daemon_quota_bytes: int,
+    message: str,
+) -> None:
+    from tinyassets.runtime.blob_refs import BlobQuotaError
+
+    blob_store = store(
+        tmp_path,
+        max_blob_bytes=20,
+        owner_quota_bytes=owner_quota_bytes,
+        daemon_quota_bytes=daemon_quota_bytes,
+    )
+    content = b"a" * 6
+    init_write(blob_store, declaration(content), content)
+    with pytest.raises(BlobQuotaError, match=message):
+        blob_store.init_blob(
+            declaration(
+                content,
+                job_id="123e4567-e89b-42d3-a456-426614174099",
+            ),
+            owner_user_id="user:owner-1",
+            daemon_id="daemon:builder-1",
+        )
+
+
+def test_daemon_quota_aggregates_pending_uploads_across_owners(tmp_path: Path) -> None:
+    from tinyassets.runtime.blob_refs import BlobQuotaError
+
+    blob_store = store(
+        tmp_path,
+        max_blob_bytes=20,
+        owner_quota_bytes=100,
+        daemon_quota_bytes=10,
+    )
+    first_content = b"a" * 6
+    first = blob_store.init_blob(
+        declaration(first_content),
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+    )
+    blob_store.write_upload(first.upload_id, first_content)
+    with pytest.raises(BlobQuotaError, match="per-daemon"):
+        blob_store.init_blob(
+            declaration(b"b" * 5),
+            owner_user_id="user:owner-2",
+            daemon_id="daemon:builder-1",
+        )
+
+
 def test_duplicate_commit_is_idempotent_and_does_not_rewrite_object(
     tmp_path: Path,
 ) -> None:

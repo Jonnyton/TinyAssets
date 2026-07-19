@@ -267,32 +267,42 @@ class BlobStore:
             owner_controlled=bool(binding["owner_controlled"]),
         )
 
-    def _live_records(self) -> list[dict[str, Any]]:
-        records = list(self._index["bindings"].values())
-        records.extend(
-            upload for upload in self._index["uploads"].values() if upload["status"] == "pending"
-        )
-        return records
-
     def _check_quota(
-        self, declaration: BlobDeclarationV1, *, owner_user_id: str, daemon_id: str
+        self,
+        declaration: BlobDeclarationV1,
+        *,
+        owner_user_id: str,
+        daemon_id: str,
+        pending: bool,
     ) -> None:
         size = declaration["size_bytes"]
         if size > self._max_blob_bytes:
             raise BlobQuotaError(f"declared blob exceeds per-blob maximum {self._max_blob_bytes}")
-        live = self._live_records()
-        owner_sizes: dict[str, int] = {}
-        daemon_sizes: dict[str, int] = {}
-        for record in live:
-            if record["owner_user_id"] == owner_user_id:
-                owner_sizes.setdefault(record["sha256"], record["size_bytes"])
-                if record["daemon_id"] == daemon_id:
-                    daemon_sizes.setdefault(record["sha256"], record["size_bytes"])
-        owner_sizes.setdefault(declaration["sha256"], size)
-        daemon_sizes.setdefault(declaration["sha256"], size)
-        if sum(owner_sizes.values()) > self._owner_quota_bytes:
+        owner_committed: dict[str, int] = {}
+        daemon_committed: dict[str, int] = {}
+        for binding in self._index["bindings"].values():
+            if binding["owner_user_id"] == owner_user_id:
+                owner_committed.setdefault(binding["sha256"], binding["size_bytes"])
+            if binding["daemon_id"] == daemon_id:
+                daemon_committed.setdefault(binding["sha256"], binding["size_bytes"])
+        owner_pending = 0
+        daemon_pending = 0
+        for upload in self._index["uploads"].values():
+            if upload["status"] != "pending":
+                continue
+            if upload["owner_user_id"] == owner_user_id:
+                owner_pending += upload["size_bytes"]
+            if upload["daemon_id"] == daemon_id:
+                daemon_pending += upload["size_bytes"]
+        if pending:
+            owner_pending += size
+            daemon_pending += size
+        else:
+            owner_committed.setdefault(declaration["sha256"], size)
+            daemon_committed.setdefault(declaration["sha256"], size)
+        if sum(owner_committed.values()) + owner_pending > self._owner_quota_bytes:
             raise BlobQuotaError("per-owner blob quota exceeded")
-        if sum(daemon_sizes.values()) > self._daemon_quota_bytes:
+        if sum(daemon_committed.values()) + daemon_pending > self._daemon_quota_bytes:
             raise BlobQuotaError("per-daemon blob quota exceeded")
 
     def init_blob(
@@ -348,9 +358,14 @@ class BlobStore:
                 raise BlobStateError("committed content hash has contradictory size")
             if blob is not None and blob.get("object_present"):
                 self._verify_platform_object(declared["sha256"], declared["size_bytes"])
-            self._check_quota(declared, owner_user_id=owner, daemon_id=daemon)
-            upload_id = str(uuid.uuid4())
             committed = bool(blob and blob.get("object_present"))
+            self._check_quota(
+                declared,
+                owner_user_id=owner,
+                daemon_id=daemon,
+                pending=not committed,
+            )
+            upload_id = str(uuid.uuid4())
             record = {
                 **declared,
                 "owner_user_id": owner,
@@ -498,7 +513,12 @@ class BlobStore:
                 if existing["owner_blob_ref"] != owner_blob_ref:
                     raise BlobBindingError("owner blob binding is already committed")
                 return self._reference_from_binding(existing)
-            self._check_quota(declared, owner_user_id=owner, daemon_id=daemon)
+            self._check_quota(
+                declared,
+                owner_user_id=owner,
+                daemon_id=daemon,
+                pending=False,
+            )
             committed_at = _utc_text()
             blob = self._index["blobs"].get(declared["sha256"])
             if blob is not None and blob["size_bytes"] != declared["size_bytes"]:
