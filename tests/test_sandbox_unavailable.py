@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -126,6 +127,17 @@ class TestCheckBwrapFailure:
 # ---------------------------------------------------------------------------
 
 class TestProbeSandboxAvailable:
+    def test_control_plane_is_not_applicable_without_probing(self, monkeypatch):
+        monkeypatch.setenv("TINYASSETS_CONTROL_PLANE", "1")
+        with patch.object(sys, "platform", "linux"):
+            with patch("shutil.which", side_effect=AssertionError("must not probe")):
+                with patch(
+                    "subprocess.run", side_effect=AssertionError("must not spawn")
+                ):
+                    result = probe_sandbox_available()
+        assert result["bwrap_available"] is False
+        assert "not applicable" in result.get("reason", "")
+
     def test_returns_unavailable_on_win32(self):
         with patch.object(sys, "platform", "win32"):
             result = probe_sandbox_available()
@@ -156,6 +168,8 @@ class TestProbeSandboxAvailable:
         assert result["bwrap_available"] is True
         assert result["reason"] is None
         assert run_mock.call_count == 2
+        for call in run_mock.call_args_list:
+            assert call.kwargs["env"] == {"PATH": os.defpath}
 
     def test_returns_unavailable_when_bwrap_launch_nonzero(self):
         version_result = MagicMock()

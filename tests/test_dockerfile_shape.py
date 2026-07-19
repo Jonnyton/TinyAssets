@@ -379,9 +379,12 @@ def test_entrypoint_script_exists():
 
 def test_entrypoint_scrubs_provider_auth_environment():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "_provider_auth_env=(" in text
+    manifest = (
+        REPO_ROOT / "tinyassets" / "provider_credential_env_vars.txt"
+    ).read_text(encoding="utf-8")
+    assert "provider_credential_env_vars.txt" in text
     for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"):
-        assert name in text
+        assert name in manifest
     assert 'unset "${_name}"' in text
 
 
@@ -399,8 +402,11 @@ def test_entrypoint_does_not_login_with_api_key():
 
 def test_entrypoint_strips_api_key_providers_by_default():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "TINYASSETS_ALLOW_API_KEY_PROVIDERS" in text
-    assert "OPENAI_API_KEY" in text
+    manifest = (
+        REPO_ROOT / "tinyassets" / "provider_credential_env_vars.txt"
+    ).read_text(encoding="utf-8")
+    assert "TINYASSETS_ALLOW_API_KEY_PROVIDERS" in manifest
+    assert "OPENAI_API_KEY" in manifest
     assert 'unset "${_name}"' in text, (
         "entrypoint must strip API-key provider env vars unless explicitly enabled"
     )

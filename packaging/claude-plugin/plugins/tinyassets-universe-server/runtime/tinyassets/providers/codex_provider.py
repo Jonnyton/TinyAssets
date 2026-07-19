@@ -159,6 +159,11 @@ class CodexProvider(BaseProvider):
                 "filesystem confinement); refusing to run a founder-facing turn "
                 "unconfined. Assign a sandbox-capable engine (claude-code)."
             )
+        # Resolve the explicit provider environment before any host capability
+        # probe.  This is the canonical control-plane refusal gate.
+        proc_env, scratch_dir = sandbox_spawn_env_and_dir(
+            self.name, config, universe_dir=universe_dir,
+        )
         base_cmd, use_shell = _resolve_codex_cmd()
         model = _codex_model()
         sandbox_status = get_sandbox_status()
@@ -189,9 +194,6 @@ class CodexProvider(BaseProvider):
         ]
         # Sanitized env for a sandbox-required coding node (only codex's own auth
         # — no cross-tenant secrets to `env`-dump); normal calls keep the full env.
-        proc_env, scratch_dir = sandbox_spawn_env_and_dir(
-            self.name, config, universe_dir=universe_dir,
-        )
         # C1(a) (Codex S3 REJECT r2): codex's `-C` workdir MUST ALWAYS be a fresh
         # per-job SCRATCH dir, NEVER the daemon repo / host checkout — codex honors
         # NO tool policy and BOTH --full-auto (workspace-write) and the bypass grant

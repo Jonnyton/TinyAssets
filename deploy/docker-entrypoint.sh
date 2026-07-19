@@ -45,22 +45,6 @@ if [[ "${_any_set}" -eq 0 ]]; then
     exit 1
 fi
 
-_api_key_env=(
-    OPENAI_API_KEY
-    ANTHROPIC_API_KEY
-    ANTHROPIC_BASE_URL
-    GEMINI_API_KEY
-    GROQ_API_KEY
-    XAI_API_KEY
-)
-
-for _name in "${_api_key_env[@]}"; do
-    if [[ -n "${!_name:-}" ]]; then
-        echo "[entrypoint] ignoring ${_name}: production is control-plane only" >&2
-    fi
-    unset "${_name}"
-done
-
 # A control-plane host must not retain any legacy provider-auth home. Scrubbing
 # environment variables is insufficient: re-adding CODEX_HOME (or relying on a
 # default path under /data) would silently re-arm platform execution. Refuse to
@@ -87,21 +71,39 @@ case "${TINYASSETS_CONTROL_PLANE:-}" in
         ;;
 esac
 
-# The production service is a control plane, not an executor. Scrub any stale
-# provider-auth settings left in /etc/tinyassets/env by an older deployment so
-# they cannot reach the MCP server process.
-_provider_auth_env=(
-    TINYASSETS_ALLOW_API_KEY_PROVIDERS
-    TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY
-    CODEX_HOME
-    CLAUDE_CONFIG_DIR
-    TINYASSETS_CODEX_AUTH_JSON_B64
-    TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64
-    CLAUDE_CODE_OAUTH_TOKEN
-)
-for _name in "${_provider_auth_env[@]}"; do
+# The production service is a control plane, not an executor. Scrub the same
+# provider credential manifest consumed by tinyassets.control_plane so shell
+# and Python startup cannot drift into two credential lists.
+_entrypoint_dir="${BASH_SOURCE[0]%/*}"
+_provider_auth_root="${_entrypoint_dir}"
+if [[ "${_provider_auth_root##*/}" == "deploy" ]]; then
+    _provider_auth_root="${_provider_auth_root%/*}"
+fi
+_provider_auth_manifest="${_provider_auth_root}/tinyassets/provider_credential_env_vars.txt"
+if [[ ! -r "${_provider_auth_manifest}" ]]; then
+    echo "CONTROL-PLANE-PROVIDER-MANIFEST-MISSING: ${_provider_auth_manifest}" >&2
+    exit 1
+fi
+while read -r _kind _name _extra || [[ -n "${_kind:-}${_name:-}${_extra:-}" ]]; do
+    if [[ -z "${_kind:-}" || "${_kind}" == \#* ]]; then
+        continue
+    fi
+    case "${_kind}" in
+        api_key|host_auth|provider_policy) ;;
+        *)
+            echo "CONTROL-PLANE-PROVIDER-MANIFEST-INVALID: unknown kind ${_kind}" >&2
+            exit 1
+            ;;
+    esac
+    if [[ -z "${_name:-}" || -n "${_extra:-}" || "${_name}" == *[!A-Z0-9_]* ]]; then
+        echo "CONTROL-PLANE-PROVIDER-MANIFEST-INVALID: malformed environment name" >&2
+        exit 1
+    fi
+    if [[ -n "${!_name:-}" ]]; then
+        echo "[entrypoint] ignoring ${_name}: production is control-plane only" >&2
+    fi
     unset "${_name}"
-done
+done < "${_provider_auth_manifest}"
 
 # ── Coding-node OS-sandbox attestation (patch-loop S3) ───────────────────────
 # TINYASSETS_OS_SANDBOX_ATTESTED is DELIBERATELY UNSET here.

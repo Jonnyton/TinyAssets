@@ -13,6 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tinyassets.control_plane import (
+    API_KEY_PROVIDER_ENV_VARS,
+    CONTROL_PLANE_ENV,
+    HOST_AUTH_ENV_VARS,
+)
+from tinyassets.control_plane import (
+    truthy_env as _truthy_env,
+)
+
 if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
 
@@ -129,31 +138,6 @@ DEGRADED_JUDGE_RESPONSE = ProviderResponse(
     latency_ms=0.0,
     degraded=True,
 )
-
-
-API_KEY_PROVIDER_ENV_VARS: tuple[str, ...] = (
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
-    "GEMINI_API_KEY",
-    "GROQ_API_KEY",
-    "XAI_API_KEY",
-)
-
-HOST_AUTH_ENV_VARS: tuple[str, ...] = (
-    *API_KEY_PROVIDER_ENV_VARS,
-    "CODEX_HOME",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "TINYASSETS_CODEX_AUTH_JSON_B64",
-    "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
-)
-
-CONTROL_PLANE_ENV = "TINYASSETS_CONTROL_PLANE"
-
-
-def _truthy_env(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _explicit_provider_subprocess_env(
@@ -972,6 +956,12 @@ def probe_sandbox_available() -> dict[str, object]:
     Returns {bwrap_available: bool, reason: str | None}.  Cached at
     module level after first call so get_status probes once at startup.
     """
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "bwrap_available": False,
+            "reason": "not applicable on a control-plane host",
+        }
+
     import shutil as _shutil
     import subprocess as _subprocess
     import sys as _sys
@@ -986,7 +976,11 @@ def probe_sandbox_available() -> dict[str, object]:
     try:
         version_result = _subprocess.run(
             [bwrap_path, "--version"],
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env={"PATH": os.defpath},
         )
         if version_result.returncode != 0:
             return {
@@ -999,7 +993,11 @@ def probe_sandbox_available() -> dict[str, object]:
 
         launch_result = _subprocess.run(
             [bwrap_path, "--ro-bind", "/", "/", "/bin/sh", "-c", "true"],
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env={"PATH": os.defpath},
         )
         if launch_result.returncode == 0:
             return {"bwrap_available": True, "reason": None}
@@ -1025,6 +1023,11 @@ _sandbox_probe_cache: dict[str, object] | None = None
 
 def get_sandbox_status() -> dict[str, object]:
     """Return cached sandbox probe result (probes once per process)."""
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "bwrap_available": False,
+            "reason": "not applicable on a control-plane host",
+        }
     global _sandbox_probe_cache  # noqa: PLW0603
     if _sandbox_probe_cache is None:
         _sandbox_probe_cache = probe_sandbox_available()
