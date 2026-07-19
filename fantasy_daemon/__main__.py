@@ -204,8 +204,8 @@ def _dispatcher_startup(universe_path: Path) -> None:
         # our own worker_id is that predecessor's orphan — reclaim it in seconds
         # instead of waiting out the TTL. Scoped to our own id, so unlike the
         # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
-        # Only an explicitly assigned process identity is safe to reclaim. An
-        # unset id cannot prove ownership of predecessor leases.
+        # Only a unique process identity is safe to reclaim. The branch-task
+        # boundary rejects blank and known shared fallback ids.
         worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
         if worker_id:
             reclaim_predecessor_tasks(universe_path, worker_id=worker_id)

@@ -36,6 +36,7 @@ from tinyassets.credentials import byo_execution_enabled as core_byo_execution_e
 
 NON_AMBIENT_WORK_ENV = "TINYASSETS_NON_AMBIENT_WORK"
 BYO_VAULT_ENCRYPTED_ENV = "TINYASSETS_BYO_VAULT_ENCRYPTED"
+EXTERNAL_CAPACITY_PENDING_REASON = "no_eligible_external_daemon"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _KNOWN_ENGINE_SOURCES = frozenset(
@@ -92,6 +93,10 @@ class EngineBinding:
     @property
     def needs_migration(self) -> bool:
         return self.needs_record_migration or self.retired_needs_rebind
+
+    @property
+    def external_route_declared(self) -> bool:
+        return self.engine_source in _RUNTIME_BACKED_SOURCES
 
     def is_eligible_for(self, provider_name: str) -> bool:
         return self.bound and provider_name.strip() in self.eligible_providers
@@ -403,6 +408,11 @@ def execution_blocked_reason(universe_dir: str | Path | None) -> str | None:
     binding = resolve_engine_binding(universe_dir)
     if binding.bound:
         return None
+    if binding.external_route_declared:
+        return (
+            f"{EXTERNAL_CAPACITY_PENDING_REASON}: the declared external daemon "
+            "route has no owner-authorized or market lease; job remains pending"
+        )
     if binding.needs_migration:
         return (
             "retired or unmigrated credential state is not rebound to a sanctioned "

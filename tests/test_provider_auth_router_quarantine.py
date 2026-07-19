@@ -16,6 +16,7 @@ from tinyassets.credential_broker import (
 from tinyassets.engine_binding import RetiredCredentialStateError
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
+    ProviderUnavailableError,
 )
 from tinyassets.providers.base import (
     BaseProvider,
@@ -334,9 +335,9 @@ def test_lane_switch_does_not_reuse_retained_broker_credential(
 ):
     universe = _bound_universe(platform_vault_env)
     write_universe_config_fields(universe, engine_source=source)
-    env = subprocess_env_for_provider("claude-code", universe_dir=universe)
-    assert "ANTHROPIC_API_KEY" not in env
-    assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in env
+    with pytest.raises(ProviderUnavailableError, match="external daemon") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+    assert "sk-ant-api03-bound" not in str(exc.value)
 
 
 @pytest.mark.parametrize("entrypoint", ["call", "policy", "ensemble"])

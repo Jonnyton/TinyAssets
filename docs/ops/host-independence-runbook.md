@@ -492,6 +492,15 @@ than an uptime requirement. `scripts/verify_llm_binding.py` remains available
 for operators to check their own BYO daemon; it must not target the TinyAssets
 production control plane as a required-green canary.
 
+**Host action — legacy founder credentials:** the control-plane entrypoint now
+fails with `CONTROL-PLANE-PROVIDER-AUTH-PRESENT` if a legacy `.codex` or
+`.claude` auth directory exists under the production data root (or at an
+explicit `CODEX_HOME` / `CLAUDE_CONFIG_DIR`). The code deliberately does not
+delete those operator-owned credentials. An operator must separately remove or
+archive `/data/.codex/auth.json` and `/data/.claude/.credentials.json`, then
+restart the service and verify the entrypoint passes. This remains a host-gated
+credential-removal action.
+
 ---
 
 ## 8. References

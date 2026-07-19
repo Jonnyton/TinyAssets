@@ -44,6 +44,7 @@ services:
     environment:
       HOME: /app
       TINYASSETS_DATA_DIR: /data
+      TINYASSETS_CONTROL_PLANE: "1"
       # Credential-vault anti-rollback guard: MUST live on a persistent
       # NON-/data volume. Under /data a restore would carry the guard along
       # with the vault (defeating rollback detection); on the ephemeral

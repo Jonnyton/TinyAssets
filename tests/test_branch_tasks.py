@@ -395,3 +395,18 @@ def test_dispatcher_startup_no_predecessor_reclaim_without_worker_id(
     _dispatcher_startup(tmp_path)
 
     assert read_queue(tmp_path)[0].status == "running"
+
+
+def test_dispatcher_startup_skips_shared_default_worker_id(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The shared fallback id cannot prove predecessor ownership."""
+    from fantasy_daemon.__main__ import _dispatcher_startup
+
+    shared_worker_id = "cloud-droplet"
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", shared_worker_id)
+    _claim_running(tmp_path, worker=shared_worker_id)
+
+    _dispatcher_startup(tmp_path)
+
+    assert read_queue(tmp_path)[0].status == "running"

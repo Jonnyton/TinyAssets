@@ -741,6 +741,9 @@ def recover_claimed_tasks(universe_path: Path) -> int:
     return count
 
 
+SHARED_DEFAULT_WORKER_IDS = frozenset({"cloud-droplet"})
+
+
 def reclaim_predecessor_tasks(
     universe_path: Path,
     *,
@@ -766,14 +769,12 @@ def reclaim_predecessor_tasks(
     incarnation is provably dead (we are its container replacement). No heartbeat
     or lease inference is needed.
 
-    No-op when ``worker_id`` is blank: a blank id can't be scoped to "ours"
-    without risking a peer's lease, so the lease TTL remains the fallback. The
-    CALLER must pass a uniquely-assigned id; shared fallback identities could
-    be held by multiple live daemons and must not be used for predecessor
-    reclamation.
+    No-op when ``worker_id`` is blank or a known shared fallback identity: those
+    ids cannot be scoped to "ours" without risking a peer's lease, so the lease
+    TTL remains the fallback. The caller must pass a uniquely-assigned id.
     """
     clean = (worker_id or "").strip()
-    if not clean:
+    if not clean or clean in SHARED_DEFAULT_WORKER_IDS:
         return 0
     qp = queue_path(universe_path)
     if not qp.exists():

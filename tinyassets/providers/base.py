@@ -148,6 +148,8 @@ HOST_AUTH_ENV_VARS: tuple[str, ...] = (
     "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
 )
 
+CONTROL_PLANE_ENV = "TINYASSETS_CONTROL_PLANE"
+
 
 def _truthy_env(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -241,12 +243,18 @@ def subprocess_env_for_provider(
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
     Engine credentials come from the platform vault via
-    :mod:`tinyassets.credential_broker`. A universe with no engine deposits
-    gets no overrides (the host_daemon default engine). Fail-closed states —
-    unmigrated legacy plaintext, ``needs_redeposit``/revoked bindings — RAISE:
-    the universe's engine stops rather than silently running on the host's
-    credentials (the ambient identity leak).
+    :mod:`tinyassets.credential_broker`. Fail-closed states — unresolved
+    external routes, unmigrated legacy plaintext, and
+    ``needs_redeposit``/revoked bindings — RAISE before a child can spawn.
     """
+    from tinyassets.exceptions import ProviderUnavailableError
+
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        raise ProviderUnavailableError(
+            "control-plane services cannot spawn model providers; external work "
+            "must remain queued for an owner-authorized BYO or market daemon"
+        )
+
     host_env = subprocess_env_without_api_keys() or os.environ.copy()
     from tinyassets.credential_broker import (
         provider_auth_env_overrides,
@@ -259,8 +267,6 @@ def subprocess_env_for_provider(
         get_pinned_byo_snapshot,
         resolve_engine_binding,
     )
-    from tinyassets.exceptions import ProviderUnavailableError
-
     resolved_universe = (
         Path(universe_dir)
         if universe_dir is not None
@@ -274,10 +280,12 @@ def subprocess_env_for_provider(
     engine_source = (
         load_universe_config(resolved_universe).engine_source.strip().lower()
     )
-    if engine_source == "host_daemon":
-        return host_env
-
     binding = resolve_engine_binding(resolved_universe)
+    if binding.external_route_declared and not binding.bound:
+        raise ProviderUnavailableError(
+            "declared external daemon route is unresolved; refusing ambient "
+            "provider auth until an owner-authorized or market lease is bound"
+        )
     if binding.needs_migration:
         raise RetiredCredentialStateError(
             "retired credential state cannot use ambient provider auth"

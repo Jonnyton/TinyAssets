@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 import yaml
 
+from tinyassets.branches import (
+    BranchDefinition,
+    EdgeDefinition,
+    GraphNodeRef,
+    NodeDefinition,
+)
+from tinyassets.config import write_universe_config_fields
+from tinyassets.engine_binding import execution_blocked_reason
+from tinyassets.exceptions import (
+    AllProvidersExhaustedError,
+    ProviderUnavailableError,
+)
+from tinyassets.providers.base import subprocess_env_for_provider
+from tinyassets.providers.router import _enforce_writer_binding
+from tinyassets.runs import RUN_STATUS_QUEUED, execute_branch
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,6 +46,19 @@ B2 and B3 are dependency-ordered validation slices of this one end-state
 architecture: B2 proves the protocol with an owner daemon; B3 places
 market matching in front of the unchanged protocol.
 """
+
+
+def test_autouse_fixture_pins_each_test_to_a_throwaway_data_root(tmp_path) -> None:
+    data_root = Path(os.environ["TINYASSETS_DATA_DIR"]).resolve()
+
+    assert data_root.exists()
+    assert data_root != tmp_path.resolve()
+    assert not data_root.is_relative_to(tmp_path.resolve())
+    assert data_root.parent == tmp_path.resolve().parent
+    assert data_root.name.startswith("tinyassets-data")
+    if os.name == "nt":
+        live_root = Path.home() / "AppData" / "Roaming" / "TinyAssets"
+        assert not data_root.is_relative_to(live_root.resolve())
 
 
 def test_plan_contains_compute_ownership_invariant_verbatim() -> None:
@@ -61,6 +91,92 @@ def test_compose_contains_only_control_plane_services() -> None:
 
     assert "seccomp=unconfined" not in compose_text
     assert "apparmor=unconfined" not in compose_text
+    assert compose["services"]["daemon"]["environment"][
+        "TINYASSETS_CONTROL_PLANE"
+    ] == "1"
+
+
+def _provider_branch() -> BranchDefinition:
+    return BranchDefinition(
+        branch_def_id="control-plane-provider-guard",
+        name="Control-plane provider guard",
+        entry_point="provider",
+        node_defs=[
+            NodeDefinition(
+                node_id="provider",
+                display_name="Provider",
+                prompt_template="say hi",
+                output_keys=["result"],
+            )
+        ],
+        graph_nodes=[GraphNodeRef(id="provider", node_def_id="provider")],
+        edges=[EdgeDefinition(from_node="provider", to_node="END")],
+    )
+
+
+@pytest.mark.parametrize(
+    "engine_source", ("host_daemon", "market_rented", "self_hosted_endpoint")
+)
+def test_unresolved_external_engine_stays_queued_before_provider_dispatch(
+    tmp_path, monkeypatch, engine_source
+) -> None:
+    universe = tmp_path / f"u-{engine_source}"
+    universe.mkdir()
+    write_universe_config_fields(universe, engine_source=engine_source)
+    calls = {"count": 0}
+
+    def provider_call(*_args, **_kwargs):
+        calls["count"] += 1
+        return "ambient execution must be unreachable"
+
+    reason = execution_blocked_reason(universe)
+    outcome = execute_branch(
+        tmp_path,
+        branch=_provider_branch(),
+        inputs={},
+        provider_call=provider_call,
+        _enqueue_universe_id=universe.name,
+    )
+
+    assert reason is not None
+    assert "no_eligible_external_daemon" in reason
+    assert outcome.status == RUN_STATUS_QUEUED
+    assert "no_eligible_external_daemon" in outcome.error
+    assert calls["count"] == 0
+
+
+@pytest.mark.parametrize(
+    "engine_source", ("host_daemon", "market_rented", "self_hosted_endpoint")
+)
+def test_unresolved_external_engine_quarantines_env_and_writer_route(
+    tmp_path, monkeypatch, engine_source
+) -> None:
+    universe = tmp_path / f"u-{engine_source}"
+    universe.mkdir()
+    write_universe_config_fields(universe, engine_source=engine_source)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-platform-token")
+
+    with pytest.raises(ProviderUnavailableError, match="external daemon") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+    assert "ambient-platform-token" not in str(exc.value)
+
+    with pytest.raises(AllProvidersExhaustedError, match="external daemon"):
+        _enforce_writer_binding(
+            ["claude-code"],
+            role="writer",
+            is_pinned_writer=False,
+            pin_writer="",
+            universe_dir=universe,
+        )
+
+
+def test_control_plane_provider_spawn_refuses_even_without_credentials(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("TINYASSETS_CONTROL_PLANE", "1")
+
+    with pytest.raises(ProviderUnavailableError, match="control-plane"):
+        subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
 
 
 def test_platform_worker_modules_are_retired_without_a_shim() -> None:

@@ -61,6 +61,32 @@ for _name in "${_api_key_env[@]}"; do
     unset "${_name}"
 done
 
+# A control-plane host must not retain any legacy provider-auth home. Scrubbing
+# environment variables is insufficient: re-adding CODEX_HOME (or relying on a
+# default path under /data) would silently re-arm platform execution. Refuse to
+# boot and leave operator-owned credentials untouched for explicit host cleanup.
+case "${TINYASSETS_CONTROL_PLANE:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+        _control_plane_data_dir="${TINYASSETS_DATA_DIR:-/data}"
+        _legacy_provider_auth_dirs=(
+            "${_control_plane_data_dir}/.codex"
+            "${_control_plane_data_dir}/.claude"
+        )
+        if [[ -n "${CODEX_HOME:-}" ]]; then
+            _legacy_provider_auth_dirs+=("${CODEX_HOME}")
+        fi
+        if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+            _legacy_provider_auth_dirs+=("${CLAUDE_CONFIG_DIR}")
+        fi
+        for _auth_dir in "${_legacy_provider_auth_dirs[@]}"; do
+            if [[ -d "${_auth_dir}" ]]; then
+                echo "CONTROL-PLANE-PROVIDER-AUTH-PRESENT: remove legacy provider auth from ${_auth_dir} before starting the control plane" >&2
+                exit 1
+            fi
+        done
+        ;;
+esac
+
 # The production service is a control plane, not an executor. Scrub any stale
 # provider-auth settings left in /etc/tinyassets/env by an older deployment so
 # they cannot reach the MCP server process.

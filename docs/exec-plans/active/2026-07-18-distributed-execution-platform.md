@@ -1,8 +1,8 @@
 # TinyAssets Distributed Patch-Loop Execution Platform
 
-**Status:** Design specification / pre-implementation execution plan  
-**Review gate:** Fable-5 opposite-family review, then lead approval  
-**Target sequence:** B2 BYO daemon live test first; B3 market selection second  
+**Status:** Design specification / pre-implementation execution plan
+**Review gate:** Fable-5 opposite-family review, then lead approval
+**Target sequence:** B2 BYO daemon live test first; B3 market selection second
 **Normative language:** “MUST”, “MUST NOT”, “SHOULD”, and “MAY” are requirements terms.
 
 ## 1. Objective

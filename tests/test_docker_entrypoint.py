@@ -101,3 +101,30 @@ def test_entrypoint_strips_provider_api_keys_even_with_legacy_opt_in(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "ignoring OPENAI_API_KEY" in result.stderr
     assert "ignoring ANTHROPIC_API_KEY" in result.stderr
+
+
+@pytest.mark.parametrize("provider_home", (".codex", ".claude"))
+def test_control_plane_entrypoint_fails_loud_on_legacy_provider_auth_dir(
+    tmp_path, provider_home
+):
+    data_root = tmp_path / "data-root"
+    auth_dir = data_root / provider_home
+    auth_dir.mkdir(parents=True)
+    auth_file = auth_dir / (
+        "auth.json" if provider_home == ".codex" else ".credentials.json"
+    )
+    auth_file.write_text("founder-credential-must-remain-untouched", encoding="utf-8")
+
+    result = _run(
+        tmp_path,
+        {
+            "TINYASSETS_CONTROL_PLANE": "1",
+            "TINYASSETS_DATA_DIR": _bash_path(data_root),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "CONTROL-PLANE-PROVIDER-AUTH-PRESENT" in result.stderr
+    assert auth_file.read_text(encoding="utf-8") == (
+        "founder-credential-must-remain-untouched"
+    )

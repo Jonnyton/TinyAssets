@@ -81,3 +81,17 @@ pollute an otherwise unrelated full suite.
 One thing I would do differently: inventory deleted test names before accepting
 the removal diff, then run mutation checks against the surviving boundary as
 the first proof that replacement coverage is load-bearing.
+
+---
+
+What surprised me: isolating `APPDATA` protected TinyAssets fallback writes but
+also moved Python's Windows user-site, breaking subprocess imports and DPAPI
+tests that were unrelated to application storage.
+
+Pattern worth capturing: test-root isolation must separate application data
+resolution from interpreter and OS-profile resolution. Preserve
+`PYTHONUSERBASE` when redirecting `APPDATA`, and compare full-suite failure node
+sets rather than trusting aggregate counts.
+
+One thing I would do differently: run one subprocess import probe immediately
+after introducing a global environment fixture, before the first full suite.
