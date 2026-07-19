@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
+import tinyassets.engine_binding as engine_binding
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -15,16 +19,58 @@ from tinyassets.branches import (
     NodeDefinition,
 )
 from tinyassets.config import write_universe_config_fields
-from tinyassets.engine_binding import execution_blocked_reason
+from tinyassets.credential_broker import deposit_engine_api_key
+from tinyassets.engine_binding import (
+    BYO_VAULT_ENCRYPTED_ENV,
+    execution_blocked_reason,
+    resolve_engine_binding,
+)
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderUnavailableError,
 )
-from tinyassets.providers.base import subprocess_env_for_provider
-from tinyassets.providers.router import _enforce_writer_binding
+from tinyassets.providers import base as provider_base
+from tinyassets.providers.base import ModelConfig, subprocess_env_for_provider
+from tinyassets.providers.claude_provider import ClaudeProvider
+from tinyassets.providers.codex_provider import CodexProvider
+from tinyassets.providers.router import ProviderRouter, _enforce_writer_binding
 from tinyassets.runs import RUN_STATUS_QUEUED, execute_branch
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+class _RawProviderSpawnVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.function_stack: list[str] = []
+        self.calls: list[tuple[str, int]] = []
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.function_stack.append(node.name)
+        self.generic_visit(node)
+        self.function_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            module = func.value.id.lstrip("_")
+            primitive = (module, func.attr)
+            if primitive in {
+                ("subprocess", "run"),
+                ("subprocess", "Popen"),
+                ("subprocess", "call"),
+                ("asyncio", "create_subprocess_exec"),
+                ("asyncio", "create_subprocess_shell"),
+                ("os", "system"),
+            }:
+                current = self.function_stack[-1] if self.function_stack else "<module>"
+                self.calls.append((current, node.lineno))
+        self.generic_visit(node)
 
 COMPUTE_OWNERSHIP_INVARIANT = """### Compute ownership invariant
 
@@ -177,6 +223,142 @@ def test_control_plane_provider_spawn_refuses_even_without_credentials(
 
     with pytest.raises(ProviderUnavailableError, match="control-plane"):
         subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
+
+
+def test_provider_modules_cannot_bypass_the_shared_spawn_gate() -> None:
+    allowed_raw_calls = {
+        ("base.py", "run_provider_subprocess"),
+        ("base.py", "create_provider_subprocess_exec"),
+        ("base.py", "create_provider_subprocess_shell"),
+        # bwrap is a platform sandbox capability probe, not a provider/model child.
+        ("base.py", "probe_sandbox_available"),
+    }
+    violations: list[str] = []
+    for path in sorted((ROOT / "tinyassets" / "providers").glob("*.py")):
+        visitor = _RawProviderSpawnVisitor()
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        for function, lineno in visitor.calls:
+            if (path.name, function) not in allowed_raw_calls:
+                violations.append(f"{path.name}:{lineno} ({function})")
+
+    assert violations == [], (
+        "provider subprocess primitives must route through the shared gated "
+        f"helpers in providers/base.py; raw calls: {violations}"
+    )
+
+
+def test_control_plane_never_spawns_provider_processes_across_any_health_or_call_path(
+    monkeypatch,
+) -> None:
+    import tinyassets.providers.codex_provider as codex_provider
+
+    calls: list[str] = []
+
+    def forbidden_sync(*_args, **_kwargs):
+        calls.append("sync")
+        raise AssertionError("control-plane provider subprocess must not spawn")
+
+    async def forbidden_async(*_args, **_kwargs):
+        calls.append("async")
+        raise AssertionError("control-plane provider subprocess must not spawn")
+
+    monkeypatch.setenv("TINYASSETS_CONTROL_PLANE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai-secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-claude-secret")
+    monkeypatch.setattr(subprocess, "run", forbidden_sync)
+    monkeypatch.setattr(subprocess, "Popen", forbidden_sync)
+    monkeypatch.setattr(subprocess, "call", forbidden_sync)
+    monkeypatch.setattr(os, "system", forbidden_sync)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_async)
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", forbidden_async)
+    monkeypatch.setattr(
+        codex_provider,
+        "get_sandbox_status",
+        lambda: {"bwrap_available": True, "reason": None},
+    )
+
+    probe = provider_base._codex_live_auth_probe(0.1)
+    assert probe["status"] == "inconclusive"
+    assert "control plane" in probe["detail"]
+
+    for provider_name in ("codex", "claude-code"):
+        health = provider_base.subscription_auth_health(provider_name)
+        assert health["status"] == "not_applicable"
+        assert "control plane" in health["detail"]
+
+    router = ProviderRouter(auth_health=provider_base.subscription_auth_health)
+    assert router._apply_auth_health_policy(["claude-code", "codex"]) == [
+        "claude-code",
+        "codex",
+    ]
+
+    for provider in (ClaudeProvider(), CodexProvider()):
+        with pytest.raises(ProviderUnavailableError, match="control-plane"):
+            asyncio.run(provider.complete("prompt", "", ModelConfig()))
+
+    assert calls == []
+
+
+def test_two_consecutive_bound_byo_claude_spawns_preserve_binding(
+    platform_vault_env, monkeypatch
+) -> None:
+    import tinyassets.providers.claude_provider as claude_provider
+
+    universe = platform_vault_env / "u-two-spawns"
+    universe.mkdir()
+    write_universe_config_fields(universe, engine_source="byo_api_key")
+    deposit_engine_api_key(
+        universe_id=universe.name,
+        founder_id="founder-1",
+        service="anthropic",
+        api_key="sk-ant-api03-two-spawn-regression",
+    )
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+    monkeypatch.setattr(engine_binding, "_sandbox_execution_attested", lambda: True)
+    monkeypatch.setattr(
+        claude_provider, "_resolve_claude_cmd", lambda: (["claude"], False)
+    )
+
+    spawn_cwds: list[str] = []
+
+    class SuccessfulProcess:
+        returncode = 0
+
+        async def communicate(self, *_args, **_kwargs):
+            return b"ok", b""
+
+        def kill(self) -> None:
+            return None
+
+        async def wait(self) -> int:
+            return 0
+
+    async def fake_exec(*_args, **kwargs):
+        spawn_cwds.append(kwargs["cwd"])
+        return SuccessfulProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    provider = ClaudeProvider()
+
+    for _attempt in range(2):
+        binding = resolve_engine_binding(universe)
+        assert binding.bound is True
+        assert execution_blocked_reason(universe) is None
+        assert _enforce_writer_binding(
+            ["claude-code"],
+            role="writer",
+            is_pinned_writer=False,
+            pin_writer="",
+            universe_dir=universe,
+        ) == ["claude-code"]
+        response = asyncio.run(
+            provider.complete("prompt", "", ModelConfig(), universe_dir=universe)
+        )
+        assert response.text == "ok"
+
+    expected_scratch = str(universe / ".engine-auth" / "claude-byo-scratch")
+    assert spawn_cwds == [expected_scratch, expected_scratch]
+    assert not (universe / ".credentials").exists()
 
 
 def test_platform_worker_modules_are_retired_without_a_shim() -> None:

@@ -95,3 +95,17 @@ sets rather than trusting aggregate counts.
 
 One thing I would do differently: run one subprocess import probe immediately
 after introducing a global environment fixture, before the first full suite.
+
+---
+
+What surprised me: closing provider dispatch at the graph boundary still left
+an independently spawned live-auth probe, while the BYO scratch directory could
+create the exact legacy-vault sentinel that later credential resolution rejects.
+
+Pattern worth capturing: provider processes need a source-enforced spawn choke
+with an explicit environment, and engine-owned runtime artifacts must live only
+in namespaces that credential migration guards do not interpret as legacy state.
+
+One thing I would do differently: begin each control-plane review with an AST
+inventory of every process primitive under the provider package, then exercise
+two consecutive bound calls before treating one successful BYO call as durable.

@@ -28,6 +28,8 @@ from tinyassets.providers.base import (
     SandboxUnavailableError,
     check_bwrap_failure,
     cleanup_sandbox_job_dir,
+    create_provider_subprocess_exec,
+    create_provider_subprocess_shell,
     get_sandbox_status,
     new_sandbox_job_dir,
     os_sandbox_attested,
@@ -207,7 +209,7 @@ class CodexProvider(BaseProvider):
         cmd_with_cwd = [*cmd, "-C", workdir]
         try:
             if use_shell:
-                proc = await asyncio.create_subprocess_shell(
+                proc = await create_provider_subprocess_shell(
                     shlex.join(cmd_with_cwd),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
@@ -216,7 +218,7 @@ class CodexProvider(BaseProvider):
                     **win_kw,
                 )
             else:
-                proc = await asyncio.create_subprocess_exec(
+                proc = await create_provider_subprocess_exec(
                     *cmd_with_cwd,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,

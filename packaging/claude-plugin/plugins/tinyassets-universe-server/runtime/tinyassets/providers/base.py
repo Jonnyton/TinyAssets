@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import abc
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -155,6 +156,59 @@ def _truthy_env(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _explicit_provider_subprocess_env(
+    env: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Enforce the provider-process boundary immediately before every spawn."""
+    from tinyassets.exceptions import ProviderUnavailableError
+
+    if env is None:
+        raise TypeError("provider subprocesses require an explicit environment")
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        raise ProviderUnavailableError(
+            "control-plane services cannot spawn model providers; external work "
+            "must remain queued for an owner-authorized BYO or market daemon"
+        )
+    return dict(env)
+
+
+def run_provider_subprocess(command, *, env: Mapping[str, str], **kwargs):
+    """Run a provider CLI through the single control-plane/env gate."""
+    import subprocess
+
+    return subprocess.run(
+        command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
+
+
+async def create_provider_subprocess_exec(
+    *command: str, env: Mapping[str, str], **kwargs
+):
+    """Spawn an argv-based provider CLI through the shared gate."""
+    import asyncio
+
+    return await asyncio.create_subprocess_exec(
+        *command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
+
+
+async def create_provider_subprocess_shell(
+    command: str, *, env: Mapping[str, str], **kwargs
+):
+    """Spawn a shell-wrapped provider CLI through the shared gate."""
+    import asyncio
+
+    return await asyncio.create_subprocess_shell(
+        command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
+
+
 def api_key_providers_enabled() -> bool:
     """Return True only when a host explicitly opts into API-key providers."""
     return _truthy_env(os.environ.get("TINYASSETS_ALLOW_API_KEY_PROVIDERS"))
@@ -249,6 +303,8 @@ def subprocess_env_for_provider(
     """
     from tinyassets.exceptions import ProviderUnavailableError
 
+    # The env-independent binding gate below covers declared external sources;
+    # this marker also stops legacy/empty-engine_source universes on control plane.
     if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
         raise ProviderUnavailableError(
             "control-plane services cannot spawn model providers; external work "
@@ -386,6 +442,38 @@ DEFAULT_AUTH_PROBE_TTL_S = 1800.0
 DEFAULT_AUTH_PROBE_TIMEOUT_S = 120.0
 
 _PROBE_FALSY = {"0", "false", "off", "no"}
+
+_CODEX_AUTH_PROBE_ENV_VARS: tuple[str, ...] = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "NO_COLOR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CODEX_HOME",
+)
 
 # Live-probe verdict cache. The supervisor calls the gate every loop tick;
 # the probe subprocess must not run per tick. The AUTHORITATIVE cache is a
@@ -526,6 +614,12 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
     Uses whatever ``codex`` is on PATH so flock-wrapper deployments keep
     their single-use refresh-token serialization.
     """
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "status": "inconclusive",
+            "detail": "live auth probe is not applicable on the control plane",
+        }
+
     import subprocess
     import tempfile
 
@@ -536,9 +630,15 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
         *base_cmd, "exec", "--skip-git-repo-check", "-s", "read-only",
         _AUTH_PROBE_PROMPT,
     ]
+    probe_env = {
+        name: os.environ[name]
+        for name in _CODEX_AUTH_PROBE_ENV_VARS
+        if os.environ.get(name)
+    }
     try:
-        proc = subprocess.run(
+        proc = run_provider_subprocess(
             cmd if not use_shell else subprocess.list2cmdline(cmd),
+            env=probe_env,
             shell=use_shell,
             capture_output=True,
             text=True,
@@ -673,6 +773,7 @@ def _codex_refresh_viability(
 #                     failure)
 #   "unknown"       — no checkable subscription auth here (API-key providers,
 #                     ollama, or an unrecognized name); callers never gate on it
+#   "not_applicable"— provider execution and probing are disabled on control plane
 #
 # Codex gets a layered refresh-viability check on top of presence
 # (live-proven gap 2026-07-14: a stale /data/.codex/auth.json stranded by the
@@ -704,6 +805,12 @@ def subscription_auth_health(
     spawns the live-probe subprocess; serves fast paths + cached verdicts.
     """
     name = (provider_name or "").strip()
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "provider": name,
+            "status": "not_applicable",
+            "detail": "provider auth health is not applicable on the control plane",
+        }
     if name == "codex":
         codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         if not (codex_home / "auth.json").is_file():

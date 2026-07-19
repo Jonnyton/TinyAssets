@@ -232,6 +232,26 @@ def test_live_probe_clean_output_is_ok(monkeypatch):
     assert base._codex_live_auth_probe(5.0)["status"] == "ok"
 
 
+def test_live_probe_passes_an_explicit_scrubbed_environment(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs)
+        return _Proc(stdout="OK")
+
+    monkeypatch.delenv(base.CONTROL_PLANE_ENV, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai-secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-claude-secret")
+    monkeypatch.setenv("UNRELATED_AMBIENT_SECRET", "must-not-reach-probe")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert base._codex_live_auth_probe(5.0)["status"] == "ok"
+    assert "env" in captured
+    assert "OPENAI_API_KEY" not in captured["env"]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["env"]
+    assert "UNRELATED_AMBIENT_SECRET" not in captured["env"]
+
+
 def test_live_probe_matches_signatures_case_insensitively(monkeypatch):
     """Codex review: 'codex login status' casing is not a contract."""
     monkeypatch.setattr(

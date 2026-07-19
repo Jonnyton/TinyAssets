@@ -28,6 +28,8 @@ from tinyassets.providers.base import (
     SandboxUnavailableError,
     check_bwrap_failure,
     cleanup_sandbox_job_dir,
+    create_provider_subprocess_exec,
+    create_provider_subprocess_shell,
     enforce_os_sandbox,
     new_sandbox_job_dir,
     sandbox_spawn_env_and_dir,
@@ -150,7 +152,7 @@ def _byo_scratch_dir(universe_dir: Path | None) -> str | None:
     """
     if universe_dir is None:
         return None
-    scratch = Path(universe_dir) / ".credentials" / "claude-byo-scratch"
+    scratch = Path(universe_dir) / ".engine-auth" / "claude-byo-scratch"
     scratch.mkdir(parents=True, exist_ok=True)
     return str(scratch)
 
@@ -320,7 +322,7 @@ class ClaudeProvider(BaseProvider):
         try:
             win_kw = _no_window_kwargs()
             if use_shell:
-                proc = await asyncio.create_subprocess_shell(
+                proc = await create_provider_subprocess_shell(
                     shlex.join(cmd),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
@@ -330,7 +332,7 @@ class ClaudeProvider(BaseProvider):
                     **win_kw,
                 )
             else:
-                proc = await asyncio.create_subprocess_exec(
+                proc = await create_provider_subprocess_exec(
                     *cmd,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
@@ -429,7 +431,7 @@ class ClaudeProvider(BaseProvider):
         try:
             win_kw = _no_window_kwargs()
             if use_shell:
-                proc = await asyncio.create_subprocess_shell(
+                proc = await create_provider_subprocess_shell(
                     shlex.join(cmd),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
@@ -439,7 +441,7 @@ class ClaudeProvider(BaseProvider):
                     **win_kw,
                 )
             else:
-                proc = await asyncio.create_subprocess_exec(
+                proc = await create_provider_subprocess_exec(
                     *cmd,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
