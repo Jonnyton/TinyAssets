@@ -5,20 +5,201 @@ the daemon's declared capabilities + visibility. Returns the new
 ``host_id`` which the caller holds for the session (heartbeat +
 deregistration target).
 
-Idempotent. If a row already exists for (owner_user_id, capability_id)
-— best-effort lookup first, else insert. Row version column handles
-concurrent-startup conflicts in a race-aware but lenient way (not
-load-bearing for Wave 1).
+The control plane derives row ownership from the authenticated daemon. The
+client never submits or logs a caller-asserted owner identity.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from typing import Any, Protocol
 
-from tinyassets.host_pool.client import HostPoolClient, HostPoolRow
+from tinyassets.host_pool.client import HostPoolClient, HostPoolRow, _UrllibClient
+from tinyassets.runtime.daemon_auth import AccessToken, DaemonSigner
 
 logger = logging.getLogger(__name__)
+
+
+class _EnrollmentHttpClient(Protocol):
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        timeout: float,
+    ) -> tuple[int, str]: ...
+
+
+class DaemonEnrollmentError(Exception):
+    """Typed enrollment transport/control-plane failure."""
+
+    def __init__(
+        self,
+        status: int,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        request_id: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.retryable = retryable
+        self.request_id = request_id
+        self.details = details or {}
+
+
+@dataclass(frozen=True)
+class EnrollmentVerificationHandoff:
+    enrollment_id: str
+    verification_code: str
+
+
+@dataclass(frozen=True)
+class EnrolledDaemon:
+    daemon_id: str
+    owner_user_id: str
+    key_thumbprint: str
+    credential_epoch: int
+
+
+class DaemonEnrollmentClient:
+    """Client for owner-approved daemon enrollment and token exchange."""
+
+    def __init__(
+        self,
+        control_plane_url: str,
+        *,
+        http: _EnrollmentHttpClient | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        if not isinstance(control_plane_url, str) or not control_plane_url.startswith("https://"):
+            raise DaemonEnrollmentError(
+                0,
+                "CONTROL_PLANE_URL_INVALID",
+                "control_plane_url must use HTTPS",
+            )
+        self._base = control_plane_url.rstrip("/")
+        self._http = http or _UrllibClient()
+        self._timeout = timeout
+
+    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        status, text = self._http.request(
+            "POST",
+            f"{self._base}{path}",
+            {"Content-Type": "application/json", "Accept": "application/json"},
+            body,
+            self._timeout,
+        )
+        try:
+            response = json.loads(text) if text else {}
+        except json.JSONDecodeError as exc:
+            raise DaemonEnrollmentError(
+                status,
+                "INVALID_RESPONSE",
+                "Invalid control-plane JSON",
+            ) from exc
+        if status < 200 or status >= 300:
+            error = response.get("error", {}) if isinstance(response, dict) else {}
+            raise DaemonEnrollmentError(
+                status,
+                str(error.get("code", "CONTROL_PLANE_ERROR")),
+                str(error.get("message", "Control-plane request failed")),
+                retryable=error.get("retryable") is True,
+                request_id=str(error.get("request_id", "")),
+                details=error.get("details") if isinstance(error.get("details"), dict) else {},
+            )
+        if not isinstance(response, dict):
+            raise DaemonEnrollmentError(status, "INVALID_RESPONSE", "Expected a JSON object")
+        return response
+
+    def begin(self, signer: DaemonSigner) -> EnrollmentVerificationHandoff:
+        response = self._post(
+            "/v1/daemon-enrollments",
+            signer.identity.as_enrollment_payload(),
+        )
+        try:
+            return EnrollmentVerificationHandoff(
+                enrollment_id=str(response["enrollment_id"]),
+                verification_code=str(response["verification_code"]),
+            )
+        except KeyError as exc:
+            raise DaemonEnrollmentError(
+                0,
+                "INVALID_RESPONSE",
+                "Enrollment handoff is incomplete",
+            ) from exc
+
+    def complete(self, enrollment_id: str) -> EnrolledDaemon:
+        if not enrollment_id:
+            raise DaemonEnrollmentError(0, "ENROLLMENT_ID_REQUIRED", "enrollment_id is required")
+        response = self._post(f"/v1/daemon-enrollments/{enrollment_id}:complete", {})
+        try:
+            return EnrolledDaemon(
+                daemon_id=str(response["daemon_id"]),
+                owner_user_id=str(response["owner_user_id"]),
+                key_thumbprint=str(response["key_thumbprint"]),
+                credential_epoch=int(response["credential_epoch"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DaemonEnrollmentError(
+                0,
+                "INVALID_RESPONSE",
+                "Enrollment result is incomplete",
+            ) from exc
+
+    def issue_access_token(self, signer: DaemonSigner, daemon_id: str) -> AccessToken:
+        challenge_response = self._post(
+            "/v1/daemon-access-tokens/challenge",
+            {"daemon_id": daemon_id},
+        )
+        try:
+            challenge = str(challenge_response["challenge"])
+        except KeyError as exc:
+            raise DaemonEnrollmentError(
+                0,
+                "INVALID_RESPONSE",
+                "Challenge response is incomplete",
+            ) from exc
+        token_response = self._post(
+            "/v1/daemon-access-tokens",
+            {
+                "daemon_id": daemon_id,
+                "challenge": challenge,
+                "signature": signer.sign_challenge(daemon_id, challenge),
+            },
+        )
+        try:
+            token = AccessToken(
+                value=str(token_response["access_token"]),
+                daemon_id=str(token_response["daemon_id"]),
+                key_thumbprint=str(token_response["key_thumbprint"]),
+                credential_epoch=int(token_response["credential_epoch"]),
+                expires_at=float(token_response["expires_at"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DaemonEnrollmentError(
+                0,
+                "INVALID_RESPONSE",
+                "Access-token response is incomplete",
+            ) from exc
+        if token_response.get("token_type") != "Bearer":
+            raise DaemonEnrollmentError(0, "INVALID_RESPONSE", "Access-token type must be Bearer")
+        if token.daemon_id != daemon_id or token.key_thumbprint != signer.identity.key_thumbprint:
+            raise DaemonEnrollmentError(
+                0,
+                "TOKEN_BINDING_MISMATCH",
+                "Access token binding is invalid",
+            )
+        if token.credential_epoch < 1:
+            raise DaemonEnrollmentError(0, "TOKEN_BINDING_MISMATCH", "Credential epoch is invalid")
+        return token
 
 
 @dataclass
@@ -37,7 +218,6 @@ class Registration:
 def register_daemon(
     client: HostPoolClient,
     *,
-    owner_user_id: str,
     provider: str,
     capability_id: str,
     visibility: str = "self",
@@ -86,7 +266,6 @@ def register_daemon(
     )
 
     row = client.register(
-        owner_user_id=owner_user_id,
         provider=provider,
         capability_id=capability_id,
         visibility=visibility,
@@ -96,6 +275,9 @@ def register_daemon(
     )
     logger.info(
         "host_pool: registered host_id=%s owner=%s capability=%s visibility=%s",
-        row.host_id, owner_user_id, capability_id, visibility,
+        row.host_id,
+        row.owner_user_id,
+        capability_id,
+        visibility,
     )
     return Registration(row=row, created=True)

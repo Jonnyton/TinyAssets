@@ -1,21 +1,11 @@
-"""Supabase REST client for the ``host_pool`` table.
+"""Signed control-plane client for daemon host-pool operations.
 
-Stdlib-only. Wraps the Supabase PostgREST endpoints for the 5 host-pool
-operations the daemon needs. No WebSocket (Presence deferred until
-Realtime wiring lands — see package docstring).
+Every operation uses a short-lived daemon bearer token plus an Ed25519
+proof-of-possession signature over the exact method, path (including query),
+body hash, timestamp, and replay nonce.  There is no administrative credential
+or unsigned fallback path.
 
-Why not supabase-py: adds ~30 transitive deps for what amounts to
-HTTP CRUD. We already ship ``urllib`` + ``json``; use those.
-
-Auth: ``SUPABASE_SERVICE_ROLE_KEY`` for server-side writes (daemons are
-trusted hosts, not tier-1 clients). Anon-key scoped calls would need RLS
-policies that accept the host's own user context via JWT — out of scope
-for Wave 1; use service-role until proper OAuth flow is wired at the
-MCP edge.
-
-Error model: one ``HostPoolError`` with ``status`` + ``body``. All
-expected failure modes (non-2xx, JSON parse, missing env) surface as
-this exception so callers don't branch on transport details.
+The transport remains stdlib-only and injectable for focused tests.
 """
 
 from __future__ import annotations
@@ -29,6 +19,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from tinyassets.runtime.daemon_auth import DaemonAuthSession
+
 
 class HostPoolError(Exception):
     """Raised when a host_pool REST call fails.
@@ -39,7 +31,7 @@ class HostPoolError(Exception):
     """
 
     def __init__(self, status: int, body: str) -> None:
-        super().__init__(f"host_pool REST error (status={status}): {body[:200]}")
+        super().__init__(f"host_pool control-plane error (status={status}): {body[:200]}")
         self.status = status
         self.body = body
 
@@ -120,17 +112,16 @@ class _UrllibClient:
 
 
 class HostPoolClient:
-    """REST wrapper over the ``host_pool`` / ``capabilities`` / ``requests`` tables.
+    """Proof-of-possession client for host-pool control-plane resources.
 
     Parameters
     ----------
-    supabase_url :
-        Base URL of the Supabase project (e.g.
-        ``https://<project>.supabase.co``). Override via
-        ``SUPABASE_URL`` env var.
-    service_role_key :
-        Supabase service-role JWT (NOT the anon key). Override via
-        ``SUPABASE_SERVICE_ROLE_KEY``.
+    control_plane_url :
+        HTTPS base URL of the TinyAssets control plane. Override via
+        ``TINYASSETS_CONTROL_PLANE_URL``.
+    auth :
+        Enrolled daemon authentication session. Required; there is no unsigned
+        or administrative-credential fallback.
     http :
         Injection seam — pass a custom ``_HttpClient`` in tests.
     timeout :
@@ -139,37 +130,42 @@ class HostPoolClient:
 
     def __init__(
         self,
-        supabase_url: str | None = None,
-        service_role_key: str | None = None,
+        control_plane_url: str | None = None,
         *,
+        auth: DaemonAuthSession | None = None,
         http: _HttpClient | None = None,
         timeout: float = 10.0,
     ) -> None:
-        url = supabase_url or os.environ.get("SUPABASE_URL", "").strip()
-        key = service_role_key or os.environ.get(
-            "SUPABASE_SERVICE_ROLE_KEY", ""
-        ).strip()
+        url = control_plane_url or os.environ.get("TINYASSETS_CONTROL_PLANE_URL", "").strip()
         if not url:
-            raise HostPoolError(0, "SUPABASE_URL not configured")
-        if not key:
-            raise HostPoolError(0, "SUPABASE_SERVICE_ROLE_KEY not configured")
+            raise HostPoolError(0, "TINYASSETS_CONTROL_PLANE_URL not configured")
+        if not url.startswith("https://"):
+            raise HostPoolError(0, "TINYASSETS_CONTROL_PLANE_URL must use HTTPS")
+        if auth is None:
+            raise HostPoolError(0, "enrolled daemon authentication is required")
         self._base = url.rstrip("/")
-        self._key = key
+        self._auth = auth
         self._http = http or _UrllibClient()
         self._timeout = timeout
 
     # -- helpers ------------------------------------------------------------
 
-    def _headers(self, *, prefer: str | None = None) -> dict[str, str]:
-        h = {
-            "apikey": self._key,
-            "Authorization": f"Bearer {self._key}",
+    def _headers(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None,
+        *,
+        prefer: str | None = None,
+    ) -> dict[str, str]:
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        headers.update(self._auth.sign_headers(method, path, body))
         if prefer:
-            h["Prefer"] = prefer
-        return h
+            headers["Prefer"] = prefer
+        return headers
 
     def _request(
         self,
@@ -180,11 +176,20 @@ class HostPoolClient:
         params: dict[str, str] | None = None,
         prefer: str | None = None,
     ) -> Any:
-        qs = f"?{urllib.parse.urlencode(params)}" if params else ""
-        url = f"{self._base}/rest/v1/{path.lstrip('/')}{qs}"
-        encoded = json.dumps(body).encode("utf-8") if body is not None else None
+        query = f"?{urllib.parse.urlencode(params)}" if params else ""
+        signed_path = f"/v1/{path.lstrip('/')}{query}"
+        url = f"{self._base}{signed_path}"
+        encoded = (
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            if body is not None
+            else None
+        )
         status, text = self._http.request(
-            method, url, self._headers(prefer=prefer), encoded, self._timeout,
+            method,
+            url,
+            self._headers(method, signed_path, encoded, prefer=prefer),
+            encoded,
+            self._timeout,
         )
         if status < 200 or status >= 300:
             raise HostPoolError(status, text)
@@ -200,7 +205,6 @@ class HostPoolClient:
     def register(
         self,
         *,
-        owner_user_id: str,
         provider: str,
         capability_id: str,
         visibility: str = "self",
@@ -215,7 +219,6 @@ class HostPoolClient:
         ``self|network|paid``.
         """
         payload = {
-            "owner_user_id": owner_user_id,
             "provider": provider,
             "capability_id": capability_id,
             "visibility": visibility,
@@ -226,7 +229,7 @@ class HostPoolClient:
             payload["price_floor"] = price_floor
         rows = self._request(
             "POST",
-            "host_pool",
+            "host-pool",
             body=payload,
             prefer="return=representation",
         )
@@ -248,27 +251,24 @@ class HostPoolClient:
         """
         self._request(
             "PATCH",
-            "host_pool",
+            f"host-pool/{host_id}:heartbeat",
             body={"updated_at": "now()"},
-            params={"host_id": f"eq.{host_id}"},
         )
 
     def update_visibility(self, host_id: str, visibility: str) -> None:
         """Change a host's visibility. ``self|network|paid``."""
         self._request(
             "PATCH",
-            "host_pool",
+            f"host-pool/{host_id}",
             body={"visibility": visibility},
-            params={"host_id": f"eq.{host_id}"},
         )
 
     def update_capability(self, host_id: str, capability_id: str) -> None:
         """Change a host's declared capability."""
         self._request(
             "PATCH",
-            "host_pool",
+            f"host-pool/{host_id}",
             body={"capability_id": capability_id},
-            params={"host_id": f"eq.{host_id}"},
         )
 
     def deregister(self, host_id: str) -> None:
@@ -280,15 +280,13 @@ class HostPoolClient:
         """
         self._request(
             "DELETE",
-            "host_pool",
-            params={"host_id": f"eq.{host_id}"},
+            f"host-pool/{host_id}",
         )
 
     def get(self, host_id: str) -> HostPoolRow | None:
         rows = self._request(
             "GET",
-            "host_pool",
-            params={"host_id": f"eq.{host_id}", "select": "*"},
+            f"host-pool/{host_id}",
         )
         if not isinstance(rows, list) or not rows:
             return None
@@ -341,7 +339,7 @@ class HostPoolClient:
         """
         rows = self._request(
             "GET",
-            "requests",
+            "execution-requests",
             params={
                 "state": "eq.pending",
                 "capability_id": f"eq.{capability_id}",

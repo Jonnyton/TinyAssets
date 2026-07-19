@@ -52,12 +52,23 @@ class _FakeHttp:
         return status, resp_body
 
 
+class _FakeAuth:
+    def sign_headers(self, method, path, body):
+        return {
+            "Authorization": "Bearer daemon-token",
+            "X-TinyAssets-Body-SHA256": "0" * 64,
+            "X-TinyAssets-Timestamp": "1800000000",
+            "X-TinyAssets-Nonce": "fresh-nonce",
+            "X-TinyAssets-Signature": "signed-proof",
+        }
+
+
 @pytest.fixture
 def client():
     http = _FakeHttp()
     c = HostPoolClient(
-        supabase_url="https://test.supabase.co",
-        service_role_key="svc_role_fake",
+        control_plane_url="https://control.example",
+        auth=_FakeAuth(),
         http=http,
         timeout=1.0,
     )
@@ -69,28 +80,25 @@ def client():
 # ---- client configuration -------------------------------------------------
 
 
-def test_missing_supabase_url_raises(monkeypatch):
-    monkeypatch.delenv("SUPABASE_URL", raising=False)
-    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+def test_missing_control_plane_url_raises(monkeypatch):
+    monkeypatch.delenv("TINYASSETS_CONTROL_PLANE_URL", raising=False)
+    with pytest.raises(HostPoolError) as ctx:
+        HostPoolClient(auth=_FakeAuth())
+    assert "TINYASSETS_CONTROL_PLANE_URL" in str(ctx.value)
+
+
+def test_missing_daemon_auth_raises(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_CONTROL_PLANE_URL", "https://control.example")
     with pytest.raises(HostPoolError) as ctx:
         HostPoolClient()
-    assert "SUPABASE_URL" in str(ctx.value)
+    assert "enrolled daemon authentication" in str(ctx.value)
 
 
-def test_missing_service_role_key_raises(monkeypatch):
-    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
-    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
-    with pytest.raises(HostPoolError) as ctx:
-        HostPoolClient()
-    assert "SUPABASE_SERVICE_ROLE_KEY" in str(ctx.value)
-
-
-def test_env_fallback_picks_up_both(monkeypatch):
-    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co/")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc_role_env")
-    c = HostPoolClient(http=_FakeHttp())
+def test_env_fallback_picks_up_control_plane_url(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_CONTROL_PLANE_URL", "https://control.example/")
+    c = HostPoolClient(auth=_FakeAuth(), http=_FakeHttp())
     # Trailing slash stripped.
-    assert c._base == "https://test.supabase.co"
+    assert c._base == "https://control.example"
 
 
 # ---- register + heartbeat + visibility + deregister ----------------------
@@ -112,7 +120,6 @@ def test_register_posts_payload_and_returns_row(client):
         }],
     )
     row = client.register(
-        owner_user_id="u-1",
         provider="local",
         capability_id="goal_planner:claude-4-opus",
     )
@@ -121,12 +128,13 @@ def test_register_posts_payload_and_returns_row(client):
 
     method, url, headers, body = client._fake.calls[-1]
     assert method == "POST"
-    assert url == "https://test.supabase.co/rest/v1/host_pool"
-    assert headers["apikey"] == "svc_role_fake"
-    assert headers["Authorization"] == "Bearer svc_role_fake"
+    assert url == "https://control.example/v1/host-pool"
+    assert "apikey" not in headers
+    assert headers["Authorization"] == "Bearer daemon-token"
+    assert headers["X-TinyAssets-Signature"] == "signed-proof"
     assert headers["Prefer"] == "return=representation"
     payload = json.loads(body)
-    assert payload["owner_user_id"] == "u-1"
+    assert "owner_user_id" not in payload
     assert payload["capability_id"] == "goal_planner:claude-4-opus"
     # price_floor omitted when None.
     assert "price_floor" not in payload
@@ -140,7 +148,7 @@ def test_register_with_price_floor_passes_through(client):
         "max_concurrent": 2, "always_active": True, "version": 1,
     }])
     row = client.register(
-        owner_user_id="u-1", provider="claude", capability_id="c1",
+        provider="claude", capability_id="c1",
         visibility="paid", price_floor=0.05, max_concurrent=2, always_active=True,
     )
     assert row.price_floor == 0.05
@@ -153,19 +161,17 @@ def test_register_error_raises_host_pool_error(client):
     client._fake.push(400, '{"message":"violates foreign key"}')
     with pytest.raises(HostPoolError) as ctx:
         client.register(
-            owner_user_id="u-bad", provider="local", capability_id="c",
+            provider="local", capability_id="c",
         )
     assert ctx.value.status == 400
 
 
-def test_heartbeat_patches_with_eq_filter(client):
+def test_heartbeat_posts_to_daemon_resource(client):
     client._fake.push(204, "")
     client.heartbeat("host-abc")
     method, url, _, body = client._fake.calls[-1]
     assert method == "PATCH"
-    # URL includes the ?host_id=eq.host-abc filter.
-    assert "host_id=eq.host-abc" in url
-    assert url.startswith("https://test.supabase.co/rest/v1/host_pool?")
+    assert url == "https://control.example/v1/host-pool/host-abc:heartbeat"
     assert json.loads(body) == {"updated_at": "now()"}
 
 
@@ -173,7 +179,7 @@ def test_update_visibility_sends_correct_patch(client):
     client._fake.push(204, "")
     client.update_visibility("h-1", "paid")
     _, url, _, body = client._fake.calls[-1]
-    assert "host_id=eq.h-1" in url
+    assert url == "https://control.example/v1/host-pool/h-1"
     assert json.loads(body) == {"visibility": "paid"}
 
 
@@ -189,7 +195,7 @@ def test_deregister_issues_delete(client):
     client.deregister("h-1")
     method, url, _, body = client._fake.calls[-1]
     assert method == "DELETE"
-    assert "host_id=eq.h-1" in url
+    assert url == "https://control.example/v1/host-pool/h-1"
     assert body is None
 
 
@@ -219,7 +225,7 @@ def test_ensure_capability_posts_with_ignore_duplicates(client):
     )
     method, url, headers, body = client._fake.calls[-1]
     assert method == "POST"
-    assert url.endswith("/rest/v1/capabilities")
+    assert url.endswith("/v1/capabilities")
     assert headers["Prefer"] == "resolution=ignore-duplicates"
     payload = json.loads(body)
     assert payload["capability_id"] == "goal_planner:claude-4-opus"
@@ -264,7 +270,6 @@ def test_register_daemon_ensures_capability_then_registers(client):
     }])
     reg = register_daemon(
         client,
-        owner_user_id="u-1",
         provider="local",
         capability_id="goal_planner:claude-4-opus",
     )
@@ -274,7 +279,7 @@ def test_register_daemon_ensures_capability_then_registers(client):
     # Verify call ordering: capabilities first, then host_pool.
     assert len(client._fake.calls) == 2
     assert client._fake.calls[0][1].endswith("/capabilities")
-    assert client._fake.calls[1][1].endswith("/host_pool")
+    assert client._fake.calls[1][1].endswith("/host-pool")
 
 
 def test_register_daemon_splits_capability_id_on_colon(client):
@@ -286,7 +291,7 @@ def test_register_daemon_splits_capability_id_on_colon(client):
         "max_concurrent": 1, "always_active": False, "version": 1,
     }])
     register_daemon(
-        client, owner_user_id="u-1", provider="local",
+        client, provider="local",
         capability_id="research_paper_drafter:claude-4-opus",
     )
     cap_body = json.loads(client._fake.calls[0][3])
@@ -303,7 +308,7 @@ def test_register_daemon_explicit_node_type_overrides_split(client):
         "max_concurrent": 1, "always_active": False, "version": 1,
     }])
     register_daemon(
-        client, owner_user_id="u-1", provider="local",
+        client, provider="local",
         capability_id="a:b",
         capability_node_type="override_node",
         capability_llm_model="override_llm",
@@ -328,8 +333,8 @@ def test_heartbeat_loop_runs_and_stops():
     http.push(204, "")  # first heartbeat
     http.push(204, "")  # spare
     c = HostPoolClient(
-        supabase_url="https://test.supabase.co",
-        service_role_key="svc", http=http, timeout=1.0,
+        control_plane_url="https://control.example",
+        auth=_FakeAuth(), http=http, timeout=1.0,
     )
 
     async def run():
@@ -344,15 +349,15 @@ def test_heartbeat_loop_runs_and_stops():
     assert http.calls, "loop should have heartbeated at least once"
     method, url, _, _ = http.calls[0]
     assert method == "PATCH"
-    assert "host_id=eq.h-1" in url
+    assert url == "https://control.example/v1/host-pool/h-1:heartbeat"
 
 
 def test_heartbeat_loop_surfaces_errors_via_callback():
     http = _FakeHttp()
     http.push(500, "server error")
     c = HostPoolClient(
-        supabase_url="https://test.supabase.co",
-        service_role_key="svc", http=http, timeout=1.0,
+        control_plane_url="https://control.example",
+        auth=_FakeAuth(), http=http, timeout=1.0,
     )
     errors = []
 
@@ -417,8 +422,8 @@ def test_bid_poller_callback_exception_does_not_break_loop():
     http.push(200, [{"request_id": "r1"}])
     http.push(200, [{"request_id": "r2"}])
     c = HostPoolClient(
-        supabase_url="https://test.supabase.co",
-        service_role_key="svc", http=http, timeout=1.0,
+        control_plane_url="https://control.example",
+        auth=_FakeAuth(), http=http, timeout=1.0,
     )
 
     seen: list[str] = []
