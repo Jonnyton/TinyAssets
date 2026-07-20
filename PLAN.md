@@ -66,11 +66,31 @@ Depth: lead memory `project_commons_first_architecture.md`.
 
 **Rule:** TinyAssets has two basic user shapes for product-design purposes: **browser-only** (phone or computer; chats through web client — Claude.ai web, ChatGPT web; no local file system or code execution) and **local-app** (computer with chat-client app + computer-use access — Claude Code, ChatGPT desktop with computer-use; local file system, local code execution, daemon hosting). Orthogonal axis: MCP host provider. Claude and ChatGPT are P0 launch/discoverability gates, not the market boundary. Any user-facing chatbot, IDE agent, local model shell, enterprise agent builder, or custom app that can connect to a TinyAssets MCP server is part of the customer model; non-P0 hosts get explicit matrix-scoped support and caveats instead of being treated as invisible long tail.
 
-**Why:** "Use Claude.ai instead" or "use Claude Code instead" is an anti-pattern. A real user is on whatever client they chose, and the platform reaches them there. Bugs that work on one provider but not another are P1 product bugs, not "use the other one." Don't second-class browser-only users — compensate via cleverness (host the daemon for them, publish results to shareable URLs, stream long outputs, save state to universe, compose chains that produce tangible deliverables, use platform scalability advantages like parallelism + retries + evaluators that no single browser session could do alone).
+**Why:** "Use Claude.ai instead" or "use Claude Code instead" is an anti-pattern. A real user is on whatever client they chose, and the platform reaches them there. Bugs that work on one provider but not another are P1 product bugs, not "use the other one." Don't second-class browser-only users — preserve the same control-plane UX while routing executable jobs to market-rented or user/organization-managed external daemons; publish results to shareable URLs, stream long outputs, save state to universe, and compose chains that produce tangible deliverables.
 
-**How to apply:** Every feature design names its target capability tier and host coverage. Local-app: daemon hosting, file system I/O, local program invocation, autoresearch overnight, multi-tenant tray, OSS-clone-and-extend. Browser-only: cloud-mediated equivalents for everything actionable. Launch parity: test on both Claude and ChatGPT before claiming a public chatbot feature ships. Matrix parity: for any other host, say exactly which host was verified and what caveat remains. A primitive earns its keep MORE if it works equivalently across both capability tiers and many MCP hosts; a primitive that only helps local-app users or one provider is a much higher bar to ship. Hopeful future: the gap collapses (Claude.ai gaining computer-use, ChatGPT gaining MCP local-file capabilities, browser sandboxing improving) — primitives should compose the same way regardless of capability tier; tier just determines leverage paths, not feature existence.
+**How to apply:** Every feature design names its target capability tier and host coverage. Local-app: daemon hosting, file system I/O, local program invocation, autoresearch overnight, multi-tenant tray, OSS-clone-and-extend. Browser-only: cloud mediation means control-plane routing to BYO or market daemons, never platform compute. Launch parity: test on both Claude and ChatGPT before claiming a public chatbot feature ships. Matrix parity: for any other host, say exactly which host was verified and what caveat remains. A primitive earns its keep MORE if it works equivalently across both capability tiers and many MCP hosts; a primitive that only helps local-app users or one provider is a much higher bar to ship. Hopeful future: the gap collapses (Claude.ai gaining computer-use, ChatGPT gaining MCP local-file capabilities, browser sandboxing improving) — primitives should compose the same way regardless of capability tier; tier just determines leverage paths, not feature existence.
 
 Depth: lead memory `project_user_capability_axis.md`; host matrix `docs/design-notes/2026-05-01-mcp-host-customer-matrix.md`. Refines `project_user_tiers` (which is about install friction); both lenses are valid.
+
+### Compute ownership invariant
+
+TinyAssets production services are control-plane only. Every executable
+job lease is fulfilled by either an owner-authorized BYO daemon or a
+resource-market host selected through the same daemon claim, lease,
+heartbeat, and fenced-result protocol.
+
+TinyAssets and its founder own no shared coding-worker fleet and provide
+no platform-capacity fallback. The founder is an ordinary user under the
+same identity, capability, daemon-registration, claim, and review rules.
+
+When no eligible BYO or market daemon is online, jobs remain pending.
+“Zero hosts online” uptime applies to authoring, browsing, collaboration,
+routing, universe/job state, review, and market state; it does not imply
+that executable jobs progress without external compute.
+
+B2 and B3 are dependency-ordered validation slices of this one end-state
+architecture: B2 proves the protocol with an owner daemon; B3 places
+market matching in front of the unchanged protocol.
 
 ---
 
@@ -245,7 +265,7 @@ _Last audited: 2026-05-19_
 
 **Purpose:** A multi-tenant workflow platform where many users and daemons collaborate without collapsing into one shared chat or one hidden runtime.
 
-**In scope:** Daemon identity (souls, fingerprints, forks), runtime instance allocation, host pool registry, soul eligibility per node/gate, soul-guided dispatch, capacity-bounded fleet sizing, file-locked claim across cloud + host executors.
+**In scope:** Daemon identity (souls, fingerprints, forks), runtime instance allocation, host pool registry, soul eligibility per node/gate, soul-guided dispatch, capacity-bounded fleet sizing, and API-mediated claims across BYO and market daemons.
 
 **Out of scope:** What a daemon *knows* (Brain); what a daemon *evaluates* (Evolution & Evaluation); goal/gate ladder definitions (Goals & Gates); MCP tool surface (API & MCP Interface).
 
@@ -255,10 +275,10 @@ _Last audited: 2026-05-19_
 - *Always ready for the next user and daemon fleet.* Multi-tenant from the first build. Storage, authorization, queues, budgets, audits, daemon bindings, and runtime activations carry tenant/owner boundaries.
 - *Zero daemons required for authoring.* Node/branch/goal creation, editing, forking, and collaboration work with no daemon running anywhere. Daemon hosting is opt-in for execution work. Load-bearing requirement — any architecture where authoring depends on a running daemon violates it.
 - *Host fleets are capacity-bounded, not product-capped.* A host may summon as many daemons as they can afford and operate, including multiple daemons on the same provider. Second-and-later same-provider summons show warning-only subscription/rate-limit guidance; no platform subscription gate.
-- *Host subscription auth can fan out to multiple same-provider workers when the provider account supports it.* The 2026-06-20 host fleet baseline is two Codex workers sharing `CODEX_HOME=/data/.codex` and two Claude workers sharing `CLAUDE_CONFIG_DIR=/data/.claude`; no second subscription or per-worker auth home is required. Codex's single-use refresh-token chain must be serialized through the shipped `codex` flock wrapper whenever that shared auth home is used.
+- *Host subscription auth can fan out to multiple same-provider workers when the provider account supports it.* An optional per-user or market-host configuration may run two Codex workers sharing one `CODEX_HOME` and two Claude workers sharing one `CLAUDE_CONFIG_DIR`; this is never a platform baseline or platform-owned fleet. Codex's single-use refresh-token chain must be serialized through the shipped `codex` flock wrapper whenever an external host shares that auth home.
 - *Soul eligibility.* Nodes and gates may declare whether daemon souls are allowed, forbidden, required, replaced, or combined with a temporary node/gate header. They may declare domain requirements (scientific, legal, artistic, local-model-only). Claim-time verification checks soul fingerprint + required claims/proofs before execution.
 - *Soul-guided dispatch.* A soul-bearing daemon returns to a decision step listing eligible work + soul policy + domain requirements + required capability + offer. The daemon may choose money, interests, reputation, public-good impact, or refusal per its soul. Soulless daemons use the default platform dispatcher.
-- *Two coexisting executors, one file-locked claim.* Cloud-side `cloud_worker` (identity `cloud-droplet`) + opt-in host-tray (identity `host`); both call `branch_tasks.claim_task`; file-lock sidecar guarantees no double-claim.
+- *One external execution protocol.* BYO and market daemons advertise API-mediated offers, acquire fenced leases, heartbeat independently, and submit results through the same completion CAS. No platform executor or shared-filesystem claim path exists.
 
 **Substrate:** `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/branch_tasks.py`, `tinyassets/runtime/`, `tinyassets/singleton_lock.py`. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
 
@@ -446,7 +466,7 @@ _Last audited: 2026-05-19_
 
 ## Module: Uptime & Alarms
 
-**Purpose:** The complete system — MCP surface + node execution + collaboration surfaces + paid-market + moderation — stays up 24/7 with zero hosts online. The host machine being asleep for 24h must not extend any outage window past the pager's escalation ladder.
+**Purpose:** The control plane — MCP surface, authoring/browsing/collaboration, routing, universe/job state, review, paid-market state, and moderation — stays up 24/7 with zero execution hosts online. Executable jobs remain pending until an eligible external daemon is online. The host machine being asleep for 24h must not extend any control-plane outage window past the pager's escalation ladder.
 
 **In scope:** Self-heal layers, alarm ladder, DR drill, canonical canary, loop-uptime-maintenance escape.
 
@@ -532,11 +552,11 @@ Strong agents run on explicit typed state and external artifacts, not hidden cha
 
 ## Reference: Full-Platform Architecture
 
-**Status: integrated.** The architectural commitments — multi-tenant multiplayer platform, Postgres-canonical catalog with GitHub as export sink, versioned-rows real-time strategy, opt-in daemon hosting, paid-market on top of a free authoring substrate, full uptime with zero hosts online, three user tiers, evaluation-as-platform-primitive, node discovery + remix surface — are the durable canonical architecture, distributed across the modules above.
+**Status: integrated.** The architectural commitments — multi-tenant multiplayer platform, Postgres-canonical catalog with GitHub as export sink, versioned-rows real-time strategy, opt-in external daemon hosting, paid-market on top of a free authoring substrate, control-plane uptime with zero execution hosts online while jobs remain pending, three user tiers, evaluation-as-platform-primitive, node discovery + remix surface — are the durable canonical architecture, distributed across the modules above.
 
 **Single source of detail:** `docs/design-notes/2026-04-18-full-platform-architecture.md` (~3000 LOC) carries the full reasoning, tradeoff analysis, scale-audit numbers, and host-decision lineage. PLAN.md modules are the principle-level reference; the design note is the integrated detail. Citation chain: PLAN.md module principle → design-note section → host-decision lineage. No layer skipped.
 
-**Phased rollout — explicitly rejected.** The earlier "Phase 1 thin relay → Phase 2 state migration → Phase 3 paid failover" plan was rejected 2026-04-18 because (a) authoring must work with zero daemons running, which Phase 1 ships 0% of, and (b) building the final shape in one push avoids three throwaway migrations that each require re-teaching users + re-cutting Claude.ai connectors. The single-build target ("weeks not months") is canonical sequencing. Historical phased plan retained as superseded context only.
+**One target architecture, dependency-ordered verification.** The earlier "Phase 1 thin relay → Phase 2 state migration → Phase 3 paid failover" sequence remains rejected because it described different interim target architectures and throwaway migrations. B2-first and B3-second are verification order within one end-state architecture: B2 proves the unchanged external-daemon claim/lease/heartbeat/fenced-result protocol with an owner daemon; B3 verifies market matching in front of that same protocol. Historical phased plans remain superseded context only.
 
 ---
 
@@ -550,7 +570,7 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **Writer self-indexes.** The writer produces entity and fact data when it commits. No separate extraction role is the end state.
 - **Editorial feedback, not scoring.** Natural-language notes about what works, what's concerning, and whether a concern is provably wrong. No numeric rubric in the core loop.
 - **Graph hierarchy is scaffolding.** Structure should emerge from the daemon's choices wherever possible, not fixed counters.
-- **TinyAssets MCP Server, not single-user daemon.** Control plane runs in the cloud (currently DO Droplet, formerly a host laptop); many named users connect through MCP clients.
+- **TinyAssets MCP Server, not single-user daemon.** Control plane runs in the cloud (currently a DigitalOcean Droplet, formerly a host laptop); the deployment hosts only control-plane services, and many named users connect through MCP clients.
 - **Multi-tenant by design, single-tenant today as N=1.** Every daemon-related design must scale from `(user, daemon)` to `(N users, M daemons per user)` without rewrite. Any architecture that would require a migration to multi-user is rejected. Memory `project_daemons_are_multi_tenant_by_design.md`.
 - **TinyAssets-first, domain-agnostic identity.** Fantasy authoring is an early benchmark domain, not the trunk.
 - **MCP clients + local host dashboard.** MCP is the shared collaborative surface; host operational controls live in a local dashboard.
@@ -559,7 +579,7 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **Branch-first collaboration.** Branches are first-class, long-lived, public-forkable. Reconciliation optional, no fixed mainline.
 - **Swarm runtime.** No universe-wide single active daemon. Runtime capacity and daemon identity are separate resources.
 - **GitHub is an export sink, not the canonical store.** Canonical state lives in Postgres (Supabase-hosted at launch). GitHub receives a periodic flat-YAML export of public goals/branches/nodes; contributions via GitHub PR are accepted via a round-trip YAML → webhook → Postgres import path. One-way-door decision (host-approved 2026-04-18).
-- **Local-first execution, git-native sync (bridge state).** DO Droplet self-host is the current bridge. Postgres-canonical replaces local-first when the control-plane backend ships.
+- **Control-plane deployment bridge.** The DigitalOcean self-host currently runs only control-plane services. Postgres-canonical replaces its local control-plane state when the backend ships; executable jobs run only on external BYO or market daemons.
 - **User-controllable state architecture.** Users should eventually inspect, steer, and redesign tinyassets/state structure conversationally.
 - **Multi-host is the destination.** Local-host is important, but end-state is a network of hosts contributing model capacity to shared projects.
 - **The system must evolve itself.** Stagnation is the worst failure mode.

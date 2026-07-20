@@ -43,6 +43,20 @@ def test_byo_flag_defaults_off(monkeypatch):
     assert byo_execution_enabled(None) is False
 
 
+def test_real_sandbox_default_keeps_byo_execution_disabled(
+    tmp_path, monkeypatch
+):
+    """Do not stub the sandbox attestation: its production default is the gate."""
+    import tinyassets.engine_binding as engine_binding
+
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+    monkeypatch.setattr(
+        engine_binding, "_vault_encryption_capability_attested", lambda *_: True
+    )
+
+    assert byo_execution_enabled(tmp_path) is False
+
+
 @pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
 def test_byo_flag_still_requires_sandbox_attestation(monkeypatch, value):
     import tinyassets.engine_binding as engine_binding

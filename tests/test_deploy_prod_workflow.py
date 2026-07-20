@@ -129,8 +129,23 @@ def test_do_ssh_key_secret_referenced():
     assert "DO_SSH_KEY" in _text()
 
 
-def test_codex_subscription_bundle_secret_referenced():
-    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in _text()
+def test_provider_auth_secrets_are_only_referenced_for_deletion():
+    wf = _load()
+    job_env = (wf.get("jobs", {}).get("deploy", {}) or {}).get("env") or {}
+    scrub_step = next(
+        s for s in _steps(wf) if s.get("name") == "Scrub stale cloud env overrides"
+    )
+    scrub_script = scrub_step.get("run", "") or ""
+    for name in (
+        "TINYASSETS_CODEX_AUTH_JSON_B64",
+        "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+    ):
+        assert name not in job_env
+        assert name in scrub_script
+        assert f"set {name}" not in _text()
 
 
 def test_no_legacy_hetzner_secrets():
@@ -318,11 +333,11 @@ def test_rollback_step_is_image_only():
 
 
 # ---------------------------------------------------------------------------
-# (i) Codex subscription auth sync
+# (i) Control-plane-only deploy
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_syncs_codex_subscription_bundle_with_helper():
+def test_deploy_does_not_sync_provider_auth():
     wf = _load()
     deploy_step = next(
         (s for s in _steps(wf) if s.get("id") == "deploy"),
@@ -330,12 +345,14 @@ def test_deploy_syncs_codex_subscription_bundle_with_helper():
     )
     assert deploy_step is not None, "deploy job must have a deploy step"
     run_script = deploy_step.get("run", "") or ""
-    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-tinyassets-env.sh set TINYASSETS_ALLOW_API_KEY_PROVIDERS" in run_script
-    assert "OPENAI_API_KEY" not in run_script, (
-        "deploy must not recover the public daemon by syncing API-key writer auth"
-    )
+    for name in (
+        "TINYASSETS_CODEX_AUTH_JSON_B64",
+        "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
+        "OPENAI_API_KEY",
+    ):
+        assert name not in run_script
 
 
 def test_deploy_syncs_runtime_compose_and_systemd_files():
@@ -429,27 +446,13 @@ def test_deploy_scrubs_legacy_workflow_env_from_cloud_env():
         assert key in run_script
 
 
-def test_deploy_verifies_cloud_worker_running():
+def test_deploy_defines_no_platform_worker_verification():
     wf = _load()
-    worker_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
-        None,
-    )
-    assert worker_step is not None, "deploy must verify cloud workers are running"
-    run_script = worker_step.get("run", "") or ""
-    for name in (
-        "tinyassets-worker",
-        "tinyassets-worker-codex-2",
-        "tinyassets-worker-claude-1",
-        "tinyassets-worker-claude-2",
-    ):
-        assert name in run_script
-    assert "docker inspect" in run_script
-    assert "State.Running" in run_script
-    assert "for i in $(seq 1 30)" in run_script
-    assert "sleep 2" in run_script
-    assert "docker compose --env-file /etc/tinyassets/env" in run_script
-    assert "exit 1" in run_script
+    names = {s.get("name") for s in _steps(wf)}
+    assert "Verify cloud worker is running" not in names
+    deploy_text = _text()
+    assert "tinyassets-worker" not in deploy_text
+    assert "tinyassets.cloud_worker" not in deploy_text
 
 
 def test_deploy_retires_legacy_workflow_service_before_restart():
@@ -489,50 +492,11 @@ def test_deploy_retires_legacy_workflow_service_before_restart():
     assert "systemctl mask workflow-daemon.service" in run_script
 
 
-def test_deploy_rejects_cloud_worker_workflow_universe_override():
-    wf = _load()
-    worker_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
-        None,
-    )
-    assert worker_step is not None
-    run_script = worker_step.get("run", "") or ""
-    assert "grep -q '^TINYASSETS_UNIVERSE='" in run_script
-    assert "stdio-only override" in run_script
-    assert "_resolve_universe_path" in run_script
-
-
-def test_deploy_verifies_llm_binding_when_codex_auth_is_synced():
-    wf = _load()
-    for step in _steps(wf):
-        if "Verify subscription LLM binding" in (step.get("name") or ""):
-            assert "HAS_CODEX_AUTH_BUNDLE" in str(step.get("if", ""))
-            run_script = step.get("run", "") or ""
-            assert "verify_llm_binding.py" in run_script
-            assert "--require-sandbox" in run_script
-            assert "--retries 12" in run_script
-            assert "--retry-delay 10" in run_script
-            return
-    pytest.fail("deploy must verify LLM binding when it syncs Codex subscription auth")
-
-
-def test_deploy_requires_llm_binding_even_without_visible_deploy_secret():
-    wf = _load()
-    step_name = "Report subscription LLM binding when no deploy auth bundle is configured"
-    step = next(
-        (
-            s for s in _steps(wf)
-            if s.get("name") == step_name
-        ),
-        None,
-    )
-    assert step is not None
-    run_script = step.get("run", "") or ""
-    assert "verify_llm_binding.py" in run_script
-    assert "--require-sandbox" in run_script
-    assert "--retries 12" in run_script
-    assert "--retry-delay 10" in run_script
-    assert "::warning::No deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64" not in run_script
+def test_deploy_has_no_platform_executor_binding_check():
+    text = _text()
+    assert "Verify subscription LLM binding" not in text
+    assert "verify_llm_binding.py" not in text
+    assert "HAS_CODEX_AUTH_BUNDLE" not in text
 
 
 def test_deploy_publishes_release_state_after_canaries_and_access_gate():
@@ -587,180 +551,56 @@ def test_deploy_publishes_release_state_after_canaries_and_access_gate():
 
 
 # ---------------------------------------------------------------------------
-# Codex auth persistent volume (PR #965) — idempotence + ownership repair
+# Control-plane data volume — idempotence + ownership repair
 # ---------------------------------------------------------------------------
 
 
-def _codex_volume_step(wf: dict) -> dict:
+def _control_plane_volume_step(wf: dict) -> dict:
     step = next(
         (
             s for s in _steps(wf)
-            if s.get("name") == "Prepare codex auth persistent volume"
+            if s.get("name") == "Prepare control-plane data volume"
         ),
         None,
     )
     assert step is not None, (
-        "deploy must include a 'Prepare codex auth persistent volume' "
-        "step that provisions tinyassets-data/.codex on every deploy "
-        "(Forever Rule — no host-action required)"
+        "deploy must prepare the control-plane data volume before restart"
     )
     return step
 
 
-def test_codex_volume_step_runs_before_deploy():
+def test_control_plane_volume_step_runs_before_deploy():
     wf = _load()
     steps = _steps(wf)
     names = [s.get("name", "") for s in steps]
-    volume_idx = names.index("Prepare codex auth persistent volume")
+    volume_idx = names.index("Prepare control-plane data volume")
     deploy_idx = next(
         i for i, step in enumerate(steps)
         if step.get("id") == "deploy"
     )
     assert volume_idx < deploy_idx, (
-        "Codex auth volume must be provisioned BEFORE the daemon "
-        "container restarts; otherwise the first restart may miss "
-        "the persistent CODEX_HOME auth directory."
+        "control-plane storage must be prepared before the daemon restarts"
     )
 
 
-def test_codex_volume_step_chown_is_unconditional():
-    """Regression guard for Codex round-2 Finding 2.
-
-    Round-1 placed `chown` inside the `if [ ! -d "$VOLUME_DIR" ]` branch.
-    If a prior deploy attempt left the dir root-owned, subsequent
-    deploys silently skipped the ownership repair and uid 1001 couldn't
-    write. Fix: run chown unconditionally every deploy.
-    """
+def test_control_plane_volume_step_repairs_root_and_auth_db_ownership():
     wf = _load()
-    step = _codex_volume_step(wf)
+    step = _control_plane_volume_step(wf)
     run_script = step.get("run", "") or ""
-
-    # Extract the heredoc body so we can reason about block structure.
-    # The heredoc starts after `<<'SH'` and ends at a line containing `SH`.
-    lines = run_script.splitlines()
-    start = next(
-        (i for i, line in enumerate(lines) if line.endswith("<<'SH'")),
-        None,
-    )
-    end = next(
-        (i for i, line in enumerate(lines[start + 1:], start=start + 1)
-         if line.strip() == "SH"),
-        None,
-    ) if start is not None else None
-    assert start is not None and end is not None, (
-        "Could not locate heredoc body in 'Prepare codex auth persistent volume'"
-    )
-    body = lines[start + 1: end]
-
-    chown_line_idx = next(
-        (i for i, line in enumerate(body)
-         if line.strip().startswith('chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"')),
-        None,
-    )
-    chmod_line_idx = next(
-        (i for i, line in enumerate(body)
-         if line.strip().startswith('chmod 700 "$CODEX_DIR"')),
-        None,
-    )
-    assert chown_line_idx is not None, "chown on $CODEX_DIR must be present"
-    assert chmod_line_idx is not None, "chmod 700 on $CODEX_DIR must be present"
-
-    # Walk backwards from each line; the most recent unmatched `if [` must
-    # NOT be the `[ ! -d "$CODEX_DIR" ]` branch. Track indent depth via
-    # leading whitespace as a coarse signal — both unconditional lines
-    # should sit at the heredoc's base indent.
-    def _indent(line: str) -> int:
-        return len(line) - len(line.lstrip(" "))
-
-    base_indent = min(
-        (_indent(line) for line in body if line.strip()),
-        default=0,
-    )
-    chown_indent = _indent(body[chown_line_idx])
-    chmod_indent = _indent(body[chmod_line_idx])
-    assert chown_indent == base_indent, (
-        f"chown line must sit at heredoc base indent ({base_indent}); "
-        f"got indent {chown_indent}. Being nested inside `if [ ! -d ]` "
-        "is exactly the Finding-2 regression we are guarding against."
-    )
-    assert chmod_indent == base_indent, (
-        f"chmod line must sit at heredoc base indent ({base_indent}); "
-        f"got indent {chmod_indent}."
-    )
+    assert 'chown "$tinyassets_uid:$tinyassets_gid" "$volume_dir"' in run_script
+    assert 'chmod 755 "$volume_dir"' in run_script
+    assert "-name '.auth.db'" in run_script
+    assert "-exec chmod 600" in run_script
 
 
-def test_codex_volume_step_creates_dir_idempotently():
+def test_control_plane_volume_step_creates_volume_idempotently():
     wf = _load()
-    step = _codex_volume_step(wf)
+    step = _control_plane_volume_step(wf)
     run_script = step.get("run", "") or ""
-    assert 'docker volume create "$VOLUME_NAME"' in run_script, (
-        "tinyassets-data named volume must be created idempotently before "
-        "resolving its mountpoint"
-    )
-    assert 'docker volume inspect "$VOLUME_NAME"' in run_script, (
-        "deploy must resolve the local volume mountpoint before preparing .codex"
-    )
-    assert 'CODEX_DIR="$VOLUME_DIR/.codex"' in run_script
-    assert 'mkdir -p "$CODEX_DIR"' in run_script, (
-        "directory creation must use `mkdir -p` so re-running the step "
-        "is a no-op when the dir already exists"
-    )
-    assert 'if [ ! -d "$CODEX_DIR" ]' in run_script, (
-        "dir-create branch must be guarded by an existence check so the "
-        "create-log line is skipped when the dir already exists"
-    )
-
-
-def test_codex_volume_step_repairs_volume_root_for_auth_db():
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-
-    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$VOLUME_DIR"' in run_script
-    assert 'chmod 755 "$VOLUME_DIR"' in run_script
-    assert ".auth.db" in run_script
-    assert "unable to open database file" in run_script
-
-
-def test_codex_volume_step_migrates_from_running_container_once():
-    """First deploy after CODEX_HOME migration onto a live droplet must copy the
-    rotated auth.json out of the running tinyassets-worker into the
-    persistent volume. Subsequent deploys skip (auth.json already
-    present). No-op when no live source container exists.
-    """
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-    assert 'if [ ! -f "$CODEX_DIR/auth.json" ]' in run_script, (
-        "migration branch must be guarded so it fires exactly once"
-    )
-    assert "docker inspect tinyassets-worker" in run_script, (
-        "migration must check tinyassets-worker presence before docker cp"
-    )
-    assert 'docker exec tinyassets-worker test -f /data/.codex/auth.json' in run_script, (
-        "migration must check the new CODEX_HOME path before copying"
-    )
-    assert 'docker exec tinyassets-worker test -f /app/.codex/auth.json' in run_script, (
-        "migration must also support one-time legacy /app/.codex pickup"
-    )
-    assert "docker cp tinyassets-worker:/data/.codex/auth.json" in run_script
-    assert "docker cp tinyassets-worker:/app/.codex/auth.json" in run_script
-    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"' in run_script
-    assert 'chmod 600 "$CODEX_DIR/auth.json"' in run_script
-
-
-def test_subscription_volume_step_prepares_claude_config_dir():
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-    assert 'CLAUDE_DIR="$VOLUME_DIR/.claude"' in run_script
-    assert 'mkdir -p "$CLAUDE_DIR"' in run_script
-    assert 'chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"' in run_script
-    assert 'chmod 700 "$CLAUDE_DIR"' in run_script
-    assert 'docker exec tinyassets-worker test -d /data/.claude' in run_script
-    assert 'docker exec tinyassets-worker test -d /app/.claude' in run_script
-    assert "docker cp tinyassets-worker:/data/.claude/." in run_script
-    assert "docker cp tinyassets-worker:/app/.claude/." in run_script
+    assert 'docker volume create "$volume_name"' in run_script
+    assert 'docker volume inspect "$volume_name"' in run_script
+    assert ".codex" not in run_script
+    assert ".claude" not in run_script
 
 
 # ---------------------------------------------------------------------------
@@ -872,11 +712,8 @@ def test_deploy_step_summary_reports_github_pr_capability_visibility():
     )
 
 
-def test_github_pr_capability_sync_runs_after_codex_auth_sync():
-    """Determinism: both sync blocks live in the same Deploy step, and
-    the capability sync must run AFTER the codex-auth sync so the
-    summary order matches the operator's mental model (codex first,
-    capability second)."""
+def test_github_pr_capability_sync_remains_without_provider_auth_sync():
+    """Control-plane capabilities remain deployable without executor auth."""
     wf = _load()
     deploy_step = next(
         (s for s in _steps(wf) if s.get("id") == "deploy"),
@@ -884,17 +721,9 @@ def test_github_pr_capability_sync_runs_after_codex_auth_sync():
     )
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
-    codex_marker = "set TINYASSETS_CODEX_AUTH_JSON_B64"
     cap_marker = "set TINYASSETS_GITHUB_PR_CAPABILITIES"
-    codex_idx = run_script.find(codex_marker)
-    cap_idx = run_script.find(cap_marker)
-    assert codex_idx != -1, "codex-auth sync block must be present"
-    assert cap_idx != -1, "capability sync block must be present"
-    assert codex_idx < cap_idx, (
-        "capability sync must run after the codex-auth sync — both "
-        "live in the same Deploy step and the operator-facing summary "
-        "lists them in that order"
-    )
+    assert cap_marker in run_script
+    assert "set TINYASSETS_CODEX_AUTH_JSON_B64" not in run_script
 
 
 # ---------------------------------------------------------------------------

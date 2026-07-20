@@ -82,7 +82,7 @@ def _enforce_writer_binding(
 
     Covers BOTH identity paths — an explicit ``universe_dir`` AND the
     process-global ``TINYASSETS_UNIVERSE`` env fallback (mirrors how the
-    auth-health KEEP bypass resolves) — so a cloud-worker child with only
+    auth-health KEEP bypass resolves) — so an external-daemon child with only
     ``TINYASSETS_UNIVERSE`` set is still constrained. **FAILS CLOSED:** any
     binding/resolution error raises ``AllProvidersExhaustedError`` (never
     swallowed → never leaks to a platform-auth provider).
@@ -99,7 +99,10 @@ def _enforce_writer_binding(
     if not is_writer_route:
         return chain
     from tinyassets.credential_broker import resolve_universe_from_env
-    from tinyassets.engine_binding import resolve_engine_binding
+    from tinyassets.engine_binding import (
+        execution_blocked_reason,
+        resolve_engine_binding,
+    )
 
     resolved = universe_dir if universe_dir is not None else resolve_universe_from_env()
     if resolved is None:
@@ -114,7 +117,13 @@ def _enforce_writer_binding(
             f"binding ({exc}); refusing to fall through to platform auth."
         ) from exc
     if not binding.bound:
-        return chain  # unbound → normal (ambient) routing.
+        blocked_reason = execution_blocked_reason(resolved)
+        if blocked_reason is not None:
+            raise AllProvidersExhaustedError(
+                "writer routing refused: external daemon execution is "
+                f"quarantined ({blocked_reason})"
+            )
+        return chain  # legacy unbound local route.
     eligible = set(binding.eligible_providers)
     if is_pinned_writer and pin_writer not in eligible:
         raise AllProvidersExhaustedError(

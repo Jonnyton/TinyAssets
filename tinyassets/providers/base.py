@@ -8,9 +8,19 @@ from __future__ import annotations
 
 import abc
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from tinyassets.control_plane import (
+    API_KEY_PROVIDER_ENV_VARS,
+    CONTROL_PLANE_ENV,
+    HOST_AUTH_ENV_VARS,
+)
+from tinyassets.control_plane import (
+    truthy_env as _truthy_env,
+)
 
 if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
@@ -130,27 +140,57 @@ DEGRADED_JUDGE_RESPONSE = ProviderResponse(
 )
 
 
-API_KEY_PROVIDER_ENV_VARS: tuple[str, ...] = (
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
-    "GEMINI_API_KEY",
-    "GROQ_API_KEY",
-    "XAI_API_KEY",
-)
+def _explicit_provider_subprocess_env(
+    env: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Enforce the provider-process boundary immediately before every spawn."""
+    from tinyassets.exceptions import ProviderUnavailableError
 
-HOST_AUTH_ENV_VARS: tuple[str, ...] = (
-    *API_KEY_PROVIDER_ENV_VARS,
-    "CODEX_HOME",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "TINYASSETS_CODEX_AUTH_JSON_B64",
-    "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
-)
+    if env is None:
+        raise TypeError("provider subprocesses require an explicit environment")
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        raise ProviderUnavailableError(
+            "control-plane services cannot spawn model providers; external work "
+            "must remain queued for an owner-authorized BYO or market daemon"
+        )
+    return dict(env)
 
 
-def _truthy_env(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+def run_provider_subprocess(command, *, env: Mapping[str, str], **kwargs):
+    """Run a provider CLI through the single control-plane/env gate."""
+    import subprocess
+
+    return subprocess.run(
+        command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
+
+
+async def create_provider_subprocess_exec(
+    *command: str, env: Mapping[str, str], **kwargs
+):
+    """Spawn an argv-based provider CLI through the shared gate."""
+    import asyncio
+
+    return await asyncio.create_subprocess_exec(
+        *command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
+
+
+async def create_provider_subprocess_shell(
+    command: str, *, env: Mapping[str, str], **kwargs
+):
+    """Spawn a shell-wrapped provider CLI through the shared gate."""
+    import asyncio
+
+    return await asyncio.create_subprocess_shell(
+        command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
 
 
 def api_key_providers_enabled() -> bool:
@@ -241,12 +281,20 @@ def subprocess_env_for_provider(
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
     Engine credentials come from the platform vault via
-    :mod:`tinyassets.credential_broker`. A universe with no engine deposits
-    gets no overrides (the host_daemon default engine). Fail-closed states —
-    unmigrated legacy plaintext, ``needs_redeposit``/revoked bindings — RAISE:
-    the universe's engine stops rather than silently running on the host's
-    credentials (the ambient identity leak).
+    :mod:`tinyassets.credential_broker`. Fail-closed states — unresolved
+    external routes, unmigrated legacy plaintext, and
+    ``needs_redeposit``/revoked bindings — RAISE before a child can spawn.
     """
+    from tinyassets.exceptions import ProviderUnavailableError
+
+    # The env-independent binding gate below covers declared external sources;
+    # this marker also stops legacy/empty-engine_source universes on control plane.
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        raise ProviderUnavailableError(
+            "control-plane services cannot spawn model providers; external work "
+            "must remain queued for an owner-authorized BYO or market daemon"
+        )
+
     host_env = subprocess_env_without_api_keys() or os.environ.copy()
     from tinyassets.credential_broker import (
         provider_auth_env_overrides,
@@ -259,8 +307,6 @@ def subprocess_env_for_provider(
         get_pinned_byo_snapshot,
         resolve_engine_binding,
     )
-    from tinyassets.exceptions import ProviderUnavailableError
-
     resolved_universe = (
         Path(universe_dir)
         if universe_dir is not None
@@ -274,10 +320,12 @@ def subprocess_env_for_provider(
     engine_source = (
         load_universe_config(resolved_universe).engine_source.strip().lower()
     )
-    if engine_source == "host_daemon":
-        return host_env
-
     binding = resolve_engine_binding(resolved_universe)
+    if binding.external_route_declared and not binding.bound:
+        raise ProviderUnavailableError(
+            "declared external daemon route is unresolved; refusing ambient "
+            "provider auth until an owner-authorized or market lease is bound"
+        )
     if binding.needs_migration:
         raise RetiredCredentialStateError(
             "retired credential state cannot use ambient provider auth"
@@ -378,6 +426,38 @@ DEFAULT_AUTH_PROBE_TTL_S = 1800.0
 DEFAULT_AUTH_PROBE_TIMEOUT_S = 120.0
 
 _PROBE_FALSY = {"0", "false", "off", "no"}
+
+_CODEX_AUTH_PROBE_ENV_VARS: tuple[str, ...] = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "NO_COLOR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CODEX_HOME",
+)
 
 # Live-probe verdict cache. The supervisor calls the gate every loop tick;
 # the probe subprocess must not run per tick. The AUTHORITATIVE cache is a
@@ -518,6 +598,12 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
     Uses whatever ``codex`` is on PATH so flock-wrapper deployments keep
     their single-use refresh-token serialization.
     """
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "status": "inconclusive",
+            "detail": "live auth probe is not applicable on the control plane",
+        }
+
     import subprocess
     import tempfile
 
@@ -528,9 +614,15 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
         *base_cmd, "exec", "--skip-git-repo-check", "-s", "read-only",
         _AUTH_PROBE_PROMPT,
     ]
+    probe_env = {
+        name: os.environ[name]
+        for name in _CODEX_AUTH_PROBE_ENV_VARS
+        if os.environ.get(name)
+    }
     try:
-        proc = subprocess.run(
+        proc = run_provider_subprocess(
             cmd if not use_shell else subprocess.list2cmdline(cmd),
+            env=probe_env,
             shell=use_shell,
             capture_output=True,
             text=True,
@@ -591,8 +683,7 @@ def _codex_refresh_viability(
     an MCP request must never block on a probe subprocess): it serves the
     freshness fast path and any cached verdict, and reports stale creds as
     "ok" with a probe-deferred detail instead of probing inline. The
-    quarantine decision itself lives in the cloud_worker gate, which always
-    probes.
+    execution-gate decision belongs to the external daemon, which may probe.
     """
     import time as _time
 
@@ -618,8 +709,7 @@ def _codex_refresh_viability(
         "TINYASSETS_AUTH_PROBE_TTL_S", DEFAULT_AUTH_PROBE_TTL_S,
     )
     now = _time.time()
-    # Disk cache first (cross-process/container truth: the worker's probe
-    # verdict must be visible to the daemon's get_status), then the
+    # Disk cache first (cross-process truth for an external daemon fleet), then the
     # in-memory layer (covers read-only CODEX_HOMEs).
     cached = _read_probe_cache_file(codex_home)
     if cached is None:
@@ -631,7 +721,7 @@ def _codex_refresh_viability(
         presence_ok["detail"] = (
             f"auth.json present at {codex_home}; last_refresh stale "
             f"(age {'unknown' if age is None else f'{age:.0f}s'}) — live "
-            "probe deferred to the worker gate"
+            "probe deferred to the external daemon"
         )
         return presence_ok
 
@@ -653,13 +743,12 @@ def _codex_refresh_viability(
     return health
 
 
-# Subscription-auth health. The 2026-06-25 loop-wedge root cause was a worker
+# Subscription-auth health. The 2026-06-25 loop-wedge root cause was an executor
 # whose claude-code auth was dead (no credentials) that kept claiming tasks
 # and failing every one, poisoning the queue for ~3 weeks undetected.
 # ``is_available()`` only checks the binary is on PATH (``shutil.which``); it
-# does NOT check login state. This helper checks login state so workers can
-# self-quarantine (cloud_worker) and get_status can surface dead writer auth
-# instead of leaving it buried in worker logs.
+# does NOT check login state. This helper lets an external daemon fail closed
+# before claiming work instead of leaving the failure buried in executor logs.
 #
 # Returns ``{"provider", "status", "detail"}`` where status is one of:
 #   "ok"            — subscription credentials are present (and, for codex,
@@ -668,6 +757,7 @@ def _codex_refresh_viability(
 #                     failure)
 #   "unknown"       — no checkable subscription auth here (API-key providers,
 #                     ollama, or an unrecognized name); callers never gate on it
+#   "not_applicable"— provider execution and probing are disabled on control plane
 #
 # Codex gets a layered refresh-viability check on top of presence
 # (live-proven gap 2026-07-14: a stale /data/.codex/auth.json stranded by the
@@ -699,6 +789,12 @@ def subscription_auth_health(
     spawns the live-probe subprocess; serves fast paths + cached verdicts.
     """
     name = (provider_name or "").strip()
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "provider": name,
+            "status": "not_applicable",
+            "detail": "provider auth health is not applicable on the control plane",
+        }
     if name == "codex":
         codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         if not (codex_home / "auth.json").is_file():
@@ -860,6 +956,12 @@ def probe_sandbox_available() -> dict[str, object]:
     Returns {bwrap_available: bool, reason: str | None}.  Cached at
     module level after first call so get_status probes once at startup.
     """
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "bwrap_available": False,
+            "reason": "not applicable on a control-plane host",
+        }
+
     import shutil as _shutil
     import subprocess as _subprocess
     import sys as _sys
@@ -874,7 +976,11 @@ def probe_sandbox_available() -> dict[str, object]:
     try:
         version_result = _subprocess.run(
             [bwrap_path, "--version"],
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env={"PATH": os.defpath},
         )
         if version_result.returncode != 0:
             return {
@@ -887,7 +993,11 @@ def probe_sandbox_available() -> dict[str, object]:
 
         launch_result = _subprocess.run(
             [bwrap_path, "--ro-bind", "/", "/", "/bin/sh", "-c", "true"],
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env={"PATH": os.defpath},
         )
         if launch_result.returncode == 0:
             return {"bwrap_available": True, "reason": None}
@@ -913,6 +1023,11 @@ _sandbox_probe_cache: dict[str, object] | None = None
 
 def get_sandbox_status() -> dict[str, object]:
     """Return cached sandbox probe result (probes once per process)."""
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "bwrap_available": False,
+            "reason": "not applicable on a control-plane host",
+        }
     global _sandbox_probe_cache  # noqa: PLW0603
     if _sandbox_probe_cache is None:
         _sandbox_probe_cache = probe_sandbox_available()

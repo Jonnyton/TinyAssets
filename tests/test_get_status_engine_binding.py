@@ -23,8 +23,10 @@ def test_status_reports_unbound_universe(tmp_path, monkeypatch):
     payload = json.loads(get_status(universe_id="u-idle"))
     binding = payload["engine_binding"]
     assert binding["bound"] is False
-    assert binding["workable"] is True
+    assert binding["workable"] is False
     assert binding["non_ambient_gate"] is False
+    assert "idle" in binding["note"].lower()
+    assert "ambient" not in " ".join(payload["caveats"]).lower()
 
 
 def test_status_gate_on_makes_unbound_universe_idle(tmp_path, monkeypatch):
@@ -62,11 +64,13 @@ def test_status_reports_real_broker_binding(
 def test_status_reports_declared_missing_binding_without_crashing(
     tmp_path, monkeypatch
 ):
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
     universe = _make_universe(tmp_path, monkeypatch, "u-broken")
     write_universe_config_fields(universe, engine_source="byo_api_key")
     binding = json.loads(get_status(universe_id=universe.name))["engine_binding"]
     assert binding["bound"] is False
     assert binding["misconfigured"] is True
+    assert binding["workable"] is False
 
 
 def test_status_distinguishes_pre_and_post_migration(tmp_path, monkeypatch):

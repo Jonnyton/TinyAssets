@@ -56,13 +56,13 @@ _HEARTBEAT_REFRESH_INTERVAL_S = 60
 _HEARTBEAT_STALE_THRESHOLD_S = _HEARTBEAT_REFRESH_INTERVAL_S * 2
 
 # Threshold for "stuck pending" — a pending task older than this without
-# claim implies dispatcher pickup or worker liveness issue (today's
+# claim implies dispatcher pickup or daemon availability issue (today's
 # BUG-009 class).
 _STUCK_PENDING_THRESHOLD_S = 120
 
 # Loop-stall window: if a backlog (pending tasks older than this) has produced
 # ZERO terminal transitions within the same window, the loop is stalled even
-# though workers may look busy — the 2026-06-25 wedge ran ~3 weeks because no
+# though executors may look busy — the 2026-06-25 wedge ran ~3 weeks because no
 # signal distinguished "claiming but never completing" from healthy operation.
 _LOOP_STALL_WINDOW_S = int(os.environ.get("TINYASSETS_LOOP_STALL_WINDOW_S", "1800"))
 
@@ -363,39 +363,6 @@ def _compute_auto_ship_health(
     return out
 
 
-# Subscription writers the loop relies on. Probed for auth-health so a dead
-# credential (the 2026-06-25 loop-wedge root cause — a worker whose claude-code
-# auth was missing claimed tasks and failed every one for ~3 weeks undetected)
-# is visible in get_status instead of buried in worker logs.
-_SUBSCRIPTION_WRITERS = ("codex", "claude-code")
-
-
-def _provider_auth_snapshot() -> dict[str, Any]:
-    """Presence-based auth health for the subscription writers + a roll-up.
-
-    Reads the same shared-volume auth paths the workers use (the main daemon
-    and workers share ``/data`` in the cloud deploy), so a writer whose creds
-    are missing surfaces here. ``all_writers_unauthenticated`` is the
-    actionable roll-up: when true the loop cannot produce at all.
-    """
-    from tinyassets.providers.base import subscription_auth_health
-
-    writers: dict[str, Any] = {}
-    known_states: list[str] = []
-    for name in _SUBSCRIPTION_WRITERS:
-        # allow_probe=False: get_status is an MCP request path and must
-        # never block on the codex live-probe subprocess (up to 120s).
-        # Fast paths + cached verdicts only; the worker gate owns probing.
-        health = subscription_auth_health(name, allow_probe=False)
-        writers[name] = {"status": health["status"], "detail": health["detail"]}
-        if health["status"] in ("ok", "not_logged_in"):
-            known_states.append(health["status"])
-    all_down = bool(known_states) and all(
-        s == "not_logged_in" for s in known_states
-    )
-    return {"writers": writers, "all_writers_unauthenticated": all_down}
-
-
 def _compute_supervisor_liveness(
     udir: Any,
     *,
@@ -442,36 +409,6 @@ def _compute_supervisor_liveness(
         "warnings": [],
         "lease_data_available": True,
     }
-
-    # Provider auth health — surfaced before the queue read so a dead-writer
-    # roll-up is visible even if the queue read fails. Turns the loop_stalled
-    # warning's "provider auth?" suspicion into a concrete signal.
-    out["provider_auth"] = _provider_auth_snapshot()
-    _dead_writers = [
-        name
-        for name, info in out["provider_auth"]["writers"].items()
-        if info["status"] == "not_logged_in"
-    ]
-    if out["provider_auth"]["all_writers_unauthenticated"]:
-        out["warnings"].append(
-            "all_writers_unauthenticated: every subscription writer "
-            "(codex, claude-code) is unauthenticated — the loop cannot "
-            "produce. Re-seed provider auth on the worker volume. "
-            "(2026-06-25 loop-wedge root cause; workers now self-quarantine "
-            "rather than claim-and-poison the queue.)"
-        )
-    elif _dead_writers:
-        # Partial outage is the EXACT 2026-06-25 shape (claude dead, codex
-        # alive). Warn even though the loop still produces, so a degraded
-        # fleet is never silent (Hard Rule #8) — the dead workers
-        # self-quarantine and the loop runs at reduced writer capacity.
-        out["warnings"].append(
-            f"writer_unauthenticated: subscription writer(s) "
-            f"{', '.join(_dead_writers)} not logged in — those workers "
-            "self-quarantine (no claim, no poison) and the loop runs at "
-            "reduced writer capacity until re-seeded. (2026-06-25 partial "
-            "loop-wedge signature.)"
-        )
 
     try:
         from tinyassets.branch_tasks import read_queue
@@ -676,8 +613,8 @@ def _compute_supervisor_liveness(
             f"{out['queue_state']['pending']} pending "
             f"(oldest {out['queue_state']['stuck_pending_max_age_s']}s) and "
             f"{out['queue_state']['failed']} failed total. The loop is claiming "
-            "but not succeeding — provider auth, double-claim, or finalize crash "
-            "(2026-06-25 loop-wedge signature). Check worker logs for provider "
+            "but not succeeding — daemon loss, double-claim, or finalize crash "
+            "(2026-06-25 loop-wedge signature). Check daemon logs for "
             "'exhausted' / 'Invalid transition'."
         )
 
@@ -695,8 +632,7 @@ def _compute_supervisor_liveness(
             "(heartbeat past threshold or lease expired). "
             "branch_tasks.reclaim_expired_leases sweeps these at every "
             "dispatcher pick (BUG-011 Phase C, shipped 2026-06-10); a "
-            "persistent entry here means no picks are happening — check "
-            "worker_liveness in universe inspect."
+            "persistent entry here means no daemon is advancing the queue."
         )
 
     return out
@@ -1239,7 +1175,7 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
     # are now TWO SEPARATE readiness classes, each meaning "an ISOLATED EXECUTOR
     # for this class is available and the adapter routes through it" (a boolean is
     # not a boundary — Codex r16 #1): `coding_nodes_runnable` = the per-job REPO
-    # executor; `source_exec_runnable` = the in-process-code OS-isolation worker.
+    # executor; `source_exec_runnable` = the in-process-code OS-isolation executor.
     # Both are ALWAYS False in this deploy (no isolated executor exists), so
     # get_status can never claim "ready because a CLI is on PATH". Surface the
     # attestation for operators too.
@@ -1329,8 +1265,9 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
     # bind next-step so a founder is offered "bind an engine so your universe
     # can run". Additive + best-effort — a status read must never FAIL on this,
     # so a misconfigured binding is *reported*, never raised here. The
-    # non_ambient_gate field echoes the flag state so the note is honest about
-    # whether ambient work still runs (flag off) or not (flag on).
+    # non_ambient_gate remains visible as rollout history, but S0 retired the
+    # platform worker that could consume an unbound universe. Workability is
+    # therefore derived only from the resolved binding, never from this flag.
     from tinyassets.engine_binding import (
         EngineMisconfiguredError,
         non_ambient_work_enabled,
@@ -1353,13 +1290,10 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
             binding = resolve_engine_binding(udir)
             engine_binding = binding.as_dict()
             engine_binding["non_ambient_gate"] = gate_on
-            # workable = will the daemon work this universe? Bound universes
-            # always; unbound universes only while the gate is off (ambient).
-            # A needs-migration universe is NEVER workable — every spawn would
-            # raise until its legacy subscription record is migrated out (#3).
-            engine_binding["workable"] = (
-                binding.bound or (not gate_on and not binding.needs_migration)
-            )
+            # S0 removed the platform coding-worker fleet. An unbound or
+            # retired universe has no executable route regardless of the old
+            # rollout flag; only a resolved binding is workable.
+            engine_binding["workable"] = binding.bound
             if binding.needs_record_migration:
                 # A RAW subscription record is still present → run the migration.
                 engine_binding["status"] = "misconfigured"
@@ -1402,21 +1336,12 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                 )
             elif not binding.bound:
                 engine_binding["note"] = (
-                    "This universe has no engine bound to it and will stay idle "
-                    "until you bind one — no ambient work runs for it."
-                    if gate_on
-                    else "This universe has no engine bound to it. Bind one so "
-                    "it runs on capacity you control (your own engine, a hosted "
-                    "daemon, or offered cloud capacity)."
+                    "This universe has no executable engine bound to it and will "
+                    "stay idle until you bind one — no ambient work runs for it."
                 )
                 caveats.append(
                     "engine_binding.bound is false — no engine/daemon capacity "
                     "is bound to this universe. It is idle-until-bound."
-                    if gate_on
-                    else "engine_binding.bound is false — no engine/daemon "
-                    "capacity is bound to this universe, but it is currently "
-                    "workable via ambient legacy execution (non-ambient gate "
-                    "off)."
                 )
                 actionable_next_steps.append(
                     "Bind a sanctioned engine. A founder can deposit a BYO API "
@@ -1434,7 +1359,7 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
                 "capacity_kinds": [],
                 "misconfigured": True,
                 "non_ambient_gate": gate_on,
-                "workable": not gate_on,
+                "workable": False,
                 "detail": exc.detail,
                 "note": (
                     "This universe declares an engine but its capacity is "

@@ -27,6 +27,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from tinyassets.control_plane import assert_provider_credential_env_write_allowed
 from tinyassets.enrichment_signals import (
     load_enrichment_signals,
     write_enrichment_signals,
@@ -569,6 +570,7 @@ def _load_provider_keys() -> None:
         return
     try:
         data = json.loads(keys_path.read_text(encoding="utf-8"))
+        pending: list[tuple[str, str]] = []
         for env_var, value in data.items():
             if env_var not in _ALLOWED_PROVIDER_ENV_VARS:
                 logger.warning(
@@ -577,8 +579,12 @@ def _load_provider_keys() -> None:
                 )
                 continue
             if value and env_var not in os.environ:
-                os.environ[env_var] = value
-                logger.info("Loaded persisted key for %s", env_var)
+                pending.append((env_var, value))
+        for env_var, _value in pending:
+            assert_provider_credential_env_write_allowed(env_var)
+        for env_var, value in pending:
+            os.environ[env_var] = value
+            logger.info("Loaded persisted key for %s", env_var)
     except (OSError, json.JSONDecodeError):
         logger.debug("Failed to load provider keys", exc_info=True)
 
@@ -2121,6 +2127,12 @@ def configure_provider(
                 f"Supported: {', '.join(sorted(_ENV_MAP))}"
             ),
         )
+
+    try:
+        assert_provider_credential_env_write_allowed(env_var)
+    except RuntimeError as exc:
+        logger.error("Refused provider configuration: %s", exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Set the env var and persist to disk
     os.environ[env_var] = body.api_key

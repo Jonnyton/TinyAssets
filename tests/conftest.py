@@ -7,34 +7,64 @@ that all test modules can reuse.
 from __future__ import annotations
 
 import os
+import site
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+# Pin a safe root before importing any TinyAssets module.  Test modules may
+# import server surfaces during collection, before fixtures can run.
+_PYTEST_SESSION_DATA_DIR = Path(
+    tempfile.mkdtemp(prefix="tinyassets-pytest-session-")
+).resolve()
+_PYTHON_USER_BASE = Path(site.getuserbase()).resolve()
+os.environ["TINYASSETS_DATA_DIR"] = str(_PYTEST_SESSION_DATA_DIR)
+
 # Force mock provider responses in all tests to avoid real API calls
-from tinyassets.providers import call as _provider_call
+from tinyassets.providers import call as _provider_call  # noqa: E402
 
 _provider_call.set_force_mock(True)
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime():
-    """Clear runtime singletons before AND after every test to prevent leakage.
+def _isolate_test_data_root(tmp_path_factory, monkeypatch):
+    """Keep every test outside the developer's real TinyAssets data root.
 
-    The pre-test reset catches cases where a prior test's background thread
-    (e.g. LangGraph executor) sets the global after the prior test's teardown.
+    The collection-time session root protects import-time initialization.  This
+    per-test root prevents database, active-universe, broker, backend, and
+    singleton state from leaking between tests.  APPDATA is isolated too so a
+    test that deliberately clears ``TINYASSETS_DATA_DIR`` still cannot resolve
+    to the developer's live Windows data root.
     """
+    # Use siblings of the test's own ``tmp_path``.  Some tests intentionally
+    # enumerate their tmp_path and must not see fixture-owned directories.
+    data_root = tmp_path_factory.mktemp("tinyassets-data")
+    appdata_root = tmp_path_factory.mktemp("appdata")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setenv("APPDATA", str(appdata_root))
+    # APPDATA also controls Python's Windows user-site location. Keep imports
+    # anchored to the real interpreter environment while TinyAssets' fallback
+    # data root stays isolated; otherwise subprocess tests lose installed
+    # dependencies such as typing_extensions.
+    monkeypatch.setenv("PYTHONUSERBASE", str(_PYTHON_USER_BASE))
+
+    from tinyassets import catalog, credential_broker
     from tinyassets import runtime_singletons as runtime
 
+    catalog.invalidate_backend_cache()
+    credential_broker._reset_backend_cache()
     runtime.reset()
     yield
     runtime.reset()
+    credential_broker._reset_backend_cache()
+    catalog.invalidate_backend_cache()
 
 
 @pytest.fixture(autouse=True)
-def _isolate_storage_backend(monkeypatch):
+def _isolate_storage_backend(_isolate_test_data_root, monkeypatch):
     """Pin the storage backend to ``sqlite_only`` by default for every test.
 
     Phase 7 Rationale: the module-global :class:`SqliteCachedBackend`

@@ -15,7 +15,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import fantasy_daemon.__main__ as dm
-import tinyassets.cloud_worker as cw
 
 LEGACY = "fantasy_author:universe_cycle_wrapper"
 
@@ -165,74 +164,6 @@ def test_declared_loop_not_found_refuses_no_fantasy_fallback(
     # through to the fantasy cycle, and must not execute anything.
     assert handled is True
     assert captured == []
-
-
-# Production worker routing stays flag-gated.
-
-def test_cloud_worker_defaults_to_fantasy_spawn_when_flag_off(
-    monkeypatch, tmp_path,
-):
-    monkeypatch.delenv("TINYASSETS_SOUL_LOOP_DISPATCH", raising=False)
-    calls: list[dict[str, object]] = []
-
-    def fake_spawn(universe, *, module="fantasy_daemon", extra_args=None):
-        calls.append({
-            "universe": universe,
-            "module": module,
-            "extra_args": list(extra_args or []),
-        })
-        return SimpleNamespace(poll=lambda: 0, returncode=0)
-
-    monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
-
-    cw._spawn_daemon_for_universe(tmp_path, extra_args=["--provider", "codex"])
-
-    assert calls == [{
-        "universe": tmp_path,
-        "module": "fantasy_daemon",
-        "extra_args": ["--provider", "codex"],
-    }]
-
-
-def test_cloud_worker_routes_declared_soul_loop_to_workflow_module(
-    monkeypatch, tmp_path,
-):
-    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
-    monkeypatch.setattr(
-        "tinyassets.api.universe._universe_loop_dispatch",
-        lambda udir: ("branch-123", {"has_soul": True}),
-    )
-    calls: list[dict[str, object]] = []
-
-    def fake_spawn(universe, *, module="fantasy_daemon", extra_args=None):
-        calls.append({
-            "universe": universe,
-            "module": module,
-            "extra_args": list(extra_args or []),
-        })
-        return SimpleNamespace(poll=lambda: 0, returncode=0)
-
-    monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
-
-    cw._spawn_daemon_for_universe(tmp_path, extra_args=["--provider", "codex"])
-
-    assert calls == [{
-        "universe": tmp_path,
-        "module": "workflow",
-        "extra_args": ["--provider", "codex"],
-    }]
-
-
-def test_cloud_worker_keeps_legacy_module_for_soulless_or_legacy_loop(
-    monkeypatch, tmp_path,
-):
-    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
-    monkeypatch.setattr(
-        "tinyassets.api.universe._universe_loop_dispatch",
-        lambda udir: (LEGACY, {"has_soul": False}),
-    )
-
-    assert cw._daemon_module_for_universe(tmp_path) == "fantasy_daemon"
 
 
 def test_workflow_cli_allows_non_fantasy_domain_for_declared_soul_loop(

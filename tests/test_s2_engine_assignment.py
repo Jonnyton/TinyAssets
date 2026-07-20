@@ -27,6 +27,7 @@ from tinyassets.credentials import (
     VaultErrorCode,
     new_secret_ref,
 )
+from tinyassets.exceptions import ProviderUnavailableError
 from tinyassets.providers.base import subprocess_env_for_provider
 
 
@@ -134,12 +135,11 @@ def test_missing_or_inactive_byo_never_inherits_host_identity(
     assert "HOST_AMBIENT_SECRET" not in str(exc.value)
 
 
-def test_explicit_host_daemon_may_inherit_host_auth(tmp_path, monkeypatch):
+def test_explicit_host_daemon_cannot_inherit_host_auth(tmp_path, monkeypatch):
     write_universe_config_fields(tmp_path, engine_source="host_daemon")
     monkeypatch.setenv("CODEX_HOME", "/host/codex")
-    assert subprocess_env_for_provider("codex", universe_dir=tmp_path)[
-        "CODEX_HOME"
-    ] == "/host/codex"
+    with pytest.raises(ProviderUnavailableError, match="external daemon"):
+        subprocess_env_for_provider("codex", universe_dir=tmp_path)
 
 
 def test_set_engine_deposits_opaque_ref(platform_vault_env, monkeypatch):

@@ -51,3 +51,61 @@ What surprised me: terminalizing a failed decision is only recoverable if replay
 Pattern worth capturing: generation failure and projection reopening must be one atomic first-transition operation; later failure-report deliveries are observability replays, not state transitions.
 
 One thing I would do differently: include “recover, then replay the old terminal report” in the initial cap-out regression, alongside the ordinary `DecisionLocked` check.
+
+---
+
+What surprised me: deleting the compose workers was not sufficient; the
+provider-auth keepalives, deployment credential seeding, and LLM-binding canary
+still encoded platform compute as an uptime requirement.
+
+Pattern worth capturing: compute ownership must be verified negatively at every
+production boundary: service topology, credentials, health checks, alarms, and
+orphan cleanup.
+
+One thing I would do differently: begin with a repository-wide inventory of
+executor credentials and executor-green alarms alongside the worker entrypoint
+search, then write the absence contract before touching compose.
+
+---
+
+What surprised me: the retired cloud worker was both production machinery and
+a test driver for surviving engine-binding invariants, so deleting the driver
+silently deleted coverage that still belonged at the binding and launch seams.
+
+Pattern worth capturing: when retiring an execution harness, classify every
+test assertion by invariant owner and rewrite surviving contracts at their
+lowest stable boundary. Also patch shared process state once outside concurrent
+workers; overlapping thread-local mock contexts can restore out of order and
+pollute an otherwise unrelated full suite.
+
+One thing I would do differently: inventory deleted test names before accepting
+the removal diff, then run mutation checks against the surviving boundary as
+the first proof that replacement coverage is load-bearing.
+
+---
+
+What surprised me: isolating `APPDATA` protected TinyAssets fallback writes but
+also moved Python's Windows user-site, breaking subprocess imports and DPAPI
+tests that were unrelated to application storage.
+
+Pattern worth capturing: test-root isolation must separate application data
+resolution from interpreter and OS-profile resolution. Preserve
+`PYTHONUSERBASE` when redirecting `APPDATA`, and compare full-suite failure node
+sets rather than trusting aggregate counts.
+
+One thing I would do differently: run one subprocess import probe immediately
+after introducing a global environment fixture, before the first full suite.
+
+---
+
+What surprised me: closing provider dispatch at the graph boundary still left
+an independently spawned live-auth probe, while the BYO scratch directory could
+create the exact legacy-vault sentinel that later credential resolution rejects.
+
+Pattern worth capturing: provider processes need a source-enforced spawn choke
+with an explicit environment, and engine-owned runtime artifacts must live only
+in namespaces that credential migration guards do not interpret as legacy state.
+
+One thing I would do differently: begin each control-plane review with an AST
+inventory of every process primitive under the provider package, then exercise
+two consecutive bound calls before treating one successful BYO call as durable.
