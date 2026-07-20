@@ -39,13 +39,24 @@ path is the priority: money moving on a self-asserted claim is the worst case.
 |---|---|---|---|
 | S2-1 | HIGH | Terminal rows reopenable by doctoring `status` back to `leased`, routing around replay verification; a second completion succeeds. Exactly-once must be enforced AT WRITE TIME (zero `completed` events for the generation before completing). | fix-5 scope (Item 0) |
 | S2-2 | MED | Malformed persisted candidate hashes surface as client-409 instead of 500-class corruption (`execution_jobs.py:305`, `lease_store.py:858`). | fix-5 scope (taxonomy F1-F3) |
-| S2-3 | ? | **NEW CLASS — TOCTOU, not forgery.** `now` sampled BEFORE `BEGIN IMMEDIATE` acquires the write lock; a writer queued behind another can pass an expiry check with pre-expiry time, so an expired lease may renew or complete (`lease_store.py:893-904,1179-1220` @ `5a307576`; violates plan :830-839). Surfaced by the S4 schema gate, not an S2 lane. | verification dispatched (`codex-stale-time-verify.md`) |
+| S2-3 | HIGH | **CONFIRMED — TOCTOU, a different class from findings 1-4.** No relevant operation samples authoritative time after lock acquisition. `_transaction()` runs `BEGIN IMMEDIATE` behind a **30-second busy timeout**, so a writer can wait up to 30s and then proceed on 30-second-stale time. Claim (`:539` before `:541`), heartbeat (`:700-701` before `:702`), candidate submission and completion (caller-supplied `now`, normalized pre-lock) all check expiry with stale time, and **no CAS statement carries an expiry predicate** (`:720-727`, `:928-945`, `:1063-1083`). Evidence: `codex-stale-time-verify.md` @ `5a307576`. | fix required; **not in fix-5 scope** |
 
-**S2-3 is the one to watch.** Findings 1-4 were all forgery vectors; this is a different
-class found by a different lane. If confirmed, it does *not* by itself mean the design is
-thrashing — but a sixth round on this store is the point to ask whether the
-durable-receipt/ledger design has too many trust surfaces and wants simplifying rather
-than more hardening (per the `no-users-build-correct-shape` host directive).
+**On S2-3's fix:** the caller-supplied `now` makes this worse, not safer — moving
+`_operation_time(now)` below the `with self._transaction()` would still use a frozen
+datetime. Expiry authority must come from a **server-owned clock invoked after
+`BEGIN IMMEDIATE` succeeds**; a supplied datetime may remain an observational request
+timestamp but cannot authorize lease validity. The CAS statements need an expiry predicate.
+Note the verifier also found the original claim's line numbers pointed at a different tree
+(committed `lease_store.py` ends at 1094) — the race is real, the citation was not.
+
+**Does S2-3 mean the design is wrong-shaped? On the evidence, no — but the *review* was.**
+Findings 1-4 were forgery vectors and they did narrow toward closure. This one is a classic
+concurrency-discipline defect that would exist in **any** design of this store; it is not a
+symptom of durable-receipt/ledger complexity. Four rounds of forgery-hunting missed it
+because no lane probed the *time* axis at all — and it was ultimately found by an S4 schema
+gate, not by any S2 lane. Read that as a **gate-coverage gap, not a design-shape problem**.
+The `no-users-build-correct-shape` simplification trigger should fire on a *sixth forgery
+vector*, not on this.
 
 ### S4 — heartbeat / lease lifecycle (`codex-s4-schema-v2-gate.md`, adapt)
 
@@ -132,14 +143,38 @@ than more hardening (per the `no-users-build-correct-shape` host directive).
   socketpair to an untrusted relay instead of terminating S7 §1.5 end-to-end encryption at
   the driver, so a compromised WSL2 guest could read and tamper with all broker traffic.
 
-### S10 / S11 — no lookaheads existed (`fable-s10-s11-lookahead.md` in flight)
+### S10 / S11 — lookaheads now exist (`fable-s10-s11-lookahead.md`, **gaps**)
 
-- S10 is where the daemon migrates from the JSON claim route to `LeaseStore.claim`,
-  inverting the fail-closed guard
-  `test_lease_store_claim_has_no_production_dispatch_caller`. A botched cutover is a live
-  daemon outage — exactly the FINDING B outage fix-2 had to repair.
-- S11 is the first B2 live test: the goal milestone. Needs an accurate list of §13
-  acceptance criteria that nothing currently satisfies.
+**The real remaining program.** Of the 20 §13 B2 acceptance criteria, **11 have nothing
+satisfying them**: 1 (as a gated set), 4, 6, 7, 8, 9, 11, 13, 15, 18, 20. Everything else
+is substrate-partial on unmerged branches. Three items are program-level, not slice-level:
+
+- **Criterion 4 — no run->job bridge.** `LeaseStore.add_task` has **zero production
+  callers**; no MCP action creates a B2 job; a `host_daemon` run today parks QUEUED with no
+  job record (`runs.py:2248-2271`). This is S10's OPEN-S10-1 and nothing upstream of it works
+  without it.
+- **Criterion 15 — ORPHAN DELIVERABLE.** No §12 slice's Files cell contains the §8.10
+  GitHub-effect route. `auto_ship_pr.py` exists but belongs to the **retired** cheat-loop
+  lane (`AUTO_FIX_DISABLED=true`) and implements none of §8.10's six independent
+  verifications. This is the end of the value chain — a patch that never becomes a
+  reviewable PR delivers nothing. Investigation dispatched (`fable-orphan-effect-route.md`).
+- **Criterion 18 — may force an ARCHITECTURE decision, not a test.** 1,000 long-polling
+  daemons + 10,000 queued jobs against a single-writer SQLite store; §17 [S4/infra] predicts
+  the filesystem MVP may fail, which collides with §2.2's explicit no-Postgres non-goal.
+  That is a **host decision**, not an agent one. Analysis dispatched
+  (`codex-load-architecture.md`), including whether the 1,000-daemon bar is even right-sized
+  for a platform with zero users. Note S2-3's 30s busy-timeout window is not a corner case
+  at that concurrency.
+- **Criterion 1 needs backfill:** S0/S1/S3/S5 merged after multi-round Codex review but have
+  **no per-slice dual-family verdict record** equivalent to the S2 gate files. The criterion
+  asks for a recorded set; that index has to be reconstructed.
+- **Criterion 20** will realistically land on the watch-item arm (zero real users) — plan
+  that wording into the acceptance artifact rather than treating it as a failure.
+
+S10 also carries the guard inversion: migrating the daemon from the JSON claim route to
+`LeaseStore.claim` flips the fail-closed
+`test_lease_store_claim_has_no_production_dispatch_caller`. A botched cutover is a live
+daemon outage — exactly the FINDING B outage fix-2 had to repair.
 
 ---
 
