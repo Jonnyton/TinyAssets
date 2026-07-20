@@ -14,6 +14,7 @@ import hmac
 import json
 import re
 import sqlite3
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -38,6 +39,42 @@ from tinyassets.runtime.execution_result import (
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+
+_RESULT_OUTCOMES = frozenset(
+    {
+        "succeeded",
+        "job_failed",
+        "cancelled",
+        "timed_out",
+        "policy_rejected",
+        "infrastructure_failed",
+    }
+)
+
+_SCHEMA_VERSION = 1
+
+_EVENT_INDEXES = {
+    "lease_events_one_shot_generation_uq": """
+        CREATE UNIQUE INDEX lease_events_one_shot_generation_uq
+        ON lease_events(task_id, COALESCE(lease_id, ''), fence, kind)
+        WHERE kind IN ('claimed', 'expired', 'result_submitted')
+    """,
+    "lease_events_added_uq": """
+        CREATE UNIQUE INDEX lease_events_added_uq
+        ON lease_events(task_id, kind)
+        WHERE kind IN ('added', 'completed')
+    """,
+}
+
+_EVENT_INDEX_KEYS = {
+    "lease_events_one_shot_generation_uq": (
+        (1, "task_id"),
+        (-2, None),
+        (4, "fence"),
+        (2, "kind"),
+    ),
+    "lease_events_added_uq": ((1, "task_id"), (2, "kind")),
+}
 
 
 class LeaseStoreError(RuntimeError):
@@ -140,7 +177,21 @@ class LeaseStore:
     def _initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode = WAL")
+            for attempt in range(100):
+                try:
+                    journal_mode = connection.execute(
+                        "PRAGMA journal_mode = WAL"
+                    ).fetchone()[0]
+                    break
+                except sqlite3.OperationalError as exc:
+                    if exc.sqlite_errorcode not in {
+                        sqlite3.SQLITE_BUSY,
+                        sqlite3.SQLITE_LOCKED,
+                    } or attempt == 99:
+                        raise
+                    time.sleep(0.01)
+            if self.db_path != Path(":memory:") and str(journal_mode).lower() != "wal":
+                raise sqlite3.OperationalError("failed to enable WAL journal mode")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS lease_tasks (
@@ -183,6 +234,110 @@ class LeaseStore:
                 END;
                 """
             )
+            self._migrate_schema(connection)
+
+    @staticmethod
+    def _normalized_schema_sql(value: str | None) -> str:
+        return " ".join((value or "").lower().split())
+
+    @classmethod
+    def _index_matches(
+        cls,
+        connection: sqlite3.Connection,
+        name: str,
+    ) -> bool:
+        schema_row = connection.execute(
+            "SELECT sql FROM sqlite_schema "
+            "WHERE type = 'index' AND tbl_name = 'lease_events' AND name = ?",
+            (name,),
+        ).fetchone()
+        if schema_row is None or cls._normalized_schema_sql(
+            schema_row["sql"]
+        ) != cls._normalized_schema_sql(_EVENT_INDEXES[name]):
+            return False
+        index_row = next(
+            (
+                row
+                for row in connection.execute("PRAGMA index_list(lease_events)")
+                if row["name"] == name
+            ),
+            None,
+        )
+        if index_row is None or index_row["unique"] != 1 or index_row["partial"] != 1:
+            return False
+        actual_keys = tuple(
+            (row["cid"], row["name"])
+            for row in connection.execute(f"PRAGMA index_xinfo('{name}')")
+            if row["key"] == 1
+        )
+        return actual_keys == _EVENT_INDEX_KEYS[name]
+
+    @classmethod
+    def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
+        """Install and verify schema-owned ledger defenses atomically.
+
+        The ledger and its hash anchors are tamper-resistant while schema
+        objects remain intact and an attacker can only doctor data rows. They
+        are not tamper-evident against arbitrary SQL or filesystem control,
+        which can drop the triggers and indexes themselves.
+        """
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version > _SCHEMA_VERSION:
+                raise StoredStateCorruptError(
+                    "lease store schema version is newer than supported"
+                )
+
+            columns = {
+                row["name"]: row
+                for row in connection.execute("PRAGMA table_info(lease_events)")
+            }
+            anchor_column = columns.get("content_sha256")
+            if anchor_column is None:
+                connection.execute(
+                    "ALTER TABLE lease_events ADD COLUMN content_sha256 TEXT"
+                )
+            elif (
+                anchor_column["type"].upper() != "TEXT"
+                or anchor_column["notnull"] != 0
+                or anchor_column["dflt_value"] is not None
+                or anchor_column["pk"] != 0
+            ):
+                raise StoredStateCorruptError(
+                    "lease event content hash column has an incompatible shape"
+                )
+
+            for name, definition in _EVENT_INDEXES.items():
+                if version == 0 or not cls._index_matches(connection, name):
+                    connection.execute(f"DROP INDEX IF EXISTS {name}")
+                    connection.execute(definition)
+                if not cls._index_matches(connection, name):
+                    raise StoredStateCorruptError(
+                        f"lease event uniqueness index {name!r} is malformed"
+                    )
+
+            if connection.execute(
+                "SELECT 1 FROM lease_events "
+                "WHERE kind = 'result_submitted' AND content_sha256 IS NULL LIMIT 1"
+            ).fetchone() is not None:
+                raise StoredStateCorruptError(
+                    "pre-anchor ledger events require migration decision"
+                )
+
+            connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+                raise StoredStateCorruptError(
+                    "lease event ledger contains duplicate one-shot events"
+                ) from exc
+            raise
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
 
     @contextlib.contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -312,13 +467,15 @@ class LeaseStore:
         lease_id: str | None,
         fence: int,
         occurred_at: str,
+        content_sha256: str | None = None,
     ) -> None:
         connection.execute(
             """
-            INSERT INTO lease_events(task_id, kind, lease_id, fence, occurred_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO lease_events(
+                task_id, kind, lease_id, fence, occurred_at, content_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (task_id, kind, lease_id, fence, occurred_at),
+            (task_id, kind, lease_id, fence, occurred_at, content_sha256),
         )
 
     @staticmethod
@@ -334,7 +491,8 @@ class LeaseStore:
         return tuple(
             connection.execute(
                 """
-                SELECT kind, lease_id, fence, occurred_at FROM lease_events
+                SELECT kind, lease_id, fence, occurred_at, content_sha256
+                FROM lease_events
                 WHERE task_id = ? AND kind = ? AND lease_id = ? AND fence = ?
                 ORDER BY event_id
                 """,
@@ -343,7 +501,29 @@ class LeaseStore:
         )
 
     @staticmethod
+    def _task_events(
+        connection: sqlite3.Connection,
+        task_id: str,
+        *,
+        kind: str,
+    ) -> tuple[sqlite3.Row, ...]:
+        """Return every task-scoped event of one kind in append order."""
+        return tuple(
+            connection.execute(
+                """
+                SELECT kind, lease_id, fence, occurred_at, content_sha256
+                FROM lease_events
+                WHERE task_id = ? AND kind = ?
+                ORDER BY event_id
+                """,
+                (task_id, kind),
+            ).fetchall()
+        )
+
+    @staticmethod
     def _completion_status(outcome: Any) -> str:
+        if type(outcome) is not str or outcome not in _RESULT_OUTCOMES:
+            raise StoredStateCorruptError("stored candidate outcome is invalid")
         return (
             "succeeded"
             if outcome == "succeeded"
@@ -363,9 +543,8 @@ class LeaseStore:
     ) -> dict[str, Any]:
         """Return the persisted candidate receipt only when every field matches
         authoritative state — the row, the just-validated candidate body, and
-        the append-only event ledger, which is tamper-evident storage of the
-        recorded acceptance time. A receipt that disagrees is a durability
-        violation, not a replayable record."""
+        the schema-protected event ledger. A receipt that disagrees is a
+        durability violation, not a replayable record."""
         events = self._matching_events(
             connection,
             row["task_id"],
@@ -378,6 +557,14 @@ class LeaseStore:
                 "durable candidate receipt does not match authoritative state"
             )
         event = events[0]
+        if (
+            type(event["content_sha256"]) is not str
+            or not _SHA256_RE.fullmatch(event["content_sha256"])
+            or not hmac.compare_digest(result_sha256, event["content_sha256"])
+        ):
+            raise StoredStateCorruptError(
+                "durable candidate receipt does not match authoritative state"
+            )
         expected = {
             "job_id": row["task_id"],
             "result_sha256": result_sha256,
@@ -407,12 +594,10 @@ class LeaseStore:
         authoritative state — the receipt_id is recomputed from the persisted
         lease bindings, status comes from the persisted candidate outcome, and
         the completion time comes from the append-only ledger."""
-        events = self._matching_events(
+        events = self._task_events(
             connection,
             row["task_id"],
             kind="completed",
-            lease_id=row["lease_id"],
-            fence=row["lease_fence"],
         )
         if len(events) != 1:
             raise StoredStateCorruptError(
@@ -550,6 +735,14 @@ class LeaseStore:
                         return self._row_to_lease(row)
                     raise AlreadyClaimedError(f"task {task_id!r} was already claimed")
                 else:
+                    if self._task_events(
+                        connection,
+                        task_id,
+                        kind="completed",
+                    ):
+                        raise StoredStateCorruptError(
+                            "completed event exists but job row is not terminal"
+                        )
                     expired = connection.execute(
                         """
                         UPDATE lease_tasks SET
@@ -854,6 +1047,13 @@ class LeaseStore:
 
             result_sha256 = verified["signature"]["result_sha256"]
             existing_hash = row["candidate_result_sha256"]
+            if existing_hash is not None and (
+                type(existing_hash) is not str
+                or not _SHA256_RE.fullmatch(existing_hash)
+            ):
+                raise StoredStateCorruptError(
+                    "stored candidate content hash is malformed"
+                )
             metadata = self._result_metadata(row)
             if existing_hash is not None and existing_hash != result_sha256:
                 raise ResultConflictError("current lease already has another candidate result")
@@ -901,6 +1101,17 @@ class LeaseStore:
                     receipt=receipt,
                     result_sha256=result_sha256,
                     outcome=verified["outcome"],
+                )
+
+            if self._matching_events(
+                connection,
+                job_id,
+                kind="result_submitted",
+                lease_id=row["lease_id"],
+                fence=row["lease_fence"],
+            ):
+                raise StoredStateCorruptError(
+                    "result-submitted event exists but candidate row is empty"
                 )
 
             try:
@@ -953,6 +1164,7 @@ class LeaseStore:
                 lease_id=row["lease_id"],
                 fence=row["lease_fence"],
                 occurred_at=accepted_at,
+                content_sha256=result_sha256,
             )
             return dict(receipt)
 
@@ -982,7 +1194,26 @@ class LeaseStore:
             ):
                 if expected[key] != row[column]:
                     raise StaleLeaseError(f"completion {key} does not match current lease")
-            if row["status"] not in _TERMINAL_STATUSES:
+
+            completed_events = self._task_events(
+                connection,
+                job_id,
+                kind="completed",
+            )
+            if len(completed_events) > 1:
+                raise StoredStateCorruptError(
+                    "durable completion receipt does not match authoritative state"
+                )
+            if completed_events:
+                if row["status"] not in _TERMINAL_STATUSES:
+                    raise StoredStateCorruptError(
+                        "completed event exists but job row is not terminal"
+                    )
+            elif row["status"] in _TERMINAL_STATUSES:
+                raise StoredStateCorruptError(
+                    "durable completion receipt does not match authoritative state"
+                )
+            else:
                 if row["status"] != "leased":
                     raise StaleLeaseError("job is not under an active lease")
                 if operation_now >= self._parse_time(row["lease_expires_at"]):
@@ -992,6 +1223,10 @@ class LeaseStore:
             candidate_hash = row["candidate_result_sha256"]
             candidate = metadata.get("candidate_result")
             if candidate_hash is None:
+                if row["status"] in _TERMINAL_STATUSES:
+                    raise StoredStateCorruptError(
+                        "terminal job has no stored candidate content hash"
+                    )
                 raise ResultConflictError("completion has no stored candidate content hash")
             if type(candidate_hash) is not str or not _SHA256_RE.fullmatch(candidate_hash):
                 raise StoredStateCorruptError(
@@ -1022,6 +1257,27 @@ class LeaseStore:
             ):
                 raise StoredStateCorruptError(
                     "completion result hash is not the stored candidate content hash"
+                )
+
+            submitted_events = self._matching_events(
+                connection,
+                job_id,
+                kind="result_submitted",
+                lease_id=row["lease_id"],
+                fence=row["lease_fence"],
+            )
+            if len(submitted_events) != 1:
+                raise StoredStateCorruptError(
+                    "candidate result ledger does not match authoritative state"
+                )
+            anchor_hash = submitted_events[0]["content_sha256"]
+            if (
+                type(anchor_hash) is not str
+                or not _SHA256_RE.fullmatch(anchor_hash)
+                or not hmac.compare_digest(candidate_hash, anchor_hash)
+            ):
+                raise StoredStateCorruptError(
+                    "stored candidate content hash does not match result ledger"
                 )
 
             if row["status"] in _TERMINAL_STATUSES:

@@ -270,6 +270,8 @@ def submit_candidate_result(
         raise  # durability violation: 500-class, never a client-typed error
     except StoreTaskNotFoundError as exc:
         raise JobNotFoundError(str(exc)) from exc
+    except StoreStaleLeaseError as exc:
+        raise StaleLeaseError(str(exc)) from exc
     except StoreResultConflictError as exc:
         raise CandidateResultConflictError(str(exc)) from exc
     except LeaseStoreError as exc:
@@ -303,11 +305,19 @@ def complete_job(
     except LeaseStoreError as exc:
         raise CompletionConflictError(str(exc)) from exc
     candidate_hash = state.get("candidate_result_sha256")
-    if (
-        type(candidate_hash) is not str
-        or not _SHA256_RE.fullmatch(candidate_hash)
-        or not hmac.compare_digest(parsed["result_sha256"], candidate_hash)
-    ):
+    if candidate_hash is None:
+        if state.get("status") in _FINAL_STATUSES:
+            raise StoreStoredStateCorruptError(
+                "terminal job has no stored candidate content hash"
+            )
+        raise CompletionConflictError(
+            "completion result hash is not the stored candidate content hash"
+        )
+    if type(candidate_hash) is not str or not _SHA256_RE.fullmatch(candidate_hash):
+        raise StoreStoredStateCorruptError(
+            "stored candidate content hash is malformed"
+        )
+    if not hmac.compare_digest(parsed["result_sha256"], candidate_hash):
         raise CompletionConflictError(
             "completion result hash is not the stored candidate content hash"
         )

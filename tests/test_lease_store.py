@@ -799,6 +799,50 @@ def _complete(store, task, expected, now):
     return store.complete_validated_result(task.branch_task_id, expected=expected, now=now)
 
 
+def _completion_request(task, lease, result_sha256: str) -> dict[str, object]:
+    return {
+        "job_id": task.branch_task_id,
+        "daemon_id": lease.daemon_id,
+        "lease_id": lease.lease_id,
+        "fence": lease.fence,
+        "capsule_sha256": lease.capsule.content_sha256,
+        "result_sha256": result_sha256,
+    }
+
+
+def _drop_one_shot_index(store: LeaseStore, *, task_scoped: bool = False) -> None:
+    index_name = (
+        "lease_events_added_uq"
+        if task_scoped
+        else "lease_events_one_shot_generation_uq"
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+
+
+def _create_v0_lease_database(
+    db_path: Path,
+    *,
+    with_content_column: bool = False,
+) -> None:
+    content_column = ", content_sha256 TEXT" if with_content_column else ""
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            f"""
+            CREATE TABLE lease_tasks (task_id TEXT PRIMARY KEY);
+            CREATE TABLE lease_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL REFERENCES lease_tasks(task_id),
+                kind TEXT NOT NULL,
+                lease_id TEXT,
+                fence INTEGER NOT NULL,
+                occurred_at TEXT NOT NULL
+                {content_column}
+            );
+            """
+        )
+
+
 def _randomized_ed25519_signature(message: bytes, key) -> bytes:
     """Create a valid Ed25519 signature with a deterministic alternate nonce."""
     from nacl.bindings import (
@@ -949,6 +993,8 @@ def test_duplicate_event_cannot_vouch_for_forged_receipt_time(
     forged_time = "2033-03-03T03:03:03Z"
     forged_lease_id = str(uuid4()) if binding == "foreign" else lease.lease_id
     forged_fence = 999 if binding == "foreign" else lease.fence
+    if replay == "completion" or binding == "current":
+        _drop_one_shot_index(store, task_scoped=replay == "completion")
     with sqlite3.connect(store.db_path) as connection:
         connection.execute(
             "INSERT INTO lease_events(task_id, kind, lease_id, fence, occurred_at) "
@@ -1314,8 +1360,10 @@ def test_idempotent_claim_rejects_incomplete_persisted_lease_row(tmp_path: Path)
         )
 
 
+@pytest.mark.parametrize("stored_expiry", ["not-a-time", "not-a-timeZ"])
 def test_complete_job_rejects_corrupt_persisted_expiry_as_store_corruption(
     tmp_path: Path,
+    stored_expiry: str,
 ) -> None:
     from tinyassets.api.execution_jobs import complete_job
 
@@ -1323,8 +1371,8 @@ def test_complete_job_rejects_corrupt_persisted_expiry_as_store_corruption(
     _record_candidate(store, task, blobs, key, raw, clock.now)
     with sqlite3.connect(store.db_path) as connection:
         connection.execute(
-            "UPDATE lease_tasks SET lease_expires_at = 'not-a-time' WHERE task_id = ?",
-            (task.branch_task_id,),
+            "UPDATE lease_tasks SET lease_expires_at = ? WHERE task_id = ?",
+            (stored_expiry, task.branch_task_id),
         )
     request = {
         "job_id": task.branch_task_id,
@@ -1370,3 +1418,872 @@ def test_record_candidate_marks_result_blobs_referenced(tmp_path: Path) -> None:
         assert binding["job_id"] == task.branch_task_id
         assert binding["lease_id"] == lease.lease_id
         assert binding["fence"] == lease.fence
+
+
+# ---------------------------------------------------------------------------
+# S2 fix-5: write-time ledger enforcement + anchored candidate hashes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stored_hash", ["not-a-hash", 12345])
+def test_record_candidate_rejects_malformed_stored_hash_as_corruption(
+    tmp_path: Path,
+    stored_hash: object,
+) -> None:
+    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = ? WHERE task_id = ?",
+            (stored_hash, task.branch_task_id),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="stored candidate content hash is malformed",
+    ):
+        _record_candidate(store, task, blobs, key, raw, clock.now)
+
+
+@pytest.mark.parametrize("kind", ["claimed", "result_submitted", "completed"])
+def test_one_shot_event_unique_indexes_reject_duplicate(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    store, task, lease, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+    candidate_receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
+    completion_receipt = None
+    if kind == "completed":
+        completion_receipt = _complete(store, task, expected, clock.now)
+    content_sha256 = result["signature"]["result_sha256"] if kind == "result_submitted" else None
+
+    duplicate_lease_id = str(uuid4()) if kind == "completed" else lease.lease_id
+    duplicate_fence = lease.fence + 1 if kind == "completed" else lease.fence
+    with sqlite3.connect(store.db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO lease_events("
+                "task_id, kind, lease_id, fence, occurred_at, content_sha256"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    task.branch_task_id,
+                    kind,
+                    duplicate_lease_id,
+                    duplicate_fence,
+                    "2033-03-03T03:03:03Z",
+                    content_sha256,
+                ),
+            )
+
+    if kind == "claimed":
+        assert store.claim(
+            task.branch_task_id,
+            daemon_id=lease.daemon_id,
+            bind_capsule=lambda _lease: lease.capsule,
+            expected_lease_id=lease.lease_id,
+        ) == lease
+    elif kind == "result_submitted":
+        assert _record_candidate(store, task, blobs, key, raw, clock.now) == candidate_receipt
+    else:
+        assert _complete(store, task, expected, clock.now) == completion_receipt
+
+
+def test_duplicate_one_shot_events_fail_closed_during_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    store, task, lease, blobs, key, result, raw, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP INDEX IF EXISTS lease_events_one_shot_generation_uq")
+        connection.execute("DROP INDEX IF EXISTS lease_events_added_uq")
+        connection.execute(
+            "INSERT INTO lease_events("
+            "task_id, kind, lease_id, fence, occurred_at, content_sha256"
+            ") VALUES (?, 'result_submitted', ?, ?, ?, ?)",
+            (
+                task.branch_task_id,
+                lease.lease_id,
+                lease.fence,
+                "2033-03-03T03:03:03Z",
+                result["signature"]["result_sha256"],
+            ),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="lease event ledger contains duplicate one-shot events",
+    ):
+        LeaseStore(db_path)
+
+
+def test_missing_indexes_on_v1_database_are_recreated(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP INDEX IF EXISTS lease_events_one_shot_generation_uq")
+        connection.execute("DROP INDEX IF EXISTS lease_events_added_uq")
+
+    repaired_store = LeaseStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+    assert {
+        "lease_events_one_shot_generation_uq",
+        "lease_events_added_uq",
+    } <= names
+
+    task = _task()
+    repaired_store.add_task(task)
+    lease = _claim(repaired_store, task.branch_task_id, "daemon-a")
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO lease_events("
+                "task_id, kind, lease_id, fence, occurred_at"
+                ") VALUES (?, 'claimed', ?, ?, ?)",
+                (
+                    task.branch_task_id,
+                    lease.lease_id,
+                    lease.fence,
+                    "2033-03-03T03:03:03Z",
+                ),
+            )
+
+
+@pytest.mark.parametrize("entrypoint", ["store", "api"])
+@pytest.mark.parametrize("clear_accepted", [False, True])
+def test_completed_event_prevents_reopening_terminal_row(
+    tmp_path: Path,
+    entrypoint: str,
+    clear_accepted: bool,
+) -> None:
+    from tinyassets.api.execution_jobs import complete_job
+
+    store, task, lease, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    _drop_one_shot_index(store, task_scoped=True)
+    accepted_clause = (
+        ", accepted_result_id = NULL, accepted_result_sha256 = NULL"
+        if clear_accepted
+        else ""
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            f"UPDATE lease_tasks SET status = 'leased'{accepted_clause} WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+    doctored = store.read_task(task.branch_task_id)
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="completed event exists but job row is not terminal",
+    ):
+        if entrypoint == "api":
+            complete_job(
+                store,
+                _completion_request(task, lease, result["signature"]["result_sha256"]),
+                now=clock.now,
+            )
+        else:
+            _complete(store, task, expected, clock.now)
+
+    assert store.read_task(task.branch_task_id) == doctored
+    assert sum(event.kind == "completed" for event in store.events(task.branch_task_id)) == 1
+
+
+def test_result_submitted_event_prevents_reopening_candidate_column(tmp_path: Path) -> None:
+    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _drop_one_shot_index(store)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = NULL WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="result-submitted event exists but candidate row is empty",
+    ):
+        _record_candidate(store, task, blobs, key, raw, clock.now)
+    assert sum(
+        event.kind == "result_submitted" for event in store.events(task.branch_task_id)
+    ) == 1
+
+
+def test_terminal_row_with_null_candidate_hash_is_corruption(tmp_path: Path) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = NULL WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="candidate content hash"):
+        _complete(store, task, expected, clock.now)
+
+
+def test_result_submitted_event_anchors_validated_candidate_hash(tmp_path: Path) -> None:
+    store, task, lease, blobs, key, result, raw, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT content_sha256 FROM lease_events "
+            "WHERE task_id = ? AND kind = 'result_submitted' "
+            "AND lease_id = ? AND fence = ?",
+            (task.branch_task_id, lease.lease_id, lease.fence),
+        ).fetchone()
+    assert row == (result["signature"]["result_sha256"],)
+
+
+def test_completion_rejects_self_consistent_candidate_body_swap(
+    tmp_path: Path,
+) -> None:
+    from tests.test_execution_result import create_result
+    from tinyassets.api.execution_jobs import complete_job
+    from tinyassets.runtime.execution_capsule import hash_canonical_jcs
+
+    store, task, lease, blobs, key, result, _, _, clock = _result_lease(tmp_path)
+    original_body = copy.deepcopy(result)
+    original_body.pop("signature")
+    original_body["outcome"] = "job_failed"
+    original_result, _ = create_result(original_body, key)
+    original_raw = json.dumps(original_result, separators=(",", ":")).encode()
+    _record_candidate(store, task, blobs, key, original_raw, clock.now)
+
+    forged = copy.deepcopy(original_result)
+    forged["outcome"] = "succeeded"
+    forged_hash = hash_canonical_jcs(
+        {key: value for key, value in forged.items() if key != "signature"}
+    ).hex()
+    forged["signature"]["result_sha256"] = forged_hash
+
+    def replace_candidate(metadata):
+        metadata["candidate_result"] = forged
+
+    _doctor_result_state(store, task.branch_task_id, replace_candidate)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = ? WHERE task_id = ?",
+            (forged_hash, task.branch_task_id),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="result ledger"):
+        complete_job(
+            store,
+            _completion_request(task, lease, forged_hash),
+            now=clock.now,
+        )
+    assert store.read_task(task.branch_task_id).status == "leased"
+    assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+
+@pytest.mark.parametrize("stored_hash", ["not-a-hash", 12345])
+def test_submit_api_exposes_malformed_stored_hash_as_corruption(
+    tmp_path: Path,
+    stored_hash: object,
+) -> None:
+    from tinyassets.api.execution_jobs import submit_candidate_result
+
+    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = ? WHERE task_id = ?",
+            (stored_hash, task.branch_task_id),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="stored candidate content hash is malformed",
+    ):
+        submit_candidate_result(
+            store,
+            job_id=task.branch_task_id,
+            raw_result=raw,
+            verify_key=key.verify_key,
+            device_key_active=True,
+            blob_store=blobs,
+            now=clock.now,
+        )
+
+
+def test_complete_api_exposes_malformed_stored_hash_as_corruption(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.api.execution_jobs import complete_job
+
+    store, task, lease, blobs, key, result, raw, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = 'not-a-hash' "
+            "WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="stored candidate content hash is malformed",
+    ):
+        complete_job(
+            store,
+            _completion_request(task, lease, result["signature"]["result_sha256"]),
+            now=clock.now,
+        )
+
+
+def test_complete_api_keeps_null_active_candidate_as_client_conflict(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.api.execution_jobs import CompletionConflictError, complete_job
+
+    store, task, lease, _, _, result, _, _, clock = _result_lease(tmp_path)
+    with pytest.raises(CompletionConflictError):
+        complete_job(
+            store,
+            _completion_request(task, lease, result["signature"]["result_sha256"]),
+            now=clock.now,
+        )
+
+
+def test_complete_api_classifies_null_terminal_candidate_as_corruption(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.api.execution_jobs import complete_job
+
+    store, task, lease, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = NULL WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="candidate content hash"):
+        complete_job(
+            store,
+            _completion_request(task, lease, result["signature"]["result_sha256"]),
+            now=clock.now,
+        )
+
+
+@pytest.mark.parametrize("stale_state", ["expired", "inactive"])
+def test_submit_api_preserves_stale_lease_identity(
+    tmp_path: Path,
+    stale_state: str,
+) -> None:
+    from tinyassets.api.execution_jobs import (
+        StaleLeaseError as ApiStaleLeaseError,
+    )
+    from tinyassets.api.execution_jobs import (
+        submit_candidate_result,
+    )
+
+    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
+    if stale_state == "expired":
+        clock.advance(121)
+        message = "expired"
+    else:
+        with sqlite3.connect(store.db_path) as connection:
+            connection.execute(
+                "UPDATE lease_tasks SET status = 'pending' WHERE task_id = ?",
+                (task.branch_task_id,),
+            )
+        message = "not under an active lease"
+
+    with pytest.raises(ApiStaleLeaseError, match=message) as exc_info:
+        submit_candidate_result(
+            store,
+            job_id=task.branch_task_id,
+            raw_result=raw,
+            verify_key=key.verify_key,
+            device_key_active=True,
+            blob_store=blobs,
+            now=clock.now,
+        )
+    assert exc_info.value.code == "stale_lease"
+
+
+def test_heartbeat_events_remain_repeatable_within_one_generation(tmp_path: Path) -> None:
+    clock = MutableClock()
+    store = LeaseStore(tmp_path / "leases.sqlite3", clock=clock)
+    task = _task()
+    store.add_task(task)
+    lease = _claim(store, task.branch_task_id, "daemon-a")
+    binding = {
+        "task_id": task.branch_task_id,
+        "daemon_id": lease.daemon_id,
+        "lease_id": lease.lease_id,
+        "fence": lease.fence,
+        "capsule_sha256": lease.capsule.content_sha256,
+    }
+    store.heartbeat(**binding, sequence=1)
+    store.heartbeat(**binding, sequence=2)
+
+    heartbeats = [
+        event for event in store.events(task.branch_task_id) if event.kind == "heartbeat"
+    ]
+    assert len(heartbeats) == 2
+
+
+@pytest.mark.parametrize("replay", ["candidate", "completion"])
+def test_duplicate_current_binding_event_with_intact_receipt_is_corruption(
+    tmp_path: Path,
+    replay: str,
+) -> None:
+    store, task, lease, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+    candidate_receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
+    receipt = (
+        _complete(store, task, expected, clock.now)
+        if replay == "completion"
+        else candidate_receipt
+    )
+    kind = "completed" if replay == "completion" else "result_submitted"
+    _drop_one_shot_index(store, task_scoped=replay == "completion")
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO lease_events("
+            "task_id, kind, lease_id, fence, occurred_at, content_sha256"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                task.branch_task_id,
+                kind,
+                lease.lease_id,
+                lease.fence,
+                "2033-03-03T03:03:03Z",
+                result["signature"]["result_sha256"]
+                if kind == "result_submitted"
+                else None,
+            ),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
+        if replay == "candidate":
+            assert _record_candidate(store, task, blobs, key, raw, clock.now) == receipt
+        else:
+            assert _complete(store, task, expected, clock.now) == receipt
+
+
+def test_completion_replay_rejects_row_status_only_forgery(tmp_path: Path) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET status = 'failed' WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
+        _complete(store, task, expected, clock.now)
+
+
+@pytest.mark.parametrize("replay", ["candidate", "completion"])
+@pytest.mark.parametrize("stray_binding", ["foreign_lease", "foreign_fence"])
+def test_foreign_result_event_does_not_poison_valid_generation_replay(
+    tmp_path: Path,
+    replay: str,
+    stray_binding: str,
+) -> None:
+    store, task, lease, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+    candidate_receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
+    receipt = (
+        _complete(store, task, expected, clock.now)
+        if replay == "completion"
+        else candidate_receipt
+    )
+    stray_lease_id = str(uuid4()) if stray_binding == "foreign_lease" else lease.lease_id
+    stray_fence = 999 if stray_binding == "foreign_fence" else lease.fence
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO lease_events("
+            "task_id, kind, lease_id, fence, occurred_at, content_sha256"
+            ") VALUES (?, 'result_submitted', ?, ?, ?, ?)",
+            (
+                task.branch_task_id,
+                stray_lease_id,
+                stray_fence,
+                "2033-03-03T03:03:03Z",
+                result["signature"]["result_sha256"],
+            ),
+        )
+
+    if replay == "candidate":
+        assert _record_candidate(store, task, blobs, key, raw, clock.now) == receipt
+    else:
+        assert _complete(store, task, expected, clock.now) == receipt
+
+
+def test_candidate_replay_rejects_non_object_durable_candidate(tmp_path: Path) -> None:
+    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+
+    def null_candidate(metadata):
+        metadata["candidate_result"] = None
+
+    _doctor_result_state(store, task.branch_task_id, null_candidate)
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="durable candidate record is incomplete",
+    ):
+        _record_candidate(store, task, blobs, key, raw, clock.now)
+
+
+@pytest.mark.parametrize(
+    "signature_corruption",
+    ["extra_key", "missing_key", "non_string_signature", "different_binding"],
+)
+def test_candidate_replay_rejects_structurally_doctored_signature(
+    tmp_path: Path,
+    signature_corruption: str,
+) -> None:
+    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+
+    def corrupt_signature(metadata):
+        signature = metadata["candidate_result"]["signature"]
+        if signature_corruption == "extra_key":
+            signature["unexpected"] = True
+        elif signature_corruption == "missing_key":
+            signature.pop("algorithm")
+        elif signature_corruption == "non_string_signature":
+            signature["signature_b64"] = 12345
+        else:
+            signature["result_sha256"] = "0" * 64
+
+    _doctor_result_state(store, task.branch_task_id, corrupt_signature)
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="durable candidate record is incomplete",
+    ):
+        _record_candidate(store, task, blobs, key, raw, clock.now)
+
+
+def test_expired_reclaim_cannot_launder_a_completed_task_into_new_generation(
+    tmp_path: Path,
+) -> None:
+    store, task, lease, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    expired_at = LeaseStore._time_text(clock.now - timedelta(seconds=1))
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET status = 'leased', lease_expires_at = ? "
+            "WHERE task_id = ?",
+            (expired_at, task.branch_task_id),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="completed event exists but job row is not terminal",
+    ):
+        store.claim(
+            task.branch_task_id,
+            daemon_id="daemon:replacement",
+            bind_capsule=_capsule("b"),
+        )
+
+    assert store.read_task(task.branch_task_id).lease_id == lease.lease_id
+    assert sum(
+        event.kind == "completed" for event in store.events(task.branch_task_id)
+    ) == 1
+
+
+def test_terminal_row_without_completed_event_is_corruption(tmp_path: Path) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("DROP TRIGGER lease_events_append_only_delete")
+        connection.execute(
+            "DELETE FROM lease_events WHERE task_id = ? AND kind = 'completed'",
+            (task.branch_task_id,),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
+        _complete(store, task, expected, clock.now)
+
+
+def test_duplicate_candidate_anchor_is_corruption_even_with_forged_hash(
+    tmp_path: Path,
+) -> None:
+    store, task, lease, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _drop_one_shot_index(store)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO lease_events("
+            "task_id, kind, lease_id, fence, occurred_at, content_sha256"
+            ") VALUES (?, 'result_submitted', ?, ?, ?, ?)",
+            (
+                task.branch_task_id,
+                lease.lease_id,
+                lease.fence,
+                "2033-03-03T03:03:03Z",
+                "0" * 64,
+            ),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="result ledger"):
+        _complete(store, task, expected, clock.now)
+
+
+def test_completion_rejects_non_enum_persisted_outcome(tmp_path: Path) -> None:
+    from tinyassets.runtime.execution_capsule import hash_canonical_jcs
+
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT result_state_json FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        metadata = json.loads(row[0])
+        candidate = metadata["candidate_result"]
+        candidate["outcome"] = "not-an-outcome"
+        forged_hash = hash_canonical_jcs(
+            {key: value for key, value in candidate.items() if key != "signature"}
+        ).hex()
+        candidate["signature"]["result_sha256"] = forged_hash
+        connection.execute(
+            "UPDATE lease_tasks SET result_state_json = ?, "
+            "candidate_result_sha256 = ? WHERE task_id = ?",
+            (
+                json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                forged_hash,
+                task.branch_task_id,
+            ),
+        )
+
+    with pytest.raises(StoredStateCorruptError):
+        _complete(store, task, expected, clock.now)
+
+
+@pytest.mark.parametrize("outcome", ["not-an-outcome", None, ["succeeded"]])
+def test_completion_status_rejects_non_enum_outcome(outcome: object) -> None:
+    with pytest.raises(StoredStateCorruptError, match="outcome"):
+        LeaseStore._completion_status(outcome)
+
+
+def test_clean_v0_database_migrates_atomically_to_v1(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    _create_v0_lease_database(db_path)
+
+    LeaseStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        columns = {
+            row[1]: row[2]
+            for row in connection.execute("PRAGMA table_info(lease_events)")
+        }
+        indexes = {
+            row[1]: (row[2], row[4])
+            for row in connection.execute("PRAGMA index_list(lease_events)")
+        }
+    assert version == 1
+    assert columns["content_sha256"].upper() == "TEXT"
+    assert indexes["lease_events_one_shot_generation_uq"] == (1, 1)
+    assert indexes["lease_events_added_uq"] == (1, 1)
+
+
+def test_v0_database_with_anchor_column_already_present_resumes_migration(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    _create_v0_lease_database(db_path, with_content_column=True)
+
+    LeaseStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert sum(
+            row[1] == "content_sha256"
+            for row in connection.execute("PRAGMA table_info(lease_events)")
+        ) == 1
+
+
+def test_schema_v1_reinitialization_is_a_noop(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = tuple(
+            connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+                "WHERE name LIKE 'lease_events_%' ORDER BY type, name"
+            )
+        )
+
+    LeaseStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        after = tuple(
+            connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+                "WHERE name LIKE 'lease_events_%' ORDER BY type, name"
+            )
+        )
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert after == before
+
+
+def test_wrong_same_name_index_is_replaced_with_required_definition(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP INDEX lease_events_one_shot_generation_uq")
+        connection.execute(
+            "CREATE INDEX lease_events_one_shot_generation_uq "
+            "ON lease_events(task_id)"
+        )
+
+    LeaseStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        definition = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?",
+            ("lease_events_one_shot_generation_uq",),
+        ).fetchone()[0]
+        index_row = next(
+            row
+            for row in connection.execute("PRAGMA index_list(lease_events)")
+            if row[1] == "lease_events_one_shot_generation_uq"
+        )
+    assert definition.startswith("CREATE UNIQUE INDEX")
+    assert "result_submitted" in definition
+    assert index_row[2] == 1
+    assert index_row[4] == 1
+
+
+def test_v0_duplicate_events_roll_back_entire_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    _create_v0_lease_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("INSERT INTO lease_tasks(task_id) VALUES ('task-1')")
+        connection.executemany(
+            "INSERT INTO lease_events("
+            "task_id, kind, lease_id, fence, occurred_at"
+            ") VALUES ('task-1', 'claimed', 'lease-1', 1, ?)",
+            [("2026-07-19T12:00:00Z",), ("2026-07-19T12:00:01Z",)],
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="lease event ledger contains duplicate one-shot events",
+    ):
+        LeaseStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert "content_sha256" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(lease_events)")
+        }
+        assert not {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(lease_events)")
+        } & {
+            "lease_events_one_shot_generation_uq",
+            "lease_events_added_uq",
+        }
+
+
+def test_exception_after_anchor_alter_rolls_back_schema_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    _create_v0_lease_database(db_path)
+    real_connect = sqlite3.connect
+
+    class FailingConnection:
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            object.__setattr__(self, "inner", inner)
+            object.__setattr__(self, "altered", False)
+
+        def __setattr__(self, name, value):
+            if name in {"inner", "altered"}:
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self.inner, name, value)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.close()
+
+        def execute(self, sql, parameters=()):
+            normalized = " ".join(sql.split()).upper()
+            if self.altered and normalized.startswith("DROP INDEX"):
+                raise sqlite3.OperationalError("injected migration failure")
+            result = self.inner.execute(sql, parameters)
+            if normalized.startswith("ALTER TABLE LEASE_EVENTS ADD COLUMN"):
+                object.__setattr__(self, "altered", True)
+            return result
+
+    def failing_connect(self):
+        inner = real_connect(str(self.db_path), timeout=30.0, isolation_level=None)
+        inner.row_factory = sqlite3.Row
+        inner.execute("PRAGMA busy_timeout = 30000")
+        inner.execute("PRAGMA foreign_keys = ON")
+        inner.execute("PRAGMA synchronous = FULL")
+        return FailingConnection(inner)
+
+    monkeypatch.setattr(LeaseStore, "_connect", failing_connect)
+    with pytest.raises(sqlite3.OperationalError, match="injected migration failure"):
+        LeaseStore(db_path)
+
+    with real_connect(db_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert "content_sha256" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(lease_events)")
+        }
+
+
+def test_legacy_unanchored_result_event_fails_at_initialization(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    _create_v0_lease_database(db_path, with_content_column=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("INSERT INTO lease_tasks(task_id) VALUES ('task-1')")
+        connection.execute(
+            "INSERT INTO lease_events("
+            "task_id, kind, lease_id, fence, occurred_at, content_sha256"
+            ") VALUES ('task-1', 'result_submitted', 'lease-1', 1, "
+            "'2026-07-19T12:00:00Z', NULL)"
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="pre-anchor ledger events require migration decision",
+    ):
+        LeaseStore(db_path)
+
+
+def test_concurrent_schema_initializers_serialize(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    start = threading.Barrier(2)
+
+    def initialize() -> None:
+        start.wait()
+        LeaseStore(db_path)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(initialize) for _ in range(2)]
+        for future in futures:
+            future.result(timeout=30)
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
