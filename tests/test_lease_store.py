@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import inspect
 import json
 import sqlite3
@@ -25,6 +26,7 @@ from tinyassets.runtime.lease_store import (
     ResultConflictError,
     StaleFenceError,
     StaleLeaseError,
+    StoredStateCorruptError,
     TaskConflictError,
 )
 
@@ -498,7 +500,7 @@ def test_two_step_fake_candidate_is_rejected_by_canonical_recompute(
             (json.dumps(state, sort_keys=True, separators=(",", ":")), task.branch_task_id),
         )
 
-    with pytest.raises(ResultConflictError, match="stored candidate"):
+    with pytest.raises(StoredStateCorruptError, match="stored candidate"):
         store.complete_validated_result(
             task.branch_task_id,
             expected=expected,
@@ -547,10 +549,17 @@ def test_terminal_replay_is_idempotent_and_terminal_state_is_immutable(
     assert store.events(task.branch_task_id) == events_before
 
 
-@pytest.mark.parametrize("corruption", ["accepted_hash", "missing_receipt"])
+@pytest.mark.parametrize(
+    ("corruption", "error_type"),
+    [
+        ("accepted_hash", StoredStateCorruptError),
+        ("missing_receipt", StoredStateCorruptError),
+    ],
+)
 def test_terminal_replay_rejects_incomplete_or_conflicting_durable_state(
     tmp_path: Path,
     corruption: str,
+    error_type: type[Exception],
 ) -> None:
     store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
     _record_candidate(store, task, blobs, key, raw, clock.now)
@@ -581,7 +590,7 @@ def test_terminal_replay_rejects_incomplete_or_conflicting_durable_state(
                 ),
             )
 
-    with pytest.raises(ResultConflictError):
+    with pytest.raises(error_type):
         store.complete_validated_result(
             task.branch_task_id,
             expected=expected,
@@ -790,7 +799,48 @@ def _complete(store, task, expected, now):
     return store.complete_validated_result(task.branch_task_id, expected=expected, now=now)
 
 
-def test_candidate_replay_rejects_forged_durable_receipt(tmp_path: Path) -> None:
+def _randomized_ed25519_signature(message: bytes, key) -> bytes:
+    """Create a valid Ed25519 signature with a deterministic alternate nonce."""
+    from nacl.bindings import (
+        crypto_core_ed25519_scalar_add,
+        crypto_core_ed25519_scalar_mul,
+        crypto_core_ed25519_scalar_reduce,
+        crypto_scalarmult_ed25519_base_noclamp,
+    )
+
+    expanded = bytearray(hashlib.sha512(bytes(key)).digest())
+    expanded[0] &= 248
+    expanded[31] &= 63
+    expanded[31] |= 64
+    private_scalar = crypto_core_ed25519_scalar_reduce(bytes(expanded[:32]) + bytes(32))
+    nonce = crypto_core_ed25519_scalar_reduce(
+        hashlib.sha512(b"tinyassets-test-randomized-ed25519" + bytes(key) + message).digest()
+    )
+    encoded_nonce = crypto_scalarmult_ed25519_base_noclamp(nonce)
+    challenge = crypto_core_ed25519_scalar_reduce(
+        hashlib.sha512(encoded_nonce + bytes(key.verify_key) + message).digest()
+    )
+    response = crypto_core_ed25519_scalar_add(
+        nonce,
+        crypto_core_ed25519_scalar_mul(challenge, private_scalar),
+    )
+    return encoded_nonce + response
+
+
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("job_id", "00000000-0000-4000-8000-000000000000"),
+        ("result_sha256", "0" * 64),
+        ("outcome", "job_failed"),
+        ("accepted_at", "1900-01-01T00:00:00Z"),
+    ],
+)
+def test_candidate_replay_rejects_forged_durable_receipt_field(
+    tmp_path: Path,
+    field: str,
+    forged_value: str,
+) -> None:
     """Gate HIGH (codex re-review): a doctored candidate receipt is vouched by
     no replay — every field must match row + validated body + event ledger."""
     store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
@@ -801,19 +851,28 @@ def test_candidate_replay_rejects_forged_durable_receipt(tmp_path: Path) -> None
     assert _record_candidate(store, task, blob_store, key, raw_result, clock.now) == first
 
     def forge(metadata):
-        metadata["candidate_receipt"] = {
-            "job_id": task.branch_task_id,
-            "result_sha256": "0" * 64,
-            "outcome": "job_failed",
-            "accepted_at": "1900-01-01T00:00:00Z",
-        }
+        metadata["candidate_receipt"][field] = forged_value
 
     _doctor_result_state(store, task.branch_task_id, forge)
-    with pytest.raises(ResultConflictError, match="authoritative state"):
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
         _record_candidate(store, task, blob_store, key, raw_result, clock.now)
 
 
-def test_completion_replay_rejects_forged_durable_receipt(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("receipt_id", "completion:forged"),
+        ("job_id", "00000000-0000-4000-8000-000000000000"),
+        ("status", "failed"),
+        ("accepted_result_sha256", "0" * 64),
+        ("completed_at", "1900-01-01T00:00:00Z"),
+    ],
+)
+def test_completion_replay_rejects_forged_durable_receipt_field(
+    tmp_path: Path,
+    field: str,
+    forged_value: str,
+) -> None:
     """Gate HIGH: a doctored completion receipt (fake status, hash, timestamps,
     receipt_id) fails closed against recomputed authoritative state."""
     store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
@@ -824,17 +883,141 @@ def test_completion_replay_rejects_forged_durable_receipt(tmp_path: Path) -> Non
     assert _complete(store, task, expected, clock.now) == first  # intact replay
 
     def forge(metadata):
-        metadata["completion_receipt"] = {
-            "receipt_id": "completion:forged",
-            "job_id": task.branch_task_id,
-            "status": "failed",
-            "accepted_result_sha256": "0" * 64,
-            "completed_at": "1900-01-01T00:00:00Z",
-        }
+        metadata["completion_receipt"][field] = forged_value
 
     _doctor_result_state(store, task.branch_task_id, forge)
-    with pytest.raises(ResultConflictError, match="authoritative state"):
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
         _complete(store, task, expected, clock.now)
+
+
+def test_completion_replay_rejects_status_contradicting_candidate_outcome(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT result_state_json FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        metadata = json.loads(row[0])
+        metadata["completion_receipt"]["status"] = "failed"
+        connection.execute(
+            "UPDATE lease_tasks SET status = 'failed', result_state_json = ? "
+            "WHERE task_id = ?",
+            (
+                json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                task.branch_task_id,
+            ),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
+        _complete(store, task, expected, clock.now)
+
+
+@pytest.mark.parametrize("replay", ["candidate", "completion"])
+@pytest.mark.parametrize("binding", ["foreign", "current"])
+def test_duplicate_event_cannot_vouch_for_forged_receipt_time(
+    tmp_path: Path,
+    replay: str,
+    binding: str,
+) -> None:
+    store, task, lease, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    candidate_receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
+    if replay == "completion":
+        intact_receipt = _complete(store, task, expected, clock.now)
+    else:
+        intact_receipt = candidate_receipt
+    kind = "result_submitted" if replay == "candidate" else "completed"
+    receipt_key = "candidate_receipt" if replay == "candidate" else "completion_receipt"
+    timestamp_key = "accepted_at" if replay == "candidate" else "completed_at"
+    genuine_events = [
+        event
+        for event in store.events(task.branch_task_id)
+        if event.kind == kind
+        and event.lease_id == lease.lease_id
+        and event.fence == lease.fence
+    ]
+    assert len(genuine_events) == 1
+    assert intact_receipt[timestamp_key] == genuine_events[0].occurred_at
+    if replay == "candidate":
+        assert _record_candidate(store, task, blobs, key, raw, clock.now) == intact_receipt
+    else:
+        assert _complete(store, task, expected, clock.now) == intact_receipt
+
+    forged_time = "2033-03-03T03:03:03Z"
+    forged_lease_id = str(uuid4()) if binding == "foreign" else lease.lease_id
+    forged_fence = 999 if binding == "foreign" else lease.fence
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO lease_events(task_id, kind, lease_id, fence, occurred_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (task.branch_task_id, kind, forged_lease_id, forged_fence, forged_time),
+        )
+    _doctor_result_state(
+        store,
+        task.branch_task_id,
+        lambda metadata: metadata[receipt_key].__setitem__(timestamp_key, forged_time),
+    )
+
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
+        if replay == "candidate":
+            _record_candidate(store, task, blobs, key, raw, clock.now)
+        else:
+            _complete(store, task, expected, clock.now)
+
+
+@pytest.mark.parametrize("replay", ["candidate", "completion"])
+@pytest.mark.parametrize("shape", ["extra", "missing"])
+def test_durable_receipt_rejects_wrong_key_set(
+    tmp_path: Path,
+    replay: str,
+    shape: str,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    if replay == "completion":
+        _complete(store, task, expected, clock.now)
+    receipt_key = "candidate_receipt" if replay == "candidate" else "completion_receipt"
+
+    def reshape(metadata):
+        receipt = metadata[receipt_key]
+        if shape == "extra":
+            receipt["unexpected"] = True
+        else:
+            receipt.pop("job_id")
+
+    _doctor_result_state(store, task.branch_task_id, reshape)
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
+        if replay == "candidate":
+            _record_candidate(store, task, blobs, key, raw, clock.now)
+        else:
+            _complete(store, task, expected, clock.now)
+
+
+@pytest.mark.parametrize("replay", ["candidate", "completion"])
+def test_durable_receipt_without_matching_event_is_corruption(
+    tmp_path: Path,
+    replay: str,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    if replay == "completion":
+        _complete(store, task, expected, clock.now)
+    kind = "result_submitted" if replay == "candidate" else "completed"
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("DROP TRIGGER lease_events_append_only_delete")
+        connection.execute(
+            "DELETE FROM lease_events WHERE task_id = ? AND kind = ?",
+            (task.branch_task_id, kind),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
+        if replay == "candidate":
+            _record_candidate(store, task, blobs, key, raw, clock.now)
+        else:
+            _complete(store, task, expected, clock.now)
 
 
 def test_candidate_replay_rejects_incomplete_durable_record(tmp_path: Path) -> None:
@@ -847,8 +1030,52 @@ def test_candidate_replay_rejects_incomplete_durable_record(tmp_path: Path) -> N
         metadata["candidate_receipt"] = None
 
     _doctor_result_state(store, task.branch_task_id, nullify)
-    with pytest.raises(ResultConflictError, match="durable candidate record is incomplete"):
+    with pytest.raises(StoredStateCorruptError, match="authoritative state"):
         _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+
+def test_candidate_replay_rejects_doctored_stored_body(tmp_path: Path) -> None:
+    store, task, _, blob_store, key, _, raw_result, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+    def tamper(metadata):
+        metadata["candidate_result"]["outcome"] = "job_failed"
+
+    _doctor_result_state(store, task.branch_task_id, tamper)
+    with pytest.raises(StoredStateCorruptError, match="durable candidate record"):
+        _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+
+def test_candidate_replay_signature_only_mismatch_stays_client_conflict(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.execution_result import RESULT_DOMAIN_SEPARATOR
+
+    store, task, _, blob_store, key, result, raw_result, _, clock = _result_lease(
+        tmp_path
+    )
+    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+    randomized = copy.deepcopy(result)
+    digest = bytes.fromhex(result["signature"]["result_sha256"])
+    randomized_signature = _randomized_ed25519_signature(
+        RESULT_DOMAIN_SEPARATOR + digest,
+        key,
+    )
+    key.verify_key.verify(RESULT_DOMAIN_SEPARATOR + digest, randomized_signature)
+    randomized["signature"]["signature_b64"] = base64.b64encode(
+        randomized_signature
+    ).decode("ascii")
+    assert randomized["signature"] != result["signature"]
+
+    with pytest.raises(ResultConflictError, match="signature"):
+        _record_candidate(
+            store,
+            task,
+            blob_store,
+            key,
+            json.dumps(randomized, separators=(",", ":")).encode(),
+            clock.now,
+        )
 
 
 def test_record_candidate_rejects_missing_result_bindings(tmp_path: Path) -> None:
@@ -892,10 +1119,39 @@ def test_completion_rejects_tampered_stored_signature_hash(tmp_path: Path) -> No
         metadata["candidate_result"]["signature"]["result_sha256"] = "0" * 64
 
     _doctor_result_state(store, task.branch_task_id, tamper)
-    with pytest.raises(ResultConflictError, match="stored candidate content hash"):
+    with pytest.raises(StoredStateCorruptError, match="stored candidate content hash"):
         _complete(store, task, expected, clock.now)
     assert store.read_task(task.branch_task_id).status == "leased"
     assert "completed" not in [event.kind for event in store.events(task.branch_task_id)]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing_body", "missing_signature", "malformed_signature", "noncanonical_body"],
+)
+def test_completion_classifies_malformed_stored_candidate_as_corruption(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    store, task, _, blob_store, key, _, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+    def corrupt(metadata):
+        candidate = metadata["candidate_result"]
+        if corruption == "missing_body":
+            metadata["candidate_result"] = None
+        elif corruption == "missing_signature":
+            candidate.pop("signature")
+        elif corruption == "malformed_signature":
+            candidate["signature"]["result_sha256"] = None
+        else:
+            candidate["checks"][0]["duration_ms"] = float("nan")
+
+    _doctor_result_state(store, task.branch_task_id, corrupt)
+    with pytest.raises(StoredStateCorruptError):
+        _complete(store, task, expected, clock.now)
 
 
 def test_complete_validated_result_rejects_unleased_job(tmp_path: Path) -> None:
@@ -927,42 +1183,72 @@ def test_completion_rejects_missing_candidate_id(tmp_path: Path) -> None:
             "UPDATE lease_tasks SET candidate_result_id = NULL WHERE task_id = ?",
             (task.branch_task_id,),
         )
-    with pytest.raises(ResultConflictError, match="durable candidate record is incomplete"):
+    with pytest.raises(StoredStateCorruptError, match="durable candidate record is incomplete"):
+        _complete(store, task, expected, clock.now)
+
+
+def test_completion_rejects_invalid_non_null_candidate_hash_as_corruption(
+    tmp_path: Path,
+) -> None:
+    store, task, _, _, _, _, _, expected, clock = _result_lease(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_sha256 = 'not-a-hash' "
+            "WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="candidate content hash"):
         _complete(store, task, expected, clock.now)
 
 
 def test_record_candidate_rejects_foreign_job_blob_reference(tmp_path: Path) -> None:
     """Real-store blob-loop pin: a result referencing a blob committed under a
     DIFFERENT job is rejected at validate_reference."""
-    from tests.test_execution_jobs_result import blob_store_with_result_blobs
-    from tests.test_execution_result import create_result, result_body
+    from tests.test_execution_result import create_result
 
     store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
         tmp_path
     )
-    # Commit a blob under a foreign job binding in the SAME blob store.
-    _, foreign_body = blob_store_with_result_blobs(
-        tmp_path / "foreign-blobs",
-        job_id=str(uuid4()),
-        lease_id=str(uuid4()),
-        fence=99,
+    # Commit unique content under a foreign binding in the SAME BlobStore. Keep
+    # the legitimate committed logs ref, so only repo_patch can reject.
+    foreign_content = b"foreign patch bytes"
+    foreign_sha256 = hashlib.sha256(foreign_content).hexdigest()
+    upload = blob_store.init_blob(
+        {
+            "sha256": foreign_sha256,
+            "size_bytes": len(foreign_content),
+            "media_type": "application/octet-stream",
+            "confidentiality": "public",
+            "job_id": str(uuid4()),
+            "lease_id": str(uuid4()),
+            "fence": 99,
+        },
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
     )
-    # Rebuild the result body for THIS job but pointing at the foreign blob.
-    body = result_body()
-    body.update(
-        job_id=task.branch_task_id,
-        capsule_id=lease.capsule.record_id,
-        capsule_sha256=lease.capsule.content_sha256,
-        lease_id=lease.lease_id,
-        fence=lease.fence,
+    blob_store.write_upload(upload.upload_id, foreign_content)
+    blob_store.commit_blob(
+        upload.upload_id,
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
     )
-    for field_name in ("repo_patch",):
-        body[field_name]["blob_ref"] = foreign_body[field_name]["blob_ref"]
-        body[field_name]["blob_sha256"] = foreign_body[field_name]["blob_sha256"]
-        body[field_name]["size_bytes"] = foreign_body[field_name]["size_bytes"]
+    body = copy.deepcopy(result)
+    body.pop("signature")
+    body["repo_patch"].update(
+        blob_ref=f"blob:sha256:{foreign_sha256}",
+        blob_sha256=foreign_sha256,
+        size_bytes=len(foreign_content),
+    )
     forged_result, _ = create_result(body, key)
     forged_raw = json.dumps(forged_result, separators=(",", ":")).encode()
-    with pytest.raises(CandidateValidationError):
+    # Isolate the validate loop: the separate mark-loop test below owns retain
+    # semantics. If validate_reference is removed/no-op, this submission wins.
+    blob_store.mark_referenced = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    with pytest.raises(
+        CandidateValidationError,
+        match="blob is not committed for this owner, job, lease, and fence",
+    ):
         store.record_validated_candidate(
             task.branch_task_id,
             raw_result=forged_raw,
@@ -973,6 +1259,83 @@ def test_record_candidate_rejects_foreign_job_blob_reference(tmp_path: Path) -> 
         )
     assert store.read_task(task.branch_task_id).status == "leased"
     assert not store.read_task(task.branch_task_id).candidate_result_sha256
+
+
+@pytest.mark.parametrize("state_json", ["not-json", "[]"])
+def test_read_result_state_rejects_corrupt_persisted_json(
+    tmp_path: Path,
+    state_json: str,
+) -> None:
+    store, task, *_ = _result_lease(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET result_state_json = ? WHERE task_id = ?",
+            (state_json, task.branch_task_id),
+        )
+    with pytest.raises(StoredStateCorruptError, match="stored result state"):
+        store.read_result_state(task.branch_task_id)
+
+
+def test_read_task_rejects_corrupt_persisted_task_json(tmp_path: Path) -> None:
+    store, task, *_ = _result_lease(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET task_json = 'not-json' WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+    with pytest.raises(StoredStateCorruptError, match="stored task record"):
+        store.read_task(task.branch_task_id)
+
+
+def test_record_candidate_rejects_corrupt_persisted_lease_expiry(tmp_path: Path) -> None:
+    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET lease_expires_at = 'not-a-time' WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+    with pytest.raises(StoredStateCorruptError, match="stored lease timestamp"):
+        _record_candidate(store, task, blobs, key, raw, clock.now)
+
+
+def test_idempotent_claim_rejects_incomplete_persisted_lease_row(tmp_path: Path) -> None:
+    store, task, lease, *_ = _result_lease(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET capsule_id = NULL WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+    with pytest.raises(StoredStateCorruptError, match="stored lease record is incomplete"):
+        store.claim(
+            task.branch_task_id,
+            daemon_id=lease.daemon_id,
+            bind_capsule=lambda _lease: lease.capsule,
+            expected_lease_id=lease.lease_id,
+        )
+
+
+def test_complete_job_rejects_corrupt_persisted_expiry_as_store_corruption(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.api.execution_jobs import complete_job
+
+    store, task, lease, blobs, key, result, raw, _, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET lease_expires_at = 'not-a-time' WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+    request = {
+        "job_id": task.branch_task_id,
+        "daemon_id": lease.daemon_id,
+        "lease_id": lease.lease_id,
+        "fence": lease.fence,
+        "capsule_sha256": lease.capsule.content_sha256,
+        "result_sha256": result["signature"]["result_sha256"],
+    }
+    with pytest.raises(StoredStateCorruptError, match="valid expiry"):
+        complete_job(store, request, now=clock.now)
 
 
 def test_record_candidate_marks_result_blobs_referenced(tmp_path: Path) -> None:

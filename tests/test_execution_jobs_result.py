@@ -189,29 +189,35 @@ class MemoryAtomicJobStore:
             candidate_hash = state.get("candidate_result_sha256")
             candidate = state.get("candidate_result")
             signature = candidate.get("signature") if isinstance(candidate, dict) else None
-            if not isinstance(candidate_hash, str) or not isinstance(signature, dict):
+            if candidate_hash is None:
                 raise ResultConflictError("completion has no stored candidate content hash")
+            if not isinstance(candidate_hash, str) or not isinstance(signature, dict):
+                raise StoredStateCorruptError(
+                    "stored candidate body or content hash is missing or malformed"
+                )
             try:
                 recomputed = hash_canonical_jcs(
                     {key: value for key, value in candidate.items() if key != "signature"}
                 ).hex()
             except CapsuleCanonicalizationError as exc:
-                raise ResultConflictError("stored candidate body is not canonicalizable") from exc
+                raise StoredStateCorruptError(
+                    "stored candidate body is not canonicalizable"
+                ) from exc
             signature_hash = signature.get("result_sha256")
             if (
                 not isinstance(signature_hash, str)
                 or not hmac.compare_digest(candidate_hash, signature_hash)
                 or not hmac.compare_digest(candidate_hash, recomputed)
             ):
-                raise ResultConflictError(
+                raise StoredStateCorruptError(
                     "completion result hash is not the stored candidate content hash"
                 )
             if state["status"] in {"succeeded", "failed", "cancelled"}:
                 if state.get("accepted_result_sha256") != candidate_hash:
-                    raise ResultConflictError("job finalized with another result hash")
+                    raise StoredStateCorruptError("job finalized with another result hash")
                 receipt = state.get("completion_receipt")
                 if not isinstance(receipt, dict):
-                    raise ResultConflictError("durable completion receipt is missing")
+                    raise StoredStateCorruptError("durable completion receipt is missing")
                 return copy.deepcopy(receipt)
             outcome = candidate["outcome"]
             final_status = (
@@ -599,11 +605,7 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
 
 
 def test_completion_rejects_stored_candidate_body_tamper(tmp_path: Path) -> None:
-    from tinyassets.api.execution_jobs import (
-        CompletionConflictError,
-        complete_job,
-        submit_candidate_result,
-    )
+    from tinyassets.api.execution_jobs import complete_job, submit_candidate_result
 
     blob_store, body = blob_store_with_result_blobs(tmp_path)
     body["outcome"] = "job_failed"
@@ -622,14 +624,12 @@ def test_completion_rejects_stored_candidate_body_tamper(tmp_path: Path) -> None
     job_store.state["candidate_result"]["outcome"] = "succeeded"
     before = copy.deepcopy(job_store.state)
 
-    with pytest.raises(CompletionConflictError) as exc_info:
+    with pytest.raises(StoredStateCorruptError):
         complete_job(
             job_store,
             complete_request(result),
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
-    assert exc_info.value.code == "completion_conflict"
-    assert exc_info.value.status_code == 409
     assert job_store.state == before
 
 
@@ -855,6 +855,82 @@ def test_store_corruption_escapes_untyped(tmp_path: Path) -> None:
             CorruptStore(leased_state()),
             request,
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+        )
+
+
+@pytest.mark.parametrize(
+    ("store_error", "expected_error"),
+    [
+        (TaskNotFoundError("task disappeared"), "job_not_found"),
+        (StoredStateCorruptError("stored state is corrupt"), "stored_corruption"),
+    ],
+)
+def test_complete_maps_second_store_call_errors_without_client_blame(
+    tmp_path: Path,
+    store_error: Exception,
+    expected_error: str,
+) -> None:
+    from tinyassets.api.execution_jobs import JobNotFoundError, complete_job
+
+    original, result, _ = submit_candidate(tmp_path)
+
+    class FailingCompletionStore(MemoryAtomicJobStore):
+        def complete_validated_result(self, job_id, **kwargs):
+            raise store_error
+
+    store = FailingCompletionStore(original.state)
+    if expected_error == "job_not_found":
+        with pytest.raises(JobNotFoundError):
+            complete_job(
+                store,
+                complete_request(result),
+                now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
+            )
+    else:
+        with pytest.raises(StoredStateCorruptError):
+            complete_job(
+                store,
+                complete_request(result),
+                now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
+            )
+
+
+def test_invalid_candidate_receipt_from_store_is_store_corruption(tmp_path: Path) -> None:
+    from tinyassets.api.execution_jobs import submit_candidate_result
+
+    class InvalidReceiptStore(MemoryAtomicJobStore):
+        def record_validated_candidate(self, job_id, **kwargs):
+            return {"job_id": job_id}
+
+    blob_store, body = blob_store_with_result_blobs(tmp_path)
+    key = SigningKey.generate()
+    result, _ = create_result(body, key)
+    with pytest.raises(StoredStateCorruptError, match="invalid candidate receipt"):
+        submit_candidate_result(
+            InvalidReceiptStore(leased_state()),
+            job_id=JOB_ID,
+            raw_result=json.dumps(result, separators=(",", ":")).encode(),
+            verify_key=key.verify_key,
+            device_key_active=True,
+            blob_store=blob_store,
+            now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+        )
+
+
+def test_invalid_completion_receipt_from_store_is_store_corruption(tmp_path: Path) -> None:
+    from tinyassets.api.execution_jobs import complete_job
+
+    original, result, _ = submit_candidate(tmp_path)
+
+    class InvalidReceiptStore(MemoryAtomicJobStore):
+        def complete_validated_result(self, job_id, **kwargs):
+            return {"job_id": job_id}
+
+    with pytest.raises(StoredStateCorruptError, match="invalid completion receipt"):
+        complete_job(
+            InvalidReceiptStore(original.state),
+            complete_request(result),
+            now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
 
 

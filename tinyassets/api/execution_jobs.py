@@ -175,11 +175,11 @@ def _utc_text(value: datetime) -> str:
 
 def _parse_lease_expiry(value: Any) -> datetime:
     if type(value) is not str or not value.endswith("Z"):
-        raise StaleLeaseError("current lease has no valid expiry")
+        raise StoreStoredStateCorruptError("current lease has no valid expiry")
     try:
         return datetime.fromisoformat(value[:-1] + "+00:00")
     except ValueError as exc:
-        raise StaleLeaseError("current lease has no valid expiry") from exc
+        raise StoreStoredStateCorruptError("current lease has no valid expiry") from exc
 
 
 def _require_current_lease(state: JobResultState, *, now: datetime) -> None:
@@ -277,7 +277,9 @@ def submit_candidate_result(
     try:
         return CandidateResultReceipt(**receipt)
     except (TypeError, ValueError) as exc:
-        raise CandidateResultRejectedError("store returned an invalid candidate receipt") from exc
+        raise StoreStoredStateCorruptError(
+            "store returned an invalid candidate receipt"
+        ) from exc
 
 
 def complete_job(
@@ -332,4 +334,6 @@ def complete_job(
     try:
         return CompletionReceipt(**receipt)
     except (TypeError, ValueError) as exc:
-        raise CompletionConflictError("store returned an invalid completion receipt") from exc
+        raise StoreStoredStateCorruptError(
+            "store returned an invalid completion receipt"
+        ) from exc

@@ -322,17 +322,35 @@ class LeaseStore:
         )
 
     @staticmethod
-    def _latest_event(
-        connection: sqlite3.Connection, task_id: str, *, kind: str
-    ) -> sqlite3.Row | None:
-        """Return the newest append-only ledger event of *kind* for *task_id*."""
-        return connection.execute(
-            """
-            SELECT kind, lease_id, fence, occurred_at FROM lease_events
-            WHERE task_id = ? AND kind = ? ORDER BY event_id DESC LIMIT 1
-            """,
-            (task_id, kind),
-        ).fetchone()
+    def _matching_events(
+        connection: sqlite3.Connection,
+        task_id: str,
+        *,
+        kind: str,
+        lease_id: str | None,
+        fence: int,
+    ) -> tuple[sqlite3.Row, ...]:
+        """Return every event of one kind for one exact lease generation."""
+        return tuple(
+            connection.execute(
+                """
+                SELECT kind, lease_id, fence, occurred_at FROM lease_events
+                WHERE task_id = ? AND kind = ? AND lease_id = ? AND fence = ?
+                ORDER BY event_id
+                """,
+                (task_id, kind, lease_id, fence),
+            ).fetchall()
+        )
+
+    @staticmethod
+    def _completion_status(outcome: Any) -> str:
+        return (
+            "succeeded"
+            if outcome == "succeeded"
+            else "cancelled"
+            if outcome == "cancelled"
+            else "failed"
+        )
 
     def _durable_candidate_receipt(
         self,
@@ -345,23 +363,33 @@ class LeaseStore:
     ) -> dict[str, Any]:
         """Return the persisted candidate receipt only when every field matches
         authoritative state — the row, the just-validated candidate body, and
-        the append-only event ledger (which independently records the true
-        acceptance time). A receipt that disagrees is a durability violation,
-        not a replayable record (S2 fix-3: forged-receipt replay finding)."""
-        event = self._latest_event(connection, row["task_id"], kind="result_submitted")
+        the append-only event ledger, which is tamper-evident storage of the
+        recorded acceptance time. A receipt that disagrees is a durability
+        violation, not a replayable record."""
+        events = self._matching_events(
+            connection,
+            row["task_id"],
+            kind="result_submitted",
+            lease_id=row["lease_id"],
+            fence=row["lease_fence"],
+        )
+        if len(events) != 1:
+            raise StoredStateCorruptError(
+                "durable candidate receipt does not match authoritative state"
+            )
+        event = events[0]
         expected = {
             "job_id": row["task_id"],
             "result_sha256": result_sha256,
             "outcome": outcome,
-            "accepted_at": event["occurred_at"] if event is not None else None,
+            "accepted_at": event["occurred_at"],
         }
         if (
-            event is None
-            or not isinstance(receipt, dict)
+            not isinstance(receipt, dict)
             or set(receipt) != set(expected)
             or any(receipt[key] != value for key, value in expected.items())
         ):
-            raise ResultConflictError(
+            raise StoredStateCorruptError(
                 "durable candidate receipt does not match authoritative state"
             )
         return dict(receipt)
@@ -373,12 +401,24 @@ class LeaseStore:
         row: sqlite3.Row,
         receipt: Any,
         candidate_hash: str,
+        outcome: Any,
     ) -> dict[str, Any]:
         """Return the persisted completion receipt only when every field matches
         authoritative state — the receipt_id is recomputed from the persisted
-        lease bindings, status/accepted hash come from the row, and the
-        completion time comes from the append-only ledger."""
-        event = self._latest_event(connection, row["task_id"], kind="completed")
+        lease bindings, status comes from the persisted candidate outcome, and
+        the completion time comes from the append-only ledger."""
+        events = self._matching_events(
+            connection,
+            row["task_id"],
+            kind="completed",
+            lease_id=row["lease_id"],
+            fence=row["lease_fence"],
+        )
+        if len(events) != 1:
+            raise StoredStateCorruptError(
+                "durable completion receipt does not match authoritative state"
+            )
+        event = events[0]
         receipt_request = {
             "job_id": row["task_id"],
             "daemon_id": row["lease_daemon_id"],
@@ -390,23 +430,24 @@ class LeaseStore:
         try:
             receipt_id = f"completion:{hash_canonical_jcs(receipt_request).hex()}"
         except CapsuleCanonicalizationError as exc:
-            raise ResultConflictError(
+            raise StoredStateCorruptError(
                 "completion bindings are not canonicalizable"
             ) from exc
+        expected_status = self._completion_status(outcome)
         expected = {
             "receipt_id": receipt_id,
             "job_id": row["task_id"],
-            "status": row["status"],
+            "status": expected_status,
             "accepted_result_sha256": candidate_hash,
-            "completed_at": event["occurred_at"] if event is not None else None,
+            "completed_at": event["occurred_at"],
         }
         if (
-            event is None
+            row["status"] != expected_status
             or not isinstance(receipt, dict)
             or set(receipt) != set(expected)
             or any(receipt[key] != value for key, value in expected.items())
         ):
-            raise ResultConflictError(
+            raise StoredStateCorruptError(
                 "durable completion receipt does not match authoritative state"
             )
         return dict(receipt)
@@ -818,8 +859,42 @@ class LeaseStore:
                 raise ResultConflictError("current lease already has another candidate result")
             if existing_hash == result_sha256:
                 receipt = metadata.get("candidate_receipt")
-                if metadata.get("candidate_result") != verified or not isinstance(receipt, dict):
-                    raise ResultConflictError("durable candidate record is incomplete")
+                durable_candidate = metadata.get("candidate_result")
+                if not isinstance(durable_candidate, dict):
+                    raise StoredStateCorruptError(
+                        "durable candidate record is incomplete"
+                    )
+                durable_body = {
+                    key: value
+                    for key, value in durable_candidate.items()
+                    if key != "signature"
+                }
+                verified_body = {
+                    key: value for key, value in verified.items() if key != "signature"
+                }
+                if durable_body != verified_body:
+                    raise StoredStateCorruptError(
+                        "durable candidate record is incomplete"
+                    )
+                if durable_candidate != verified:
+                    durable_signature = durable_candidate.get("signature")
+                    verified_signature = verified["signature"]
+                    if (
+                        not isinstance(durable_signature, dict)
+                        or set(durable_signature) != set(verified_signature)
+                        or type(durable_signature.get("signature_b64")) is not str
+                        or any(
+                            durable_signature[key] != value
+                            for key, value in verified_signature.items()
+                            if key != "signature_b64"
+                        )
+                    ):
+                        raise StoredStateCorruptError(
+                            "durable candidate record is incomplete"
+                        )
+                    raise ResultConflictError(
+                        "candidate replay signature differs from the durable signature"
+                    )
                 return self._durable_candidate_receipt(
                     connection,
                     row=row,
@@ -916,50 +991,58 @@ class LeaseStore:
             metadata = self._result_metadata(row)
             candidate_hash = row["candidate_result_sha256"]
             candidate = metadata.get("candidate_result")
-            signature = candidate.get("signature") if isinstance(candidate, dict) else None
-            if (
-                type(candidate_hash) is not str
-                or not _SHA256_RE.fullmatch(candidate_hash)
-                or not isinstance(candidate, dict)
-                or not isinstance(signature, dict)
-                or type(signature.get("result_sha256")) is not str
-            ):
+            if candidate_hash is None:
                 raise ResultConflictError("completion has no stored candidate content hash")
+            if type(candidate_hash) is not str or not _SHA256_RE.fullmatch(candidate_hash):
+                raise StoredStateCorruptError(
+                    "stored candidate content hash is malformed"
+                )
+            if not isinstance(candidate, dict):
+                raise StoredStateCorruptError("stored candidate body is missing or malformed")
+            signature = candidate.get("signature")
+            if (
+                not isinstance(signature, dict)
+                or type(signature.get("result_sha256")) is not str
+                or not _SHA256_RE.fullmatch(signature["result_sha256"])
+            ):
+                raise StoredStateCorruptError(
+                    "stored candidate signature is missing or malformed"
+                )
             try:
                 recomputed_hash = hash_canonical_jcs(
                     {key: value for key, value in candidate.items() if key != "signature"}
                 ).hex()
             except CapsuleCanonicalizationError as exc:
-                raise ResultConflictError("stored candidate body is not canonicalizable") from exc
+                raise StoredStateCorruptError(
+                    "stored candidate body is not canonicalizable"
+                ) from exc
             if (
                 not hmac.compare_digest(candidate_hash, signature["result_sha256"])
                 or not hmac.compare_digest(candidate_hash, recomputed_hash)
             ):
-                raise ResultConflictError(
+                raise StoredStateCorruptError(
                     "completion result hash is not the stored candidate content hash"
                 )
 
             if row["status"] in _TERMINAL_STATUSES:
                 if row["accepted_result_sha256"] != candidate_hash:
-                    raise ResultConflictError("job finalized with another result hash")
+                    raise StoredStateCorruptError(
+                        "job finalized with another result hash"
+                    )
                 receipt = metadata.get("completion_receipt")
-                if not isinstance(receipt, dict):
-                    raise ResultConflictError("durable completion receipt is missing")
                 return self._durable_completion_receipt(
-                    connection, row=row, receipt=receipt, candidate_hash=candidate_hash
+                    connection,
+                    row=row,
+                    receipt=receipt,
+                    candidate_hash=candidate_hash,
+                    outcome=candidate.get("outcome"),
                 )
 
             candidate_id = row["candidate_result_id"]
             if type(candidate_id) is not str or not candidate_id:
-                raise ResultConflictError("durable candidate record is incomplete")
+                raise StoredStateCorruptError("durable candidate record is incomplete")
             outcome = candidate.get("outcome")
-            final_status = (
-                "succeeded"
-                if outcome == "succeeded"
-                else "cancelled"
-                if outcome == "cancelled"
-                else "failed"
-            )
+            final_status = self._completion_status(outcome)
             receipt_request = {
                 "job_id": job_id,
                 "daemon_id": expected["daemon_id"],
