@@ -22,12 +22,15 @@
 - [x] 2.1 Correct stale "five canonical handles" wording in AGENTS.md Hard
       Rule #12 to the as-built handle set, deferring to the
       `live-mcp-connector-surface` spec (verify canary code first)
+- [x] 2.2 Fix the canary `converse` drift (docstring, `--assert-handles`
+      help, success suffix, test fixture) — review finding 5; suite green
 
 ## 3. Verify and sync
 
 - [x] 3.1 `openspec validate` (or format lint) passes for all 14 delta specs
-- [ ] 3.2 Cross-family Codex accuracy review of the full spec set vs code;
-      fix findings
+- [x] 3.2 Cross-family Codex accuracy review of the full spec set vs code;
+      fix findings (verdict `adapt`, 5 findings, all addressed —
+      `docs/audits/2026-07-19-spec-baseline-codex-review.md`)
 - [x] 3.3 Sync delta specs into `openspec/specs/<capability>/spec.md`
       (create; forward-vision specs untouched)
 - [ ] 3.4 Draft PR opened with the convention (AGENTS.md), config, STATUS

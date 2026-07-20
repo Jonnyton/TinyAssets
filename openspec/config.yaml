@@ -2,14 +2,18 @@ schema: spec-driven
 
 # Project context — shown to AI when creating artifacts.
 context: |
-  TinyAssets (migrating from the "Workflow" name): a goal-agnostic daemon
-  engine + democratized production commons. Python 3.11+ backend
-  (workflow/ package, fantasy_daemon/ runtime), SvelteKit site
-  (WebSite/site/), live MCP connector at https://tinyassets.io/mcp with
-  exactly five canonical handles (read_graph/write_graph/run_graph/
-  read_page/write_page, plus get_status).
+  TinyAssets (formerly "Workflow"; the code rename to the `tinyassets/`
+  package is complete): a goal-agnostic daemon engine + democratized
+  production commons. Python 3.11+ backend (`tinyassets/` package,
+  `fantasy_daemon/` runtime entry), SvelteKit site (WebSite/site/), live
+  MCP connector at https://tinyassets.io/mcp advertising the canonical
+  handle set read_graph/write_graph/run_graph/read_page/write_page/converse
+  plus get_status (authoritative spec:
+  openspec/specs/live-mcp-connector-surface/spec.md).
 
-  Conventions that constrain every change:
+  As-built capability truth lives in openspec/specs/ (baseline change
+  `spec-out-existing-platform`, 2026-07-19); check there before drafting
+  requirements. Conventions that constrain every change:
   - AGENTS.md owns process truth, PLAN.md owns design truth, STATUS.md owns
     live-state truth. openspec/specs/ owns per-capability behavioral
     requirements (as-built).
@@ -28,7 +32,7 @@ rules:
   proposal:
     - Always include capability names in kebab-case; check openspec/specs/ for existing capabilities before adding new ones.
   specs:
-    - Requirements use SHALL language; every requirement has at least one "#### Scenario:" block.
+    - Requirements use SHALL language, with SHALL/MUST in the first line of each requirement body; every requirement has at least one "#### Scenario:" block.
     - Ground requirements in actual as-built behavior (cite the owning module in prose when helpful); do not spec aspirations.
   tasks:
     - Order tasks by dependency; each task is landable and verifiable on its own.

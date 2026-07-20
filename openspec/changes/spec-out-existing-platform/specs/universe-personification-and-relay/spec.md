@@ -38,7 +38,7 @@ Once a universe exists, first-person contact SHALL be the default with no consen
 - **THEN** that invocation is treated as consent to first-person contact with no additional permission question
 
 ### Requirement: converse runs one first-person turn on the universe's assigned engine, grounded in its own bundle
-The `converse` operation (`tinyassets.universe_intelligence.converse`) SHALL resolve the universe's own directory and assigned engine (`UniverseContext`), assemble a first-person persona system prompt grounded in the universe's OKF grounding files, and run exactly one LLM turn as the universe with `role="writer"` so the universe's preferred writer and vault key take effect. The turn SHALL be in-process and scoped to the universe by construction, and SHALL NOT pass through the MCP transport auth gate (that gate authorizes untrusted external callers; the intelligence is first-party for its own universe). As-built limitation: this turn is turn-scoped for M1; the persistent 24/7 loop is a later slice.
+The `converse` operation (`tinyassets.universe_intelligence.converse`) SHALL resolve the universe's own directory and assigned engine (`UniverseContext`), assemble a first-person persona system prompt grounded in the universe's OKF grounding files, and run exactly one LLM turn as the universe with `role="writer"` so the universe's preferred writer and vault key take effect. The turn SHALL be in-process and scoped to the universe by construction, and SHALL NOT pass through the MCP transport auth gate (that gate authorizes untrusted external callers; the intelligence is first-party for its own universe). An assigned engine that cannot enforce the sandbox SHALL refuse the turn rather than run it unconfined: the Codex provider raises a `ProviderError` for any `sandbox_workspace` turn (its `--sandbox read-only` still reads the whole filesystem and it honors no tool policy), so as-built, `claude-code` is the only engine that can serve `converse`, and a Codex-assigned universe fails closed with an error directing reassignment. As-built limitation: this turn is turn-scoped for M1; the persistent 24/7 loop is a later slice.
 
 #### Scenario: converse runs on the assigned engine as the persona
 - **WHEN** `converse` is called for an existing universe with a founder message
@@ -53,12 +53,17 @@ The `converse` operation (`tinyassets.universe_intelligence.converse`) SHALL res
 - **WHEN** `converse` is called for a universe directory that does not exist
 - **THEN** it raises rather than fabricating a reply
 
+#### Scenario: a sandbox-incapable assigned engine fails closed
+- **WHEN** `converse` runs for a universe whose assigned engine is Codex
+- **THEN** the provider raises a `ProviderError` refusing to run the founder-facing turn unconfined
+- **AND** the error directs assigning a sandbox-capable engine (`claude-code`) instead of silently running without the sandbox
+
 ### Requirement: The engine turn is confined by a fail-closed sandbox
-Every universe-intelligence engine turn SHALL run with `sandbox_workspace=True` (cwd pinned to the universe's own directory) and a tool policy that allows only `WebFetch` and fail-closed denies every other tool by name — including `Bash`, `Monitor` (which runs shell commands), filesystem tools, scheduling/messaging tools, and all MCP server tools via the `mcp__*` wildcard — because the CLI has no allow-only-X mode and any unlisted built-in would otherwise stay usable. The universe's own soul and canon SHALL reach the engine via context injection into the system prompt, NOT via a filesystem read tool, and brain writes SHALL go through the separate governed learning path rather than the engine's tools. As-built limitation: the denylist is rot-prone as the CLI adds tools, and true filesystem-level confinement is deferred to an OS sandbox (bwrap/container).
+Every universe-intelligence engine turn SHALL run with `sandbox_workspace=True` (cwd pinned to the universe's own directory) and a tool policy that requests `WebFetch` as the sole allowed tool and fail-closed denies every other currently-enumerated tool by name — including `Bash`, `Monitor` (which runs shell commands), filesystem tools, scheduling/messaging tools, and all MCP server tools via the `mcp__*` wildcard. This is a policy-level constraint honored by the `claude-code` CLI, not a true allow-only sandbox: the CLI has no allow-only-X mode, so an unenumerated future tool would stay usable until added to the denylist. The universe's own soul and canon SHALL reach the engine via context injection into the system prompt, NOT via a filesystem read tool, and brain writes SHALL go through the separate governed learning path rather than the engine's tools. As-built limitation: the denylist is rot-prone as the CLI adds tools, and true filesystem/OS-level confinement (bwrap/container) is deferred — the sandbox is deny-enumerated policy, not OS enforcement.
 
 #### Scenario: the sandbox config locks the engine down
 - **WHEN** the engine `ModelConfig` for a universe turn is built
-- **THEN** it pins the workspace to the universe's directory, allows only `WebFetch`, and denies shell, filesystem, messaging, scheduling, and `mcp__*` tools
+- **THEN** it pins the workspace to the universe's directory, requests `WebFetch` as the sole allowed tool, and denies the enumerated shell, filesystem, messaging, scheduling, and `mcp__*` tools
 
 #### Scenario: both engine turns are sandboxed
 - **WHEN** `converse` runs its reply turn and its learning-extraction turn

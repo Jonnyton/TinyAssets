@@ -20,8 +20,13 @@ byte mirror, never a second truth).
 - One as-built main spec per landed capability, grounded in actual code
   (file:line-verified during drafting), including as-built limitations.
 - A named sync target for every in-flight change's deltas.
-- Documentation-only: `git diff` touches `openspec/**`, `AGENTS.md`,
-  `STATUS.md` and nothing else.
+- Documentation-only, with one review-mandated exception: the Codex adapt
+  verdict required the pre-existing red canary drift to land with the
+  baseline rather than stay a red dependency, so `git diff` touches
+  `openspec/**`, `AGENTS.md`, `STATUS.md`, plus the
+  `scripts/mcp_public_canary.py` docstring/help/success-suffix and the
+  `tests/test_mcp_public_canary.py` fixture (adds `converse`; no runtime
+  behavior change — `CANONICAL_HANDLES` already enforced it).
 
 **Non-Goals:**
 - No new requirements, no behavior changes, no code edits.
