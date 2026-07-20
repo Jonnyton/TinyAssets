@@ -1,0 +1,34 @@
+schema: spec-driven
+
+# Project context — shown to AI when creating artifacts.
+context: |
+  TinyAssets (migrating from the "Workflow" name): a goal-agnostic daemon
+  engine + democratized production commons. Python 3.11+ backend
+  (workflow/ package, fantasy_daemon/ runtime), SvelteKit site
+  (WebSite/site/), live MCP connector at https://tinyassets.io/mcp with
+  exactly five canonical handles (read_graph/write_graph/run_graph/
+  read_page/write_page, plus get_status).
+
+  Conventions that constrain every change:
+  - AGENTS.md owns process truth, PLAN.md owns design truth, STATUS.md owns
+    live-state truth. openspec/specs/ owns per-capability behavioral
+    requirements (as-built).
+  - Hard rules (AGENTS.md): SqliteSaver only; LanceDB singleton; no API SDKs
+    for the primary writer (claude -p / codex exec subprocesses);
+    fail loudly, never silently; no shims/migrations/compat aliases —
+    replace bad shapes at the boundary; TypedDict + Annotated reducers;
+    autonomous defaults for executable gates.
+  - Public-surface changes require post-change canary probes
+    (scripts/mcp_public_canary.py) and rendered-chatbot ui-test proof.
+  - Multi-provider repo: Claude Code, Codex, Cursor, Cowork, Kimi all work
+    here concurrently; STATUS.md Work table is the claim surface.
+  - pytest + ruff gate commits; every module has tests.
+
+rules:
+  proposal:
+    - Always include capability names in kebab-case; check openspec/specs/ for existing capabilities before adding new ones.
+  specs:
+    - Requirements use SHALL language; every requirement has at least one "#### Scenario:" block.
+    - Ground requirements in actual as-built behavior (cite the owning module in prose when helpful); do not spec aspirations.
+  tasks:
+    - Order tasks by dependency; each task is landable and verifiable on its own.
