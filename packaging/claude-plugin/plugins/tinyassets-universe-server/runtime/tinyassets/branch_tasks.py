@@ -56,7 +56,7 @@ VALID_TRIGGER_SOURCES = frozenset({
 })
 
 VALID_STATUSES = frozenset({
-    "pending", "running", "succeeded", "failed", "cancelled", "dead_ref",
+    "pending", "running", "leased", "succeeded", "failed", "cancelled", "dead_ref",
 })
 # ``dead_ref`` (Codex r15 #5): a task whose handler branch was deleted while it
 # sat queued — refused at claim time, never run. A terminal SINK (counts as a
@@ -70,8 +70,9 @@ _IDEMPOTENT_WINNER_STATUSES = VALID_STATUSES - {"dead_ref"}
 # Valid transitions. `pending` can go to running or cancelled;
 # running can go to any terminal state. Terminal states are sinks.
 _VALID_TRANSITIONS = {
-    "pending": {"running", "cancelled"},
+    "pending": {"running", "leased", "cancelled"},
     "running": {"succeeded", "failed", "cancelled"},
+    "leased": {"succeeded", "failed", "cancelled"},
     "succeeded": set(),
     "failed": set(),
     "cancelled": set(),
@@ -112,7 +113,20 @@ class BranchTask:
     worker_owner_id: str = ""
     executor_worker_id: str = ""
     executor_runtime_id: str = ""
+    # Distributed-execution lease state. SQLite is the concurrency authority;
+    # these fields are the durable task-record projection consumed by API and
+    # dispatcher code, not a second locking path.
+    lease_id: str = ""
+    lease_fence: int = 0
+    lease_daemon_id: str = ""
     lease_expires_at: str = ""
+    lease_heartbeat_sequence: int = 0
+    capsule_id: str = ""
+    capsule_sha256: str = ""
+    candidate_result_id: str = ""
+    candidate_result_sha256: str = ""
+    accepted_result_id: str = ""
+    accepted_result_sha256: str = ""
     heartbeat_at: str = ""
     last_progress_at: str = ""
     # When the task reached a terminal status (succeeded/failed/cancelled).
