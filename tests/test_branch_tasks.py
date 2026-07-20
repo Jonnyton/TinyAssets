@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from tinyassets.branch_tasks import (
     BranchTask,
+    LegacyClaimAuthorityDisabled,
     append_task,
     append_task_if_absent,
     claim_task,
@@ -36,6 +37,27 @@ def _task(task_id: str | None = None) -> BranchTask:
         branch_def_id="fantasy_author:universe_cycle_wrapper",
         universe_id="u",
     )
+
+
+def _append_running_task(
+    universe_path: Path,
+    task: BranchTask,
+    claimer: str,
+    *,
+    executor_worker_id: str = "",
+    executor_runtime_id: str = "",
+) -> BranchTask:
+    """Project historical JSON running state without granting ownership."""
+    now = datetime.now(timezone.utc)
+    task.status = "running"
+    task.claimed_by = claimer
+    task.worker_owner_id = claimer
+    task.executor_worker_id = executor_worker_id
+    task.executor_runtime_id = executor_runtime_id
+    task.heartbeat_at = now.isoformat()
+    task.lease_expires_at = (now + timedelta(minutes=30)).isoformat()
+    append_task(universe_path, task)
+    return task
 
 
 def test_branch_task_lease_fields_default_and_roundtrip() -> None:
@@ -93,27 +115,19 @@ def test_idempotent_append_preserves_every_non_dead_ref_status(
     assert read_queue(tmp_path) == [winner]
 
 
-def test_claim_task_stamps_write_only_lease_metadata(tmp_path: Path) -> None:
+def test_claim_task_fails_loud_without_mutating_json_queue(tmp_path: Path) -> None:
     task = _task()
     append_task(tmp_path, task)
 
-    claimed = claim_task(tmp_path, task.branch_task_id, "daemon-a")
+    with pytest.raises(LegacyClaimAuthorityDisabled, match="SQLite lease store"):
+        claim_task(tmp_path, task.branch_task_id, "daemon-a")
 
-    assert claimed is not None
-    assert claimed.status == "running"
-    assert claimed.claimed_by == "daemon-a"
-    assert claimed.worker_owner_id == "daemon-a"
-    assert claimed.heartbeat_at
-    assert claimed.lease_expires_at
-    assert _dt(claimed.lease_expires_at) > _dt(claimed.heartbeat_at)
-    assert claimed.last_progress_at == ""
+    assert read_queue(tmp_path) == [task]
 
 
 def test_refresh_task_heartbeat_extends_running_task_lease(tmp_path: Path) -> None:
     task = _task()
-    append_task(tmp_path, task)
-    claimed = claim_task(tmp_path, task.branch_task_id, "daemon-a")
-    assert claimed is not None
+    claimed = _append_running_task(tmp_path, task, "daemon-a")
 
     refreshed = refresh_task_heartbeat(
         tmp_path,
@@ -129,9 +143,7 @@ def test_refresh_task_heartbeat_extends_running_task_lease(tmp_path: Path) -> No
 
 def test_refresh_task_heartbeat_respects_worker_owner_guard(tmp_path: Path) -> None:
     task = _task()
-    append_task(tmp_path, task)
-    claimed = claim_task(tmp_path, task.branch_task_id, "daemon-a")
-    assert claimed is not None
+    claimed = _append_running_task(tmp_path, task, "daemon-a")
 
     refreshed = refresh_task_heartbeat(
         tmp_path,
@@ -147,8 +159,7 @@ def test_refresh_task_heartbeat_respects_worker_owner_guard(tmp_path: Path) -> N
 
 def test_mark_task_progress_stamps_running_task(tmp_path: Path) -> None:
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "daemon-a")
+    _append_running_task(tmp_path, task, "daemon-a")
 
     progressed = mark_task_progress(tmp_path, task.branch_task_id)
 
@@ -158,8 +169,7 @@ def test_mark_task_progress_stamps_running_task(tmp_path: Path) -> None:
 
 def test_recover_claimed_tasks_clears_active_lease_metadata(tmp_path: Path) -> None:
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "daemon-a")
+    _append_running_task(tmp_path, task, "daemon-a")
     mark_task_progress(tmp_path, task.branch_task_id, progress_at="2026-05-02T12:00:00+00:00")
 
     count = recover_claimed_tasks(tmp_path)
@@ -181,8 +191,7 @@ def test_reclaim_leaseless_running_row_only_in_startup_mode(tmp_path: Path) -> N
     recover to lease-aware reclaim stranded pre-lease/corrupt rows forever.
     """
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # stamps a lease
+    _append_running_task(tmp_path, task, "daemon-a")
     qp = queue_path(tmp_path)
     data = json.loads(qp.read_text())
     data[0]["lease_expires_at"] = ""  # simulate pre-lease-era / corrupt row
@@ -213,8 +222,7 @@ def test_lease_window_exceeds_worst_case_provider_node(tmp_path: Path) -> None:
 
 def test_mark_status_stamps_terminal_at_on_terminal_transition(tmp_path: Path) -> None:
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # -> running
+    _append_running_task(tmp_path, task, "daemon-a")
     assert read_queue(tmp_path)[0].terminal_at == ""
 
     mark_status(tmp_path, task.branch_task_id, status="succeeded")
@@ -232,8 +240,7 @@ def test_mark_status_terminal_finalize_is_idempotent(tmp_path: Path) -> None:
     crash the daemon mid-finalize) and must not flip the first result.
     """
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # -> running
+    _append_running_task(tmp_path, task, "daemon-a")
 
     mark_status(tmp_path, task.branch_task_id, status="succeeded")
     # A conflicting late finalize from a duplicate worker: no raise, no flip.
@@ -263,8 +270,7 @@ def test_dispatcher_startup_preserves_live_peer_running_task(tmp_path: Path) -> 
     from fantasy_daemon.__main__ import _dispatcher_startup
 
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "live-peer")  # stamps a fresh 300s lease
+    _append_running_task(tmp_path, task, "live-peer")
 
     _dispatcher_startup(tmp_path)
 
@@ -278,8 +284,7 @@ def test_dispatcher_startup_reclaims_expired_lease(tmp_path: Path) -> None:
     from fantasy_daemon.__main__ import _dispatcher_startup
 
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "dead-worker")
+    _append_running_task(tmp_path, task, "dead-worker")
     qp = queue_path(tmp_path)
     data = json.loads(qp.read_text())
     data[0]["lease_expires_at"] = "2000-01-01T00:00:00+00:00"  # long expired
@@ -296,12 +301,14 @@ def test_dispatcher_startup_reclaims_expired_lease(tmp_path: Path) -> None:
 
 
 def _claim_running(tmp_path: Path, *, worker: str, runtime: str = "r1") -> BranchTask:
-    """Append + claim a task so it is 'running' under *worker* with a fresh lease."""
+    """Append historical JSON running state under *worker* with a fresh lease."""
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(
-        tmp_path, task.branch_task_id, "daemon-a",
-        executor_worker_id=worker, executor_runtime_id=runtime,
+    _append_running_task(
+        tmp_path,
+        task,
+        "daemon-a",
+        executor_worker_id=worker,
+        executor_runtime_id=runtime,
     )
     return task
 
@@ -389,8 +396,7 @@ def test_dispatcher_startup_no_predecessor_reclaim_without_worker_id(
 
     monkeypatch.delenv("TINYASSETS_WORKER_ID", raising=False)
     task = _task()
-    append_task(tmp_path, task)
-    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # fresh lease, blank executor
+    _append_running_task(tmp_path, task, "daemon-a")
 
     _dispatcher_startup(tmp_path)
 

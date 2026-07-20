@@ -122,7 +122,7 @@ def test_same_current_holder_reclaim_with_same_lease_id_is_a_noop(
         )
 
 
-def test_crash_reclaim_fences_every_old_lease_mutation(tmp_path: Path) -> None:
+def test_crash_reclaim_fences_old_lease_heartbeat(tmp_path: Path) -> None:
     clock = MutableClock()
     store = LeaseStore(tmp_path / "leases.sqlite3", clock=clock)
     task = _task()
@@ -144,17 +144,6 @@ def test_crash_reclaim_fences_every_old_lease_mutation(tmp_path: Path) -> None:
     }
     with pytest.raises(StaleFenceError):
         store.heartbeat(**old_binding, sequence=1)
-    with pytest.raises(StaleFenceError):
-        store.submit_result(
-            **old_binding,
-            result=RecordReference(str(uuid4()), "c" * 64),
-        )
-    with pytest.raises(StaleFenceError):
-        store.complete(
-            **old_binding,
-            result=RecordReference(str(uuid4()), "c" * 64),
-            status="succeeded",
-        )
 
     # Isolate the fence comparison from the lease-id comparison: even the
     # current lease UUID cannot authenticate a superseded fence.
@@ -177,29 +166,7 @@ def test_crash_reclaim_fences_every_old_lease_mutation(tmp_path: Path) -> None:
         capsule_sha256=replacement.capsule.content_sha256,
         sequence=1,
     )
-    result = RecordReference(str(uuid4()), "d" * 64)
-    stored = store.submit_result(
-        task.branch_task_id,
-        daemon_id=replacement.daemon_id,
-        lease_id=replacement.lease_id,
-        fence=replacement.fence,
-        capsule_sha256=replacement.capsule.content_sha256,
-        result=result,
-    )
-    completed = store.complete(
-        task.branch_task_id,
-        daemon_id=replacement.daemon_id,
-        lease_id=replacement.lease_id,
-        fence=replacement.fence,
-        capsule_sha256=replacement.capsule.content_sha256,
-        result=result,
-        status="succeeded",
-    )
-
     assert renewed.expires_at > replacement.expires_at
-    assert stored.candidate_result_id == result.record_id
-    assert completed.status == "succeeded"
-    assert completed.accepted_result_id == result.record_id
 
 
 def test_fence_is_strictly_monotonic_and_unique_per_task(tmp_path: Path) -> None:
@@ -345,3 +312,8 @@ def test_atomic_update_projects_s5_result_state_under_the_same_cas(
     assert completed.status == "succeeded"
     assert completed.accepted_result_id == candidate.candidate_result_id
     assert completed.accepted_result_sha256 == result_hash
+
+
+def test_lease_store_exposes_no_unvalidated_result_or_completion_path() -> None:
+    assert not hasattr(LeaseStore, "submit_result")
+    assert not hasattr(LeaseStore, "complete")

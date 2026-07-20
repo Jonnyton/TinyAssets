@@ -109,3 +109,18 @@ in namespaces that credential migration guards do not interpret as legacy state.
 One thing I would do differently: begin each control-plane review with an AST
 inventory of every process primitive under the provider package, then exercise
 two consecutive bound calls before treating one successful BYO call as durable.
+
+---
+
+What surprised me: the lease fence itself was sound, but side effects and legacy
+entry points around it still created independent authorities that the fence could
+not protect.
+
+Pattern worth capturing: single authority must be proved at every reachable
+boundary. Put claim side effects after the winning CAS in its transaction, keep
+validation above the sole fenced mutation primitive, and make retired routes fail
+loud until their callers are fully migrated.
+
+One thing I would do differently: start an authority review with a repository-wide
+caller inventory and a cross-path race test, then inspect the transactional
+ordering inside the surviving authority.

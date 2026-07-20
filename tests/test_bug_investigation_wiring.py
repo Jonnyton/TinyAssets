@@ -1050,14 +1050,15 @@ def test_maybe_enqueue_recovers_from_handler_deleted_race(tmp_path, monkeypatch)
 
 
 def test_claim_task_refuses_dead_handler_at_consumption(tmp_path, monkeypatch):
-    # Codex r15 #5: the enqueue-boundary check only NARROWS the race window — a
-    # delete while the task sits queued still needs closure at CONSUMPTION. The
-    # claim boundary must revalidate the handler before transitioning to running:
-    # a deleted handler yields a structured dead_ref terminal state, never a run
-    # against a dead reference.
+    # The retired JSON boundary grants no ownership, even for a queued task whose
+    # handler was deleted after enqueue. S4/S10 owns SQLite claim-time validation.
     import json as _json
 
-    from tinyassets.branch_tasks import claim_task, queue_path
+    from tinyassets.branch_tasks import (
+        LegacyClaimAuthorityDisabled,
+        claim_task,
+        queue_path,
+    )
     from tinyassets.bug_investigation import enqueue_investigation_request
     from tinyassets.daemon_server import delete_branch_definition
 
@@ -1075,47 +1076,26 @@ def test_claim_task_refuses_dead_handler_at_consumption(tmp_path, monkeypatch):
     # can't cover).
     delete_branch_definition(tmp_path, branch_def_id="branch-canonical-abc")
 
-    claimed = claim_task(tmp_path, request_id, claimer="daemon-1")
-    assert claimed is None   # refused — NOT transitioned to running
+    with pytest.raises(LegacyClaimAuthorityDisabled, match="SQLite lease store"):
+        claim_task(tmp_path, request_id, claimer="daemon-1")
 
     raw = _json.loads(queue_path(tmp_path).read_text(encoding="utf-8"))
     row = next(r for r in raw if r["branch_task_id"] == request_id)
-    assert row["status"] == "dead_ref"                       # structured outcome
-    assert row["dead_ref_reason"].startswith("handler_deleted:")
-
-    # Codex r16 #4: dead_ref is a COMPLETE terminal state.
-    # (a) terminal_at is stamped (like mark_status) so get_status's loop-stall
-    #     signal counts this as a real terminal transition.
-    assert row.get("terminal_at"), "dead_ref must stamp terminal_at"
-    # (b) dead_ref_reason survives BranchTask deserialization (from_dict filters
-    #     to declared fields — it must be a declared field, not silently dropped).
-    from tinyassets.branch_tasks import BranchTask
-
-    task = BranchTask.from_dict(row)
-    assert task.status == "dead_ref"
-    assert task.dead_ref_reason.startswith("handler_deleted:")
-    assert task.terminal_at
-    # (c) get_status loop-health counts dead_ref and surfaces it as a warning.
-    from tinyassets.api.status import _compute_supervisor_liveness
-
-    live = _compute_supervisor_liveness(tmp_path)
-    assert live["queue_state"]["dead_ref"] == 1, live["queue_state"]
-    assert any(
-        "dead_ref_terminals" in w for w in live["warnings"]
-    ), live["warnings"]
+    assert row["status"] == "pending"
+    assert not row.get("claimed_by")
 
 
 def test_claim_task_transient_registry_error_stays_retryable(tmp_path, monkeypatch):
-    # Codex r19 #2: a TRANSIENT registry read error (e.g. SQLite 'database is
-    # locked') must NOT become a permanent dead_ref. Consumption-time
-    # revalidation distinguishes definitive-missing (terminal) from
-    # transient-unavailable (retryable): the task stays PENDING for a later claim
-    # once storage recovers — never permanently discarded on a momentary lock.
+    # Retired JSON claims do not consult the registry or mutate the queue.
     import json as _json
     import sqlite3
 
     import tinyassets.daemon_server as ds
-    from tinyassets.branch_tasks import claim_task, queue_path
+    from tinyassets.branch_tasks import (
+        LegacyClaimAuthorityDisabled,
+        claim_task,
+        queue_path,
+    )
     from tinyassets.bug_investigation import enqueue_investigation_request
 
     _register_handler_branch(tmp_path, monkeypatch)
@@ -1135,8 +1115,8 @@ def test_claim_task_transient_registry_error_stays_retryable(tmp_path, monkeypat
 
     monkeypatch.setattr(ds, "get_branch_definition", _locked)
 
-    claimed = claim_task(tmp_path, request_id, claimer="daemon-1")
-    assert claimed is None   # not claimed while storage is unavailable
+    with pytest.raises(LegacyClaimAuthorityDisabled, match="SQLite lease store"):
+        claim_task(tmp_path, request_id, claimer="daemon-1")
 
     raw = _json.loads(queue_path(tmp_path).read_text(encoding="utf-8"))
     row = next(r for r in raw if r["branch_task_id"] == request_id)

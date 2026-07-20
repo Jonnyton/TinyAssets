@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
 from tinyassets.branch_tasks import SHARED_DEFAULT_WORKER_IDS, BranchTask
 
@@ -394,6 +394,7 @@ class LeaseStore:
                         and clean_daemon == row["lease_daemon_id"]
                     ):
                         return self._row_to_lease(row)
+                    raise AlreadyClaimedError(f"task {task_id!r} was already claimed")
                 else:
                     expired = connection.execute(
                         """
@@ -440,13 +441,13 @@ class LeaseStore:
                 issued_at=now_text,
                 expires_at=self._time_text(now + timedelta(seconds=lease_seconds)),
             )
-            capsule = self._reference(bind_capsule(identity), "capsule")
             cursor = connection.execute(
                 """
                 UPDATE lease_tasks SET
                     status = 'leased', lease_id = ?, lease_fence = lease_fence + 1,
                     lease_daemon_id = ?, lease_issued_at = ?, lease_expires_at = ?,
-                    lease_heartbeat_sequence = 0, capsule_id = ?, capsule_sha256 = ?,
+                    lease_heartbeat_sequence = 0, capsule_id = NULL,
+                    capsule_sha256 = NULL,
                     candidate_result_id = NULL, candidate_result_sha256 = NULL,
                     accepted_result_id = NULL, accepted_result_sha256 = NULL,
                     result_state_json = ?, updated_at = ?
@@ -457,8 +458,6 @@ class LeaseStore:
                     clean_daemon,
                     identity.issued_at,
                     identity.expires_at,
-                    capsule.record_id,
-                    capsule.content_sha256,
                     result_state_json,
                     now_text,
                     task_id,
@@ -469,6 +468,24 @@ class LeaseStore:
                 raise AlreadyClaimedError(
                     f"task {task_id!r} was already claimed"
                 )
+            capsule = self._reference(bind_capsule(identity), "capsule")
+            capsule_cursor = connection.execute(
+                """
+                UPDATE lease_tasks SET capsule_id = ?, capsule_sha256 = ?
+                WHERE task_id = ? AND status = 'leased' AND lease_id = ?
+                    AND lease_fence = ? AND capsule_id IS NULL
+                    AND capsule_sha256 IS NULL
+                """,
+                (
+                    capsule.record_id,
+                    capsule.content_sha256,
+                    task_id,
+                    identity.lease_id,
+                    identity.fence,
+                ),
+            )
+            if capsule_cursor.rowcount != 1:
+                raise StaleLeaseError("capsule binding lost the current lease CAS")
             self._append_event(
                 connection,
                 task_id=task_id,
@@ -489,7 +506,6 @@ class LeaseStore:
         fence: int,
         capsule_sha256: str,
         now: datetime,
-        allow_terminal: bool = False,
     ) -> None:
         # Fence is checked independently and first: matching a current UUID is
         # never enough to authenticate a superseded generation.
@@ -497,9 +513,7 @@ class LeaseStore:
             raise StaleFenceError(
                 f"lease fence {fence!r} is not current fence {row['lease_fence']!r}"
             )
-        if row["status"] != "leased" and not (
-            allow_terminal and row["status"] in {"succeeded", "failed", "cancelled"}
-        ):
+        if row["status"] != "leased":
             raise StaleLeaseError("task is not under the supplied active lease")
         if lease_id != row["lease_id"]:
             raise StaleLeaseError("lease id is not current")
@@ -569,136 +583,6 @@ class LeaseStore:
                 occurred_at=now_text,
             )
             return self._row_to_lease(self._task_row(connection, task_id))
-
-    def submit_result(
-        self,
-        task_id: str,
-        *,
-        daemon_id: str,
-        lease_id: str,
-        fence: int,
-        capsule_sha256: str,
-        result: RecordReference,
-    ) -> BranchTask:
-        """CAS one opaque result id/hash reference onto the current lease."""
-        self._canonical_uuid(lease_id, "lease_id")
-        result = self._reference(result, "result")
-        now = self._now()
-        now_text = self._time_text(now)
-        with self._transaction() as connection:
-            row = self._task_row(connection, task_id)
-            self._require_current_lease(
-                row,
-                daemon_id=daemon_id,
-                lease_id=lease_id,
-                fence=fence,
-                capsule_sha256=capsule_sha256,
-                now=now,
-            )
-            existing = (row["candidate_result_id"], row["candidate_result_sha256"])
-            wanted = (result.record_id, result.content_sha256)
-            if existing == wanted:
-                return self._row_to_task(row)
-            if any(existing):
-                raise ResultConflictError("current lease already has another result")
-            cursor = connection.execute(
-                """
-                UPDATE lease_tasks SET
-                    candidate_result_id = ?, candidate_result_sha256 = ?, updated_at = ?
-                WHERE task_id = ? AND status = 'leased' AND lease_id = ?
-                    AND lease_fence = ? AND candidate_result_id IS NULL
-                """,
-                (
-                    result.record_id,
-                    result.content_sha256,
-                    now_text,
-                    task_id,
-                    lease_id,
-                    fence,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise StaleLeaseError("result submission lost the current lease CAS")
-            self._append_event(
-                connection,
-                task_id=task_id,
-                kind="result_submitted",
-                lease_id=lease_id,
-                fence=fence,
-                occurred_at=now_text,
-            )
-            return self._row_to_task(self._task_row(connection, task_id))
-
-    def complete(
-        self,
-        task_id: str,
-        *,
-        daemon_id: str,
-        lease_id: str,
-        fence: int,
-        capsule_sha256: str,
-        result: RecordReference,
-        status: Literal["succeeded", "failed", "cancelled"],
-    ) -> BranchTask:
-        """CAS the current lease and its candidate result to a terminal status."""
-        self._canonical_uuid(lease_id, "lease_id")
-        result = self._reference(result, "result")
-        if status not in {"succeeded", "failed", "cancelled"}:
-            raise LeaseStoreError("completion status must be terminal")
-        now = self._now()
-        now_text = self._time_text(now)
-        with self._transaction() as connection:
-            row = self._task_row(connection, task_id)
-            self._require_current_lease(
-                row,
-                daemon_id=daemon_id,
-                lease_id=lease_id,
-                fence=fence,
-                capsule_sha256=capsule_sha256,
-                now=now,
-                allow_terminal=True,
-            )
-            wanted = (result.record_id, result.content_sha256)
-            if row["status"] in {"succeeded", "failed", "cancelled"}:
-                accepted = (row["accepted_result_id"], row["accepted_result_sha256"])
-                if row["status"] == status and accepted == wanted:
-                    return self._row_to_task(row)
-                raise ResultConflictError("task was finalized with another result")
-            candidate = (row["candidate_result_id"], row["candidate_result_sha256"])
-            if candidate != wanted:
-                raise ResultConflictError("completion result is not the current candidate")
-            cursor = connection.execute(
-                """
-                UPDATE lease_tasks SET
-                    status = ?, accepted_result_id = ?,
-                    accepted_result_sha256 = ?, updated_at = ?
-                WHERE task_id = ? AND status = 'leased' AND lease_id = ?
-                    AND lease_fence = ? AND candidate_result_id = ?
-                    AND candidate_result_sha256 = ?
-                """,
-                (
-                    status,
-                    result.record_id,
-                    result.content_sha256,
-                    now_text,
-                    task_id,
-                    lease_id,
-                    fence,
-                    result.record_id,
-                    result.content_sha256,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise StaleLeaseError("completion lost the current lease CAS")
-            self._append_event(
-                connection,
-                task_id=task_id,
-                kind="completed",
-                lease_id=lease_id,
-                fence=fence,
-                occurred_at=now_text,
-            )
-            return self._row_to_task(self._task_row(connection, task_id))
 
     def read_task(self, task_id: str) -> BranchTask:
         """Return the current SQLite state as a ``BranchTask`` projection."""

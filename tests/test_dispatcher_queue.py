@@ -33,6 +33,7 @@ from tinyassets.branch_tasks import (
     ARCHIVE_FILENAME,
     QUEUE_FILENAME,
     BranchTask,
+    LegacyClaimAuthorityDisabled,
     append_task,
     archive_path,
     claim_task,
@@ -88,6 +89,25 @@ def _make_task(
     )
 
 
+def _project_running_task(
+    universe_path: Path,
+    task_id: str,
+    claimer: str,
+) -> None:
+    """Project historical JSON running state without granting ownership."""
+    qp = queue_path(universe_path)
+    rows = json.loads(qp.read_text(encoding="utf-8"))
+    for row in rows:
+        if row.get("branch_task_id") == task_id:
+            row["status"] = "running"
+            row["claimed_by"] = claimer
+            row["worker_owner_id"] = claimer
+            break
+    else:
+        raise AssertionError(f"missing task {task_id}")
+    qp.write_text(json.dumps(rows), encoding="utf-8")
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Queue plumbing (8 tests)
 # ───────────────────────────────────────────────────────────────────────
@@ -121,21 +141,17 @@ def test_append_task_preserves_ordering(universe_dir):
     assert [t.branch_task_id for t in q] == [t1.branch_task_id, t2.branch_task_id]
 
 
-def test_claim_task_idempotent(universe_dir):
+def test_claim_task_fails_loud_without_mutating_queue(universe_dir):
     t = _make_task()
     append_task(universe_dir, t)
-    first = claim_task(universe_dir, t.branch_task_id, "daemon-1")
-    assert first is not None
-    assert first.status == "running"
-    assert first.claimed_by == "daemon-1"
-    second = claim_task(universe_dir, t.branch_task_id, "daemon-2")
-    assert second is None
+    with pytest.raises(LegacyClaimAuthorityDisabled, match="SQLite lease store"):
+        claim_task(universe_dir, t.branch_task_id, "daemon-1")
+    assert read_queue(universe_dir) == [t]
 
 
 def test_mark_status_valid_transitions(universe_dir):
-    t = _make_task()
+    t = _make_task(status="running", claimed_by="d1")
     append_task(universe_dir, t)
-    claim_task(universe_dir, t.branch_task_id, "d1")
     mark_status(universe_dir, t.branch_task_id, status="succeeded")
     q = read_queue(universe_dir)
     assert q[0].status == "succeeded"
@@ -149,24 +165,25 @@ def test_mark_status_invalid_transition_raises(universe_dir):
         mark_status(universe_dir, t.branch_task_id, status="succeeded")
 
 
-def test_file_lock_race(universe_dir):
-    """5 threads × 20 mixed ops, no lost entries, no duplicate claims."""
+def test_concurrent_legacy_claims_fail_closed_without_queue_mutation(universe_dir):
+    """Every concurrent legacy claimant is rejected; the queue stays pending."""
     ids = [f"bt_race_{i}" for i in range(100)]
     for tid in ids:
         append_task(universe_dir, _make_task(branch_task_id=tid))
 
-    claimed: list[str] = []
-    claimed_lock = threading.Lock()
+    rejected: list[str] = []
+    rejected_lock = threading.Lock()
     errors: list[Exception] = []
 
     def worker(start: int):
         try:
             for i in range(20):
                 tid = ids[(start * 20 + i) % 100]
-                got = claim_task(universe_dir, tid, f"w-{start}")
-                if got is not None:
-                    with claimed_lock:
-                        claimed.append(got.branch_task_id)
+                try:
+                    claim_task(universe_dir, tid, f"w-{start}")
+                except LegacyClaimAuthorityDisabled:
+                    with rejected_lock:
+                        rejected.append(tid)
         except Exception as exc:
             errors.append(exc)
 
@@ -177,11 +194,10 @@ def test_file_lock_race(universe_dir):
         t.join()
 
     assert errors == []
-    assert len(claimed) == len(set(claimed))  # no duplicate claims
+    assert sorted(rejected) == sorted(ids)
     q = read_queue(universe_dir)
     assert len(q) == 100  # no lost entries
-    running = sum(1 for t in q if t.status == "running")
-    assert running == len(claimed)
+    assert all(task.status == "pending" for task in q)
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -843,7 +859,7 @@ def test_queue_cancel_on_running_task_as_host_requests_cancel(
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
     btid = q[0].branch_task_id
-    claim_task(udir, btid, "daemon-1")
+    _project_running_task(udir, btid, "daemon-1")
 
     resp = json.loads(
         _action_queue_cancel(universe_id=uid, branch_task_id=btid),
@@ -871,7 +887,7 @@ def test_queue_cancel_on_running_task_as_owner_requests_cancel(
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
     btid = q[0].branch_task_id
-    claim_task(udir, btid, "daemon-1")
+    _project_running_task(udir, btid, "daemon-1")
 
     resp = json.loads(
         _action_queue_cancel(universe_id=uid, branch_task_id=btid),
@@ -897,7 +913,7 @@ def test_queue_cancel_on_running_task_unauthorized(
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
     btid = q[0].branch_task_id
-    claim_task(udir, btid, "daemon-1")
+    _project_running_task(udir, btid, "daemon-1")
 
     resp = json.loads(
         _action_queue_cancel(universe_id=uid, branch_task_id=btid),

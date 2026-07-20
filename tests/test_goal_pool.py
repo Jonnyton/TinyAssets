@@ -745,7 +745,7 @@ def test_wire_up_try_pick_returns_none_when_queue_empty(
     assert inputs == {}
 
 
-def test_wire_up_try_pick_claims_pending_task(
+def test_wire_up_try_pick_refuses_pending_json_task(
     universe_dir, monkeypatch,
 ):
     from fantasy_daemon.__main__ import _try_dispatcher_pick
@@ -767,13 +767,11 @@ def test_wire_up_try_pick_claims_pending_task(
     claimed, inputs_merge = _try_dispatcher_pick(
         universe_dir, "daemon-test",
     )
-    assert claimed is not None
-    assert claimed.branch_task_id == task.branch_task_id
-    assert inputs_merge == {"active_series": "pooled"}
-    # Queue shows running status
+    assert claimed is None
+    assert inputs_merge == {}
     q = read_queue(universe_dir)
-    assert q[0].status == "running"
-    assert q[0].claimed_by == "daemon-test"
+    assert q[0].status == "pending"
+    assert not q[0].claimed_by
 
 
 def test_wire_up_cancel_during_claim_race(universe_dir, monkeypatch):

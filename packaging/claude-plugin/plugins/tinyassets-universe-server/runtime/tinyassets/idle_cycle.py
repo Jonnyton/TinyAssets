@@ -2,8 +2,9 @@
 
 Why this exists (root-caused live 2026-07-14): multiple daemon processes can
 run the per-universe idle heartbeat tail when the dispatcher claims nothing.
-Task claims are file-locked
-(``branch_tasks.claim_task``) but the idle cycle was not, so N healthy
+Task claims were file-locked at the time of the incident (the JSON claim path
+is now retired in favor of SQLite ``LeaseStore``), but the idle cycle was not,
+so N healthy
 daemons produced N duplicate cycles — observed as exact duplicate
 ``activity.log`` pairs every ~5min, 0–2s apart.
 

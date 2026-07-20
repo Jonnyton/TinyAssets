@@ -64,7 +64,14 @@ def leased_state() -> dict[str, Any]:
     }
 
 
-def blob_store_with_result_blobs(tmp_path: Path):
+def blob_store_with_result_blobs(
+    tmp_path: Path,
+    *,
+    body: dict[str, Any] | None = None,
+    job_id: str = JOB_ID,
+    lease_id: str = LEASE_ID,
+    fence: int = 17,
+):
     from tinyassets.runtime.blob_refs import BlobStore
 
     blob_store = BlobStore(
@@ -73,7 +80,7 @@ def blob_store_with_result_blobs(tmp_path: Path):
         owner_quota_bytes=4096,
         daemon_quota_bytes=4096,
     )
-    body = result_body()
+    body = body or result_body()
     for field, content in (
         (body["repo_patch"], b"patch bytes"),
         (body["logs"][0], b"stdout bytes"),
@@ -87,9 +94,9 @@ def blob_store_with_result_blobs(tmp_path: Path):
             "size_bytes": len(content),
             "media_type": "application/octet-stream",
             "confidentiality": "public",
-            "job_id": JOB_ID,
-            "lease_id": LEASE_ID,
-            "fence": 17,
+            "job_id": job_id,
+            "lease_id": lease_id,
+            "fence": fence,
         }
         upload = blob_store.init_blob(
             declared,
@@ -157,6 +164,97 @@ def test_valid_current_fence_committed_blob_completes_exactly_once(tmp_path: Pat
     assert job_store.state["accepted_result_sha256"] == result["signature"]["result_sha256"]
     assert job_store.state_changes == 2  # candidate acceptance + one completion
     assert "effect" not in vars(first)
+
+
+def test_lease_store_validated_s5_path_completes_exactly_once(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.api.execution_jobs import (
+        CompletionConflictError,
+        complete_job,
+        submit_candidate_result,
+    )
+    from tinyassets.branch_tasks import BranchTask
+    from tinyassets.runtime.lease_store import LeaseStore, RecordReference
+
+    lease_now = datetime(2026, 7, 19, 0, 30, tzinfo=UTC)
+    store = LeaseStore(tmp_path / "leases.sqlite3", clock=lambda: lease_now)
+    task = BranchTask(
+        branch_task_id=JOB_ID,
+        branch_def_id="branch-loop",
+        universe_id="universe-a",
+        queued_at="2026-07-19T00:29:00Z",
+    )
+    store.add_task(
+        task,
+        result_state={
+            "owner_user_id": "user:owner-1",
+            "device_key_id": "device-key:builder-1",
+            "capability_class": "repo",
+            "repo_mode": "coding",
+            "runner_policy_sha256": "c" * 64,
+            "image_digest": f"sha256:{'d' * 64}",
+            "candidate_result": None,
+            "candidate_receipt": None,
+            "completion_receipt": None,
+        },
+    )
+    lease = store.claim(
+        JOB_ID,
+        daemon_id="daemon:builder-1",
+        bind_capsule=lambda _identity: RecordReference(CAPSULE_ID, CAPSULE_SHA256),
+    )
+    opaque_request = {
+        "job_id": JOB_ID,
+        "daemon_id": lease.daemon_id,
+        "lease_id": lease.lease_id,
+        "fence": lease.fence,
+        "capsule_sha256": lease.capsule.content_sha256,
+        "result_sha256": "0" * 64,
+    }
+    with pytest.raises(CompletionConflictError):
+        complete_job(store, opaque_request, now=datetime(2026, 7, 19, 0, 31, tzinfo=UTC))
+    assert store.read_task(JOB_ID).status == "leased"
+
+    body = result_body()
+    body["lease_id"] = lease.lease_id
+    body["fence"] = lease.fence
+    blob_store, body = blob_store_with_result_blobs(
+        tmp_path,
+        body=body,
+        job_id=JOB_ID,
+        lease_id=lease.lease_id,
+        fence=lease.fence,
+    )
+    key = SigningKey.generate()
+    result, _ = create_result(body, key)
+    submit_candidate_result(
+        store,
+        job_id=JOB_ID,
+        raw_result=json.dumps(result, separators=(",", ":")).encode(),
+        verify_key=key.verify_key,
+        device_key_active=True,
+        blob_store=blob_store,
+        now=datetime(2026, 7, 19, 0, 31, tzinfo=UTC),
+    )
+    request = dict(
+        opaque_request,
+        result_sha256=result["signature"]["result_sha256"],
+    )
+    first = complete_job(
+        store,
+        request,
+        now=datetime(2026, 7, 19, 0, 31, 10, tzinfo=UTC),
+    )
+    second = complete_job(
+        store,
+        request,
+        now=datetime(2026, 7, 19, 0, 31, 20, tzinfo=UTC),
+    )
+
+    assert second == first
+    assert store.read_task(JOB_ID).status == "succeeded"
+    assert sum(event.kind == "completed" for event in store.events(JOB_ID)) == 1
 
 
 def test_completion_rejects_stored_candidate_body_tamper(tmp_path: Path) -> None:

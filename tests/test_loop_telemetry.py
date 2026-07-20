@@ -10,7 +10,6 @@ import pytest
 from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
-    claim_task,
     new_task_id,
     read_queue,
     reclaim_expired_leases,
@@ -21,21 +20,25 @@ def _utc(offset_s: float = 0.0) -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=offset_s)
 
 
-def _make_task(universe: Path) -> BranchTask:
+def _make_task(universe: Path, *, running: bool = False) -> BranchTask:
+    now = _utc()
     task = BranchTask(
         branch_task_id=new_task_id(),
         branch_def_id="def-telemetry-test",
         universe_id="u-telemetry-test",
         trigger_source="owner_queued",
+        status="running" if running else "pending",
+        claimed_by="daemon::test::1" if running else "",
+        worker_owner_id="daemon::test::1" if running else "",
+        heartbeat_at=now.isoformat() if running else "",
+        lease_expires_at=(now + timedelta(minutes=30)).isoformat() if running else "",
     )
     append_task(universe, task)
     return task
 
 
 def test_reclaim_resets_expired_lease(tmp_path):
-    task = _make_task(tmp_path)
-    claimed = claim_task(tmp_path, task.branch_task_id, "daemon::test::1")
-    assert claimed is not None
+    task = _make_task(tmp_path, running=True)
 
     count = reclaim_expired_leases(tmp_path, now=_utc(offset_s=10_000))
     assert count == 1
@@ -48,8 +51,7 @@ def test_reclaim_resets_expired_lease(tmp_path):
 
 
 def test_reclaim_leaves_fresh_lease_alone(tmp_path):
-    task = _make_task(tmp_path)
-    assert claim_task(tmp_path, task.branch_task_id, "daemon::test::1") is not None
+    task = _make_task(tmp_path, running=True)
 
     assert reclaim_expired_leases(tmp_path) == 0
     rows = {task.branch_task_id: task for task in read_queue(tmp_path)}
@@ -57,8 +59,7 @@ def test_reclaim_leaves_fresh_lease_alone(tmp_path):
 
 
 def test_reclaim_skips_leaseless_running_rows(tmp_path):
-    task = _make_task(tmp_path)
-    assert claim_task(tmp_path, task.branch_task_id, "daemon::test::1") is not None
+    _make_task(tmp_path, running=True)
     from tinyassets.branch_tasks import _read_raw, _write_raw, queue_path
 
     queue = queue_path(tmp_path)

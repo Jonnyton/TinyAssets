@@ -17,7 +17,6 @@ import pytest
 from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
-    claim_task,
     is_task_cancel_requested,
     mark_status,
     new_task_id,
@@ -33,7 +32,12 @@ def universe_dir(tmp_path: Path) -> Path:
     return d
 
 
-def _queue_one(universe_dir: Path, trigger: str = "user_request") -> str:
+def _queue_one(
+    universe_dir: Path,
+    trigger: str = "user_request",
+    *,
+    running: bool = False,
+) -> str:
     task_id = new_task_id()
     append_task(
         universe_dir,
@@ -43,6 +47,9 @@ def _queue_one(universe_dir: Path, trigger: str = "user_request") -> str:
             universe_id="u",
             inputs={},
             trigger_source=trigger,
+            status="running" if running else "pending",
+            claimed_by="daemon-1" if running else "",
+            worker_owner_id="daemon-1" if running else "",
         ),
     )
     return task_id
@@ -105,8 +112,7 @@ def test_request_task_cancel_sets_flag_on_pending(universe_dir):
 
 def test_request_task_cancel_sets_flag_on_running(universe_dir):
     """Running task: flag goes True (the primary new case)."""
-    task_id = _queue_one(universe_dir)
-    claim_task(universe_dir, task_id, "daemon-1")
+    task_id = _queue_one(universe_dir, running=True)
     assert request_task_cancel(universe_dir, task_id) is True
     row = next(t for t in read_queue(universe_dir) if t.branch_task_id == task_id)
     assert row.cancel_requested is True
@@ -119,8 +125,7 @@ def test_request_task_cancel_noop_on_terminal(universe_dir):
     Stale MCP calls can't resurrect a terminal task or cause a
     daemon restart-recovery step to finalize the wrong row.
     """
-    task_id = _queue_one(universe_dir)
-    claim_task(universe_dir, task_id, "daemon-1")
+    task_id = _queue_one(universe_dir, running=True)
     mark_status(universe_dir, task_id, status="succeeded")
 
     assert request_task_cancel(universe_dir, task_id) is False
@@ -204,9 +209,7 @@ def test_request_then_is_requested_roundtrip_for_claimed_task(universe_dir):
       3. Stream loop polls is_task_cancel_requested, sees True.
       4. Daemon calls mark_status("cancelled") to finalize.
     """
-    task_id = _queue_one(universe_dir)
-    claimed = claim_task(universe_dir, task_id, "daemon-1")
-    assert claimed is not None and claimed.status == "running"
+    task_id = _queue_one(universe_dir, running=True)
 
     # MCP layer requests cancel.
     assert request_task_cancel(universe_dir, task_id) is True

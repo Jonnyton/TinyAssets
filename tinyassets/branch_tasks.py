@@ -7,8 +7,9 @@ spawn zero or many BranchTasks.
 
 The queue is per-universe (``<universe>/branch_tasks.json``) — sibling
 to ``work_targets.json``. All mutations go through a sidecar ``.lock``
-file so concurrent ``submit_request`` + daemon-claim + mark-status
-paths can't clobber one another. This is the codebase's first
+file so concurrent queue projection updates and mark-status paths cannot
+clobber one another. Claim authority lives only in SQLite ``LeaseStore``.
+This is the codebase's first
 file-lock primitive; the pattern is also exercised by the queue
 race tests.
 
@@ -431,6 +432,10 @@ class QueueCapExceeded(RuntimeError):
     exceeded. The task was NOT appended."""
 
 
+class LegacyClaimAuthorityDisabled(RuntimeError):
+    """The JSON queue cannot grant execution ownership."""
+
+
 def append_task_capped(
     universe_path: Path,
     task: BranchTask,
@@ -491,63 +496,15 @@ def claim_task(
     executor_worker_id: str | None = None,
     executor_runtime_id: str | None = None,
 ) -> BranchTask | None:
-    """File-locked claim. Returns claimed task, or None if already
-    claimed / missing / not pending.
-    """
-    qp = queue_path(universe_path)
-    with _file_lock(universe_path):
-        raw = _read_raw(qp)
-        for row in raw:
-            if not isinstance(row, dict):
-                continue
-            if row.get("branch_task_id") != task_id:
-                continue
-            if row.get("status") != "pending":
-                return None
-            # CONSUMPTION-time dead-ref guard (Codex r15 #5): the enqueue-boundary
-            # check only narrows the deletion-race window; a concurrent delete can
-            # land while the task sits queued. Before transitioning a
-            # bug_investigation task to running, revalidate its handler branch
-            # still exists — never RUN against a dead reference. Mark it a
-            # structured ``dead_ref`` terminal state instead of claiming it.
-            if row.get("request_type") == "bug_investigation":
-                from tinyassets.bug_investigation import (
-                    revalidate_investigation_handler,
-                )
+    """Refuse the retired JSON ownership path.
 
-                status, reason = revalidate_investigation_handler(
-                    universe_path, row.get("branch_def_id", ""),
-                )
-                if status == "dead":
-                    # DEFINITIVE missing handler → TERMINAL dead_ref. Stamp
-                    # terminal_at like mark_status does (Codex r16 #4), so
-                    # get_status's loop-stall signal counts this as a real
-                    # terminal transition (an empty terminal_at would make the
-                    # wedge gate miss it).
-                    row["status"] = "dead_ref"
-                    row["dead_ref_reason"] = reason
-                    row["terminal_at"] = _now_iso()
-                    _write_raw(qp, raw)
-                    return None
-                if status == "unavailable":
-                    # TRANSIENT registry error (e.g. SQLite 'database is locked')
-                    # — NOT proof the handler is gone (Codex r19 #2). Do NOT claim
-                    # and do NOT terminate: leave the task PENDING so a later
-                    # claim retries once storage recovers. Never permanently
-                    # discard a task on a transient error.
-                    return None
-                # status == "ok" → the handler exists; fall through and claim.
-            heartbeat_at, lease_expires_at = _lease_window()
-            row["status"] = "running"
-            row["claimed_by"] = claimer
-            row["worker_owner_id"] = claimer
-            row["executor_worker_id"] = executor_worker_id or ""
-            row["executor_runtime_id"] = executor_runtime_id or ""
-            row["heartbeat_at"] = heartbeat_at
-            row["lease_expires_at"] = lease_expires_at
-            _write_raw(qp, raw)
-            return BranchTask.from_dict(row)
-    return None
+    S4/S10 must route daemon execution through ``runtime.LeaseStore.claim``
+    with the signed capsule binder. Keeping this legacy signature fail-loud
+    prevents an older caller from silently recreating a second authority.
+    """
+    raise LegacyClaimAuthorityDisabled(
+        "JSON task claims are disabled; claim through the SQLite lease store"
+    )
 
 
 def refresh_task_heartbeat(
@@ -828,21 +785,20 @@ def reclaim_expired_leases(
 ) -> int:
     """Lease-aware reclaim: reset ``running`` rows whose lease expired.
 
-    BUG-011 Phase C / daemon-liveness-watchdog spec: ``claim_task``
-    stamps a lease window and the runner refreshes it via
-    ``refresh_task_heartbeat`` while alive — so a ``running`` row with
-    an expired lease means its worker wedged or died mid-task. Unlike
+    Legacy daemon-liveness projection cleanup: historical ``running`` rows
+    carry a lease window that the old runner refreshed via
+    ``refresh_task_heartbeat``. The JSON queue can no longer grant claims;
+    SQLite ``LeaseStore`` is the sole authority. Unlike
     :func:`recover_claimed_tasks` (startup-only blanket reset), this is
     safe to call while OTHER workers are healthy: live claims keep
     their leases fresh and are never touched. Intended call site is the
-    dispatcher claim path, so every claim attempt sweeps first and a
-    wedged claim is reaped on the next pick instead of the next daemon
-    restart. Returns the count reclaimed.
+    legacy dispatcher selection path while S4/S10 migration is pending.
+    Returns the count reclaimed.
 
     ``reclaim_leaseless`` (startup-only): also reset ``running`` rows that
-    carry NO lease / an unparsable one. Since ``claim_task`` always stamps a
-    lease, a lease-less running row can only be a pre-lease-era or corrupt
-    orphan — never a live peer — so it is safe to reclaim. Without this a
+    carry NO lease / an unparsable one. Such a row is a pre-lease-era or corrupt
+    orphan — never a current SQLite-granted owner — so it is safe to reclaim.
+    Without this a
     lease-less row would stay ``running`` forever once startup stopped using
     the blanket :func:`recover_claimed_tasks` (Codex cross-family review,
     2026-06-25).
