@@ -149,11 +149,62 @@ reasoning does not.*
 > invariant into the plan. The fix was one lane of opposite-family review — the same move that
 > corrected the S6 amendment and Edit 3 of invariant 26.
 
-**Status: still NOT ACTED ON** pending the one remaining question — whether the proposed
-Ed25519 re-check actually closes the *demonstrated* fix-5 forge, which turns on whether
-`lease_id`/`lease_fence` are inside the signed `ExecutionResultBodyV1`
-(`fable-does-signature-close-forge.md`, in flight). If they are not signed, Path B does not
-close it either and fix-6 needs a different shape. A contingent fix-6 brief is being pre-drafted
+### RESOLVED: the signature re-check DOES close the demonstrated forge
+
+`fable-does-signature-close-forge.md` (**partial**) settles the pivotal question.
+
+**`lease_id` and `fence` ARE inside the signed payload** (`execution_result.py:129-130`); the
+signature covers the JCS hash of the whole body (`:351-353`, signed at `:528`), and
+`verify_execution_result` both re-runs the Ed25519 check (`:579`) *and* binds
+`body["lease_id"] == expected_lease_id` / `body["fence"] == expected_fence` (`:594-595`).
+Walking the reproduced forge with a completion-time re-check installed:
+
+- **Never-signed doctored body B'** — the copied `signature_b64` is over the *original* body,
+  so verification fails -> `ResultIntegrityError`. **Forge fails.**
+- **Genuinely-signed body replayed onto a fabricated `(L2,F2)`** — signature valid, but signed
+  `lease_id` != expected -> `ResultBindingError`. **Forge fails, precisely because the
+  generation is inside the signed content.**
+
+Why the forge works today: `complete_validated_result` **never re-verifies the signature**. It
+only recomputes the JCS hash of the stored body, compares it to `candidate_result_sha256` and
+to the body's own `signature.result_sha256` *as a string*, and compares it to the anchor event.
+Every one of those comparands is authorable by a full-DB actor — and `complete_validated_result`
+and `complete_job` **take no verify key at all**.
+
+**Why the verdict is `partial`, and what fix-6 must therefore include:** the re-check's trust
+root is the same caller-supplied device key already flagged `contract-defect`, and the
+signature is the **daemon's own** key, not an independent validator's. So the load-bearing
+element is the **platform-owned key registry plus an enforced single-writer invariant**, not
+the re-check alone. Resolve the verify key the caller-supplied way and fix-6 inherits the S1
+hole.
+
+> **Stale-claim correction, verified directly.** That review repeated an earlier claim that
+> compose "still co-mounts one `workflow-data` volume into the control plane and all four
+> workers", concluding the forge's actor still exists. **False at `eb793409`** — I checked
+> `git show eb793409:deploy/compose.yml`: three services (`daemon`, `cloudflared`, `logs`),
+> and `tinyassets-data:/data` mounts **only** into `daemon`. The four workers were retired in
+> `764a4f65`, as Codex's Path B gate stated. The genuine residual full-compromise paths are
+> the `logs` sidecar's Docker socket (`:154`) and the root backup job — both full-compromise,
+> neither the narrow row-only actor.
+
+### fix-6 shape — now determined by cross-verified evidence
+
+1. **Retire** the anchor/receipt/count tower (both families; no count/index layer *can* close
+   the class).
+2. **Add** Ed25519 re-verification of the stored candidate at completion — *proven* to close
+   the demonstrated forge because the generation is signed.
+3. **Resolve the verify key from a platform-owned key registry**, never caller-supplied, or the
+   fix inherits the S1 trust-root defect.
+4. **Preserve** a compact receipt/event consistency mechanism the signature check does not
+   replace (Codex's correction to Path B's over-aggressive retirement list).
+5. **Add** the in-transaction clock fix for the confirmed TOCTOU: server-owned clock sampled
+   after `BEGIN IMMEDIATE`, expiry predicate in the CAS.
+6. **State the invariant honestly** — "no deployment currently grants an untrusted actor DML
+   access to the lease store" — and name its preconditions (Docker-socket sidecar, root backup
+   job) rather than claiming SQLite makes the actor impossible.
+
+**Still not started.** The brief exists (`fable-fix6-reshape-brief.md`, brief-ready) and needs
+one revision pass to fold in items 3, 4 and 6 before any build. A contingent fix-6 brief is being pre-drafted
 (`fable-fix6-reshape-brief.md`) with a hard requirement to name, for every retired guard, what
 property it provided and what now provides it — deleting a guard whose property has no
 replacement is how a simplification becomes a regression. The two fix-5 gates were left
