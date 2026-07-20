@@ -168,6 +168,179 @@ class _RawProviderSpawnVisitor(ast.NodeVisitor):
             self.calls.append((current, node.lineno))
         self.generic_visit(node)
 
+
+class _ProviderCredentialEnvWriteVisitor(ast.NodeVisitor):
+    """Find static writes to manifest credentials through ``os.environ`` aliases."""
+
+    def __init__(self) -> None:
+        self.function_stack: list[str] = []
+        self.bindings: list[dict[str, tuple[str, object]]] = [{}]
+        self.writes: list[tuple[str, int, str]] = []
+
+    def _resolve(self, node: ast.expr) -> tuple[str, object] | None:
+        if isinstance(node, ast.Name):
+            return self.bindings[-1].get(node.id)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return ("strings", frozenset({node.value}))
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            values: set[str] = set()
+            for element in node.elts:
+                resolved = self._resolve(element)
+                if not resolved or resolved[0] != "strings":
+                    return None
+                values.update(resolved[1])
+            return ("strings", frozenset(values))
+        if isinstance(node, ast.Dict):
+            keys: set[str] = set()
+            values: set[str] = set()
+            for key, value in zip(node.keys, node.values, strict=True):
+                if key is None:
+                    return None
+                resolved_key = self._resolve(key)
+                resolved_value = self._resolve(value)
+                if not resolved_key or resolved_key[0] != "strings":
+                    return None
+                keys.update(resolved_key[1])
+                if resolved_value and resolved_value[0] == "strings":
+                    values.update(resolved_value[1])
+            return ("mapping", (frozenset(keys), frozenset(values)))
+        if isinstance(node, ast.Attribute):
+            owner = self._resolve(node.value)
+            if owner and owner == ("module", "os"):
+                if node.attr == "environ":
+                    return ("environ", "os.environ")
+                if node.attr == "putenv":
+                    return ("putenv", "os.putenv")
+            if owner and owner[0] == "environ" and node.attr in {
+                "__setitem__",
+                "setdefault",
+                "update",
+            }:
+                return ("environ_method", node.attr)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            owner = self._resolve(node.func.value)
+            if owner and owner[0] == "mapping" and node.func.attr in {"get", "values"}:
+                return ("strings", owner[1][1])
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            owner = self._resolve(node.args[0])
+            attribute = node.args[1].value
+            if owner and owner == ("module", "os") and attribute in {
+                "environ",
+                "putenv",
+            }:
+                return (attribute, f"os.{attribute}")
+            if owner and owner[0] == "environ" and attribute in {
+                "__setitem__",
+                "setdefault",
+                "update",
+            }:
+                return ("environ_method", attribute)
+        return None
+
+    def _bind(self, target: ast.expr, value: tuple[str, object] | None) -> None:
+        if not isinstance(target, ast.Name):
+            return
+        if value is None:
+            self.bindings[-1].pop(target.id, None)
+        else:
+            self.bindings[-1][target.id] = value
+
+    def _record(self, key: ast.expr | None, lineno: int) -> None:
+        resolved = self._resolve(key) if key is not None else None
+        if not resolved or resolved[0] != "strings":
+            names = {"<dynamic>"}
+        else:
+            names = set(resolved[1]) & set(PROVIDER_CREDENTIAL_ENV_VARS)
+        current = self.function_stack[-1] if self.function_stack else "<module>"
+        self.writes.extend((name, lineno, current) for name in sorted(names))
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name == "os":
+                self.bindings[-1][alias.asname or alias.name] = ("module", "os")
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module != "os":
+            return
+        for alias in node.names:
+            if alias.name in {"environ", "putenv"}:
+                self.bindings[-1][alias.asname or alias.name] = (
+                    alias.name,
+                    f"os.{alias.name}",
+                )
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        resolved = self._resolve(node.value)
+        for target in node.targets:
+            if isinstance(target, ast.Subscript):
+                owner = self._resolve(target.value)
+                if owner and owner[0] == "environ":
+                    self._record(target.slice, node.lineno)
+            self._bind(target, resolved)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+        if isinstance(node.target, ast.Subscript):
+            owner = self._resolve(node.target.value)
+            if owner and owner[0] == "environ":
+                self._record(node.target.slice, node.lineno)
+        self._bind(node.target, self._resolve(node.value) if node.value else None)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        owner = self._resolve(node.target)
+        if owner and owner[0] == "environ":
+            resolved = self._resolve(node.value)
+            if resolved and resolved[0] == "mapping":
+                for key in sorted(resolved[1][0]):
+                    self._record(ast.Constant(key), node.lineno)
+            else:
+                self._record(None, node.lineno)
+        self.generic_visit(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.function_stack.append(node.name)
+        self.bindings.append(self.bindings[-1].copy())
+        self.generic_visit(node)
+        self.bindings.pop()
+        self.function_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        resolved_func = self._resolve(node.func)
+        if resolved_func and resolved_func[0] == "putenv":
+            self._record(node.args[0] if node.args else None, node.lineno)
+        elif resolved_func and resolved_func[0] == "environ_method":
+            if resolved_func[1] in {"__setitem__", "setdefault"}:
+                self._record(node.args[0] if node.args else None, node.lineno)
+            elif resolved_func[1] == "update":
+                if node.args:
+                    resolved = self._resolve(node.args[0])
+                    if resolved and resolved[0] == "mapping":
+                        for key in sorted(resolved[1][0]):
+                            self._record(ast.Constant(key), node.lineno)
+                    else:
+                        self._record(None, node.lineno)
+                for keyword in node.keywords:
+                    self._record(
+                        ast.Constant(keyword.arg) if keyword.arg else None,
+                        node.lineno,
+                    )
+        self.generic_visit(node)
+
 COMPUTE_OWNERSHIP_INVARIANT = """### Compute ownership invariant
 
 TinyAssets production services are control-plane only. Every executable
@@ -265,6 +438,87 @@ print(json.dumps({{
         "PATH": env["PATH"],
         "TINYASSETS_DATA_DIR": env["TINYASSETS_DATA_DIR"],
         "GIT_AUTHOR_NAME": "preserved-git-setting",
+    }
+
+
+def test_control_plane_refuses_both_provider_key_write_surfaces_for_process_lifetime(
+    tmp_path,
+) -> None:
+    base_path = tmp_path / "control-plane-api"
+    base_path.mkdir()
+    keys_path = base_path / ".provider_keys.json"
+    keys_path.write_text(
+        json.dumps({"GROQ_API_KEY": "persisted-after-bootstrap"}),
+        encoding="utf-8",
+    )
+    child_code = (
+        "import json, os; "
+        f"print(json.dumps({{name: os.environ.get(name) for name in "
+        f"{PROVIDER_CREDENTIAL_ENV_VARS!r}}}))"
+    )
+    repro_code = f"""
+import json
+import os
+import subprocess
+import sys
+
+from fastapi.testclient import TestClient
+from fantasy_daemon.api import app, configure
+
+names = {PROVIDER_CREDENTIAL_ENV_VARS!r}
+load_error = None
+try:
+    configure(base_path={str(base_path)!r}, api_key="", daemon=None)
+except RuntimeError as exc:
+    load_error = str(exc)
+
+response = TestClient(app, raise_server_exceptions=False).post(
+    "/v1/config/providers",
+    json={{"provider": "grok-free", "api_key": "endpoint-after-bootstrap"}},
+)
+child = subprocess.run(
+    [sys.executable, "-c", {child_code!r}],
+    capture_output=True,
+    check=True,
+    text=True,
+)
+print(json.dumps({{
+    "load_error": load_error,
+    "endpoint_status": response.status_code,
+    "endpoint_detail": response.json().get("detail"),
+    "persisted": json.loads(open({str(keys_path)!r}, encoding="utf-8").read()),
+    "parent": {{name: os.environ.get(name) for name in names}},
+    "child": json.loads(child.stdout),
+}}))
+"""
+    env = os.environ.copy()
+    env.update(
+        {
+            "TINYASSETS_CONTROL_PLANE": "1",
+            "TINYASSETS_DATA_DIR": str(tmp_path / "process-data"),
+            **{name: f"ambient-{name.lower()}" for name in PROVIDER_CREDENTIAL_ENV_VARS},
+        }
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", repro_code],
+        capture_output=True,
+        check=True,
+        env=env,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+
+    assert result["load_error"] is not None
+    assert "control-plane" in result["load_error"]
+    assert result["endpoint_status"] == 409
+    assert "control-plane" in result["endpoint_detail"]
+    assert result["persisted"] == {"GROQ_API_KEY": "persisted-after-bootstrap"}
+    assert result["parent"] == {
+        name: None for name in PROVIDER_CREDENTIAL_ENV_VARS
+    }
+    assert result["child"] == {
+        name: None for name in PROVIDER_CREDENTIAL_ENV_VARS
     }
 
 
@@ -433,6 +687,93 @@ def test_raw_provider_spawn_visitor_resolves_static_aliases(source, lineno) -> N
     visitor.visit(ast.parse(source))
 
     assert visitor.calls == [("<module>", lineno)]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_name"),
+    (
+        (
+            "import os as operating_system\n"
+            "operating_system.environ['ANTHROPIC_API_KEY'] = 'x'\n",
+            "ANTHROPIC_API_KEY",
+        ),
+        (
+            "from os import environ as runtime_env\n"
+            "runtime_env.setdefault('OPENAI_API_KEY', 'x')\n",
+            "OPENAI_API_KEY",
+        ),
+        (
+            "import os\nenv = os.environ\n"
+            "env.update({'GROQ_API_KEY': 'x'})\n",
+            "GROQ_API_KEY",
+        ),
+        (
+            "from os import putenv as set_env\nset_env('XAI_API_KEY', 'x')\n",
+            "XAI_API_KEY",
+        ),
+        (
+            "import os\nkey = 'GEMINI_API_KEY'\nos.environ[key] = 'x'\n",
+            "GEMINI_API_KEY",
+        ),
+        (
+            "import os\nruntime_env = getattr(os, 'environ')\n"
+            "runtime_env.__setitem__('CLAUDE_CODE_OAUTH_TOKEN', 'x')\n",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ),
+        (
+            "import os\nruntime_env = os.environ\n"
+            "writer = getattr(runtime_env, 'setdefault')\n"
+            "writer('ANTHROPIC_BASE_URL', 'x')\n",
+            "ANTHROPIC_BASE_URL",
+        ),
+        (
+            "import os\nwriter = os.environ.update\n"
+            "writer({'TINYASSETS_CODEX_AUTH_JSON_B64': 'x'})\n",
+            "TINYASSETS_CODEX_AUTH_JSON_B64",
+        ),
+    ),
+)
+def test_provider_credential_env_write_visitor_resolves_static_aliases(
+    source, expected_name
+) -> None:
+    visitor = _ProviderCredentialEnvWriteVisitor()
+    visitor.visit(ast.parse(source))
+
+    assert visitor.writes == [(expected_name, source.count("\n"), "<module>")]
+
+
+def test_manifest_provider_credentials_are_not_written_to_process_environment() -> None:
+    allowed_writes = {
+        ("fantasy_daemon/api.py", "_load_provider_keys"),
+        ("fantasy_daemon/api.py", "configure_provider"),
+    }
+    roots = (
+        ROOT / "tinyassets",
+        ROOT / "fantasy_daemon",
+        ROOT / "scripts",
+        ROOT
+        / "packaging"
+        / "claude-plugin"
+        / "plugins"
+        / "tinyassets-universe-server"
+        / "runtime"
+        / "tinyassets",
+    )
+    violations: list[str] = []
+    for source_root in roots:
+        for path in sorted(source_root.rglob("*.py")):
+            visitor = _ProviderCredentialEnvWriteVisitor()
+            visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+            relative = path.relative_to(ROOT).as_posix()
+            for name, lineno, function in visitor.writes:
+                if (relative, function) not in allowed_writes:
+                    violations.append(f"{relative}:{lineno} ({function}: {name})")
+
+    assert violations == [], (
+        "manifest provider credentials may enter explicit child environments, "
+        "but must not be written into the process environment outside the "
+        f"guarded off-control-plane loader/configuration paths: {violations}"
+    )
 
 
 def test_control_plane_never_spawns_provider_processes_across_any_health_or_call_path(

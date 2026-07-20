@@ -55,6 +55,21 @@ def truthy_env(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def assert_provider_credential_env_write_allowed(
+    name: str,
+    environ: MutableMapping[str, str] | None = None,
+) -> None:
+    """Fail before a manifest credential enters a control-plane environment."""
+    if name not in PROVIDER_CREDENTIAL_ENV_VARS:
+        raise ValueError(f"not a provider credential manifest variable: {name}")
+    target = os.environ if environ is None else environ
+    if truthy_env(target.get(CONTROL_PLANE_ENV)):
+        raise RuntimeError(
+            "control-plane process refuses provider credential environment "
+            f"write: {name}"
+        )
+
+
 def scrub_control_plane_provider_credentials(
     environ: MutableMapping[str, str] | None = None,
 ) -> tuple[str, ...]:
