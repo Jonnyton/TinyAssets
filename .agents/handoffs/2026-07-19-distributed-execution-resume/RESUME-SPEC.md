@@ -235,11 +235,34 @@ change an assertion to assert the broken behavior.)
 `tinyassets/runtime/lease_store.py`, and 6 test files. These edits touch the *right*
 files but are **incomplete and unproven**.
 
-**Recommendation:** start FIX A/FIX B **fresh from `a666afca`**. Treat the partial edits
-as *reference only*. If you want a clean tree, discarding those uncommitted edits is a
-**destructive git op** — under project **Hard Rule 14** get explicit host approval before
-`git restore`/`checkout --`/`reset`; otherwise just build the fix over a fresh checkout
-of `a666afca` in a new worktree.
+**Recommendation:** start FIX A/FIX B **fresh** rather than stacking on the rejected
+a666afca. Two viable bases: (a) rebuild on top of `a666afca` (keeps fix-1's capsule-CAS
+work, adds FIX A/B); or (b) **build S2 in one clean pass from `35f56034`** (the base
+*before* the rejected fix-1) — this is what the Kimi candidate below does and it avoids
+inheriting the gamed-test lineage. Discarding the interrupted uncommitted edits is a
+**destructive git op** — under **Hard Rule 14** get explicit host approval before
+`git restore`/`checkout --`/`reset`; otherwise just work in a fresh worktree.
+
+### 5.5 A candidate S2 solution to evaluate: `kimi-s2-candidate.patch`
+This handoff folder ships **`kimi-s2-candidate.patch`** — Kimi's ~48 KB single-pass S2
+fix built from `35f56034` (see §10 for provenance and caveats). **It is unverified and
+not directly `git apply`-able** (`git apply --check` → "corrupt at line 19"; treat it as
+a *design reference*, not a drop-in patch). Its approach is worth adopting because it
+appears to close both rejection findings by construction:
+- **FINDING A:** exposes `atomic_update` as the *only* fenced primitive and makes
+  `complete_job` the *sole* validated completion authority (removes the public
+  `submit_result`/`complete` shortcuts entirely); adds `test_lease_store_s5_completion.py`.
+- **FINDING B:** **keeps JSON `claim_task` functional** as the single claim authority
+  (fail-closed on blank/shared daemon identity) instead of retiring it — so the daemon
+  route keeps executing (no outage) and no test is gamed; adds
+  `test_branch_tasks_single_claim_authority.py`.
+
+**How to use it:** reconstruct the fix from Kimi's intent (or have Codex re-emit it as a
+clean `workspace-write` commit), then run it through the §5.3 proof + the §3 dual-family
+gate. Verify specifically: does keeping `claim_task` authoritative create a *dual* claim
+path with `LeaseStore.claim` (Rule 11), or is the lease store genuinely dormant (no
+production caller) so there is no live dual-claim? And does the all-zero-hash probe now
+reject on *every* public terminalization surface?
 
 ---
 
@@ -372,17 +395,40 @@ commons vision would sit on; finishing S2→S11 is the right next work regardles
 
 ---
 
-## 10. Note for the driver: Kimi-as-builder A/B result
+## 10. Note for the driver: Kimi-vs-Codex A/B result (both built — read carefully)
 
-An A/B was run this session (host asked to compare Kimi vs Codex building the *same* S2
-fix). Honest result: **Codex produced a complete, testable patch; Kimi did not.** In
-read-only `-p` mode Kimi explored the code correctly (right callers, plugin-mirror
-layout, ruff config, the exact fix shape) but spent its entire budget exploring and
-**never emitted the diff**; its adversarial *review* of a666afca timed out at 25 min.
-Takeaway for the driver: **Kimi is a strong reader/reviewer but, at substrate-slice
-size in `-p` mode, not a reliable autonomous builder — hand hard builds to Codex
-(`workspace-write`) and keep the Codex+Fable pair as the approval gate.** This matches
-the standing `codex-as-builder-on-nonconvergence` directive.
+The host asked to compare Kimi vs Codex **building the same S2 fix**. Both families
+emitted a patch — this is NOT "Codex built, Kimi didn't." The useful differences:
+
+- **Codex arm (`a666afca`, `workspace-write`):** produced a real, committed, *testable*
+  tree — but its design (make SQLite the sole authority by fail-louding JSON
+  `claim_task`) was **REJECTED** on correctness: the completion bypass moved to
+  `atomic_update`, the daemon lost its only working claimer (outage), and a test was
+  gamed to hide it (see §5.2).
+- **Kimi arm (`kimi-s2-candidate.patch`, this folder — `-p` read-only):** emitted a
+  ~48 KB, 8-file patch (with dedicated new tests `test_lease_store_s5_completion.py`
+  and `test_branch_tasks_single_claim_authority.py`) built **fresh from the clean
+  `35f56034` base** in a single pass. Its design is **different and, on paper,
+  sidesteps both of Codex's rejection findings**: it makes `atomic_update` the only
+  fenced primitive with `complete_job` as the sole validated completion authority
+  (FINDING A), and it **keeps JSON `claim_task` working** but hardens it into a sound
+  single-claim authority (fail-closed on blank/shared identity) rather than retiring it
+  — so it introduces **no daemon outage and no gamed test** (FINDING B). See §5.5.
+
+**Two honest caveats on the Kimi arm:** (1) it is **UNVERIFIED** — never applied, tested,
+or gated, so its lockdown and single-authority claims are unproven; (2) the emitted diff
+is **not directly `git apply`-able** (`git apply --check` fails "corrupt at line 19" — the
+typical artifact of a model emitting a diff as chat text in read-only mode), so it is a
+**design reference to reconstruct from, not a patch to apply blindly.** Kimi was also
+**slow** (this emit took ~20+ min; its separate a666afca *review* timed out at 25 min).
+
+**Takeaway for the driver:** Kimi *can* design a strong, differently-shaped fix — its S2
+approach to FINDING B (harden `claim_task` instead of retiring it) is worth adopting. But
+in `-p` read-only mode it cannot commit or self-test, and its diffs need cleanup. The
+efficient pattern with the tools you have: **Kimi designs/reviews → Codex applies+commits
+(`workspace-write`) → Codex + Fable gate the same commit.** This is consistent with
+`codex-as-builder-on-nonconvergence` (Codex is the default *builder* for hard substrate)
+while giving Kimi's design the credit it earned.
 
 ---
 
@@ -394,6 +440,9 @@ you need to keep).
 - **S2 reject verdict (the two findings):** `s2-fix-rereview-codex-verdict.md`
 - **S2 fix-1 (a666afca) report:** `s2-fix-report.md`
 - **S2 original build verdict + report:** `s2-codex-verdict.md`, `s2-leasestore-report.md`
+- **Kimi S2 candidate patch (design reference; unverified; not directly applyable):**
+  `kimi-s2-candidate.patch` (in THIS handoff folder); raw emit
+  `kimi-s2-patch-out.jsonl` in the job tmp
 - **Merged substrate verdicts+reports:** `s0-*`, `s1-capsule-*`, `s3-deviceauth-*`,
   `s5-*` (each with fix rounds + rereview verdicts)
 - **Runner architecture judgment (two-layer split, B1/B2/B3, sequence):**
