@@ -1,0 +1,128 @@
+# Distributed-execution — open findings ledger
+
+**Opened:** 2026-07-20, on resuming Kimi Code's lane after its credit ran out.
+**Purpose:** one durable place for findings produced by the standing fleet, so nothing
+is lost between rounds. Kimi's `output/s2-gate/s2-fix2-report.md` remains the canonical
+S2 review-cycle log; this ledger is the *cross-slice* open-items view.
+
+**Fleet:** `>=4` Codex + `>=4` Claude/Fable `peer_agent.py` lanes held continuously by
+the `.claude/hooks/fleet_floor_guard.py` Stop hook. Status: `python scripts/fleet_status.py`.
+Lane artifacts land in `C:/Users/Jonathan/Projects/TinyAssets/output/s2-gate/`.
+
+---
+
+## The recurring defect class
+
+Five independent findings, one shape: **an authority boundary is asserted at one layer
+that the substrate underneath never actually establishes.** The system trusts a party's
+own claim about itself, or hands a component more authority than its role needs.
+
+| Slice | The trusted party asserts | Artifact |
+|---|---|---|
+| S2 (5 rounds) | its own result hashes -> receipts -> ledger events -> row status | `gate-verdict-codex-fix{,3,4}.md` |
+| S6 HIGH-1 | its own sandbox pins; both sides of the check come from the supplier | `fable-s6-check.md` |
+| S7 HIGH-1 | broker gets a write handle to the terminalizing store | `fable-s7-attack.md` |
+| S7 HIGH-2 | one unscoped S3 credential lets a broker sign a result and complete | `fable-s7-attack.md` |
+| S8 OPEN-1 | "credential-free staging" with no rule making it true | `codex-s8-amendment.md` |
+
+A Fable lane is auditing the remaining program for the same class and testing whether a
+single invariant closes it (`fable-structural-audit.md`, in flight). The §9 settlement
+path is the priority: money moving on a self-asserted claim is the worst case.
+
+---
+
+## Open findings
+
+### S2 — fenced lease store (fix-5 build in flight)
+
+| ID | Sev | Finding | State |
+|---|---|---|---|
+| S2-1 | HIGH | Terminal rows reopenable by doctoring `status` back to `leased`, routing around replay verification; a second completion succeeds. Exactly-once must be enforced AT WRITE TIME (zero `completed` events for the generation before completing). | fix-5 scope (Item 0) |
+| S2-2 | MED | Malformed persisted candidate hashes surface as client-409 instead of 500-class corruption (`execution_jobs.py:305`, `lease_store.py:858`). | fix-5 scope (taxonomy F1-F3) |
+| S2-3 | ? | **NEW CLASS — TOCTOU, not forgery.** `now` sampled BEFORE `BEGIN IMMEDIATE` acquires the write lock; a writer queued behind another can pass an expiry check with pre-expiry time, so an expired lease may renew or complete (`lease_store.py:893-904,1179-1220` @ `5a307576`; violates plan :830-839). Surfaced by the S4 schema gate, not an S2 lane. | verification dispatched (`codex-stale-time-verify.md`) |
+
+**S2-3 is the one to watch.** Findings 1-4 were all forgery vectors; this is a different
+class found by a different lane. If confirmed, it does *not* by itself mean the design is
+thrashing — but a sixth round on this store is the point to ask whether the
+durable-receipt/ledger design has too many trust surfaces and wants simplifying rather
+than more hardening (per the `no-users-build-correct-shape` host directive).
+
+### S4 — heartbeat / lease lifecycle (`codex-s4-schema-v2-gate.md`, adapt)
+
+- **Blocking 1:** the S2-3 stale-time race above. Fix: sample authoritative time AFTER
+  lock acquisition for claim, heartbeat, completion, sweep, and cancel co-triggers; add a
+  barrier test holding the writer lock across exact expiry.
+- **Blocking 2:** W2's completion-less terminal `cancelled` (terminal row, no `completed`
+  event) is treated as *corrupt* by current completion authority — so v2's promised typed
+  409 is actually a 500-class error.
+- Partially resolved: post-completion heartbeat no-op rule is overbroad for 410 and lacks
+  atomic ordering; expiry co-triggers do not give the claimed liveness bound; heartbeat
+  idempotency still unspecified; 410 epoch-revocation conflicts with A2.
+- **S4 build must not start** until these close. Brief design-gate in flight
+  (`fable-s4-brief-gate.md`).
+
+### S6 — sandbox runner (`fable-s6-check.md`, adapt)
+
+- Lookahead is accurate against branch code but **stale**: never folds in the binding
+  sandbox-review adapt items (gVisor `runsc` normative, capsule-bound backend-profile
+  identity, measured-overhead gate) that `output/research/INDEX.md:12` marks REQUIRED
+  pre-build. `OPEN-S6-1` as posed would steer the brief to the wrong menu.
+- **HIGH-1:** pin flow is supplier-circular under B3. Fix = platform-published signed pin
+  registry + pin-echo is attribution-only, never acceptance evidence.
+- Invariant 15 as written makes every external-adapter daemon permanently ineligible ->
+  pressure to fake local attestation. Needs a distinct `external_dispatch` capability class.
+- Adopt-ready amendment text delivered for §6.7, invariant 15, §12 S6 row.
+- Cross-family verification in flight (`codex-crossfamily-verify-s6-s7.md`).
+
+### S7 — model broker (`fable-s7-attack.md`, adapt; `codex-s7-opens-resolution.md` in flight)
+
+- **HIGH-1:** reconciled sub-spec co-locates the broker ledger in the lease-store DB using
+  `BEGIN IMMEDIATE`, handing a daemon-side broker a write handle to the tables S2
+  terminalizes with — and contradicts the draft's network-RPC reservation with a 5s
+  deadline. An implementer cannot build from both. Must pick network-RPC and delete the
+  same-database language.
+- **HIGH-2:** S3 mints one unscoped device credential; a compromised broker can sign a
+  candidate-result and call `:complete` -> **second terminalizer**. Fix belongs in S3,
+  which is already landed. Under cross-family verification now.
+- **HIGH-3:** budget aggregation key and cost ceiling are not signed capsule fields, so
+  anti-reset and cost-cap defenses are unverified.
+
+### S8 — staging / bundle isolation (`codex-s8-amendment.md`, adapt)
+
+- The strong "credential-free staging" claim **cannot be made** and was replaced with two
+  enforceable guarantees: ambient-authority isolation + snapshot-object closure, with an
+  exact permitted-object set (`base.commit` + `base.tree` recursive closure; parents,
+  tags, notes, reflogs, dangling objects all excluded; mode `160000` rejected).
+- Closure enforced at the quarantine-to-staging boundary, before any child launches.
+- Cancellation-per-phase mapping corrected against heartbeat v2 grace rules.
+
+### S9 — WSL2 broker transport (`fable-s9-check-v2.md` in flight)
+
+- First run **audited the wrong tree** (searched `workflow/` on `main`; the program lives
+  in `tinyassets/` on `feat/patch-loop-runner`), so its "absent from main" findings are
+  artifacts. Re-dispatched with an explicit branch pin.
+- Its one substantive claim, pending proper verification: S9 preserves a plaintext
+  socketpair to an untrusted relay instead of terminating S7 §1.5 end-to-end encryption at
+  the driver, so a compromised WSL2 guest could read and tamper with all broker traffic.
+
+### S10 / S11 — no lookaheads existed (`fable-s10-s11-lookahead.md` in flight)
+
+- S10 is where the daemon migrates from the JSON claim route to `LeaseStore.claim`,
+  inverting the fail-closed guard
+  `test_lease_store_claim_has_no_production_dispatch_caller`. A botched cutover is a live
+  daemon outage — exactly the FINDING B outage fix-2 had to repair.
+- S11 is the first B2 live test: the goal milestone. Needs an accurate list of §13
+  acceptance criteria that nothing currently satisfies.
+
+---
+
+## Tooling notes (learned the hard way this session)
+
+- `peer_agent.py --out` captures **only the peer's final message**. A lane that delivers
+  in parts, or sends an addendum after a background search, loses its body. Briefs must
+  say: deliver everything in ONE final message.
+- Lanes search whatever tree they land in. Any brief touching code MUST pin the branch
+  (`feat/patch-loop-runner`) and note the package is `tinyassets/`, not `workflow/` —
+  otherwise "does not exist" findings are artifacts of the wrong checkout.
+- The anti-deferral clause (Kimi's rule) is still required for Claude lanes; without it
+  they dispatch their own sub-reviews and end with "I'll report when it returns".
