@@ -67,12 +67,29 @@ than more hardening (per the `no-users-build-correct-shape` host directive).
   sandbox-review adapt items (gVisor `runsc` normative, capsule-bound backend-profile
   identity, measured-overhead gate) that `output/research/INDEX.md:12` marks REQUIRED
   pre-build. `OPEN-S6-1` as posed would steer the brief to the wrong menu.
-- **HIGH-1:** pin flow is supplier-circular under B3. Fix = platform-published signed pin
-  registry + pin-echo is attribution-only, never acceptance evidence.
-- Invariant 15 as written makes every external-adapter daemon permanently ineligible ->
-  pressure to fake local attestation. Needs a distinct `external_dispatch` capability class.
-- Adopt-ready amendment text delivered for §6.7, invariant 15, §12 S6 row.
-- Cross-family verification in flight (`codex-crossfamily-verify-s6-s7.md`).
+- **HIGH-1 — REFUTED as an acceptance bypass** by cross-family verification
+  (`codex-crossfamily-verify-s6-s7.md`). The narrow observation stands (§8.4 lets the
+  daemon submit its own pins; no signed registry in eligibility), but settlement already
+  requires the fenced B2 completion CAS *plus* the verification tier, and invariant 22
+  already demotes self-report to attribution. **Fable's proposed fix was also wrong:** a
+  signed registry does not prove a dishonest host *used* an allowed pin — it can simply
+  echo a registered value. Correct fix = pin echo is explicitly attribution-only, with
+  independent verification preserved.
+- **Two further corrections to Fable's amendment**, both material:
+  - the optional lower-trust `linux-bwrap` / `linux-rootless-oci` profiles create parallel
+    execution routes, violating **Hard Rule 11** (single clean route, no dual paths);
+  - **`external_dispatch` is the wrong abstraction.** The capsule's execution capability is
+    the semantic class `"repo" | "source_exec"`, and B3 must feed the *unchanged* B2
+    protocol. Venue/supply type belongs in a backend-profile or market-offer dimension,
+    not as a replacement for the capability class.
+- Staleness finding: **CONFIRMED** (gVisor `runsc`, capsule-bound profile identity,
+  readiness/per-job receipt separation, measured-overhead gate all absent).
+- Final reconciled amendment text dispatched (`codex-s6-amendment-final.md`), instructed to
+  judge on merits rather than defer to the later reviewer.
+
+> **Process note.** This is the cross-family gate paying for itself on a *review*, not a
+> build: adopting Fable's text as written would have introduced a Rule 11 violation and a
+> wrong abstraction into the plan. A finding being real does not make its proposed fix right.
 
 ### S7 — model broker (`fable-s7-attack.md`, adapt; `codex-s7-opens-resolution.md` in flight)
 
@@ -81,9 +98,19 @@ than more hardening (per the `no-users-build-correct-shape` host directive).
   terminalizes with — and contradicts the draft's network-RPC reservation with a 5s
   deadline. An implementer cannot build from both. Must pick network-RPC and delete the
   same-database language.
-- **HIGH-2:** S3 mints one unscoped device credential; a compromised broker can sign a
-  candidate-result and call `:complete` -> **second terminalizer**. Fix belongs in S3,
-  which is already landed. Under cross-family verification now.
+- **HIGH-2 — CONFIRMED** by cross-family verification, with one literal correction and an
+  important scoping: S3 does *not* mint exactly one token (up to 8 concurrent 5-minute
+  tokens, `daemon_enrollment.py:50,183-190`), but every token belongs to the **same
+  undifferentiated authority class**. The token object carries only `daemon_id`, key
+  thumbprint, credential epoch, and expiry — **no audience, no operation scope, no
+  job/lease/fence binding, no broker principal** (`daemon_auth.py:142-147`). Request
+  signing binds method/path/body/nonce, but that is proof-of-possession and replay
+  protection, **not authorization**; the verifier returns `AuthenticatedDaemon` and performs
+  **no endpoint or action-scope check** (`daemon_enrollment.py:920-999`).
+  **Exploitability: a pre-build contract defect, NOT a presently reachable landed exploit** —
+  the completion endpoints are not mounted yet (`execution_jobs.py:3-4,221,309`; S4 merges
+  HTTP routing later). So the fix must land **before S4 mounts the routes**, at which point
+  it becomes live. Fix belongs in S3, which is already merged.
 - **HIGH-3:** budget aggregation key and cost ceiling are not signed capsule fields, so
   anti-reset and cost-cap defenses are unverified.
 
