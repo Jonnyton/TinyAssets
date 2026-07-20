@@ -11,6 +11,37 @@ Lane artifacts land in `C:/Users/Jonathan/Projects/TinyAssets/output/s2-gate/`.
 
 ---
 
+## Live state (2026-07-20)
+
+**S2 fix-5 is COMMITTED at `eb793409`** on `feat/patch-loop-leasestore-fix2` — ledger-anchored
+one-shot completion + taxonomy closure. Codex built it but its sandbox denied writes to the
+worktree git metadata, so the commit is host-side. Verification was **independently re-run
+before committing**, not taken from the builder's report: 156 passed focused; ruff clean on
+the 3 changed files; vault CORE zero-diff; scope exactly 3 files (+1202/-19); and the
+daemon-route failure **ID set is byte-identical** to the same suites at `5a307576`
+(11 failed/127 passed both sides — pre-existing, no regression and no masked pass/fail swap).
+**Dual-family gate is firing on `eb793409` now.**
+
+> Method note: the first ID-diff I ran reported "identical" against two *empty* sets, because
+> pytest's ANSI codes meant `grep '^FAILED'` matched nothing. Re-ran with `--color=no`. A
+> green result from a comparison that matched zero rows is the same vacuity trap this program
+> keeps finding in its own tests — check that a diff actually compared something.
+
+**Resolved host questions:**
+- **§13.18 load — PostgreSQL is NOT required** (`codex-load-architecture.md`, fails-tunable).
+  The filesystem MVP does not pass as-is, but can likely survive on one SQLite writer after
+  S4 protocol changes. Decision: build S4 around SQLite as sole job/lease authority, remove
+  JSON and poll writes from the hot path, fix transaction-time authority, run the load gate
+  early — and **do not approve the current S4 brief unchanged**. Exact from code: one
+  concurrent writer globally (`BEGIN IMMEDIATE`), WAL, `synchronous=FULL`, and every
+  30s-heartbeat takes that same global lock. No measured numbers exist; all capacity figures
+  are UNVERIFIED estimates.
+
+**Still open for the host:** the orphan effect route needs an owning slice
+(`fable-orphan-effect-route.md`, confirmed-orphan).
+
+---
+
 ## The recurring defect class
 
 Five independent findings, one shape: **an authority boundary is asserted at one layer
@@ -24,10 +55,41 @@ own claim about itself, or hands a component more authority than its role needs.
 | S7 HIGH-1 | broker gets a write handle to the terminalizing store | `fable-s7-attack.md` |
 | S7 HIGH-2 | one unscoped S3 credential lets a broker sign a result and complete | `fable-s7-attack.md` |
 | S8 OPEN-1 | "credential-free staging" with no rule making it true | `codex-s8-amendment.md` |
+| **S1 (LANDED)** | its own signing root — `create_execution_capsule` takes any caller-supplied `SigningKey` + arbitrary `signing_key_id`, and verification takes a caller-supplied `VerifyKey` + `signing_key_active=True`. Crypto is sound; the caller supplies its own trust root. **Sixth instance, and the first in merged code.** Reachability under determination (`codex-s1-trustroot-reach.md`) | `codex-landed-substrate-audit.md` (**reject**) |
+| **S14 settlement** | the PAYER asserts "my replay disagreed" — blocking payment, triggering refund, and posting negative reputation, with the patch already fetched from CAS. No defined adjudicator, so whoever asserts first wins | `fable-structural-audit.md` HIGH-B |
 
-A Fable lane is auditing the remaining program for the same class and testing whether a
-single invariant closes it (`fable-structural-audit.md`, in flight). The §9 settlement
-path is the priority: money moving on a self-asserted claim is the worst case.
+### Proposed closure: invariant 26 + a mandatory gate probe
+
+The structural audit's answer to "does one principle close this class?" was **yes, but the
+sentence alone provably does not work** — invariant 22 already said essentially this, was
+scoped to market attestation, was enforced nowhere, and instances 2-4 happened anyway. The
+contribution is the **gate probe**: *"for each decision, which comparand or precondition
+could the constrained/paid party have authored?"* Both sides, or the load-bearing one, = RED
+without needing an exploit demo. It retroactively catches S2 fix-2/-3/-4, S6 HIGH-1,
+S7 HIGH-1/2 and S8 OPEN-1 — defects that cost multi-round gates to find live.
+
+A same-family stress test (`fable-invariant26-stress.md`, **adopt-with-edits**) found the
+probe mechanically decidable and correct on **10 of 13** real decisions, but caught three
+defects in the proposed text: "eligibility" in the prohibited class makes §9.2 matching
+**unimplementable** (no independent source exists or can exist pre-execution for a remote
+host's RAM or image); no trust-domain scope, so it outlaws the B2 owner-BYO completion that
+§13 requires; and the "constrained/paid party" wording **misses the audit's own HIGH-B**,
+since a payer-authored replay verdict is authored by neither. Four exact edits proposed,
+plus a rider to fold the S6 pin amendment in the same commit. **Cross-family gate in flight
+(`codex-invariant26-gate.md`) — nothing adopted until it returns**, since both the proposal
+and its stress test came from the same family.
+
+### A SECOND class the probe is blind to: reset-by-multiplicity
+
+The stress test constructed a defect the probe structurally cannot see: the attacker does not
+author a comparand, it **multiplies the decision** — fresh identity, attempt, lease, or
+idempotency key — until an aggregate constraint resets. Every individual decision is properly
+provenanced. Known instances: the per-capsule **model budget reset** (lapse the lease,
+re-claim, get a fresh budget, indefinitely, billed to the owner) and **sybil reputation
+reset** (abandon `daemon_id`, re-enrol). A dedicated audit returned **7 findings**
+(`fable-reset-multiplicity.md`). The probe interrogates one decision's provenance and is
+blind to cardinality across decisions; stretching invariant 26 to cover it would destroy its
+one-question decidability, so it needs its own treatment.
 
 ---
 
