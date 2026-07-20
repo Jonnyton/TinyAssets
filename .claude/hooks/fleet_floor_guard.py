@@ -62,6 +62,33 @@ def _allow(reset: bool = True) -> None:
     sys.exit(0)
 
 
+def _warn_mode() -> bool:
+    """PostToolUse runs this advisory: report a dip mid-turn, never block."""
+    return "--warn" in sys.argv
+
+
+# Advisory mode is throttled so a long turn is not spammed every tool call.
+WARN_INTERVAL_S = 120
+WARN_STAMP = PROJECT_DIR / ".claude" / ".fleet_warn_stamp"
+
+
+def _warn_throttled() -> bool:
+    """True if enough time has passed since the last advisory warning."""
+    import time  # noqa: PLC0415
+
+    try:
+        if time.time() - WARN_STAMP.stat().st_mtime < WARN_INTERVAL_S:
+            return False
+    except OSError:
+        pass
+    try:
+        WARN_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        WARN_STAMP.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
 def main() -> None:
     if OFF_SWITCH.exists():
         _allow()
@@ -81,6 +108,21 @@ def main() -> None:
     claude = sum(1 for lane in lanes if lane["provider"] in CLAUDE_PROVIDERS)
     if codex >= FLOOR_CODEX and claude >= FLOOR_CLAUDE:
         _allow()
+
+    if _warn_mode():
+        # Mid-turn advisory: surface the dip immediately so the fleet can be
+        # topped up without waiting for the end of the turn. Never blocks.
+        if _warn_throttled():
+            print(
+                f"[fleet] BELOW FLOOR mid-turn — codex {codex}/{FLOOR_CODEX}, "
+                f"claude {claude}/{FLOOR_CLAUDE}. The supervisor daemon should "
+                f"refill from its queue; if it is not running, start it:\n"
+                f"  python scripts/fleet_supervisor.py --daemon &\n"
+                f"and keep the queue stocked at output/s2-gate/_queue/"
+                f"{{codex,claude}}/.",
+                file=sys.stderr,
+            )
+        sys.exit(0)
 
     blocks = _read_blocks() + 1
     if blocks > MAX_CONSECUTIVE_BLOCKS:
