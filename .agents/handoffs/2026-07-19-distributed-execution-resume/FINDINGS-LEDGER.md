@@ -40,6 +40,60 @@ daemon-route failure **ID set is byte-identical** to the same suites at `5a30757
 **Still open for the host:** the orphan effect route needs an owning slice
 (`fable-orphan-effect-route.md`, confirmed-orphan).
 
+### fix-5 GATE: **BOTH FAMILIES REJECT `eb793409`** — independently, on different defects
+
+- **Fable: reject (CRITICAL)** — the completion authority is forgeable *within its own stated
+  boundary*; machine-reproduced. Detail below.
+- **Codex: reject (High)** — public past-expiry replay still misfiles stored corruption as a
+  client 409. Repro: legitimately complete, then set `status='leased'`, clear the accepted
+  columns, and set `lease_expires_at` one second in the past. The direct store correctly
+  raises `StoredStateCorruptError` ("completed event exists but job row is not terminal"), but
+  `complete_job` runs its row-status/expiry preflight (`execution_jobs.py:185`) *before* the
+  store consults its task-scoped `completed` ledger, so the public path returns
+  `StaleLeaseError` / 409. Same shape as the taxonomy defect fix-5 was built to close, one
+  layer up.
+
+Neither family approved, and neither found the other's defect — two independent rejects on one
+commit. That is the dual-family rule working exactly as intended.
+
+#### Fable's finding in detail (`gate-verdict-fable-fix5.md`)
+
+**The builder's own stated invariant is false.** The commit message said the anchor is
+"tamper-resistant only while schema objects remain intact… the open question for the gate."
+The gate answered it by *reproducing* a durable, replay-clean completion of a body the
+validator **never signed**, with every trigger and both unique indexes intact.
+
+Root cause: the append-only triggers (`lease_store.py:226-234`) block only **UPDATE and
+DELETE** on `lease_events` — **INSERT is a data-row write and is allowed**. The
+generation-scoped unique index blocks a *duplicate* `result_submitted` within one
+`(task_id, lease_id, fence)`, and the completion `count != 1` gate catches duplicates.
+**Neither blocks a singleton anchor for a generation that has no genuine event.** So the
+attacker doctors the row onto a fabricated generation `(L2, F2)`, INSERTs one anchor with
+`content_sha256 = H'`, and completion accepts. Both routes fall: the active path appends a
+forged `completed` event (task-scoped index has room), and the terminal-replay path reuses
+the genuine task-scoped `completed` while comparing an attacker-doctored column against
+itself — so the "anchor is the sole surviving witness" assumption fails.
+
+> **"No count/index layer can close this, because the substrate permits fresh-generation
+> INSERT."**
+
+That is a proof that **fix-6-as-more-armor is impossible**, not an opinion. It is the fifth
+consecutive instance of the identical root class: fix-2 receipt fields -> fix-3 row-status +
+unfiltered event -> fix-4 row-status routing key -> fix-5 attacker-chosen generation. The
+earlier ledger note said the simplification trigger should fire on a *sixth forgery vector*
+rather than on the TOCTOU. **It has now fired.**
+
+What the gate found SOUND and worth salvaging: the taxonomy 500-vs-409 split, the atomic
+migration (individual `execute()` in one `BEGIN IMMEDIATE`, index-shape validation, typed
+failure on legacy-unanchored rows), and the fix-4 reopen guard — verified non-vacuous. The
+gate's phrasing: these are *"well-built — but they harden the wrong layer."*
+
+Why the anchor pins missed it: every anchor test doctors **within the current generation**
+(UPDATE-doctor authoring path). Not one test moves the row onto a fabricated generation and
+INSERTs a matching anchor. `test_foreign_result_event_…` inserts a foreign-generation event
+but leaves the row on the genuine generation, so it is filtered out — it proves the opposite
+of coverage.
+
 ### The big open question: should S2 RETIRE most of what five rounds built?
 
 `fable-s2-simplification.md` (**path-b**) argues the anchor/receipt machinery defends an
@@ -63,9 +117,43 @@ re-verification at completion + the in-transaction clock fix. Timing argument: `
 has **zero production instantiations** and there are no users, so pre-merge is the cheapest
 this reshape will ever be.
 
-**Status: NOT ACTED ON.** Single-family finding recommending deletion of five rounds of work
--> Codex cross-family gate in flight (`codex-pathb-gate.md`), asked explicitly which error it
-would rather make. A contingent fix-6 brief is being pre-drafted
+**CROSS-FAMILY VERDICT: `partial`** (`codex-pathb-gate.md`) — *the conclusion survives, the
+reasoning does not.*
+
+- **The "unoccupiable adversary" claim is FALSE, and Codex proved it empirically** by running
+  SQLite 3.50.4: the per-connection **authorizer API** can allow `UPDATE` while denying
+  `DROP TRIGGER` (`has_set_authorizer True` / `update_result 2` /
+  `drop_trigger DatabaseError not authorized`). A broker process can expose constrained DML
+  without exposing the file, and **a future Postgres deployment would naturally grant DML
+  without schema ownership**. So the row-only actor is entirely constructible.
+- **But it is absent here.** Exhaustive branch grep found no `set_authorizer`, no SQL broker,
+  no constrained connection, no direct SQL endpoint; `LeaseStore` connections have
+  unrestricted SQL capability (`lease_store.py:167-175`).
+- **The accurate invariant** is therefore *"No deployment currently grants an untrusted actor
+  DML access to the lease store"* — **not** "SQLite makes such an actor impossible." Writing
+  the categorical version into the plan would bake in a claim that silently breaks the moment
+  anyone adds Postgres or an SQL broker.
+- **B2 access boundary confirmed.** The historical four-worker co-mount *did* create an
+  out-of-process filesystem actor — but with full file/schema power, not row-only — and commit
+  `764a4f65` retired those workers (ancestor of `eb793409`); compose now mounts the data volume
+  only into the daemon. Two remaining **full-compromise** paths deserve naming: the log sidecar
+  holds the Docker socket (root-equivalent; `:ro` on the socket path does not make Docker API
+  requests read-only) and the root backup job exports/restores the whole volume. Neither
+  produces the narrow adversary; both enlarge the full-compromise domain.
+- **Retirement list is too aggressive.** Reshape before merge and retire the anchor tower, but
+  **preserve a compact receipt/event consistency mechanism that the signature check does not
+  replace.**
+
+> This is the clearest case of the session's pattern: Fable's *conclusion* was right and its
+> *justification* was categorically false. Adopting it unreviewed would have written a false
+> invariant into the plan. The fix was one lane of opposite-family review — the same move that
+> corrected the S6 amendment and Edit 3 of invariant 26.
+
+**Status: still NOT ACTED ON** pending the one remaining question — whether the proposed
+Ed25519 re-check actually closes the *demonstrated* fix-5 forge, which turns on whether
+`lease_id`/`lease_fence` are inside the signed `ExecutionResultBodyV1`
+(`fable-does-signature-close-forge.md`, in flight). If they are not signed, Path B does not
+close it either and fix-6 needs a different shape. A contingent fix-6 brief is being pre-drafted
 (`fable-fix6-reshape-brief.md`) with a hard requirement to name, for every retired guard, what
 property it provided and what now provides it — deleting a guard whose property has no
 replacement is how a simplification becomes a regression. The two fix-5 gates were left
