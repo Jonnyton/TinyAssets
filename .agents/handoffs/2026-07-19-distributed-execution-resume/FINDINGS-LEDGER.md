@@ -40,6 +40,50 @@ daemon-route failure **ID set is byte-identical** to the same suites at `5a30757
 **Still open for the host:** the orphan effect route needs an owning slice
 (`fable-orphan-effect-route.md`, confirmed-orphan).
 
+### The big open question: should S2 RETIRE most of what five rounds built?
+
+`fable-s2-simplification.md` (**path-b**) argues the anchor/receipt machinery defends an
+adversary that **cannot exist**:
+
+- B2 daemons never touch the SQLite file — B2 is an HTTP protocol; daemons are remote machines
+  reaching `tinyassets.io/mcp` through the Cloudflare tunnel with OS-keystore keys and
+  <=5-minute tokens. No SQL access of any kind (plan:607-700, :1144).
+- Everyone who *can* reach the file has **full** access, not row-only. SQLite has no privilege
+  system: no connection can be granted `UPDATE lease_tasks` while denied `DROP TRIGGER`.
+  **Fix-5's own migration docstring concedes this** (`lease_store.py:277-283` @ `eb793409`).
+  So the "schema-intact, data-rows-only" adversary is **unoccupiable** — what that boundary
+  really describes is the control plane's own code paths: **bugs, not adversaries**.
+- Single-writer is explicit plan through B2 and beyond (plan:1226, :1283, :1307); the
+  1,000-daemon test scales API clients, not DB writers (plan:1158).
+
+Proposed fix-6 **reshape, before S2 merges** — RETIRE receipt rederivation, anchor enforcement,
+write/replay count gates and their migration; KEEP submission-time S5 verification, CAS +
+fences, partial UNIQUE indexes, append-only triggers, slim taxonomy; ADD one Ed25519
+re-verification at completion + the in-transaction clock fix. Timing argument: `LeaseStore`
+has **zero production instantiations** and there are no users, so pre-merge is the cheapest
+this reshape will ever be.
+
+**Status: NOT ACTED ON.** Single-family finding recommending deletion of five rounds of work
+-> Codex cross-family gate in flight (`codex-pathb-gate.md`), asked explicitly which error it
+would rather make. A contingent fix-6 brief is being pre-drafted
+(`fable-fix6-reshape-brief.md`) with a hard requirement to name, for every retired guard, what
+property it provided and what now provides it — deleting a guard whose property has no
+replacement is how a simplification becomes a regression. The two fix-5 gates were left
+running rather than killed on an unverified recommendation; if Path B confirms, their verdicts
+still say whether the KEPT parts are sound.
+
+If Path B holds, the honest read is that five rounds were not spent on a bad design — they
+were spent hardening against a threat model nobody had checked. That is a gate-coverage
+lesson, not a code lesson, and it is the same root as S2-3 (four rounds of forgery-hunting
+missed a classic TOCTOU because no lane probed the time axis).
+
+### §13 criterion 1 is NOT claimable today
+
+`fable-verdict-index-backfill.md` (**gaps-4**): all four merged slices (S0/S1/S3/S5) lack a
+recorded dual-family verdict against the **merged** sha. "Codex reviewed it several times" is
+not dual-family approval, and neither is "Fable approved an earlier revision". Combined with
+the S1 trust-root `reject`, the merged substrate is less verified than the slice table implies.
+
 ---
 
 ## The recurring defect class
