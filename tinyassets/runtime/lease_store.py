@@ -78,6 +78,12 @@ class CandidateValidationError(LeaseStoreError):
     pass
 
 
+class StoredStateCorruptError(LeaseStoreError):
+    """Persisted state failed structural integrity (corrupt JSON, timestamps,
+    or records). This is a server-side durability failure — it must escape
+    untyped (500-class), never fold into a client-blame rejection/conflict."""
+
+
 @dataclass(frozen=True)
 class RecordReference:
     record_id: str
@@ -210,11 +216,11 @@ class LeaseStore:
     @staticmethod
     def _parse_time(value: Any) -> datetime:
         if type(value) is not str or not value.endswith("Z"):
-            raise LeaseStoreError("stored lease timestamp is corrupt")
+            raise StoredStateCorruptError("stored lease timestamp is corrupt")
         try:
             return datetime.fromisoformat(value[:-1] + "+00:00")
         except ValueError as exc:
-            raise LeaseStoreError("stored lease timestamp is corrupt") from exc
+            raise StoredStateCorruptError("stored lease timestamp is corrupt") from exc
 
     @staticmethod
     def _canonical_uuid(value: str, field: str) -> str:
@@ -251,7 +257,7 @@ class LeaseStore:
         try:
             task_data = json.loads(row["task_json"])
         except (TypeError, json.JSONDecodeError) as exc:
-            raise LeaseStoreError("stored task record is corrupt") from exc
+            raise StoredStateCorruptError("stored task record is corrupt") from exc
         task_data.update(
             status=row["status"],
             claimed_by=row["lease_daemon_id"] or "",
@@ -275,9 +281,9 @@ class LeaseStore:
         try:
             value = json.loads(row["result_state_json"])
         except (TypeError, json.JSONDecodeError) as exc:
-            raise LeaseStoreError("stored result state is corrupt") from exc
+            raise StoredStateCorruptError("stored result state is corrupt") from exc
         if not isinstance(value, dict):
-            raise LeaseStoreError("stored result state is not an object")
+            raise StoredStateCorruptError("stored result state is not an object")
         return value
 
     @classmethod
@@ -315,6 +321,96 @@ class LeaseStore:
             (task_id, kind, lease_id, fence, occurred_at),
         )
 
+    @staticmethod
+    def _latest_event(
+        connection: sqlite3.Connection, task_id: str, *, kind: str
+    ) -> sqlite3.Row | None:
+        """Return the newest append-only ledger event of *kind* for *task_id*."""
+        return connection.execute(
+            """
+            SELECT kind, lease_id, fence, occurred_at FROM lease_events
+            WHERE task_id = ? AND kind = ? ORDER BY event_id DESC LIMIT 1
+            """,
+            (task_id, kind),
+        ).fetchone()
+
+    def _durable_candidate_receipt(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        receipt: Any,
+        result_sha256: str,
+        outcome: Any,
+    ) -> dict[str, Any]:
+        """Return the persisted candidate receipt only when every field matches
+        authoritative state — the row, the just-validated candidate body, and
+        the append-only event ledger (which independently records the true
+        acceptance time). A receipt that disagrees is a durability violation,
+        not a replayable record (S2 fix-3: forged-receipt replay finding)."""
+        event = self._latest_event(connection, row["task_id"], kind="result_submitted")
+        expected = {
+            "job_id": row["task_id"],
+            "result_sha256": result_sha256,
+            "outcome": outcome,
+            "accepted_at": event["occurred_at"] if event is not None else None,
+        }
+        if (
+            event is None
+            or not isinstance(receipt, dict)
+            or set(receipt) != set(expected)
+            or any(receipt[key] != value for key, value in expected.items())
+        ):
+            raise ResultConflictError(
+                "durable candidate receipt does not match authoritative state"
+            )
+        return dict(receipt)
+
+    def _durable_completion_receipt(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        receipt: Any,
+        candidate_hash: str,
+    ) -> dict[str, Any]:
+        """Return the persisted completion receipt only when every field matches
+        authoritative state — the receipt_id is recomputed from the persisted
+        lease bindings, status/accepted hash come from the row, and the
+        completion time comes from the append-only ledger."""
+        event = self._latest_event(connection, row["task_id"], kind="completed")
+        receipt_request = {
+            "job_id": row["task_id"],
+            "daemon_id": row["lease_daemon_id"],
+            "lease_id": row["lease_id"],
+            "fence": row["lease_fence"],
+            "capsule_sha256": row["capsule_sha256"],
+            "result_sha256": candidate_hash,
+        }
+        try:
+            receipt_id = f"completion:{hash_canonical_jcs(receipt_request).hex()}"
+        except CapsuleCanonicalizationError as exc:
+            raise ResultConflictError(
+                "completion bindings are not canonicalizable"
+            ) from exc
+        expected = {
+            "receipt_id": receipt_id,
+            "job_id": row["task_id"],
+            "status": row["status"],
+            "accepted_result_sha256": candidate_hash,
+            "completed_at": event["occurred_at"] if event is not None else None,
+        }
+        if (
+            event is None
+            or not isinstance(receipt, dict)
+            or set(receipt) != set(expected)
+            or any(receipt[key] != value for key, value in expected.items())
+        ):
+            raise ResultConflictError(
+                "durable completion receipt does not match authoritative state"
+            )
+        return dict(receipt)
+
     @classmethod
     def _row_to_lease(cls, row: sqlite3.Row) -> Lease:
         required = (
@@ -326,7 +422,7 @@ class LeaseStore:
             "capsule_sha256",
         )
         if any(type(row[key]) is not str or not row[key] for key in required):
-            raise LeaseStoreError("stored lease record is incomplete")
+            raise StoredStateCorruptError("stored lease record is incomplete")
         return Lease(
             task_id=row["task_id"],
             lease_id=row["lease_id"],
@@ -724,7 +820,13 @@ class LeaseStore:
                 receipt = metadata.get("candidate_receipt")
                 if metadata.get("candidate_result") != verified or not isinstance(receipt, dict):
                     raise ResultConflictError("durable candidate record is incomplete")
-                return dict(receipt)
+                return self._durable_candidate_receipt(
+                    connection,
+                    row=row,
+                    receipt=receipt,
+                    result_sha256=result_sha256,
+                    outcome=verified["outcome"],
+                )
 
             try:
                 for blob_ref, _, _ in references:
@@ -843,7 +945,9 @@ class LeaseStore:
                 receipt = metadata.get("completion_receipt")
                 if not isinstance(receipt, dict):
                     raise ResultConflictError("durable completion receipt is missing")
-                return dict(receipt)
+                return self._durable_completion_receipt(
+                    connection, row=row, receipt=receipt, candidate_hash=candidate_hash
+                )
 
             candidate_id = row["candidate_result_id"]
             if type(candidate_id) is not str or not candidate_id:

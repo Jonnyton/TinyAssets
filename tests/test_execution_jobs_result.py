@@ -22,9 +22,15 @@ from tests.test_execution_result import (
     create_result,
     result_body,
 )
+from tinyassets.runtime.lease_store import StoredStateCorruptError, TaskNotFoundError
 
 
 class MemoryAtomicJobStore:
+    """In-memory AtomicJobResultStore fake. HAZARD (test-quality finding 8):
+    this class re-implements the store's guard logic — a mock-level attack
+    test pins THE MOCK's copy, not lease_store.py. Every mock-level attack
+    test therefore needs a real-store twin in tests/test_lease_store.py."""
+
     def __init__(self, state: dict[str, Any]) -> None:
         self.state = copy.deepcopy(state)
         self.state_changes = 0
@@ -33,7 +39,7 @@ class MemoryAtomicJobStore:
     def read_result_state(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             if self.state["job_id"] != job_id:
-                raise KeyError(job_id)
+                raise TaskNotFoundError(f"task {job_id!r} does not exist")
             return copy.deepcopy(self.state)
 
     def record_validated_candidate(
@@ -60,7 +66,7 @@ class MemoryAtomicJobStore:
 
         with self._lock:
             if self.state["job_id"] != job_id:
-                raise KeyError(job_id)
+                raise TaskNotFoundError(f"task {job_id!r} does not exist")
             state = copy.deepcopy(self.state)
             expires_at = datetime.fromisoformat(state["lease_expires_at"].replace("Z", "+00:00"))
             if state["status"] != "leased" or now >= expires_at:
@@ -161,7 +167,7 @@ class MemoryAtomicJobStore:
 
         with self._lock:
             if self.state["job_id"] != job_id:
-                raise KeyError(job_id)
+                raise TaskNotFoundError(f"task {job_id!r} does not exist")
             state = copy.deepcopy(self.state)
             if expected["lease_fence"] != state["lease_fence"]:
                 raise StaleFenceError("completion fence is not current")
@@ -764,3 +770,106 @@ def test_candidate_replay_to_another_job_binding_is_rejected(tmp_path: Path) -> 
             blob_store=blob_store,
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
+
+
+# ---------------------------------------------------------------------------
+# S2 fix-3: typed not-found, corruption pass-through, fence type edge
+# ---------------------------------------------------------------------------
+
+
+def test_submit_maps_unknown_job_to_typed_404(tmp_path: Path) -> None:
+    from tinyassets.api.execution_jobs import JobNotFoundError, submit_candidate_result
+
+    blob_store, body = blob_store_with_result_blobs(tmp_path)
+    key = SigningKey.generate()
+    result, _ = create_result(body, key)
+    job_store = MemoryAtomicJobStore(leased_state())
+    with pytest.raises(JobNotFoundError) as excinfo:
+        submit_candidate_result(
+            job_store,
+            job_id="123e4567-e89b-42d3-a456-426614174000",
+            raw_result=json.dumps(result, separators=(",", ":")).encode(),
+            verify_key=key.verify_key,
+            device_key_active=True,
+            blob_store=blob_store,
+            now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+        )
+    assert excinfo.value.code == "job_not_found"
+    assert excinfo.value.status_code == 404
+
+
+def test_complete_maps_unknown_job_to_typed_404(tmp_path: Path) -> None:
+    from tinyassets.api.execution_jobs import JobNotFoundError, complete_job
+
+    job_store = MemoryAtomicJobStore(leased_state())
+    request = {
+        "job_id": "123e4567-e89b-42d3-a456-426614174000",
+        "daemon_id": "daemon:builder-1",
+        "lease_id": LEASE_ID,
+        "fence": 17,
+        "capsule_sha256": CAPSULE_SHA256,
+        "result_sha256": "a" * 64,
+    }
+    with pytest.raises(JobNotFoundError) as excinfo:
+        complete_job(job_store, request, now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC))
+    assert excinfo.value.code == "job_not_found"
+    assert excinfo.value.status_code == 404
+
+
+def test_store_corruption_escapes_untyped(tmp_path: Path) -> None:
+    """StoredStateCorruptError is a 500-class durability failure — it must NOT
+    fold into client-typed rejected/conflict errors (hard rule 8)."""
+    from tinyassets.api.execution_jobs import complete_job, submit_candidate_result
+
+    class CorruptStore(MemoryAtomicJobStore):
+        def record_validated_candidate(self, job_id, **kwargs):
+            raise StoredStateCorruptError("stored result state is corrupt")
+
+        def read_result_state(self, job_id):
+            raise StoredStateCorruptError("stored result state is corrupt")
+
+    blob_store, body = blob_store_with_result_blobs(tmp_path)
+    key = SigningKey.generate()
+    result, _ = create_result(body, key)
+    raw = json.dumps(result, separators=(",", ":")).encode()
+    with pytest.raises(StoredStateCorruptError):
+        submit_candidate_result(
+            CorruptStore(leased_state()),
+            job_id=JOB_ID,
+            raw_result=raw,
+            verify_key=key.verify_key,
+            device_key_active=True,
+            blob_store=blob_store,
+            now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+        )
+    request = {
+        "job_id": JOB_ID,
+        "daemon_id": "daemon:builder-1",
+        "lease_id": LEASE_ID,
+        "fence": 17,
+        "capsule_sha256": CAPSULE_SHA256,
+        "result_sha256": "a" * 64,
+    }
+    with pytest.raises(StoredStateCorruptError):
+        complete_job(
+            CorruptStore(leased_state()),
+            request,
+            now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+        )
+
+
+def test_completion_rejects_bool_fence(tmp_path: Path) -> None:
+    """type(True) is not int — a bool fence is malformed, never coerced to 1."""
+    from tinyassets.api.execution_jobs import CompletionRequestError, complete_job
+
+    job_store = MemoryAtomicJobStore(leased_state())
+    request = {
+        "job_id": JOB_ID,
+        "daemon_id": "daemon:builder-1",
+        "lease_id": LEASE_ID,
+        "fence": True,
+        "capsule_sha256": CAPSULE_SHA256,
+        "result_sha256": "a" * 64,
+    }
+    with pytest.raises(CompletionRequestError, match="fence"):
+        complete_job(job_store, request, now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC))

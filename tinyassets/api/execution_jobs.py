@@ -39,6 +39,12 @@ from tinyassets.runtime.lease_store import (
 from tinyassets.runtime.lease_store import (
     StaleLeaseError as StoreStaleLeaseError,
 )
+from tinyassets.runtime.lease_store import (
+    StoredStateCorruptError as StoreStoredStateCorruptError,
+)
+from tinyassets.runtime.lease_store import (
+    TaskNotFoundError as StoreTaskNotFoundError,
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9:_.-]+$", re.ASCII)
@@ -138,6 +144,13 @@ class CandidateResultConflictError(ExecutionJobResultError):
 
 class CompletionRequestError(ExecutionJobResultError):
     """Raised when a completion request is malformed."""
+
+
+class JobNotFoundError(ExecutionJobResultError):
+    """HTTP 404 equivalent for an unknown job (§8.2 standard error contract)."""
+
+    code = "job_not_found"
+    status_code = 404
 
 
 class StaleLeaseError(ExecutionJobResultError):
@@ -253,6 +266,10 @@ def submit_candidate_result(
             blob_store=blob_store,
             now=now,
         )
+    except StoreStoredStateCorruptError:
+        raise  # durability violation: 500-class, never a client-typed error
+    except StoreTaskNotFoundError as exc:
+        raise JobNotFoundError(str(exc)) from exc
     except StoreResultConflictError as exc:
         raise CandidateResultConflictError(str(exc)) from exc
     except LeaseStoreError as exc:
@@ -275,6 +292,10 @@ def complete_job(
     try:
         state = store.read_result_state(parsed["job_id"])
         _assert_completion_bindings(state, parsed, now=now)
+    except StoreStoredStateCorruptError:
+        raise  # durability violation: 500-class, never a client-typed error
+    except StoreTaskNotFoundError as exc:
+        raise JobNotFoundError(str(exc)) from exc
     except StoreStaleLeaseError as exc:
         raise StaleLeaseError(str(exc)) from exc
     except LeaseStoreError as exc:
@@ -300,6 +321,10 @@ def complete_job(
             expected=expected,
             now=now,
         )
+    except StoreStoredStateCorruptError:
+        raise  # durability violation: 500-class, never a client-typed error
+    except StoreTaskNotFoundError as exc:
+        raise JobNotFoundError(str(exc)) from exc
     except StoreStaleLeaseError as exc:
         raise StaleLeaseError(str(exc)) from exc
     except LeaseStoreError as exc:

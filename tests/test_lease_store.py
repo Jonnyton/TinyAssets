@@ -18,6 +18,7 @@ import tinyassets.runtime.lease_store as lease_store_module
 from tinyassets.branch_tasks import BranchTask
 from tinyassets.runtime.lease_store import (
     AlreadyClaimedError,
+    CandidateValidationError,
     InvalidLeaseHolderError,
     LeaseStore,
     RecordReference,
@@ -763,3 +764,246 @@ def test_lease_store_exposes_only_semantic_result_mutators() -> None:
     for name in public_callables:
         parameters = set(inspect.signature(getattr(store, name)).parameters)
         assert parameters.isdisjoint(forbidden_parameters)
+
+
+# ---------------------------------------------------------------------------
+# S2 fix-3: durable-receipt verification + real-store guard pins
+# ---------------------------------------------------------------------------
+
+
+def _doctor_result_state(store: LeaseStore, task_id: str, mutate) -> None:
+    """Rewrite result_state_json via direct SQL — simulates the forged-receipt
+    attack from the Codex gate verdict (corruption below the API layer)."""
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT result_state_json FROM lease_tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        metadata = json.loads(row[0])
+        mutate(metadata)
+        connection.execute(
+            "UPDATE lease_tasks SET result_state_json = ? WHERE task_id = ?",
+            (json.dumps(metadata, sort_keys=True, separators=(",", ":")), task_id),
+        )
+
+
+def _complete(store, task, expected, now):
+    return store.complete_validated_result(task.branch_task_id, expected=expected, now=now)
+
+
+def test_candidate_replay_rejects_forged_durable_receipt(tmp_path: Path) -> None:
+    """Gate HIGH (codex re-review): a doctored candidate receipt is vouched by
+    no replay — every field must match row + validated body + event ledger."""
+    store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    first = _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+    # Intact replay returns the durable receipt unchanged.
+    assert _record_candidate(store, task, blob_store, key, raw_result, clock.now) == first
+
+    def forge(metadata):
+        metadata["candidate_receipt"] = {
+            "job_id": task.branch_task_id,
+            "result_sha256": "0" * 64,
+            "outcome": "job_failed",
+            "accepted_at": "1900-01-01T00:00:00Z",
+        }
+
+    _doctor_result_state(store, task.branch_task_id, forge)
+    with pytest.raises(ResultConflictError, match="authoritative state"):
+        _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+
+def test_completion_replay_rejects_forged_durable_receipt(tmp_path: Path) -> None:
+    """Gate HIGH: a doctored completion receipt (fake status, hash, timestamps,
+    receipt_id) fails closed against recomputed authoritative state."""
+    store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+    first = _complete(store, task, expected, clock.now)
+    assert _complete(store, task, expected, clock.now) == first  # intact replay
+
+    def forge(metadata):
+        metadata["completion_receipt"] = {
+            "receipt_id": "completion:forged",
+            "job_id": task.branch_task_id,
+            "status": "failed",
+            "accepted_result_sha256": "0" * 64,
+            "completed_at": "1900-01-01T00:00:00Z",
+        }
+
+    _doctor_result_state(store, task.branch_task_id, forge)
+    with pytest.raises(ResultConflictError, match="authoritative state"):
+        _complete(store, task, expected, clock.now)
+
+
+def test_candidate_replay_rejects_incomplete_durable_record(tmp_path: Path) -> None:
+    store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+    def nullify(metadata):
+        metadata["candidate_receipt"] = None
+
+    _doctor_result_state(store, task.branch_task_id, nullify)
+    with pytest.raises(ResultConflictError, match="durable candidate record is incomplete"):
+        _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+
+def test_record_candidate_rejects_missing_result_bindings(tmp_path: Path) -> None:
+    """Real-store pin: a task added without result_state bindings cannot take a
+    candidate — typed CandidateValidationError, not an untyped KeyError."""
+    from nacl.signing import SigningKey
+
+    from tinyassets.runtime.blob_refs import BlobStore
+
+    clock = MutableClock()
+    store = LeaseStore(tmp_path / "leases.sqlite3", clock=clock)
+    task = _task()
+    store.add_task(task)  # no result_state bindings
+    _claim(store, task.branch_task_id, "daemon:builder-1")
+    blob_store = BlobStore(
+        tmp_path / "blobs",
+        max_blob_bytes=1024,
+        owner_quota_bytes=4096,
+        daemon_quota_bytes=4096,
+    )
+    with pytest.raises(CandidateValidationError, match="missing result bindings"):
+        store.record_validated_candidate(
+            task.branch_task_id,
+            raw_result=b"{}",
+            verify_key=SigningKey.generate().verify_key,
+            device_key_active=True,
+            blob_store=blob_store,
+            now=clock.now,
+        )
+
+
+def test_completion_rejects_tampered_stored_signature_hash(tmp_path: Path) -> None:
+    """Pins hmac compare #1: the stored signature.result_sha256 is tampered
+    while body and column hash stay consistent — only compare #1 catches it."""
+    store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+
+    def tamper(metadata):
+        metadata["candidate_result"]["signature"]["result_sha256"] = "0" * 64
+
+    _doctor_result_state(store, task.branch_task_id, tamper)
+    with pytest.raises(ResultConflictError, match="stored candidate content hash"):
+        _complete(store, task, expected, clock.now)
+    assert store.read_task(task.branch_task_id).status == "leased"
+    assert "completed" not in [event.kind for event in store.events(task.branch_task_id)]
+
+
+def test_complete_validated_result_rejects_unleased_job(tmp_path: Path) -> None:
+    """Direct-store pin for the status guard: pending job, all-NULL bindings."""
+    clock = MutableClock()
+    store = LeaseStore(tmp_path / "leases.sqlite3", clock=clock)
+    task = _task()
+    store.add_task(task)
+    with pytest.raises(StaleLeaseError, match="not under an active lease"):
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected={
+                "lease_id": None,
+                "lease_fence": 0,
+                "daemon_id": None,
+                "capsule_sha256": None,
+            },
+            now=clock.now,
+        )
+
+
+def test_completion_rejects_missing_candidate_id(tmp_path: Path) -> None:
+    store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET candidate_result_id = NULL WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+    with pytest.raises(ResultConflictError, match="durable candidate record is incomplete"):
+        _complete(store, task, expected, clock.now)
+
+
+def test_record_candidate_rejects_foreign_job_blob_reference(tmp_path: Path) -> None:
+    """Real-store blob-loop pin: a result referencing a blob committed under a
+    DIFFERENT job is rejected at validate_reference."""
+    from tests.test_execution_jobs_result import blob_store_with_result_blobs
+    from tests.test_execution_result import create_result, result_body
+
+    store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    # Commit a blob under a foreign job binding in the SAME blob store.
+    _, foreign_body = blob_store_with_result_blobs(
+        tmp_path / "foreign-blobs",
+        job_id=str(uuid4()),
+        lease_id=str(uuid4()),
+        fence=99,
+    )
+    # Rebuild the result body for THIS job but pointing at the foreign blob.
+    body = result_body()
+    body.update(
+        job_id=task.branch_task_id,
+        capsule_id=lease.capsule.record_id,
+        capsule_sha256=lease.capsule.content_sha256,
+        lease_id=lease.lease_id,
+        fence=lease.fence,
+    )
+    for field_name in ("repo_patch",):
+        body[field_name]["blob_ref"] = foreign_body[field_name]["blob_ref"]
+        body[field_name]["blob_sha256"] = foreign_body[field_name]["blob_sha256"]
+        body[field_name]["size_bytes"] = foreign_body[field_name]["size_bytes"]
+    forged_result, _ = create_result(body, key)
+    forged_raw = json.dumps(forged_result, separators=(",", ":")).encode()
+    with pytest.raises(CandidateValidationError):
+        store.record_validated_candidate(
+            task.branch_task_id,
+            raw_result=forged_raw,
+            verify_key=key.verify_key,
+            device_key_active=True,
+            blob_store=blob_store,
+            now=clock.now,
+        )
+    assert store.read_task(task.branch_task_id).status == "leased"
+    assert not store.read_task(task.branch_task_id).candidate_result_sha256
+
+
+def test_record_candidate_marks_result_blobs_referenced(tmp_path: Path) -> None:
+    """Pins the mark_referenced loop: every result blob is marked with the
+    job's exact binding after a successful submission."""
+
+    class BlobStoreSpy:
+        def __init__(self, inner):
+            self._inner = inner
+            self.validated = []
+            self.marked = []
+
+        def validate_reference(self, blob_ref, **binding):
+            self.validated.append((blob_ref, binding))
+            return self._inner.validate_reference(blob_ref, **binding)
+
+        def mark_referenced(self, blob_ref, **binding):
+            self.marked.append((blob_ref, binding))
+            return self._inner.mark_referenced(blob_ref, **binding)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    store, task, lease, blob_store, key, result, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    spy = BlobStoreSpy(blob_store)
+    _record_candidate(store, task, spy, key, raw_result, clock.now)
+    assert spy.validated, "validate_reference never ran"
+    assert [ref for ref, _ in spy.marked] == [ref for ref, _ in spy.validated]
+    for _ref, binding in spy.marked:
+        assert binding["job_id"] == task.branch_task_id
+        assert binding["lease_id"] == lease.lease_id
+        assert binding["fence"] == lease.fence
