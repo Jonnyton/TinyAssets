@@ -92,6 +92,20 @@ B2 and B3 are dependency-ordered validation slices of this one end-state
 architecture: B2 proves the protocol with an owner daemon; B3 places
 market matching in front of the unchanged protocol.
 
+The fenced-lease store has one trusted control-plane writer. No deployment
+currently grants an untrusted actor DML access to that store; this is an
+operational invariant, not a claim that SQLite cannot express a row-only
+actor. It depends on retiring co-mounted cloud workers and the legacy
+file-lock claim path, keeping `claude -p` / `codex exec` subprocesses away
+from the database path, and routing B2 writes through the authoritative API.
+The `logs` sidecar Docker socket and the root backup job's whole-volume
+export/restore are root-equivalent full-compromise paths. Within that trust
+boundary, completion re-verifies the stored result's Ed25519 signature and
+signed lease/fence bindings with the platform enrollment registry's current
+key and credential epoch; compact receipt/event consistency and fenced CAS
+guards remain because signatures do not authenticate control-plane receipts,
+selection, or lease currency.
+
 ---
 
 ## Canonical Vocabulary

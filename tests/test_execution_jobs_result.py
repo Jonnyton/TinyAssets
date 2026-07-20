@@ -9,7 +9,8 @@ import json
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from types import SimpleNamespace
+from typing import Any, Callable, Mapping
 
 import pytest
 from nacl.signing import SigningKey
@@ -31,10 +32,16 @@ class MemoryAtomicJobStore:
     test pins THE MOCK's copy, not lease_store.py. Every mock-level attack
     test therefore needs a real-store twin in tests/test_lease_store.py."""
 
-    def __init__(self, state: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.state = copy.deepcopy(state)
         self.state_changes = 0
         self._lock = threading.Lock()
+        self._clock = clock or (lambda: datetime(2026, 7, 19, 0, 32, tzinfo=UTC))
 
     def read_result_state(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -50,7 +57,6 @@ class MemoryAtomicJobStore:
         verify_key,
         device_key_active: bool,
         blob_store,
-        now: datetime,
     ) -> dict[str, Any]:
         from tinyassets.runtime.blob_refs import BlobError
         from tinyassets.runtime.execution_result import (
@@ -65,12 +71,15 @@ class MemoryAtomicJobStore:
         )
 
         with self._lock:
+            now = self._clock()
             if self.state["job_id"] != job_id:
                 raise TaskNotFoundError(f"task {job_id!r} does not exist")
             state = copy.deepcopy(self.state)
             expires_at = datetime.fromisoformat(state["lease_expires_at"].replace("Z", "+00:00"))
-            if state["status"] != "leased" or now >= expires_at:
+            if state["status"] != "leased":
                 raise StaleLeaseError("job is not under an active lease")
+            if now >= expires_at:
+                raise StaleLeaseError("job lease has expired")
             required = (
                 "owner_user_id",
                 "device_key_id",
@@ -153,7 +162,6 @@ class MemoryAtomicJobStore:
         job_id: str,
         *,
         expected: Mapping[str, Any],
-        now: datetime,
     ) -> dict[str, Any]:
         from tinyassets.runtime.execution_capsule import (
             CapsuleCanonicalizationError,
@@ -166,6 +174,7 @@ class MemoryAtomicJobStore:
         )
 
         with self._lock:
+            now = self._clock()
             if self.state["job_id"] != job_id:
                 raise TaskNotFoundError(f"task {job_id!r} does not exist")
             state = copy.deepcopy(self.state)
@@ -184,13 +193,19 @@ class MemoryAtomicJobStore:
                 expires_at = datetime.fromisoformat(
                     state["lease_expires_at"].replace("Z", "+00:00")
                 )
-                if state["status"] != "leased" or now >= expires_at:
+                if state["status"] != "leased":
                     raise StaleLeaseError("job is not under an active lease")
+                if now >= expires_at:
+                    raise StaleLeaseError("job lease has expired")
             candidate_hash = state.get("candidate_result_sha256")
             candidate = state.get("candidate_result")
             signature = candidate.get("signature") if isinstance(candidate, dict) else None
             if candidate_hash is None:
                 raise ResultConflictError("completion has no stored candidate content hash")
+            if expected.get("result_sha256") != candidate_hash:
+                raise ResultConflictError(
+                    "completion result hash is not the stored candidate content hash"
+                )
             if not isinstance(candidate_hash, str) or not isinstance(signature, dict):
                 raise StoredStateCorruptError(
                     "stored candidate body or content hash is missing or malformed"
@@ -256,6 +271,7 @@ def leased_state() -> dict[str, Any]:
         "status": "leased",
         "daemon_id": "daemon:builder-1",
         "device_key_id": "device-key:builder-1",
+        "device_key_epoch": 1,
         "lease_id": LEASE_ID,
         "lease_fence": 17,
         "lease_expires_at": "2026-07-19T01:00:00Z",
@@ -525,7 +541,19 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
     from tinyassets.runtime.lease_store import LeaseStore, RecordReference
 
     lease_now = datetime(2026, 7, 19, 0, 30, tzinfo=UTC)
-    store = LeaseStore(tmp_path / "leases.sqlite3", clock=lambda: lease_now)
+    key = SigningKey.generate()
+    registry_record = SimpleNamespace(
+        device_key_id="device-key:builder-1",
+        verify_key=key.verify_key,
+        credential_epoch=1,
+        active=True,
+    )
+    registry = SimpleNamespace(resolve_device_key=lambda _key_id: registry_record)
+    store = LeaseStore(
+        tmp_path / "leases.sqlite3",
+        clock=lambda: lease_now,
+        key_registry=registry,
+    )
     task = BranchTask(
         branch_task_id=JOB_ID,
         branch_def_id="branch-loop",
@@ -537,6 +565,7 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         result_state={
             "owner_user_id": "user:owner-1",
             "device_key_id": "device-key:builder-1",
+            "device_key_epoch": 1,
             "capability_class": "repo",
             "repo_mode": "coding",
             "runner_policy_sha256": "c" * 64,
@@ -573,7 +602,6 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         lease_id=lease.lease_id,
         fence=lease.fence,
     )
-    key = SigningKey.generate()
     result, _ = create_result(body, key)
     submit_candidate_result(
         store,
@@ -741,6 +769,7 @@ def test_completion_rejects_expired_current_lease(tmp_path: Path) -> None:
     from tinyassets.api.execution_jobs import StaleLeaseError, complete_job
 
     job_store, result, _ = submit_candidate(tmp_path)
+    job_store._clock = lambda: datetime(2026, 7, 19, 1, 0, tzinfo=UTC)
     before = copy.deepcopy(job_store.state)
     with pytest.raises(StaleLeaseError, match="expired"):
         complete_job(
@@ -826,6 +855,9 @@ def test_store_corruption_escapes_untyped(tmp_path: Path) -> None:
             raise StoredStateCorruptError("stored result state is corrupt")
 
         def read_result_state(self, job_id):
+            raise StoredStateCorruptError("stored result state is corrupt")
+
+        def complete_validated_result(self, job_id, **kwargs):
             raise StoredStateCorruptError("stored result state is corrupt")
 
     blob_store, body = blob_store_with_result_blobs(tmp_path)

@@ -7,7 +7,6 @@ store protocol makes the lease store's lock/transaction the atomicity boundary.
 
 from __future__ import annotations
 
-import hmac
 import re
 import uuid
 from dataclasses import dataclass
@@ -49,7 +48,6 @@ from tinyassets.runtime.lease_store import (
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9:_.-]+$", re.ASCII)
 _JSON_SAFE_INTEGER_MAX = 2**53 - 1
-_FINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +70,7 @@ class JobResultState(TypedDict):
     status: Literal["pending", "leased", "succeeded", "failed", "cancelled"]
     daemon_id: str | None
     device_key_id: str | None
+    device_key_epoch: int | None
     lease_id: str | None
     lease_fence: int
     lease_expires_at: str | None
@@ -118,7 +117,6 @@ class AtomicJobResultStore(Protocol):
         verify_key: VerifyKey,
         device_key_active: bool,
         blob_store: BlobStore,
-        now: datetime,
     ) -> dict[str, Any]: ...
 
     def complete_validated_result(
@@ -126,7 +124,6 @@ class AtomicJobResultStore(Protocol):
         job_id: str,
         *,
         expected: Mapping[str, Any],
-        now: datetime,
     ) -> dict[str, Any]: ...
 
 
@@ -173,22 +170,6 @@ def _utc_text(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _parse_lease_expiry(value: Any) -> datetime:
-    if type(value) is not str or not value.endswith("Z"):
-        raise StoreStoredStateCorruptError("current lease has no valid expiry")
-    try:
-        return datetime.fromisoformat(value[:-1] + "+00:00")
-    except ValueError as exc:
-        raise StoreStoredStateCorruptError("current lease has no valid expiry") from exc
-
-
-def _require_current_lease(state: JobResultState, *, now: datetime) -> None:
-    if state.get("status") != "leased":
-        raise StaleLeaseError("job is not under an active lease")
-    if now >= _parse_lease_expiry(state.get("lease_expires_at")):
-        raise StaleLeaseError("job lease has expired")
-
-
 def _parse_completion_request(value: Mapping[str, Any]) -> CompleteJobRequest:
     if not isinstance(value, Mapping) or isinstance(value, (str, bytes)):
         raise CompletionRequestError("completion request must be a JSON object")
@@ -228,23 +209,6 @@ def _parse_completion_request(value: Mapping[str, Any]) -> CompleteJobRequest:
     return cast(CompleteJobRequest, request)
 
 
-def _assert_completion_bindings(
-    state: JobResultState, request: CompleteJobRequest, *, now: datetime
-) -> None:
-    if state.get("status") not in _FINAL_STATUSES:
-        _require_current_lease(state, now=now)
-    expected = {
-        "job_id": state.get("job_id"),
-        "daemon_id": state.get("daemon_id"),
-        "lease_id": state.get("lease_id"),
-        "fence": state.get("lease_fence"),
-        "capsule_sha256": state.get("capsule_sha256"),
-    }
-    for key, current in expected.items():
-        if request[key] != current:
-            raise StaleLeaseError(f"completion {key} does not match current lease")
-
-
 def submit_candidate_result(
     store: AtomicJobResultStore,
     *,
@@ -264,7 +228,6 @@ def submit_candidate_result(
             verify_key=verify_key,
             device_key_active=device_key_active,
             blob_store=blob_store,
-            now=now,
         )
     except StoreStoredStateCorruptError:
         raise  # durability violation: 500-class, never a client-typed error
@@ -293,45 +256,17 @@ def complete_job(
     """CAS ``leased -> terminal`` only for the current accepted candidate hash."""
     parsed = _parse_completion_request(request)
     _utc_text(now)
-    try:
-        state = store.read_result_state(parsed["job_id"])
-        _assert_completion_bindings(state, parsed, now=now)
-    except StoreStoredStateCorruptError:
-        raise  # durability violation: 500-class, never a client-typed error
-    except StoreTaskNotFoundError as exc:
-        raise JobNotFoundError(str(exc)) from exc
-    except StoreStaleLeaseError as exc:
-        raise StaleLeaseError(str(exc)) from exc
-    except LeaseStoreError as exc:
-        raise CompletionConflictError(str(exc)) from exc
-    candidate_hash = state.get("candidate_result_sha256")
-    if candidate_hash is None:
-        if state.get("status") in _FINAL_STATUSES:
-            raise StoreStoredStateCorruptError(
-                "terminal job has no stored candidate content hash"
-            )
-        raise CompletionConflictError(
-            "completion result hash is not the stored candidate content hash"
-        )
-    if type(candidate_hash) is not str or not _SHA256_RE.fullmatch(candidate_hash):
-        raise StoreStoredStateCorruptError(
-            "stored candidate content hash is malformed"
-        )
-    if not hmac.compare_digest(parsed["result_sha256"], candidate_hash):
-        raise CompletionConflictError(
-            "completion result hash is not the stored candidate content hash"
-        )
     expected = {
         "lease_id": parsed["lease_id"],
         "lease_fence": parsed["fence"],
         "daemon_id": parsed["daemon_id"],
         "capsule_sha256": parsed["capsule_sha256"],
+        "result_sha256": parsed["result_sha256"],
     }
     try:
         receipt = store.complete_validated_result(
             parsed["job_id"],
             expected=expected,
-            now=now,
         )
     except StoreStoredStateCorruptError:
         raise  # durability violation: 500-class, never a client-typed error

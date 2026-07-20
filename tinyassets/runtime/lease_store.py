@@ -5,6 +5,14 @@ fields are a read projection for callers; this module deliberately never
 mutates the legacy JSON queue or uses its sidecar file lock as a claim path.
 Every current-row mutation is CAS-guarded and mirrored into an append-only
 event ledger in the same transaction.
+
+No deployment currently grants an untrusted actor DML access to the lease
+store. This is an operational invariant, not a SQLite guarantee: a
+per-connection authorizer can permit row writes while denying schema changes.
+The ``logs`` sidecar's Docker socket is root-equivalent, and the root backup
+job exports and restores the whole volume; either path is a full compromise,
+not a row-only actor. The schema guards below still detect control-plane bugs
+and preserve receipt/event consistency inside the trusted writer boundary.
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from nacl.signing import VerifyKey
 
@@ -153,15 +161,32 @@ class LeaseEvent:
 CapsuleBinder = Callable[[LeaseIdentity], RecordReference]
 
 
+class DeviceVerificationKey(Protocol):
+    device_key_id: str
+    verify_key: VerifyKey
+    credential_epoch: int
+    active: bool
+
+
+class DeviceKeyRegistry(Protocol):
+    """Platform-owned enrolled-device key lookup used by completion."""
+
+    def resolve_device_key(
+        self, device_key_id: str
+    ) -> DeviceVerificationKey | None: ...
+
+
 class LeaseStore:
     def __init__(
         self,
         db_path: Path,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        key_registry: DeviceKeyRegistry | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self._clock = clock
+        self._key_registry = key_registry
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -366,7 +391,9 @@ class LeaseStore:
 
     @staticmethod
     def _time_text(value: datetime) -> str:
-        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        return value.astimezone(UTC).isoformat(timespec="microseconds").replace(
+            "+00:00", "Z"
+        )
 
     @staticmethod
     def _parse_time(value: Any) -> datetime:
@@ -531,6 +558,85 @@ class LeaseStore:
             if outcome == "cancelled"
             else "failed"
         )
+
+    def _verify_stored_candidate(
+        self,
+        *,
+        row: sqlite3.Row,
+        candidate: dict[str, Any],
+        candidate_hash: str,
+    ) -> dict[str, Any]:
+        state = self._row_to_result_state(row)
+        device_key_id = state.get("device_key_id")
+        device_key_epoch = state.get("device_key_epoch")
+        if (
+            type(device_key_id) is not str
+            or not device_key_id
+            or type(device_key_epoch) is not int
+            or device_key_epoch < 1
+        ):
+            raise StoredStateCorruptError(
+                "stored candidate has no registered device-key binding"
+            )
+        if self._key_registry is None:
+            raise StoredStateCorruptError(
+                "platform device-key registry is unavailable"
+            )
+        registered = self._key_registry.resolve_device_key(device_key_id)
+        if registered is None or registered.device_key_id != device_key_id:
+            raise StoredStateCorruptError(
+                "stored candidate device key is not registered"
+            )
+        if registered.credential_epoch != device_key_epoch or registered.active is not True:
+            raise StoredStateCorruptError(
+                "stored candidate device key is inactive or has changed epoch"
+            )
+        required_strings = (
+            "daemon_id",
+            "job_id",
+            "capsule_id",
+            "capsule_sha256",
+            "lease_id",
+            "capability_class",
+            "runner_policy_sha256",
+            "image_digest",
+        )
+        if any(type(state.get(key)) is not str or not state[key] for key in required_strings):
+            raise StoredStateCorruptError(
+                "stored candidate has incomplete signed bindings"
+            )
+        if type(state.get("lease_fence")) is not int or "repo_mode" not in state:
+            raise StoredStateCorruptError(
+                "stored candidate has incomplete signed bindings"
+            )
+        try:
+            verified = verify_execution_result(
+                json.dumps(candidate, separators=(",", ":")).encode(),
+                verify_key=registered.verify_key,
+                expected_device_key_id=device_key_id,
+                device_key_active=registered.active,
+                expected_daemon_id=cast(str, state["daemon_id"]),
+                expected_job_id=state["job_id"],
+                expected_capsule_id=cast(str, state["capsule_id"]),
+                expected_capsule_sha256=cast(str, state["capsule_sha256"]),
+                expected_lease_id=cast(str, state["lease_id"]),
+                expected_fence=state["lease_fence"],
+                expected_capability_class=state["capability_class"],
+                expected_repo_mode=state.get("repo_mode"),
+                expected_runner_policy_sha256=state["runner_policy_sha256"],
+                expected_image_digest=state["image_digest"],
+            )
+        except (ExecutionResultError, TypeError, ValueError) as exc:
+            raise StoredStateCorruptError(
+                "stored candidate signature or signed bindings are invalid"
+            ) from exc
+        if not hmac.compare_digest(
+            candidate_hash, verified["signature"]["result_sha256"]
+        ):
+            raise StoredStateCorruptError(
+                "stored candidate signature does not match the selected result"
+            )
+        return verified
 
     def _durable_candidate_receipt(
         self,
@@ -721,56 +827,58 @@ class LeaseStore:
         if expected_lease_id is not None:
             self._canonical_uuid(expected_lease_id, "expected_lease_id")
 
-        now = self._now()
-        now_text = self._time_text(now)
         with self._transaction() as connection:
+            now = self._now()
+            now_text = self._time_text(now)
             row = self._task_row(connection, task_id)
             if row["status"] == "leased":
-                expires_at = self._parse_time(row["lease_expires_at"])
-                if expires_at > now:
+                self._parse_time(row["lease_expires_at"])
+                if self._task_events(
+                    connection,
+                    task_id,
+                    kind="completed",
+                ):
+                    raise StoredStateCorruptError(
+                        "completed event exists but job row is not terminal"
+                    )
+                expired = connection.execute(
+                    """
+                    UPDATE lease_tasks SET
+                        status = 'pending', lease_id = NULL,
+                        lease_daemon_id = NULL, lease_issued_at = NULL,
+                        lease_expires_at = NULL, lease_heartbeat_sequence = 0,
+                        capsule_id = NULL, capsule_sha256 = NULL,
+                        candidate_result_id = NULL,
+                        candidate_result_sha256 = NULL,
+                        updated_at = ?
+                    WHERE task_id = ? AND status = 'leased'
+                        AND lease_id = ? AND lease_fence = ?
+                        AND lease_expires_at <= ?
+                    """,
+                    (
+                        now_text,
+                        task_id,
+                        row["lease_id"],
+                        row["lease_fence"],
+                        now_text,
+                    ),
+                )
+                if expired.rowcount != 1:
                     if (
                         expected_lease_id == row["lease_id"]
                         and clean_daemon == row["lease_daemon_id"]
                     ):
                         return self._row_to_lease(row)
                     raise AlreadyClaimedError(f"task {task_id!r} was already claimed")
-                else:
-                    if self._task_events(
-                        connection,
-                        task_id,
-                        kind="completed",
-                    ):
-                        raise StoredStateCorruptError(
-                            "completed event exists but job row is not terminal"
-                        )
-                    expired = connection.execute(
-                        """
-                        UPDATE lease_tasks SET
-                            status = 'pending', lease_id = NULL,
-                            lease_daemon_id = NULL, lease_issued_at = NULL,
-                            lease_expires_at = NULL, lease_heartbeat_sequence = 0,
-                            capsule_id = NULL, capsule_sha256 = NULL,
-                            candidate_result_id = NULL,
-                            candidate_result_sha256 = NULL,
-                            updated_at = ?
-                        WHERE task_id = ? AND status = 'leased'
-                            AND lease_id = ? AND lease_fence = ?
-                        """,
-                        (now_text, task_id, row["lease_id"], row["lease_fence"]),
-                    )
-                    if expired.rowcount != 1:
-                        raise AlreadyClaimedError(
-                            f"task {task_id!r} lease changed during reclaim"
-                        )
-                    self._append_event(
-                        connection,
-                        task_id=task_id,
-                        kind="expired",
-                        lease_id=row["lease_id"],
-                        fence=row["lease_fence"],
-                        occurred_at=now_text,
-                    )
-                    row = self._task_row(connection, task_id)
+                self._append_event(
+                    connection,
+                    task_id=task_id,
+                    kind="expired",
+                    lease_id=row["lease_id"],
+                    fence=row["lease_fence"],
+                    occurred_at=now_text,
+                )
+                row = self._task_row(connection, task_id)
 
             old_fence = row["lease_fence"]
             result_state = self._result_state(row)
@@ -843,16 +951,14 @@ class LeaseStore:
             )
             return self._row_to_lease(self._task_row(connection, task_id))
 
-    @classmethod
+    @staticmethod
     def _require_current_lease(
-        cls,
         row: sqlite3.Row,
         *,
         daemon_id: str,
         lease_id: str,
         fence: int,
         capsule_sha256: str,
-        now: datetime,
     ) -> None:
         # Fence is checked independently and first: matching a current UUID is
         # never enough to authenticate a superseded generation.
@@ -868,8 +974,6 @@ class LeaseStore:
             raise StaleLeaseError("daemon id is not current lease holder")
         if capsule_sha256 != row["capsule_sha256"]:
             raise StaleLeaseError("capsule hash is not current")
-        if row["status"] == "leased" and now >= cls._parse_time(row["lease_expires_at"]):
-            raise StaleLeaseError("current lease has expired")
 
     def heartbeat(
         self,
@@ -890,9 +994,9 @@ class LeaseStore:
             raise LeaseStoreError("heartbeat sequence must be a positive integer")
         if type(lease_seconds) is not int or lease_seconds <= 0:
             raise LeaseStoreError("lease_seconds must be a positive integer")
-        now = self._now()
-        now_text = self._time_text(now)
         with self._transaction() as connection:
+            now = self._now()
+            now_text = self._time_text(now)
             row = self._task_row(connection, task_id)
             self._require_current_lease(
                 row,
@@ -900,7 +1004,6 @@ class LeaseStore:
                 lease_id=lease_id,
                 fence=fence,
                 capsule_sha256=capsule_sha256,
-                now=now,
             )
             expires_at = self._time_text(
                 max(
@@ -916,10 +1019,22 @@ class LeaseStore:
                     lease_expires_at = ?, lease_heartbeat_sequence = ?, updated_at = ?
                 WHERE task_id = ? AND status = 'leased' AND lease_id = ?
                     AND lease_fence = ? AND lease_heartbeat_sequence < ?
+                    AND lease_expires_at > ?
                 """,
-                (expires_at, sequence, now_text, task_id, lease_id, fence, sequence),
+                (
+                    expires_at,
+                    sequence,
+                    now_text,
+                    task_id,
+                    lease_id,
+                    fence,
+                    sequence,
+                    now_text,
+                ),
             )
             if cursor.rowcount != 1:
+                if now >= self._parse_time(row["lease_expires_at"]):
+                    raise StaleLeaseError("current lease has expired")
                 raise StaleLeaseError("heartbeat lost the current lease CAS")
             self._append_event(
                 connection,
@@ -955,13 +1070,6 @@ class LeaseStore:
         return tuple(LeaseEvent(**dict(row)) for row in rows)
 
     @staticmethod
-    def _operation_time(value: datetime) -> tuple[datetime, str]:
-        if not isinstance(value, datetime) or value.tzinfo is None:
-            raise LeaseStoreError("operation time must be timezone-aware")
-        normalized = value.astimezone(UTC)
-        return normalized, LeaseStore._time_text(normalized)
-
-    @staticmethod
     def _result_metadata(row: sqlite3.Row) -> dict[str, Any]:
         metadata = LeaseStore._result_state(row)
         for key in (
@@ -987,16 +1095,15 @@ class LeaseStore:
         verify_key: VerifyKey,
         device_key_active: bool,
         blob_store: BlobStore,
-        now: datetime,
     ) -> dict[str, Any]:
         """Validate and persist one write-once S5 candidate under the job lock."""
-        operation_now, accepted_at = self._operation_time(now)
         with self._transaction() as connection:
+            operation_now = self._now()
+            accepted_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
             if row["status"] != "leased":
                 raise StaleLeaseError("job is not under an active lease")
-            if operation_now >= self._parse_time(row["lease_expires_at"]):
-                raise StaleLeaseError("job lease has expired")
+            lease_expires_at = self._parse_time(row["lease_expires_at"])
             state = self._row_to_result_state(row)
             required_bindings = (
                 "owner_user_id",
@@ -1014,6 +1121,11 @@ class LeaseStore:
                 for key in required_bindings
             ):
                 raise CandidateValidationError("leased job is missing result bindings")
+            if (
+                type(state.get("device_key_epoch")) is not int
+                or state["device_key_epoch"] < 1
+            ):
+                raise CandidateValidationError("leased job is missing device-key epoch")
             try:
                 verified = verify_execution_result(
                     raw_result,
@@ -1058,43 +1170,9 @@ class LeaseStore:
             if existing_hash is not None and existing_hash != result_sha256:
                 raise ResultConflictError("current lease already has another candidate result")
             if existing_hash == result_sha256:
+                if operation_now >= lease_expires_at:
+                    raise StaleLeaseError("job lease has expired")
                 receipt = metadata.get("candidate_receipt")
-                durable_candidate = metadata.get("candidate_result")
-                if not isinstance(durable_candidate, dict):
-                    raise StoredStateCorruptError(
-                        "durable candidate record is incomplete"
-                    )
-                durable_body = {
-                    key: value
-                    for key, value in durable_candidate.items()
-                    if key != "signature"
-                }
-                verified_body = {
-                    key: value for key, value in verified.items() if key != "signature"
-                }
-                if durable_body != verified_body:
-                    raise StoredStateCorruptError(
-                        "durable candidate record is incomplete"
-                    )
-                if durable_candidate != verified:
-                    durable_signature = durable_candidate.get("signature")
-                    verified_signature = verified["signature"]
-                    if (
-                        not isinstance(durable_signature, dict)
-                        or set(durable_signature) != set(verified_signature)
-                        or type(durable_signature.get("signature_b64")) is not str
-                        or any(
-                            durable_signature[key] != value
-                            for key, value in verified_signature.items()
-                            if key != "signature_b64"
-                        )
-                    ):
-                        raise StoredStateCorruptError(
-                            "durable candidate record is incomplete"
-                        )
-                    raise ResultConflictError(
-                        "candidate replay signature differs from the durable signature"
-                    )
                 return self._durable_candidate_receipt(
                     connection,
                     row=row,
@@ -1144,6 +1222,7 @@ class LeaseStore:
                 WHERE task_id = ? AND status = 'leased' AND lease_id = ?
                     AND lease_fence = ? AND candidate_result_sha256 IS NULL
                     AND accepted_result_sha256 IS NULL
+                    AND lease_expires_at > ?
                 """,
                 (
                     candidate_id,
@@ -1153,9 +1232,12 @@ class LeaseStore:
                     job_id,
                     row["lease_id"],
                     row["lease_fence"],
+                    accepted_at,
                 ),
             )
             if cursor.rowcount != 1:
+                if operation_now >= lease_expires_at:
+                    raise StaleLeaseError("job lease has expired")
                 raise StaleLeaseError("candidate write lost the current lease CAS")
             self._append_event(
                 connection,
@@ -1173,15 +1255,22 @@ class LeaseStore:
         job_id: str,
         *,
         expected: Mapping[str, Any],
-        now: datetime,
     ) -> dict[str, Any]:
         """Complete only the current lease's persisted validated candidate."""
-        operation_now, completed_at = self._operation_time(now)
-        expected_fields = {"lease_id", "lease_fence", "daemon_id", "capsule_sha256"}
+        expected_fields = {
+            "lease_id",
+            "lease_fence",
+            "daemon_id",
+            "capsule_sha256",
+            "result_sha256",
+        }
         if not isinstance(expected, Mapping) or set(expected) != expected_fields:
             raise LeaseStoreError("completion expected bindings are malformed")
         with self._transaction() as connection:
+            operation_now = self._now()
+            completed_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
+            lease_expires_at: datetime | None = None
             if (
                 type(expected["lease_fence"]) is not int
                 or expected["lease_fence"] != row["lease_fence"]
@@ -1216,8 +1305,7 @@ class LeaseStore:
             else:
                 if row["status"] != "leased":
                     raise StaleLeaseError("job is not under an active lease")
-                if operation_now >= self._parse_time(row["lease_expires_at"]):
-                    raise StaleLeaseError("job lease has expired")
+                lease_expires_at = self._parse_time(row["lease_expires_at"])
 
             metadata = self._result_metadata(row)
             candidate_hash = row["candidate_result_sha256"]
@@ -1232,32 +1320,17 @@ class LeaseStore:
                 raise StoredStateCorruptError(
                     "stored candidate content hash is malformed"
                 )
-            if not isinstance(candidate, dict):
-                raise StoredStateCorruptError("stored candidate body is missing or malformed")
-            signature = candidate.get("signature")
-            if (
-                not isinstance(signature, dict)
-                or type(signature.get("result_sha256")) is not str
-                or not _SHA256_RE.fullmatch(signature["result_sha256"])
-            ):
-                raise StoredStateCorruptError(
-                    "stored candidate signature is missing or malformed"
-                )
-            try:
-                recomputed_hash = hash_canonical_jcs(
-                    {key: value for key, value in candidate.items() if key != "signature"}
-                ).hex()
-            except CapsuleCanonicalizationError as exc:
-                raise StoredStateCorruptError(
-                    "stored candidate body is not canonicalizable"
-                ) from exc
-            if (
-                not hmac.compare_digest(candidate_hash, signature["result_sha256"])
-                or not hmac.compare_digest(candidate_hash, recomputed_hash)
-            ):
-                raise StoredStateCorruptError(
+            if not hmac.compare_digest(expected["result_sha256"], candidate_hash):
+                raise ResultConflictError(
                     "completion result hash is not the stored candidate content hash"
                 )
+            if not isinstance(candidate, dict):
+                raise StoredStateCorruptError("stored candidate body is missing or malformed")
+            candidate = self._verify_stored_candidate(
+                row=row,
+                candidate=candidate,
+                candidate_hash=candidate_hash,
+            )
 
             submitted_events = self._matching_events(
                 connection,
@@ -1324,6 +1397,7 @@ class LeaseStore:
                 WHERE task_id = ? AND status = 'leased' AND lease_id = ?
                     AND lease_fence = ? AND candidate_result_sha256 = ?
                     AND accepted_result_sha256 IS NULL
+                    AND lease_expires_at > ?
                 """,
                 (
                     final_status,
@@ -1335,9 +1409,12 @@ class LeaseStore:
                     row["lease_id"],
                     row["lease_fence"],
                     candidate_hash,
+                    completed_at,
                 ),
             )
             if cursor.rowcount != 1:
+                if lease_expires_at is not None and operation_now >= lease_expires_at:
+                    raise StaleLeaseError("job lease has expired")
                 raise StaleLeaseError("completion lost the current lease CAS")
             self._append_event(
                 connection,

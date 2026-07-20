@@ -118,6 +118,29 @@ def _signed_request(daemon_auth, signer, token, *, now, nonce="fresh-nonce", bod
     )
 
 
+def test_enrollment_registry_resolves_platform_owned_device_key_and_epoch(
+    auth_harness,
+):
+    _, _, service, signer, completed, _, _ = auth_harness
+
+    registered = service.resolve_device_key(completed.key_thumbprint)
+
+    assert registered is not None
+    assert registered.device_key_id == completed.key_thumbprint
+    assert registered.credential_epoch == completed.credential_epoch == 1
+    assert registered.active is True
+    assert bytes(registered.verify_key) == signer.identity.ed25519_public_key
+
+    assert service.resolve_device_key("unregistered-key") is None
+
+    service.revoke_daemon(completed.owner_user_id, completed.daemon_id)
+    revoked = service.resolve_device_key(completed.key_thumbprint)
+
+    assert revoked is not None
+    assert revoked.credential_epoch == 2
+    assert revoked.active is False
+
+
 def test_device_identity_has_ed25519_x25519_nonce_and_verifiable_signatures():
     daemon_auth = _daemon_auth()
     signer = daemon_auth.DaemonSigner("installation-a", key_store=_MemoryKeyStore())

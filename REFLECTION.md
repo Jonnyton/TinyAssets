@@ -124,3 +124,18 @@ loud until their callers are fully migrated.
 One thing I would do differently: start an authority review with a repository-wide
 caller inventory and a cross-path race test, then inspect the transactional
 ordering inside the surviving authority.
+
+---
+
+What surprised me: four rounds of receipt and event hardening could never
+authenticate completion because a fresh-generation event remained insertable;
+the missing primitive was verification of the signed lease and fence.
+
+Pattern worth capturing: decide trust at the narrowest durable boundary. Resolve
+the verification key from platform-owned state, authenticate the stored body at
+completion, and retain receipt/event guards only for consistency properties that
+a signature does not provide.
+
+One thing I would do differently: begin by enumerating each actor's exact write
+capabilities and mutate one guard per property before adding any corroborating
+count, index, or receipt layer.

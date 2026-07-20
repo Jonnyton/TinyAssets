@@ -8,9 +8,11 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -21,6 +23,7 @@ from tinyassets.runtime.lease_store import (
     AlreadyClaimedError,
     CandidateValidationError,
     InvalidLeaseHolderError,
+    Lease,
     LeaseStore,
     RecordReference,
     ResultConflictError,
@@ -40,6 +43,45 @@ class MutableClock:
 
     def advance(self, seconds: int) -> None:
         self.now += timedelta(seconds=seconds)
+
+
+class StaticDeviceKeyRegistry:
+    def __init__(self, key, *, credential_epoch: int = 1, active: bool = True) -> None:
+        self.device_key_id = "device-key:builder-1"
+        self.verify_key = key.verify_key
+        self.credential_epoch = credential_epoch
+        self.active = active
+
+    def resolve_device_key(self, device_key_id: str):
+        if device_key_id != self.device_key_id:
+            return None
+        return SimpleNamespace(
+            device_key_id=self.device_key_id,
+            verify_key=self.verify_key,
+            credential_epoch=self.credential_epoch,
+            active=self.active,
+        )
+
+
+class SignalingLeaseStore(LeaseStore):
+    def __init__(self, *args, transaction_boundary: threading.Event, **kwargs) -> None:
+        self._transaction_boundary = transaction_boundary
+        super().__init__(*args, **kwargs)
+
+    @contextmanager
+    def _transaction(self):
+        self._transaction_boundary.set()
+        with super()._transaction() as connection:
+            yield connection
+
+
+def test_time_text_is_fixed_width_for_sqlite_expiry_ordering() -> None:
+    whole_second = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    next_microsecond = whole_second + timedelta(microseconds=1)
+
+    assert LeaseStore._time_text(whole_second).endswith(".000000Z")
+    assert LeaseStore._time_text(next_microsecond).endswith(".000001Z")
+    assert LeaseStore._time_text(whole_second) < LeaseStore._time_text(next_microsecond)
 
 
 def _task() -> BranchTask:
@@ -72,16 +114,24 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
     from nacl.signing import SigningKey
 
     from tests.test_execution_jobs_result import blob_store_with_result_blobs
-    from tests.test_execution_result import create_result, result_body
+    from tests.test_execution_result import result_body
+    from tinyassets.runtime.execution_result import create_execution_result
 
     active_clock = clock or MutableClock()
-    store = LeaseStore(tmp_path / "leases.sqlite3", clock=active_clock)
+    key = SigningKey.generate()
+    registry = StaticDeviceKeyRegistry(key)
+    store = LeaseStore(
+        tmp_path / "leases.sqlite3",
+        clock=active_clock,
+        key_registry=registry,
+    )
     task = _task()
     store.add_task(
         task,
         result_state={
             "owner_user_id": "user:owner-1",
-            "device_key_id": "device-key:builder-1",
+            "device_key_id": registry.device_key_id,
+            "device_key_epoch": registry.credential_epoch,
             "capability_class": "repo",
             "repo_mode": "coding",
             "runner_policy_sha256": "c" * 64,
@@ -100,6 +150,7 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
         lease_id=lease.lease_id,
         fence=lease.fence,
     )
+    body["executor"]["device_key_id"] = registry.device_key_id
     blob_store, body = blob_store_with_result_blobs(
         tmp_path / "result-blobs",
         body=body,
@@ -107,14 +158,19 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
         lease_id=lease.lease_id,
         fence=lease.fence,
     )
-    key = SigningKey.generate()
-    result, _ = create_result(body, key)
+    result = create_execution_result(
+        body,
+        signing_key=key,
+        device_key_id=registry.device_key_id,
+        repo_mode="coding",
+    )
     raw_result = json.dumps(result, separators=(",", ":")).encode()
     expected = {
         "lease_id": lease.lease_id,
         "lease_fence": lease.fence,
         "daemon_id": lease.daemon_id,
         "capsule_sha256": lease.capsule.content_sha256,
+        "result_sha256": result["signature"]["result_sha256"],
     }
     return store, task, lease, blob_store, key, result, raw_result, expected, active_clock
 
@@ -133,7 +189,6 @@ def _record_candidate(
         verify_key=key.verify_key,
         device_key_active=True,
         blob_store=blob_store,
-        now=now,
     )
 
 
@@ -360,7 +415,6 @@ def test_semantic_result_operations_project_s5_state_under_the_same_cas(
     completion_receipt = store.complete_validated_result(
         task.branch_task_id,
         expected=expected,
-        now=clock.now,
     )
     completed = store.read_task(task.branch_task_id)
     assert completed.status == "succeeded"
@@ -386,6 +440,10 @@ def test_completion_status_is_derived_only_from_the_validated_candidate_outcome(
     body.pop("signature")
     body["outcome"] = outcome
     changed_result, _ = create_result(body, key)
+    expected = dict(
+        expected,
+        result_sha256=changed_result["signature"]["result_sha256"],
+    )
     _record_candidate(
         store,
         task,
@@ -398,7 +456,6 @@ def test_completion_status_is_derived_only_from_the_validated_candidate_outcome(
     receipt = store.complete_validated_result(
         task.branch_task_id,
         expected=expected,
-        now=clock.now,
     )
 
     assert receipt["status"] == expected_status
@@ -463,7 +520,6 @@ def test_completion_requires_a_persisted_validated_candidate_and_active_lease(
         store.complete_validated_result(
             task.branch_task_id,
             expected=expected,
-            now=clock.now,
         )
     assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
 
@@ -477,8 +533,8 @@ def test_completion_requires_a_persisted_validated_candidate_and_active_lease(
                 "lease_fence": 0,
                 "daemon_id": "daemon:builder-1",
                 "capsule_sha256": "0" * 64,
+                "result_sha256": "0" * 64,
             },
-            now=clock.now,
         )
     assert all(event.kind != "completed" for event in store.events(pending.branch_task_id))
 
@@ -504,11 +560,158 @@ def test_two_step_fake_candidate_is_rejected_by_canonical_recompute(
         store.complete_validated_result(
             task.branch_task_id,
             expected=expected,
-            now=clock.now,
         )
 
     assert store.read_task(task.branch_task_id).status == "leased"
     assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+
+def test_completion_rejects_singleton_anchor_for_unsigned_fabricated_generation(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.execution_capsule import hash_canonical_jcs
+
+
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    fabricated_lease_id = str(uuid4())
+    fabricated_fence = expected["lease_fence"] + 1
+
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT result_state_json FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        state = json.loads(row[0])
+        forged = state["candidate_result"]
+        forged["lease_id"] = fabricated_lease_id
+        forged["fence"] = fabricated_fence
+        forged_hash = hash_canonical_jcs(
+            {key: value for key, value in forged.items() if key != "signature"}
+        ).hex()
+        forged["signature"]["result_sha256"] = forged_hash
+        connection.execute(
+            """
+            UPDATE lease_tasks SET lease_id = ?, lease_fence = ?,
+                candidate_result_sha256 = ?, result_state_json = ?
+            WHERE task_id = ?
+            """,
+            (
+                fabricated_lease_id,
+                fabricated_fence,
+                forged_hash,
+                json.dumps(state, sort_keys=True, separators=(",", ":")),
+                task.branch_task_id,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO lease_events(
+                task_id, kind, lease_id, fence, occurred_at, content_sha256
+            ) VALUES (?, 'result_submitted', ?, ?, ?, ?)
+            """,
+            (
+                task.branch_task_id,
+                fabricated_lease_id,
+                fabricated_fence,
+                LeaseStore._time_text(clock.now),
+                forged_hash,
+            ),
+        )
+
+    doctored_expected = dict(expected)
+    doctored_expected["lease_id"] = fabricated_lease_id
+    doctored_expected["lease_fence"] = fabricated_fence
+    doctored_expected["result_sha256"] = forged_hash
+    with pytest.raises(StoredStateCorruptError, match="signature"):
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected=doctored_expected,
+        )
+
+    assert store.read_task(task.branch_task_id).status == "leased"
+    assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+
+def test_completion_rejects_signed_result_replayed_onto_fabricated_generation(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    fabricated_lease_id = str(uuid4())
+    fabricated_fence = expected["lease_fence"] + 1
+    result_hash = result["signature"]["result_sha256"]
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET lease_id = ?, lease_fence = ? WHERE task_id = ?",
+            (fabricated_lease_id, fabricated_fence, task.branch_task_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO lease_events(
+                task_id, kind, lease_id, fence, occurred_at, content_sha256
+            ) VALUES (?, 'result_submitted', ?, ?, ?, ?)
+            """,
+            (
+                task.branch_task_id,
+                fabricated_lease_id,
+                fabricated_fence,
+                LeaseStore._time_text(clock.now),
+                result_hash,
+            ),
+        )
+
+    doctored_expected = dict(
+        expected,
+        lease_id=fabricated_lease_id,
+        lease_fence=fabricated_fence,
+    )
+    with pytest.raises(StoredStateCorruptError, match="signed bindings"):
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected=doctored_expected,
+        )
+
+    assert store.read_task(task.branch_task_id).status == "leased"
+    assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+
+@pytest.mark.parametrize(
+    ("registry_fault", "message"),
+    [
+        ("unavailable", "registry is unavailable"),
+        ("unregistered", "not registered"),
+        ("wrong_key", "signature"),
+        ("inactive", "inactive or has changed epoch"),
+        ("wrong_epoch", "inactive or has changed epoch"),
+    ],
+)
+def test_completion_requires_platform_registry_key_epoch_and_activity(
+    tmp_path: Path,
+    registry_fault: str,
+    message: str,
+) -> None:
+    from nacl.signing import SigningKey
+
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    registry = store._key_registry
+    assert isinstance(registry, StaticDeviceKeyRegistry)
+    if registry_fault == "unavailable":
+        store._key_registry = None
+    elif registry_fault == "unregistered":
+        registry.device_key_id = "device-key:other"
+    elif registry_fault == "wrong_key":
+        registry.verify_key = SigningKey.generate().verify_key
+    elif registry_fault == "inactive":
+        registry.active = False
+    else:
+        registry.credential_epoch += 1
+
+    with pytest.raises(StoredStateCorruptError, match=message):
+        store.complete_validated_result(task.branch_task_id, expected=expected)
+    assert store.read_task(task.branch_task_id).status == "leased"
 
 
 def test_terminal_replay_is_idempotent_and_terminal_state_is_immutable(
@@ -519,7 +722,6 @@ def test_terminal_replay_is_idempotent_and_terminal_state_is_immutable(
     first = store.complete_validated_result(
         task.branch_task_id,
         expected=expected,
-        now=clock.now,
     )
     before = store.read_result_state(task.branch_task_id)
     events_before = store.events(task.branch_task_id)
@@ -527,7 +729,6 @@ def test_terminal_replay_is_idempotent_and_terminal_state_is_immutable(
     assert store.complete_validated_result(
         task.branch_task_id,
         expected=expected,
-        now=clock.now,
     ) == first
     with pytest.raises(StaleLeaseError):
         _record_candidate(store, task, blobs, key, raw, clock.now)
@@ -566,7 +767,6 @@ def test_terminal_replay_rejects_incomplete_or_conflicting_durable_state(
     store.complete_validated_result(
         task.branch_task_id,
         expected=expected,
-        now=clock.now,
     )
     events_before = store.events(task.branch_task_id)
     with sqlite3.connect(store.db_path) as connection:
@@ -594,7 +794,6 @@ def test_terminal_replay_rejects_incomplete_or_conflicting_durable_state(
         store.complete_validated_result(
             task.branch_task_id,
             expected=expected,
-            now=clock.now,
         )
     assert store.events(task.branch_task_id) == events_before
 
@@ -615,18 +814,193 @@ def test_completion_enforces_lease_bindings_and_expiry_under_the_store_lock(
             store.complete_validated_result(
                 task.branch_task_id,
                 expected=dict(expected, **{key_name: wrong_value}),
-                now=clock.now,
             )
     clock.advance(121)
     with pytest.raises(StaleLeaseError, match="expired"):
         store.complete_validated_result(
             task.branch_task_id,
             expected=expected,
-            now=clock.now,
         )
     with pytest.raises(StaleLeaseError, match="expired"):
         _record_candidate(store, task, blobs, key, raw, clock.now)
 
+    assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+
+def test_heartbeat_rejects_lease_expiring_while_waiting_for_writer_lock(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    store = LeaseStore(tmp_path / "leases.sqlite3", clock=clock)
+    task = _task()
+    store.add_task(task)
+    lease = _claim(store, task.branch_task_id, "daemon:builder-1")
+    expiry = datetime.fromisoformat(lease.expires_at.replace("Z", "+00:00"))
+    clock.now = expiry - timedelta(microseconds=1)
+    reached_lock = threading.Event()
+    contender = SignalingLeaseStore(
+        store.db_path,
+        clock=clock,
+        transaction_boundary=reached_lock,
+    )
+    blocker = sqlite3.connect(store.db_path, timeout=1, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    def heartbeat() -> Lease:
+        return contender.heartbeat(
+            task.branch_task_id,
+            daemon_id=lease.daemon_id,
+            lease_id=lease.lease_id,
+            fence=lease.fence,
+            capsule_sha256=lease.capsule.content_sha256,
+            sequence=1,
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(heartbeat)
+            assert reached_lock.wait(timeout=2)
+            clock.now = expiry
+            blocker.commit()
+            with pytest.raises(StaleLeaseError, match="expired"):
+                future.result(timeout=5)
+    finally:
+        blocker.close()
+
+    current = store.read_task(task.branch_task_id)
+    assert current.lease_expires_at == lease.expires_at
+    assert current.lease_heartbeat_sequence == 0
+    assert all(event.kind != "heartbeat" for event in store.events(task.branch_task_id))
+
+
+def test_claim_reclaims_lease_expiring_while_waiting_for_writer_lock(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    store = LeaseStore(tmp_path / "leases.sqlite3", clock=clock)
+    task = _task()
+    store.add_task(task)
+    lease = _claim(store, task.branch_task_id, "daemon-a")
+    expiry = datetime.fromisoformat(lease.expires_at.replace("Z", "+00:00"))
+    clock.now = expiry - timedelta(microseconds=1)
+    reached_lock = threading.Event()
+    contender = SignalingLeaseStore(
+        store.db_path,
+        clock=clock,
+        transaction_boundary=reached_lock,
+    )
+    blocker = sqlite3.connect(store.db_path, timeout=1, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    def reclaim() -> Lease:
+        return contender.claim(
+            task.branch_task_id,
+            daemon_id=lease.daemon_id,
+            bind_capsule=_capsule("b"),
+            expected_lease_id=lease.lease_id,
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(reclaim)
+            assert reached_lock.wait(timeout=2)
+            clock.now = expiry
+            blocker.commit()
+            replacement = future.result(timeout=5)
+    finally:
+        blocker.close()
+
+    assert replacement.lease_id != lease.lease_id
+    assert replacement.fence == lease.fence + 1
+    assert sum(event.kind == "expired" for event in store.events(task.branch_task_id)) == 1
+
+
+def test_candidate_rejects_lease_expiring_while_waiting_for_writer_lock(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    store, task, lease, blobs, key, _, raw, _, _ = _result_lease(
+        tmp_path,
+        clock=clock,
+    )
+    expiry = datetime.fromisoformat(lease.expires_at.replace("Z", "+00:00"))
+    clock.now = expiry - timedelta(microseconds=1)
+    reached_lock = threading.Event()
+    contender = SignalingLeaseStore(
+        store.db_path,
+        clock=clock,
+        key_registry=store._key_registry,
+        transaction_boundary=reached_lock,
+    )
+    blocker = sqlite3.connect(store.db_path, timeout=1, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    def record() -> dict:
+        return _record_candidate(contender, task, blobs, key, raw, clock.now)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(record)
+            assert reached_lock.wait(timeout=2)
+            clock.now = expiry
+            blocker.commit()
+            with pytest.raises(StaleLeaseError, match="expired"):
+                future.result(timeout=5)
+    finally:
+        blocker.close()
+
+    assert store.read_task(task.branch_task_id).candidate_result_sha256 == ""
+    assert all(
+        event.kind != "result_submitted" for event in store.events(task.branch_task_id)
+    )
+
+
+def test_completion_rejects_lease_expiring_while_waiting_for_writer_lock(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.api.execution_jobs import StaleLeaseError as ApiStaleLeaseError
+    from tinyassets.api.execution_jobs import complete_job
+
+    clock = MutableClock()
+    store, task, lease, blobs, key, result, raw, expected, _ = _result_lease(
+        tmp_path,
+        clock=clock,
+    )
+    candidate_receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
+    expiry = datetime.fromisoformat(lease.expires_at.replace("Z", "+00:00"))
+    clock.now = expiry - timedelta(microseconds=1)
+    reached_lock = threading.Event()
+    contender = SignalingLeaseStore(
+        store.db_path,
+        clock=clock,
+        key_registry=store._key_registry,
+        transaction_boundary=reached_lock,
+    )
+    blocker = sqlite3.connect(store.db_path, timeout=1, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    request = {
+        "job_id": task.branch_task_id,
+        "daemon_id": expected["daemon_id"],
+        "lease_id": expected["lease_id"],
+        "fence": expected["lease_fence"],
+        "capsule_sha256": expected["capsule_sha256"],
+        "result_sha256": candidate_receipt["result_sha256"],
+    }
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(complete_job, contender, request, now=clock.now)
+            assert reached_lock.wait(timeout=2)
+            clock.now = expiry
+            blocker.commit()
+            with pytest.raises(ApiStaleLeaseError, match="expired"):
+                future.result(timeout=5)
+    finally:
+        blocker.close()
+
+    current = store.read_task(task.branch_task_id)
+    assert current.status == "leased"
+    assert current.accepted_result_sha256 == ""
     assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
 
 
@@ -636,8 +1010,8 @@ def test_concurrent_completion_returns_one_durable_receipt_and_one_event(
     store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
     _record_candidate(store, task, blobs, key, raw, clock.now)
     stores = [
-        LeaseStore(store.db_path, clock=clock),
-        LeaseStore(store.db_path, clock=clock),
+        LeaseStore(store.db_path, clock=clock, key_registry=store._key_registry),
+        LeaseStore(store.db_path, clock=clock, key_registry=store._key_registry),
     ]
     barrier = threading.Barrier(2)
 
@@ -646,7 +1020,6 @@ def test_concurrent_completion_returns_one_durable_receipt_and_one_event(
         return contender.complete_validated_result(
             task.branch_task_id,
             expected=expected,
-            now=clock.now,
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -662,9 +1035,12 @@ def test_completion_racing_expiry_reclaim_never_splits_lease_authority(
 ) -> None:
     store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
     _record_candidate(store, task, blobs, key, raw, clock.now)
-    completion_time = clock.now + timedelta(seconds=60)
     clock.advance(121)
-    completing_store = LeaseStore(store.db_path, clock=clock)
+    completing_store = LeaseStore(
+        store.db_path,
+        clock=clock,
+        key_registry=store._key_registry,
+    )
     reclaiming_store = LeaseStore(store.db_path, clock=clock)
     barrier = threading.Barrier(2)
 
@@ -674,7 +1050,6 @@ def test_completion_racing_expiry_reclaim_never_splits_lease_authority(
             return completing_store.complete_validated_result(
                 task.branch_task_id,
                 expected=expected,
-                now=completion_time,
             )
         except StaleLeaseError as exc:
             return exc
@@ -696,16 +1071,11 @@ def test_completion_racing_expiry_reclaim_never_splits_lease_authority(
     completed_events = [
         event for event in store.events(task.branch_task_id) if event.kind == "completed"
     ]
-    if isinstance(completed, dict):
-        assert isinstance(reclaimed, AlreadyClaimedError)
-        assert current.status == "succeeded"
-        assert len(completed_events) == 1
-    else:
-        assert isinstance(completed, StaleLeaseError)
-        assert not isinstance(reclaimed, AlreadyClaimedError)
-        assert current.status == "leased"
-        assert current.lease_fence == expected["lease_fence"] + 1
-        assert completed_events == []
+    assert isinstance(completed, StaleLeaseError)
+    assert not isinstance(reclaimed, AlreadyClaimedError)
+    assert current.status == "leased"
+    assert current.lease_fence == expected["lease_fence"] + 1
+    assert completed_events == []
 
 
 def test_add_task_cannot_preseed_authoritative_lease_or_terminal_state(
@@ -796,7 +1166,7 @@ def _doctor_result_state(store: LeaseStore, task_id: str, mutate) -> None:
 
 
 def _complete(store, task, expected, now):
-    return store.complete_validated_result(task.branch_task_id, expected=expected, now=now)
+    return store.complete_validated_result(task.branch_task_id, expected=expected)
 
 
 def _completion_request(task, lease, result_sha256: str) -> dict[str, object]:
@@ -1080,19 +1450,24 @@ def test_candidate_replay_rejects_incomplete_durable_record(tmp_path: Path) -> N
         _record_candidate(store, task, blob_store, key, raw_result, clock.now)
 
 
-def test_candidate_replay_rejects_doctored_stored_body(tmp_path: Path) -> None:
-    store, task, _, blob_store, key, _, raw_result, _, clock = _result_lease(tmp_path)
-    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+def test_candidate_replay_defers_stored_body_authentication_to_completion(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blob_store, key, _, raw_result, expected, clock = _result_lease(
+        tmp_path
+    )
+    receipt = _record_candidate(store, task, blob_store, key, raw_result, clock.now)
 
     def tamper(metadata):
         metadata["candidate_result"]["outcome"] = "job_failed"
 
     _doctor_result_state(store, task.branch_task_id, tamper)
-    with pytest.raises(StoredStateCorruptError, match="durable candidate record"):
-        _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+    assert _record_candidate(store, task, blob_store, key, raw_result, clock.now) == receipt
+    with pytest.raises(StoredStateCorruptError, match="signature"):
+        store.complete_validated_result(task.branch_task_id, expected=expected)
 
 
-def test_candidate_replay_signature_only_mismatch_stays_client_conflict(
+def test_candidate_replay_with_equivalent_signature_is_idempotent(
     tmp_path: Path,
 ) -> None:
     from tinyassets.runtime.execution_result import RESULT_DOMAIN_SEPARATOR
@@ -1100,7 +1475,7 @@ def test_candidate_replay_signature_only_mismatch_stays_client_conflict(
     store, task, _, blob_store, key, result, raw_result, _, clock = _result_lease(
         tmp_path
     )
-    _record_candidate(store, task, blob_store, key, raw_result, clock.now)
+    receipt = _record_candidate(store, task, blob_store, key, raw_result, clock.now)
     randomized = copy.deepcopy(result)
     digest = bytes.fromhex(result["signature"]["result_sha256"])
     randomized_signature = _randomized_ed25519_signature(
@@ -1113,15 +1488,14 @@ def test_candidate_replay_signature_only_mismatch_stays_client_conflict(
     ).decode("ascii")
     assert randomized["signature"] != result["signature"]
 
-    with pytest.raises(ResultConflictError, match="signature"):
-        _record_candidate(
-            store,
-            task,
-            blob_store,
-            key,
-            json.dumps(randomized, separators=(",", ":")).encode(),
-            clock.now,
-        )
+    assert _record_candidate(
+        store,
+        task,
+        blob_store,
+        key,
+        json.dumps(randomized, separators=(",", ":")).encode(),
+        clock.now,
+    ) == receipt
 
 
 def test_record_candidate_rejects_missing_result_bindings(tmp_path: Path) -> None:
@@ -1149,7 +1523,6 @@ def test_record_candidate_rejects_missing_result_bindings(tmp_path: Path) -> Non
             verify_key=SigningKey.generate().verify_key,
             device_key_active=True,
             blob_store=blob_store,
-            now=clock.now,
         )
 
 
@@ -1165,7 +1538,7 @@ def test_completion_rejects_tampered_stored_signature_hash(tmp_path: Path) -> No
         metadata["candidate_result"]["signature"]["result_sha256"] = "0" * 64
 
     _doctor_result_state(store, task.branch_task_id, tamper)
-    with pytest.raises(StoredStateCorruptError, match="stored candidate content hash"):
+    with pytest.raises(StoredStateCorruptError, match="signature or signed bindings"):
         _complete(store, task, expected, clock.now)
     assert store.read_task(task.branch_task_id).status == "leased"
     assert "completed" not in [event.kind for event in store.events(task.branch_task_id)]
@@ -1214,8 +1587,8 @@ def test_complete_validated_result_rejects_unleased_job(tmp_path: Path) -> None:
                 "lease_fence": 0,
                 "daemon_id": None,
                 "capsule_sha256": None,
+                "result_sha256": "0" * 64,
             },
-            now=clock.now,
         )
 
 
@@ -1301,7 +1674,6 @@ def test_record_candidate_rejects_foreign_job_blob_reference(tmp_path: Path) -> 
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store,
-            now=clock.now,
         )
     assert store.read_task(task.branch_task_id).status == "leased"
     assert not store.read_task(task.branch_task_id).candidate_result_sha256
@@ -1382,7 +1754,7 @@ def test_complete_job_rejects_corrupt_persisted_expiry_as_store_corruption(
         "capsule_sha256": lease.capsule.content_sha256,
         "result_sha256": result["signature"]["result_sha256"],
     }
-    with pytest.raises(StoredStateCorruptError, match="valid expiry"):
+    with pytest.raises(StoredStateCorruptError, match="lease timestamp"):
         complete_job(store, request, now=clock.now)
 
 
@@ -1648,7 +2020,6 @@ def test_completion_rejects_self_consistent_candidate_body_swap(
 ) -> None:
     from tests.test_execution_result import create_result
     from tinyassets.api.execution_jobs import complete_job
-    from tinyassets.runtime.execution_capsule import hash_canonical_jcs
 
     store, task, lease, blobs, key, result, _, _, clock = _result_lease(tmp_path)
     original_body = copy.deepcopy(result)
@@ -1658,12 +2029,11 @@ def test_completion_rejects_self_consistent_candidate_body_swap(
     original_raw = json.dumps(original_result, separators=(",", ":")).encode()
     _record_candidate(store, task, blobs, key, original_raw, clock.now)
 
-    forged = copy.deepcopy(original_result)
-    forged["outcome"] = "succeeded"
-    forged_hash = hash_canonical_jcs(
-        {key: value for key, value in forged.items() if key != "signature"}
-    ).hex()
-    forged["signature"]["result_sha256"] = forged_hash
+    forged_body = copy.deepcopy(original_result)
+    forged_body.pop("signature")
+    forged_body["outcome"] = "succeeded"
+    forged, _ = create_result(forged_body, key)
+    forged_hash = forged["signature"]["result_sha256"]
 
     def replace_candidate(metadata):
         metadata["candidate_result"] = forged
@@ -1768,6 +2138,36 @@ def test_complete_api_classifies_null_terminal_candidate_as_corruption(
         )
 
     with pytest.raises(StoredStateCorruptError, match="candidate content hash"):
+        complete_job(
+            store,
+            _completion_request(task, lease, result["signature"]["result_sha256"]),
+            now=clock.now,
+        )
+
+
+def test_complete_api_checks_terminal_ledger_before_expiry_preflight(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.api.execution_jobs import complete_job
+
+    store, task, lease, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, expected, clock.now)
+    expired_at = LeaseStore._time_text(clock.now - timedelta(seconds=1))
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            """
+            UPDATE lease_tasks SET status = 'leased', accepted_result_id = NULL,
+                accepted_result_sha256 = NULL, lease_expires_at = ?
+            WHERE task_id = ?
+            """,
+            (expired_at, task.branch_task_id),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="completed event exists but job row is not terminal",
+    ):
         complete_job(
             store,
             _completion_request(task, lease, result["signature"]["result_sha256"]),
@@ -1922,31 +2322,31 @@ def test_foreign_result_event_does_not_poison_valid_generation_replay(
         assert _complete(store, task, expected, clock.now) == receipt
 
 
-def test_candidate_replay_rejects_non_object_durable_candidate(tmp_path: Path) -> None:
-    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
-    _record_candidate(store, task, blobs, key, raw, clock.now)
+def test_completion_rejects_non_object_durable_candidate_after_replay(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
 
     def null_candidate(metadata):
         metadata["candidate_result"] = None
 
     _doctor_result_state(store, task.branch_task_id, null_candidate)
-    with pytest.raises(
-        StoredStateCorruptError,
-        match="durable candidate record is incomplete",
-    ):
-        _record_candidate(store, task, blobs, key, raw, clock.now)
+    assert _record_candidate(store, task, blobs, key, raw, clock.now) == receipt
+    with pytest.raises(StoredStateCorruptError, match="candidate body"):
+        store.complete_validated_result(task.branch_task_id, expected=expected)
 
 
 @pytest.mark.parametrize(
     "signature_corruption",
     ["extra_key", "missing_key", "non_string_signature", "different_binding"],
 )
-def test_candidate_replay_rejects_structurally_doctored_signature(
+def test_completion_rejects_structurally_doctored_signature_after_replay(
     tmp_path: Path,
     signature_corruption: str,
 ) -> None:
-    store, task, _, blobs, key, _, raw, _, clock = _result_lease(tmp_path)
-    _record_candidate(store, task, blobs, key, raw, clock.now)
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
 
     def corrupt_signature(metadata):
         signature = metadata["candidate_result"]["signature"]
@@ -1960,11 +2360,9 @@ def test_candidate_replay_rejects_structurally_doctored_signature(
             signature["result_sha256"] = "0" * 64
 
     _doctor_result_state(store, task.branch_task_id, corrupt_signature)
-    with pytest.raises(
-        StoredStateCorruptError,
-        match="durable candidate record is incomplete",
-    ):
-        _record_candidate(store, task, blobs, key, raw, clock.now)
+    assert _record_candidate(store, task, blobs, key, raw, clock.now) == receipt
+    with pytest.raises(StoredStateCorruptError, match="signature"):
+        store.complete_validated_result(task.branch_task_id, expected=expected)
 
 
 def test_expired_reclaim_cannot_launder_a_completed_task_into_new_generation(
@@ -2061,8 +2459,9 @@ def test_completion_rejects_non_enum_persisted_outcome(tmp_path: Path) -> None:
                 forged_hash,
                 task.branch_task_id,
             ),
-        )
+            )
 
+    expected = dict(expected, result_sha256=forged_hash)
     with pytest.raises(StoredStateCorruptError):
         _complete(store, task, expected, clock.now)
 

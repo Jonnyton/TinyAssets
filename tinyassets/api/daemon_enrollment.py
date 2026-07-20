@@ -118,6 +118,16 @@ class AuthenticatedDaemon:
     credential_epoch: int
 
 
+@dataclass(frozen=True)
+class RegisteredDeviceKey:
+    """Platform-owned execution verification key state."""
+
+    device_key_id: str
+    verify_key: VerifyKey
+    credential_epoch: int
+    active: bool
+
+
 class DaemonEnrollmentService:
     """SQLite-backed enrollment, token, replay, and revocation authority."""
 
@@ -879,6 +889,27 @@ class DaemonEnrollmentService:
         if row is None:
             raise DaemonApiError(401, "INVALID_AUTHENTICATION", "Authentication failed")
         return row
+
+    def resolve_device_key(self, device_key_id: str) -> RegisteredDeviceKey | None:
+        """Resolve an enrolled device key without accepting caller key material."""
+        if not isinstance(device_key_id, str) or not device_key_id:
+            return None
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT ed25519_public_key, key_thumbprint, credential_epoch, revoked_at
+                FROM enrolled_daemons WHERE key_thumbprint = ?
+                """,
+                (device_key_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return RegisteredDeviceKey(
+            device_key_id=row["key_thumbprint"],
+            verify_key=VerifyKey(row["ed25519_public_key"]),
+            credential_epoch=int(row["credential_epoch"]),
+            active=row["revoked_at"] is None,
+        )
 
     def verify_request(
         self,
