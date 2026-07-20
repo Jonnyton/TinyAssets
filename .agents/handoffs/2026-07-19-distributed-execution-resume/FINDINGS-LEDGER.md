@@ -231,6 +231,35 @@ vector*, not on this.
 - **HIGH-3:** budget aggregation key and cost ceiling are not signed capsule fields, so
   anti-reset and cost-cap defenses are unverified.
 
+**OPENs resolution + cross-family check** (`codex-s7-opens-resolution.md` ->
+`fable-s7-opens-crossfamily.md`, **adapt**). All six OPENs got real, implementable decisions
+rather than restatements, and ~15 code citations across four modules verified accurate. It
+**closes HIGH-1 in design** (picks the draft's network-RPC side and relocates `BEGIN IMMEDIATE`
+inside the control-plane action — the correct resolution of the mutual exclusivity) and
+**closes HIGH-3 outright** (policy-side binding via the existing signed `policy_sha256`;
+"may lower, never raise without owner authorization, never resets spend"). OPEN-S7-08 fixed a
+real crypto defect in r2, which paired XChaCha20 with the application `sequence` doubling as
+the AEAD nonce — an invitation to nonce misuse; now pinned to
+`Noise_NNpsk0_25519_ChaChaPoly_SHA256` with nonce ownership in Noise `CipherState`.
+
+Three adapt items still block the S7 implementation gate:
+- **It ROUTES AROUND HIGH-2** — explicitly asserts "no new broker authentication family is
+  needed", reusing the unscoped S3 daemon credential that the attack identified as a second
+  terminalizer. This is the finding that becomes live when S4 mounts the completion routes.
+- The r2 ledger-co-location sentence is never actually deleted, so the contradictory text
+  survives in the spec even though the decision went the other way.
+- **MED race:** OPEN-S7-03 requires acceptance to compare cost fields against a *fresh*
+  ledger recompute, but reconciliation is asynchronous — an authorization can legitimately move
+  `usage_uncertain -> settled` between finalization and acceptance, so an HONEST result
+  mismatches and is rejected. Under fix-5's candidate-swap guard the daemon then cannot
+  resubmit under the same lease, **wedging the attempt**. Fix: bind the comparison to the
+  ledger generation captured at finalization, not an acceptance-time recompute
+  (the "generation-bound receipts" pattern from this project's own review-pattern list).
+
+Method note worth keeping: the reviewer noticed the resolution stamped its S2 citations at
+`5a307576` (fix-4), one commit behind the tip, and re-verified them at `eb793409` — line
+numbers shift ~150 but the claims hold. Citations against a moving branch need a sha stamp.
+
 ### S8 — staging / bundle isolation (`codex-s8-amendment.md`, adapt)
 
 - The strong "credential-free staging" claim **cannot be made** and was replaced with two
