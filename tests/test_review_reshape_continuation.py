@@ -17,32 +17,6 @@ _OWNER_ID = "owner-reshape"
 _WORKER_ID = "worker-reshape"
 
 
-def _project_running_revision(universe_dir, task_id: str):
-    """Project legacy running state for continuation tests without claiming."""
-    from tinyassets.branch_tasks import (
-        BranchTask,
-        _lease_window,
-        _read_raw,
-        _write_raw,
-        queue_path,
-    )
-
-    path = queue_path(universe_dir)
-    rows = _read_raw(path)
-    for row in rows:
-        if row.get("branch_task_id") == task_id:
-            heartbeat_at, lease_expires_at = _lease_window()
-            row["status"] = "running"
-            row["claimed_by"] = "revision-daemon"
-            row["worker_owner_id"] = "revision-daemon"
-            row["executor_worker_id"] = _WORKER_ID
-            row["heartbeat_at"] = heartbeat_at
-            row["lease_expires_at"] = lease_expires_at
-            _write_raw(path, rows)
-            return BranchTask.from_dict(row)
-    raise AssertionError(f"missing revision task {task_id}")
-
-
 class _MutableHeadApi:
     def __init__(self, head: str = "a" * 40) -> None:
         self.head = head
@@ -259,7 +233,15 @@ def _enqueue_revision_task(universe_dir, source_run_id, route):
     )
     assert result["kind"] == "enqueue_revision"
     assert result["executed"] is True
-    claimed = _project_running_revision(universe_dir, result["branch_task_id"])
+    from tinyassets.branch_tasks import claim_task
+
+    claimed = claim_task(
+        universe_dir,
+        result["branch_task_id"],
+        "revision-daemon",
+        executor_worker_id=_WORKER_ID,
+    )
+    assert claimed is not None
     return decision, claimed
 
 
@@ -316,10 +298,16 @@ def test_review_revision_terminalizes_if_head_moves_before_consumption(
         "finalize_run",
     ]
 
-    from tinyassets.branch_tasks import read_queue
+    from tinyassets.branch_tasks import claim_task, read_queue
 
     [queued] = read_queue(universe_dir)
-    claimed = _project_running_revision(universe_dir, queued.branch_task_id)
+    claimed = claim_task(
+        universe_dir,
+        queued.branch_task_id,
+        "revision-daemon",
+        executor_worker_id=_WORKER_ID,
+    )
+    assert claimed is not None
     api.head = "b" * 40
     monkeypatch.setattr(
         "tinyassets.github_http.github_client_from_vault",
@@ -404,10 +392,16 @@ def test_review_revision_terminalizes_if_head_moves_during_execution(
         "finalize_run",
     ]
 
-    from tinyassets.branch_tasks import read_queue
+    from tinyassets.branch_tasks import claim_task, read_queue
 
     [queued] = read_queue(universe_dir)
-    claimed = _project_running_revision(universe_dir, queued.branch_task_id)
+    claimed = claim_task(
+        universe_dir,
+        queued.branch_task_id,
+        "revision-daemon",
+        executor_worker_id=_WORKER_ID,
+    )
+    assert claimed is not None
 
     def move_head_during_revision(
         _prompt, _system, *, role, config=None, universe_context=None,
@@ -548,10 +542,16 @@ def test_review_revision_head_move_blocks_in_node_enqueue(
         "finalize_run",
     ]
 
-    from tinyassets.branch_tasks import read_queue
+    from tinyassets.branch_tasks import claim_task, read_queue
 
     [queued] = read_queue(universe_dir)
-    claimed = _project_running_revision(universe_dir, queued.branch_task_id)
+    claimed = claim_task(
+        universe_dir,
+        queued.branch_task_id,
+        "revision-daemon",
+        executor_worker_id=_WORKER_ID,
+    )
+    assert claimed is not None
     monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
     monkeypatch.setattr(

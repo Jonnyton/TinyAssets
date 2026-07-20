@@ -6,6 +6,7 @@ from fantasy_daemon.__main__ import _build_branch_task_observers
 from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
+    claim_task,
     new_task_id,
     read_queue,
 )
@@ -18,12 +19,10 @@ def test_branch_task_observers_refresh_heartbeat_and_progress(
         branch_task_id=new_task_id(),
         branch_def_id="fantasy_author:universe_cycle_wrapper",
         universe_id="u",
-        status="running",
-        claimed_by="daemon-a",
-        worker_owner_id="daemon-a",
     )
     append_task(tmp_path, task)
-    claimed = task
+    claimed = claim_task(tmp_path, task.branch_task_id, "daemon-a")
+    assert claimed is not None
 
     heartbeat, node_status = _build_branch_task_observers(tmp_path, claimed)
 

@@ -304,10 +304,11 @@ def _enqueue_investigation_task(
     # at the enqueue boundary — immediately before append_task. This NARROWS the
     # window but does NOT fully close it (Codex r15 #5): the registry (SQLite) and
     # the queue (JSON) are not atomically joinable, and a delete can still land
-    # after this check or while the task sits queued. The retired JSON claim path
-    # is fail-closed, so it cannot run the task; S4/S10 must repeat this check in
-    # the sole SQLite claim transaction. Fail here with a structured
-    # HandlerDeletedError (the caller recovers it; filing persists, nothing queued).
+    # after this check or while the task sits queued. FULL closure is the
+    # CONSUMPTION-time revalidation at claim (``revalidate_investigation_handler``
+    # / the ``claim_task`` dead-ref guard below), which refuses to RUN a task
+    # whose handler is gone. Fail here with a structured HandlerDeletedError (the
+    # caller recovers it; filing persists, nothing queued).
     if not _handler_branch_exists(base_path, canonical_branch_def_id):
         _logger.warning(
             "enqueue_investigation_request | %s | handler %s deleted before enqueue "

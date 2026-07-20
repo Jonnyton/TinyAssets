@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 from uuid import uuid4
 
-from tinyassets.branch_tasks import BranchTask, append_task, claim_task, read_queue
+from tinyassets.branch_tasks import BranchTask
 from tinyassets.runtime.lease_store import AlreadyClaimedError, LeaseStore, RecordReference
 
 
@@ -108,46 +109,42 @@ def test_only_atomic_claim_winner_persists_a_capsule(tmp_path: Path) -> None:
     assert capsule.content_sha256 == persisted.capsule_sha256
 
 
-def test_json_and_sqlite_claim_paths_cannot_both_grant_ownership(
-    tmp_path: Path,
-) -> None:
-    universe_dir = tmp_path / "universe"
-    task = BranchTask(
-        branch_task_id=str(uuid4()),
-        branch_def_id="branch-loop",
-        universe_id="universe-a",
-        queued_at="2026-07-19T12:00:00Z",
+def test_lease_store_claim_has_no_production_dispatch_caller() -> None:
+    """Dormant-authority guard (S2 fix-2).
+
+    ``LeaseStore`` is the DESIGNATED sole claim authority, but it is DORMANT
+    in production: the daemon's live execution route is the legacy JSON
+    ``claim_task`` until S4/S10 supplies the signed capsule/Order binder and
+    migrates the daemon to ``LeaseStore.claim`` (exec plan §17 [S10]). Both
+    stores can technically grant ownership of the same task today, so
+    production safety against dual-claim rests on exactly one invariant: NO
+    production dispatch module wires ``LeaseStore`` into the daemon execution
+    path. This static guard fails the moment anyone does — and inverts at
+    S4/S10, when the JSON route must be gone instead.
+    """
+    repo = Path(__file__).resolve().parent.parent
+    dispatch_sources = [
+        repo / "fantasy_daemon" / "__main__.py",
+        repo / "tinyassets" / "dispatcher.py",
+        repo / "tinyassets" / "idle_cycle.py",
+        repo / "tinyassets" / "producers" / "goal_pool.py",
+        repo / "tinyassets" / "bug_investigation.py",
+        repo / "tinyassets" / "branch_tasks.py",
+    ]
+    # Fail closed: a renamed/moved listed module must FAIL the guard, never
+    # silently hollow it (mutation-test-fail-closed-default).
+    missing = [path.name for path in dispatch_sources if not path.exists()]
+    assert not missing, f"guard source(s) missing — update the list: {missing}"
+    wiring_patterns = (
+        re.compile(r"^\s*(from|import)\s+\S*lease_store", re.MULTILINE),
+        re.compile(r"\bLeaseStore\s*\("),
     )
-    append_task(universe_dir, task)
-    store = LeaseStore(tmp_path / "leases.sqlite3")
-    store.add_task(task)
-    barrier = Barrier(2)
-
-    def json_claim():
-        barrier.wait(timeout=5)
-        try:
-            return claim_task(universe_dir, task.branch_task_id, "json-daemon")
-        except RuntimeError as exc:
-            return exc
-
-    def sqlite_claim():
-        barrier.wait(timeout=5)
-        return store.claim(
-            task.branch_task_id,
-            daemon_id="sqlite-daemon",
-            bind_capsule=lambda _identity: RecordReference(str(uuid4()), "f" * 64),
-        )
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        json_future = pool.submit(json_claim)
-        sqlite_future = pool.submit(sqlite_claim)
-        json_outcome = json_future.result()
-        sqlite_lease = sqlite_future.result()
-
-    assert isinstance(json_outcome, RuntimeError)
-    assert "SQLite lease store" in str(json_outcome)
-    assert sqlite_lease.task_id == task.branch_task_id
-    assert store.read_task(task.branch_task_id).status == "leased"
-    json_projection = read_queue(universe_dir)[0]
-    assert json_projection.status == "pending"
-    assert not json_projection.claimed_by
+    offenders = []
+    for source_path in dispatch_sources:
+        text = source_path.read_text(encoding="utf-8")
+        if any(pattern.search(text) for pattern in wiring_patterns):
+            offenders.append(source_path.name)
+    assert not offenders, (
+        "LeaseStore wired into a production dispatch module before S4/S10 "
+        "retires the JSON claim route: " + ", ".join(offenders)
+    )

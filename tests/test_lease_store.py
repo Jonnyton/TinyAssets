@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import base64
+import copy
+import inspect
+import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,14 +14,17 @@ from uuid import uuid4
 
 import pytest
 
+import tinyassets.runtime.lease_store as lease_store_module
 from tinyassets.branch_tasks import BranchTask
 from tinyassets.runtime.lease_store import (
     AlreadyClaimedError,
     InvalidLeaseHolderError,
     LeaseStore,
     RecordReference,
+    ResultConflictError,
     StaleFenceError,
     StaleLeaseError,
+    TaskConflictError,
 )
 
 
@@ -53,6 +62,75 @@ def _claim(store: LeaseStore, task_id: str, daemon_id: str, seed: str = "a"):
         daemon_id=daemon_id,
         bind_capsule=_capsule(seed),
         lease_seconds=120,
+    )
+
+
+def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
+    from nacl.signing import SigningKey
+
+    from tests.test_execution_jobs_result import blob_store_with_result_blobs
+    from tests.test_execution_result import create_result, result_body
+
+    active_clock = clock or MutableClock()
+    store = LeaseStore(tmp_path / "leases.sqlite3", clock=active_clock)
+    task = _task()
+    store.add_task(
+        task,
+        result_state={
+            "owner_user_id": "user:owner-1",
+            "device_key_id": "device-key:builder-1",
+            "capability_class": "repo",
+            "repo_mode": "coding",
+            "runner_policy_sha256": "c" * 64,
+            "image_digest": f"sha256:{'d' * 64}",
+            "candidate_result": None,
+            "candidate_receipt": None,
+            "completion_receipt": None,
+        },
+    )
+    lease = _claim(store, task.branch_task_id, "daemon:builder-1")
+    body = result_body()
+    body.update(
+        job_id=task.branch_task_id,
+        capsule_id=lease.capsule.record_id,
+        capsule_sha256=lease.capsule.content_sha256,
+        lease_id=lease.lease_id,
+        fence=lease.fence,
+    )
+    blob_store, body = blob_store_with_result_blobs(
+        tmp_path / "result-blobs",
+        body=body,
+        job_id=task.branch_task_id,
+        lease_id=lease.lease_id,
+        fence=lease.fence,
+    )
+    key = SigningKey.generate()
+    result, _ = create_result(body, key)
+    raw_result = json.dumps(result, separators=(",", ":")).encode()
+    expected = {
+        "lease_id": lease.lease_id,
+        "lease_fence": lease.fence,
+        "daemon_id": lease.daemon_id,
+        "capsule_sha256": lease.capsule.content_sha256,
+    }
+    return store, task, lease, blob_store, key, result, raw_result, expected, active_clock
+
+
+def _record_candidate(
+    store: LeaseStore,
+    task: BranchTask,
+    blob_store,
+    key,
+    raw_result: bytes,
+    now: datetime,
+) -> dict:
+    return store.record_validated_candidate(
+        task.branch_task_id,
+        raw_result=raw_result,
+        verify_key=key.verify_key,
+        device_key_active=True,
+        blob_store=blob_store,
+        now=now,
     )
 
 
@@ -262,7 +340,365 @@ def test_lease_event_history_is_append_only(tmp_path: Path) -> None:
             connection.execute("DELETE FROM lease_events")
 
 
-def test_atomic_update_projects_s5_result_state_under_the_same_cas(
+def test_semantic_result_operations_project_s5_state_under_the_same_cas(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
+
+    candidate_receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
+    candidate = store.read_task(task.branch_task_id)
+    state = store.read_result_state(task.branch_task_id)
+    result_hash = result["signature"]["result_sha256"]
+    assert candidate.candidate_result_id
+    assert candidate.candidate_result_sha256 == result_hash
+    assert state["candidate_result"] == result
+    assert candidate_receipt["result_sha256"] == result_hash
+
+    completion_receipt = store.complete_validated_result(
+        task.branch_task_id,
+        expected=expected,
+        now=clock.now,
+    )
+    completed = store.read_task(task.branch_task_id)
+    assert completed.status == "succeeded"
+    assert completed.accepted_result_id == candidate.candidate_result_id
+    assert completed.accepted_result_sha256 == result_hash
+    assert completion_receipt["accepted_result_sha256"] == result_hash
+    assert [event.kind for event in store.events(task.branch_task_id)].count("completed") == 1
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_status"),
+    [("job_failed", "failed"), ("cancelled", "cancelled")],
+)
+def test_completion_status_is_derived_only_from_the_validated_candidate_outcome(
+    tmp_path: Path,
+    outcome: str,
+    expected_status: str,
+) -> None:
+    from tests.test_execution_result import create_result
+
+    store, task, _, blobs, key, result, _, expected, clock = _result_lease(tmp_path)
+    body = copy.deepcopy(result)
+    body.pop("signature")
+    body["outcome"] = outcome
+    changed_result, _ = create_result(body, key)
+    _record_candidate(
+        store,
+        task,
+        blobs,
+        key,
+        json.dumps(changed_result, separators=(",", ":")).encode(),
+        clock.now,
+    )
+
+    receipt = store.complete_validated_result(
+        task.branch_task_id,
+        expected=expected,
+        now=clock.now,
+    )
+
+    assert receipt["status"] == expected_status
+    assert store.read_task(task.branch_task_id).status == expected_status
+
+
+def test_record_candidate_rejects_self_consistent_body_with_forged_signature(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, result, _, _, clock = _result_lease(tmp_path)
+    forged = copy.deepcopy(result)
+    forged["signature"]["signature_b64"] = base64.b64encode(b"\0" * 64).decode()
+
+    with pytest.raises(lease_store_module.CandidateValidationError, match="signature"):
+        _record_candidate(
+            store,
+            task,
+            blobs,
+            key,
+            json.dumps(forged, separators=(",", ":")).encode(),
+            clock.now,
+        )
+
+    assert store.read_task(task.branch_task_id).candidate_result_sha256 == ""
+    assert all(event.kind != "result_submitted" for event in store.events(task.branch_task_id))
+
+
+def test_candidate_is_write_once_but_identical_replay_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    from tests.test_execution_result import create_result
+
+    store, task, _, blobs, key, result, raw, _, clock = _result_lease(tmp_path)
+    first = _record_candidate(store, task, blobs, key, raw, clock.now)
+    assert _record_candidate(store, task, blobs, key, raw, clock.now) == first
+
+    replacement_body = copy.deepcopy(result)
+    replacement_body.pop("signature")
+    replacement_body["outcome"] = "job_failed"
+    replacement, _ = create_result(replacement_body, key)
+    with pytest.raises(ResultConflictError, match="another candidate"):
+        _record_candidate(
+            store,
+            task,
+            blobs,
+            key,
+            json.dumps(replacement, separators=(",", ":")).encode(),
+            clock.now,
+        )
+
+    assert [event.kind for event in store.events(task.branch_task_id)].count(
+        "result_submitted"
+    ) == 1
+
+
+def test_completion_requires_a_persisted_validated_candidate_and_active_lease(
+    tmp_path: Path,
+) -> None:
+    store, task, _, _, _, _, _, expected, clock = _result_lease(tmp_path)
+
+    with pytest.raises(ResultConflictError, match="stored candidate"):
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected=expected,
+            now=clock.now,
+        )
+    assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+    pending = _task()
+    store.add_task(pending)
+    with pytest.raises(StaleLeaseError):
+        store.complete_validated_result(
+            pending.branch_task_id,
+            expected={
+                "lease_id": str(uuid4()),
+                "lease_fence": 0,
+                "daemon_id": "daemon:builder-1",
+                "capsule_sha256": "0" * 64,
+            },
+            now=clock.now,
+        )
+    assert all(event.kind != "completed" for event in store.events(pending.branch_task_id))
+
+
+def test_two_step_fake_candidate_is_rejected_by_canonical_recompute(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT result_state_json FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        state = json.loads(row[0])
+        state["candidate_result"]["outcome"] = "job_failed"
+        connection.execute(
+            "UPDATE lease_tasks SET result_state_json = ? WHERE task_id = ?",
+            (json.dumps(state, sort_keys=True, separators=(",", ":")), task.branch_task_id),
+        )
+
+    with pytest.raises(ResultConflictError, match="stored candidate"):
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected=expected,
+            now=clock.now,
+        )
+
+    assert store.read_task(task.branch_task_id).status == "leased"
+    assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+
+def test_terminal_replay_is_idempotent_and_terminal_state_is_immutable(
+    tmp_path: Path,
+) -> None:
+    store, task, lease, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    first = store.complete_validated_result(
+        task.branch_task_id,
+        expected=expected,
+        now=clock.now,
+    )
+    before = store.read_result_state(task.branch_task_id)
+    events_before = store.events(task.branch_task_id)
+
+    assert store.complete_validated_result(
+        task.branch_task_id,
+        expected=expected,
+        now=clock.now,
+    ) == first
+    with pytest.raises(StaleLeaseError):
+        _record_candidate(store, task, blobs, key, raw, clock.now)
+    with pytest.raises(StaleLeaseError):
+        store.heartbeat(
+            task.branch_task_id,
+            daemon_id=lease.daemon_id,
+            lease_id=lease.lease_id,
+            fence=lease.fence,
+            capsule_sha256=lease.capsule.content_sha256,
+            sequence=1,
+        )
+    with pytest.raises(AlreadyClaimedError):
+        _claim(store, task.branch_task_id, "daemon:other")
+    with pytest.raises(TaskConflictError):
+        store.add_task(task)
+
+    assert store.read_result_state(task.branch_task_id) == before
+    assert store.events(task.branch_task_id) == events_before
+
+
+@pytest.mark.parametrize("corruption", ["accepted_hash", "missing_receipt"])
+def test_terminal_replay_rejects_incomplete_or_conflicting_durable_state(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    store.complete_validated_result(
+        task.branch_task_id,
+        expected=expected,
+        now=clock.now,
+    )
+    events_before = store.events(task.branch_task_id)
+    with sqlite3.connect(store.db_path) as connection:
+        if corruption == "accepted_hash":
+            connection.execute(
+                "UPDATE lease_tasks SET accepted_result_sha256 = ? WHERE task_id = ?",
+                ("0" * 64, task.branch_task_id),
+            )
+        else:
+            row = connection.execute(
+                "SELECT result_state_json FROM lease_tasks WHERE task_id = ?",
+                (task.branch_task_id,),
+            ).fetchone()
+            state = json.loads(row[0])
+            state["completion_receipt"] = None
+            connection.execute(
+                "UPDATE lease_tasks SET result_state_json = ? WHERE task_id = ?",
+                (
+                    json.dumps(state, sort_keys=True, separators=(",", ":")),
+                    task.branch_task_id,
+                ),
+            )
+
+    with pytest.raises(ResultConflictError):
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected=expected,
+            now=clock.now,
+        )
+    assert store.events(task.branch_task_id) == events_before
+
+
+def test_completion_enforces_lease_bindings_and_expiry_under_the_store_lock(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+
+    for key_name, wrong_value, error_type in (
+        ("lease_fence", expected["lease_fence"] + 1, StaleFenceError),
+        ("lease_id", str(uuid4()), StaleLeaseError),
+        ("daemon_id", "daemon:other", StaleLeaseError),
+        ("capsule_sha256", "0" * 64, StaleLeaseError),
+    ):
+        with pytest.raises(error_type):
+            store.complete_validated_result(
+                task.branch_task_id,
+                expected=dict(expected, **{key_name: wrong_value}),
+                now=clock.now,
+            )
+    clock.advance(121)
+    with pytest.raises(StaleLeaseError, match="expired"):
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected=expected,
+            now=clock.now,
+        )
+    with pytest.raises(StaleLeaseError, match="expired"):
+        _record_candidate(store, task, blobs, key, raw, clock.now)
+
+    assert all(event.kind != "completed" for event in store.events(task.branch_task_id))
+
+
+def test_concurrent_completion_returns_one_durable_receipt_and_one_event(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    stores = [
+        LeaseStore(store.db_path, clock=clock),
+        LeaseStore(store.db_path, clock=clock),
+    ]
+    barrier = threading.Barrier(2)
+
+    def complete(contender: LeaseStore) -> dict:
+        barrier.wait()
+        return contender.complete_validated_result(
+            task.branch_task_id,
+            expected=expected,
+            now=clock.now,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(pool.map(complete, stores))
+
+    assert receipts[0] == receipts[1]
+    assert store.read_task(task.branch_task_id).status == "succeeded"
+    assert [event.kind for event in store.events(task.branch_task_id)].count("completed") == 1
+
+
+def test_completion_racing_expiry_reclaim_never_splits_lease_authority(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    completion_time = clock.now + timedelta(seconds=60)
+    clock.advance(121)
+    completing_store = LeaseStore(store.db_path, clock=clock)
+    reclaiming_store = LeaseStore(store.db_path, clock=clock)
+    barrier = threading.Barrier(2)
+
+    def complete():
+        barrier.wait()
+        try:
+            return completing_store.complete_validated_result(
+                task.branch_task_id,
+                expected=expected,
+                now=completion_time,
+            )
+        except StaleLeaseError as exc:
+            return exc
+
+    def reclaim():
+        barrier.wait()
+        try:
+            return _claim(reclaiming_store, task.branch_task_id, "daemon:replacement")
+        except AlreadyClaimedError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        completed_future = pool.submit(complete)
+        reclaimed_future = pool.submit(reclaim)
+        completed = completed_future.result()
+        reclaimed = reclaimed_future.result()
+
+    current = store.read_task(task.branch_task_id)
+    completed_events = [
+        event for event in store.events(task.branch_task_id) if event.kind == "completed"
+    ]
+    if isinstance(completed, dict):
+        assert isinstance(reclaimed, AlreadyClaimedError)
+        assert current.status == "succeeded"
+        assert len(completed_events) == 1
+    else:
+        assert isinstance(completed, StaleLeaseError)
+        assert not isinstance(reclaimed, AlreadyClaimedError)
+        assert current.status == "leased"
+        assert current.lease_fence == expected["lease_fence"] + 1
+        assert completed_events == []
+
+
+def test_add_task_cannot_preseed_authoritative_lease_or_terminal_state(
     tmp_path: Path,
 ) -> None:
     store = LeaseStore(tmp_path / "leases.sqlite3")
@@ -270,50 +706,60 @@ def test_atomic_update_projects_s5_result_state_under_the_same_cas(
     store.add_task(
         task,
         result_state={
-            "owner_user_id": "owner-a",
-            "device_key_id": "device-a",
-            "capability_class": "repo",
-            "repo_mode": "coding",
-            "runner_policy_sha256": "e" * 64,
-            "image_digest": "sha256:" + "f" * 64,
-            "candidate_result": None,
-            "candidate_receipt": None,
-            "completion_receipt": None,
+            "status": "succeeded",
+            "lease_id": str(uuid4()),
+            "lease_fence": 99,
+            "daemon_id": "daemon:attacker",
+            "capsule_sha256": "0" * 64,
+            "candidate_result_sha256": "0" * 64,
+            "accepted_result_sha256": "0" * 64,
+            "candidate_result": {"signature": {"result_sha256": "0" * 64}},
+            "candidate_receipt": {"result_sha256": "0" * 64},
+            "completion_receipt": {"status": "succeeded"},
         },
     )
-    lease = _claim(store, task.branch_task_id, "daemon-a")
-    result_hash = "d" * 64
 
-    def retain_candidate(state):
-        assert state["job_id"] == task.branch_task_id
-        assert state["lease_id"] == lease.lease_id
-        assert state["lease_fence"] == lease.fence
-        assert state["capsule_id"] == lease.capsule.record_id
-        updated = dict(state)
-        updated["candidate_result_sha256"] = result_hash
-        updated["candidate_result"] = {"signature": {"result_sha256": result_hash}}
-        updated["candidate_receipt"] = {"result_sha256": result_hash}
-        return updated, "candidate-stored"
+    state = store.read_result_state(task.branch_task_id)
+    assert state["status"] == "pending"
+    assert state["lease_id"] is None
+    assert state["lease_fence"] == 0
+    assert state["candidate_result_sha256"] is None
+    assert state["accepted_result_sha256"] is None
 
-    assert store.atomic_update(task.branch_task_id, retain_candidate) == "candidate-stored"
-    candidate = store.read_task(task.branch_task_id)
-    assert candidate.candidate_result_id
-    assert candidate.candidate_result_sha256 == result_hash
-
-    def finalize(state):
-        updated = dict(state)
-        updated["status"] = "succeeded"
-        updated["accepted_result_sha256"] = result_hash
-        updated["completion_receipt"] = {"status": "succeeded"}
-        return updated, "completed"
-
-    assert store.atomic_update(task.branch_task_id, finalize) == "completed"
-    completed = store.read_task(task.branch_task_id)
-    assert completed.status == "succeeded"
-    assert completed.accepted_result_id == candidate.candidate_result_id
-    assert completed.accepted_result_sha256 == result_hash
+    _claim(store, task.branch_task_id, "daemon:builder-1")
+    claimed = store.read_result_state(task.branch_task_id)
+    assert claimed["candidate_result"] is None
+    assert claimed["candidate_receipt"] is None
+    assert claimed["completion_receipt"] is None
 
 
-def test_lease_store_exposes_no_unvalidated_result_or_completion_path() -> None:
-    assert not hasattr(LeaseStore, "submit_result")
-    assert not hasattr(LeaseStore, "complete")
+def test_lease_store_exposes_only_semantic_result_mutators() -> None:
+    store = LeaseStore(Path(":memory:"))
+    public_callables = {
+        name
+        for name in dir(store)
+        if not name.startswith("_") and callable(getattr(store, name))
+    }
+    assert public_callables == {
+        "add_task",
+        "claim",
+        "complete_validated_result",
+        "events",
+        "heartbeat",
+        "read_result_state",
+        "read_task",
+        "record_validated_candidate",
+    }
+    assert "atomic_update" not in dir(store)
+    assert "_atomic_update" not in dir(store)
+    assert not hasattr(lease_store_module, "Transition")
+    forbidden_parameters = {
+        "update",
+        "transition",
+        "status",
+        "candidate_result_sha256",
+        "accepted_result_sha256",
+    }
+    for name in public_callables:
+        parameters = set(inspect.signature(getattr(store, name)).parameters)
+        assert parameters.isdisjoint(forbidden_parameters)

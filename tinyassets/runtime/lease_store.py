@@ -10,6 +10,7 @@ event ledger in the same transaction.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import re
 import sqlite3
@@ -18,11 +19,25 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, cast
+
+from nacl.signing import VerifyKey
 
 from tinyassets.branch_tasks import SHARED_DEFAULT_WORKER_IDS, BranchTask
+from tinyassets.runtime.blob_refs import BlobError, BlobStore
+from tinyassets.runtime.execution_capsule import (
+    CapsuleCanonicalizationError,
+    hash_canonical_jcs,
+)
+from tinyassets.runtime.execution_result import (
+    ExecutionResultError,
+    result_blob_references,
+    verify_execution_result,
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
 
 class LeaseStoreError(RuntimeError):
@@ -59,6 +74,10 @@ class ResultConflictError(LeaseStoreError):
     pass
 
 
+class CandidateValidationError(LeaseStoreError):
+    pass
+
+
 @dataclass(frozen=True)
 class RecordReference:
     record_id: str
@@ -88,8 +107,6 @@ class LeaseEvent:
     occurred_at: str
 
 
-ResponseT = TypeVar("ResponseT")
-Transition = Callable[[dict[str, Any]], tuple[dict[str, Any], ResponseT]]
 CapsuleBinder = Callable[[LeaseIdentity], RecordReference]
 
 
@@ -589,6 +606,11 @@ class LeaseStore:
         with self._connect() as connection:
             return self._row_to_task(self._task_row(connection, task_id))
 
+    def read_result_state(self, job_id: str) -> dict[str, Any]:
+        """Return a read-only projection of the current S5 result state."""
+        with self._connect() as connection:
+            return self._row_to_result_state(self._task_row(connection, job_id))
+
     def events(self, task_id: str) -> tuple[LeaseEvent, ...]:
         """Return the immutable lease event history in append order."""
         with self._connect() as connection:
@@ -602,14 +624,17 @@ class LeaseStore:
             ).fetchall()
         return tuple(LeaseEvent(**dict(row)) for row in rows)
 
-    def atomic_update(
-        self, job_id: str, update: Transition[ResponseT]
-    ) -> ResponseT:
-        """Run an S5 result transition under the authoritative job transaction."""
-        if not callable(update):
-            raise TypeError("update must be callable")
-        now_text = self._now_text()
-        core_keys = {
+    @staticmethod
+    def _operation_time(value: datetime) -> tuple[datetime, str]:
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise LeaseStoreError("operation time must be timezone-aware")
+        normalized = value.astimezone(UTC)
+        return normalized, LeaseStore._time_text(normalized)
+
+    @staticmethod
+    def _result_metadata(row: sqlite3.Row) -> dict[str, Any]:
+        metadata = LeaseStore._result_state(row)
+        for key in (
             "job_id",
             "status",
             "daemon_id",
@@ -620,105 +645,263 @@ class LeaseStore:
             "capsule_sha256",
             "candidate_result_sha256",
             "accepted_result_sha256",
-        }
-        mutable_result_keys = {
-            "candidate_result",
-            "candidate_receipt",
-            "completion_receipt",
-        }
+        ):
+            metadata.pop(key, None)
+        return metadata
+
+    def record_validated_candidate(
+        self,
+        job_id: str,
+        *,
+        raw_result: bytes,
+        verify_key: VerifyKey,
+        device_key_active: bool,
+        blob_store: BlobStore,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Validate and persist one write-once S5 candidate under the job lock."""
+        operation_now, accepted_at = self._operation_time(now)
         with self._transaction() as connection:
             row = self._task_row(connection, job_id)
-            current = self._row_to_result_state(row)
-            updated, response = update(dict(current))
-            if not isinstance(updated, dict):
-                raise LeaseStoreError("atomic update must return a state object")
-
-            immutable_core = core_keys - {
-                "status",
-                "candidate_result_sha256",
-                "accepted_result_sha256",
-            }
-            if any(updated.get(key) != current.get(key) for key in immutable_core):
-                raise LeaseStoreError("atomic update changed an immutable job binding")
-            current_status = current["status"]
-            new_status = updated.get("status")
-            allowed_status = new_status == current_status or (
-                current_status == "leased"
-                and new_status in {"succeeded", "failed", "cancelled"}
+            if row["status"] != "leased":
+                raise StaleLeaseError("job is not under an active lease")
+            if operation_now >= self._parse_time(row["lease_expires_at"]):
+                raise StaleLeaseError("job lease has expired")
+            state = self._row_to_result_state(row)
+            required_bindings = (
+                "owner_user_id",
+                "device_key_id",
+                "daemon_id",
+                "capsule_id",
+                "capsule_sha256",
+                "lease_id",
+                "capability_class",
+                "runner_policy_sha256",
+                "image_digest",
             )
-            if not allowed_status:
-                raise LeaseStoreError(
-                    f"atomic update cannot transition {current_status!r} to {new_status!r}"
+            if "repo_mode" not in state or any(
+                type(state.get(key)) is not str or not state[key]
+                for key in required_bindings
+            ):
+                raise CandidateValidationError("leased job is missing result bindings")
+            try:
+                verified = verify_execution_result(
+                    raw_result,
+                    verify_key=verify_key,
+                    expected_device_key_id=cast(str, state["device_key_id"]),
+                    device_key_active=device_key_active,
+                    expected_daemon_id=cast(str, state["daemon_id"]),
+                    expected_job_id=state["job_id"],
+                    expected_capsule_id=cast(str, state["capsule_id"]),
+                    expected_capsule_sha256=cast(str, state["capsule_sha256"]),
+                    expected_lease_id=cast(str, state["lease_id"]),
+                    expected_fence=state["lease_fence"],
+                    expected_capability_class=state["capability_class"],
+                    expected_repo_mode=state.get("repo_mode"),
+                    expected_runner_policy_sha256=state["runner_policy_sha256"],
+                    expected_image_digest=state["image_digest"],
                 )
+                references = result_blob_references(verified)
+                for blob_ref, sha256, size_bytes in references:
+                    blob_store.validate_reference(
+                        blob_ref,
+                        owner_user_id=state["owner_user_id"],
+                        job_id=state["job_id"],
+                        lease_id=cast(str, state["lease_id"]),
+                        fence=state["lease_fence"],
+                        expected_sha256=sha256,
+                        expected_size_bytes=size_bytes,
+                    )
+            except (ExecutionResultError, BlobError) as exc:
+                raise CandidateValidationError(str(exc)) from exc
 
-            candidate_hash = updated.get("candidate_result_sha256")
-            accepted_hash = updated.get("accepted_result_sha256")
-            for field, value in (
-                ("candidate_result_sha256", candidate_hash),
-                ("accepted_result_sha256", accepted_hash),
-            ):
-                if value is not None and (
-                    type(value) is not str or not _SHA256_RE.fullmatch(value)
-                ):
-                    raise LeaseStoreError(f"{field} must be lowercase SHA-256 hex or null")
-            if accepted_hash is not None and accepted_hash != candidate_hash:
-                raise ResultConflictError("accepted result must be the current candidate")
-            if row["candidate_result_sha256"] is not None and (
-                candidate_hash != row["candidate_result_sha256"]
-            ):
-                raise ResultConflictError("atomic update cannot replace a candidate result")
+            result_sha256 = verified["signature"]["result_sha256"]
+            existing_hash = row["candidate_result_sha256"]
+            metadata = self._result_metadata(row)
+            if existing_hash is not None and existing_hash != result_sha256:
+                raise ResultConflictError("current lease already has another candidate result")
+            if existing_hash == result_sha256:
+                receipt = metadata.get("candidate_receipt")
+                if metadata.get("candidate_result") != verified or not isinstance(receipt, dict):
+                    raise ResultConflictError("durable candidate record is incomplete")
+                return dict(receipt)
 
-            current_meta = {key: value for key, value in current.items() if key not in core_keys}
-            updated_meta = {key: value for key, value in updated.items() if key not in core_keys}
-            immutable_meta = (set(current_meta) | set(updated_meta)) - mutable_result_keys
-            if any(updated_meta.get(key) != current_meta.get(key) for key in immutable_meta):
-                raise LeaseStoreError("atomic update changed immutable result bindings")
-            result_state_json = json.dumps(
-                updated_meta, sort_keys=True, separators=(",", ":")
-            )
+            try:
+                for blob_ref, _, _ in references:
+                    blob_store.mark_referenced(
+                        blob_ref,
+                        owner_user_id=state["owner_user_id"],
+                        job_id=state["job_id"],
+                        lease_id=cast(str, state["lease_id"]),
+                        fence=state["lease_fence"],
+                    )
+            except BlobError as exc:
+                raise CandidateValidationError(str(exc)) from exc
 
-            candidate_id = row["candidate_result_id"]
-            if candidate_hash is not None and candidate_id is None:
-                candidate_id = str(uuid.uuid4())
-            accepted_id = candidate_id if accepted_hash is not None else None
+            receipt = {
+                "job_id": state["job_id"],
+                "result_sha256": result_sha256,
+                "outcome": verified["outcome"],
+                "accepted_at": accepted_at,
+            }
+            metadata["candidate_result"] = verified
+            metadata["candidate_receipt"] = receipt
+            result_state_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+            candidate_id = str(uuid.uuid4())
             cursor = connection.execute(
                 """
                 UPDATE lease_tasks SET
-                    status = ?, candidate_result_id = ?,
-                    candidate_result_sha256 = ?, accepted_result_id = ?,
-                    accepted_result_sha256 = ?, result_state_json = ?, updated_at = ?
-                WHERE task_id = ? AND status = ? AND lease_fence = ?
-                    AND lease_id IS ?
+                    candidate_result_id = ?, candidate_result_sha256 = ?,
+                    result_state_json = ?, updated_at = ?
+                WHERE task_id = ? AND status = 'leased' AND lease_id = ?
+                    AND lease_fence = ? AND candidate_result_sha256 IS NULL
+                    AND accepted_result_sha256 IS NULL
                 """,
                 (
-                    new_status,
                     candidate_id,
-                    candidate_hash,
-                    accepted_id,
-                    accepted_hash,
+                    result_sha256,
                     result_state_json,
-                    now_text,
+                    accepted_at,
                     job_id,
-                    current_status,
-                    row["lease_fence"],
                     row["lease_id"],
+                    row["lease_fence"],
                 ),
             )
             if cursor.rowcount != 1:
-                raise StaleLeaseError("atomic result update lost the job CAS")
-            event_kind = (
-                "completed"
-                if new_status != current_status
-                else "result_submitted"
-                if candidate_hash != current.get("candidate_result_sha256")
-                else "atomic_update"
-            )
+                raise StaleLeaseError("candidate write lost the current lease CAS")
             self._append_event(
                 connection,
                 task_id=job_id,
-                kind=event_kind,
+                kind="result_submitted",
                 lease_id=row["lease_id"],
                 fence=row["lease_fence"],
-                occurred_at=now_text,
+                occurred_at=accepted_at,
             )
-            return response
+            return dict(receipt)
+
+    def complete_validated_result(
+        self,
+        job_id: str,
+        *,
+        expected: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Complete only the current lease's persisted validated candidate."""
+        operation_now, completed_at = self._operation_time(now)
+        expected_fields = {"lease_id", "lease_fence", "daemon_id", "capsule_sha256"}
+        if not isinstance(expected, Mapping) or set(expected) != expected_fields:
+            raise LeaseStoreError("completion expected bindings are malformed")
+        with self._transaction() as connection:
+            row = self._task_row(connection, job_id)
+            if (
+                type(expected["lease_fence"]) is not int
+                or expected["lease_fence"] != row["lease_fence"]
+            ):
+                raise StaleFenceError("completion fence is not current")
+            for key, column in (
+                ("lease_id", "lease_id"),
+                ("daemon_id", "lease_daemon_id"),
+                ("capsule_sha256", "capsule_sha256"),
+            ):
+                if expected[key] != row[column]:
+                    raise StaleLeaseError(f"completion {key} does not match current lease")
+            if row["status"] not in _TERMINAL_STATUSES:
+                if row["status"] != "leased":
+                    raise StaleLeaseError("job is not under an active lease")
+                if operation_now >= self._parse_time(row["lease_expires_at"]):
+                    raise StaleLeaseError("job lease has expired")
+
+            metadata = self._result_metadata(row)
+            candidate_hash = row["candidate_result_sha256"]
+            candidate = metadata.get("candidate_result")
+            signature = candidate.get("signature") if isinstance(candidate, dict) else None
+            if (
+                type(candidate_hash) is not str
+                or not _SHA256_RE.fullmatch(candidate_hash)
+                or not isinstance(candidate, dict)
+                or not isinstance(signature, dict)
+                or type(signature.get("result_sha256")) is not str
+            ):
+                raise ResultConflictError("completion has no stored candidate content hash")
+            try:
+                recomputed_hash = hash_canonical_jcs(
+                    {key: value for key, value in candidate.items() if key != "signature"}
+                ).hex()
+            except CapsuleCanonicalizationError as exc:
+                raise ResultConflictError("stored candidate body is not canonicalizable") from exc
+            if (
+                not hmac.compare_digest(candidate_hash, signature["result_sha256"])
+                or not hmac.compare_digest(candidate_hash, recomputed_hash)
+            ):
+                raise ResultConflictError(
+                    "completion result hash is not the stored candidate content hash"
+                )
+
+            if row["status"] in _TERMINAL_STATUSES:
+                if row["accepted_result_sha256"] != candidate_hash:
+                    raise ResultConflictError("job finalized with another result hash")
+                receipt = metadata.get("completion_receipt")
+                if not isinstance(receipt, dict):
+                    raise ResultConflictError("durable completion receipt is missing")
+                return dict(receipt)
+
+            candidate_id = row["candidate_result_id"]
+            if type(candidate_id) is not str or not candidate_id:
+                raise ResultConflictError("durable candidate record is incomplete")
+            outcome = candidate.get("outcome")
+            final_status = (
+                "succeeded"
+                if outcome == "succeeded"
+                else "cancelled"
+                if outcome == "cancelled"
+                else "failed"
+            )
+            receipt_request = {
+                "job_id": job_id,
+                "daemon_id": expected["daemon_id"],
+                "lease_id": expected["lease_id"],
+                "fence": expected["lease_fence"],
+                "capsule_sha256": expected["capsule_sha256"],
+                "result_sha256": candidate_hash,
+            }
+            receipt = {
+                "receipt_id": f"completion:{hash_canonical_jcs(receipt_request).hex()}",
+                "job_id": job_id,
+                "status": final_status,
+                "accepted_result_sha256": candidate_hash,
+                "completed_at": completed_at,
+            }
+            metadata["completion_receipt"] = receipt
+            result_state_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+            cursor = connection.execute(
+                """
+                UPDATE lease_tasks SET
+                    status = ?, accepted_result_id = ?, accepted_result_sha256 = ?,
+                    result_state_json = ?, updated_at = ?
+                WHERE task_id = ? AND status = 'leased' AND lease_id = ?
+                    AND lease_fence = ? AND candidate_result_sha256 = ?
+                    AND accepted_result_sha256 IS NULL
+                """,
+                (
+                    final_status,
+                    candidate_id,
+                    candidate_hash,
+                    result_state_json,
+                    completed_at,
+                    job_id,
+                    row["lease_id"],
+                    row["lease_fence"],
+                    candidate_hash,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StaleLeaseError("completion lost the current lease CAS")
+            self._append_event(
+                connection,
+                task_id=job_id,
+                kind="completed",
+                lease_id=row["lease_id"],
+                fence=row["lease_fence"],
+                occurred_at=completed_at,
+            )
+            return dict(receipt)

@@ -443,16 +443,17 @@ def _try_dispatcher_pick(
     """Phase F wire-up (preflight §4.10). Call the dispatcher, claim
     the picked task, return ``(claimed_task, inputs_merge)``.
 
-    JSON queue selection is read-only. Until S4/S10 supplies the signed capsule
-    binder needed by ``LeaseStore.claim``, this legacy daemon boundary refuses
-    execution instead of granting ownership through a second authority.
+    Uses ``claim_task`` (returns None on not-pending) rather than
+    ``mark_status(running)`` — handles cancel-during-claim race cleanly
+    per invariant 8. On race loss, returns ``(None, {})`` and logs
+    ``claim_lost_to_cancel``.
 
     Callers should merge ``inputs_merge`` into the initial graph state
     with ``inputs`` winning on overlapping keys. Unknown keys are
     tolerated by LangGraph's initial_state.
     """
     try:
-        from tinyassets.branch_tasks import reclaim_expired_leases
+        from tinyassets.branch_tasks import claim_task, reclaim_expired_leases
         from tinyassets.dispatcher import (
             dispatcher_enabled,
             load_dispatcher_config,
@@ -483,12 +484,29 @@ def _try_dispatcher_pick(
         picked = select_next_task(universe_path, config=cfg)
         if picked is None:
             return None, {}
-        logger.error(
-            "dispatcher_pick: refusing legacy JSON claim for %s; "
-            "S4/S10 SQLite lease-store routing is required",
+        executor_worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+        executor_runtime_id = os.environ.get(
+            "TINYASSETS_RUNTIME_INSTANCE_ID", "",
+        ).strip()
+        claimed = claim_task(
+            universe_path,
             picked.branch_task_id,
+            daemon_id,
+            executor_worker_id=executor_worker_id,
+            executor_runtime_id=executor_runtime_id,
         )
-        return None, {}
+        if claimed is None:
+            logger.info(
+                "dispatcher_pick: claim_lost_to_cancel %s",
+                picked.branch_task_id,
+            )
+            return None, {}
+        logger.info(
+            "dispatcher_pick: claimed %s tier=%s branch=%s",
+            claimed.branch_task_id, claimed.trigger_source,
+            claimed.branch_def_id,
+        )
+        return claimed, dict(claimed.inputs or {})
     except Exception:  # noqa: BLE001
         logger.exception("dispatcher_pick failed")
         return None, {}

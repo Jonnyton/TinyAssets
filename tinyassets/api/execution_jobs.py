@@ -7,38 +7,37 @@ store protocol makes the lease store's lock/transaction the atomicity boundary.
 
 from __future__ import annotations
 
-import copy
 import hmac
 import re
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import (
     Any,
-    Callable,
     Literal,
     Mapping,
     NotRequired,
     Protocol,
     TypedDict,
-    TypeVar,
     cast,
 )
 
 from nacl.signing import VerifyKey
 
-from tinyassets.runtime.blob_refs import BlobError, BlobStore
+from tinyassets.runtime.blob_refs import BlobStore
 from tinyassets.runtime.execution_capsule import (
-    CapsuleCanonicalizationError,
     CapsulePolicyError,
-    hash_canonical_jcs,
     reject_host_path_material,
 )
-from tinyassets.runtime.execution_result import (
-    ExecutionResultError,
-    ExecutionResultV1,
-    result_blob_references,
-    verify_execution_result,
+from tinyassets.runtime.execution_result import ExecutionResultV1
+from tinyassets.runtime.lease_store import (
+    LeaseStoreError,
+)
+from tinyassets.runtime.lease_store import (
+    ResultConflictError as StoreResultConflictError,
+)
+from tinyassets.runtime.lease_store import (
+    StaleLeaseError as StoreStaleLeaseError,
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -100,14 +99,29 @@ class CompletionReceipt:
     completed_at: str
 
 
-ResponseT = TypeVar("ResponseT")
-Transition = Callable[[JobResultState], tuple[JobResultState, ResponseT]]
-
-
 class AtomicJobResultStore(Protocol):
-    """S2/S4 adapter: execute one transition under the authoritative job lock."""
+    """S2/S4 adapter exposing only validation-owning result operations."""
 
-    def atomic_update(self, job_id: str, update: Transition[ResponseT]) -> ResponseT: ...
+    def read_result_state(self, job_id: str) -> JobResultState: ...
+
+    def record_validated_candidate(
+        self,
+        job_id: str,
+        *,
+        raw_result: bytes,
+        verify_key: VerifyKey,
+        device_key_active: bool,
+        blob_store: BlobStore,
+        now: datetime,
+    ) -> dict[str, Any]: ...
+
+    def complete_validated_result(
+        self,
+        job_id: str,
+        *,
+        expected: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]: ...
 
 
 class ExecutionJobResultError(ValueError):
@@ -229,81 +243,24 @@ def submit_candidate_result(
     now: datetime,
 ) -> CandidateResultReceipt:
     """Verify and retain a candidate; this grants no repository effect authority."""
-    accepted_at = _utc_text(now)
-
-    def transition(state: JobResultState) -> tuple[JobResultState, CandidateResultReceipt]:
-        _require_current_lease(state, now=now)
-        required_bindings = (
-            "device_key_id",
-            "daemon_id",
-            "capsule_id",
-            "capsule_sha256",
-            "lease_id",
-        )
-        if any(type(state.get(key)) is not str or not state[key] for key in required_bindings):
-            raise CandidateResultRejectedError("leased job is missing result bindings")
-        try:
-            verified = verify_execution_result(
-                raw_result,
-                verify_key=verify_key,
-                expected_device_key_id=cast(str, state["device_key_id"]),
-                device_key_active=device_key_active,
-                expected_daemon_id=cast(str, state["daemon_id"]),
-                expected_job_id=state["job_id"],
-                expected_capsule_id=cast(str, state["capsule_id"]),
-                expected_capsule_sha256=cast(str, state["capsule_sha256"]),
-                expected_lease_id=cast(str, state["lease_id"]),
-                expected_fence=state["lease_fence"],
-                expected_capability_class=state["capability_class"],
-                expected_repo_mode=state["repo_mode"],
-                expected_runner_policy_sha256=state["runner_policy_sha256"],
-                expected_image_digest=state["image_digest"],
-            )
-            for blob_ref, sha256, size_bytes in result_blob_references(verified):
-                blob_store.validate_reference(
-                    blob_ref,
-                    owner_user_id=state["owner_user_id"],
-                    job_id=state["job_id"],
-                    lease_id=cast(str, state["lease_id"]),
-                    fence=state["lease_fence"],
-                    expected_sha256=sha256,
-                    expected_size_bytes=size_bytes,
-                )
-        except (ExecutionResultError, BlobError) as exc:
-            raise CandidateResultRejectedError(str(exc)) from exc
-
-        result_sha256 = verified["signature"]["result_sha256"]
-        existing_hash = state.get("candidate_result_sha256")
-        if existing_hash is not None and existing_hash != result_sha256:
-            raise CandidateResultConflictError("current lease already has another candidate result")
-        existing_receipt = state.get("candidate_receipt")
-        if existing_hash == result_sha256 and isinstance(existing_receipt, dict):
-            return state, CandidateResultReceipt(**existing_receipt)
-
-        for blob_ref, _, _ in result_blob_references(verified):
-            blob_store.mark_referenced(
-                blob_ref,
-                owner_user_id=state["owner_user_id"],
-                job_id=state["job_id"],
-                lease_id=cast(str, state["lease_id"]),
-                fence=state["lease_fence"],
-            )
-        receipt = CandidateResultReceipt(
-            job_id=state["job_id"],
-            result_sha256=result_sha256,
-            outcome=verified["outcome"],
-            accepted_at=accepted_at,
-        )
-        updated = copy.deepcopy(state)
-        updated["candidate_result_sha256"] = result_sha256
-        updated["candidate_result"] = verified
-        updated["candidate_receipt"] = asdict(receipt)
-        return updated, receipt
-
+    _utc_text(now)
     try:
-        return store.atomic_update(job_id, transition)
-    except StaleLeaseError as exc:
+        receipt = store.record_validated_candidate(
+            job_id,
+            raw_result=raw_result,
+            verify_key=verify_key,
+            device_key_active=device_key_active,
+            blob_store=blob_store,
+            now=now,
+        )
+    except StoreResultConflictError as exc:
+        raise CandidateResultConflictError(str(exc)) from exc
+    except LeaseStoreError as exc:
         raise CandidateResultRejectedError(str(exc)) from exc
+    try:
+        return CandidateResultReceipt(**receipt)
+    except (TypeError, ValueError) as exc:
+        raise CandidateResultRejectedError("store returned an invalid candidate receipt") from exc
 
 
 def complete_job(
@@ -314,66 +271,40 @@ def complete_job(
 ) -> CompletionReceipt:
     """CAS ``leased -> terminal`` only for the current accepted candidate hash."""
     parsed = _parse_completion_request(request)
-    completed_at = _utc_text(now)
-
-    def transition(state: JobResultState) -> tuple[JobResultState, CompletionReceipt]:
+    _utc_text(now)
+    try:
+        state = store.read_result_state(parsed["job_id"])
         _assert_completion_bindings(state, parsed, now=now)
-        candidate_hash = state.get("candidate_result_sha256")
-        candidate = state.get("candidate_result")
-        signature = candidate.get("signature") if isinstance(candidate, dict) else None
-        if (
-            type(candidate_hash) is not str
-            or not _SHA256_RE.fullmatch(candidate_hash)
-            or not isinstance(candidate, dict)
-            or not isinstance(signature, dict)
-        ):
-            raise CompletionConflictError(
-                "completion result hash is not the stored candidate content hash"
-            )
-        try:
-            recomputed_hash = hash_canonical_jcs(
-                {key: value for key, value in candidate.items() if key != "signature"}
-            ).hex()
-        except CapsuleCanonicalizationError as exc:
-            raise CompletionConflictError("stored candidate body is not canonicalizable") from exc
-        signature_hash = signature.get("result_sha256")
-        if (
-            type(signature_hash) is not str
-            or not hmac.compare_digest(recomputed_hash, candidate_hash)
-            or not hmac.compare_digest(recomputed_hash, signature_hash)
-            or not hmac.compare_digest(parsed["result_sha256"], candidate_hash)
-        ):
-            raise CompletionConflictError(
-                "completion result hash is not the stored candidate content hash"
-            )
-
-        if state.get("status") in _FINAL_STATUSES:
-            if state.get("accepted_result_sha256") != candidate_hash:
-                raise CompletionConflictError("job finalized with another result hash")
-            receipt_data = state.get("completion_receipt")
-            if not isinstance(receipt_data, dict):
-                raise CompletionConflictError("durable completion receipt is missing")
-            return state, CompletionReceipt(**receipt_data)
-
-        outcome = candidate["outcome"]
-        final_status = (
-            "succeeded"
-            if outcome == "succeeded"
-            else "cancelled"
-            if outcome == "cancelled"
-            else "failed"
+    except StoreStaleLeaseError as exc:
+        raise StaleLeaseError(str(exc)) from exc
+    except LeaseStoreError as exc:
+        raise CompletionConflictError(str(exc)) from exc
+    candidate_hash = state.get("candidate_result_sha256")
+    if (
+        type(candidate_hash) is not str
+        or not _SHA256_RE.fullmatch(candidate_hash)
+        or not hmac.compare_digest(parsed["result_sha256"], candidate_hash)
+    ):
+        raise CompletionConflictError(
+            "completion result hash is not the stored candidate content hash"
         )
-        receipt = CompletionReceipt(
-            receipt_id=f"completion:{hash_canonical_jcs(parsed).hex()}",
-            job_id=state["job_id"],
-            status=final_status,
-            accepted_result_sha256=candidate_hash,
-            completed_at=completed_at,
+    expected = {
+        "lease_id": parsed["lease_id"],
+        "lease_fence": parsed["fence"],
+        "daemon_id": parsed["daemon_id"],
+        "capsule_sha256": parsed["capsule_sha256"],
+    }
+    try:
+        receipt = store.complete_validated_result(
+            parsed["job_id"],
+            expected=expected,
+            now=now,
         )
-        updated = copy.deepcopy(state)
-        updated["status"] = final_status
-        updated["accepted_result_sha256"] = candidate_hash
-        updated["completion_receipt"] = asdict(receipt)
-        return updated, receipt
-
-    return store.atomic_update(parsed["job_id"], transition)
+    except StoreStaleLeaseError as exc:
+        raise StaleLeaseError(str(exc)) from exc
+    except LeaseStoreError as exc:
+        raise CompletionConflictError(str(exc)) from exc
+    try:
+        return CompletionReceipt(**receipt)
+    except (TypeError, ValueError) as exc:
+        raise CompletionConflictError("store returned an invalid completion receipt") from exc
