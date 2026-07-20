@@ -203,8 +203,19 @@ hole.
    access to the lease store" — and name its preconditions (Docker-socket sidecar, root backup
    job) rather than claiming SQLite makes the actor impossible.
 
-**Still not started.** The brief exists (`fable-fix6-reshape-brief.md`, brief-ready) and needs
-one revision pass to fold in items 3, 4 and 6 before any build. A contingent fix-6 brief is being pre-drafted
+**fix-6 BUILD DISPATCHED** (`codex-fix6-build-result.md`), on branch, **not to be pushed or
+merged**. The decision to proceed rather than wait rests on the host's own standing
+directives — `no-users-build-correct-shape` ("recurring same-area findings = wrong shape, do
+the structural rebuild") and `autonomous-build-and-selfverify-mandate` — plus the fact that
+S4's corrected brief came back **`blocked-on S2`**, making fix-6 the critical path for the
+whole program. A commit on an unmerged feature branch is reversible; a merge would not be.
+
+The build prompt carries five MANDATORY corrections that the pre-existing brief predates:
+platform-owned key registry (not caller-supplied, else it inherits the S1 hole); do NOT retire
+everything (preserve the compact receipt/event consistency mechanism, and report any guard
+whose property has no replacement rather than deleting it); state the single-writer invariant
+honestly rather than categorically; close Codex's separate 409-misfiling reject; and add the
+in-transaction clock fix with its barrier test. A contingent fix-6 brief is being pre-drafted
 (`fable-fix6-reshape-brief.md`) with a hard requirement to name, for every retired guard, what
 property it provided and what now provides it — deleting a guard whose property has no
 replacement is how a simplification becomes a regression. The two fix-5 gates were left
