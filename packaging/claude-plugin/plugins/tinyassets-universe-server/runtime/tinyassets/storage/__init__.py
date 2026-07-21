@@ -39,6 +39,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tinyassets.singleton_lock import acquire_singleton_lock
+
 # -------------------------------------------------------------------
 # Constants
 # -------------------------------------------------------------------
@@ -51,6 +53,7 @@ DB_FILENAME = ".tinyassets.db"
 # generation has to stay in the chain until the fleet is known-migrated.
 _LEGACY_DB_FILENAMES = (".author_server.db", ".workflow.db")
 _SQLITE_SIBLING_SUFFIXES = ("-wal", "-shm")
+_MIGRATION_LOCK_FILENAME = f"{DB_FILENAME}.migration.lock"
 DEFAULT_BRANCH_MODE = "no_fixed_mainline"
 DEFAULT_QUICK_VOTE_SECONDS = 300
 SESSION_PREFIX = "fa_session_"
@@ -499,9 +502,37 @@ def _migrate_legacy_db_filename(base_path: str | Path) -> None:
     _reject_orphaned_legacy_sidecars(base)
 
 
+@contextlib.contextmanager
+def _migration_lock(base: Path):
+    """Exclude other processes while resolving the canonical database name.
+
+    The OS-level lock is authoritative and is released by the kernel when the
+    descriptor closes or the process dies. The persistent lock/PID files are
+    breadcrumbs only: no timeout can steal the lock from a live slow migrator.
+    """
+    acquired = acquire_singleton_lock(base / _MIGRATION_LOCK_FILENAME)
+    if not acquired.acquired or acquired.fd is None:
+        holder = (
+            f" by PID {acquired.existing_pid}"
+            if acquired.existing_pid is not None
+            else ""
+        )
+        raise RuntimeError(
+            f"Refusing to migrate or open {base / DB_FILENAME}: migration "
+            f"lock {acquired.path} is held or unavailable{holder}."
+        )
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(acquired.fd)
+
+
 def db_path(base_path: str | Path) -> Path:
-    _migrate_legacy_db_filename(base_path)
-    return Path(base_path) / DB_FILENAME
+    base = Path(base_path)
+    with _migration_lock(base):
+        _migrate_legacy_db_filename(base)
+    return base / DB_FILENAME
 
 
 # -------------------------------------------------------------------

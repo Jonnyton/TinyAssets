@@ -6,6 +6,10 @@ import contextlib
 import logging
 import os
 import sqlite3
+import subprocess
+import sys
+import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +19,100 @@ from tinyassets.storage import DB_FILENAME, _connect, db_path
 LEGACY_DB_FILENAME = ".author_server.db"
 # Canonical name between 20047d1d (2026-05-01) and 89edf995 (2026-06-26).
 WORKFLOW_DB_FILENAME = ".workflow.db"
+MIGRATION_LOCK_FILENAME = f"{DB_FILENAME}.migration.lock"
+
+_LOCKED_MIGRATOR = textwrap.dedent(
+    """
+    import os
+    import sys
+    import time
+    from pathlib import Path
+
+    from tinyassets.singleton_lock import acquire_singleton_lock
+    from tinyassets.storage import DB_FILENAME, _migrate_legacy_db_filename
+
+    base = Path(sys.argv[1])
+    ready = Path(sys.argv[2])
+    release = Path(sys.argv[3])
+    acquired = acquire_singleton_lock(base / f"{DB_FILENAME}.migration.lock")
+    if not acquired.acquired or acquired.fd is None:
+        raise RuntimeError("holder could not acquire migration lock")
+    try:
+        ready.write_text("ready", encoding="utf-8")
+        while not release.exists():
+            time.sleep(0.01)
+        _migrate_legacy_db_filename(base)
+    finally:
+        os.close(acquired.fd)
+    """
+)
+
+_CONNECT_AND_READ_MARKER = textwrap.dedent(
+    """
+    import sys
+    from pathlib import Path
+
+    from tinyassets.storage import _connect
+
+    with _connect(Path(sys.argv[1])) as conn:
+        print(conn.execute("SELECT value FROM marker").fetchone()[0])
+    """
+)
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    repo_root = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (repo_root, env.get("PYTHONPATH", "")) if part
+    )
+    return env
+
+
+def _wait_until_ready(ready: Path, process: subprocess.Popen[str]) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if ready.exists():
+            return
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(
+                f"lock holder exited before signaling ready: "
+                f"returncode={process.returncode}, stdout={stdout!r}, stderr={stderr!r}"
+            )
+        time.sleep(0.01)
+    pytest.fail("timed out waiting for lock holder")
+
+
+def _start_locked_migrator(
+    base: Path,
+    ready: Path,
+    release: Path,
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [sys.executable, "-c", _LOCKED_MIGRATOR, str(base), str(ready), str(release)],
+        env=_subprocess_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _run_python(script: str, base: Path) -> tuple[int, str, str]:
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(base)],
+        env=_subprocess_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise
+    return process.returncode, stdout, stderr
 
 
 def _seed_sqlite(path: Path, marker: str) -> None:
@@ -213,6 +311,78 @@ def _seed_workflow_generation(work: Path) -> None:
     _seed_sqlite(work / WORKFLOW_DB_FILENAME, "workflow-generation")
     (work / f"{WORKFLOW_DB_FILENAME}-wal").write_bytes(b"wal-bytes")
     (work / f"{WORKFLOW_DB_FILENAME}-shm").write_bytes(b"shm-bytes")
+
+
+def test_concurrent_migration_loser_fails_closed_while_holder_promotes(
+    tmp_path: Path,
+) -> None:
+    """Two real processes may not rename or open the database concurrently."""
+    work = tmp_path / "universe"
+    _seed_workflow_generation(work)
+    ready = tmp_path / "holder-ready"
+    release = tmp_path / "release-holder"
+    holder = _start_locked_migrator(work, ready, release)
+
+    try:
+        _wait_until_ready(ready, holder)
+        returncode, stdout, stderr = _run_python(_CONNECT_AND_READ_MARKER, work)
+
+        assert returncode != 0, (
+            "contending process opened the database instead of failing closed: "
+            f"stdout={stdout!r}, stderr={stderr!r}"
+        )
+        assert "migration lock" in stderr.lower()
+        assert (work / WORKFLOW_DB_FILENAME).is_file()
+        assert not (work / DB_FILENAME).exists(), (
+            "loser created/opened the canonical database while the migration lock was held"
+        )
+
+        release.write_text("release", encoding="utf-8")
+        stdout, stderr = holder.communicate(timeout=10)
+        assert holder.returncode == 0, f"stdout={stdout!r}, stderr={stderr!r}"
+        assert _read_marker(work / DB_FILENAME) == "workflow-generation"
+        assert not (work / WORKFLOW_DB_FILENAME).exists()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.communicate()
+
+
+def test_migration_lock_io_failure_does_not_open_fresh_database(tmp_path: Path) -> None:
+    """An unusable lock path is a hard stop, never permission to create a DB."""
+    _seed_workflow_generation(tmp_path)
+    (tmp_path / MIGRATION_LOCK_FILENAME).mkdir()
+
+    with pytest.raises(OSError):
+        with _connect(tmp_path):
+            pass
+
+    assert (tmp_path / WORKFLOW_DB_FILENAME).is_file()
+    assert not (tmp_path / DB_FILENAME).exists()
+
+
+def test_dead_migrator_releases_kernel_lock_without_staleness_timeout(
+    tmp_path: Path,
+) -> None:
+    """Killing a holder releases the OS lock even though lock sidecars remain."""
+    work = tmp_path / "universe"
+    _seed_workflow_generation(work)
+    ready = tmp_path / "holder-ready"
+    release = tmp_path / "never-release"
+    holder = _start_locked_migrator(work, ready, release)
+
+    _wait_until_ready(ready, holder)
+    holder.kill()
+    holder.communicate(timeout=10)
+
+    assert (work / MIGRATION_LOCK_FILENAME).exists()
+    assert (work / f"{MIGRATION_LOCK_FILENAME}.pid").exists()
+
+    returncode, stdout, stderr = _run_python(_CONNECT_AND_READ_MARKER, work)
+
+    assert returncode == 0, stderr
+    assert stdout.strip() == "workflow-generation"
+    assert not (work / WORKFLOW_DB_FILENAME).exists()
 
 
 def _run_with_replace_failing_at(work: Path, fail_at: int, monkeypatch) -> None:
