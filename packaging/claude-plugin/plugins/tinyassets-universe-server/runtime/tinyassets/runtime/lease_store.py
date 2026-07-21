@@ -56,7 +56,10 @@ from tinyassets.runtime.signed_records import (
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+<<<<<<< HEAD
 _GIT_OBJECT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
 _OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
@@ -94,9 +97,12 @@ _LEASE_GRANT_FIELDS = frozenset(
         "repo_mode",
         "runner_policy_sha256",
         "image_digest",
+<<<<<<< HEAD
         "universe_id",
         "base_commit",
         "base_tree",
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
     }
 )
 _COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
@@ -287,9 +293,12 @@ class LeaseGrantPolicy:
     repo_mode: str | None
     runner_policy_sha256: str
     image_digest: str
+<<<<<<< HEAD
     universe_id: str
     base_commit: str
     base_tree: str
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
 
 
 @dataclass(frozen=True)
@@ -743,20 +752,26 @@ class LeaseStore:
             or not _OCI_DIGEST_RE.fullmatch(policy.image_digest)
         ):
             raise LeaseStoreError("capsule image digest is invalid")
+<<<<<<< HEAD
         if type(policy.universe_id) is not str or not policy.universe_id:
             raise LeaseStoreError("capsule universe binding is invalid")
         if not _GIT_OBJECT_RE.fullmatch(policy.base_commit):
             raise LeaseStoreError("capsule base commit is invalid")
         if not _GIT_OBJECT_RE.fullmatch(policy.base_tree):
             raise LeaseStoreError("capsule base tree is invalid")
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
         return {
             "capability_class": policy.capability_class,
             "repo_mode": policy.repo_mode,
             "runner_policy_sha256": policy.runner_policy_sha256,
             "image_digest": policy.image_digest,
+<<<<<<< HEAD
             "universe_id": policy.universe_id,
             "base_commit": policy.base_commit,
             "base_tree": policy.base_tree,
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
         }
 
     def _verified_lease_grant(
@@ -831,9 +846,12 @@ class LeaseStore:
                     repo_mode=binding["repo_mode"],
                     runner_policy_sha256=binding["runner_policy_sha256"],
                     image_digest=binding["image_digest"],
+<<<<<<< HEAD
                     universe_id=binding["universe_id"],
                     base_commit=binding["base_commit"],
                     base_tree=binding["base_tree"],
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
                 )
             )
         except LeaseStoreError as exc:
@@ -1480,6 +1498,7 @@ class LeaseStore:
         with self._connect() as connection:
             return self._row_to_result_state(self._task_row(connection, job_id))
 
+<<<<<<< HEAD
     def _load_verified_capsule(
         self, job_id: str, capsule_sha256: str
     ) -> dict[str, Any]:
@@ -1508,6 +1527,8 @@ class LeaseStore:
             "integrity": {"capsule_sha256": grant["capsule_sha256"]},
         }
 
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
     def events(self, task_id: str) -> tuple[LeaseEvent, ...]:
         """Return the immutable lease event history in append order."""
         with self._connect() as connection:
@@ -2268,15 +2289,21 @@ class LeaseGrantIssuer:
             "capsule",
         )
         allowed = payload["allowed_capability"]
+<<<<<<< HEAD
         base = payload["base"]
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
         return reference, LeaseGrantPolicy(
             capability_class=allowed["class"],
             repo_mode=allowed["repo_mode"],
             runner_policy_sha256=allowed["runner_policy_sha256"],
             image_digest=allowed["image_digest"],
+<<<<<<< HEAD
             universe_id=payload["universe_scope"]["universe_id"],
             base_commit=base["commit"],
             base_tree=base["tree"],
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
         )
 
     def _encode_lease_grant(

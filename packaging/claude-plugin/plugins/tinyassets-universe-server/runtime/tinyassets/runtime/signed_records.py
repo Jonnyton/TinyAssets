@@ -100,9 +100,12 @@ DEFAULT_SIGNED_FIELD_CONTRACTS = MappingProxyType(
                     "repo_mode",
                     "runner_policy_sha256",
                     "image_digest",
+<<<<<<< HEAD
                     "universe_id",
                     "base_commit",
                     "base_tree",
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
                 }
             ),
             inert_fields=frozenset(),

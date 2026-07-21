@@ -635,6 +635,7 @@ class BlobStore:
                 self._verify_platform_object(binding["sha256"], binding["size_bytes"])
             return self._reference_from_binding(binding)
 
+<<<<<<< HEAD
     def read_verified_bytes(
         self,
         *,
@@ -676,6 +677,8 @@ class BlobStore:
                 raise BlobHashMismatchError("committed CAS object hash changed during read")
             return content
 
+=======
+>>>>>>> feat/patch-loop-leasestore-fix2
     def mark_referenced(
         self,
         blob_ref: str,
