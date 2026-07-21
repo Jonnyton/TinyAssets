@@ -138,15 +138,45 @@ def _raw_dml_authority_probe(
 
 @contextmanager
 def _legacy_attestation_insert(connection: sqlite3.Connection):
-    """Install a pre-v6 duplicate row, then restore the exact insert guard."""
+    """Install a pre-v7 duplicate row outside the current schema contract."""
     name = "lease_completion_attestations_append_only_insert"
     connection.execute(f"DROP TRIGGER {name}")
+    connection.execute(
+        "DROP INDEX lease_completion_attestations_task_id_uq"
+    )
     try:
         yield
     finally:
         connection.execute(
             lease_store_module._COMPLETION_ATTESTATION_TRIGGERS[name]
         )
+
+
+def _replace_attestation_table(
+    connection: sqlite3.Connection,
+    definition: str,
+) -> None:
+    for name in lease_store_module._COMPLETION_ATTESTATION_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {name}")
+    connection.execute("DROP TABLE main.lease_completion_attestations")
+    connection.execute(definition)
+    connection.execute(
+        lease_store_module._COMPLETION_ATTESTATION_TASK_INDEX
+    )
+    for trigger in lease_store_module._COMPLETION_ATTESTATION_TRIGGERS.values():
+        connection.execute(trigger)
+
+
+def _spoof_canonical_attestation_table_sql(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        "UPDATE main.sqlite_schema SET sql = ? "
+        "WHERE type = 'table' AND name = 'lease_completion_attestations'",
+        (lease_store_module._COMPLETION_ATTESTATION_TABLE,),
+    )
+    connection.execute("PRAGMA writable_schema = OFF")
 
 
 def test_time_text_is_fixed_width_for_sqlite_expiry_ordering() -> None:
@@ -940,21 +970,25 @@ def test_completion_rejects_two_distinct_valid_attestation_payloads(
         _complete(store, task, blobs, expected, clock.now)
 
 
-@pytest.mark.parametrize("second_blob_store", [False, True], ids=["same", "cross"])
+@pytest.mark.parametrize(
+    "collector_alias",
+    ["same-instance", "same-path", "extended-path"],
+)
 def test_blob_gc_cannot_run_between_final_validation_and_completion_commit(
     tmp_path: Path,
-    second_blob_store: bool,
+    collector_alias: str,
 ) -> None:
     from tinyassets.runtime.blob_refs import BlobStore
     from tinyassets.runtime.execution_result import result_blob_references
 
     store, task, _, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
     _record_candidate(store, task, blobs, key, raw, clock.now)
-    garbage_collector = (
-        BlobStore(tmp_path / "result-blobs" / "blobs")
-        if second_blob_store
-        else blobs
-    )
+    blob_root = (tmp_path / "result-blobs" / "blobs").resolve()
+    garbage_collector = blobs
+    if collector_alias == "same-path":
+        garbage_collector = BlobStore(blob_root)
+    elif collector_alias == "extended-path":
+        garbage_collector = BlobStore(f"\\\\?\\{blob_root}")
     final_validation_reached = threading.Event()
     allow_validation_to_return = threading.Event()
     gc_finished = threading.Event()
@@ -1010,43 +1044,83 @@ def test_blob_gc_cannot_run_between_final_validation_and_completion_commit(
     assert not gc_thread.is_alive()
     assert "error" not in completion
     assert completion["receipt"]["status"] == "succeeded"
-    prefix = "CROSS_INSTANCE_" if second_blob_store else ""
+    prefix = "CROSS_INSTANCE_" if collector_alias != "same-instance" else ""
     print(f"{prefix}BLOB_GC_DURING_COMPLETION_BLOCKED: committed_before_gc=True")
 
 
-def test_candidate_and_completion_take_database_lock_before_blob_lock(
+@pytest.mark.parametrize("first", ["candidate", "completion"])
+def test_candidate_and_completion_serialize_without_lock_cycle(
     tmp_path: Path,
+    first: str,
 ) -> None:
     store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
-
-    def assert_database_write_lock_held() -> None:
-        with sqlite3.connect(
-            store.db_path,
-            timeout=0,
-            isolation_level=None,
-        ) as probe:
-            with pytest.raises(sqlite3.OperationalError, match="locked"):
-                probe.execute("BEGIN IMMEDIATE")
-
-    original_validate = blobs.validate_reference
-
-    def validate_after_database_lock(*args, **kwargs):
-        assert_database_write_lock_held()
-        return original_validate(*args, **kwargs)
-
-    blobs.validate_reference = validate_after_database_lock
-    _record_candidate(store, task, blobs, key, raw, clock.now)
-
-    original_guard = blobs.completion_validation_guard
+    candidate_receipt = _record_candidate(store, task, blobs, key, raw, clock.now)
+    rendezvous = threading.Barrier(2)
+    first_inside_guard = threading.Event()
+    original_guard = blobs.serialization_guard
+    guard_depth = threading.local()
 
     @contextmanager
-    def guard_after_database_lock():
-        assert_database_write_lock_held()
+    def scheduled_guard():
+        depth = getattr(guard_depth, "value", 0)
+        if depth:
+            with original_guard():
+                yield
+            return
+        actor = threading.current_thread().name
+        rendezvous.wait(5)
+        if actor != first:
+            assert first_inside_guard.wait(5)
         with original_guard():
-            yield
+            guard_depth.value = 1
+            with sqlite3.connect(
+                store.db_path,
+                timeout=0,
+                isolation_level=None,
+            ) as probe:
+                probe.execute("BEGIN IMMEDIATE")
+                probe.rollback()
+            if actor == first:
+                first_inside_guard.set()
+            try:
+                yield
+            finally:
+                guard_depth.value = 0
 
-    blobs.completion_validation_guard = guard_after_database_lock
-    assert _complete(store, task, blobs, expected, clock.now)["status"] == "succeeded"
+    blobs.serialization_guard = scheduled_guard
+    results: dict[str, object] = {}
+
+    def replay_candidate() -> None:
+        try:
+            results["candidate"] = _record_candidate(
+                store, task, blobs, key, raw, clock.now
+            )
+        except BaseException as exc:
+            results["candidate_error"] = exc
+
+    def complete() -> None:
+        try:
+            results["completion"] = _complete(
+                store, task, blobs, expected, clock.now
+            )
+        except BaseException as exc:
+            results["completion_error"] = exc
+
+    threads = [
+        threading.Thread(target=replay_candidate, name="candidate"),
+        threading.Thread(target=complete, name="completion"),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert "candidate_error" not in results
+    assert "completion_error" not in results
+    assert results["candidate"] == candidate_receipt
+    assert results["completion"]["status"] == "succeeded"
+    assert _complete(store, task, blobs, expected, clock.now) == results["completion"]
 
 
 def _record_candidate(
@@ -4272,7 +4346,7 @@ def test_legacy_active_authenticated_lease_is_reset_without_owner_inference(
         assert legacy["lease_grant_signature"] is None
 
 
-def test_clean_v0_database_migrates_atomically_to_v6(tmp_path: Path) -> None:
+def test_clean_v0_database_migrates_atomically_to_v7(tmp_path: Path) -> None:
     db_path = tmp_path / "leases.sqlite3"
     _create_v0_lease_database(db_path)
 
@@ -4292,7 +4366,7 @@ def test_clean_v0_database_migrates_atomically_to_v6(tmp_path: Path) -> None:
             row[1]: row[2]
             for row in connection.execute("PRAGMA table_info(lease_tasks)")
         }
-    assert version == 6
+    assert version == 7
     assert columns["content_sha256"].upper() == "TEXT"
     assert task_columns["lease_grant_json"].upper() == "TEXT"
     assert task_columns["lease_grant_signature"].upper() == "TEXT"
@@ -4310,14 +4384,14 @@ def test_v0_database_with_anchor_column_already_present_resumes_migration(
     LeaseStore(db_path)
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
         assert sum(
             row[1] == "content_sha256"
             for row in connection.execute("PRAGMA table_info(lease_events)")
         ) == 1
 
 
-def test_schema_v6_reinitialization_is_a_noop(tmp_path: Path) -> None:
+def test_schema_v7_reinitialization_is_a_noop(tmp_path: Path) -> None:
     db_path = tmp_path / "leases.sqlite3"
     LeaseStore(db_path)
     with sqlite3.connect(db_path) as connection:
@@ -4337,11 +4411,11 @@ def test_schema_v6_reinitialization_is_a_noop(tmp_path: Path) -> None:
                 "WHERE name LIKE 'lease_events_%' ORDER BY type, name"
             )
         )
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
     assert after == before
 
 
-def test_schema_v5_migrates_exact_insert_guards_to_v6(tmp_path: Path) -> None:
+def test_schema_v5_migrates_exact_insert_guards_to_v7(tmp_path: Path) -> None:
     db_path = tmp_path / "leases.sqlite3"
     LeaseStore(db_path)
     old_insert_guards = {
@@ -4373,7 +4447,7 @@ def test_schema_v5_migrates_exact_insert_guards_to_v6(tmp_path: Path) -> None:
             ).fetchone()[0]
             for name in old_insert_guards
         }
-    assert version == 6
+    assert version == 7
     assert all(
         LeaseStore._normalized_schema_sql(actual[name])
         == LeaseStore._normalized_schema_sql(definition)
@@ -4482,6 +4556,9 @@ def test_schema_v4_rejects_attestation_primary_key_on_conflict_replace(
             "signed_json TEXT NOT NULL, signature TEXT NOT NULL, "
             "created_at TEXT NOT NULL)"
         )
+        connection.execute(
+            lease_store_module._COMPLETION_ATTESTATION_TASK_INDEX
+        )
         for definition in lease_store_module._COMPLETION_ATTESTATION_TRIGGERS.values():
             connection.execute(definition)
 
@@ -4490,6 +4567,245 @@ def test_schema_v4_rejects_attestation_primary_key_on_conflict_replace(
         match="completion attestation table",
     ):
         LeaseStore(db_path)
+
+
+def test_operational_connections_enable_required_sqlite_defenses(
+    tmp_path: Path,
+) -> None:
+    store = LeaseStore(tmp_path / "leases.sqlite3")
+
+    with store._connect() as connection:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert connection.execute("PRAGMA recursive_triggers").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "table_suffix",
+    [
+        "STRICT",
+        (
+            ", shadow TEXT GENERATED ALWAYS AS (attestation_id) VIRTUAL"
+        ),
+    ],
+    ids=["strict-table-list", "hidden-table-xinfo"],
+)
+def test_attestation_validation_rejects_metadata_hidden_by_spoofed_table_sql(
+    tmp_path: Path,
+    table_suffix: str,
+) -> None:
+    store = LeaseStore(tmp_path / "leases.sqlite3")
+    if table_suffix == "STRICT":
+        definition = lease_store_module._COMPLETION_ATTESTATION_TABLE.strip() + " STRICT"
+    else:
+        canonical = lease_store_module._COMPLETION_ATTESTATION_TABLE.strip()
+        definition = canonical[:-1] + table_suffix + ")"
+
+    with store._connect() as connection:
+        _replace_attestation_table(connection, definition)
+        _spoof_canonical_attestation_table_sql(connection)
+        with pytest.raises(StoredStateCorruptError, match="completion attestation"):
+            LeaseStore._migrate_schema(connection)
+
+
+def test_attestation_validation_rejects_spoofed_foreign_key_contract(
+    tmp_path: Path,
+) -> None:
+    store = LeaseStore(tmp_path / "leases.sqlite3")
+    altered_definition = """
+        CREATE TABLE lease_completion_attestations (
+            attestation_id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES lease_tasks(task_id) ON DELETE CASCADE,
+            signed_json TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """
+
+    with store._connect() as connection:
+        _replace_attestation_table(connection, altered_definition)
+        _spoof_canonical_attestation_table_sql(connection)
+        with pytest.raises(StoredStateCorruptError, match="foreign key"):
+            LeaseStore._migrate_schema(connection)
+
+
+def test_attestation_validation_rejects_existing_foreign_key_violation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO main.lease_completion_attestations("
+            "attestation_id, task_id, signed_json, signature, created_at"
+            ") VALUES ('orphan', 'missing-task', '{}', 'signature', 'now')"
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="foreign key violation"):
+        LeaseStore(db_path)
+
+
+@pytest.mark.parametrize(
+    "index_corruption",
+    ["missing", "malformed", "extra"],
+)
+def test_attestation_validation_rejects_noncanonical_index_set(
+    tmp_path: Path,
+    index_corruption: str,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    index_name = "lease_completion_attestations_task_id_uq"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+        if index_corruption == "malformed":
+            connection.execute(
+                f"CREATE UNIQUE INDEX {index_name} "
+                "ON lease_completion_attestations(task_id COLLATE NOCASE)"
+            )
+        elif index_corruption == "extra":
+            connection.execute(
+                f"CREATE UNIQUE INDEX {index_name} "
+                "ON lease_completion_attestations(task_id)"
+            )
+            connection.execute(
+                "CREATE INDEX lease_completion_attestations_created_at "
+                "ON lease_completion_attestations(created_at)"
+            )
+
+    with pytest.raises(StoredStateCorruptError, match="index"):
+        LeaseStore(db_path)
+
+
+def test_v6_migration_rejects_duplicate_task_attestations(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, blobs, expected, clock.now)
+    insert_trigger = "lease_completion_attestations_append_only_insert"
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(f"DROP TRIGGER {insert_trigger}")
+        connection.execute(
+            "DROP INDEX IF EXISTS lease_completion_attestations_task_id_uq"
+        )
+        connection.execute(
+            "INSERT INTO lease_completion_attestations("
+            "attestation_id, task_id, signed_json, signature, created_at) "
+            "SELECT 'duplicate-task', task_id, signed_json, signature, created_at "
+            "FROM lease_completion_attestations WHERE task_id = ?",
+            (task.branch_task_id,),
+        )
+        connection.execute(
+            lease_store_module._COMPLETION_ATTESTATION_TRIGGERS[insert_trigger]
+        )
+        connection.execute("PRAGMA user_version = 6")
+
+    with pytest.raises(StoredStateCorruptError, match="duplicate task"):
+        LeaseStore(store.db_path)
+
+
+@pytest.mark.parametrize("trigger_corruption", ["altered_when", "extra"])
+def test_attestation_validation_rejects_noncanonical_trigger_set(
+    tmp_path: Path,
+    trigger_corruption: str,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        if trigger_corruption == "altered_when":
+            name = "lease_completion_attestations_append_only_insert"
+            connection.execute(f"DROP TRIGGER {name}")
+            connection.execute(
+                f"CREATE TRIGGER {name} "
+                "BEFORE INSERT ON lease_completion_attestations "
+                "WHEN EXISTS (SELECT 1 FROM lease_completion_attestations "
+                "WHERE attestation_id = NEW.attestation_id) "
+                "BEGIN SELECT RAISE(ABORT, "
+                "'lease_completion_attestations is append-only'); END"
+            )
+        else:
+            connection.execute(
+                "CREATE TRIGGER lease_completion_attestations_unexpected "
+                "AFTER INSERT ON lease_completion_attestations BEGIN SELECT 1; END"
+            )
+
+    with pytest.raises(StoredStateCorruptError, match="trigger"):
+        LeaseStore(db_path)
+
+
+def test_attestation_validation_rejects_temp_namespace_shadow(
+    tmp_path: Path,
+) -> None:
+    store = LeaseStore(tmp_path / "leases.sqlite3")
+    with store._connect() as connection:
+        connection.execute(
+            "CREATE TEMP TABLE lease_completion_attestations("
+            "attestation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+            "signed_json TEXT NOT NULL, signature TEXT NOT NULL, "
+            "created_at TEXT NOT NULL)"
+        )
+        with pytest.raises(StoredStateCorruptError, match="temp"):
+            LeaseStore._migrate_schema(connection)
+
+
+def test_attestation_replay_reads_main_table_despite_temp_shadow(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    receipt = _complete(store, task, blobs, expected, clock.now)
+
+    with store._connect() as connection:
+        connection.execute(
+            "CREATE TEMP TABLE lease_completion_attestations("
+            "attestation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+            "signed_json TEXT NOT NULL, signature TEXT NOT NULL, "
+            "created_at TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO temp.lease_completion_attestations VALUES "
+            "('shadow', ?, '{}', 'bad-signature', 'now')",
+            (task.branch_task_id,),
+        )
+        row = connection.execute(
+            "SELECT * FROM main.lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        assert row is not None
+        assert store._verified_completion_replay(
+            connection,
+            row=row,
+            expected=expected,
+        ) == dict(receipt)
+
+
+def test_completion_writes_main_attestation_despite_temp_shadow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    real_connect = store._connect
+
+    def shadowed_connect() -> sqlite3.Connection:
+        connection = real_connect()
+        connection.execute(
+            "CREATE TEMP TABLE lease_completion_attestations("
+            "attestation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+            "signed_json TEXT NOT NULL, signature TEXT NOT NULL, "
+            "created_at TEXT NOT NULL)"
+        )
+        return connection
+
+    monkeypatch.setattr(store, "_connect", shadowed_connect)
+    _complete(store, task, blobs, expected, clock.now)
+
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM main.lease_completion_attestations "
+            "WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()[0] == 1
 
 
 @pytest.mark.parametrize("operation", ["update", "delete", "insert"])
@@ -4665,4 +4981,4 @@ def test_concurrent_schema_initializers_serialize(tmp_path: Path) -> None:
             future.result(timeout=30)
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7

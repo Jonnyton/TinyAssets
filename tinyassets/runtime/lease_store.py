@@ -75,7 +75,7 @@ _RESULT_OUTCOMES = frozenset(
     }
 )
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 _LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v2"
 _LEASE_GRANT_DOMAIN_SEPARATOR = LEASE_GRANT_DOMAIN_SEPARATOR
 _COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
@@ -87,6 +87,10 @@ _COMPLETION_ATTESTATION_COLUMNS = (
     ("signature", "TEXT", 1, None, 0),
     ("created_at", "TEXT", 1, None, 0),
 )
+_COMPLETION_ATTESTATION_TABLE_XINFO = tuple(
+    (ordinal, *column, 0)
+    for ordinal, column in enumerate(_COMPLETION_ATTESTATION_COLUMNS)
+)
 _COMPLETION_ATTESTATION_TABLE = """
     CREATE TABLE lease_completion_attestations (
         attestation_id TEXT PRIMARY KEY,
@@ -96,6 +100,23 @@ _COMPLETION_ATTESTATION_TABLE = """
         created_at TEXT NOT NULL
     )
 """
+_COMPLETION_ATTESTATION_TASK_INDEX_NAME = (
+    "lease_completion_attestations_task_id_uq"
+)
+_COMPLETION_ATTESTATION_TASK_INDEX = """
+    CREATE UNIQUE INDEX lease_completion_attestations_task_id_uq
+    ON lease_completion_attestations(task_id)
+"""
+_COMPLETION_ATTESTATION_INDEX_XINFO = {
+    "sqlite_autoindex_lease_completion_attestations_1": (
+        (0, 0, "attestation_id", 0, "BINARY", 1),
+        (1, -1, None, 0, "BINARY", 0),
+    ),
+    _COMPLETION_ATTESTATION_TASK_INDEX_NAME: (
+        (0, 1, "task_id", 0, "BINARY", 1),
+        (1, -1, None, 0, "BINARY", 0),
+    ),
+}
 _V5_COMPLETION_ATTESTATION_INSERT_TRIGGER = """
     CREATE TRIGGER lease_completion_attestations_append_only_insert
     BEFORE INSERT ON lease_completion_attestations
@@ -334,6 +355,13 @@ class LeaseStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 30000")
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA recursive_triggers = ON")
+        if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            connection.close()
+            raise sqlite3.OperationalError("failed to enable foreign key enforcement")
+        if connection.execute("PRAGMA recursive_triggers").fetchone()[0] != 1:
+            connection.close()
+            raise sqlite3.OperationalError("failed to enable recursive triggers")
         connection.execute("PRAGMA synchronous = FULL")
         return connection
 
@@ -430,6 +458,165 @@ class LeaseStore:
         return actual_keys == _EVENT_INDEX_KEYS[name]
 
     @classmethod
+    def _validate_completion_attestation_schema(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        require_task_index: bool,
+    ) -> None:
+        name = "lease_completion_attestations"
+        schema_rows = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM main.sqlite_schema "
+            "WHERE name = ?",
+            (name,),
+        ).fetchall()
+        if len(schema_rows) != 1:
+            raise StoredStateCorruptError(
+                "completion attestation table identity is corrupt"
+            )
+        table_row = schema_rows[0]
+        if (
+            table_row["type"] != "table"
+            or table_row["name"] != name
+            or table_row["tbl_name"] != name
+            or cls._normalized_schema_sql(table_row["sql"])
+            != cls._normalized_schema_sql(_COMPLETION_ATTESTATION_TABLE)
+        ):
+            raise StoredStateCorruptError(
+                "completion attestation table has an incompatible definition"
+            )
+
+        table_list_rows = [
+            row
+            for row in connection.execute("PRAGMA main.table_list")
+            if row["name"] == name
+        ]
+        if len(table_list_rows) != 1 or tuple(
+            table_list_rows[0][key]
+            for key in ("schema", "name", "type", "ncol", "wr", "strict")
+        ) != ("main", name, "table", 5, 0, 0):
+            raise StoredStateCorruptError(
+                "completion attestation table metadata is corrupt"
+            )
+
+        table_xinfo = tuple(
+            tuple(row[key] for key in row.keys())
+            for row in connection.execute(
+                "PRAGMA main.table_xinfo('lease_completion_attestations')"
+            )
+        )
+        if table_xinfo != _COMPLETION_ATTESTATION_TABLE_XINFO:
+            raise StoredStateCorruptError(
+                "completion attestation table has an incompatible shape"
+            )
+
+        if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise StoredStateCorruptError(
+                "completion attestation foreign key enforcement is disabled"
+            )
+        foreign_keys = tuple(
+            tuple(row[key] for key in row.keys())
+            for row in connection.execute(
+                "PRAGMA main.foreign_key_list('lease_completion_attestations')"
+            )
+        )
+        if foreign_keys != (
+            (
+                0,
+                0,
+                "lease_tasks",
+                "task_id",
+                "task_id",
+                "NO ACTION",
+                "NO ACTION",
+                "NONE",
+            ),
+        ):
+            raise StoredStateCorruptError(
+                "completion attestation foreign key contract is corrupt"
+            )
+        if connection.execute(
+            "PRAGMA main.foreign_key_check('lease_completion_attestations')"
+        ).fetchone() is not None:
+            raise StoredStateCorruptError(
+                "completion attestation table contains a foreign key violation"
+            )
+
+        index_rows = {
+            row["name"]: (row["unique"], row["origin"], row["partial"])
+            for row in connection.execute(
+                "PRAGMA main.index_list('lease_completion_attestations')"
+            )
+        }
+        primary_index = "sqlite_autoindex_lease_completion_attestations_1"
+        allowed_indexes = {primary_index, _COMPLETION_ATTESTATION_TASK_INDEX_NAME}
+        if set(index_rows) - allowed_indexes or index_rows.get(primary_index) != (
+            1,
+            "pk",
+            0,
+        ):
+            raise StoredStateCorruptError(
+                "completion attestation index set is corrupt"
+            )
+        task_index_present = _COMPLETION_ATTESTATION_TASK_INDEX_NAME in index_rows
+        if require_task_index and not task_index_present:
+            raise StoredStateCorruptError(
+                "completion attestation task index is missing"
+            )
+        if task_index_present:
+            if index_rows[_COMPLETION_ATTESTATION_TASK_INDEX_NAME] != (1, "c", 0):
+                raise StoredStateCorruptError(
+                    "completion attestation task index is malformed"
+                )
+            index_schema_row = connection.execute(
+                "SELECT sql FROM main.sqlite_schema "
+                "WHERE type = 'index' AND tbl_name = ? AND name = ?",
+                (name, _COMPLETION_ATTESTATION_TASK_INDEX_NAME),
+            ).fetchone()
+            if index_schema_row is None or cls._normalized_schema_sql(
+                index_schema_row["sql"]
+            ) != cls._normalized_schema_sql(_COMPLETION_ATTESTATION_TASK_INDEX):
+                raise StoredStateCorruptError(
+                    "completion attestation task index is malformed"
+                )
+        for index_name in index_rows:
+            index_xinfo = tuple(
+                tuple(row[key] for key in row.keys())
+                for row in connection.execute(
+                    f"PRAGMA main.index_xinfo('{index_name}')"
+                )
+            )
+            if index_xinfo != _COMPLETION_ATTESTATION_INDEX_XINFO[index_name]:
+                raise StoredStateCorruptError(
+                    f"completion attestation index {index_name!r} is malformed"
+                )
+
+        actual_triggers = {
+            row["name"]: cls._normalized_schema_sql(row["sql"])
+            for row in connection.execute(
+                "SELECT name, sql FROM main.sqlite_schema "
+                "WHERE type = 'trigger' AND tbl_name = ?",
+                (name,),
+            )
+        }
+        expected_triggers = {
+            trigger_name: cls._normalized_schema_sql(definition)
+            for trigger_name, definition in _COMPLETION_ATTESTATION_TRIGGERS.items()
+        }
+        if actual_triggers != expected_triggers:
+            raise StoredStateCorruptError(
+                "completion attestation trigger set is malformed"
+            )
+
+        if connection.execute(
+            "SELECT 1 FROM temp.sqlite_schema WHERE name = ? LIMIT 1",
+            (name,),
+        ).fetchone() is not None:
+            raise StoredStateCorruptError(
+                "completion attestation table is shadowed in temp schema"
+            )
+
+    @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
         """Install and verify schema-owned ledger defenses atomically.
 
@@ -505,50 +692,16 @@ class LeaseStore:
                     """
                 )
 
-            attestation_columns = tuple(
-                (
-                    row["name"],
-                    row["type"].upper(),
-                    row["notnull"],
-                    row["dflt_value"],
-                    row["pk"],
-                )
-                for row in connection.execute(
-                    "PRAGMA table_info(lease_completion_attestations)"
-                )
-            )
-            if version == 0 and not attestation_columns:
+            attestation_objects = connection.execute(
+                "SELECT type FROM main.sqlite_schema "
+                "WHERE name = 'lease_completion_attestations'"
+            ).fetchall()
+            if version == 0 and not attestation_objects:
                 connection.execute(_COMPLETION_ATTESTATION_TABLE)
-                attestation_columns = tuple(
-                    (
-                        row["name"],
-                        row["type"].upper(),
-                        row["notnull"],
-                        row["dflt_value"],
-                        row["pk"],
-                    )
-                    for row in connection.execute(
-                        "PRAGMA table_info(lease_completion_attestations)"
-                    )
-                )
-            if attestation_columns != _COMPLETION_ATTESTATION_COLUMNS:
-                raise StoredStateCorruptError(
-                    "completion attestation table has an incompatible shape"
-                )
-            table_row = connection.execute(
-                "SELECT sql FROM sqlite_schema WHERE type = 'table' "
-                "AND name = 'lease_completion_attestations'"
-            ).fetchone()
-            if table_row is None or cls._normalized_schema_sql(
-                table_row["sql"]
-            ) != cls._normalized_schema_sql(_COMPLETION_ATTESTATION_TABLE):
-                raise StoredStateCorruptError(
-                    "completion attestation table has an incompatible definition"
-                )
 
             for name, definition in _COMPLETION_ATTESTATION_TRIGGERS.items():
                 schema_row = connection.execute(
-                    "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                    "SELECT sql FROM main.sqlite_schema WHERE type = 'trigger' "
                     "AND tbl_name = 'lease_completion_attestations' AND name = ?",
                     (name,),
                 ).fetchone()
@@ -562,7 +715,7 @@ class LeaseStore:
                 ):
                     connection.execute(definition)
                     schema_row = connection.execute(
-                        "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                        "SELECT sql FROM main.sqlite_schema WHERE type = 'trigger' "
                         "AND tbl_name = 'lease_completion_attestations' AND name = ?",
                         (name,),
                     ).fetchone()
@@ -584,7 +737,7 @@ class LeaseStore:
                         connection.execute(f"DROP TRIGGER IF EXISTS {name}")
                         connection.execute(definition)
                         schema_row = connection.execute(
-                            "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                            "SELECT sql FROM main.sqlite_schema WHERE type = 'trigger' "
                             "AND tbl_name = 'lease_completion_attestations' "
                             "AND name = ?",
                             (name,),
@@ -595,6 +748,28 @@ class LeaseStore:
                     raise StoredStateCorruptError(
                         f"completion attestation trigger {name!r} is malformed"
                     )
+
+            cls._validate_completion_attestation_schema(
+                connection,
+                require_task_index=version >= 7,
+            )
+            if version < 7 and connection.execute(
+                "SELECT task_id FROM main.lease_completion_attestations "
+                "GROUP BY task_id HAVING count(*) > 1 LIMIT 1"
+            ).fetchone() is not None:
+                raise StoredStateCorruptError(
+                    "completion attestation ledger contains duplicate task rows"
+                )
+            if version < 7 and connection.execute(
+                "SELECT 1 FROM main.sqlite_schema "
+                "WHERE type = 'index' AND name = ?",
+                (_COMPLETION_ATTESTATION_TASK_INDEX_NAME,),
+            ).fetchone() is None:
+                connection.execute(_COMPLETION_ATTESTATION_TASK_INDEX)
+            cls._validate_completion_attestation_schema(
+                connection,
+                require_task_index=True,
+            )
 
             columns = {
                 row["name"]: row
@@ -684,6 +859,16 @@ class LeaseStore:
             raise
         finally:
             connection.close()
+
+    @contextlib.contextmanager
+    def _blob_transaction(
+        self,
+        blob_store: BlobStore,
+    ) -> Iterator[sqlite3.Connection]:
+        """Take the physical blob-root coordinator before SQLite."""
+        with blob_store.serialization_guard():
+            with self._transaction() as connection:
+                yield connection
 
     def _now_text(self) -> str:
         return self._time_text(self._now())
@@ -1493,12 +1678,19 @@ class LeaseStore:
         authenticated_daemon: AuthenticatedLeasePrincipal,
     ) -> dict[str, Any]:
         """Validate and persist one write-once S5 candidate under the job lock."""
-        with self._transaction() as connection:
+        with self._connect() as connection:
+            started_while_leased = self._task_row(connection, job_id)["status"] == "leased"
+        with self._blob_transaction(blob_store) as connection:
             operation_now = self._now()
             operation_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
             self._require_generation_floor(connection, row)
-            if row["status"] != "leased":
+            terminal_replay = started_while_leased and row["status"] in {
+                "succeeded",
+                "cancelled",
+                "failed",
+            }
+            if row["status"] != "leased" and not terminal_replay:
                 raise StaleLeaseError("job is not under an active lease")
             lease_expires_at = self._parse_time(row["lease_expires_at"])
             grant = self._verified_lease_grant(row).payload
@@ -1563,7 +1755,7 @@ class LeaseStore:
             if existing_hash is not None and existing_hash != result_sha256:
                 raise ResultConflictError("current lease already has another candidate result")
             if existing_hash == result_sha256:
-                if operation_now >= lease_expires_at:
+                if not terminal_replay and operation_now >= lease_expires_at:
                     raise StaleLeaseError("job lease has expired")
                 stored_candidate = metadata.get("candidate_result")
                 if not isinstance(stored_candidate, dict):
@@ -1582,6 +1774,11 @@ class LeaseStore:
                     result_sha256=result_sha256,
                     outcome=verified["outcome"],
                     accepted_at=verified["completed_at"],
+                )
+
+            if terminal_replay:
+                raise StoredStateCorruptError(
+                    "terminal job is missing its durable candidate hash"
                 )
 
             if operation_now >= lease_expires_at:
@@ -1688,7 +1885,7 @@ class LeaseStore:
         expected: Mapping[str, Any],
     ) -> dict[str, Any] | None:
         attestation_rows = connection.execute(
-            "SELECT signed_json, signature FROM lease_completion_attestations "
+            "SELECT signed_json, signature FROM main.lease_completion_attestations "
             "WHERE task_id = ? ORDER BY attestation_id",
             (row["task_id"],),
         ).fetchall()
@@ -1867,7 +2064,7 @@ class LeaseStore:
                 "completion signing and verification keys do not match"
             )
 
-        with self._transaction() as connection:
+        with self._blob_transaction(blob_store) as connection:
             operation_now = self._now()
             completed_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
@@ -1981,7 +2178,7 @@ class LeaseStore:
                         raise StaleLeaseError("job lease has expired")
                     raise StaleLeaseError("completion lost the current lease CAS")
                 connection.execute(
-                    "INSERT INTO lease_completion_attestations("
+                    "INSERT INTO main.lease_completion_attestations("
                     "attestation_id, task_id, signed_json, signature, created_at"
                     ") VALUES (?, ?, ?, ?, ?)",
                     (
