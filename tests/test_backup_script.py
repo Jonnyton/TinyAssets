@@ -151,12 +151,13 @@ def test_backup_dry_run_prints_dry_run_indicator():
     assert "dry" in combined, f"Expected 'dry' in output:\n{result.stdout}\n{result.stderr}"
 
 
-def test_backup_dry_run_no_mutating_commands(tmp_path):
-    """DRY_RUN=1: tar and rclone must not be invoked."""
-    call_log = tmp_path / "calls.log"
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    for cmd in ("tar", "rclone", "docker"):
+_MUTATING_COMMANDS = ("tar", "rclone", "docker")
+
+
+def _write_command_shims(fake_bin: Path, call_log: Path) -> None:
+    """Write logging stand-ins for the mutating commands into ``fake_bin``."""
+    fake_bin.mkdir(exist_ok=True)
+    for cmd in _MUTATING_COMMANDS:
         fake_cmd = fake_bin / cmd
         fake_cmd.write_text(
             "#!/usr/bin/env bash\n"
@@ -167,6 +168,48 @@ def test_backup_dry_run_no_mutating_commands(tmp_path):
         )
         fake_cmd.chmod(0o755)
 
+
+def _assert_shims_are_reachable(tmp_path: Path, fake_bin: Path, call_log: Path) -> None:
+    """Positive control for the PATH plumbing the no-mutation coverage rests on.
+
+    ``_bash_path_env`` has to splice a POSIX-style shim dir onto a Windows
+    ``PATH`` (git-bash) or synthesize a WSL one. If that splice regresses, the
+    shims stop shadowing the real binaries, ``call_log`` is never created, and
+    the "tar was not invoked" assertions below prove nothing at all — they are
+    trivially true about an empty file. Drive every shim through the exact
+    ``_run`` / ``_bash_path_env`` path the real assertions use, so a broken
+    Windows path setup fails loudly instead of hollowing out the test.
+    """
+    probe = tmp_path / "probe-shims.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\n"
+        + "".join(f"{cmd} --probe\n" for cmd in _MUTATING_COMMANDS),
+        encoding="utf-8",
+        newline="\n",
+    )
+    result = _run(probe, {"PATH": _bash_path_env(fake_bin)})
+    assert result.returncode == 0, (
+        f"shim probe failed (exit {result.returncode})\n{result.stdout}\n{result.stderr}"
+    )
+    assert call_log.exists(), (
+        f"PATH plumbing is broken: no shim in {fake_bin} was reachable from "
+        f"{_BASH}, so the DRY_RUN no-mutation assertions would pass vacuously"
+    )
+    calls = call_log.read_text()
+    for cmd in _MUTATING_COMMANDS:
+        assert f"{cmd} called" in calls, (
+            f"shim for {cmd!r} did not shadow the real binary:\n{calls}"
+        )
+    call_log.unlink()
+
+
+def test_backup_dry_run_no_mutating_commands(tmp_path):
+    """DRY_RUN=1: tar and rclone must not be invoked."""
+    call_log = tmp_path / "calls.log"
+    fake_bin = tmp_path / "bin"
+    _write_command_shims(fake_bin, call_log)
+    _assert_shims_are_reachable(tmp_path, fake_bin, call_log)
+
     env = {
         "DRY_RUN": "1",
         "BACKUP_DEST": "s3://test-bucket/backups",
@@ -175,10 +218,9 @@ def test_backup_dry_run_no_mutating_commands(tmp_path):
     }
     result = _run(BACKUP_SH, env)
     assert result.returncode == 0, f"exit {result.returncode}\n{result.stderr}"
-    if call_log.exists():
-        calls = call_log.read_text()
-        assert "tar called" not in calls, f"tar was invoked in DRY_RUN:\n{calls}"
-        assert "rclone called" not in calls, f"rclone was invoked in DRY_RUN:\n{calls}"
+    calls = call_log.read_text() if call_log.exists() else ""
+    assert "tar called" not in calls, f"tar was invoked in DRY_RUN:\n{calls}"
+    assert "rclone called" not in calls, f"rclone was invoked in DRY_RUN:\n{calls}"
 
 
 # ---------------------------------------------------------------------------
