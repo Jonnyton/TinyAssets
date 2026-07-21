@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import (
@@ -180,7 +181,7 @@ _EMPTY_LLM_RESPONSE_ACTION = (
 
 
 # Phase 3: Graph Runner — execute a BranchDefinition
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
 # The runner compiles a validated branch into a LangGraph StateGraph via
 # `tinyassets.graph_compiler.compile_branch`, runs it synchronously against
 # user-supplied inputs, and persists run metadata + per-node events in
@@ -689,6 +690,28 @@ def _resolve_runtime_bindings(
     return values, None
 
 
+def _create_host_daemon_job(
+    base_path: Path,
+    *,
+    universe_id: str,
+    run_id: str,
+) -> Any | None:
+    """Bridge a prepared host-daemon run into the B2 lease queue."""
+    from tinyassets.config import load_universe_config
+
+    if load_universe_config(_universe_dir(universe_id)).engine_source != "host_daemon":
+        return None
+
+    from tinyassets.api.execution_jobs import create_job_from_run
+    from tinyassets.runs import get_run
+    from tinyassets.runtime.lease_store import LeaseStore
+
+    run = get_run(base_path, run_id)
+    if run is None:
+        raise RuntimeError(f"prepared run {run_id!r} could not be loaded")
+    return create_job_from_run(LeaseStore(base_path / "leases.sqlite3"), run)
+
+
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
 
@@ -877,6 +900,12 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             runtime_bindings=runtime_bindings,
             _enqueue_universe_id=universe_id,
             execution_scope=_exec_scope,
+            owner_user_id=request_actor,
+        )
+        job = _create_host_daemon_job(
+            base_path,
+            universe_id=universe_id,
+            run_id=outcome.run_id,
         )
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)
@@ -911,6 +940,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "output": outcome.output,
         "error": outcome.error,
     }
+    if job is not None:
+        result["job_id"] = job.branch_task_id
     if source_run is not None:
         branch_version = int(getattr(branch, "version", 1) or 1)
         record_lineage(
@@ -1800,9 +1831,9 @@ def _action_run_routing_evidence(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Memory-scope status
 # get_memory_scope_status — self-auditing primitive §4.1
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
 
 
 def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
