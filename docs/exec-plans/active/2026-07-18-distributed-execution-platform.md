@@ -1554,3 +1554,54 @@ is that the production construction site is the same one the end-to-end anchor e
 **Honest scope note.** V1.4 deliberately does **not** design the production trust root (where the real
 platform signing key lives, custody, rotation). That remains host-gated (§18.5 B22/B24/B25) and is
 listed here so it is not mistaken for delivered.
+
+### 18.9 Landed 2026-07-21 — backlog burn-down and two classes of silent failure
+
+**Delivered against §18.5 (all host-verified, not taken from builder reports).**
+
+| Rows | What now holds | PR |
+|---|---|---|
+| **V1.4** | A daemon claims/results/completes over the authenticated transport; one composition root builds the whole authority stack | #1477 |
+| **B05/B06** | `unbound_fields` REMOVED; domain separator selects an immutable field contract (row-bound / specialized / inert); `owner_user_id` durably row-bound | #1479 |
+| **B01–B04** | Append-only ledger closed against `INSERT OR REPLACE`/`REPLACE`/UPSERT on both evidence tables; verify-first replay | #1481 |
+| **B07–B10** | One lock order; physical root identity; no stale index; full attestation table contract, never auto-repaired | #1487 |
+| CI gates | py311 floor + security suites + advisory authority scan, all self-enforcing | #1478 |
+
+**A latent defect closed en route:** `api/runs.py::_create_host_daemon_job` built `LeaseStore` with no
+`key_registry` and no `record_verifier`, so the job the production path created could never have been
+claimed or completed. That is the concrete cost of having had no composition root.
+
+#### Two silent-failure classes — both cost real work before anyone noticed
+
+1. **Dispatch reported success for dead lanes.** `peer_agent.py` pinned Claude lanes to a
+   rate-limited model; the CLI exits 1 after ~25s with EMPTY stderr, so lanes died while the queue
+   log said "dispatched". A dead lane and a working lane were indistinguishable from outside. Fixed
+   via `WORKFLOW_CLAUDE_MODEL`. **The floor guard that should have caught the drain existed but was
+   wired to nothing** — dead code whose own docstring called it a Stop hook.
+2. **Green tests that could not go red.** Two suites passed while asserting nothing (`if
+   call_log.exists():` around every assertion in a path where the file is never created; config
+   strings pinned but never resolved). This is why §18.6 requires mutation proof: a green test is not
+   evidence until it has been shown capable of failing.
+
+#### The backlog itself is a hazard — NEW, must not be lost
+
+**Five dev-ready rows were dispatched; five were wrong.** Arc C (#24) landed 81 days earlier as a
+DELETION — building it would have re-introduced deliberately-removed shims and violated the active
+no-shims-ever directive. Community-pool named an unreachable error (`repo_root_path()` uses
+non-strict `resolve()`). Two test rows described failures that do not reproduce, hiding vacuous tests.
+Phase 6 was fully implemented 2026-05-01.
+
+That last one is the warning: **the stale row concealed a live data-loss bug.** Because the row said
+Phase 6 was unbuilt, nobody asked why — and universes last booted 2026-05-01..06-26 were silently
+getting a fresh empty database while their real one was stranded (fixed, PR #1486; five mutations
+proven RED).
+
+A stale row does not merely decay, it actively misdirects whoever claims it next, and it suppresses
+the questions that would surface the real defect. Exit criterion: every Work row classified
+**live / landed / inverted / unverifiable** with a commit or file:line cited, inverted rows ranked
+first as traps. Audit in flight.
+
+**Open, host-gated:** no cross-process migration lock (SQLite treats renaming an OPEN database as
+undefined; the design assumed a stopped daemon, the live deploy is multi-process on a shared volume) —
+build in flight, rollout ordering is a host call. S10.5 effect route remains PARTIAL. Production trust
+root, custody and rotation remain host-gated (B22/B24/B25). S0 confinement is seam-only by design.
