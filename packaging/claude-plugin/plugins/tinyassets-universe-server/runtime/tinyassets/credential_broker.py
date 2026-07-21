@@ -40,6 +40,7 @@ directory for :class:`~tinyassets.credentials.FileKeyProvider` (outside
 from __future__ import annotations
 
 import contextlib
+import hmac
 import logging
 import os
 import sqlite3
@@ -920,6 +921,31 @@ def resolve_credential(
 ) -> SecretLease:
     """Binding lookup + authenticated vault read. Every failure is typed."""
     binding = find_binding(universe_id, provider, purpose, destination, base=base)
+    be = backend if backend is not None else platform_backend(base)
+    return be.get(binding, binding.scope)
+
+
+def resolve_bound_credential(
+    *,
+    binding_id: str,
+    universe_id: str,
+    destination: str,
+    purpose: str,
+    base: str | Path | None = None,
+    backend: PlatformVaultBackend | None = None,
+) -> SecretLease:
+    """Resolve only the exact vault binding captured by an owner grant."""
+    if not is_secret_ref(binding_id):
+        raise CredentialUnavailable(VaultErrorCode.INVALID_ARGUMENT)
+    binding = find_binding(
+        universe_id,
+        GITHUB_PROVIDER,
+        purpose,
+        destination,
+        base=base,
+    )
+    if not hmac.compare_digest(binding.ref, binding_id):
+        raise CredentialUnavailable(VaultErrorCode.SCOPE_MISMATCH, binding.ref)
     be = backend if backend is not None else platform_backend(base)
     return be.get(binding, binding.scope)
 

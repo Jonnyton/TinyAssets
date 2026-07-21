@@ -91,6 +91,41 @@ def test_happy_path_builds_branch(monkeypatch):
     }
 
 
+def test_effect_binding_rejects_moved_base_before_blob_write(monkeypatch):
+    fake = _scripted_api(_happy_responses())
+    monkeypatch.setattr(github_pr, "_git_data_api", fake)
+    result = github_pr._materialize_branch(
+        changes_json={"README_PROBE.md": "probe\n"},
+        destination=_DEST,
+        base_branch=_BASE,
+        head_branch=_HEAD,
+        commit_message="Probe",
+        capability_token="tok",
+        expected_base_commit="different-base",
+    )
+    assert result["error_kind"] == "repository_head_moved"
+    assert not any(method == "POST" for method, _path, _body in fake.calls)
+
+
+def test_effect_binding_rejects_wrong_resulting_tree_before_commit_or_ref(monkeypatch):
+    fake = _scripted_api(_happy_responses())
+    monkeypatch.setattr(github_pr, "_git_data_api", fake)
+    result = github_pr._materialize_branch(
+        changes_json={"README_PROBE.md": "probe\n"},
+        destination=_DEST,
+        base_branch=_BASE,
+        head_branch=_HEAD,
+        commit_message="Probe",
+        capability_token="tok",
+        expected_base_commit="basecommitsha",
+        expected_base_tree="basetreesha",
+        expected_resulting_tree="different-tree",
+    )
+    assert result["error_kind"] == "resulting_tree_mismatch"
+    assert not any(path.endswith("/git/commits") for _, path, _ in fake.calls)
+    assert not any(path.endswith("/git/refs") for _, path, _ in fake.calls)
+
+
 def test_api_call_order(monkeypatch):
     """ref -> base commit -> blob -> tree -> commit -> ref, in that order."""
     fake = _scripted_api(_happy_responses())

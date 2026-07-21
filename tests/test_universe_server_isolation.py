@@ -632,24 +632,23 @@ class TestUniverseWriteBoundaryBeyondUniverseTool:
         assert out["required_permission"] == "write"
         assert not (universe_base / "other" / "auto_ship_attempts.jsonl").exists()
 
-    def test_auto_ship_pr_open_to_unowned_universe_is_denied(
-        self,
-        universe_base,
-    ):
-        from tinyassets.api import auto_ship_actions
+    def test_result_bound_github_effect_identity_is_universe_scoped(self):
+        from tinyassets.api.auto_ship_actions import _AUTO_SHIP_ACTIONS
+        from tinyassets.runtime.effect_authorization import derive_effect_id
 
-        _make_universe(universe_base, "other")
-        _authenticate("alice", ["tinyassets.extensions.write"])
+        owner_effect = derive_effect_id(
+            universe_id="mine",
+            repository_node_id="R_node_1",
+            accepted_result_sha256="a" * 64,
+        )
+        foreign_effect = derive_effect_id(
+            universe_id="other",
+            repository_node_id="R_node_1",
+            accepted_result_sha256="a" * 64,
+        )
 
-        out = json.loads(auto_ship_actions._action_open_auto_ship_pr({
-            "ship_attempt_id": "ship_1",
-            "head_branch": "auto-change/test",
-            "universe_id": "other",
-        }))
-
-        assert out["error"] == "universe_access_denied"
-        assert out["surface"] == "extensions"
-        assert out["required_permission"] == "write"
+        assert owner_effect != foreign_effect
+        assert "open_auto_ship_pr" not in _AUTO_SHIP_ACTIONS
 
 
 class TestRunReadVisibility:

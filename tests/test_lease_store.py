@@ -405,6 +405,44 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
     )
 
 
+def test_effect_loader_returns_only_platform_signed_capsule_bindings(
+    tmp_path: Path,
+) -> None:
+    fixture = _result_lease(tmp_path)
+    store, task, lease, *_ = fixture
+    capsule = store._load_verified_capsule(
+        task.branch_task_id,
+        lease.capsule.content_sha256,
+    )
+    payload = capsule["payload"]
+    assert payload["job_id"] == task.branch_task_id
+    assert payload["owner_user_id"] == "user:owner-1"
+    assert payload["lease"] == {
+        "lease_id": lease.lease_id,
+        "fence": lease.fence,
+    }
+    assert payload["universe_scope"]["universe_id"]
+    assert payload["base"]["commit"]
+    assert payload["base"]["tree"]
+
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT lease_grant_json FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        forged = json.loads(row[0])
+        forged["base_commit"] = "0" * 40
+        connection.execute(
+            "UPDATE lease_tasks SET lease_grant_json = ? WHERE task_id = ?",
+            (json.dumps(forged, separators=(",", ":")), task.branch_task_id),
+        )
+    with pytest.raises(StoredStateCorruptError, match="signature"):
+        store._load_verified_capsule(
+            task.branch_task_id,
+            lease.capsule.content_sha256,
+        )
+
+
 def test_terminal_row_reset_replays_one_verified_completion_attestation(
     tmp_path: Path,
 ) -> None:

@@ -90,6 +90,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -614,6 +615,134 @@ def _scope_or(error: dict[str, Any], step_kind: str) -> str:
 _MAX_EDIT_BLOCKS_PER_FILE = 100
 
 
+_DIFF_HUNK_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?\n?$"
+)
+
+
+def _diff_path(raw: str, *, prefix: str) -> str:
+    value = raw.rstrip("\n")
+    if value == "/dev/null":
+        return value
+    if not value.startswith(prefix):
+        raise ValueError("git diff path lacks its pinned a/ or b/ prefix")
+    path = value[len(prefix):]
+    parts = path.replace("\\", "/").split("/")
+    if (
+        not path
+        or path.startswith("/")
+        or "\\" in path
+        or any(part in {"", ".", ".."} for part in parts)
+        or parts[0] == ".git"
+        or "\x00" in path
+    ):
+        raise ValueError("git diff contains a forbidden repository path")
+    return path
+
+
+def _apply_diff_hunks(base: str, lines: list[str]) -> str:
+    source = base.splitlines(keepends=True)
+    output: list[str] = []
+    source_index = 0
+    index = 0
+    saw_hunk = False
+    while index < len(lines):
+        match = _DIFF_HUNK_RE.match(lines[index])
+        if match is None:
+            index += 1
+            continue
+        saw_hunk = True
+        old_start = int(match.group(1))
+        old_count = int(match.group(2) or "1")
+        new_count = int(match.group(4) or "1")
+        target_index = max(old_start - 1, 0)
+        if target_index < source_index or target_index > len(source):
+            raise ValueError("git diff hunk is outside the exact base contents")
+        output.extend(source[source_index:target_index])
+        source_index = target_index
+        consumed_old = 0
+        produced_new = 0
+        index += 1
+        while index < len(lines) and not lines[index].startswith("@@ "):
+            line = lines[index]
+            if line.startswith("diff --git "):
+                break
+            if line.startswith("\\ No newline at end of file"):
+                index += 1
+                continue
+            if not line or line[0] not in {" ", "+", "-"}:
+                break
+            content = line[1:]
+            if line[0] in {" ", "-"}:
+                if source_index >= len(source) or source[source_index] != content:
+                    raise ValueError("git diff does not match exact base contents")
+                source_index += 1
+                consumed_old += 1
+            if line[0] in {" ", "+"}:
+                output.append(content)
+                produced_new += 1
+            index += 1
+        if consumed_old != old_count or produced_new != new_count:
+            raise ValueError("git diff hunk line counts are inconsistent")
+    if not saw_hunk:
+        raise ValueError("git diff file section contains no hunks")
+    output.extend(source[source_index:])
+    return "".join(output)
+
+
+def _changes_from_git_diff(
+    patch_bytes: bytes,
+    *,
+    fetch_base: Callable[[str], str],
+) -> dict[str, str | None]:
+    """Apply a bounded UTF-8 git diff against exact fetched base contents."""
+    if type(patch_bytes) is not bytes:
+        raise ValueError("git diff must be bytes")
+    try:
+        text = patch_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("binary git diff is not supported") from exc
+    lines = text.splitlines(keepends=True)
+    starts = [index for index, line in enumerate(lines) if line.startswith("diff --git ")]
+    if not starts:
+        raise ValueError("git diff contains no file sections")
+    starts.append(len(lines))
+    changes: dict[str, str | None] = {}
+    for position in range(len(starts) - 1):
+        section = lines[starts[position]:starts[position + 1]]
+        header = section[0].rstrip("\n").split(" ")
+        if len(header) != 4:
+            raise ValueError("git diff quoted or spaced paths are unsupported")
+        if any(
+            marker in line
+            for line in section
+            for marker in (
+                "GIT binary patch",
+                "Binary files ",
+                "rename from ",
+                "rename to ",
+                "copy from ",
+                "copy to ",
+            )
+        ):
+            raise ValueError("binary, rename, and copy git diffs are unsupported")
+        old_header = next((line[4:] for line in section if line.startswith("--- ")), None)
+        new_header = next((line[4:] for line in section if line.startswith("+++ ")), None)
+        if old_header is None or new_header is None:
+            raise ValueError("git diff file section is missing path headers")
+        old_path = _diff_path(old_header, prefix="a/")
+        new_path = _diff_path(new_header, prefix="b/")
+        if old_path == new_path == "/dev/null":
+            raise ValueError("git diff cannot add and delete the same null path")
+        path = new_path if new_path != "/dev/null" else old_path
+        if path in changes:
+            raise ValueError("git diff repeats a repository path")
+        base = "" if old_path == "/dev/null" else fetch_base(old_path)
+        changed = _apply_diff_hunks(base, section)
+        changes[path] = None if new_path == "/dev/null" else changed
+    return changes
+
+
 def _fetch_file_at_ref(
     *, owner_repo: str, path: str, ref: str, capability_token: str
 ) -> tuple[str | None, dict[str, Any] | None]:
@@ -771,6 +900,9 @@ def _materialize_branch(
     commit_message: str,
     capability_token: str,
     edits_json: Any = None,
+    expected_base_commit: str | None = None,
+    expected_base_tree: str | None = None,
+    expected_resulting_tree: str | None = None,
 ) -> dict[str, Any]:
     """Build a remote head branch from ``changes_json`` via the Git Data API.
 
@@ -883,6 +1015,11 @@ def _materialize_branch(
             "error": f"base ref heads/{base_branch} returned no commit sha",
             "error_kind": "base_ref_lookup_failed",
         }
+    if expected_base_commit is not None and base_commit_sha != expected_base_commit:
+        return {
+            "error": "repository base ref moved from the authorized commit",
+            "error_kind": "repository_head_moved",
+        }
 
     # Step 2: base commit → base tree sha (review correction: the ref
     # gives a COMMIT sha, not a tree sha; a commit lookup is required).
@@ -901,6 +1038,11 @@ def _materialize_branch(
         return {
             "error": f"base commit {base_commit_sha} returned no tree sha",
             "error_kind": "base_commit_lookup_failed",
+        }
+    if expected_base_tree is not None and base_tree_sha != expected_base_tree:
+        return {
+            "error": "authorized base commit resolved to a different tree",
+            "error_kind": "base_binding_mismatch",
         }
 
     # Step 3: one blob per modified/created path (deletions carry no blob).
@@ -947,6 +1089,11 @@ def _materialize_branch(
     new_tree_sha = (tree or {}).get("sha")
     if not isinstance(new_tree_sha, str) or not new_tree_sha:
         return {"error": "tree create returned no sha", "error_kind": "tree_create_failed"}
+    if expected_resulting_tree is not None and new_tree_sha != expected_resulting_tree:
+        return {
+            "error": "materialized tree does not equal the accepted resulting tree",
+            "error_kind": "resulting_tree_mismatch",
+        }
 
     # Step 5: commit pointing at the new tree, parented on the base commit.
     commit, err = _git_data_api(
@@ -1127,6 +1274,234 @@ def _invoke_github_api_pr_create(
     return result
 
 
+def _effect_capability_token(credential: Any) -> str:
+    value = credential.reveal() if hasattr(credential, "reveal") else credential
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("vault GitHub credential is not UTF-8") from exc
+    if type(value) is not str or not value:
+        raise ValueError("vault GitHub credential is empty")
+    return value
+
+
+class GitHubRestEffectClient:
+    """GitHub REST adapter for the result-bound effect authority route."""
+
+    def read_repository(
+        self,
+        *,
+        repository: str,
+        installation_id: str,
+        base_ref: str,
+        credential: Any,
+    ) -> Any:
+        from tinyassets.runtime.effect_authorization import RepositorySnapshot
+
+        token = _effect_capability_token(credential)
+        repo, error = _git_data_api(
+            method="GET", path=f"/repos/{repository}", capability_token=token
+        )
+        if error is not None or not isinstance(repo, dict):
+            raise RuntimeError(f"repository identity lookup failed: {error}")
+        installation, error = _git_data_api(
+            method="GET",
+            path=f"/repos/{repository}/installation",
+            capability_token=token,
+        )
+        if error is not None or not isinstance(installation, dict):
+            raise RuntimeError(f"repository installation lookup failed: {error}")
+        ref, error = _git_data_api(
+            method="GET",
+            path=f"/repos/{repository}/git/ref/heads/{base_ref}",
+            capability_token=token,
+        )
+        if error is not None:
+            raise RuntimeError(f"repository head lookup failed: {error}")
+        head_sha = ((ref or {}).get("object") or {}).get("sha")
+        commit, error = _git_data_api(
+            method="GET",
+            path=f"/repos/{repository}/git/commits/{head_sha}",
+            capability_token=token,
+        )
+        if error is not None:
+            raise RuntimeError(f"repository commit lookup failed: {error}")
+        tree_sha = ((commit or {}).get("tree") or {}).get("sha")
+        node_id = repo.get("node_id")
+        actual_installation_id = str(installation.get("id") or "")
+        if not all(isinstance(value, str) and value for value in (node_id, head_sha, tree_sha)):
+            raise ValueError("GitHub repository response lacks stable identity or head")
+        if actual_installation_id != installation_id:
+            raise ValueError("GitHub installation identity does not match owner grant")
+        return RepositorySnapshot(
+            repository_node_id=node_id,
+            installation_id=actual_installation_id,
+            base_ref=base_ref,
+            head_sha=head_sha,
+            base_tree=tree_sha,
+        )
+
+    def materialize_patch(
+        self,
+        *,
+        repository: str,
+        installation_id: str,
+        base_ref: str,
+        base_commit: str,
+        base_tree: str,
+        resulting_tree: str,
+        head_ref: str,
+        effect_id: str,
+        patch_bytes: bytes,
+        credential: Any,
+    ) -> dict[str, Any]:
+        del installation_id
+        token = _effect_capability_token(credential)
+
+        def fetch_base(path: str) -> str:
+            contents, error = _fetch_file_at_ref(
+                owner_repo=repository,
+                path=path,
+                ref=base_commit,
+                capability_token=token,
+            )
+            if error is not None or contents is None:
+                raise ValueError(f"exact base file {path!r} is unavailable: {error}")
+            return contents
+
+        changes = _changes_from_git_diff(patch_bytes, fetch_base=fetch_base)
+        result = _materialize_branch(
+            changes_json=changes,
+            destination=repository,
+            base_branch=base_ref,
+            head_branch=head_ref,
+            commit_message=f"Apply accepted TinyAssets effect {effect_id}",
+            capability_token=token,
+            expected_base_commit=base_commit,
+            expected_base_tree=base_tree,
+            expected_resulting_tree=resulting_tree,
+        )
+        if result.get("error"):
+            raise RuntimeError(f"{result.get('error_kind')}: {result['error']}")
+        return {
+            "head_ref": head_ref,
+            "commit_sha": result.get("commit_sha"),
+            "tree_sha": result.get("tree_sha"),
+            "effect_id": effect_id,
+        }
+
+    def open_reviewable_pr(
+        self,
+        *,
+        repository: str,
+        installation_id: str,
+        base_ref: str,
+        head_ref: str,
+        effect_id: str,
+        title: str,
+        body: str,
+        draft: bool,
+        credential: Any,
+    ) -> dict[str, Any]:
+        del installation_id
+        if draft is not False or f"TinyAssets-Effect-ID: {effect_id}" not in body:
+            raise ValueError("effect PR must be review-ready and carry its identity marker")
+        created = _github_api_request(
+            path=f"/repos/{repository}/pulls",
+            capability_token=_effect_capability_token(credential),
+            body={
+                "title": title,
+                "body": body,
+                "base": base_ref,
+                "head": head_ref,
+                "draft": False,
+            },
+        )
+        number = created.get("number") if isinstance(created, dict) else None
+        url = created.get("html_url") if isinstance(created, dict) else None
+        if type(number) is not int or type(url) is not str or not url:
+            raise ValueError("GitHub PR response lacks number or URL")
+        return {
+            "number": number,
+            "url": url,
+            "state": created.get("state", "open"),
+            "head_ref": head_ref,
+            "effect_id": effect_id,
+        }
+
+    def find_effect(
+        self,
+        *,
+        repository: str,
+        installation_id: str,
+        head_ref: str,
+        effect_id: str,
+        credential: Any,
+        include_all_pr_states: bool,
+    ) -> dict[str, Any]:
+        del installation_id
+        if include_all_pr_states is not True:
+            raise ValueError("effect reconciliation must query every PR state")
+        token = _effect_capability_token(credential)
+        branch: dict[str, Any] | None = None
+        ref, ref_error = _git_data_api(
+            method="GET",
+            path=f"/repos/{repository}/git/ref/heads/{head_ref}",
+            capability_token=token,
+        )
+        if ref_error is not None and ref_error.get("http_status") != 404:
+            raise RuntimeError(f"effect branch lookup failed: {ref_error}")
+        commit_sha = ((ref or {}).get("object") or {}).get("sha")
+        if isinstance(commit_sha, str) and commit_sha:
+            commit, error = _git_data_api(
+                method="GET",
+                path=f"/repos/{repository}/git/commits/{commit_sha}",
+                capability_token=token,
+            )
+            if error is not None:
+                raise RuntimeError(f"effect commit lookup failed: {error}")
+            tree_sha = ((commit or {}).get("tree") or {}).get("sha")
+            branch = {
+                "head_ref": head_ref,
+                "commit_sha": commit_sha,
+                "tree_sha": tree_sha,
+                "effect_id": effect_id,
+            }
+        owner = repository.split("/", 1)[0]
+        query = urllib.parse.urlencode(
+            {"state": "all", "head": f"{owner}:{head_ref}", "per_page": 100}
+        )
+        pulls, error = _git_data_api(
+            method="GET",
+            path=f"/repos/{repository}/pulls?{query}",
+            capability_token=token,
+        )
+        if error is not None or not isinstance(pulls, list):
+            raise RuntimeError(f"effect PR reconciliation lookup failed: {error}")
+        marker = f"TinyAssets-Effect-ID: {effect_id}"
+        matches = [
+            pull
+            for pull in pulls
+            if isinstance(pull, dict)
+            and marker in str(pull.get("body") or "")
+            and ((pull.get("head") or {}).get("ref") == head_ref)
+        ]
+        if len(matches) > 1:
+            raise RuntimeError("multiple PRs carry the same deterministic effect identity")
+        pull_request = None
+        if matches:
+            pull = matches[0]
+            pull_request = {
+                "number": pull.get("number"),
+                "url": pull.get("html_url"),
+                "state": pull.get("state"),
+                "head_ref": head_ref,
+                "effect_id": effect_id,
+            }
+        return {"branch": branch, "pull_request": pull_request}
+
+
 # ---------------------------------------------------------------------------
 # Main effector
 # ---------------------------------------------------------------------------
@@ -1225,7 +1600,7 @@ def run_github_pr_effector(
     if isinstance(raw_hint, str):
         idempotency_hint = raw_hint.strip()
 
-    # â”€â”€ Phase 1 backward-compat path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Phase 1 backward-compat path.
     # A packet without ``destination`` is a Phase 1 packet by definition
     # — Phase 2 made the field part of the canonical shape. Preserve the
     # Phase-1 dry-run evidence shape exactly so existing tests + consumers
@@ -1249,7 +1624,7 @@ def run_github_pr_effector(
 
     universe_dir = _resolve_universe_dir(base_path)
 
-    # â”€â”€ Gate 0: soul-scoped effect-authority â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Gate 0: soul-scoped effect-authority.
     # The running universe's soul is the source of effect-authority (gap 1 of
     # the souled-universe self-maintenance model). A universe whose soul.md
     # declares effect_authority grants must include this sink:destination, or
@@ -1311,7 +1686,7 @@ def run_github_pr_effector(
             "matched_output_key": matched_key,
         }
 
-    # â”€â”€ Gate 2: consent grant â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Gate 2: consent grant.
     if not _check_consent(universe_dir, destination):
         return {
             "dry_run": True,
@@ -1327,7 +1702,7 @@ def run_github_pr_effector(
             ),
         }
 
-    # â”€â”€ Gate 3: idempotency receipt (atomic reservation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Gate 3: idempotency receipt (atomic reservation).
     # Round-2 P1.1: the round-1 sequence (lookup → invoke → record)
     # was non-atomic. Two concurrent threads could both observe "no
     # receipt" and both invoke ``gh pr create``. We now reserve the
@@ -1420,7 +1795,7 @@ def run_github_pr_effector(
     # We hold the reservation (or there was no hint so we proceed
     # without one). Invoke the side-effect.
 
-    # â”€â”€ Real write â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Real write.
     payload = packet.get("payload") or {}
     payload = payload if isinstance(payload, dict) else {}
 

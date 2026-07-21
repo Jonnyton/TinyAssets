@@ -329,11 +329,6 @@ def _extensions_impl(
     to_node_id: str = "",
     message_type: str = "",
     body_json: str = "",
-    ship_attempt_id: str = "",
-    head_branch: str = "",
-    title: str = "",
-    pr_body: str = "",
-    base_branch: str = "",
     reply_to_message_id: str = "",
     message_types: str = "",
     message_id: str = "",
@@ -645,11 +640,6 @@ def _extensions_impl(
             "ship_class": ship_class,
             "changed_paths_json": changed_paths_json,
             "stable_evidence_handle": stable_evidence_handle,
-            "ship_attempt_id": ship_attempt_id,
-            "head_branch": head_branch,
-            "title": title,
-            "body": pr_body,
-            "base_branch": base_branch,
         }
         return auto_ship_handler(as_kwargs)
 
