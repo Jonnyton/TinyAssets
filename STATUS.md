@@ -39,8 +39,7 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 | OpenAI app submission hardening — chatgpt-app-submission.json present on disk (180 lines); submission docs/proof still pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT approval/mobile proof | dev-ready |
 | **#23 Arc B phase 2** — `codex/old-session-consolidation` at c967272; focused gates green | tests/, tinyassets/api/runs.py, fantasy_daemon/api.py | - | host-review |
 | **#25 Arc B phase 3** — `codex/arc-b-phase3` at 1ae48ef; stacked on #23 | tinyassets/_rename_compat.py, fantasy_author/, domains/fantasy_author/ | #23 | host-review |
-| **#24 Arc C** — env-var deprecation aliases (UNIVERSE_SERVER_BASE, WIKI_PATH) | tinyassets/storage/__init__.py | #25 | dev-ready |
-| **Phase 6** — `.workflow.db`, `db_path()` fn, Option A migration, 30s restart, plugin minor-bump | tinyassets/storage/__init__.py + plugin mirror, tests/ | #24 | dev-ready |
+| **Phase 6** — `.workflow.db`, `db_path()` fn, Option A migration, 30s restart, plugin minor-bump | tinyassets/storage/__init__.py + plugin mirror, tests/ | - (#24 landed 2026-05-01 `39e69191`) | claimed:claude-code |
 | `run_branch resume_from=<run_id>` param (F2 ACCEPTED 2026-04-28) | tinyassets/api/runs.py, tests/ | #23 | dev-ready |
 | Windows full-suite backup.sh path fix | tests/test_backup_script.py | #18,#23 | dev-ready |
 | Clean-clone MCP config test mismatch | tests/test_mcp_server.py, .mcp.example.json | #18,#23 | dev-ready |
