@@ -163,6 +163,7 @@ class AtomicJobResultStore(Protocol):
         job_id: str,
         *,
         expected: Mapping[str, Any],
+        blob_store: BlobStore,
     ) -> dict[str, Any]: ...
 
 
@@ -290,9 +291,10 @@ def complete_job(
     store: AtomicJobResultStore,
     request: Mapping[str, Any],
     *,
+    blob_store: BlobStore,
     now: datetime,
 ) -> CompletionReceipt:
-    """CAS ``leased -> terminal`` only for the current accepted candidate hash."""
+    """Revalidate signed blob claims, then CAS the current candidate terminal."""
     parsed = _parse_completion_request(request)
     _utc_text(now)
     expected = {
@@ -306,6 +308,7 @@ def complete_job(
         receipt = store.complete_validated_result(
             parsed["job_id"],
             expected=expected,
+            blob_store=blob_store,
         )
     except StoreStoredStateCorruptError:
         raise  # durability violation: 500-class, never a client-typed error

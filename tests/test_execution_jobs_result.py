@@ -162,11 +162,13 @@ class MemoryAtomicJobStore:
         job_id: str,
         *,
         expected: Mapping[str, Any],
+        blob_store,
     ) -> dict[str, Any]:
         from tinyassets.runtime.execution_capsule import (
             CapsuleCanonicalizationError,
             hash_canonical_jcs,
         )
+        from tinyassets.runtime.execution_result import result_blob_references
         from tinyassets.runtime.lease_store import (
             ResultConflictError,
             StaleFenceError,
@@ -189,14 +191,17 @@ class MemoryAtomicJobStore:
                     raise StaleLeaseError(
                         f"completion {expected_key} does not match current lease"
                     )
-            if state["status"] not in {"succeeded", "failed", "cancelled"}:
-                expires_at = datetime.fromisoformat(
-                    state["lease_expires_at"].replace("Z", "+00:00")
+            if state["status"] in {"succeeded", "failed", "cancelled"}:
+                raise StoredStateCorruptError(
+                    "terminal completion replay has no cryptographic authority"
                 )
-                if state["status"] != "leased":
-                    raise StaleLeaseError("job is not under an active lease")
-                if now >= expires_at:
-                    raise StaleLeaseError("job lease has expired")
+            expires_at = datetime.fromisoformat(
+                state["lease_expires_at"].replace("Z", "+00:00")
+            )
+            if state["status"] != "leased":
+                raise StaleLeaseError("job is not under an active lease")
+            if now >= expires_at:
+                raise StaleLeaseError("job lease has expired")
             candidate_hash = state.get("candidate_result_sha256")
             candidate = state.get("candidate_result")
             signature = candidate.get("signature") if isinstance(candidate, dict) else None
@@ -227,13 +232,16 @@ class MemoryAtomicJobStore:
                 raise StoredStateCorruptError(
                     "completion result hash is not the stored candidate content hash"
                 )
-            if state["status"] in {"succeeded", "failed", "cancelled"}:
-                if state.get("accepted_result_sha256") != candidate_hash:
-                    raise StoredStateCorruptError("job finalized with another result hash")
-                receipt = state.get("completion_receipt")
-                if not isinstance(receipt, dict):
-                    raise StoredStateCorruptError("durable completion receipt is missing")
-                return copy.deepcopy(receipt)
+            for blob_ref, sha256, size_bytes in result_blob_references(candidate):
+                blob_store.validate_reference(
+                    blob_ref,
+                    owner_user_id=state["owner_user_id"],
+                    job_id=state["job_id"],
+                    lease_id=state["lease_id"],
+                    fence=state["lease_fence"],
+                    expected_sha256=sha256,
+                    expected_size_bytes=size_bytes,
+                )
             outcome = candidate["outcome"]
             final_status = (
                 "succeeded"
@@ -343,6 +351,7 @@ def submit_candidate(tmp_path: Path):
     key = SigningKey.generate()
     result, _ = create_result(body, key)
     job_store = MemoryAtomicJobStore(leased_state())
+    job_store.blob_store = blob_store
     receipt = submit_candidate_result(
         job_store,
         job_id=JOB_ID,
@@ -515,14 +524,19 @@ def test_valid_current_fence_committed_blob_completes_exactly_once(tmp_path: Pat
     first = complete_job(
         job_store,
         complete_request(result),
+        blob_store=job_store.blob_store,
         now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
     )
-    second = complete_job(
-        job_store,
-        complete_request(result),
-        now=datetime(2026, 7, 19, 0, 34, tzinfo=UTC),
-    )
-    assert second == first
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="terminal completion replay has no cryptographic authority",
+    ):
+        complete_job(
+            job_store,
+            complete_request(result),
+            blob_store=job_store.blob_store,
+            now=datetime(2026, 7, 19, 0, 34, tzinfo=UTC),
+        )
     assert job_store.state["status"] == "succeeded"
     assert job_store.state["accepted_result_sha256"] == result["signature"]["result_sha256"]
     assert job_store.state_changes == 2  # candidate acceptance + one completion
@@ -607,7 +621,12 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         "result_sha256": "0" * 64,
     }
     with pytest.raises(CompletionConflictError):
-        complete_job(store, opaque_request, now=datetime(2026, 7, 19, 0, 31, tzinfo=UTC))
+        complete_job(
+            store,
+            opaque_request,
+            blob_store=blob_store_with_result_blobs(tmp_path / "preflight")[0],
+            now=datetime(2026, 7, 19, 0, 31, tzinfo=UTC),
+        )
     assert store.read_task(JOB_ID).status == "leased"
 
     body = result_body()
@@ -636,18 +655,22 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         opaque_request,
         result_sha256=result["signature"]["result_sha256"],
     )
-    first = complete_job(
+    complete_job(
         store,
         request,
+        blob_store=blob_store,
         now=datetime(2026, 7, 19, 0, 31, 10, tzinfo=UTC),
     )
-    second = complete_job(
-        store,
-        request,
-        now=datetime(2026, 7, 19, 0, 31, 20, tzinfo=UTC),
-    )
-
-    assert second == first
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="terminal completion replay has no cryptographic authority",
+    ):
+        complete_job(
+            store,
+            request,
+            blob_store=blob_store,
+            now=datetime(2026, 7, 19, 0, 31, 20, tzinfo=UTC),
+        )
     assert store.read_task(JOB_ID).status == "succeeded"
     assert sum(event.kind == "completed" for event in store.events(JOB_ID)) == 1
 
@@ -676,6 +699,7 @@ def test_completion_rejects_stored_candidate_body_tamper(tmp_path: Path) -> None
         complete_job(
             job_store,
             complete_request(result),
+            blob_store=blob_store,
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
     assert job_store.state == before
@@ -693,6 +717,7 @@ def test_completion_rejects_stale_fence_even_when_every_other_binding_matches(
         complete_job(
             job_store,
             stale_request,
+            blob_store=job_store.blob_store,
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
     assert exc_info.value.code == "stale_lease"
@@ -720,6 +745,7 @@ def test_completion_rejects_wrong_current_lease_bindings(
         complete_job(
             job_store,
             complete_request(result, **{field: wrong_value}),
+            blob_store=job_store.blob_store,
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
     assert job_store.state == before
@@ -733,6 +759,7 @@ def test_completion_rejects_unaccepted_result_hash(tmp_path: Path) -> None:
         complete_job(
             job_store,
             complete_request(result, result_sha256="0" * 64),
+            blob_store=job_store.blob_store,
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
     assert job_store.state["status"] == "leased"
@@ -747,6 +774,7 @@ def test_completion_rejects_noncanonical_uuid_before_cas(tmp_path: Path) -> None
         complete_job(
             job_store,
             complete_request(result, lease_id="not-a-uuid"),
+            blob_store=job_store.blob_store,
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
 
@@ -779,6 +807,7 @@ def test_completion_rejects_malformed_request_before_store_access(
         complete_job(
             job_store,
             request,
+            blob_store=job_store.blob_store,
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
 
@@ -795,6 +824,7 @@ def test_completion_rejects_expired_current_lease(tmp_path: Path) -> None:
         complete_job(
             job_store,
             complete_request(result),
+            blob_store=job_store.blob_store,
             now=datetime(2026, 7, 19, 1, 0, tzinfo=UTC),
         )
     assert job_store.state == before
@@ -833,6 +863,7 @@ def test_submit_maps_unknown_job_to_typed_404(tmp_path: Path) -> None:
     key = SigningKey.generate()
     result, _ = create_result(body, key)
     job_store = MemoryAtomicJobStore(leased_state())
+    job_store.blob_store = blob_store
     with pytest.raises(JobNotFoundError) as excinfo:
         submit_candidate_result(
             job_store,
@@ -860,7 +891,12 @@ def test_complete_maps_unknown_job_to_typed_404(tmp_path: Path) -> None:
         "result_sha256": "a" * 64,
     }
     with pytest.raises(JobNotFoundError) as excinfo:
-        complete_job(job_store, request, now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC))
+        complete_job(
+            job_store,
+            request,
+            blob_store=blob_store_with_result_blobs(tmp_path)[0],
+            now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+        )
     assert excinfo.value.code == "job_not_found"
     assert excinfo.value.status_code == 404
 
@@ -906,6 +942,7 @@ def test_store_corruption_escapes_untyped(tmp_path: Path) -> None:
         complete_job(
             CorruptStore(leased_state()),
             request,
+            blob_store=blob_store,
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
 
@@ -936,6 +973,7 @@ def test_complete_maps_second_store_call_errors_without_client_blame(
             complete_job(
                 store,
                 complete_request(result),
+                blob_store=original.blob_store,
                 now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
             )
     else:
@@ -943,6 +981,7 @@ def test_complete_maps_second_store_call_errors_without_client_blame(
             complete_job(
                 store,
                 complete_request(result),
+                blob_store=original.blob_store,
                 now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
             )
 
@@ -982,6 +1021,7 @@ def test_invalid_completion_receipt_from_store_is_store_corruption(tmp_path: Pat
         complete_job(
             InvalidReceiptStore(original.state),
             complete_request(result),
+            blob_store=original.blob_store,
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
 
@@ -1000,4 +1040,9 @@ def test_completion_rejects_bool_fence(tmp_path: Path) -> None:
         "result_sha256": "a" * 64,
     }
     with pytest.raises(CompletionRequestError, match="fence"):
-        complete_job(job_store, request, now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC))
+        complete_job(
+            job_store,
+            request,
+            blob_store=blob_store_with_result_blobs(tmp_path)[0],
+            now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
+        )

@@ -4,7 +4,8 @@ The SQLite row is the only distributed lease authority. ``BranchTask`` lease
 fields are a read projection for callers; this module deliberately never
 mutates the legacy JSON queue or uses its sidecar file lock as a claim path.
 Every current-row mutation is CAS-guarded and mirrored into an append-only
-event ledger in the same transaction.
+audit ledger in the same transaction. Events never authorize a state change or
+receipt replay.
 
 Completion remains fail-closed even if an actor can doctor lease rows and insert
 permitted events: the signing-only control-plane role signs the authenticated
@@ -774,55 +775,16 @@ class LeaseStore:
         occurred_at: str,
         content_sha256: str | None = None,
     ) -> None:
+        # Events are attacker-insertable audit observations, never operation
+        # authority. A preinserted one-shot row therefore must not roll back an
+        # otherwise valid signed/CAS state transition through a UNIQUE error.
         connection.execute(
             """
-            INSERT INTO lease_events(
+            INSERT OR IGNORE INTO lease_events(
                 task_id, kind, lease_id, fence, occurred_at, content_sha256
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (task_id, kind, lease_id, fence, occurred_at, content_sha256),
-        )
-
-    @staticmethod
-    def _matching_events(
-        connection: sqlite3.Connection,
-        task_id: str,
-        *,
-        kind: str,
-        lease_id: str | None,
-        fence: int,
-    ) -> tuple[sqlite3.Row, ...]:
-        """Return every event of one kind for one exact lease generation."""
-        return tuple(
-            connection.execute(
-                """
-                SELECT kind, lease_id, fence, occurred_at, content_sha256
-                FROM lease_events
-                WHERE task_id = ? AND kind = ? AND lease_id = ? AND fence = ?
-                ORDER BY event_id
-                """,
-                (task_id, kind, lease_id, fence),
-            ).fetchall()
-        )
-
-    @staticmethod
-    def _task_events(
-        connection: sqlite3.Connection,
-        task_id: str,
-        *,
-        kind: str,
-    ) -> tuple[sqlite3.Row, ...]:
-        """Return every task-scoped event of one kind in append order."""
-        return tuple(
-            connection.execute(
-                """
-                SELECT kind, lease_id, fence, occurred_at, content_sha256
-                FROM lease_events
-                WHERE task_id = ? AND kind = ?
-                ORDER BY event_id
-                """,
-                (task_id, kind),
-            ).fetchall()
         )
 
     @staticmethod
@@ -878,42 +840,23 @@ class LeaseStore:
 
     def _durable_candidate_receipt(
         self,
-        connection: sqlite3.Connection,
         *,
-        row: sqlite3.Row,
+        job_id: str,
         receipt: Any,
         result_sha256: str,
         outcome: Any,
+        accepted_at: Any,
     ) -> dict[str, Any]:
-        """Return the persisted candidate receipt only when every field matches
-        authoritative state — the row, the just-validated candidate body, and
-        the schema-protected event ledger. A receipt that disagrees is a
-        durability violation, not a replayable record."""
-        events = self._matching_events(
-            connection,
-            row["task_id"],
-            kind="result_submitted",
-            lease_id=row["lease_id"],
-            fence=row["lease_fence"],
-        )
-        if len(events) != 1:
-            raise StoredStateCorruptError(
-                "durable candidate receipt does not match authoritative state"
-            )
-        event = events[0]
-        if (
-            type(event["content_sha256"]) is not str
-            or not _SHA256_RE.fullmatch(event["content_sha256"])
-            or not hmac.compare_digest(result_sha256, event["content_sha256"])
-        ):
+        """Recompute a replay receipt only from the verified candidate body."""
+        if type(accepted_at) is not str:
             raise StoredStateCorruptError(
                 "durable candidate receipt does not match authoritative state"
             )
         expected = {
-            "job_id": row["task_id"],
+            "job_id": job_id,
             "result_sha256": result_sha256,
             "outcome": outcome,
-            "accepted_at": event["occurred_at"],
+            "accepted_at": accepted_at,
         }
         if (
             not isinstance(receipt, dict)
@@ -922,62 +865,6 @@ class LeaseStore:
         ):
             raise StoredStateCorruptError(
                 "durable candidate receipt does not match authoritative state"
-            )
-        return dict(receipt)
-
-    def _durable_completion_receipt(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        row: sqlite3.Row,
-        receipt: Any,
-        candidate_hash: str,
-        outcome: Any,
-    ) -> dict[str, Any]:
-        """Return the persisted completion receipt only when every field matches
-        authoritative state — the receipt_id is recomputed from the persisted
-        lease bindings, status comes from the persisted candidate outcome, and
-        the completion time comes from the append-only ledger."""
-        events = self._task_events(
-            connection,
-            row["task_id"],
-            kind="completed",
-        )
-        if len(events) != 1:
-            raise StoredStateCorruptError(
-                "durable completion receipt does not match authoritative state"
-            )
-        event = events[0]
-        receipt_request = {
-            "job_id": row["task_id"],
-            "daemon_id": row["lease_daemon_id"],
-            "lease_id": row["lease_id"],
-            "fence": row["lease_fence"],
-            "capsule_sha256": row["capsule_sha256"],
-            "result_sha256": candidate_hash,
-        }
-        try:
-            receipt_id = f"completion:{hash_canonical_jcs(receipt_request).hex()}"
-        except CapsuleCanonicalizationError as exc:
-            raise StoredStateCorruptError(
-                "completion bindings are not canonicalizable"
-            ) from exc
-        expected_status = self._completion_status(outcome)
-        expected = {
-            "receipt_id": receipt_id,
-            "job_id": row["task_id"],
-            "status": expected_status,
-            "accepted_result_sha256": candidate_hash,
-            "completed_at": event["occurred_at"],
-        }
-        if (
-            row["status"] != expected_status
-            or not isinstance(receipt, dict)
-            or set(receipt) != set(expected)
-            or any(receipt[key] != value for key, value in expected.items())
-        ):
-            raise StoredStateCorruptError(
-                "durable completion receipt does not match authoritative state"
             )
         return dict(receipt)
 
@@ -1093,14 +980,6 @@ class LeaseStore:
             row = self._task_row(connection, task_id)
             if row["status"] == "leased":
                 lease_expires_at = self._parse_time(row["lease_expires_at"])
-                if self._task_events(
-                    connection,
-                    task_id,
-                    kind="completed",
-                ):
-                    raise StoredStateCorruptError(
-                        "completed event exists but job row is not terminal"
-                    )
                 if now < lease_expires_at:
                     if (
                         expected_lease_id == row["lease_id"]
@@ -1452,7 +1331,7 @@ class LeaseStore:
         """Validate and persist one write-once S5 candidate under the job lock."""
         with self._transaction() as connection:
             operation_now = self._now()
-            accepted_at = self._time_text(operation_now)
+            operation_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
             if row["status"] != "leased":
                 raise StaleLeaseError("job is not under an active lease")
@@ -1523,22 +1402,11 @@ class LeaseStore:
                 )
                 receipt = metadata.get("candidate_receipt")
                 return self._durable_candidate_receipt(
-                    connection,
-                    row=row,
+                    job_id=grant["job_id"],
                     receipt=receipt,
                     result_sha256=result_sha256,
                     outcome=verified["outcome"],
-                )
-
-            if self._matching_events(
-                connection,
-                job_id,
-                kind="result_submitted",
-                lease_id=row["lease_id"],
-                fence=row["lease_fence"],
-            ):
-                raise StoredStateCorruptError(
-                    "result-submitted event exists but candidate row is empty"
+                    accepted_at=verified["completed_at"],
                 )
 
             if operation_now >= lease_expires_at:
@@ -1560,12 +1428,12 @@ class LeaseStore:
                 "job_id": grant["job_id"],
                 "result_sha256": result_sha256,
                 "outcome": verified["outcome"],
-                "accepted_at": accepted_at,
+                "accepted_at": verified["completed_at"],
             }
             metadata["candidate_result"] = verified
             metadata["candidate_receipt"] = receipt
             result_state_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
-            candidate_id = str(uuid.uuid4())
+            candidate_id = f"result:{result_sha256}"
             cursor = connection.execute(
                 """
                 UPDATE lease_tasks SET
@@ -1579,7 +1447,7 @@ class LeaseStore:
                     candidate_id,
                     result_sha256,
                     result_state_json,
-                    accepted_at,
+                    operation_at,
                     job_id,
                     row["lease_id"],
                     row["lease_fence"],
@@ -1595,7 +1463,7 @@ class LeaseStore:
                 kind="result_submitted",
                 lease_id=row["lease_id"],
                 fence=row["lease_fence"],
-                occurred_at=accepted_at,
+                occurred_at=operation_at,
                 content_sha256=result_sha256,
             )
             return dict(receipt)
@@ -1605,8 +1473,9 @@ class LeaseStore:
         job_id: str,
         *,
         expected: Mapping[str, Any],
+        blob_store: BlobStore | None = None,
     ) -> dict[str, Any]:
-        """Complete only the current lease's persisted validated candidate."""
+        """Revalidate and complete only the signed current-lease candidate."""
         expected_fields = {
             "lease_id",
             "lease_fence",
@@ -1620,51 +1489,27 @@ class LeaseStore:
             operation_now = self._now()
             completed_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
-            lease_expires_at: datetime | None = None
+            if row["status"] in _TERMINAL_STATUSES:
+                raise StoredStateCorruptError(
+                    "terminal completion replay has no cryptographic authority"
+                )
+            if row["status"] != "leased":
+                raise StaleLeaseError("job is not under an active lease")
+            grant = self._verified_lease_grant(row)
             if (
                 type(expected["lease_fence"]) is not int
-                or expected["lease_fence"] != row["lease_fence"]
+                or expected["lease_fence"] != grant["fence"]
             ):
                 raise StaleFenceError("completion fence is not current")
-            for key, column in (
-                ("lease_id", "lease_id"),
-                ("daemon_id", "lease_daemon_id"),
-                ("capsule_sha256", "capsule_sha256"),
-            ):
-                if expected[key] != row[column]:
+            for key in ("lease_id", "daemon_id", "capsule_sha256"):
+                if expected[key] != grant[key]:
                     raise StaleLeaseError(f"completion {key} does not match current lease")
-
-            completed_events = self._task_events(
-                connection,
-                job_id,
-                kind="completed",
-            )
-            if len(completed_events) > 1:
-                raise StoredStateCorruptError(
-                    "durable completion receipt does not match authoritative state"
-                )
-            if completed_events:
-                if row["status"] not in _TERMINAL_STATUSES:
-                    raise StoredStateCorruptError(
-                        "completed event exists but job row is not terminal"
-                    )
-            elif row["status"] in _TERMINAL_STATUSES:
-                raise StoredStateCorruptError(
-                    "durable completion receipt does not match authoritative state"
-                )
-            else:
-                if row["status"] != "leased":
-                    raise StaleLeaseError("job is not under an active lease")
-                lease_expires_at = self._parse_time(row["lease_expires_at"])
+            lease_expires_at = self._parse_time(grant["expires_at"])
 
             metadata = self._result_metadata(row)
             candidate_hash = row["candidate_result_sha256"]
             candidate = metadata.get("candidate_result")
             if candidate_hash is None:
-                if row["status"] in _TERMINAL_STATUSES:
-                    raise StoredStateCorruptError(
-                        "terminal job has no stored candidate content hash"
-                    )
                 raise ResultConflictError("completion has no stored candidate content hash")
             if type(candidate_hash) is not str or not _SHA256_RE.fullmatch(candidate_hash):
                 raise StoredStateCorruptError(
@@ -1677,59 +1522,44 @@ class LeaseStore:
                 candidate=candidate,
                 candidate_hash=candidate_hash,
             )
+            candidate_hash = candidate["signature"]["result_sha256"]
             if not hmac.compare_digest(expected["result_sha256"], candidate_hash):
                 raise ResultConflictError(
                     "completion result hash is not the stored candidate content hash"
                 )
-
-            submitted_events = self._matching_events(
-                connection,
-                job_id,
-                kind="result_submitted",
-                lease_id=row["lease_id"],
-                fence=row["lease_fence"],
-            )
-            if len(submitted_events) != 1:
-                raise StoredStateCorruptError(
-                    "candidate result ledger does not match authoritative state"
-                )
-            anchor_hash = submitted_events[0]["content_sha256"]
-            if (
-                type(anchor_hash) is not str
-                or not _SHA256_RE.fullmatch(anchor_hash)
-                or not hmac.compare_digest(candidate_hash, anchor_hash)
-            ):
-                raise StoredStateCorruptError(
-                    "stored candidate content hash does not match result ledger"
-                )
-
-            if row["status"] in _TERMINAL_STATUSES:
-                if row["accepted_result_sha256"] != candidate_hash:
-                    raise StoredStateCorruptError(
-                        "job finalized with another result hash"
-                    )
-                receipt = metadata.get("completion_receipt")
-                return self._durable_completion_receipt(
-                    connection,
-                    row=row,
-                    receipt=receipt,
-                    candidate_hash=candidate_hash,
-                    outcome=candidate.get("outcome"),
-                )
-
-            if lease_expires_at is None or operation_now >= lease_expires_at:
+            if operation_now >= lease_expires_at:
                 raise StaleLeaseError("job lease has expired")
-            candidate_id = row["candidate_result_id"]
-            if type(candidate_id) is not str or not candidate_id:
-                raise StoredStateCorruptError("durable candidate record is incomplete")
+            if not isinstance(blob_store, BlobStore):
+                raise CandidateValidationError(
+                    "completion requires the authoritative blob store"
+                )
+            try:
+                for blob_ref, sha256, size_bytes in result_blob_references(candidate):
+                    blob_store.validate_reference(
+                        blob_ref,
+                        owner_user_id=grant["owner_user_id"],
+                        job_id=grant["job_id"],
+                        lease_id=grant["lease_id"],
+                        fence=grant["fence"],
+                        expected_sha256=sha256,
+                        expected_size_bytes=size_bytes,
+                    )
+            except BlobError as exc:
+                raise CandidateValidationError(str(exc)) from exc
+
+            candidate_id = f"result:{candidate_hash}"
+            if row["candidate_result_id"] != candidate_id:
+                raise StoredStateCorruptError(
+                    "candidate result id does not match signed candidate"
+                )
             outcome = candidate.get("outcome")
             final_status = self._completion_status(outcome)
             receipt_request = {
-                "job_id": job_id,
-                "daemon_id": row["lease_daemon_id"],
-                "lease_id": row["lease_id"],
-                "fence": row["lease_fence"],
-                "capsule_sha256": row["capsule_sha256"],
+                "job_id": grant["job_id"],
+                "daemon_id": grant["daemon_id"],
+                "lease_id": grant["lease_id"],
+                "fence": grant["fence"],
+                "capsule_sha256": grant["capsule_sha256"],
                 "result_sha256": candidate_hash,
             }
             receipt = {
@@ -1747,7 +1577,8 @@ class LeaseStore:
                     status = ?, accepted_result_id = ?, accepted_result_sha256 = ?,
                     result_state_json = ?, updated_at = ?
                 WHERE task_id = ? AND status = 'leased' AND lease_id = ?
-                    AND lease_fence = ? AND candidate_result_sha256 = ?
+                    AND lease_fence = ? AND candidate_result_id = ?
+                    AND candidate_result_sha256 = ?
                     AND accepted_result_sha256 IS NULL
                 """,
                 (
@@ -1757,21 +1588,22 @@ class LeaseStore:
                     result_state_json,
                     completed_at,
                     job_id,
-                    row["lease_id"],
-                    row["lease_fence"],
+                    grant["lease_id"],
+                    grant["fence"],
+                    candidate_id,
                     candidate_hash,
                 ),
             )
             if cursor.rowcount != 1:
-                if lease_expires_at is not None and operation_now >= lease_expires_at:
+                if operation_now >= lease_expires_at:
                     raise StaleLeaseError("job lease has expired")
                 raise StaleLeaseError("completion lost the current lease CAS")
             self._append_event(
                 connection,
                 task_id=job_id,
                 kind="completed",
-                lease_id=row["lease_id"],
-                fence=row["lease_fence"],
+                lease_id=grant["lease_id"],
+                fence=grant["fence"],
                 occurred_at=completed_at,
             )
             return dict(receipt)
