@@ -614,34 +614,136 @@ def _try_check_always_allow(page) -> bool:
 _INLINE_ALWAYS_ALLOW_PROBE = r"""
 (() => {
   // Claude.ai's newer permission UX renders inline in the chat
-  // transcript (not a role=dialog modal). Strict gating to avoid
-  // random clicks: require both distinctive phrases on the page
-  // AND an exact-prefix "Always allow" button.
-  const allText = document.body ? (document.body.innerText || '') : '';
-  if (!/Claude wants to use/i.test(allText)) {
+  // transcript (not a role=dialog modal).
+  //
+  // The gate must be scoped to the CARD THAT OWNS THE BUTTON. Matching
+  // the brand against the whole page is unsound: a resolved TinyAssets
+  // card stays in the transcript DOM forever, so its stale text would
+  // vouch for a *different* connector's live card (Google Drive, Gmail)
+  // and we would click that card's "Always allow" — silently granting
+  // the model standing access to the host's account. Walk up from the
+  // button instead and require the prompt AND the brand inside its own
+  // card.
+  //
+  // The connector name is matched EXACTLY, never as a substring. The
+  // user-sim talks about TinyAssets constantly, so a Gmail card with
+  // "TinyAssets" in its displayed arguments — or a connector named
+  // "EvilTinyAssetsBackup" — would sail through a substring test.
+  //
+  // APPROVED_NAMES keeps the legacy "Universe Server" entry on purpose:
+  // this text is the user's install-time connector name in Claude.ai,
+  // which the repo-side rename to TinyAssets cannot change
+  // retroactively, and this harness drives an existing account. Because
+  // the match is exact, the entry can only ever match a connector named
+  // precisely "Universe Server". RETIREMENT: drop it once the host
+  // confirms no Claude.ai account used for user-sim still has a
+  // connector installed under the old name.
+  //
+  // Real card shape, from a browser capture (2026-04-14,
+  // output/claude_chat_failures/20260414T231328_response_timeout.txt):
+  //
+  //     Claude wants to use
+  //     Universe Operations      <- TOOL name
+  //     from
+  //     Universe Server          <- CONNECTOR name
+  //     Always allow
+  //
+  // The connector is the line after a standalone "from" line. Reading
+  // whatever follows "Claude wants to use" instead would capture the
+  // TOOL name — which the connector itself controls, so a hostile
+  // connector could publish a tool literally named "x from TinyAssets"
+  // and vouch for its own card.
+  const ASK = /Claude wants to use/i;
+  const ASK_ALL = /Claude wants to use/gi;
+  const FROM_CONNECTOR = /(?:^|\n)[ \t]*from[ \t]*\n[ \t]*([^\n]+)/gi;
+  // Older/simpler single-line shape, used only when no "from" line
+  // exists. Deliberately same-line ([ \t], not \s) so it cannot reach
+  // down to a tool name on the following line.
+  const ASK_INLINE = /Claude wants to use[ \t]+([^\n]+)/i;
+  const APPROVED_NAMES = [
+    'tinyassets',
+    'tinyassets server',
+    'universe server',
+  ];
+  const body = document.body;
+  if (!body || !ASK.test(body.innerText || '')) {
     return {found: false, reason: 'no permission card text'};
   }
-  if (!/TinyAssets(?: Server)?|Universe Server/i.test(allText)) {
-    return {found: false, reason: 'not TinyAssets Server card'};
-  }
-  const buttons = Array.from(document.querySelectorAll('button'));
-  const btn = buttons.find(b => {
-    const t = (b.innerText || '').trim();
-    return /^always allow\b/i.test(t) && b.offsetParent !== null;
-  });
-  if (!btn) {
+  const candidates = Array.from(document.querySelectorAll('button')).filter(
+    b => /^always allow\b/i.test((b.innerText || '').trim()) &&
+         b.offsetParent !== null
+  );
+  if (!candidates.length) {
     return {found: false, reason: 'no visible Always-allow button'};
   }
-  try {
-    btn.scrollIntoView({block: 'center'});
-    btn.click();
-    return {found: true, clicked: true, label: (btn.innerText||'').trim()};
-  } catch (e) {
-    return {found: true, clicked: false, label: (btn.innerText||'').trim(),
-            error: String(e)};
+  let reason = 'no visible Always-allow button';
+  let rejectedName = '';
+  for (const btn of candidates) {
+    // The card is the smallest ancestor carrying the permission prompt.
+    let card = btn.parentElement;
+    while (card && card !== body && card !== document.documentElement) {
+      if (ASK.test(card.innerText || '')) break;
+      card = card.parentElement;
+    }
+    if (!card || card === body || card === document.documentElement) {
+      reason = 'Always-allow button not inside a permission card';
+      continue;
+    }
+    const cardText = card.innerText || '';
+    // A scope spanning two prompts cannot attribute the brand to this
+    // button. Fail closed rather than guess which card it belongs to.
+    if ((cardText.match(ASK_ALL) || []).length !== 1) {
+      reason = 'ambiguous permission card (multiple prompts in scope)';
+      continue;
+    }
+    const froms = Array.from(cardText.matchAll(FROM_CONNECTOR));
+    let raw;
+    if (froms.length === 1) {
+      raw = froms[0][1];
+    } else if (froms.length === 0) {
+      const inline = cardText.match(ASK_INLINE);
+      raw = inline ? inline[1] : '';
+    } else {
+      reason = 'ambiguous permission card (multiple prompts in scope)';
+      continue;
+    }
+    // Whitespace-normalise only (this also folds NBSP and other Unicode
+    // spaces into ' '), then compare VERBATIM. Stripping punctuation
+    // would make a connector named "TinyAssets!" indistinguishable from
+    // ours.
+    const connector = raw.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (APPROVED_NAMES.indexOf(connector) === -1) {
+      reason = 'not TinyAssets Server card';
+      rejectedName = connector;
+      continue;
+    }
+    const label = (btn.innerText || '').trim();
+    try {
+      btn.scrollIntoView({block: 'center'});
+      btn.click();
+      return {found: true, clicked: true, label: label};
+    } catch (e) {
+      return {found: true, clicked: false, label: label, error: String(e)};
+    }
   }
+  return {found: false, reason: reason, name: rejectedName};
 })();
 """
+
+
+# Probe rejections worth telling the host about exactly once. These mean
+# "a visible Always-allow button existed and we deliberately refused it" —
+# either someone else's connector was on screen, or Claude.ai changed the
+# card DOM and our scoping no longer resolves. Both are invisible
+# otherwise, and a silently fail-closed gate is undiagnosable. The two
+# ordinary misses ("no permission card text", "no visible Always-allow
+# button") fire on every poll and are deliberately not listed.
+_INLINE_DIAGNOSTIC_REASONS = frozenset({
+    "not TinyAssets Server card",
+    "ambiguous permission card (multiple prompts in scope)",
+    "Always-allow button not inside a permission card",
+})
+_inline_reject_reasons_logged: set[str] = set()
 
 
 def _dismiss_inline_permission_card(page) -> int:
@@ -649,14 +751,34 @@ def _dismiss_inline_permission_card(page) -> int:
 
     The newer UX is NOT a modal (no role=dialog / aria-modal). It's an
     inline card in the chat transcript — which the dialog-scoped
-    selectors miss. Scoped to TinyAssets-Server cards only to avoid
-    random clicks. Returns 1 on click, 0 on no-op / miss.
+    selectors miss.
+
+    Only clicks a button whose *own* card names TinyAssets (or the
+    legacy "Universe Server" connector name), so another connector's
+    permission card is never granted on our behalf. Returns 1 on click,
+    0 on no-op / miss.
     """
     try:
         result = page.evaluate(_INLINE_ALWAYS_ALLOW_PROBE) or {}
     except Exception:
         return 0
     if not result.get("found"):
+        reason = str(result.get("reason", "") or "")
+        # Include the connector name we saw: if Claude.ai reshapes the
+        # card and our scoping stops resolving, this line is what makes
+        # it tunable instead of a silent stall.
+        name = str(result.get("name", "") or "")[:60]
+        key = f"{reason}|{name}"
+        if (
+            reason in _INLINE_DIAGNOSTIC_REASONS
+            and key not in _inline_reject_reasons_logged
+        ):
+            _inline_reject_reasons_logged.add(key)
+            detail = f"{reason}: {name}" if name else reason
+            _log_dialog_to_notepad(
+                f"refused Always-allow ({detail})", outcome="skipped",
+                tool_name="_dismiss_inline_permission_card",
+            )
         return 0
     label = str(result.get("label", "") or "Always allow")
     if result.get("clicked"):
