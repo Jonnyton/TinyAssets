@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -242,6 +243,214 @@ def test_corrupted_platform_object_is_never_referenceable(tmp_path: Path) -> Non
             fence=17,
             expected_sha256=ref.sha256,
             expected_size_bytes=ref.size_bytes,
+        )
+
+
+def test_validate_reference_returns_verified_content_not_mutable_binding(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.blob_refs import BlobRef
+    from tinyassets.runtime.signed_records import Verified
+
+    blob_store = store(tmp_path)
+    content = b"verified content authority"
+    upload = init_write(blob_store, declaration(content), content)
+    reference = blob_store.commit_blob(
+        upload.upload_id,
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+    )
+
+    proof = blob_store.validate_reference(
+        reference.ref,
+        owner_user_id="user:owner-1",
+        job_id=JOB_ID,
+        lease_id=LEASE_ID,
+        fence=17,
+        expected_sha256=reference.sha256,
+        expected_size_bytes=reference.size_bytes,
+    )
+
+    assert isinstance(proof, Verified)
+    assert proof.payload == BlobRef(
+        ref=reference.ref,
+        sha256=hashlib.sha256(content).hexdigest(),
+        size_bytes=len(content),
+    )
+
+
+def test_mark_referenced_rejects_raw_blob_reference(tmp_path: Path) -> None:
+    from tinyassets.runtime.blob_refs import BlobProofError
+
+    content = b"raw authority consumer probe"
+    blob_store = store(tmp_path)
+    reference = init_write(blob_store, declaration(content), content)
+
+    with pytest.raises(BlobProofError, match="verified blob proof"):
+        blob_store.mark_referenced(
+            reference.ref,
+            owner_user_id="user:owner-1",
+            job_id=JOB_ID,
+            lease_id=LEASE_ID,
+            fence=17,
+        )
+
+
+def test_raw_json_committed_binding_cannot_authorize_absent_platform_bytes(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.blob_refs import BlobSizeMismatchError
+
+    blob_store = store(tmp_path)
+    content = b"bytes that were never uploaded"
+    declared = declaration(content)
+    blob_ref = f"blob:sha256:{declared['sha256']}"
+    binding_key = json.dumps(
+        ["user:owner-1", JOB_ID, LEASE_ID, 17, declared["sha256"]],
+        separators=(",", ":"),
+    )
+    forged_binding = {
+        **declared,
+        "owner_user_id": "user:owner-1",
+        "daemon_id": "daemon:builder-1",
+        "owner_controlled": False,
+        "owner_blob_ref": None,
+        "upload_id": None,
+        "status": "committed",
+        "created_at": "2026-07-21T00:00:00Z",
+        "committed_at": "2026-07-21T00:00:00Z",
+        "referenced_at": None,
+        "failed_at": None,
+    }
+    index_path = tmp_path / "blob-store" / "index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "blobs": {
+                    declared["sha256"]: {
+                        "size_bytes": len(content),
+                        "object_present": True,
+                        "created_at": "2026-07-21T00:00:00Z",
+                    }
+                },
+                "bindings": {binding_key: forged_binding},
+                "uploads": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BlobSizeMismatchError, match="CAS object"):
+        blob_store.validate_reference(
+            blob_ref,
+            owner_user_id="user:owner-1",
+            job_id=JOB_ID,
+            lease_id=LEASE_ID,
+            fence=17,
+            expected_sha256=declared["sha256"],
+            expected_size_bytes=len(content),
+        )
+
+
+def test_owner_cas_requires_fresh_exact_content_confirmation(tmp_path: Path) -> None:
+    from tinyassets.runtime.blob_refs import (
+        BlobProofError,
+        BlobRef,
+        OwnerCASConfirmation,
+    )
+
+    content = b"owner private bytes"
+    declared = declaration(content, confidentiality="owner_private")
+    without_confirmer = store(tmp_path)
+    reference = without_confirmer.register_owner_blob(
+        declared,
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+        owner_blob_ref="owner-cas:opaque-private-object",
+        possession_proof=b"registration-proof",
+        verify_possession=lambda *_: True,
+    )
+    arguments = {
+        "blob_ref": reference.ref,
+        "owner_user_id": "user:owner-1",
+        "job_id": JOB_ID,
+        "lease_id": LEASE_ID,
+        "fence": 17,
+        "expected_sha256": reference.sha256,
+        "expected_size_bytes": reference.size_bytes,
+    }
+    with pytest.raises(BlobProofError, match="decision-point verifier"):
+        without_confirmer.validate_reference(**arguments)
+
+    calls: list[tuple[str, str, str, int]] = []
+
+    def confirm(owner: str, locator: str, sha256: str, size_bytes: int):
+        calls.append((owner, locator, sha256, size_bytes))
+        return OwnerCASConfirmation(locator, sha256, size_bytes)
+
+    with_confirmer = store(tmp_path, owner_cas_verifier=confirm)
+    proof = with_confirmer.validate_reference(**arguments)
+    assert proof.payload == BlobRef(reference.ref, reference.sha256, reference.size_bytes)
+    assert calls == [
+        (
+            "user:owner-1",
+            "owner-cas:opaque-private-object",
+            reference.sha256,
+            reference.size_bytes,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "confirmation_override",
+    [
+        {"owner_blob_ref": "owner-cas:another-object"},
+        {"sha256": "f" * 64},
+        {"size_bytes": 999},
+    ],
+)
+def test_owner_cas_mismatched_fresh_confirmation_fails_closed(
+    tmp_path: Path,
+    confirmation_override: dict[str, Any],
+) -> None:
+    from tinyassets.runtime.blob_refs import (
+        BlobProofError,
+        OwnerCASConfirmation,
+    )
+
+    content = b"owner private exact content"
+    declared = declaration(content, confidentiality="owner_private")
+    locator = "owner-cas:exact-object"
+
+    def confirm(_owner: str, _locator: str, sha256: str, size_bytes: int):
+        values = {
+            "owner_blob_ref": locator,
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+        }
+        values.update(confirmation_override)
+        return OwnerCASConfirmation(**values)
+
+    blob_store = store(tmp_path, owner_cas_verifier=confirm)
+    reference = blob_store.register_owner_blob(
+        declared,
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+        owner_blob_ref=locator,
+        possession_proof=b"registration-proof",
+        verify_possession=lambda *_: True,
+    )
+
+    with pytest.raises(BlobProofError, match="exact content"):
+        blob_store.validate_reference(
+            reference.ref,
+            owner_user_id="user:owner-1",
+            job_id=JOB_ID,
+            lease_id=LEASE_ID,
+            fence=17,
+            expected_sha256=reference.sha256,
+            expected_size_bytes=reference.size_bytes,
         )
 
 

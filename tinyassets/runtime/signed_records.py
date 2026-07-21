@@ -59,13 +59,16 @@ def _verified_contract():
     @final
     @dataclass(frozen=True, init=False)
     class Verified(Generic[T]):
-        """Frozen DML-proof wrapper minted after record verification."""
+        """Frozen proof wrapper minted after an authority mechanism verifies."""
 
         payload: T
 
         def __init__(self, payload: T, *, _token: object | None = None) -> None:
             if _token is not construction_token:
-                raise TypeError("Verified can only be constructed by RecordVerifier")
+                raise TypeError(
+                    "Verified can only be constructed by an authority verifier "
+                    "such as RecordVerifier"
+                )
             object.__setattr__(self, "payload", payload)
 
         def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -167,7 +170,7 @@ def _verified_contract():
                     raise StoredStateCorruptError(
                         "signed record specialized validation failed"
                     ) from exc
-            return Verified(MappingProxyType(payload), _token=construction_token)
+            return verified_after_mechanism_check(MappingProxyType(payload))
 
         def _matches(self, verify_key: VerifyKey) -> bool:
             return hmac.compare_digest(
@@ -175,10 +178,14 @@ def _verified_contract():
                 bytes(verify_key),
             )
 
-    return Verified, RecordVerifier
+    def verified_after_mechanism_check(payload: T) -> Verified[T]:
+        """Package-private mint seam for a completed authority check."""
+        return Verified(payload, _token=construction_token)
+
+    return Verified, RecordVerifier, verified_after_mechanism_check
 
 
-Verified, RecordVerifier = _verified_contract()
+Verified, RecordVerifier, _verified_after_mechanism_check = _verified_contract()
 
 
 def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

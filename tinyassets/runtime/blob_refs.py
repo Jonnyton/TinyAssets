@@ -25,6 +25,10 @@ from tinyassets.runtime.execution_capsule import (
     CapsuleSchemaError,
     reject_host_path_material,
 )
+from tinyassets.runtime.signed_records import (
+    Verified,
+    _verified_after_mechanism_check,
+)
 
 DEFAULT_MAX_BLOB_BYTES = 25 * 1024 * 1024
 DEFAULT_OWNER_BLOB_QUOTA_BYTES = 512 * 1024 * 1024
@@ -66,6 +70,24 @@ class BlobReference:
     owner_controlled: bool
 
 
+@dataclass(frozen=True)
+class BlobRef:
+    """Content identity proven from decision-time bytes or external authority."""
+
+    ref: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class OwnerCASConfirmation:
+    """Decision-time statement returned by an owner CAS authority adapter."""
+
+    owner_blob_ref: str
+    sha256: str
+    size_bytes: int
+
+
 class BlobError(ValueError):
     """Base class for explicit blob protocol rejection."""
 
@@ -103,6 +125,7 @@ class BlobProofError(BlobError):
 
 
 PossessionVerifier = Callable[[BlobDeclarationV1, str, bytes], bool]
+OwnerCASVerifier = Callable[[str, str, str, int], OwnerCASConfirmation]
 
 
 @dataclass
@@ -312,6 +335,7 @@ class BlobStore:
         owner_quota_bytes: int = DEFAULT_OWNER_BLOB_QUOTA_BYTES,
         daemon_quota_bytes: int = DEFAULT_DAEMON_BLOB_QUOTA_BYTES,
         unreferenced_ttl_seconds: int = DEFAULT_UNREFERENCED_TTL_SECONDS,
+        owner_cas_verifier: OwnerCASVerifier | None = None,
     ) -> None:
         self._coordinator = _shared_root_coordinator(Path(root))
         self._root = self._coordinator.root
@@ -330,6 +354,9 @@ class BlobStore:
         self._owner_quota_bytes = owner_quota_bytes
         self._daemon_quota_bytes = daemon_quota_bytes
         self._ttl = timedelta(seconds=unreferenced_ttl_seconds)
+        if owner_cas_verifier is not None and not callable(owner_cas_verifier):
+            raise BlobSchemaError("owner_cas_verifier must be callable")
+        self._owner_cas_verifier = owner_cas_verifier
         with self.serialization_guard():
             self._objects.mkdir(parents=True, exist_ok=True)
             self._uploads.mkdir(parents=True, exist_ok=True)
@@ -398,6 +425,32 @@ class BlobStore:
                 digest.update(chunk)
         if not hmac.compare_digest(digest.hexdigest(), sha256):
             raise BlobHashMismatchError("committed CAS object hash does not match metadata")
+
+    def _verify_owner_object(
+        self,
+        *,
+        owner_user_id: str,
+        owner_blob_ref: object,
+        sha256: str,
+        size_bytes: int,
+    ) -> None:
+        if type(owner_blob_ref) is not str or not owner_blob_ref:
+            raise BlobStateError("owner CAS locator is missing or malformed")
+        if self._owner_cas_verifier is None:
+            raise BlobProofError("owner CAS decision-point verifier is unavailable")
+        try:
+            confirmation = self._owner_cas_verifier(
+                owner_user_id,
+                owner_blob_ref,
+                sha256,
+                size_bytes,
+            )
+        except Exception as exc:
+            raise BlobProofError("owner CAS decision-point verification failed") from exc
+        if not isinstance(confirmation, OwnerCASConfirmation) or confirmation != (
+            OwnerCASConfirmation(owner_blob_ref, sha256, size_bytes)
+        ):
+            raise BlobProofError("owner CAS did not confirm exact content")
 
     def _reference_from_binding(self, binding: dict[str, Any]) -> BlobReference:
         return BlobReference(
@@ -706,8 +759,8 @@ class BlobStore:
         fence: int,
         expected_sha256: str,
         expected_size_bytes: int,
-    ) -> BlobReference:
-        """Resolve only an exact committed owner/job/lease/fence content binding."""
+    ) -> Verified[BlobRef]:
+        """Prove exact content after mutable bindings pass reject-only checks."""
         match = _BLOB_REF_RE.fullmatch(blob_ref) if type(blob_ref) is str else None
         if match is None:
             raise BlobSchemaError("blob_ref must be an opaque blob:sha256 reference")
@@ -737,13 +790,22 @@ class BlobStore:
                 raise BlobBindingError("blob belongs to a failed job")
             if binding["size_bytes"] != checked_size:
                 raise BlobBindingError("blob size does not match signed result")
-            if not binding["owner_controlled"]:
-                self._verify_platform_object(binding["sha256"], binding["size_bytes"])
-            return self._reference_from_binding(binding)
+            if binding["owner_controlled"]:
+                self._verify_owner_object(
+                    owner_user_id=owner,
+                    owner_blob_ref=binding.get("owner_blob_ref"),
+                    sha256=expected_sha256,
+                    size_bytes=checked_size,
+                )
+            else:
+                self._verify_platform_object(expected_sha256, checked_size)
+            return _verified_after_mechanism_check(
+                BlobRef(blob_ref, expected_sha256, checked_size)
+            )
 
     def mark_referenced(
         self,
-        blob_ref: str,
+        proof: Verified[BlobRef],
         *,
         owner_user_id: str,
         job_id: str,
@@ -751,15 +813,18 @@ class BlobStore:
         fence: int,
     ) -> None:
         """Retain a blob after a verified candidate result references it."""
-        match = _BLOB_REF_RE.fullmatch(blob_ref) if type(blob_ref) is str else None
-        if match is None:
-            raise BlobSchemaError("blob_ref must be an opaque blob:sha256 reference")
+        if not isinstance(proof, Verified) or not isinstance(proof.payload, BlobRef):
+            raise BlobProofError("mark_referenced requires a verified blob proof")
+        blob_ref = proof.payload.ref
+        match = _BLOB_REF_RE.fullmatch(blob_ref)
+        if match is None or match.group("sha256") != proof.payload.sha256:
+            raise BlobProofError("verified blob proof is internally inconsistent")
         key = _binding_key(
             owner_user_id=_opaque_id(owner_user_id, "owner_user_id"),
             job_id=_canonical_uuid(job_id, "job_id"),
             lease_id=_canonical_uuid(lease_id, "lease_id"),
             fence=_nonnegative_integer(fence, "fence"),
-            sha256=match.group("sha256"),
+            sha256=proof.payload.sha256,
         )
         with self._locked_index() as index:
             binding = index["bindings"].get(key)

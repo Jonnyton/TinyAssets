@@ -1729,7 +1729,7 @@ class LeaseStore:
                     expected_image_digest=grant["image_digest"],
                 )
                 references = result_blob_references(verified)
-                for blob_ref, sha256, size_bytes in references:
+                blob_proofs = tuple(
                     blob_store.validate_reference(
                         blob_ref,
                         owner_user_id=grant["owner_user_id"],
@@ -1739,6 +1739,8 @@ class LeaseStore:
                         expected_sha256=sha256,
                         expected_size_bytes=size_bytes,
                     )
+                    for blob_ref, sha256, size_bytes in references
+                )
             except (ExecutionResultError, BlobError) as exc:
                 raise CandidateValidationError(str(exc)) from exc
 
@@ -1785,9 +1787,9 @@ class LeaseStore:
                 raise StaleLeaseError("job lease has expired")
 
             try:
-                for blob_ref, _, _ in references:
+                for blob_proof in blob_proofs:
                     blob_store.mark_referenced(
-                        blob_ref,
+                        blob_proof,
                         owner_user_id=grant["owner_user_id"],
                         job_id=grant["job_id"],
                         lease_id=grant["lease_id"],
