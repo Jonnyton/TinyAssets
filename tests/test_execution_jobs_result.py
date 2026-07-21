@@ -26,6 +26,15 @@ from tests.test_execution_result import (
 from tinyassets.runtime.lease_store import StoredStateCorruptError, TaskNotFoundError
 
 
+def _authenticated_daemon(*, owner_user_id: str = "user:owner-1"):
+    return SimpleNamespace(
+        daemon_id="daemon:builder-1",
+        owner_user_id=owner_user_id,
+        key_thumbprint="device-key:builder-1",
+        credential_epoch=1,
+    )
+
+
 class MemoryAtomicJobStore:
     """In-memory AtomicJobResultStore fake. HAZARD (test-quality finding 8):
     this class re-implements the store's guard logic — a mock-level attack
@@ -57,6 +66,7 @@ class MemoryAtomicJobStore:
         verify_key,
         device_key_active: bool,
         blob_store,
+        authenticated_daemon,
     ) -> dict[str, Any]:
         from tinyassets.runtime.blob_refs import BlobError
         from tinyassets.runtime.execution_result import (
@@ -66,6 +76,7 @@ class MemoryAtomicJobStore:
         )
         from tinyassets.runtime.lease_store import (
             CandidateValidationError,
+            InvalidLeaseHolderError,
             ResultConflictError,
             StaleLeaseError,
         )
@@ -80,6 +91,21 @@ class MemoryAtomicJobStore:
                 raise StaleLeaseError("job is not under an active lease")
             if now >= expires_at:
                 raise StaleLeaseError("job lease has expired")
+            principal = (
+                getattr(authenticated_daemon, "daemon_id", None),
+                getattr(authenticated_daemon, "owner_user_id", None),
+                getattr(authenticated_daemon, "key_thumbprint", None),
+                getattr(authenticated_daemon, "credential_epoch", None),
+            )
+            if principal != (
+                state["daemon_id"],
+                state["owner_user_id"],
+                state["device_key_id"],
+                state["device_key_epoch"],
+            ):
+                raise InvalidLeaseHolderError(
+                    "signed lease grant differs from the authenticated daemon"
+                )
             required = (
                 "owner_user_id",
                 "device_key_id",
@@ -359,6 +385,7 @@ def submit_candidate(tmp_path: Path):
         verify_key=key.verify_key,
         device_key_active=True,
         blob_store=blob_store,
+        authenticated_daemon=_authenticated_daemon(),
         now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
     )
     return job_store, result, receipt
@@ -397,6 +424,7 @@ def test_candidate_crypto_attacks_map_to_typed_rejection(
             verify_key=verify_key,
             device_key_active=device_key_active,
             blob_store=blob_store,
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
 
@@ -442,6 +470,7 @@ def test_candidate_binding_attacks_map_to_typed_rejection(
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store,
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
 
@@ -469,6 +498,7 @@ def test_candidate_blob_binding_attack_maps_to_typed_rejection(tmp_path: Path) -
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store,
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
 
@@ -497,6 +527,7 @@ def test_candidate_replacement_maps_to_typed_conflict(tmp_path: Path) -> None:
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store_with_result_blobs(tmp_path / "replacement")[0],
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 33, tzinfo=UTC),
         )
 
@@ -651,6 +682,7 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         verify_key=key.verify_key,
         device_key_active=True,
         blob_store=blob_store,
+        authenticated_daemon=_authenticated_daemon(),
         now=datetime(2026, 7, 19, 0, 31, tzinfo=UTC),
     )
     request = dict(
@@ -690,6 +722,7 @@ def test_completion_rejects_stored_candidate_body_tamper(tmp_path: Path) -> None
         verify_key=key.verify_key,
         device_key_active=True,
         blob_store=blob_store,
+        authenticated_daemon=_authenticated_daemon(),
         now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
     )
     job_store.state["candidate_result"]["outcome"] = "succeeded"
@@ -847,6 +880,7 @@ def test_candidate_replay_to_another_job_binding_is_rejected(tmp_path: Path) -> 
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store,
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
 
@@ -872,6 +906,7 @@ def test_submit_maps_unknown_job_to_typed_404(tmp_path: Path) -> None:
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store,
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
     assert excinfo.value.code == "job_not_found"
@@ -928,6 +963,7 @@ def test_store_corruption_escapes_untyped(tmp_path: Path) -> None:
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store,
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
     request = {
@@ -1004,6 +1040,7 @@ def test_invalid_candidate_receipt_from_store_is_store_corruption(tmp_path: Path
             verify_key=key.verify_key,
             device_key_active=True,
             blob_store=blob_store,
+            authenticated_daemon=_authenticated_daemon(),
             now=datetime(2026, 7, 19, 0, 32, tzinfo=UTC),
         )
 

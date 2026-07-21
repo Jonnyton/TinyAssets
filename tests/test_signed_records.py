@@ -10,20 +10,65 @@ from nacl.signing import SigningKey
 
 import tinyassets.runtime.signed_records as signed_records_module
 from tinyassets.runtime.signed_records import (
+    LEASE_GRANT_DOMAIN_SEPARATOR,
     PlatformSigner,
     RecordVerifier,
     StoredStateCorruptError,
     Verified,
 )
 
-_DOMAIN = b"tinyassets.test-record.v1\0"
+_DOMAIN = LEASE_GRANT_DOMAIN_SEPARATOR
+
+
+def _payload(**changes):
+    payload = {
+        "schema_version": "lease-grant/v2",
+        "job_id": "job-1",
+        "owner_user_id": "user:owner-1",
+        "daemon_id": "daemon:builder-1",
+        "device_key_id": "device-key:builder-1",
+        "device_verify_key": "public-key",
+        "device_key_epoch": 1,
+        "lease_id": "lease-1",
+        "fence": 3,
+        "issued_at": "2026-07-19T12:00:00.000000Z",
+        "expires_at": "2026-07-19T12:02:00.000000Z",
+        "capsule_id": "capsule-1",
+        "capsule_sha256": "a" * 64,
+        "capability_class": "repo",
+        "repo_mode": "coding",
+        "runner_policy_sha256": "b" * 64,
+        "image_digest": f"sha256:{'c' * 64}",
+    }
+    payload.update(changes)
+    return payload
+
+
+def _row_bindings(payload):
+    return {
+        field: payload[field]
+        for field in (
+            "job_id",
+            "daemon_id",
+            "lease_id",
+            "fence",
+            "issued_at",
+            "expires_at",
+            "capsule_id",
+            "capsule_sha256",
+        )
+    }
+
+
+def _test_verifier(key) -> RecordVerifier:
+    return RecordVerifier(key.verify_key)
 
 
 def test_verified_is_frozen_and_public_construction_bypasses_are_refused() -> None:
     key = SigningKey.generate()
     signer = PlatformSigner(key)
-    verifier = RecordVerifier(key.verify_key)
-    payload = {"job_id": "job-1", "fence": 3}
+    verifier = _test_verifier(key)
+    payload = _payload()
     signed_json, signature = signer.sign(_DOMAIN, payload)
 
     with pytest.raises(TypeError, match="RecordVerifier"):
@@ -38,8 +83,7 @@ def test_verified_is_frozen_and_public_construction_bypasses_are_refused() -> No
         _DOMAIN,
         signed_json,
         signature,
-        payload,
-        unbound_fields=frozenset(),
+        _row_bindings(payload),
     )
 
     assert verified.payload == payload
@@ -72,8 +116,8 @@ def test_verified_custody_is_not_an_arbitrary_in_process_python_boundary() -> No
     """DML cannot mint proofs; arbitrary Python can bypass object/key privacy."""
     key = SigningKey.generate()
     signer = PlatformSigner(key)
-    verifier = RecordVerifier(key.verify_key)
-    payload = {"job_id": "outside", "fence": 9}
+    verifier = _test_verifier(key)
+    payload = _payload(job_id="outside", fence=9)
 
     forged = object.__new__(Verified)
     object.__setattr__(forged, "payload", payload)
@@ -89,35 +133,55 @@ def test_verified_custody_is_not_an_arbitrary_in_process_python_boundary() -> No
     )
 
 
-def test_record_verifier_rejects_omitted_signed_fields_unless_declared_unbound() -> None:
+def test_record_verifier_uses_contract_partitions_without_caller_accounting() -> None:
     key = SigningKey.generate()
     signer = PlatformSigner(key)
     verifier = RecordVerifier(key.verify_key)
-    payload = {"job_id": "job-1", "fence": 3, "capsule_id": "capsule-1"}
+    payload = _payload()
     signed_json, signature = signer.sign(_DOMAIN, payload)
-
-    with pytest.raises(
-        StoredStateCorruptError,
-        match="declared unbound",
-    ) as rejection:
-        verifier.verify(
-            _DOMAIN,
-            signed_json,
-            signature,
-            {"job_id": "job-1", "fence": 3},
-            unbound_fields=frozenset(),
-        )
-    print(f"OMITTED_SIGNED_FIELD_REJECTED: {rejection.value}")
 
     verified = verifier.verify(
         _DOMAIN,
         signed_json,
         signature,
-        {"job_id": "job-1", "fence": 3},
-        unbound_fields=frozenset({"capsule_id"}),
+        _row_bindings(payload),
     )
-
     assert verified.payload == payload
+
+    incomplete_payload = dict(payload)
+    del incomplete_payload["owner_user_id"]
+    incomplete_json, incomplete_signature = signer.sign(_DOMAIN, incomplete_payload)
+    with pytest.raises(StoredStateCorruptError, match="field contract") as rejection:
+        verifier.verify(
+            _DOMAIN,
+            incomplete_json,
+            incomplete_signature,
+            _row_bindings(payload),
+        )
+    print(f"OMITTED_SIGNED_FIELD_REJECTED: {rejection.value}")
+
+
+def test_domain_contract_rejects_unclassified_signed_field_even_if_caller_unbinds_it() -> None:
+    key = SigningKey.generate()
+    signer = PlatformSigner(key)
+    verifier = RecordVerifier(key.verify_key)
+    payload = _payload(future_authority="attacker-controlled")
+    row_bindings = _row_bindings(payload)
+    signed_json, signature = signer.sign(_DOMAIN, payload)
+    legacy_escape_hatch = {}
+    if "unbound_fields" in inspect.signature(verifier.verify).parameters:
+        legacy_escape_hatch["unbound_fields"] = frozenset(payload) - frozenset(
+            row_bindings
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="field contract"):
+        verifier.verify(
+            _DOMAIN,
+            signed_json,
+            signature,
+            row_bindings,
+            **legacy_escape_hatch,
+        )
 
 
 @pytest.mark.parametrize(
@@ -127,7 +191,7 @@ def test_record_verifier_rejects_omitted_signed_fields_unless_declared_unbound()
         ("duplicate_field", "malformed"),
         ("malformed_signature", "signature"),
         ("wrong_signature", "signature"),
-        ("wrong_domain", "signature"),
+        ("wrong_domain", "field contract"),
         ("row_binding", "row binding"),
     ],
 )
@@ -137,11 +201,11 @@ def test_record_verifier_fails_closed_for_every_untrusted_input(
 ) -> None:
     key = SigningKey.generate()
     signer = PlatformSigner(key)
-    verifier = RecordVerifier(key.verify_key)
-    payload = {"job_id": "job-1", "fence": 3}
+    verifier = _test_verifier(key)
+    payload = _payload()
     signed_json, signature = signer.sign(domain=_DOMAIN, payload=payload)
     domain = _DOMAIN
-    row_bindings = dict(payload)
+    row_bindings = _row_bindings(payload)
 
     if mutation == "malformed_json":
         signed_json = "{"
@@ -165,7 +229,6 @@ def test_record_verifier_fails_closed_for_every_untrusted_input(
             signed_json=signed_json,
             signature=signature,
             row_bindings=row_bindings,
-            unbound_fields=frozenset(),
         )
 
 

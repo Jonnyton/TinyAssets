@@ -39,8 +39,19 @@ _ROOT_LOCKS_GUARD = threading.Lock()
 _ROOT_LOCKS: dict[str, threading.RLock] = {}
 
 
+def _canonical_root_identity(root: Path) -> str:
+    """Return one lock key for ordinary and extended Windows path aliases."""
+    resolved = str(root.resolve())
+    folded = resolved.casefold()
+    if folded.startswith("\\\\?\\unc\\"):
+        resolved = "\\\\" + resolved[8:]
+    elif folded.startswith("\\\\?\\"):
+        resolved = resolved[4:]
+    return os.path.normcase(os.path.normpath(resolved))
+
+
 def _shared_root_lock(root: Path) -> threading.RLock:
-    key = os.path.normcase(str(root))
+    key = _canonical_root_identity(root)
     with _ROOT_LOCKS_GUARD:
         lock = _ROOT_LOCKS.get(key)
         if lock is None:
@@ -222,14 +233,22 @@ class BlobStore:
         self._owner_quota_bytes = owner_quota_bytes
         self._daemon_quota_bytes = daemon_quota_bytes
         self._ttl = timedelta(seconds=unreferenced_ttl_seconds)
-        self._objects.mkdir(parents=True, exist_ok=True)
-        self._uploads.mkdir(parents=True, exist_ok=True)
-        self._index = self._load_index()
+        with self._lock:
+            self._objects.mkdir(parents=True, exist_ok=True)
+            self._uploads.mkdir(parents=True, exist_ok=True)
+            self._index = self._load_index()
+
+    @contextlib.contextmanager
+    def _locked_index(self) -> Iterator[None]:
+        """Reload the shared index before reading or mutating it."""
+        with self._lock:
+            self._index = self._load_index()
+            yield
 
     @contextlib.contextmanager
     def completion_validation_guard(self) -> Iterator[None]:
         """Hold blob bindings stable through a caller's terminal commit."""
-        with self._lock:
+        with self._locked_index():
             yield
 
     def _load_index(self) -> dict[str, Any]:
@@ -345,7 +364,7 @@ class BlobStore:
             fence=declared["fence"],
             sha256=declared["sha256"],
         )
-        with self._lock:
+        with self._locked_index():
             existing = self._index["bindings"].get(key)
             if existing is not None:
                 if existing["daemon_id"] != daemon:
@@ -410,7 +429,7 @@ class BlobStore:
         _canonical_uuid(upload_id, "upload_id")
         if type(content) is not bytes:
             raise BlobSchemaError("upload content must be bytes")
-        with self._lock:
+        with self._locked_index():
             upload = self._index["uploads"].get(upload_id)
             if upload is None:
                 raise BlobStateError("unknown upload")
@@ -434,7 +453,7 @@ class BlobStore:
         _canonical_uuid(upload_id, "upload_id")
         owner = _opaque_id(owner_user_id, "owner_user_id")
         daemon = _opaque_id(daemon_id, "daemon_id")
-        with self._lock:
+        with self._locked_index():
             upload = self._index["uploads"].get(upload_id)
             if upload is None:
                 raise BlobStateError("unknown upload")
@@ -526,7 +545,7 @@ class BlobStore:
             fence=declared["fence"],
             sha256=declared["sha256"],
         )
-        with self._lock:
+        with self._locked_index():
             existing = self._index["bindings"].get(key)
             if existing is not None:
                 if existing["daemon_id"] != daemon:
@@ -602,7 +621,7 @@ class BlobStore:
             fence=checked_fence,
             sha256=expected_sha256,
         )
-        with self._lock:
+        with self._locked_index():
             binding = self._index["bindings"].get(key)
             if binding is None or binding["status"] != "committed":
                 raise BlobBindingError(
@@ -636,7 +655,7 @@ class BlobStore:
             fence=_nonnegative_integer(fence, "fence"),
             sha256=match.group("sha256"),
         )
-        with self._lock:
+        with self._locked_index():
             binding = self._index["bindings"].get(key)
             if binding is None or binding["status"] != "committed":
                 raise BlobBindingError("cannot retain an uncommitted blob binding")
@@ -650,7 +669,7 @@ class BlobStore:
         owner = _opaque_id(owner_user_id, "owner_user_id")
         job = _canonical_uuid(job_id, "job_id")
         stamp = _utc_text(failed_at)
-        with self._lock:
+        with self._locked_index():
             for binding in self._index["bindings"].values():
                 if binding["owner_user_id"] == owner and binding["job_id"] == job:
                     binding["failed_at"] = stamp
@@ -662,7 +681,7 @@ class BlobStore:
         if not isinstance(checked_at, datetime) or checked_at.tzinfo is None:
             raise BlobSchemaError("garbage collection time must be timezone-aware")
         checked_at = checked_at.astimezone(UTC)
-        with self._lock:
+        with self._locked_index():
             removed_upload_ids: set[str] = set()
             removed_refs: set[str] = set()
             for upload_id, upload in list(self._index["uploads"].items()):

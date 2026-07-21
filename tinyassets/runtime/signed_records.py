@@ -37,6 +37,97 @@ class StoredStateCorruptError(RuntimeError):
 T = TypeVar("T")
 
 
+@dataclass(frozen=True)
+class SignedFieldContract:
+    """Immutable accounting for every field signed under one domain."""
+
+    row_bound_fields: frozenset[str]
+    specialized_fields: frozenset[str]
+    inert_fields: frozenset[str]
+
+    def __post_init__(self) -> None:
+        partitions = (
+            self.row_bound_fields,
+            self.specialized_fields,
+            self.inert_fields,
+        )
+        if any(
+            type(partition) is not frozenset
+            or any(type(field) is not str or not field for field in partition)
+            for partition in partitions
+        ):
+            raise TypeError("signed field contract partitions must be frozensets of names")
+        if (
+            self.row_bound_fields & self.specialized_fields
+            or self.row_bound_fields & self.inert_fields
+            or self.specialized_fields & self.inert_fields
+        ):
+            raise ValueError("signed field contract partitions must not overlap")
+        if not self.fields:
+            raise ValueError("signed field contract must classify at least one field")
+
+    @property
+    def fields(self) -> frozenset[str]:
+        return self.row_bound_fields | self.specialized_fields | self.inert_fields
+
+
+LEASE_GRANT_DOMAIN_SEPARATOR = b"tinyassets.lease-grant.v2\0"
+COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = b"tinyassets.completion-attestation.v1\0"
+
+DEFAULT_SIGNED_FIELD_CONTRACTS = MappingProxyType(
+    {
+        LEASE_GRANT_DOMAIN_SEPARATOR: SignedFieldContract(
+            row_bound_fields=frozenset(
+                {
+                    "job_id",
+                    "daemon_id",
+                    "lease_id",
+                    "fence",
+                    "issued_at",
+                    "expires_at",
+                    "capsule_id",
+                    "capsule_sha256",
+                }
+            ),
+            specialized_fields=frozenset(
+                {
+                    "schema_version",
+                    "owner_user_id",
+                    "device_key_id",
+                    "device_verify_key",
+                    "device_key_epoch",
+                    "capability_class",
+                    "repo_mode",
+                    "runner_policy_sha256",
+                    "image_digest",
+                }
+            ),
+            inert_fields=frozenset(),
+        ),
+        COMPLETION_ATTESTATION_DOMAIN_SEPARATOR: SignedFieldContract(
+            row_bound_fields=frozenset({"job_id"}),
+            specialized_fields=frozenset(
+                {
+                    "schema_version",
+                    "receipt_id",
+                    "owner_user_id",
+                    "daemon_id",
+                    "lease_id",
+                    "fence",
+                    "capsule_id",
+                    "capsule_sha256",
+                    "result_id",
+                    "result_sha256",
+                    "status",
+                    "completed_at",
+                }
+            ),
+            inert_fields=frozenset(),
+        ),
+    }
+)
+
+
 def _verified_contract():
     construction_token = object()
 
@@ -83,11 +174,14 @@ def _verified_contract():
             signed_json: str,
             signature: str,
             row_bindings: Mapping[str, Any],
-            *,
-            unbound_fields: frozenset[str],
         ) -> Verified[Mapping[str, Any]]:
             if type(domain) is not bytes or not domain:
                 raise StoredStateCorruptError("signed record domain is malformed")
+            contract = DEFAULT_SIGNED_FIELD_CONTRACTS.get(domain)
+            if contract is None:
+                raise StoredStateCorruptError(
+                    "signed record domain has no immutable field contract"
+                )
             try:
                 if type(signed_json) is not str or type(signature) is not str:
                     raise TypeError
@@ -119,23 +213,18 @@ def _verified_contract():
                 raise StoredStateCorruptError(
                     "signed record row bindings are malformed"
                 )
-            if type(unbound_fields) is not frozenset or any(
-                type(field) is not str for field in unbound_fields
-            ):
-                raise StoredStateCorruptError(
-                    "signed record unbound fields are malformed"
-                )
             bound_fields = frozenset(row_bindings)
             if any(type(field) is not str for field in bound_fields):
                 raise StoredStateCorruptError(
                     "signed record row bindings are malformed"
                 )
-            if (
-                bound_fields & unbound_fields
-                or bound_fields | unbound_fields != frozenset(payload)
-            ):
+            if bound_fields != contract.row_bound_fields:
                 raise StoredStateCorruptError(
-                    "every signed record field must be row-bound or declared unbound"
+                    "signed record row bindings differ from its immutable field contract"
+                )
+            if frozenset(payload) != contract.fields:
+                raise StoredStateCorruptError(
+                    "signed record fields differ from its immutable field contract"
                 )
             for field, value in row_bindings.items():
                 if payload[field] != value:

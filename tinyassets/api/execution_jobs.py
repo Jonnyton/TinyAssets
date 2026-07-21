@@ -214,6 +214,7 @@ class AtomicJobResultStore(Protocol):
         verify_key: VerifyKey,
         device_key_active: bool,
         blob_store: BlobStore,
+        authenticated_daemon: AuthenticatedLeasePrincipal,
     ) -> dict[str, Any]: ...
 
     def complete_validated_result(
@@ -316,6 +317,7 @@ def submit_candidate_result(
     verify_key: VerifyKey,
     device_key_active: bool,
     blob_store: BlobStore,
+    authenticated_daemon: AuthenticatedLeasePrincipal,
     now: datetime,
 ) -> CandidateResultReceipt:
     """Verify and retain a candidate; this grants no repository effect authority."""
@@ -327,6 +329,7 @@ def submit_candidate_result(
             verify_key=verify_key,
             device_key_active=device_key_active,
             blob_store=blob_store,
+            authenticated_daemon=authenticated_daemon,
         )
     except StoreStoredStateCorruptError:
         raise  # durability violation: 500-class, never a client-typed error

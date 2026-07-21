@@ -47,6 +47,8 @@ from tinyassets.runtime.execution_result import (
     verify_execution_result,
 )
 from tinyassets.runtime.signed_records import (
+    COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
+    LEASE_GRANT_DOMAIN_SEPARATOR,
     PlatformSigner,
     RecordVerifier,
     StoredStateCorruptError,
@@ -69,9 +71,9 @@ _RESULT_OUTCOMES = frozenset(
     }
 )
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v2"
-_LEASE_GRANT_DOMAIN_SEPARATOR = b"tinyassets.lease-grant.v2\0"
+_LEASE_GRANT_DOMAIN_SEPARATOR = LEASE_GRANT_DOMAIN_SEPARATOR
 _LEASE_GRANT_FIELDS = frozenset(
     {
         "schema_version",
@@ -93,43 +95,13 @@ _LEASE_GRANT_FIELDS = frozenset(
         "image_digest",
     }
 )
-_LEASE_GRANT_UNBOUND_FIELDS = frozenset(
-    {
-        "schema_version",
-        "owner_user_id",
-        "device_key_id",
-        "device_verify_key",
-        "device_key_epoch",
-        "capability_class",
-        "repo_mode",
-        "runner_policy_sha256",
-        "image_digest",
-    }
-)
-
 _COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
-_COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = b"tinyassets.completion-attestation.v1\0"
+_COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = COMPLETION_ATTESTATION_DOMAIN_SEPARATOR
 _COMPLETION_ATTESTATION_FIELDS = frozenset(
     {
         "schema_version",
         "receipt_id",
         "job_id",
-        "owner_user_id",
-        "daemon_id",
-        "lease_id",
-        "fence",
-        "capsule_id",
-        "capsule_sha256",
-        "result_id",
-        "result_sha256",
-        "status",
-        "completed_at",
-    }
-)
-_COMPLETION_ATTESTATION_UNBOUND_FIELDS = frozenset(
-    {
-        "schema_version",
-        "receipt_id",
         "owner_user_id",
         "daemon_id",
         "lease_id",
@@ -159,6 +131,16 @@ _COMPLETION_ATTESTATION_TABLE = """
     )
 """
 _COMPLETION_ATTESTATION_TRIGGERS = {
+    "lease_completion_attestations_append_only_insert": """
+        CREATE TRIGGER lease_completion_attestations_append_only_insert
+        BEFORE INSERT ON lease_completion_attestations
+        WHEN EXISTS (
+            SELECT 1 FROM lease_completion_attestations
+            WHERE attestation_id = NEW.attestation_id
+        ) BEGIN
+            SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
+        END
+    """,
     "lease_completion_attestations_append_only_update": """
         CREATE TRIGGER lease_completion_attestations_append_only_update
         BEFORE UPDATE ON lease_completion_attestations BEGIN
@@ -169,6 +151,30 @@ _COMPLETION_ATTESTATION_TRIGGERS = {
         CREATE TRIGGER lease_completion_attestations_append_only_delete
         BEFORE DELETE ON lease_completion_attestations BEGIN
             SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
+        END
+    """,
+}
+
+_EVENT_TRIGGERS = {
+    "lease_events_append_only_insert": """
+        CREATE TRIGGER lease_events_append_only_insert
+        BEFORE INSERT ON lease_events
+        WHEN EXISTS (
+            SELECT 1 FROM lease_events WHERE event_id = NEW.event_id
+        ) BEGIN
+            SELECT RAISE(ABORT, 'lease_events is append-only');
+        END
+    """,
+    "lease_events_append_only_update": """
+        CREATE TRIGGER lease_events_append_only_update
+        BEFORE UPDATE ON lease_events BEGIN
+            SELECT RAISE(ABORT, 'lease_events is append-only');
+        END
+    """,
+    "lease_events_append_only_delete": """
+        CREATE TRIGGER lease_events_append_only_delete
+        BEFORE DELETE ON lease_events BEGIN
+            SELECT RAISE(ABORT, 'lease_events is append-only');
         END
     """,
 }
@@ -405,16 +411,6 @@ class LeaseStore:
                     occurred_at TEXT NOT NULL
                 );
 
-                CREATE TRIGGER IF NOT EXISTS lease_events_append_only_update
-                BEFORE UPDATE ON lease_events BEGIN
-                    SELECT RAISE(ABORT, 'lease_events is append-only');
-                END;
-
-                CREATE TRIGGER IF NOT EXISTS lease_events_append_only_delete
-                BEFORE DELETE ON lease_events BEGIN
-                    SELECT RAISE(ABORT, 'lease_events is append-only');
-                END;
-
                 """
             )
             self._migrate_schema(connection)
@@ -520,6 +516,16 @@ class LeaseStore:
                 raise StoredStateCorruptError(
                     "completion attestation table has an incompatible shape"
                 )
+            table_row = connection.execute(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' "
+                "AND name = 'lease_completion_attestations'"
+            ).fetchone()
+            if table_row is None or cls._normalized_schema_sql(
+                table_row["sql"]
+            ) != cls._normalized_schema_sql(_COMPLETION_ATTESTATION_TABLE):
+                raise StoredStateCorruptError(
+                    "completion attestation table has an incompatible definition"
+                )
 
             for name, definition in _COMPLETION_ATTESTATION_TRIGGERS.items():
                 schema_row = connection.execute(
@@ -527,7 +533,14 @@ class LeaseStore:
                     "AND tbl_name = 'lease_completion_attestations' AND name = ?",
                     (name,),
                 ).fetchone()
-                if version == 0 and schema_row is None:
+                if schema_row is None and (
+                    version == 0
+                    or (
+                        version < 4
+                        and name
+                        == "lease_completion_attestations_append_only_insert"
+                    )
+                ):
                     connection.execute(definition)
                     schema_row = connection.execute(
                         "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
@@ -559,6 +572,29 @@ class LeaseStore:
                 raise StoredStateCorruptError(
                     "lease event content hash column has an incompatible shape"
                 )
+
+            for name, definition in _EVENT_TRIGGERS.items():
+                schema_row = connection.execute(
+                    "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                    "AND tbl_name = 'lease_events' AND name = ?",
+                    (name,),
+                ).fetchone()
+                if schema_row is None and (
+                    version == 0
+                    or (version < 4 and name == "lease_events_append_only_insert")
+                ):
+                    connection.execute(definition)
+                    schema_row = connection.execute(
+                        "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                        "AND tbl_name = 'lease_events' AND name = ?",
+                        (name,),
+                    ).fetchone()
+                if schema_row is None or cls._normalized_schema_sql(
+                    schema_row["sql"]
+                ) != cls._normalized_schema_sql(definition):
+                    raise StoredStateCorruptError(
+                        f"lease event trigger {name!r} is malformed"
+                    )
 
             for name, definition in _EVENT_INDEXES.items():
                 if version == 0 or not cls._index_matches(connection, name):
@@ -731,7 +767,6 @@ class LeaseStore:
                 signed_json=row["lease_grant_json"],
                 signature=row["lease_grant_signature"],
                 row_bindings=row_bindings,
-                unbound_fields=_LEASE_GRANT_UNBOUND_FIELDS,
             )
         except StoredStateCorruptError as exc:
             if "signature" in str(exc):
@@ -1107,6 +1142,7 @@ class LeaseStore:
             now = self._now()
             now_text = self._time_text(now)
             row = self._task_row(connection, task_id)
+            self._require_generation_floor(connection, row)
             if row["status"] == "leased":
                 lease_expires_at = self._parse_time(row["lease_expires_at"])
                 if now < lease_expires_at:
@@ -1290,6 +1326,20 @@ class LeaseStore:
         if capsule_sha256 != row["capsule_sha256"]:
             raise StaleLeaseError("capsule hash is not current")
 
+    @staticmethod
+    def _require_generation_floor(
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> None:
+        high_water = connection.execute(
+            "SELECT MAX(fence) FROM lease_events WHERE task_id = ?",
+            (row["task_id"],),
+        ).fetchone()[0]
+        if high_water is not None and row["lease_fence"] < high_water:
+            raise StaleFenceError(
+                "lease generation is below the durable generation floor"
+            )
+
     def heartbeat(
         self,
         task_id: str,
@@ -1336,6 +1386,7 @@ class LeaseStore:
             now = self._now()
             now_text = self._time_text(now)
             row = self._task_row(connection, task_id)
+            self._require_generation_floor(connection, row)
             self._require_current_lease(
                 row,
                 daemon_id=daemon_id,
@@ -1456,16 +1507,28 @@ class LeaseStore:
         verify_key: VerifyKey,
         device_key_active: bool,
         blob_store: BlobStore,
+        authenticated_daemon: AuthenticatedLeasePrincipal,
     ) -> dict[str, Any]:
         """Validate and persist one write-once S5 candidate under the job lock."""
         with self._transaction() as connection:
             operation_now = self._now()
             operation_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
+            self._require_generation_floor(connection, row)
             if row["status"] != "leased":
                 raise StaleLeaseError("job is not under an active lease")
             lease_expires_at = self._parse_time(row["lease_expires_at"])
             grant = self._verified_lease_grant(row).payload
+            principal = self._grant_principal_values(authenticated_daemon)
+            if principal != (
+                grant["daemon_id"],
+                grant["owner_user_id"],
+                grant["device_key_id"],
+                grant["device_key_epoch"],
+            ):
+                raise InvalidLeaseHolderError(
+                    "signed lease grant differs from the authenticated daemon"
+                )
             grant_verify_key = self._active_grant_device_key(grant)
             if not isinstance(verify_key, VerifyKey) or not hmac.compare_digest(
                 bytes(verify_key), bytes(grant_verify_key)
@@ -1706,8 +1769,7 @@ class LeaseStore:
             raise StoredStateCorruptError(
                 "platform completion-attestation verification key is unavailable"
             )
-        verified_payloads: list[Mapping[str, Any]] = []
-        last_error: StoredStateCorruptError | None = None
+        verified_payloads: dict[bytes, Mapping[str, Any]] = {}
         for attestation_row in attestation_rows:
             try:
                 verified = self._record_verifier.verify(
@@ -1715,17 +1777,20 @@ class LeaseStore:
                     signed_json=attestation_row["signed_json"],
                     signature=attestation_row["signature"],
                     row_bindings={"job_id": row["task_id"]},
-                    unbound_fields=_COMPLETION_ATTESTATION_UNBOUND_FIELDS,
                 )
-            except StoredStateCorruptError as exc:
-                last_error = exc
+            except StoredStateCorruptError:
                 continue
-            verified_payloads.append(verified.payload)
-        if len(verified_payloads) != 1:
+            verified_payloads.setdefault(
+                hash_canonical_jcs(dict(verified.payload)),
+                verified.payload,
+            )
+        if not verified_payloads:
+            return None
+        if len(verified_payloads) > 1:
             raise StoredStateCorruptError(
-                "platform completion attestation is missing or invalid"
-            ) from last_error
-        payload = verified_payloads[0]
+                "distinct valid platform completion attestations conflict"
+            )
+        payload = next(iter(verified_payloads.values()))
         receipt = self._completion_attestation_receipt(row=row, payload=payload)
         if type(expected["lease_fence"]) is not int or expected["lease_fence"] != payload[
             "fence"
@@ -1822,6 +1887,7 @@ class LeaseStore:
             raise LeaseStoreError("completion expected bindings are malformed")
         with self._transaction() as connection:
             row = self._task_row(connection, job_id)
+            self._require_generation_floor(connection, row)
             replay = self._verified_completion_replay(
                 connection,
                 row=row,
@@ -1847,30 +1913,31 @@ class LeaseStore:
                 "completion signing and verification keys do not match"
             )
 
-        with blob_store.completion_validation_guard():
-            with self._transaction() as connection:
-                operation_now = self._now()
-                completed_at = self._time_text(operation_now)
-                row = self._task_row(connection, job_id)
-                replay = self._verified_completion_replay(
-                    connection,
-                    row=row,
-                    expected=expected,
-                )
-                if replay is not None:
-                    return replay
-                (
-                    grant,
-                    candidate,
-                    candidate_hash,
-                    candidate_id,
-                    metadata,
-                    lease_expires_at,
-                ) = self._validated_completion_candidate(
-                    row=row,
-                    expected=expected,
-                    operation_now=operation_now,
-                )
+        with self._transaction() as connection:
+            operation_now = self._now()
+            completed_at = self._time_text(operation_now)
+            row = self._task_row(connection, job_id)
+            self._require_generation_floor(connection, row)
+            replay = self._verified_completion_replay(
+                connection,
+                row=row,
+                expected=expected,
+            )
+            if replay is not None:
+                return replay
+            (
+                grant,
+                candidate,
+                candidate_hash,
+                candidate_id,
+                metadata,
+                lease_expires_at,
+            ) = self._validated_completion_candidate(
+                row=row,
+                expected=expected,
+                operation_now=operation_now,
+            )
+            with blob_store.completion_validation_guard():
                 try:
                     for blob_ref, sha256, size_bytes in result_blob_references(candidate):
                         blob_store.validate_reference(

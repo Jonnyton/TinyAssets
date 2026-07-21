@@ -421,3 +421,56 @@ def test_failed_unreferenced_blob_is_collected_after_ttl_and_index_survives_rest
             expected_sha256=ref.sha256,
             expected_size_bytes=ref.size_bytes,
         )
+
+
+def test_blob_store_lock_identity_collapses_windows_extended_path_alias(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.blob_refs import BlobStore
+
+    root = (tmp_path / "blob-store").resolve()
+    ordinary = BlobStore(root)
+    extended = BlobStore(f"\\\\?\\{root}")
+
+    assert ordinary._lock is extended._lock
+
+
+def test_two_live_blob_stores_do_not_lose_each_others_committed_bindings(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.blob_refs import BlobStore
+
+    root = tmp_path / "blob-store"
+    first = BlobStore(root)
+    second = BlobStore(root)
+    first_content = b"first concurrent binding"
+    first_decl = declaration(first_content)
+    first_upload = init_write(first, first_decl, first_content)
+    first_ref = first.commit_blob(
+        first_upload.upload_id,
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+    )
+    second_content = b"second concurrent binding"
+    second_decl = declaration(
+        second_content,
+        job_id="123e4567-e89b-42d3-a456-426614174099",
+    )
+    second_upload = init_write(second, second_decl, second_content)
+    second_ref = second.commit_blob(
+        second_upload.upload_id,
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+    )
+
+    restarted = BlobStore(root)
+    for ref, declared in ((first_ref, first_decl), (second_ref, second_decl)):
+        restarted.validate_reference(
+            ref.ref,
+            owner_user_id="user:owner-1",
+            job_id=declared["job_id"],
+            lease_id=declared["lease_id"],
+            fence=declared["fence"],
+            expected_sha256=ref.sha256,
+            expected_size_bytes=ref.size_bytes,
+        )

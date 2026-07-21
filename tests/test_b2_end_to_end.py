@@ -456,6 +456,7 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(tmp_path: Path) -> N
         verify_key=device_signing_key.verify_key,
         device_key_active=True,
         blob_store=blob_store,
+        authenticated_daemon=authenticated_daemon,
         now=now,
     )
     completion_request = {
