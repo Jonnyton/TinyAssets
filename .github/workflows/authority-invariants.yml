@@ -1,0 +1,135 @@
+name: authority-invariants
+
+# Gate policy:
+# - python-floor is BLOCKING: Python 3.11 is the declared floor, so syntax that
+#   only parses on a newer interpreter must never merge.
+# - authority-regression is BLOCKING: these suites exercise signed-record,
+#   forged/mutated-state, fenced-lease, and B2 end-to-end authority behavior.
+# - new-authority-read-advisory is ADVISORY: static syntax cannot prove whether
+#   a mutable read grants authority or only narrows/rejects it. Blocking on that
+#   heuristic would create routine false positives and train maintainers to
+#   ignore the signal.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - ".github/workflows/authority-invariants.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - ".github/workflows/authority-invariants.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: authority-invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-floor:
+    name: Blocking - Python ${{ matrix.python-version }} floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile every Python surface on the project floor
+        run: python -m compileall -q .
+
+  authority-regression:
+    name: Blocking - mutation probes and authority regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The full declared dependency set, not a hand-picked subset. A curated
+      # list rots silently and turns a blocking authority gate red for a reason
+      # unrelated to authority; correctness matters more here than install time.
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run signed-record, lease-store, and B2 security suites
+        run: |
+          python -m pytest \
+            tests/test_signed_records.py \
+            tests/test_lease_store.py \
+            tests/test_b2_end_to_end.py \
+            --basetemp="${RUNNER_TEMP}/authority-pytest"
+
+  new-authority-read-advisory:
+    name: Advisory - new authority sites reading mutable state
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Self-test the bounded heuristic
+        run: python scripts/check_authority_sites.py --self-test
+
+      - name: Resolve comparison commits
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          head="${{ github.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ] && \
+               [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            base="${{ github.event.before }}"
+          elif git rev-parse "${head}^" >/dev/null 2>&1; then
+            base="${head}^"
+          else
+            base="${head}"
+          fi
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+          echo "head=${head}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan added direct SQL reads at authority-shaped sites
+        run: |
+          python scripts/check_authority_sites.py \
+            --base "${{ steps.diff.outputs.base }}" \
+            --head "${{ steps.diff.outputs.head }}"
+
+      - name: Record why this job is advisory
+        if: always()
+        run: |
+          {
+            echo "### Advisory authority-site scan"
+            echo ""
+            echo "This is intentionally non-blocking. It detects only added literal"
+            echo "SELECT/PRAGMA calls in lexically authority-like Python functions."
+            echo "It cannot follow helper calls or prove whether a read grants authority"
+            echo "versus only narrowing/rejecting state; every finding needs review."
+          } >> "$GITHUB_STEP_SUMMARY"
