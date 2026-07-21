@@ -1514,3 +1514,43 @@ A vertical slice may claim its runnable proof while later rows remain open. Its 
 5. never describe “not needed for this slice” as “not needed for the program.”
 
 That is the binding meaning of the host decision: delivery is un-bundled; the vision is not.
+
+### 18.8 V1 delivery log (live)
+
+**Naming correction.** Session commit messages on `feat/patch-loop-leasestore-fix2` used the labels
+"V1"/"V2" for micro-slices. Those are **sub-slices of §18.2 slice V1**, not the program's V2/V3.
+The program numbering in §18.2 is authoritative; this log renumbers them as V1.1, V1.2, V1.3 to end
+the collision. No scope moved.
+
+| Sub-slice | Commit | What now runs | Proof |
+|---|---|---|---|
+| **V1.1** | `8da1d47e` | A persisted branch run becomes a B2 job and reaches signed terminal acceptance over real components — no mocks on the authority path. | `tests/test_b2_end_to_end.py` |
+| **V1.2** | `c7e53d89` | All 8 cross-family findings closed, each converted into a mutation-proven regression test rather than a review document (§18.6 rule). | focused suites green |
+| **V1.3** | `d838fb15` | A **real `run_graph` user path** creates the job: OAuth → universe ACL → persisted branch → public `run_graph` → job → signed terminal. Anchor also executed on actual CPython 3.11, closing the "never run on the floor version" residual. | e2e + `test_api_runs`, 354 passed |
+
+**In flight (dispatched 2026-07-21), not yet landed:**
+
+- **V1.4 — authenticated claim transport + composition root.** Today the claim/result/complete leg is
+  driven inline by the test; **no daemon has ever claimed a job over a transport**, and the run parks
+  as `no_eligible_external_daemon`. Adds `tinyassets/runtime/execution_plane.py` (composition root),
+  `tinyassets/api/execution_transport.py` (`:claim`/`:result`/`:complete` routes over the existing
+  `verify_headers` signed-request scheme), and a daemon-side signed client. Proof: the e2e anchor
+  drives that leg through a real ASGI request/response cycle, plus rejection cases (unauthenticated,
+  wrong-owner, replayed nonce).
+- **B05/B06** in worktree `wf-m1-denylist`, implementing
+  `output/s2-gate/codex-domain-contract-spec.md` exactly.
+- **Authority CI gates** in worktree `wf-authority-ci` (py311 floor job, security-suite job,
+  authority-site check).
+
+**New confirmed defect found while scoping V1.4 — add to the §18.5 ledger:**
+
+`tinyassets/api/runs.py::_create_host_daemon_job` constructs
+`LeaseStore(base_path / "leases.sqlite3")` with **no `key_registry` and no `record_verifier`**. The
+job the real user path creates today therefore could never be claimed or completed — the authority
+stack is absent at the only production construction site. This is the concrete cost of having no
+composition root, and it is exactly what V1.4 must fix. Status: **confirmed-unfixed**; exit criterion
+is that the production construction site is the same one the end-to-end anchor exercises.
+
+**Honest scope note.** V1.4 deliberately does **not** design the production trust root (where the real
+platform signing key lives, custody, rotation). That remains host-gated (§18.5 B22/B24/B25) and is
+listed here so it is not mistaken for delivered.
