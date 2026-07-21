@@ -186,6 +186,34 @@ loop: `idea-refine` (design-approval gate) -> `planning-and-task-breakdown` ->
 `code-simplification` carries the write-the-least-code ladder. All skills mirror
 into `.claude/skills/` and `.codex/skills/`.
 
+### Spec-driven development — OpenSpec is the standard [all providers]
+
+Host directive 2026-07-19: this project is spec-driven from here on.
+
+- **OpenSpec (`openspec/`) is the canonical spec system.**
+  `openspec/specs/<capability>/spec.md` is the as-built requirement truth for
+  each capability; `openspec/changes/<name>/` holds in-flight change proposals
+  (proposal / design / delta specs / tasks). The `openspec` skill drives the
+  lifecycle: explore → propose → apply → sync-specs → archive.
+- **Every substantive change starts as an OpenSpec change.** Behavior changes,
+  MCP/API surface, storage shapes, new capabilities, security posture — all get
+  a change with its `applyRequires` artifacts done before implementation.
+  `opsx:propose` fronts the core dev loop; `idea-refine` and
+  `spec-driven-development` remain the dependency-free fallback only where the
+  CLI is unavailable. Trivial mechanical work (typos, comment/doc formatting,
+  test-only fixes that change no behavior) needs no change.
+- **Touch it → spec it (backfill obligation).** Capabilities that predate
+  OpenSpec get their main spec backfilled by the
+  `spec-out-existing-platform` baseline; anything still unspecced gets its
+  spec written before or alongside its next substantive change.
+- **Sync and archive on land.** When a change's implementation lands, sync its
+  delta specs into `openspec/specs/` and archive the change in the same lane.
+  A landed change with unsynced deltas is spec drift — treat it like a failing
+  gate.
+- **Truth split stays.** `PLAN.md` owns architecture and principles (why the
+  system is shaped this way); `openspec/specs/` owns behavioral requirements
+  (what each capability does). Specs complement PLAN.md, never replace it.
+
 ### Multi-Session Steering
 
 - The user may steer multiple live sessions across different providers at once.
@@ -464,7 +492,7 @@ keeps the next provider's `claim_check.py` accurate.
 8. **Fail loudly, never silently.** Mock fallbacks that look like real output are worse than crashes.
 9. **User uploads are authoritative.** Preserved verbatim. Never summarize, truncate, or reformat.
 10. **Contributor attribution uses `CONTRIBUTORS.md`.** When a branch or node ships and `attribution_credit` rows exist, read `CONTRIBUTORS.md` to map each `actor_id` to a GitHub handle and emit `Co-Authored-By:` lines in the commit message. Format: `Co-Authored-By: Display Name <handle@users.noreply.github.com>`. If an actor_id is not in the table, skip silently — never block a commit on missing attribution.
-11. **Public-surface changes verify post-change.** After any edit to DNS records, Cloudflare tunnel config, GoDaddy Website Builder config, or any surface affecting `tinyassets.io`, run `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` (or `scripts/uptime_canary.py --once` when Layer-1 is wired) and confirm a green probe. For any change to the MCP tool surface or connector tool catalog, additionally run `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles` to confirm the live `/mcp` advertises exactly the five canonical handles (`read_graph`/`write_graph`/`run_graph`/`read_page`/`write_page`, plus optional `get_status`) — the PR-178 drift guard, so the user surface can never silently regress to the legacy fat tools. This canary is required evidence, not final chatbot-surface proof; MCP/chatbot-facing changes also require the rendered chatbot `ui-test` check above before final acceptance. Canonical public endpoint is `https://tinyassets.io/mcp` only. `mcp.tinyassets.io` is an Access-gated internal tunnel origin (host directive 2026-04-20) — it exists in DNS but is not user-facing; direct requests without the Worker's CF Access service-token headers return 401/403. Do not document or share `mcp.tinyassets.io` in user-facing contexts. The 2026-04-19 P0 outage (`docs/audits/2026-04-20-public-mcp-outage-postmortem.md`) landed when a tunnel reshuffle silently dropped a route — no commit touched the broken surface, so only a post-change out-of-band probe can catch this class. Named reference probes (including PROBE-001, the validated full-stack smoke): `docs/ops/acceptance-probe-catalog.md`.
+11. **Public-surface changes verify post-change.** After any edit to DNS records, Cloudflare tunnel config, GoDaddy Website Builder config, or any surface affecting `tinyassets.io`, run `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` (or `scripts/uptime_canary.py --once` when Layer-1 is wired) and confirm a green probe. For any change to the MCP tool surface or connector tool catalog, additionally run `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles` to confirm the live `/mcp` advertises exactly the canonical handle set (`read_graph`/`write_graph`/`run_graph`/`read_page`/`write_page`/`converse`, plus optional `get_status` — as-built truth: `openspec/specs/live-mcp-connector-surface/spec.md`, asserted by `CANONICAL_HANDLES` in the canary) — the PR-178 drift guard, so the user surface can never silently regress to the legacy fat tools. This canary is required evidence, not final chatbot-surface proof; MCP/chatbot-facing changes also require the rendered chatbot `ui-test` check above before final acceptance. Canonical public endpoint is `https://tinyassets.io/mcp` only. `mcp.tinyassets.io` is an Access-gated internal tunnel origin (host directive 2026-04-20) — it exists in DNS but is not user-facing; direct requests without the Worker's CF Access service-token headers return 401/403. Do not document or share `mcp.tinyassets.io` in user-facing contexts. The 2026-04-19 P0 outage (`docs/audits/2026-04-20-public-mcp-outage-postmortem.md`) landed when a tunnel reshuffle silently dropped a route — no commit touched the broken surface, so only a post-change out-of-band probe can catch this class. Named reference probes (including PROBE-001, the validated full-stack smoke): `docs/ops/acceptance-probe-catalog.md`.
 12. **Portfolio graph stays current.** Before changing public-facing docs, project status, repo structure, or lineage, inspect `PROJECT_GRAPH.yml` where present and the standards in `docs/portfolio/`. If the change affects how a project appears publicly, update the relevant manifest, `docs/project-lineage.md`, or portfolio index notes. Default stance is public-draft unless explicitly private, but public publishing remains gated by scan/review.
 13. **No destructive git ops without explicit approval.** Do not use `git reset --hard`, `git checkout --`, `git restore`, `git clean`, force-push, or stash/drop as cleanup or diagnostics unless the host explicitly asks for that operation. Do not switch a dirty worktree to `main`; create a clean main-based worktree/session for live-ready work.
 
