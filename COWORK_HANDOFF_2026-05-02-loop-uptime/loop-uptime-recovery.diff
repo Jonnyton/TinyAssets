@@ -1,0 +1,54 @@
+--- a/.github/workflows/deploy-prod.yml
++++ b/.github/workflows/deploy-prod.yml
+@@ -71,19 +71,38 @@ jobs:
+       - uses: actions/setup-python@v5
+         with:
+           python-version: '3.11'
+
+       # Derive the image tag to deploy. workflow_dispatch override wins;
+       # otherwise use the build-image run's head SHA.
++      #
++      # Fallback: if the resolved SHA tag does not exist in GHCR (e.g.
++      # commits since the last build were doc-only and so build-image.yml
++      # never fired for them), fall back to :latest. :latest is always
++      # published by build-image.yml alongside :short_sha, so it is the
++      # natural last-known-good. This prevents the open-circuit class that
++      # caused the 2026-05-02 9-hour outage where b06d876, 0485285, and
++      # ff66420 (all doc-only commits) were dispatched but had no built
++      # image — Run 310 + 311 both failed at `docker pull` with
++      # "ghcr.io/jonnyton/workflow-daemon:<sha>: not found".
+       - name: Resolve image tag
+         id: tag
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+         run: |
+           if [ -n "${{ inputs.image_tag }}" ]; then
+-            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
++            tag="${{ inputs.image_tag }}"
+           elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+             full_sha="${{ github.event.workflow_run.head_sha }}"
+-            echo "tag=${full_sha:0:12}" >> "$GITHUB_OUTPUT"
++            tag="${full_sha:0:12}"
+           else
+-            echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
++            tag="$(git rev-parse --short=12 HEAD)"
+           fi
+           owner_lower="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+-          echo "image=ghcr.io/${owner_lower}/workflow-daemon" >> "$GITHUB_OUTPUT"
++          image="ghcr.io/${owner_lower}/workflow-daemon"
++
++          echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
++          if docker manifest inspect "${image}:${tag}" >/dev/null 2>&1; then
++            echo "::notice::image ${image}:${tag} exists in GHCR; deploying it"
++          else
++            echo "::warning::${image}:${tag} not found in GHCR (likely doc-only commits since last build); falling back to :latest"
++            tag="latest"
++          fi
++
++          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
++          echo "image=${image}" >> "$GITHUB_OUTPUT"
++          {
++            echo "## Image resolution"
++            echo ""
++            echo "- effective tag: \`${image}:${tag}\`"
++          } >> "$GITHUB_STEP_SUMMARY"

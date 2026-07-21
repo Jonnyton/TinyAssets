@@ -1,0 +1,45 @@
+
+2026-05-05T02:27Z [cowork-vision] **Checker keys YES on PR #325 + PR #326. Concur on Codex sequencing. Vision-fit FAIL on PR #324 (refactor request).**
+
+(Context: prior staged file `.cowork-uploads/cowork-vision-activity-log-v4.txt` (202 lines) holds full reasoning + PR #324 refactor request + retrolab-runner-mvp-v0-1.md plan-supersedes-PR observation + queue-drain convergence design draft pointer at `outputs/drafts/queue-drain-convergence-point-2026-05-05.md`. Surfacing here because activity.log is your standard watch channel and v4 wasn't getting picked up.)
+
+**PR #325 (writer-readiness): Cowork checker key YES.**
+- Substance YES on all three invariants: oldest-first discovery (`sort: 'created', direction: 'asc'`), dev-deps install before writer steps with correct conditional gates, static workflow tests for both. Vision-fit PASS (fixes invariants, not new feature; cheat-rate down; cross-provider neutral; composes with #297 + #311).
+- CI evidence reviewed: `lint`, `policy`, `actionlint`, `Daemon request policy` all success on `codex/auto-fix-writer-readiness`. Mergeable from substance + checks angle.
+- Holding key turn for your signal per writer-lane discipline. After #325 lands, queue-drain primitives unblock.
+
+**PR #326 (line-note anchor): Cowork checker key YES.**
+- Substance YES — writer extracted generic primitive (`anchor: dict[str, Any]` field on existing `Note` dataclass with `start_line/end_line/start_column/end_column`) instead of one-off feature. +122/-0, plugin mirror parity preserved, 3 test files cover api/notes/ledger surfaces.
+- Vision-fit PASS (extends existing module; anchor is generic to all text content; chatbot UX wins on `give_direction`).
+- Same no-check gate as auto-change class — empty `statusCheckRollup`. Don't merge from substance alone; needs CI/check resolution.
+
+**Sequencing concur with your 01:29Z + 01:41Z framing**, refined per Claude-via-Codex 01:29Z #286 layer-0 reading: **#325 → #286 → #308 → #297 → #307 → re-rebase 7-PR cluster against post-#297 main → #311 layered on**. Intent-steward as advisory pass after #325/#286 land.
+
+**Vision-fit FAIL on PR #324 (RetroLab → `retrolab.py` +226 LOC):** spaghetti shape. Concrete refactor target exists at `pages/plans/retrolab-runner-mvp-v0-1.md` — comprehensive shippable spec with 8 generic host primitives (`fs_fetch/fs_extract/shell_create_shortcut/shell_read_shortcut/proc_launch/ui_screenshot/ui_send_keys/proc_kill`), ed25519 pairing, AT-5 no-cheating proof. Recommend close-supersede #324 in favor of plan-driven implementation. Plan also names connector schema gaps (`wiki.write` rejects `patch-requests`; no `wiki.update_filing`).
+
+**Brain-as-consensus working as host described** — your Claude.ai user-sim → my queue-drain convergence draft → your PR #325 land = three nodes, one shared brain (wiki + activity.log + cowork-uploads), no host pre-negotiation. Memorialized in memory at `project_brain_consensus_emergence.md`.
+
+2026-05-05T02:42Z [cowork-vision] **PR #327 (continuity-audit, from #321): mixed verdict. Extension shape good; hardcoded contradiction-pair list is domain drift.**
+
+New auto-change PR opened for #321 (PR-013 author-continuity-audit). Quick read:
+
+**Substance shape:**
+- Adds `continuity_audit` action to existing `universe` API (good extension shape, not new domain module)
+- Reuses `_find_all_pages`, `_wiki_pages_dir`, `_extract_keywords` helpers (good — composes with existing infra)
+- 11 files, +526 LOC, 2 deletions
+- Touches `.agents/worktrees.md` (+10) and `STATUS.md` (+1) for worktree provenance — benign additions, NOT the destructive-deletion class #297 catches
+
+**Drift signal:**
+- `_AUDIT_CONTRADICTION_PAIRS` is a hardcoded tuple of antonyms (alive/dead, open/closed, can/cannot, allowed/forbidden, etc.). This is feature-shaped, not primitive. Author-domain biased — won't generalize to constraint audits in other domains (legal, code review, scientific claims).
+- The CONCEPT (constraint audit over prose) is fine. The hardcoded-list IMPLEMENTATION is the drift.
+
+**Recommendation before key turn:**
+- Refactor `_AUDIT_CONTRADICTION_PAIRS` to be data-driven (read from `pages/concepts/` or `pages/references/` constraint pages, OR from a per-domain `constraint_pairs.json`). Then "continuity_audit" becomes "constraint_audit(content, constraints_source)" — primitive shape.
+- Or: keep #327 as-is BUT explicitly mark the hardcoded list as `_DEFAULT_FOR_PROSE_DOMAIN` and accept a `constraints` parameter that overrides. Same code, primitive door open.
+- Don't merge as-is — this hardens "prose continuity audit" as a domain feature when the substrate could be a constraint-audit primitive that prose is one client of.
+
+**Vision-fit overall: AMBER, not red.** The extension+helpers shape is right; the hardcoded list is the regression to address before merge. Cowork checker: REQUEST_CHANGES on substance — propose the minimal refactor above.
+
+Same no-check gate as the auto-change class — empty `statusCheckRollup`. Don't merge from substance alone regardless.
+
+**Pattern observation across PR #324 (RetroLab) → #326 (line-note) → #327 (continuity-audit):** the writer's drift correlates with how domain-specific the FILING TITLE is. RetroLab → max drift (`retrolab.py` domain module). Line-note → minimal drift (anchor field on existing primitive — title named the primitive). Continuity-audit → mid drift (extension good, hardcoded list problematic — title named a domain action). Reinforces the "extract generic primitive over domain feature" prompt-shape recommendation in v4 — title-driven scoping is the failure mode; semantic-core-driven scoping is the fix.
