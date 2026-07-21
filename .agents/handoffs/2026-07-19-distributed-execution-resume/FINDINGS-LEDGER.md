@@ -11,9 +11,154 @@ Lane artifacts land in `C:/Users/Jonathan/Projects/TinyAssets/output/s2-gate/`.
 
 ---
 
-## Live state (2026-07-20)
+## Live state (2026-07-20, NEWEST FIRST)
 
-**S2 fix-5 is COMMITTED at `eb793409`** on `feat/patch-loop-leasestore-fix2` — ledger-anchored
+**HOST PIVOT (2026-07-20): UNIFIED AUTHORITY-DERIVATION REARCHITECTURE.** After S2 hit round 5 and the
+systemic audit (`codex-systemic-event-authority-audit.md`) proved "authority from mutable/insertable DB
+state" is systemic (S3 identity/token, GitHub merge, paid-market, S4, S5), the host chose ONE unified
+authority-derivation model over surface-by-surface patches. Design running as diverse-perspective
+dual-family: `design-authority-codex` (primary, generalizes fix-9) + `design-authority-fable`
+(independent — simplest correct shape / where the abstraction leaks). Synthesize → host approval
+(PLAN.md-level) → build. **Live-vs-unwired staging mandatory:** S2/S4 unwired (safe); S3/WorkOS is LIVE,
+market + GitHub may be live → staged rollout + host go/no-go, never an autonomous dark-cut. fix-9 (S2
+lease-store) is the reference implementation and continues. Memory: [[unified-authority-derivation-rearchitecture]].
+
+**Designs landed → SYNTHESIS = Fable's three-mechanism scoping** (`design-authority-fable.md` >
+`design-authority-codex.md`). Both agree on the primitive (`Verified[T]` return type + verify-key
+CUSTODY as the structural lever + mutation-probe test gate + trust-root-first). They diverge on scope;
+Fable's is sharper and adopted: unify only **M1 platform-signed** surfaces (lease grant, completion
+attestation, enrollment approval, claim ownership) behind ONE `RecordVerifier`; keep **M2
+content-addressing** (blobs, git head_sha, digests) and **M3 external** (WorkOS JWT identity, GitHub
+approval, ledger-backed settlement) as SEPARATE verifiers sharing only the `Verified[T]` return type.
+Codex's total-unification would be a "false unification" — forcing WorkOS/hash/ledger into one signature
+constructor manufactures a needless, `never-infer-identity`-violating migration. Migration payoff: M2/M3
+migrate for FREE (no stored artifact to backfill); only M1-LIVE (S3 enrollment, market claim) need a
+bounded dual-verify window + host sign-off; WorkOS left untouched. Build order: trust-root/composition-root
+FIRST (the missing linchpin both flag) → M1 unwired (S2/S4) → M2/M3 tightening (defense-in-depth) →
+M1-live staged.
+
+**fix-9 dual-family gate = SPLIT (4th straight; Codex reject).** Fable approve (no 7th-axis leak). Codex
+reject: (1) mutable terminal-row RESET still permits accepted replay (fix = SIGNED terminal attestation,
+not reject-all); (2) blob re-validation is TOCTOU-open BEFORE the fenced CAS (fix = validate INSIDE the
+CAS txn). Both designs already prescribe both fixes. **`build-m1-foundation` (Codex, building)** builds
+the shared `signed_records.py` (`Verified[T]`+`RecordVerifier`+`PlatformSigner`), routes lease completion
+through it as the first consumer, AND closes both fix-9 gaps — the shape-independent foundation.
+**HOST APPROVED the Fable-scoped design 2026-07-20.** Proceeding autonomously: foundation + M1-unwired
+(S2/S4) + M2/M3 tightening (defense-in-depth). M1-LIVE (S3 enrollment, market claim) still returns for
+explicit per-surface staging sign-off (bounded dual-verify window); WorkOS untouched. PLAN.md design
+addition now authorized (record with the foundation commit).
+
+
+**S2 fix-7 is COMMITTED at `6c5ef4ec`** (worktree `wf-s2-fix2`, branch
+`feat/patch-loop-leasestore-fix2`, on top of fix-6 `eb4ab6f0`). Code+tests only — PLAN.md
+threat-model addition held for host approval. **Independently verified host-side before commit**
+(not the builder's report): 257 passed against the confirmed worktree code (integration venv,
+basetemp outside repo), ruff clean, vault CORE zero-diff, no tests deleted/skipped/xfailed.
+**Dual-family gate on `6c5ef4ec` = SPLIT → fix-8 BUILDING.** Fable **approve (scoped)** — no
+forge within the DML model, but flagged (a) `LeaseStore` has ZERO production callers (S2 unwired,
+no live forge yet), (b) S4 wiring must be a HARD gate on signing-key process isolation, (c)
+recommend enforcing the issuer/verifier split in code. Codex **reject** with TWO machine forges:
+(1) `COLOCATED_PRIVATE_KEY_FORGE` — the in-process signing key is readable (the S0 entanglement,
+not live yet since unwired); (2) **`POLICY_SELECTOR_FORGE_SUCCEEDED` — the decisive one**: fix-7
+closed the KEY selector but `capability_class`/`repo_mode`/`runner_policy_sha256`/`image_digest`
+are STILL read from mutable `result_state_json` (`lease_store.py:843,861`), so with the
+legitimately-granted device key an attacker doctors those selectors, signs a matching result, and
+completes. Fable had ruled these "out of scope / S5-S6 concern"; Codex forged with them. Opposite
+family caught it a 4th time.
+
+**fix-8 is COMMITTED at `de9f0843`** (code+tests only, PLAN.md held for host). The class-closing
+rebuild: completion derives EVERY positive acceptance input from a signed source (signed capsule /
+signed grant / device-signed candidate); mutable inputs (result_state_json, registry, row, events,
+receipts, clock, CAS) can only narrow/reject/enforce-durability, never authorize. The build AUDITED
+the whole acceptance path and found+closed a *5th* selector (`capsule_id`). Issuer/verifier split
+now enforced IN CODE (`LeaseGrantIssuer` owns the signing key + retains no store; `LeaseStore` is
+verify-key-only) — Fable's rec, making signing-key co-location a wiring-level impossibility.
+Independently verified host-side: 266 passed, ruff clean, vault zero-diff, no test weakened;
+POLICY_SELECTOR_FORGE RED→GREEN, 5 prior forges pass.
+
+**fix-8 dual-family gate = SPLIT (round 5) → fix-9 BUILDING.** Fable **approve** (every VALUE selector
+closed, no capsule swap, split real). Codex **reject** with 3 machine forges on a NEW axis —
+events/ids as authority, not values: (1) `RESULT_SUBMITTED_EVENT_AUTHORITY_RED` — completion trusts an
+insertable `result_submitted` event as proof blob-validation ran; a candidate referencing a NONEXISTENT
+blob was accepted (completion never re-validates blobs, `blob_refs.py:554` skipped at completion);
+(2) `MUTABLE_COMPLETION_AUTHORITY_RED` — `accepted_result_id` copied from an unsigned mutable row field
+(`lease_store.py:1722,1747`); terminal-replay selected by mutable status + insertable `completed` event +
+synthesized receipt (`:1637,941,971`). Both persisted a fabricated completion. Codex's inventory shows
+every VALUE selector IS closed — the remaining RED is a BOUNDED set of 3 on the event/validation/id axis,
+so this is fix-8 not covering that axis, not an unbounded wrong-shape regress. **fix-9** (building, Codex,
+`build-fix9-event-authority`): re-validate blobs at completion, derive `accepted_result_id` from the
+signature, make terminal authority cryptographic/CAS not event+status, demote `lease_events` to audit-only,
++ pin the capsule-key at the issuer (Codex UNVERIFIED residual). **Escalation rule set with host: if fix-9's
+gate ALSO splits, stop patching and reshape to a stateless signed-completion-bundle (no reconstruct-from-row)
+— bring to host before any fix-10.** 3 consecutive gates (fix-6/7/8) split with Codex rejecting what Fable
+cleared — the cross-family split is doing exactly its job.
+
+**S2↔S0 at S4 wiring:** both families agree fix-7's key isolation is only real once the platform
+key leaves the daemon process — the S0 remediation (dark-cut in-process exec + externalize key).
+That remediation touches the LIVE universe-engine exec path (`graph_compiler.py:1908-1951`), so it
+is a host-staging decision, NOT an autonomous dark-cut (Forever-Rule uptime). Live-safe staging
+plan in flight (wave-4).
+
+fix-7 shape: at authoritative lease grant the control plane signs a domain-separated Ed25519
+grant over (owner, daemon, device_key_id + public key + epoch, job, lease, fence, capsule
+id+hash, issued/expiry); completion resolves the verify key ONLY from that signed grant (via an
+out-of-band platform public key), never from mutable `result_state_json`. All four forges
+(registry, unsigned-singleton, signed-fabricated-generation, registry-row key substitution)
+reject RED→GREEN. Findings 2-4 also fixed (verify-before-compare ordering, candidate-replay
+reauth, parsed-datetime exact-expiry).
+
+**CRITICAL ENTANGLEMENT — S2 is bounded by S0 (both families confirm).** fix-7 closes the
+completion-*selector* forge, but its trust root (the grant-signing key) is only unreachable
+against a **DML-only** attacker. Per the confirmed S0 finding, platform KEKs sit in an
+**in-process** module global (`credential_broker._PRELOADED_KEY_PROVIDER._keys`,
+`credential_broker.py:166-207`) that any `source_code`-node `exec` can read
+(`graph_compiler.py:1908-1951`). So against the *documented* reality (user workload runs
+in-process), an in-process signing key is readable → the anchor is hollow. **Fully closing S2
+additionally requires the S0 remediation:** confine in-process user exec (per-job sandbox —
+`wf-sandbox-runner-design` lane) + move the platform signing/KEK key to a separate trust domain
+(sign-only OS keystore / distinct control-plane process / remote signer). fix-7 is a real scoped
+improvement (closes the selector forge for the DML model); it is NOT "S2 single-writer holds."
+Refs: `fable-fix7-requirement-preview.md` (#3/#4/#6), `fable-s0-invariant-confirm.md`,
+`codex-s0-remediation.md`. S0 remediation spec + dual-family review are in flight (wave-3).
+
+**Prior — fix-6 dual-family gate SPLIT** (Codex reject / Fable approve) triggered fix-7. The
+split *was* the finding: the opposite family caught a working exploit the other cleared.
+- **Codex reject (CRITICAL), machine-reproduced (`REAL_REGISTRY_FORGE_SUCCEEDED`):** fix-6
+  re-verifies the stored signature (correct) but reads `device_key_id`/epoch from *mutable*
+  `result_state_json` to choose which registry key verifies (`lease_store.py:569`, comparands
+  `:613`). Enrollment lookup returns key id/bytes/epoch with **no** job/lease/fence/owner
+  assignment (`daemon_enrollment.py:121,893`). So a row-doctor selects which *real enrolled*
+  key validates: sign a fabricated `(lease,fence)` with daemon B's genuine key while asserting
+  A, doctor `device_key_id`→B, INSERT the permitted singleton event, complete — every crypto
+  check passes. The registry proves "some active key," never "the platform assigned *this* key
+  to *this* generation." Codex also filed 3 lesser: (#2) verify-before-compare ordering still
+  misfiles stored corruption as a 409 (`:1323`); (#3) candidate-replay now returns success on a
+  corrupt durable body (retired guarantee, no same-path replacement); (#4) exact-expiry CAS is
+  lexically wrong for legacy variable-width timestamps (`:1400`).
+- **Fable approve:** confirmed the *old* forge fails, signature verify runs before completion,
+  no caller-supplied key *at completion*, server clock sampled after `BEGIN IMMEDIATE`. Missed
+  the selector — assumed "completion re-resolves from the registry" was safe, the exact thing
+  Codex falsified.
+- **This is the recurring defect class one layer deeper** (fix-5: attacker INSERTs a
+  fresh-generation anchor; fix-6: attacker *selects which key* validates). Third round, same
+  area ⇒ `no-users-build-correct-shape` trigger: structural rebuild, not a 4th selector patch.
+  fix-7 requirement: resolve the completion verify-key ONLY from a platform-established
+  `(job,lease,fence)→(daemon,key,epoch)` grant binding the completion caller can neither author
+  nor *select* — likely cryptographically anchored (attacker has DML: doctors rows, INSERTs
+  events). Ties S2 to the S3/S7-HIGH-2 gap (tokens/leases carry no such binding today). Codex is
+  the builder (`build-fix7-grant-binding.md`); Fable pre-reviews the direction while it builds.
+
+**Fleet infra fix (2026-07-20):** the supervisor had a dispatch race — it renamed each brief to
+`dispatched/` *after* `Popen`, so the child raced the rename and 9 auto-dispatched lanes died
+"cannot read prompt" (25 min of vacuous lanes). Fixed: rename-before-dispatch, point the child
+at the stable path (`fleet_supervisor.py::_dispatch`). Same vacuity class the program keeps
+finding in its own tests, caught in the orchestration layer.
+
+---
+
+### PRIOR: S2 fix-5 (SUPERSEDED by fix-6→fix-7)
+
+**S2 fix-5 was COMMITTED at `eb793409`** on `feat/patch-loop-leasestore-fix2` — ledger-anchored
 one-shot completion + taxonomy closure. Codex built it but its sandbox denied writes to the
 worktree git metadata, so the commit is host-side. Verification was **independently re-run
 before committing**, not taken from the builder's report: 156 passed focused; ruff clean on

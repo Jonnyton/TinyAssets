@@ -32,6 +32,7 @@ create `supervisor.stop` to request a clean shutdown.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import subprocess
@@ -110,6 +111,27 @@ def _next_brief(queue_root: Path, provider: str) -> Path | None:
 
 def _dispatch(brief: Path, provider: str, gate_dir: Path, queue_root: Path) -> bool:
     out_path = gate_dir / f"{brief.stem}.md"
+    directive = _parse_directive(brief)  # parse before moving the file
+
+    # Move the brief into dispatched/ BEFORE launching, and point the child at
+    # that stable path. Popen returns as soon as the process is spawned — long
+    # before the child interpreter starts and opens --prompt-file. If we renamed
+    # AFTER dispatch (the old order) the rename raced the child's read and the
+    # brief vanished from under it: observed 2026-07-20, 9 lanes died with
+    # "cannot read prompt: No such file or directory". Rename-first closes it.
+    dispatched = queue_root / "dispatched"
+    dispatched.mkdir(parents=True, exist_ok=True)
+    launch_path = dispatched / brief.name
+    try:
+        # os.replace (not Path.rename): atomic overwrite on BOTH platforms.
+        # Path.rename raises WinError 183 on Windows when a same-named brief is
+        # already in dispatched/ (a re-stocked/re-run brief), which wedged the
+        # dispatch loop on 2026-07-20. Overwrite instead — a re-run is fine.
+        os.replace(str(brief), str(launch_path))
+    except OSError as exc:
+        _log(queue_root, f"ERROR moving {brief.name} to dispatched: {exc}")
+        return False
+
     cmd = [
         sys.executable,
         str(_peer_agent()),
@@ -117,8 +139,8 @@ def _dispatch(brief: Path, provider: str, gate_dir: Path, queue_root: Path) -> b
         "--out",
         str(out_path),
         "--prompt-file",
-        str(brief),
-        *_parse_directive(brief),
+        str(launch_path),
+        *directive,
     ]
     try:
         subprocess.Popen(  # noqa: S603 - fixed argv, no shell
@@ -128,15 +150,13 @@ def _dispatch(brief: Path, provider: str, gate_dir: Path, queue_root: Path) -> b
             stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
+        try:  # dispatch failed — roll the brief back so it isn't lost
+            launch_path.rename(brief)
+        except OSError:
+            pass
         _log(queue_root, f"ERROR dispatching {brief.name}: {exc}")
         return False
 
-    dispatched = queue_root / "dispatched"
-    dispatched.mkdir(parents=True, exist_ok=True)
-    try:
-        brief.rename(dispatched / brief.name)
-    except OSError:
-        pass  # already launched; leaving it queued would double-dispatch
     _log(queue_root, f"dispatched {provider:<6} {brief.name} -> {out_path.name}")
     return True
 
@@ -159,7 +179,16 @@ def reconcile(queue_root: Path, gate_dir: Path, floors: dict[str, int]) -> dict:
                 )
                 break
             if not _dispatch(brief, provider, gate_dir, queue_root):
-                break
+                # A brief that can't be dispatched must NOT wedge the whole
+                # provider loop (2026-07-20: a dispatched/ name collision raised
+                # every cycle and stalled all lanes). Quarantine it, keep going.
+                failed = queue_root / "failed"
+                failed.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.replace(str(brief), str(failed / brief.name))
+                except OSError:
+                    pass
+                continue
             launched += 1
             time.sleep(1)  # let the process register before recounting
         summary[provider] = {"live": have, "launched": launched, "floor": want}
