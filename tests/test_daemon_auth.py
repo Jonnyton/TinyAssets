@@ -723,6 +723,7 @@ def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
         LeaseGrantIssuer,
         LeaseStore,
     )
+    from tinyassets.runtime.signed_records import PlatformSigner, RecordVerifier
 
     daemon_auth, _, service, signer, completed, token, now = auth_harness
     signed = _signed_request(
@@ -742,10 +743,10 @@ def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
     store = LeaseStore(
         tmp_path / "leases.sqlite3",
         key_registry=service,
-        grant_verify_key=grant_key.verify_key,
+        record_verifier=RecordVerifier(grant_key.verify_key),
     )
     issuer = LeaseGrantIssuer(
-        signing_key=grant_key,
+        platform_signer=PlatformSigner(grant_key),
         capsule_key=_capsule_key(grant_key),
         supported_request_schema_versions={3},
     )
@@ -768,7 +769,7 @@ def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
     with store._connect() as connection:
         grant = store._verified_lease_grant(
             store._task_row(connection, task.branch_task_id)
-        )
+        ).payload
     assert grant["job_id"] == task.branch_task_id
     assert grant["lease_id"] == lease.lease_id
     assert grant["fence"] == lease.fence

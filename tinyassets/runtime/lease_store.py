@@ -32,23 +32,25 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from nacl.exceptions import BadSignatureError
-from nacl.signing import SigningKey, VerifyKey
+from nacl.signing import VerifyKey
 
 from tinyassets.branch_tasks import SHARED_DEFAULT_WORKER_IDS, BranchTask
 from tinyassets.runtime.blob_refs import BlobError, BlobStore
 from tinyassets.runtime.execution_capsule import (
-    CapsuleCanonicalizationError,
     ExecutionCapsuleError,
     hash_canonical_jcs,
-    sign_domain_separated_ed25519,
-    verify_domain_separated_ed25519,
     verify_execution_capsule,
 )
 from tinyassets.runtime.execution_result import (
     ExecutionResultError,
     result_blob_references,
     verify_execution_result,
+)
+from tinyassets.runtime.signed_records import (
+    PlatformSigner,
+    RecordVerifier,
+    StoredStateCorruptError,
+    Verified,
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -67,7 +69,7 @@ _RESULT_OUTCOMES = frozenset(
     }
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v2"
 _LEASE_GRANT_DOMAIN_SEPARATOR = b"tinyassets.lease-grant.v2\0"
 _LEASE_GRANT_FIELDS = frozenset(
@@ -89,6 +91,26 @@ _LEASE_GRANT_FIELDS = frozenset(
         "repo_mode",
         "runner_policy_sha256",
         "image_digest",
+    }
+)
+
+_COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
+_COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = b"tinyassets.completion-attestation.v1\0"
+_COMPLETION_ATTESTATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "receipt_id",
+        "job_id",
+        "owner_user_id",
+        "daemon_id",
+        "lease_id",
+        "fence",
+        "capsule_id",
+        "capsule_sha256",
+        "result_id",
+        "result_sha256",
+        "status",
+        "completed_at",
     }
 )
 
@@ -152,12 +174,6 @@ class ResultConflictError(LeaseStoreError):
 
 class CandidateValidationError(LeaseStoreError):
     pass
-
-
-class StoredStateCorruptError(LeaseStoreError):
-    """Persisted state failed structural integrity (corrupt JSON, timestamps,
-    or records). This is a server-side durability failure — it must escape
-    untyped (500-class), never fold into a client-blame rejection/conflict."""
 
 
 @dataclass(frozen=True)
@@ -250,14 +266,16 @@ class LeaseStore:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         key_registry: DeviceKeyRegistry | None = None,
-        grant_verify_key: VerifyKey | None = None,
+        record_verifier: RecordVerifier | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self._clock = clock
         self._key_registry = key_registry
-        if grant_verify_key is not None and not isinstance(grant_verify_key, VerifyKey):
-            raise TypeError("grant_verify_key must be an Ed25519 VerifyKey")
-        self._grant_verify_key = grant_verify_key
+        if record_verifier is not None and not isinstance(
+            record_verifier, RecordVerifier
+        ):
+            raise TypeError("record_verifier must be a RecordVerifier")
+        self._record_verifier = record_verifier
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -321,6 +339,14 @@ class LeaseStore:
                     occurred_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS lease_completion_attestations (
+                    attestation_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL REFERENCES lease_tasks(task_id),
+                    signed_json TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE TRIGGER IF NOT EXISTS lease_events_append_only_update
                 BEFORE UPDATE ON lease_events BEGIN
                     SELECT RAISE(ABORT, 'lease_events is append-only');
@@ -329,6 +355,16 @@ class LeaseStore:
                 CREATE TRIGGER IF NOT EXISTS lease_events_append_only_delete
                 BEFORE DELETE ON lease_events BEGIN
                     SELECT RAISE(ABORT, 'lease_events is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS lease_completion_attestations_append_only_update
+                BEFORE UPDATE ON lease_completion_attestations BEGIN
+                    SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS lease_completion_attestations_append_only_delete
+                BEFORE DELETE ON lease_completion_attestations BEGIN
+                    SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
                 END;
                 """
             )
@@ -571,21 +607,43 @@ class LeaseStore:
             "image_digest": policy.image_digest,
         }
 
-    def _verified_lease_grant(self, row: sqlite3.Row) -> dict[str, Any]:
-        if self._grant_verify_key is None:
+    def _verified_lease_grant(
+        self,
+        row: sqlite3.Row,
+    ) -> Verified[Mapping[str, Any]]:
+        if self._record_verifier is None:
             raise StoredStateCorruptError(
                 "platform lease-grant verification key is unavailable"
             )
+        row_bindings = {
+            "job_id": row["task_id"],
+            "daemon_id": row["lease_daemon_id"],
+            "lease_id": row["lease_id"],
+            "fence": row["lease_fence"],
+            "issued_at": row["lease_issued_at"],
+            "expires_at": row["lease_expires_at"],
+            "capsule_id": row["capsule_id"],
+            "capsule_sha256": row["capsule_sha256"],
+        }
         try:
-            binding = json.loads(row["lease_grant_json"])
-            signature = base64.b64decode(
-                row["lease_grant_signature"], validate=True
+            verified = self._record_verifier.verify(
+                domain=_LEASE_GRANT_DOMAIN_SEPARATOR,
+                signed_json=row["lease_grant_json"],
+                signature=row["lease_grant_signature"],
+                row_bindings=row_bindings,
             )
-        except (TypeError, ValueError, json.JSONDecodeError, binascii.Error) as exc:
-            raise StoredStateCorruptError(
-                "platform lease grant is missing or malformed"
-            ) from exc
-        if type(binding) is not dict or frozenset(binding) != _LEASE_GRANT_FIELDS:
+        except StoredStateCorruptError as exc:
+            if "signature" in str(exc):
+                message = "platform lease grant signature is invalid"
+            elif "row binding" in str(exc):
+                message = (
+                    "platform lease grant does not match the current lease generation"
+                )
+            else:
+                message = "platform lease grant is missing or malformed"
+            raise StoredStateCorruptError(message) from exc
+        binding = verified.payload
+        if not isinstance(binding, Mapping) or frozenset(binding) != _LEASE_GRANT_FIELDS:
             raise StoredStateCorruptError(
                 "platform lease grant is missing or malformed"
             )
@@ -611,36 +669,6 @@ class LeaseStore:
             raise StoredStateCorruptError(
                 "platform lease grant is missing or malformed"
             )
-        try:
-            verify_domain_separated_ed25519(
-                hash_canonical_jcs(binding),
-                signature,
-                domain_separator=_LEASE_GRANT_DOMAIN_SEPARATOR,
-                verify_key=self._grant_verify_key,
-            )
-        except (
-            BadSignatureError,
-            CapsuleCanonicalizationError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            raise StoredStateCorruptError(
-                "platform lease grant signature is invalid"
-            ) from exc
-        row_bindings = {
-            "job_id": row["task_id"],
-            "daemon_id": row["lease_daemon_id"],
-            "lease_id": row["lease_id"],
-            "fence": row["lease_fence"],
-            "issued_at": row["lease_issued_at"],
-            "expires_at": row["lease_expires_at"],
-            "capsule_id": row["capsule_id"],
-            "capsule_sha256": row["capsule_sha256"],
-        }
-        if any(binding[field] != value for field, value in row_bindings.items()):
-            raise StoredStateCorruptError(
-                "platform lease grant does not match the current lease generation"
-            )
         self._parse_time(binding["issued_at"])
         self._parse_time(binding["expires_at"])
         self._grant_device_verify_key(binding)
@@ -657,7 +685,7 @@ class LeaseStore:
             raise StoredStateCorruptError(
                 "platform lease grant is missing or malformed"
             ) from exc
-        return binding
+        return verified
 
     @staticmethod
     def _grant_device_verify_key(binding: Mapping[str, Any]) -> VerifyKey:
@@ -806,7 +834,7 @@ class LeaseStore:
         candidate: dict[str, Any],
         candidate_hash: str,
     ) -> dict[str, Any]:
-        grant = self._verified_lease_grant(row)
+        grant = self._verified_lease_grant(row).payload
         device_key_id = grant["device_key_id"]
         grant_verify_key = self._active_grant_device_key(grant)
         try:
@@ -986,7 +1014,7 @@ class LeaseStore:
                         and clean_daemon == row["lease_daemon_id"]
                     ):
                         if authenticated_daemon is not None:
-                            grant = self._verified_lease_grant(row)
+                            grant = self._verified_lease_grant(row).payload
                             principal = self._grant_principal_values(
                                 authenticated_daemon
                             )
@@ -1236,7 +1264,7 @@ class LeaseStore:
                     raise LeaseStoreError(
                         "authenticated lease heartbeat requires grant issuer"
                     )
-                grant = self._verified_lease_grant(row)
+                grant = dict(self._verified_lease_grant(row).payload)
                 grant["expires_at"] = expires_at
                 grant_json, grant_signature = grant_issuer._encode_lease_grant(grant)
             cursor = connection.execute(
@@ -1336,7 +1364,7 @@ class LeaseStore:
             if row["status"] != "leased":
                 raise StaleLeaseError("job is not under an active lease")
             lease_expires_at = self._parse_time(row["lease_expires_at"])
-            grant = self._verified_lease_grant(row)
+            grant = self._verified_lease_grant(row).payload
             grant_verify_key = self._active_grant_device_key(grant)
             if not isinstance(verify_key, VerifyKey) or not hmac.compare_digest(
                 bytes(verify_key), bytes(grant_verify_key)
@@ -1468,14 +1496,219 @@ class LeaseStore:
             )
             return dict(receipt)
 
+    def _completion_attestation_receipt(
+        self,
+        *,
+        row: sqlite3.Row,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if frozenset(payload) != _COMPLETION_ATTESTATION_FIELDS:
+            raise StoredStateCorruptError(
+                "platform completion attestation is missing or malformed"
+            )
+        required_strings = _COMPLETION_ATTESTATION_FIELDS - {"fence"}
+        if any(
+            type(payload.get(field)) is not str or not payload[field]
+            for field in required_strings
+        ) or type(payload.get("fence")) is not int:
+            raise StoredStateCorruptError(
+                "platform completion attestation is missing or malformed"
+            )
+        if (
+            payload["schema_version"] != _COMPLETION_ATTESTATION_SCHEMA_VERSION
+            or payload["fence"] < 1
+            or payload["status"] not in _TERMINAL_STATUSES
+            or not _SHA256_RE.fullmatch(payload["capsule_sha256"])
+            or not _SHA256_RE.fullmatch(payload["result_sha256"])
+            or payload["result_id"] != f"result:{payload['result_sha256']}"
+        ):
+            raise StoredStateCorruptError(
+                "platform completion attestation is missing or malformed"
+            )
+        self._parse_time(payload["completed_at"])
+        receipt_request = {
+            "job_id": payload["job_id"],
+            "daemon_id": payload["daemon_id"],
+            "lease_id": payload["lease_id"],
+            "fence": payload["fence"],
+            "capsule_sha256": payload["capsule_sha256"],
+            "result_sha256": payload["result_sha256"],
+        }
+        expected_receipt_id = f"completion:{hash_canonical_jcs(receipt_request).hex()}"
+        if payload["receipt_id"] != expected_receipt_id:
+            raise StoredStateCorruptError(
+                "platform completion attestation receipt id is invalid"
+            )
+        receipt = {
+            "receipt_id": payload["receipt_id"],
+            "job_id": payload["job_id"],
+            "status": payload["status"],
+            "accepted_result_sha256": payload["result_sha256"],
+            "completed_at": payload["completed_at"],
+        }
+        metadata = self._result_metadata(row)
+        stored_receipt = metadata.get("completion_receipt")
+        if not isinstance(stored_receipt, dict) or stored_receipt != receipt:
+            raise StoredStateCorruptError(
+                "durable completion receipt does not match signed attestation"
+            )
+        if row["status"] in _TERMINAL_STATUSES:
+            if row["status"] != payload["status"]:
+                raise StoredStateCorruptError(
+                    "terminal row status does not match signed attestation"
+                )
+        elif row["status"] != "leased":
+            raise StoredStateCorruptError(
+                "terminal row reset is inconsistent with signed attestation"
+            )
+        resettable_row_vetoes = {
+            "accepted_result_id": payload["result_id"],
+            "accepted_result_sha256": payload["result_sha256"],
+        }
+        for field, expected_value in resettable_row_vetoes.items():
+            row_value = row[field]
+            if row_value is not None and row_value != expected_value:
+                raise StoredStateCorruptError(
+                    f"terminal row {field} does not match signed attestation"
+                )
+        required_row_bindings = {
+            "candidate_result_id": payload["result_id"],
+            "candidate_result_sha256": payload["result_sha256"],
+            "lease_id": payload["lease_id"],
+            "lease_fence": payload["fence"],
+            "lease_daemon_id": payload["daemon_id"],
+            "capsule_id": payload["capsule_id"],
+            "capsule_sha256": payload["capsule_sha256"],
+        }
+        for field, expected_value in required_row_bindings.items():
+            if row[field] != expected_value:
+                raise StoredStateCorruptError(
+                    f"terminal row {field} does not match signed attestation"
+                )
+        return receipt
+
+    def _verified_completion_replay(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        expected: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        attestation_rows = connection.execute(
+            "SELECT signed_json, signature FROM lease_completion_attestations "
+            "WHERE task_id = ? ORDER BY attestation_id",
+            (row["task_id"],),
+        ).fetchall()
+        if not attestation_rows:
+            return None
+        if self._record_verifier is None:
+            raise StoredStateCorruptError(
+                "platform completion-attestation verification key is unavailable"
+            )
+        verified_payloads: list[Mapping[str, Any]] = []
+        last_error: StoredStateCorruptError | None = None
+        for attestation_row in attestation_rows:
+            try:
+                verified = self._record_verifier.verify(
+                    domain=_COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
+                    signed_json=attestation_row["signed_json"],
+                    signature=attestation_row["signature"],
+                    row_bindings={"job_id": row["task_id"]},
+                )
+            except StoredStateCorruptError as exc:
+                last_error = exc
+                continue
+            verified_payloads.append(verified.payload)
+        if len(verified_payloads) != 1:
+            raise StoredStateCorruptError(
+                "platform completion attestation is missing or invalid"
+            ) from last_error
+        payload = verified_payloads[0]
+        receipt = self._completion_attestation_receipt(row=row, payload=payload)
+        if type(expected["lease_fence"]) is not int or expected["lease_fence"] != payload[
+            "fence"
+        ]:
+            raise StaleFenceError("completion fence is not current")
+        for key in ("lease_id", "daemon_id", "capsule_sha256"):
+            if expected[key] != payload[key]:
+                raise StaleLeaseError(f"completion {key} does not match signed attestation")
+        if expected["result_sha256"] != payload["result_sha256"]:
+            raise ResultConflictError(
+                "completion result hash does not match signed attestation"
+            )
+        return receipt
+
+    def _validated_completion_candidate(
+        self,
+        *,
+        row: sqlite3.Row,
+        expected: Mapping[str, Any],
+        operation_now: datetime,
+    ) -> tuple[Mapping[str, Any], dict[str, Any], str, str, dict[str, Any], datetime]:
+        if row["status"] in _TERMINAL_STATUSES:
+            raise StoredStateCorruptError(
+                "terminal completion replay has no valid signed attestation"
+            )
+        if row["status"] != "leased":
+            raise StaleLeaseError("job is not under an active lease")
+        grant = self._verified_lease_grant(row).payload
+        if (
+            type(expected["lease_fence"]) is not int
+            or expected["lease_fence"] != grant["fence"]
+        ):
+            raise StaleFenceError("completion fence is not current")
+        for key in ("lease_id", "daemon_id", "capsule_sha256"):
+            if expected[key] != grant[key]:
+                raise StaleLeaseError(f"completion {key} does not match current lease")
+        lease_expires_at = self._parse_time(grant["expires_at"])
+        metadata = self._result_metadata(row)
+        if metadata.get("completion_receipt") is not None:
+            raise StoredStateCorruptError(
+                "reset completion row has no valid signed attestation"
+            )
+        candidate_hash = row["candidate_result_sha256"]
+        candidate = metadata.get("candidate_result")
+        if candidate_hash is None:
+            raise ResultConflictError("completion has no stored candidate content hash")
+        if type(candidate_hash) is not str or not _SHA256_RE.fullmatch(candidate_hash):
+            raise StoredStateCorruptError("stored candidate content hash is malformed")
+        if not isinstance(candidate, dict):
+            raise StoredStateCorruptError("stored candidate body is missing or malformed")
+        candidate = self._verify_stored_candidate(
+            row=row,
+            candidate=candidate,
+            candidate_hash=candidate_hash,
+        )
+        candidate_hash = candidate["signature"]["result_sha256"]
+        if not hmac.compare_digest(expected["result_sha256"], candidate_hash):
+            raise ResultConflictError(
+                "completion result hash is not the stored candidate content hash"
+            )
+        if operation_now >= lease_expires_at:
+            raise StaleLeaseError("job lease has expired")
+        candidate_id = f"result:{candidate_hash}"
+        if row["candidate_result_id"] != candidate_id:
+            raise StoredStateCorruptError(
+                "candidate result id does not match signed candidate"
+            )
+        return (
+            grant,
+            candidate,
+            candidate_hash,
+            candidate_id,
+            metadata,
+            lease_expires_at,
+        )
+
     def complete_validated_result(
         self,
         job_id: str,
         *,
         expected: Mapping[str, Any],
         blob_store: BlobStore | None = None,
+        completion_signer: PlatformSigner | None = None,
     ) -> dict[str, Any]:
-        """Revalidate and complete only the signed current-lease candidate."""
+        """Complete once or replay only a signed terminal attestation."""
         expected_fields = {
             "lease_id",
             "lease_fence",
@@ -1486,127 +1719,165 @@ class LeaseStore:
         if not isinstance(expected, Mapping) or set(expected) != expected_fields:
             raise LeaseStoreError("completion expected bindings are malformed")
         with self._transaction() as connection:
-            operation_now = self._now()
-            completed_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
-            if row["status"] in _TERMINAL_STATUSES:
-                raise StoredStateCorruptError(
-                    "terminal completion replay has no cryptographic authority"
-                )
-            if row["status"] != "leased":
-                raise StaleLeaseError("job is not under an active lease")
-            grant = self._verified_lease_grant(row)
-            if (
-                type(expected["lease_fence"]) is not int
-                or expected["lease_fence"] != grant["fence"]
-            ):
-                raise StaleFenceError("completion fence is not current")
-            for key in ("lease_id", "daemon_id", "capsule_sha256"):
-                if expected[key] != grant[key]:
-                    raise StaleLeaseError(f"completion {key} does not match current lease")
-            lease_expires_at = self._parse_time(grant["expires_at"])
-
-            metadata = self._result_metadata(row)
-            candidate_hash = row["candidate_result_sha256"]
-            candidate = metadata.get("candidate_result")
-            if candidate_hash is None:
-                raise ResultConflictError("completion has no stored candidate content hash")
-            if type(candidate_hash) is not str or not _SHA256_RE.fullmatch(candidate_hash):
-                raise StoredStateCorruptError(
-                    "stored candidate content hash is malformed"
-                )
-            if not isinstance(candidate, dict):
-                raise StoredStateCorruptError("stored candidate body is missing or malformed")
-            candidate = self._verify_stored_candidate(
-                row=row,
-                candidate=candidate,
-                candidate_hash=candidate_hash,
-            )
-            candidate_hash = candidate["signature"]["result_sha256"]
-            if not hmac.compare_digest(expected["result_sha256"], candidate_hash):
-                raise ResultConflictError(
-                    "completion result hash is not the stored candidate content hash"
-                )
-            if operation_now >= lease_expires_at:
-                raise StaleLeaseError("job lease has expired")
-            if not isinstance(blob_store, BlobStore):
-                raise CandidateValidationError(
-                    "completion requires the authoritative blob store"
-                )
-            try:
-                for blob_ref, sha256, size_bytes in result_blob_references(candidate):
-                    blob_store.validate_reference(
-                        blob_ref,
-                        owner_user_id=grant["owner_user_id"],
-                        job_id=grant["job_id"],
-                        lease_id=grant["lease_id"],
-                        fence=grant["fence"],
-                        expected_sha256=sha256,
-                        expected_size_bytes=size_bytes,
-                    )
-            except BlobError as exc:
-                raise CandidateValidationError(str(exc)) from exc
-
-            candidate_id = f"result:{candidate_hash}"
-            if row["candidate_result_id"] != candidate_id:
-                raise StoredStateCorruptError(
-                    "candidate result id does not match signed candidate"
-                )
-            outcome = candidate.get("outcome")
-            final_status = self._completion_status(outcome)
-            receipt_request = {
-                "job_id": grant["job_id"],
-                "daemon_id": grant["daemon_id"],
-                "lease_id": grant["lease_id"],
-                "fence": grant["fence"],
-                "capsule_sha256": grant["capsule_sha256"],
-                "result_sha256": candidate_hash,
-            }
-            receipt = {
-                "receipt_id": f"completion:{hash_canonical_jcs(receipt_request).hex()}",
-                "job_id": job_id,
-                "status": final_status,
-                "accepted_result_sha256": candidate_hash,
-                "completed_at": completed_at,
-            }
-            metadata["completion_receipt"] = receipt
-            result_state_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
-            cursor = connection.execute(
-                """
-                UPDATE lease_tasks SET
-                    status = ?, accepted_result_id = ?, accepted_result_sha256 = ?,
-                    result_state_json = ?, updated_at = ?
-                WHERE task_id = ? AND status = 'leased' AND lease_id = ?
-                    AND lease_fence = ? AND candidate_result_id = ?
-                    AND candidate_result_sha256 = ?
-                    AND accepted_result_sha256 IS NULL
-                """,
-                (
-                    final_status,
-                    candidate_id,
-                    candidate_hash,
-                    result_state_json,
-                    completed_at,
-                    job_id,
-                    grant["lease_id"],
-                    grant["fence"],
-                    candidate_id,
-                    candidate_hash,
-                ),
-            )
-            if cursor.rowcount != 1:
-                if operation_now >= lease_expires_at:
-                    raise StaleLeaseError("job lease has expired")
-                raise StaleLeaseError("completion lost the current lease CAS")
-            self._append_event(
+            replay = self._verified_completion_replay(
                 connection,
-                task_id=job_id,
-                kind="completed",
-                lease_id=grant["lease_id"],
-                fence=grant["fence"],
-                occurred_at=completed_at,
+                row=row,
+                expected=expected,
             )
-            return dict(receipt)
+            if replay is not None:
+                return replay
+            self._validated_completion_candidate(
+                row=row,
+                expected=expected,
+                operation_now=self._now(),
+            )
+        if not isinstance(blob_store, BlobStore):
+            raise CandidateValidationError(
+                "completion requires the authoritative blob store"
+            )
+        if not isinstance(completion_signer, PlatformSigner):
+            raise LeaseStoreError("platform completion signer is unavailable")
+        if self._record_verifier is None or not completion_signer.matches(
+            self._record_verifier
+        ):
+            raise LeaseStoreError(
+                "completion signing and verification keys do not match"
+            )
+
+        with blob_store.completion_validation_guard():
+            with self._transaction() as connection:
+                operation_now = self._now()
+                completed_at = self._time_text(operation_now)
+                row = self._task_row(connection, job_id)
+                replay = self._verified_completion_replay(
+                    connection,
+                    row=row,
+                    expected=expected,
+                )
+                if replay is not None:
+                    return replay
+                (
+                    grant,
+                    candidate,
+                    candidate_hash,
+                    candidate_id,
+                    metadata,
+                    lease_expires_at,
+                ) = self._validated_completion_candidate(
+                    row=row,
+                    expected=expected,
+                    operation_now=operation_now,
+                )
+                try:
+                    for blob_ref, sha256, size_bytes in result_blob_references(candidate):
+                        blob_store.validate_reference(
+                            blob_ref,
+                            owner_user_id=grant["owner_user_id"],
+                            job_id=grant["job_id"],
+                            lease_id=grant["lease_id"],
+                            fence=grant["fence"],
+                            expected_sha256=sha256,
+                            expected_size_bytes=size_bytes,
+                        )
+                except BlobError as exc:
+                    raise CandidateValidationError(str(exc)) from exc
+
+                outcome = candidate.get("outcome")
+                final_status = self._completion_status(outcome)
+                receipt_request = {
+                    "job_id": grant["job_id"],
+                    "daemon_id": grant["daemon_id"],
+                    "lease_id": grant["lease_id"],
+                    "fence": grant["fence"],
+                    "capsule_sha256": grant["capsule_sha256"],
+                    "result_sha256": candidate_hash,
+                }
+                receipt = {
+                    "receipt_id": (
+                        f"completion:{hash_canonical_jcs(receipt_request).hex()}"
+                    ),
+                    "job_id": job_id,
+                    "status": final_status,
+                    "accepted_result_sha256": candidate_hash,
+                    "completed_at": completed_at,
+                }
+                attestation_payload = {
+                    "schema_version": _COMPLETION_ATTESTATION_SCHEMA_VERSION,
+                    "receipt_id": receipt["receipt_id"],
+                    "job_id": grant["job_id"],
+                    "owner_user_id": grant["owner_user_id"],
+                    "daemon_id": grant["daemon_id"],
+                    "lease_id": grant["lease_id"],
+                    "fence": grant["fence"],
+                    "capsule_id": grant["capsule_id"],
+                    "capsule_sha256": grant["capsule_sha256"],
+                    "result_id": candidate_id,
+                    "result_sha256": candidate_hash,
+                    "status": final_status,
+                    "completed_at": completed_at,
+                }
+                signed_json, signature = completion_signer.sign(
+                    domain=_COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
+                    payload=attestation_payload,
+                )
+                attestation_id = "attestation:" + hash_canonical_jcs(
+                    {"signed_json": signed_json, "signature": signature}
+                ).hex()
+                metadata["completion_receipt"] = receipt
+                result_state_json = json.dumps(
+                    metadata,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                cursor = connection.execute(
+                    """
+                    UPDATE lease_tasks SET
+                        status = ?, accepted_result_id = ?, accepted_result_sha256 = ?,
+                        result_state_json = ?, updated_at = ?
+                    WHERE task_id = ? AND status = 'leased' AND lease_id = ?
+                        AND lease_fence = ? AND candidate_result_id = ?
+                        AND candidate_result_sha256 = ?
+                        AND accepted_result_sha256 IS NULL
+                    """,
+                    (
+                        final_status,
+                        candidate_id,
+                        candidate_hash,
+                        result_state_json,
+                        completed_at,
+                        job_id,
+                        grant["lease_id"],
+                        grant["fence"],
+                        candidate_id,
+                        candidate_hash,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    if operation_now >= lease_expires_at:
+                        raise StaleLeaseError("job lease has expired")
+                    raise StaleLeaseError("completion lost the current lease CAS")
+                connection.execute(
+                    "INSERT INTO lease_completion_attestations("
+                    "attestation_id, task_id, signed_json, signature, created_at"
+                    ") VALUES (?, ?, ?, ?, ?)",
+                    (
+                        attestation_id,
+                        job_id,
+                        signed_json,
+                        signature,
+                        completed_at,
+                    ),
+                )
+                self._append_event(
+                    connection,
+                    task_id=job_id,
+                    kind="completed",
+                    lease_id=grant["lease_id"],
+                    fence=grant["fence"],
+                    occurred_at=completed_at,
+                )
+                return dict(receipt)
 
 
 class LeaseGrantIssuer:
@@ -1615,12 +1886,12 @@ class LeaseGrantIssuer:
     def __init__(
         self,
         *,
-        signing_key: SigningKey,
+        platform_signer: PlatformSigner,
         capsule_key: CapsuleVerificationKey,
         supported_request_schema_versions: Collection[int],
     ) -> None:
-        if not isinstance(signing_key, SigningKey):
-            raise TypeError("signing_key must be an Ed25519 SigningKey")
+        if not isinstance(platform_signer, PlatformSigner):
+            raise TypeError("platform_signer must be a PlatformSigner")
         if (
             not isinstance(capsule_key.verify_key, VerifyKey)
             or type(capsule_key.signing_key_id) is not str
@@ -1628,7 +1899,7 @@ class LeaseGrantIssuer:
             or type(capsule_key.active) is not bool
         ):
             raise TypeError("capsule_key must be an authoritative key record")
-        self.__signing_key = signing_key
+        self.__platform_signer = platform_signer
         self.__capsule_key = capsule_key
         self.__supported_request_schema_versions = frozenset(
             supported_request_schema_versions
@@ -1733,8 +2004,8 @@ class LeaseGrantIssuer:
     def _require_matching_store(self, store: LeaseStore) -> None:
         if not isinstance(store, LeaseStore):
             raise TypeError("store must be a LeaseStore")
-        if store._grant_verify_key is None or not hmac.compare_digest(
-            bytes(self.__signing_key.verify_key), bytes(store._grant_verify_key)
+        if store._record_verifier is None or not self.__platform_signer.matches(
+            store._record_verifier
         ):
             raise ValueError("grant signing and verification keys do not match")
 
@@ -1791,13 +2062,7 @@ class LeaseGrantIssuer:
     def _encode_lease_grant(
         self, binding: Mapping[str, Any]
     ) -> tuple[str, str]:
-        digest = hash_canonical_jcs(binding)
-        signature = sign_domain_separated_ed25519(
-            digest,
-            domain_separator=_LEASE_GRANT_DOMAIN_SEPARATOR,
-            signing_key=self.__signing_key,
-        )
-        return (
-            json.dumps(binding, sort_keys=True, separators=(",", ":")),
-            base64.b64encode(signature).decode("ascii"),
+        return self.__platform_signer.sign(
+            domain=_LEASE_GRANT_DOMAIN_SEPARATOR,
+            payload=binding,
         )

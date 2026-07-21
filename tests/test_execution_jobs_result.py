@@ -557,6 +557,7 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         LeaseGrantIssuer,
         LeaseStore,
     )
+    from tinyassets.runtime.signed_records import PlatformSigner, RecordVerifier
 
     lease_now = datetime(2026, 7, 19, 0, 30, tzinfo=UTC)
     key = SigningKey.generate()
@@ -572,10 +573,11 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         tmp_path / "leases.sqlite3",
         clock=lambda: lease_now,
         key_registry=registry,
-        grant_verify_key=grant_key.verify_key,
+        record_verifier=RecordVerifier(grant_key.verify_key),
     )
+    platform_signer = PlatformSigner(grant_key)
     issuer = LeaseGrantIssuer(
-        signing_key=grant_key,
+        platform_signer=platform_signer,
         capsule_key=_capsule_key(grant_key),
         supported_request_schema_versions={3},
     )
@@ -655,22 +657,20 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         opaque_request,
         result_sha256=result["signature"]["result_sha256"],
     )
-    complete_job(
+    first = complete_job(
         store,
         request,
         blob_store=blob_store,
         now=datetime(2026, 7, 19, 0, 31, 10, tzinfo=UTC),
+        completion_signer=platform_signer,
     )
-    with pytest.raises(
-        StoredStateCorruptError,
-        match="terminal completion replay has no cryptographic authority",
-    ):
-        complete_job(
-            store,
-            request,
-            blob_store=blob_store,
-            now=datetime(2026, 7, 19, 0, 31, 20, tzinfo=UTC),
-        )
+    replay = complete_job(
+        store,
+        request,
+        blob_store=blob_store,
+        now=datetime(2026, 7, 19, 0, 31, 20, tzinfo=UTC),
+    )
+    assert replay == first
     assert store.read_task(JOB_ID).status == "succeeded"
     assert sum(event.kind == "completed" for event in store.events(JOB_ID)) == 1
 

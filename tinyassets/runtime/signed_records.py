@@ -1,0 +1,142 @@
+"""Shared M1 verification for platform-signed authority records."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hmac
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, Generic, TypeVar, final
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import SigningKey, VerifyKey
+
+from tinyassets.runtime.execution_capsule import (
+    CapsuleCanonicalizationError,
+    canonicalize_jcs,
+    hash_canonical_jcs,
+    sign_domain_separated_ed25519,
+    verify_domain_separated_ed25519,
+)
+
+
+class StoredStateCorruptError(RuntimeError):
+    """Persisted authority state failed cryptographic or binding validation."""
+
+
+T = TypeVar("T")
+_VERIFIED_TOKEN = object()
+
+
+@final
+@dataclass(frozen=True, init=False)
+class Verified(Generic[T]):
+    """Frozen proof wrapper minted only after verification in this module."""
+
+    payload: T
+
+    def __init__(self, payload: T, *, _token: object | None = None) -> None:
+        if _token is not _VERIFIED_TOKEN:
+            raise TypeError("Verified can only be constructed by RecordVerifier")
+        object.__setattr__(self, "payload", payload)
+
+
+def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON member {key!r}")
+        value[key] = item
+    return value
+
+
+class RecordVerifier:
+    """Verify one platform key's domain-separated signed JSON records."""
+
+    __slots__ = ("__verify_key",)
+
+    def __init__(self, verify_key: VerifyKey) -> None:
+        if not isinstance(verify_key, VerifyKey):
+            raise TypeError("verify_key must be an Ed25519 VerifyKey")
+        self.__verify_key = verify_key
+
+    def verify(
+        self,
+        domain: bytes,
+        signed_json: str,
+        signature: str,
+        row_bindings: Mapping[str, Any],
+    ) -> Verified[Mapping[str, Any]]:
+        if type(domain) is not bytes or not domain:
+            raise StoredStateCorruptError("signed record domain is malformed")
+        try:
+            if type(signed_json) is not str or type(signature) is not str:
+                raise TypeError
+            payload = json.loads(
+                signed_json,
+                object_pairs_hook=_reject_duplicate_members,
+            )
+            if type(payload) is not dict:
+                raise TypeError
+            signature_bytes = base64.b64decode(signature, validate=True)
+            verify_domain_separated_ed25519(
+                hash_canonical_jcs(payload),
+                signature_bytes,
+                domain_separator=domain,
+                verify_key=self.__verify_key,
+            )
+        except (BadSignatureError, binascii.Error) as exc:
+            raise StoredStateCorruptError("signed record signature is invalid") from exc
+        except (CapsuleCanonicalizationError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StoredStateCorruptError("signed record is malformed") from exc
+        if not isinstance(row_bindings, Mapping):
+            raise StoredStateCorruptError("signed record row bindings are malformed")
+        for field, value in row_bindings.items():
+            if type(field) is not str or field not in payload or payload[field] != value:
+                raise StoredStateCorruptError(
+                    f"signed record does not match row binding {field!r}"
+                )
+        return Verified(MappingProxyType(payload), _token=_VERIFIED_TOKEN)
+
+    def _matches(self, verify_key: VerifyKey) -> bool:
+        return hmac.compare_digest(bytes(self.__verify_key), bytes(verify_key))
+
+
+class PlatformSigner:
+    """Non-retaining platform signer with no storage dependency."""
+
+    __slots__ = ("__signing_key",)
+
+    def __init__(self, signing_key: SigningKey) -> None:
+        if not isinstance(signing_key, SigningKey):
+            raise TypeError("signing_key must be an Ed25519 SigningKey")
+        self.__signing_key = signing_key
+
+    def sign(
+        self,
+        domain: bytes,
+        payload: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        if type(domain) is not bytes or not domain:
+            raise TypeError("domain must be non-empty bytes")
+        if not isinstance(payload, Mapping):
+            raise TypeError("payload must be a mapping")
+        record = dict(payload)
+        digest = hash_canonical_jcs(record)
+        signature = sign_domain_separated_ed25519(
+            digest,
+            domain_separator=domain,
+            signing_key=self.__signing_key,
+        )
+        return (
+            canonicalize_jcs(record).decode("utf-8"),
+            base64.b64encode(signature).decode("ascii"),
+        )
+
+    def matches(self, verifier: RecordVerifier) -> bool:
+        return isinstance(verifier, RecordVerifier) and verifier._matches(
+            self.__signing_key.verify_key
+        )

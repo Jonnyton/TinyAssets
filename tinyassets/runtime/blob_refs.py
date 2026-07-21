@@ -6,6 +6,7 @@ receive only opaque upload IDs and ``blob:sha256:...`` references, never paths.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -13,6 +14,7 @@ import os
 import re
 import threading
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -211,6 +213,12 @@ class BlobStore:
         self._objects.mkdir(parents=True, exist_ok=True)
         self._uploads.mkdir(parents=True, exist_ok=True)
         self._index = self._load_index()
+
+    @contextlib.contextmanager
+    def completion_validation_guard(self) -> Iterator[None]:
+        """Hold blob bindings stable through a caller's terminal commit."""
+        with self._lock:
+            yield
 
     def _load_index(self) -> dict[str, Any]:
         if not self._index_path.exists():

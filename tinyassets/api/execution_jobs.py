@@ -50,6 +50,7 @@ from tinyassets.runtime.lease_store import (
 from tinyassets.runtime.lease_store import (
     TaskNotFoundError as StoreTaskNotFoundError,
 )
+from tinyassets.runtime.signed_records import PlatformSigner
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9:_.-]+$", re.ASCII)
@@ -164,6 +165,7 @@ class AtomicJobResultStore(Protocol):
         *,
         expected: Mapping[str, Any],
         blob_store: BlobStore,
+        completion_signer: PlatformSigner | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -293,6 +295,7 @@ def complete_job(
     *,
     blob_store: BlobStore,
     now: datetime,
+    completion_signer: PlatformSigner | None = None,
 ) -> CompletionReceipt:
     """Revalidate signed blob claims, then CAS the current candidate terminal."""
     parsed = _parse_completion_request(request)
@@ -305,11 +308,13 @@ def complete_job(
         "result_sha256": parsed["result_sha256"],
     }
     try:
-        receipt = store.complete_validated_result(
-            parsed["job_id"],
-            expected=expected,
-            blob_store=blob_store,
-        )
+        completion_kwargs: dict[str, Any] = {
+            "expected": expected,
+            "blob_store": blob_store,
+        }
+        if completion_signer is not None:
+            completion_kwargs["completion_signer"] = completion_signer
+        receipt = store.complete_validated_result(parsed["job_id"], **completion_kwargs)
     except StoreStoredStateCorruptError:
         raise  # durability violation: 500-class, never a client-typed error
     except StoreTaskNotFoundError as exc:
