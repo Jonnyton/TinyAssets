@@ -44,7 +44,7 @@ Full specs: `docs/vetted-specs.md` (H2 heading per spec). Dev reads there, never
 | Windows full-suite backup.sh path fix | tests/test_backup_script.py | #18,#23 | dev-ready |
 | Clean-clone MCP config test mismatch | tests/test_mcp_server.py, .mcp.example.json | #18,#23 | dev-ready |
 | Card-matcher cleanup vs legacy-connector fallback contract | scripts/claude_chat.py, tests/test_claude_chat_inline_dismiss.py | - | dev-ready |
-| `TINYASSETS_REPO_ROOT=/data/community-pool` points at nonexistent dir on live volume — community-pool posts error `repo_root_not_resolvable`; mkdir scaffold on volume or drop env (audit §6) | deploy/compose.yml or droplet mkdir | - | dev-ready |
+| Community-pool failure needs FRESH REPRO — disproved 2026-07-21: `repo_root_path()` uses non-strict `resolve()`, so a missing dir cannot raise `repo_root_not_resolvable` while the env is set; both audit §6 fixes aimed at a non-cause | docs/audits/2026-07-15-workflow-data-volume-audit.md | live error/log evidence before implementation | pending |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | host | host-decision |
 | Host decision: BUG-018 canonical filename trailing-hyphen — rename canonical to drop, or `wiki action=promote` draft to overwrite? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
