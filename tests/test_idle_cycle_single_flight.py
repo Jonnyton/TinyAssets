@@ -246,9 +246,9 @@ def test_window_rejects_non_finite_and_non_positive(monkeypatch, bad):
 
 def test_worker_identity_precedence(monkeypatch):
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
-    monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "cloud-droplet-claude-1")
+    monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "owner-daemon-claude-1")
     assert idle_cycle.resolve_worker_identity() == "claude-1"
     monkeypatch.delenv("TINYASSETS_WORKER_ID")
-    assert idle_cycle.resolve_worker_identity() == "cloud-droplet-claude-1"
+    assert idle_cycle.resolve_worker_identity() == "owner-daemon-claude-1"
     monkeypatch.delenv("UNIVERSE_SERVER_HOST_USER")
     assert idle_cycle.resolve_worker_identity() == "host"

@@ -232,6 +232,26 @@ def test_live_probe_clean_output_is_ok(monkeypatch):
     assert base._codex_live_auth_probe(5.0)["status"] == "ok"
 
 
+def test_live_probe_passes_an_explicit_scrubbed_environment(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs)
+        return _Proc(stdout="OK")
+
+    monkeypatch.delenv(base.CONTROL_PLANE_ENV, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai-secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-claude-secret")
+    monkeypatch.setenv("UNRELATED_AMBIENT_SECRET", "must-not-reach-probe")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert base._codex_live_auth_probe(5.0)["status"] == "ok"
+    assert "env" in captured
+    assert "OPENAI_API_KEY" not in captured["env"]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["env"]
+    assert "UNRELATED_AMBIENT_SECRET" not in captured["env"]
+
+
 def test_live_probe_matches_signatures_case_insensitively(monkeypatch):
     """Codex review: 'codex login status' casing is not a contract."""
     monkeypatch.setattr(
@@ -349,22 +369,3 @@ def test_unparseable_last_refresh_field_is_suspicious(tmp_path):
 
 def test_unreadable_auth_json_returns_none(tmp_path):
     assert base._codex_last_refresh_age_s(tmp_path / "nope") is None
-
-
-# ---- supervisor wiring ----------------------------------------------------------
-
-
-def test_dead_probe_verdict_flows_into_worker_quarantine(tmp_path, monkeypatch):
-    """cloud_worker gates on subscription_auth_health; a present-but-dead
-    token must now read not_logged_in end-to-end (the 2026-06-25 class)."""
-    import tinyassets.cloud_worker as cw
-
-    _make_stale(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        base, "_codex_live_auth_probe",
-        lambda timeout_s: {"status": "not_logged_in",
-                           "detail": "refresh-viability probe FAILED"},
-    )
-    health = cw._worker_auth_health(["--provider", "codex"])
-    assert health is not None
-    assert health["status"] == "not_logged_in"

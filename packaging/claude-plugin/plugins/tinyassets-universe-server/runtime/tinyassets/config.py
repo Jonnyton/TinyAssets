@@ -10,6 +10,7 @@ See AGENTS.md Input Files table.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,14 +53,18 @@ class UniverseConfig:
     and ``.claude/agent-memory/navigator/q63_section4_dispositions.md``
     for the design rationale."""
 
-    # Engine source (how this universe's intelligence is powered) — set by
-    # `universe action=set_engine`. The founder chooses at onboard.
+    # Engine source (how this universe's intelligence is powered) — the founder's
+    # DECLARED lane. NOTE (Phase-1 scaffolding): NONE of these is a working
+    # end-to-end bind-and-run lane yet. Hosted BYO-key deposit is refused through
+    # the chat (a raw secret must not cross the relay); executable BYO is gated
+    # behind a code-backed KMS attestation that is False until Phase 2; and
+    # host_daemon / market_rented / self_hosted_endpoint have no executor routing
+    # yet. A real out-of-chat deposit + real KMS + a real executor are Phase 2.
     engine_source: str = "byo_api_key"
-    """How this universe sources its engine: ``byo_api_key`` (default; a BYO API
-    key in the vault) / ``self_hosted_endpoint`` / ``market_rented`` /
-    ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
-    persist the founder's choice (deeper market-matching / endpoint-routing
-    runtime is post-M1 hardening)."""
+    """How this universe DECLARES its engine lane: ``byo_api_key`` /
+    ``self_hosted_endpoint`` / ``market_rented`` / ``host_daemon``. These are
+    stored declarations only — none executes end-to-end in Phase-1 S5 (see the
+    2026-07-02 custody note §0.2 Phase-1/Phase-2 split)."""
 
     engine_endpoint: str = ""
     """Self-hosted engine endpoint (e.g. an ``OLLAMA_HOST`` / ``ANTHROPIC_BASE_URL``
@@ -186,7 +191,10 @@ def _build_config(data: dict[str, Any]) -> UniverseConfig:
 
 
 def write_universe_config_fields(
-    universe_path: str | Path, **fields: Any
+    universe_path: str | Path,
+    *,
+    clear: Iterable[str] = (),
+    **fields: Any,
 ) -> None:
     """Merge *fields* into ``{universe_path}/config.yaml`` (atomic).
 
@@ -196,40 +204,74 @@ def write_universe_config_fields(
     per-universe engine assignment (``preferred_writer`` /
     ``allow_api_key_providers`` set by ``universe action=set_engine``).
 
+    ``clear`` names keys to REMOVE before applying *fields*, in the SAME atomic
+    write — used by engine-lane transitions so a lane switch REPLACES the engine
+    namespace instead of merging (round-12 #5): e.g. ``market_rented`` →
+    ``self_hosted_endpoint`` must not retain a stale ``market_rate`` / ``spending_cap``.
+    A key present in both *clear* and *fields* is set to the new value (fields win).
+
     Fails loudly (raises) if PyYAML is unavailable or the write fails — a
     silently-dropped engine assignment would leave the universe on the wrong
     engine (Hard Rule #8).
+
+    Round-14 #5 (data-loss fix): the whole read-modify-write runs under a
+    CROSS-PROCESS ``filelock`` so concurrent declarations can't clobber each
+    other, and an existing config.yaml that is UNREADABLE / malformed / non-mapping
+    is a **loud raise**, NEVER a silent rewrite-fresh (which erased the founder's
+    real fields — the reproduced bug). Fix or remove the bad file, then retry.
     """
     import os
     import tempfile
 
     import yaml
+    from filelock import FileLock, Timeout
 
     config_file = Path(universe_path) / "config.yaml"
-    data: dict[str, Any] = {}
-    if config_file.exists():
-        try:
-            loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception as e:  # noqa: BLE001 - fall back to empty, log below
-            logger.warning(
-                "Existing config.yaml at %s unreadable (%s); rewriting fresh",
-                config_file, e,
-            )
-    data.update(fields)
-
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
-    )
+    lock = FileLock(str(config_file) + ".lock", timeout=30)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
-        os.replace(tmp_path, config_file)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+        with lock:
+            data: dict[str, Any] = {}
+            if config_file.exists():
+                try:
+                    raw = config_file.read_text(encoding="utf-8")
+                    loaded = yaml.safe_load(raw)
+                except (OSError, yaml.YAMLError) as e:
+                    # Hard Rule #8: NEVER silently overwrite unreadable/malformed
+                    # existing state — that erases the founder's real fields.
+                    raise ValueError(
+                        f"config.yaml at {config_file} is unreadable/malformed "
+                        f"({e}); refusing to overwrite (would lose existing "
+                        "fields). Fix or remove the file, then retry."
+                    ) from e
+                if loaded is None:
+                    data = {}
+                elif isinstance(loaded, dict):
+                    data = loaded
+                else:
+                    raise ValueError(
+                        f"config.yaml at {config_file} is not a mapping; refusing "
+                        "to overwrite (would lose existing state)."
+                    )
+            for key in clear:
+                data.pop(key, None)
+            data.update(fields)
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
+                os.replace(tmp_path, config_file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+    except Timeout as e:
+        raise ValueError(
+            f"could not acquire the config.yaml lock for {config_file} within "
+            "30s; another writer may be stuck."
+        ) from e

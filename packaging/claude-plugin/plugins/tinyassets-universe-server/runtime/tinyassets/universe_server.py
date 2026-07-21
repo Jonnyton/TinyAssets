@@ -435,18 +435,22 @@ def read_graph(
     author: str = "",
     run_status: str = "",
     limit: int = 30,
+    offset: int = 0,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            or branch.
+            branch, designs (list remixable branch designs — public published
+            ones plus your own; other users' private designs are never listed),
+            or design (export one branch as a portable design artifact).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
-            branch's full graph + node configs). Falls back to graph_id.
+            branch's full graph + node configs) or target=design (the branch
+            to export). Falls back to graph_id.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
@@ -491,10 +495,31 @@ def read_graph(
         # even confirm existence. get_branch was already callable here via the
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
+    if normalized == "designs":
+        # DISCOVER (patch-loop S2): enumerate remixable branch designs — PUBLIC
+        # published designs plus your OWN published designs. Paginates at the DB
+        # over the PUBLISHED surface (drafts never consume the page); pass
+        # ``offset`` (from a prior response's ``next_offset``) to browse further.
+        return _extensions_impl(
+            action="list_branches",
+            scope="published",
+            author=author,
+            limit=limit,
+            offset=offset,
+        )
+    if normalized == "design":
+        # EXPORT (patch-loop S2): serialize one branch as the portable design
+        # artifact (envelope + spec) — the same format the repo seed uses, so
+        # export -> import round-trips. Public branches export for anyone;
+        # private branches are author-gated.
+        return _extensions_impl(
+            action="export_design", branch_def_id=(branch_id or graph_id),
+        )
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs", "run", "branch"),
+        ("status", "graphs", "graph", "goals", "goal", "runs", "run",
+         "branch", "designs", "design"),
     )
 
 
@@ -524,14 +549,25 @@ def write_graph(
     request_type: str = "general",
     branch_id: str = "",
     changes_json: str = "",
+    artifact_json: str = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, branch, or universe. The founder's
-            home universe is auto-created on first contact; use target=universe
-            to create an additional universe (or the home when a create-scoped
-            sign-in declined auto-birth).
+        target: What to write: goal, request, branch, universe, engine, design,
+            binding, or remix. The
+            founder's home universe is auto-created on first contact; use
+            target=universe to create an additional universe (or the home when a
+            create-scoped sign-in declined auto-birth). target=engine DECLARES the
+            universe's engine lane (graph_id=universe, changes_json=the non-secret
+            declaration, e.g. {"engine_source":"self_hosted_endpoint",
+            "endpoint":"https://…"}); a raw API key is never accepted here.
+            target=design
+            imports a portable design artifact as a new owned branch;
+            target=binding stores a design's declared repo/policy values in a
+            private universe store;
+            target=remix forks a published design (by branch_id) into an owned
+            copy with provenance recorded.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -543,7 +579,18 @@ def write_graph(
             branch_def_id to patch.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
-            only the branch's author can edit it.
+            only the branch's author can edit it. You can edit a design's
+            topology and its binding SCHEMA (which slots are `is_binding`), but
+            you cannot set binding VALUES (a target repo, a credential, a merge
+            policy) here — the platform never stores private binding values.
+            A design with unfilled binding slots is INERT until target=binding
+            fills them for a selected universe. Credentials are deposited into
+            the encrypted broker separately and resolve by destination.
+        artifact_json: With target=design, the portable design artifact to
+            import — a design envelope OR a raw build_branch spec.
+        changes_json: With target=binding, private values for the design's
+            declared ``is_binding`` repo/policy slots. Values stay in the
+            selected universe and never enter the shared design or response.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -614,13 +661,58 @@ def write_graph(
     if normalized == "branch":
         # PR-180 EDIT half: a founder patches their own branch graph via the
         # existing transactional patch_branch handler (author-gated: BUG-081).
+        # A set_state_field_default op only DECLARES the binding slot; binding
+        # VALUES never enter the shared branch row (PLAN §4); bind them to a
+        # private universe with target=binding instead.
         return _extensions_impl(
             action="patch_branch",
             branch_def_id=branch_id,
             changes_json=changes_json,
         )
+    if normalized == "engine":
+        # Founder DECLARES the universe's engine lane through a VISIBLE canonical
+        # handle (round-11 #1): the legacy `universe` tool is hidden from
+        # tools/list, so `universe action=set_engine` was a dead end for real
+        # chatbot users. Routes to the existing founder-admin-scoped set_engine
+        # handler; the declaration payload (non-secret) travels in changes_json.
+        # NOTE: this NEVER accepts a raw API key (refused; Phase-2 out-of-chat
+        # deposit) — only non-secret lane declarations.
+        return _universe_impl(
+            action="set_engine",
+            universe_id=graph_id,
+            inputs_json=changes_json,
+        )
+    if normalized == "binding":
+        # BIND (patch-loop S2): store only declared repo/policy slot values in
+        # the selected universe's private host-local store. Credentials remain
+        # in the encrypted broker and resolve by destination at execution.
+        return _universe_impl(
+            action="bind_design",
+            universe_id=graph_id,
+            branch_def_id=branch_id,
+            inputs_json=changes_json,
+        )
+    if normalized == "design":
+        # IMPORT (patch-loop S2): a user hands their chatbot a design artifact
+        # (envelope or raw spec) and it becomes a branch they own.
+        return _extensions_impl(
+            action="import_design",
+            artifact_json=artifact_json,
+        )
+    if normalized == "remix":
+        # FORK/REMIX (patch-loop S2): fork a published design (branch_id) into
+        # an owned copy; provenance (fork_from + record_remix edge) is recorded.
+        return _extensions_impl(
+            action="remix_design",
+            branch_def_id=branch_id,
+            name=name,
+        )
     return _unknown_target(
-        "write_graph", target, ("goal", "request", "branch", "universe")
+        "write_graph", target,
+        (
+            "goal", "request", "branch", "universe", "engine", "binding",
+            "design", "remix",
+        ),
     )
 
 
@@ -1267,6 +1359,7 @@ def extensions(
     max_wait_s: int = 60,
     limit: int = 50,
     spec_json: str = "",
+    artifact_json: str = "",
     changes_json: str = "",
     judgment_text: str = "",
     judgment_id: str = "",
@@ -1368,11 +1461,52 @@ def extensions(
     Behavioral rules live in `control_station`, `extension_guide`, and
     `branch_design_guide`; this description is the I/O contract.
 
-    Core actions include build_branch, patch_branch, list_branches,
-    describe_branch, get_branch, run_branch, get_run, wait_for_run,
-    judge_run, publish_version, schedule_branch, fork_tree, search_nodes,
-    get_action_scope_status, record_run_receipt, and list_run_receipts.
-    Pass `action` plus the matching ids or JSON payload fields.
+    Action groups:
+    - Node registry: register, list, inspect, approve, disable, enable, remove.
+    - Branch authoring: build_branch, create_branch, patch_branch, add_node,
+      update_node, patch_nodes, connect_nodes, set_entry_point, add_state_field,
+      validate_branch, describe_branch, get_branch, list_branches,
+      delete_branch, fork_tree, suggest_node_edit, export_design,
+      import_design, remix_design.
+    - Branch versions: publish_version, get_branch_version,
+      list_branch_versions.
+    - Runs: run_branch, run_branch_version, get_run, get_run_output, list_runs,
+      query_runs, stream_run, wait_for_run, cancel_run, resume_run,
+      estimate_run_cost, attach_existing_child_run.
+    - Run receipts: record_run_receipt, list_run_receipts.
+    - Node ops: get_node_output, list_node_versions, rollback_node,
+      rollback_merge, get_rollback_history, approve_source_code, search_nodes.
+    - Evidence: get_routing_evidence, get_memory_scope_status.
+    - Judging: judge_run, list_judgments, compare_runs.
+    - Project memory: project_memory_get, project_memory_set,
+      project_memory_list.
+    - Scheduler: schedule_branch, unschedule_branch, list_schedules,
+      subscribe_branch, unsubscribe_branch, list_scheduler_subscriptions.
+    - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
+    - Owner review queue: review_queue_list, review_queue_approve,
+      review_queue_reshape, review_queue_reject, review_queue_merge,
+      review_queue_set_preference.
+
+    Owner review verbs (patch-loop S4, GitHub-native) let a project owner act on
+    the App-authored PRs their loop produced. GitHub owns review/merge state;
+    each decision RECORDS the exact GitHub call it will run (Phase 1 records,
+    Phase 2 executes). They reuse existing arg slots: `subject_id` = the GitHub
+    PR number, `project_id` = the destination repo (owner/repo), `status` = the
+    list workflow-outcome filter, `notes` = the owner's decision notes,
+    `expected_version` = the head_sha the owner reviewed (from
+    review_queue_list's `head_sha`) — REQUIRED for approve/reshape/reject (it
+    head-binds the decision so it can't apply to a re-pushed head). `limit` +
+    `since_step` paginate the list. `review_queue_approve` records a GitHub
+    APPROVE review; `review_queue_reshape` requires `notes` and records a
+    REQUEST_CHANGES review plus a durable draft_patch resume row (the loop-side
+    revision consumer lands with Phase 2); `review_queue_reject` records a
+    REQUEST_CHANGES review + terminal workflow outcome. `review_queue_set_preference`
+    owner-binds the off-GitHub merge preference (manual/auto/not_before) via
+    `branch_def_id` + `value` (the preference) + `field_default` (not_before
+    seconds) + `active_only` (review_required).
+
+    Pass `action` plus the matching ids or JSON payload fields; the status
+    action `get_action_scope_status` is always available.
     Receipt actions use `run_id`, `receipt_type`, `payload_json`, and optional
     `node_id` / `subject_id` to preserve source acquisition, claim lineage,
     and revision evidence for later gates and runs.
@@ -1413,6 +1547,7 @@ def extensions(
         max_wait_s=max_wait_s,
         limit=limit,
         spec_json=spec_json,
+        artifact_json=artifact_json,
         changes_json=changes_json,
         judgment_text=judgment_text,
         judgment_id=judgment_id,
@@ -1587,6 +1722,8 @@ def goals(
                    tags. Needs query.
       leaderboard  Rank bound Branches by metric (run_count/forks/outcome).
       common_nodes Nodes appearing in >=`min_branches` Branches.
+      archive_consultation Archive a completed Goal consultation thread.
+                   Needs goal_id.
 
     """
     return _goals_impl(
@@ -1668,15 +1805,17 @@ def gates(
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
-      record_conformance_pack
-                    Store a standards/readiness conformance pack for a
-                    Goal or Branch before gated rungs.
+      record_conformance_pack  Store a standards/readiness conformance
+                    pack for a Goal or Branch before gated rungs.
+      get_conformance_pack  Read a stored conformance pack. Needs
+                    conformance_pack_id.
+      list_conformance_packs  List conformance packs for a Goal or
+                    Branch.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url.
-      claim_from_branch_run
-                    Claim a rung whose key (and optionally evidence
-                    URL) came from a completed run's final output.
-                    Needs run_id. The branch's
+      claim_from_branch_run  Claim a rung whose key (and optionally
+                    evidence URL) came from a completed run's final
+                    output. Needs run_id. The branch's
                     ``recommended_rung_claim`` field selects the rung;
                     validated against the bound Goal's ladder.
       retract       Soft-delete a claim. Needs branch_def_id, rung_key,
@@ -1800,8 +1939,8 @@ def wiki(
     Args:
         action: One of — reads: read, search, since, list, lint;
             writes: write, patch, delete, consolidate, promote, ingest, supersede,
-            sync_projects, file_bug, cosign_bug.
-            `search` is lexical best-effort, not a completeness proof; use
+            sync_projects, file_bug, cosign_bug;
+            note: `search` is lexical best-effort, not a completeness proof — use
             `since` with `changed_since` to review pages updated after a known
             timestamp, then `read` the candidate pages.
         old_text/new_text: For action="patch", exact text to replace server-side.
@@ -2217,6 +2356,9 @@ def create_streamable_http_app() -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
+        # Reference branch designs are seeded on the transport-agnostic
+        # startup seam in ``main()`` (see ``_seed_reference_designs_best_effort``),
+        # so stdio/MCPB boots — which never build this ASGI app — get them too.
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
                 legacy_app.router.lifespan_context(legacy_app),
@@ -2254,6 +2396,80 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+# Last reference-design seed outcome — a cheap, checkable seed-health signal
+# (Finding 5). None until the first seed runs on startup.
+_LAST_SEED_RESULT: dict[str, list[str]] | None = None
+
+
+def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
+    """Idempotently re-seed the durable reference branch designs at startup —
+    transport-agnostic so BOTH stdio/MCPB and Streamable-HTTP boots get the
+    commons reference designs.
+
+    stdio/MCPB startup goes straight to ``mcp.run()`` and never builds the
+    Streamable-HTTP ASGI app, so seeding cannot live in that app's lifespan —
+    it belongs on the shared ``main()`` seam invoked for every transport (S1 of
+    docs/design-notes/2026-07-15-user-patch-loop-reference-design.md; a
+    registry/volume wipe can never delete a design class again).
+
+    NEVER raises — the reference seed is a FEATURE, not a process-critical
+    fixture (Codex r13 #3, REVERSING r12 #3). Quarantining the reference after a
+    security rollback (or any seed failure) must NOT take down the whole MCP
+    service or restart-loop it: the Forever Rule makes 24/7 uptime top priority
+    and Hard Rule 4 forbids blocking unrelated work on a feature-health failure.
+    Failures are reported LOUDLY — ``get_status.reference_designs.healthy`` +
+    ``required_missing``, ERROR logs, and ``last_seed_result()``. Packaged-seed
+    VALIDITY (refuse to SHIP broken) is a CI/deploy-time gate
+    (``tests/test_branch_design_seed.py::test_packaged_reference_design_is_valid_and_seedable``),
+    not process death at runtime.
+
+    Detectability (Finding 5): a TOTAL crash still records a loud
+    ``<seed-crashed>`` marker in ``failed`` and stashes the result.
+    """
+    global _LAST_SEED_RESULT
+    try:
+        # EVERY feature import lives INSIDE the guard (Codex r19 #3): importing
+        # the feature module BEFORE the try meant a missing/broken package raised
+        # ModuleNotFoundError and crashed startup, breaking the "never raises"
+        # uptime contract. A broken import now degrades to <seed-crashed> like
+        # any other seed failure — the server stays UP.
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.branch_designs import (
+            seed_reference_designs,
+            unhealthy_packaged_designs,
+        )
+
+        results = seed_reference_designs(_base_path())
+        if results["failed"]:
+            logger.error("reference design seeding had failures: %s", results)
+        else:
+            logger.info("reference design seeding: %s", results)
+
+        # The reference seed is a COMMONS FEATURE, not a boot-critical fixture
+        # (Codex r15 #4). An unhealthy PACKAGED design is reported LOUDLY (log +
+        # get_status.reference_designs + last_seed_result) — the server STAYS UP
+        # and serves; it NEVER refuses startup (Forever Rule / Hard Rule 4). CI
+        # owns "refuse to SHIP broken".
+        unhealthy = unhealthy_packaged_designs(results)
+        if unhealthy:
+            logger.error(
+                "packaged reference design(s) unhealthy: %s — server stays UP, "
+                "reporting unhealthy via get_status.reference_designs", unhealthy,
+            )
+    except Exception:  # noqa: BLE001 - server must stay UP on ANY feature failure
+        logger.exception("reference design seeding crashed")
+        results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
+    _LAST_SEED_RESULT = results
+    return results
+
+
+def last_seed_result() -> dict[str, list[str]] | None:
+    """The most recent reference-design seed outcome, or None if seeding has not
+    run yet. Checkable seed-health signal (Finding 5) — a non-empty ``failed``
+    means the last boot's commons seed did not fully succeed."""
+    return _LAST_SEED_RESULT
+
+
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -2271,6 +2487,10 @@ def main(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,
     )
+
+    # Transport-agnostic startup seam: seed reference designs before dispatch
+    # so stdio/MCPB (which never builds the HTTP app) is seeded too.
+    _seed_reference_designs_best_effort()
 
     if transport == "streamable-http":
         app = create_streamable_http_app()

@@ -63,20 +63,6 @@ TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 
 
 # ---------------------------------------------------------------------
-# Subscription-backed LLM auth
-# ---------------------------------------------------------------------
-
-# Daemons default to subscription-backed LLM auth. API-key-backed providers
-# are ignored project-wide unless the host deliberately opts this daemon into
-# API-key providers.
-TINYASSETS_ALLOW_API_KEY_PROVIDERS=0
-
-# Legacy compatibility flag retained for older compose/operator docs. The
-# enforced default is now controlled by TINYASSETS_ALLOW_API_KEY_PROVIDERS:
-# leave that flag 0 for subscription-only operation.
-TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY=1
-
-# ---------------------------------------------------------------------
 # Community patch loop pickup
 # ---------------------------------------------------------------------
 
@@ -106,39 +92,6 @@ TINYASSETS_REPO_ROOT=/data/community-pool
 # Rollback: set either back to `warn` and recreate the daemon container.
 TINYASSETS_AUTO_SHIP_RUBRIC_MODE=enforce
 TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE=enforce
-
-# Optional base64-encoded auth.json produced by a subscription login:
-#   codex login
-#   base64 -w0 ~/.codex/auth.json
-# This is subscription auth material, not an OpenAI API key. The entrypoint
-# seeds it into /data/.codex/auth.json only when that file is missing, then
-# unsets the env var before starting the daemon. Codex refreshes auth.json in
-# place on the shared tinyassets-data volume; leave OPENAI_API_KEY blank for
-# normal subscription-billed operation.
-TINYASSETS_CODEX_AUTH_JSON_B64=
-
-# Claude Code subscription auth is stored under this durable config
-# directory on the tinyassets-data volume. Login once with:
-#   sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude auth login --claudeai
-CLAUDE_CONFIG_DIR=/data/.claude
-
-# Claude auth seeding so a fresh /data volume is not left "Not logged in"
-# (which fails every pinned claude-code writer). Set ONE of these; the
-# entrypoint applies it only when /data/.claude/.credentials.json is missing,
-# never clobbering a rotated in-place token:
-#   * CLAUDE_CODE_OAUTH_TOKEN — preferred. A `claude setup-token` long-lived
-#     token Claude Code reads from the env directly (no file, rotation-safe).
-#   * TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 — base64 of a subscription
-#     ~/.claude/.credentials.json (base64 -w0 ~/.claude/.credentials.json),
-#     the direct mirror of TINYASSETS_CODEX_AUTH_JSON_B64.
-CLAUDE_CODE_OAUTH_TOKEN=
-TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64=
-
-# Deprecated legacy placeholder. Daemon startup strips this var unless
-# TINYASSETS_ALLOW_API_KEY_PROVIDERS=1; do not fill it for normal TinyAssets
-# daemons.
-OPENAI_API_KEY=
-
 
 # ---------------------------------------------------------------------
 # Supabase (Row A — runtime dependency)

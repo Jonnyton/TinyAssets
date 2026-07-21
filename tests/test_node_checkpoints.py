@@ -36,7 +36,7 @@ def _mk_node(
 
 
 def _static_provider(val: str):
-    def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
+    def _call(prompt: str, system: str = "", *, role: str = "writer", **_kw) -> str:
         return val
     return _call
 

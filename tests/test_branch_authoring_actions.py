@@ -57,6 +57,52 @@ def test_create_branch_requires_name(branch_env):
     assert "error" in result
 
 
+def test_create_branch_strips_reserved_seed_author(branch_env):
+    # Fable MAJOR (data-loss): create_branch must NOT let a user smuggle the
+    # reserved seed author. Otherwise a user could create_branch
+    # author="reference-designs" + force-tag it and get their branch DELETED by
+    # the next boot's reserved-author prune.
+    us, base = branch_env
+    created = _call(
+        us, "create_branch", name="Smuggle", author="reference-designs",
+    )
+    assert created["status"] == "created"
+
+    from tinyassets.daemon_server import get_branch_definition
+
+    row = get_branch_definition(base, branch_def_id=created["branch_def_id"])
+    assert row["author"] != "reference-designs"
+    assert row["author"] == "tester"   # fell back to the current actor
+
+
+@pytest.mark.parametrize("bad", [123, True, ["a"], {"x": 1}])
+def test_create_branch_rejects_nonstring_author(branch_env, bad):
+    # Codex r12 #4: a non-string author must be a CLEAN rejection, not an
+    # AttributeError crash through _sanitize_reserved_author(...).strip().
+    us, base = branch_env
+    result = _call(us, "create_branch", name="AuthBad", author=bad)
+    assert "error" in result, (bad, result)
+    assert "author" in result["error"].lower(), (bad, result)
+
+
+@pytest.mark.parametrize("bad", [123, True, ["a"], {"x": 1}])
+def test_build_branch_rejects_nonstring_author(branch_env, bad):
+    # Codex r12 #4: build_branch (composite staging) must reject a non-string
+    # author cleanly — nothing persisted — not crash on .strip().
+    us, _ = branch_env
+    spec = {
+        "name": "auth-bad-build", "author": bad, "entry_point": "n",
+        "node_defs": [
+            {"node_id": "n", "display_name": "N", "prompt_template": "x {y}"},
+        ],
+        "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+        "state_schema": [{"name": "y", "type": "str"}],
+    }
+    result = _call(us, "build_branch", spec_json=json.dumps(spec))
+    assert result["status"] == "rejected", (bad, result)
+    assert any("author" in e.lower() for e in result.get("errors", [])), (bad, result)
+
+
 def test_list_branches_returns_summaries(branch_env):
     """`scope="all"` returns every branch including drafts.
 

@@ -101,7 +101,7 @@ def _scripted_provider(gate_output: str):
     and a stable leaf message for any other node. Used to seed the gate
     output the router reads.
     """
-    def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
+    def _call(prompt: str, system: str = "", *, role: str = "writer", **_kw) -> str:
         if "decide" in prompt:
             return gate_output
         return "leaf ran"
@@ -316,7 +316,7 @@ class TestSymptom2TerminalNoopAndLoopBack:
         # answer on the second invocation.
         invocation_count = {"n": 0}
 
-        def scripted(prompt: str, system: str = "", *, role: str = "writer") -> str:
+        def scripted(prompt: str, system: str = "", *, role: str = "writer", **_kw) -> str:
             if "decide" not in prompt:
                 return "leaf ran"
             invocation_count["n"] += 1
@@ -419,7 +419,7 @@ class TestSymptom3ThreeGateIterations:
         invocations = {"n": 0, "outputs": []}
         script = ["FIRST", "SECOND", "THIRD"]
 
-        def scripted(prompt: str, system: str = "", *, role: str = "writer") -> str:
+        def scripted(prompt: str, system: str = "", *, role: str = "writer", **_kw) -> str:
             if "decide" not in prompt:
                 return "leaf ran"
             v = script[min(invocations["n"], len(script) - 1)]

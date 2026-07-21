@@ -149,3 +149,71 @@ def branch_run_actor(universe_id: str) -> str:
     if uid:
         return f"universe:{uid}"
     return current_actor_id()
+
+
+def current_github_handle(universe_id: str) -> str:
+    """Resolve the universe's CONNECTED GitHub login SERVER-SIDE (Codex r15 #5) —
+    from the authoritative per-universe credential vault, never caller text.
+
+    This is the founder identity the autonomous-merge CODEOWNERS gate + the
+    crash-reconciliation review matcher require. Returns ``""`` when no GitHub
+    identity is connected (or it is ambiguous), which keeps autonomous merge
+    fail-closed (``expected_owner_unknown``) — a real lookup, not a stub that the
+    tests monkeypatch away. Universe-scoped (no destination): the founder's
+    connected GitHub account is one login across their universe's vcs records."""
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ""
+    try:
+        from tinyassets.credential_broker import github_account_login
+
+        return github_account_login(uid)
+    except Exception:  # noqa: BLE001 — no vault / unreadable ⇒ fail closed (empty)
+        logger.warning(
+            "current_github_handle: github-login lookup failed for universe %r",
+            uid,
+            exc_info=True,
+        )
+        return ""
+
+
+def current_actor_is_universe_owner(universe_id: str) -> bool:
+    """Return True iff the authenticated actor OWNS the universe — the founder
+    whose home is this universe, or an explicit ``admin`` (owner-level) ACL
+    grant. Ordinary ``write`` scope is NOT enough.
+
+    Used to gate owner-only actions (e.g. minting a founder-OAuth-per-merge
+    approval — Codex R6 C4) above the ordinary write gate.
+    """
+    uid = (universe_id or "").strip()
+    if not uid or not is_authenticated_request():
+        return False
+    actor_id = current_actor_id()
+    base = _base_path()
+    try:
+        from tinyassets.daemon_server import get_founder_home
+
+        if get_founder_home(base, actor_id) == uid:
+            return True
+    except Exception:
+        logger.warning(
+            "current_actor_is_universe_owner: founder_home lookup failed for "
+            "universe %r",
+            uid,
+            exc_info=True,
+        )
+    try:
+        from tinyassets.daemon_server import universe_access_permission
+
+        return (
+            universe_access_permission(base, universe_id=uid, actor_id=actor_id)
+            == "admin"
+        )
+    except Exception:
+        logger.warning(
+            "current_actor_is_universe_owner: admin-grant lookup failed for "
+            "universe %r",
+            uid,
+            exc_info=True,
+        )
+        return False

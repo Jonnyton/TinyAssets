@@ -83,7 +83,7 @@ def test_empty_provider_raises_empty_response_error():
     a generic CompilerError, so the runner can record reason='empty_response'."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    def _empty(prompt, system, *, role):
+    def _empty(prompt, system, *, role, **_kw):
         return ""
 
     branch = _simple_branch()
@@ -101,7 +101,7 @@ def test_non_empty_provider_does_not_raise_empty_response_error():
     """Sanity: a provider returning a non-empty string must not raise."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    def _ok(prompt, system, *, role):
+    def _ok(prompt, system, *, role, **_kw):
         return "result"
 
     branch = _simple_branch()
@@ -120,7 +120,7 @@ def test_bwrap_provider_output_raises_sandbox_unavailable():
 
     from tinyassets.providers.base import SandboxUnavailableError
 
-    def _bwrap_leak(prompt, system, *, role):
+    def _bwrap_leak(prompt, system, *, role, **_kw):
         return "bwrap: No permissions to create new namespace"
 
     branch = _simple_branch()

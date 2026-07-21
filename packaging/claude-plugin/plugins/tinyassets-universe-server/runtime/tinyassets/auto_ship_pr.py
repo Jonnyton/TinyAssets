@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.auto_ship_ledger import find_attempt, update_attempt
-from tinyassets.credential_vault import resolve_github_token
+from tinyassets.credential_broker import GITHUB_WRITE_PURPOSE, github_token
 
 PR_CREATE_FLAG = "TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED"
 REPO_ENV = "TINYASSETS_AUTO_SHIP_REPO"
@@ -44,12 +44,18 @@ def _github_token(
     *,
     universe_path: Path | None = None,
     destination: str = "",
-    purpose: str = "write",
+    purpose: str = GITHUB_WRITE_PURPOSE,
 ) -> str:
     if explicit is not None:
         return explicit.strip()
     if universe_path is not None and destination:
-        return resolve_github_token(universe_path, destination, purpose=purpose)
+        # Universe-bound auto-ship is vault-ONLY (legacy contract preserved):
+        # a universe that has not deposited a credential for this destination
+        # gets "" (missing_token failure), never the host env tokens below.
+        # github_token raises on fail-closed states (unmigrated legacy
+        # plaintext, needs_redeposit/revoked bindings).
+        token = github_token(universe_path, destination, purpose=purpose)
+        return token if token is not None else ""
     for name in TOKEN_ENV_VARS:
         token = os.environ.get(name, "").strip()
         if token:
@@ -327,12 +333,12 @@ def open_auto_ship_pr(
         token,
         universe_path=universe_path,
         destination=repo_slug,
-        purpose="write",
+        purpose=GITHUB_WRITE_PURPOSE,
     )
     if not gh_token:
         msg = (
-            "A per-universe vcs/github/write credential is required when PR "
-            "creation is enabled"
+            "A per-universe github external_write credential is required when "
+            "PR creation is enabled"
         )
         ledger_error = _mark_attempt(
             universe_path,

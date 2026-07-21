@@ -123,7 +123,7 @@ def test_compile_and_run_template_with_json_example():
 
     captured: dict[str, str] = {}
 
-    def _provider(prompt: str, system: str, *, role: str) -> str:
+    def _provider(prompt: str, system: str, *, role: str, **_kw) -> str:
         captured["prompt"] = prompt
         return "ok"
 
@@ -192,7 +192,7 @@ def test_jinja_style_double_braces_still_substitute():
 
     captured: dict[str, str] = {}
 
-    def _provider(prompt: str, system: str, *, role: str) -> str:
+    def _provider(prompt: str, system: str, *, role: str, **_kw) -> str:
         captured["prompt"] = prompt
         return "ok"
 

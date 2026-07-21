@@ -95,7 +95,6 @@ def test_metadata_has_runbook_refs():
         "CLOUDFLARE_API_TOKEN",
         "DIGITALOCEAN_TOKEN",
         "DO_SSH_KEY",
-        "OPENAI_API_KEY",
         "PUSHOVER_USER_KEY",
         "PUSHOVER_APP_TOKEN",
     }
@@ -137,7 +136,6 @@ def test_runbook_has_per_secret_rotation_headings():
         "do-ssh-key",
         "do-droplet-host",
         "do-ssh-user",
-        "openai-api-key",
         "pushover-user-key",
         "pushover-app-token",
     }

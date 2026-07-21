@@ -1,0 +1,22 @@
+VERDICT: adapt
+
+1. **Critical: “irreversible” refresh claims and tombstones are rollbackable.** Claims, tombstones, and ciphertext share the same SQLite recovery domain ([leases.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/leases.py:81), [platform_backend.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/platform_backend.py:178)). Fresh reproduction showed:
+
+   - Restoring a pre-refresh DB reopened consumed version 1 and issued a second `RefreshTicket`.
+   - Restoring a pre-delete DB made the deleted value readable again.
+
+   This contradicts the design’s irreversible/never-reclaimable guarantee ([design note](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/docs/design-notes/2026-07-16-provider-generic-credential-vault.md:90)). Add anti-rollback state outside the restored snapshot, or make every restore bump an epoch and force reauthorization/revocation of rotating credentials. Add full-DB/full-local-directory rollback tests; current tests restore only a row or sidecar while preserving the tombstone database.
+
+2. **Required: successful local deletion can leave old credential versions on disk.** Rotation removes the previous sidecar best-effort ([local_backend.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/local_backend.py:625)), while deletion removes only the currently live version ([local_backend.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/local_backend.py:707)). Simulating one locked-file cleanup left `v1` present after `v2` was successfully deleted. Track and remove every version, use durable garbage collection, or return a typed pending/failure state instead of claiming protected bytes were deleted.
+
+3. **Required: the public typed-error contract remains false.** The broker promises every failure is `CredentialUnavailable` ([broker.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/broker.py:17)), but malformed CAS pairing and empty/oversized payloads raise raw `ValueError` ([leases.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/leases.py:58), [secret_bytes.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/secret_bytes.py:32)). Either add a typed `INVALID_ARGUMENT` code and update tests, or explicitly narrow the documented contract.
+
+4. **Required: authenticated-record corruption does not invalidate cached attestation as documented.** After tampering ciphertext, `get()` returned `CORRUPT_RECORD` but `_attested` remained `True`; the crypto failure path at [platform_backend.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/platform_backend.py:321) does not clear it. Either invalidate attestation or revise the design to distinguish record quarantine from backend-level corruption and test that policy.
+
+5. **Required: the canonical refresh example uses the forbidden completion path.** [platform_backend.py](/C:/Users/Jonathan/.claude/jobs/aaaa5b09/tmp/wt-vault-review/tinyassets/credentials/platform_backend.py:553) tells integrations to call `put(replace=...)`, although rotating kinds structurally require `complete_refresh()`. Correct the example before S4/S5 integration.
+
+6. **Required process adaptation:** the target `_PURPOSE.md` still says its STATUS row must be added, but no credential-vault lane exists. Add the claimed/review-blocked row before advancing the parked draft.
+
+Fresh verification: `117 passed, 2 skipped in 12.91s`; Ruff, `compileall`, and `git diff --check` passed. These green tests do not cover findings 1–2.
+
+The material citations were independently confirmed: [SQLite DELETE+EXTRA durability](https://www.sqlite.org/pragma.html#pragma_synchronous), [GitHub one-use refresh and 8-hour/6-month lifetimes](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens), [XChaCha random-nonce guidance](https://doc.libsodium.org/secret-key_cryptography/aead/chacha20-poly1305), [DPAPI user/machine semantics](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata), and [current X pricing](https://docs.x.com/x-api/getting-started/pricing).

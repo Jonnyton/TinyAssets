@@ -14,12 +14,23 @@ and the PR-178 ``mcp_public_canary --assert-handles`` guard stays green.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 
 import pytest
 
-ADVERTISED = {
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+
+# The actually-advertised handle set on this branch. The five canonical graph/page
+# handles + get_status are the PR-178 invariant; `converse` is a pre-existing handle
+# added by the founder-identity relay work (b91a6b07, on origin/main) — NOT by this
+# S5 change (round-12 #7: align the expected set with reality; the separate
+# assert-handles canary allowlist for converse is tracked outside this branch).
+# The invariant THIS file guards: adding read_graph/write_graph *targets* (run,
+# branch, engine, …) adds NO new handle.
+_CANONICAL_HANDLES = {
     "read_graph",
     "write_graph",
     "run_graph",
@@ -27,6 +38,7 @@ ADVERTISED = {
     "write_page",
     "get_status",
 }
+ADVERTISED = _CANONICAL_HANDLES | {"converse"}
 
 _BASIC_SPEC = {
     "name": "Founder branch",
@@ -143,3 +155,116 @@ def test_patch_branch_is_author_gated_via_connector(server_env, monkeypatch):
     ))
     # Author gate fires: either an error or a rejected status, never a clean apply.
     assert blocked.get("status") == "rejected" or "error" in blocked, blocked
+
+
+# ── ENGINE half: write_graph target=engine (round-11 #1) ─────────────────────
+# The legacy `universe` fat tool is hidden from tools/list (PR-178 drift guard),
+# so `universe action=set_engine` was a dead end for real chatbot users. Engine
+# declaration now routes through the VISIBLE write_graph handle — no new handle.
+#
+# The universe write ACL deliberately ignores UNIVERSE_SERVER_USER (an env var
+# must never confer universe write authority); it requires a real authenticated
+# request identity. These tests bind one the way the live /mcp path does.
+
+
+class _StaticAuthProvider(AuthProvider):
+    """Auth-required provider resolving the bearer token "ok" to one identity."""
+
+    def __init__(self, identity: Identity | None) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "ok" else None
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict) -> dict:
+        return {"client_id": "test-client", **metadata}
+
+    def create_authorization(self, *a, **k) -> str:
+        return "test-code"
+
+    def exchange_code(self, *a, **k) -> dict | None:
+        return None
+
+
+_FOUNDER_SCOPES = [
+    "tinyassets.universe.read",
+    "tinyassets.universe.write",
+    "tinyassets.universe.admin",
+    "tinyassets.universe.costly",
+]
+
+
+@contextlib.contextmanager
+def _founder_session(user_id: str):
+    """Bind an authenticated founder request identity, then restore dev auth."""
+    set_provider(_StaticAuthProvider(
+        Identity(user_id=user_id, username=user_id, capabilities=list(_FOUNDER_SCOPES))
+    ))
+    auth_middleware("ok")
+    try:
+        yield
+    finally:
+        set_provider(DevAuthProvider())
+        auth_middleware(None)
+
+
+def test_write_graph_engine_listed_in_allowed_targets(server_env):
+    us = server_env
+    payload = json.loads(us.write_graph(target="bogus"))
+    assert payload["error"] == "unknown_target"
+    assert "engine" in payload["allowed_targets"]
+
+
+def test_write_graph_engine_declares_lane_end_to_end(server_env):
+    """Authenticated tools/list -> tools/call: the DOCUMENTED path works end to
+    end. write_graph is advertised while the legacy `universe` tool is hidden,
+    and target=engine declares a non-secret lane on the founder's own universe.
+    """
+    us = server_env
+    advertised = {t.name for t in asyncio.run(us.mcp.list_tools(run_middleware=True))}
+    assert "write_graph" in advertised  # reachable canonical handle
+    assert "universe" not in advertised  # PR-178: no new/legacy fat handle
+
+    with _founder_session("founder"):
+        # Birth the founder's universe through the visible handle, then DECLARE
+        # its engine lane through the same handle (founder owns it -> write ACL).
+        born = json.loads(us.write_graph(target="universe", text=""))
+        uid = born["universe_id"]
+        assert born["status"] == "born"
+
+        declared = json.loads(us.write_graph(
+            target="engine",
+            graph_id=uid,
+            changes_json=json.dumps({
+                "engine_source": "self_hosted_endpoint",
+                "endpoint": "https://ollama.example.com",
+            }),
+        ))
+    # Reached set_engine (not unknown_target) and produced an honest declaration.
+    assert declared.get("error") != "unknown_target", declared
+    assert declared["engine_source"] == "self_hosted_endpoint"
+    assert declared["status"] == "engine_declared"
+    assert declared["executable"] is False
+
+
+def test_write_graph_engine_never_accepts_raw_key(server_env):
+    """Defense-in-depth at the connector boundary: a raw API key routed through
+    the visible handle is REFUSED by the handler (Phase-2 is an out-of-chat
+    deposit, C3) — even for an authenticated, authorized founder."""
+    us = server_env
+    with _founder_session("founder"):
+        born = json.loads(us.write_graph(target="universe", text=""))
+        uid = born["universe_id"]
+        out = json.loads(us.write_graph(
+            target="engine",
+            graph_id=uid,
+            changes_json=json.dumps({
+                "engine_source": "byo_api_key",
+                "service": "anthropic",
+                "api_key": "sk-ant-api03-" + "A" * 40,
+            }),
+        ))
+    assert "error" in out and out.get("status") != "engine_set"

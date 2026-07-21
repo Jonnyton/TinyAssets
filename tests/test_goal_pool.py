@@ -400,7 +400,7 @@ def test_goal_pool_accepts_registered_fantasy_seed(repo_root, universe_dir):
 def test_goal_pool_skips_fantasy_seed_when_unregistered(repo_root, universe_dir):
     """Pin the process-dependent de-fantasy divergence.
 
-    In a process that has NOT loaded the fantasy domain (the cloud-worker
+    In a process that has NOT loaded the fantasy domain (an external-daemon
     producer pump, the plugin runtime), ``registered_domain_branch_slugs()`` is
     empty, so a goal-pool task targeting the fantasy wrapper is skipped here.
     This is the intended engine-is-infrastructure contract, not a silent
