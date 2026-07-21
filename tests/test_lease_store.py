@@ -480,13 +480,21 @@ def test_terminal_row_and_forged_attestation_cannot_authorize_replay(
     print(f"FORGED_TERMINAL_ATTESTATION_REJECTED: {rejection}")
 
 
+@pytest.mark.parametrize("second_blob_store", [False, True], ids=["same", "cross"])
 def test_blob_gc_cannot_run_between_final_validation_and_completion_commit(
     tmp_path: Path,
+    second_blob_store: bool,
 ) -> None:
+    from tinyassets.runtime.blob_refs import BlobStore
     from tinyassets.runtime.execution_result import result_blob_references
 
     store, task, _, blobs, key, result, raw, expected, clock = _result_lease(tmp_path)
     _record_candidate(store, task, blobs, key, raw, clock.now)
+    garbage_collector = (
+        BlobStore(tmp_path / "result-blobs" / "blobs")
+        if second_blob_store
+        else blobs
+    )
     final_validation_reached = threading.Event()
     allow_validation_to_return = threading.Event()
     gc_finished = threading.Event()
@@ -519,12 +527,12 @@ def test_blob_gc_cannot_run_between_final_validation_and_completion_commit(
             completion["error"] = exc
 
     def collect_between_validation_and_commit() -> None:
-        blobs.mark_job_failed(
+        garbage_collector.mark_job_failed(
             owner_user_id="user:owner-1",
             job_id=task.branch_task_id,
             failed_at=clock.now,
         )
-        blobs.collect_garbage(now=clock.now + timedelta(days=2))
+        garbage_collector.collect_garbage(now=clock.now + timedelta(days=2))
         gc_finished.set()
 
     completion_thread = threading.Thread(target=finish_completion)
@@ -542,7 +550,8 @@ def test_blob_gc_cannot_run_between_final_validation_and_completion_commit(
     assert not gc_thread.is_alive()
     assert "error" not in completion
     assert completion["receipt"]["status"] == "succeeded"
-    print("BLOB_GC_DURING_COMPLETION_BLOCKED: committed_before_gc=True")
+    prefix = "CROSS_INSTANCE_" if second_blob_store else ""
+    print(f"{prefix}BLOB_GC_DURING_COMPLETION_BLOCKED: committed_before_gc=True")
 
 
 def _record_candidate(
@@ -3746,6 +3755,58 @@ def test_schema_v3_reinitialization_is_a_noop(tmp_path: Path) -> None:
         )
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
     assert after == before
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "table_columns",
+        "missing_update_trigger",
+        "malformed_update_trigger",
+        "missing_delete_trigger",
+        "malformed_delete_trigger",
+    ],
+)
+def test_schema_v3_rejects_malformed_completion_attestation_defenses(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    trigger_suffix = "update" if "update" in corruption else "delete"
+    trigger_name = (
+        f"lease_completion_attestations_append_only_{trigger_suffix}"
+    )
+    with sqlite3.connect(db_path) as connection:
+        if corruption == "table_columns":
+            connection.execute(
+                "DROP TRIGGER lease_completion_attestations_append_only_update"
+            )
+            connection.execute(
+                "DROP TRIGGER lease_completion_attestations_append_only_delete"
+            )
+            connection.execute("DROP TABLE lease_completion_attestations")
+            connection.execute(
+                "CREATE TABLE lease_completion_attestations("
+                "attestation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+                "signed_json TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
+        else:
+            connection.execute(f"DROP TRIGGER {trigger_name}")
+            if corruption.startswith("malformed"):
+                operation = trigger_suffix.upper()
+                connection.execute(
+                    f"CREATE TRIGGER {trigger_name} BEFORE {operation} "
+                    "ON lease_completion_attestations BEGIN SELECT 1; END"
+                )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="completion attestation",
+    ) as rejection:
+        LeaseStore(db_path)
+    if corruption == "malformed_update_trigger":
+        print(f"MIGRATION_MALFORMED_TRIGGER_REJECTED: {rejection.value}")
 
 
 def test_wrong_same_name_index_is_replaced_with_required_definition(

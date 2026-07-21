@@ -93,6 +93,19 @@ _LEASE_GRANT_FIELDS = frozenset(
         "image_digest",
     }
 )
+_LEASE_GRANT_UNBOUND_FIELDS = frozenset(
+    {
+        "schema_version",
+        "owner_user_id",
+        "device_key_id",
+        "device_verify_key",
+        "device_key_epoch",
+        "capability_class",
+        "repo_mode",
+        "runner_policy_sha256",
+        "image_digest",
+    }
+)
 
 _COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
 _COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = b"tinyassets.completion-attestation.v1\0"
@@ -113,6 +126,52 @@ _COMPLETION_ATTESTATION_FIELDS = frozenset(
         "completed_at",
     }
 )
+_COMPLETION_ATTESTATION_UNBOUND_FIELDS = frozenset(
+    {
+        "schema_version",
+        "receipt_id",
+        "owner_user_id",
+        "daemon_id",
+        "lease_id",
+        "fence",
+        "capsule_id",
+        "capsule_sha256",
+        "result_id",
+        "result_sha256",
+        "status",
+        "completed_at",
+    }
+)
+_COMPLETION_ATTESTATION_COLUMNS = (
+    ("attestation_id", "TEXT", 0, None, 1),
+    ("task_id", "TEXT", 1, None, 0),
+    ("signed_json", "TEXT", 1, None, 0),
+    ("signature", "TEXT", 1, None, 0),
+    ("created_at", "TEXT", 1, None, 0),
+)
+_COMPLETION_ATTESTATION_TABLE = """
+    CREATE TABLE lease_completion_attestations (
+        attestation_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES lease_tasks(task_id),
+        signed_json TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+"""
+_COMPLETION_ATTESTATION_TRIGGERS = {
+    "lease_completion_attestations_append_only_update": """
+        CREATE TRIGGER lease_completion_attestations_append_only_update
+        BEFORE UPDATE ON lease_completion_attestations BEGIN
+            SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
+        END
+    """,
+    "lease_completion_attestations_append_only_delete": """
+        CREATE TRIGGER lease_completion_attestations_append_only_delete
+        BEFORE DELETE ON lease_completion_attestations BEGIN
+            SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
+        END
+    """,
+}
 
 _EVENT_INDEXES = {
     "lease_events_one_shot_generation_uq": """
@@ -339,14 +398,6 @@ class LeaseStore:
                     occurred_at TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS lease_completion_attestations (
-                    attestation_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL REFERENCES lease_tasks(task_id),
-                    signed_json TEXT NOT NULL,
-                    signature TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
                 CREATE TRIGGER IF NOT EXISTS lease_events_append_only_update
                 BEFORE UPDATE ON lease_events BEGIN
                     SELECT RAISE(ABORT, 'lease_events is append-only');
@@ -357,15 +408,6 @@ class LeaseStore:
                     SELECT RAISE(ABORT, 'lease_events is append-only');
                 END;
 
-                CREATE TRIGGER IF NOT EXISTS lease_completion_attestations_append_only_update
-                BEFORE UPDATE ON lease_completion_attestations BEGIN
-                    SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
-                END;
-
-                CREATE TRIGGER IF NOT EXISTS lease_completion_attestations_append_only_delete
-                BEFORE DELETE ON lease_completion_attestations BEGIN
-                    SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
-                END;
                 """
             )
             self._migrate_schema(connection)
@@ -439,6 +481,57 @@ class LeaseStore:
                 ):
                     raise StoredStateCorruptError(
                         f"lease grant column {name!r} has an incompatible shape"
+                    )
+
+            attestation_columns = tuple(
+                (
+                    row["name"],
+                    row["type"].upper(),
+                    row["notnull"],
+                    row["dflt_value"],
+                    row["pk"],
+                )
+                for row in connection.execute(
+                    "PRAGMA table_info(lease_completion_attestations)"
+                )
+            )
+            if version == 0 and not attestation_columns:
+                connection.execute(_COMPLETION_ATTESTATION_TABLE)
+                attestation_columns = tuple(
+                    (
+                        row["name"],
+                        row["type"].upper(),
+                        row["notnull"],
+                        row["dflt_value"],
+                        row["pk"],
+                    )
+                    for row in connection.execute(
+                        "PRAGMA table_info(lease_completion_attestations)"
+                    )
+                )
+            if attestation_columns != _COMPLETION_ATTESTATION_COLUMNS:
+                raise StoredStateCorruptError(
+                    "completion attestation table has an incompatible shape"
+                )
+
+            for name, definition in _COMPLETION_ATTESTATION_TRIGGERS.items():
+                schema_row = connection.execute(
+                    "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                    "AND tbl_name = 'lease_completion_attestations' AND name = ?",
+                    (name,),
+                ).fetchone()
+                if version == 0 and schema_row is None:
+                    connection.execute(definition)
+                    schema_row = connection.execute(
+                        "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                        "AND tbl_name = 'lease_completion_attestations' AND name = ?",
+                        (name,),
+                    ).fetchone()
+                if schema_row is None or cls._normalized_schema_sql(
+                    schema_row["sql"]
+                ) != cls._normalized_schema_sql(definition):
+                    raise StoredStateCorruptError(
+                        f"completion attestation trigger {name!r} is malformed"
                     )
 
             columns = {
@@ -631,6 +724,7 @@ class LeaseStore:
                 signed_json=row["lease_grant_json"],
                 signature=row["lease_grant_signature"],
                 row_bindings=row_bindings,
+                unbound_fields=_LEASE_GRANT_UNBOUND_FIELDS,
             )
         except StoredStateCorruptError as exc:
             if "signature" in str(exc):
@@ -1614,6 +1708,7 @@ class LeaseStore:
                     signed_json=attestation_row["signed_json"],
                     signature=attestation_row["signature"],
                     row_bindings={"job_id": row["task_id"]},
+                    unbound_fields=_COMPLETION_ATTESTATION_UNBOUND_FIELDS,
                 )
             except StoredStateCorruptError as exc:
                 last_error = exc

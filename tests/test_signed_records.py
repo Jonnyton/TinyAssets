@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import copy
 import inspect
+import pickle
 from dataclasses import FrozenInstanceError
 
 import pytest
 from nacl.signing import SigningKey
 
+import tinyassets.runtime.signed_records as signed_records_module
 from tinyassets.runtime.signed_records import (
     PlatformSigner,
     RecordVerifier,
@@ -16,7 +19,7 @@ from tinyassets.runtime.signed_records import (
 _DOMAIN = b"tinyassets.test-record.v1\0"
 
 
-def test_verified_is_sealed_frozen_and_created_only_by_record_verifier() -> None:
+def test_verified_is_frozen_and_public_construction_bypasses_are_refused() -> None:
     key = SigningKey.generate()
     signer = PlatformSigner(key)
     verifier = RecordVerifier(key.verify_key)
@@ -28,14 +31,93 @@ def test_verified_is_sealed_frozen_and_created_only_by_record_verifier() -> None
     with pytest.raises(TypeError, match="RecordVerifier"):
         Verified(payload, _token=object())
 
-    verified = verifier.verify(_DOMAIN, signed_json, signature, payload)
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+        type("ForgedVerified", (Verified,), {})
+
+    verified = verifier.verify(
+        _DOMAIN,
+        signed_json,
+        signature,
+        payload,
+        unbound_fields=frozenset(),
+    )
 
     assert verified.payload == payload
     assert getattr(Verified, "__final__", False) is True
+    module_globals = vars(signed_records_module)
+    assert "_mint_verified" not in module_globals
+    assert not {
+        name for name, value in module_globals.items() if type(value) is object
+    }
+    for operation in (
+        lambda: copy.copy(verified),
+        lambda: copy.deepcopy(verified),
+        lambda: pickle.dumps(verified),
+        lambda: verified.__reduce__(),
+        lambda: verified.__reduce_ex__(pickle.HIGHEST_PROTOCOL),
+    ):
+        with pytest.raises(TypeError, match="Verified proof wrapper"):
+            operation()
     with pytest.raises(FrozenInstanceError):
         verified.payload = {}  # type: ignore[misc]
     with pytest.raises(TypeError):
         verified.payload["fence"] = 4  # type: ignore[index]
+    print(
+        "VERIFIED_CUSTODY_CONTRACT_ENFORCED: "
+        "sentinel_global=False subclass=False copy=False deepcopy=False pickle=False"
+    )
+
+
+def test_verified_custody_is_not_an_arbitrary_in_process_python_boundary() -> None:
+    """DML cannot mint proofs; arbitrary Python can bypass object/key privacy."""
+    key = SigningKey.generate()
+    signer = PlatformSigner(key)
+    verifier = RecordVerifier(key.verify_key)
+    payload = {"job_id": "outside", "fence": 9}
+
+    forged = object.__new__(Verified)
+    object.__setattr__(forged, "payload", payload)
+
+    assert forged.payload == payload
+    assert bytes(getattr(verifier, "_RecordVerifier__verify_key")) == bytes(
+        key.verify_key
+    )
+    assert bytes(getattr(signer, "_PlatformSigner__signing_key")) == bytes(key)
+    assert "DML" in (signed_records_module.__doc__ or "")
+    assert "arbitrary in-process Python execution" in (
+        signed_records_module.__doc__ or ""
+    )
+
+
+def test_record_verifier_rejects_omitted_signed_fields_unless_declared_unbound() -> None:
+    key = SigningKey.generate()
+    signer = PlatformSigner(key)
+    verifier = RecordVerifier(key.verify_key)
+    payload = {"job_id": "job-1", "fence": 3, "capsule_id": "capsule-1"}
+    signed_json, signature = signer.sign(_DOMAIN, payload)
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="declared unbound",
+    ) as rejection:
+        verifier.verify(
+            _DOMAIN,
+            signed_json,
+            signature,
+            {"job_id": "job-1", "fence": 3},
+            unbound_fields=frozenset(),
+        )
+    print(f"OMITTED_SIGNED_FIELD_REJECTED: {rejection.value}")
+
+    verified = verifier.verify(
+        _DOMAIN,
+        signed_json,
+        signature,
+        {"job_id": "job-1", "fence": 3},
+        unbound_fields=frozenset({"capsule_id"}),
+    )
+
+    assert verified.payload == payload
 
 
 @pytest.mark.parametrize(
@@ -83,6 +165,7 @@ def test_record_verifier_fails_closed_for_every_untrusted_input(
             signed_json=signed_json,
             signature=signature,
             row_bindings=row_bindings,
+            unbound_fields=frozenset(),
         )
 
 

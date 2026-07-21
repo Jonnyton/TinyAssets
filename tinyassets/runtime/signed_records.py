@@ -1,4 +1,11 @@
-"""Shared M1 verification for platform-signed authority records."""
+"""Shared M1 verification for platform-signed authority records.
+
+``Verified`` custody makes row-only DML unable to mint authenticated authority
+and makes accidental or casual reconstruction conspicuous. It is not proof
+against arbitrary in-process Python execution: such code can bypass Python
+object privacy and can also reach the signing and verification key objects.
+That S0 boundary is enforced outside this module.
+"""
 
 from __future__ import annotations
 
@@ -28,20 +35,125 @@ class StoredStateCorruptError(RuntimeError):
 
 
 T = TypeVar("T")
-_VERIFIED_TOKEN = object()
 
 
-@final
-@dataclass(frozen=True, init=False)
-class Verified(Generic[T]):
-    """Frozen proof wrapper minted only after verification in this module."""
+def _verified_contract():
+    construction_token = object()
 
-    payload: T
+    @final
+    @dataclass(frozen=True, init=False)
+    class Verified(Generic[T]):
+        """Frozen DML-proof wrapper minted after record verification."""
 
-    def __init__(self, payload: T, *, _token: object | None = None) -> None:
-        if _token is not _VERIFIED_TOKEN:
-            raise TypeError("Verified can only be constructed by RecordVerifier")
-        object.__setattr__(self, "payload", payload)
+        payload: T
+
+        def __init__(self, payload: T, *, _token: object | None = None) -> None:
+            if _token is not construction_token:
+                raise TypeError("Verified can only be constructed by RecordVerifier")
+            object.__setattr__(self, "payload", payload)
+
+        def __init_subclass__(cls, **kwargs: Any) -> None:
+            raise TypeError("Verified cannot be subclassed")
+
+        def __copy__(self):
+            raise TypeError("Verified proof wrappers cannot be copied")
+
+        def __deepcopy__(self, memo: dict[int, Any]):
+            raise TypeError("Verified proof wrappers cannot be copied")
+
+        def __reduce__(self):
+            raise TypeError("Verified proof wrappers cannot be pickled")
+
+        def __reduce_ex__(self, protocol: int):
+            raise TypeError("Verified proof wrappers cannot be pickled")
+
+    class RecordVerifier:
+        """Verify one platform key's domain-separated signed JSON records."""
+
+        __slots__ = ("__verify_key",)
+
+        def __init__(self, verify_key: VerifyKey) -> None:
+            if not isinstance(verify_key, VerifyKey):
+                raise TypeError("verify_key must be an Ed25519 VerifyKey")
+            self.__verify_key = verify_key
+
+        def verify(
+            self,
+            domain: bytes,
+            signed_json: str,
+            signature: str,
+            row_bindings: Mapping[str, Any],
+            *,
+            unbound_fields: frozenset[str],
+        ) -> Verified[Mapping[str, Any]]:
+            if type(domain) is not bytes or not domain:
+                raise StoredStateCorruptError("signed record domain is malformed")
+            try:
+                if type(signed_json) is not str or type(signature) is not str:
+                    raise TypeError
+                payload = json.loads(
+                    signed_json,
+                    object_pairs_hook=_reject_duplicate_members,
+                )
+                if type(payload) is not dict:
+                    raise TypeError
+                signature_bytes = base64.b64decode(signature, validate=True)
+                verify_domain_separated_ed25519(
+                    hash_canonical_jcs(payload),
+                    signature_bytes,
+                    domain_separator=domain,
+                    verify_key=self.__verify_key,
+                )
+            except (BadSignatureError, binascii.Error) as exc:
+                raise StoredStateCorruptError(
+                    "signed record signature is invalid"
+                ) from exc
+            except (
+                CapsuleCanonicalizationError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise StoredStateCorruptError("signed record is malformed") from exc
+            if not isinstance(row_bindings, Mapping):
+                raise StoredStateCorruptError(
+                    "signed record row bindings are malformed"
+                )
+            if type(unbound_fields) is not frozenset or any(
+                type(field) is not str for field in unbound_fields
+            ):
+                raise StoredStateCorruptError(
+                    "signed record unbound fields are malformed"
+                )
+            bound_fields = frozenset(row_bindings)
+            if any(type(field) is not str for field in bound_fields):
+                raise StoredStateCorruptError(
+                    "signed record row bindings are malformed"
+                )
+            if (
+                bound_fields & unbound_fields
+                or bound_fields | unbound_fields != frozenset(payload)
+            ):
+                raise StoredStateCorruptError(
+                    "every signed record field must be row-bound or declared unbound"
+                )
+            for field, value in row_bindings.items():
+                if payload[field] != value:
+                    raise StoredStateCorruptError(
+                        f"signed record does not match row binding {field!r}"
+                    )
+            return Verified(MappingProxyType(payload), _token=construction_token)
+
+        def _matches(self, verify_key: VerifyKey) -> bool:
+            return hmac.compare_digest(
+                bytes(self.__verify_key),
+                bytes(verify_key),
+            )
+
+    return Verified, RecordVerifier
+
+
+Verified, RecordVerifier = _verified_contract()
 
 
 def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -51,58 +163,6 @@ def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError(f"duplicate JSON member {key!r}")
         value[key] = item
     return value
-
-
-class RecordVerifier:
-    """Verify one platform key's domain-separated signed JSON records."""
-
-    __slots__ = ("__verify_key",)
-
-    def __init__(self, verify_key: VerifyKey) -> None:
-        if not isinstance(verify_key, VerifyKey):
-            raise TypeError("verify_key must be an Ed25519 VerifyKey")
-        self.__verify_key = verify_key
-
-    def verify(
-        self,
-        domain: bytes,
-        signed_json: str,
-        signature: str,
-        row_bindings: Mapping[str, Any],
-    ) -> Verified[Mapping[str, Any]]:
-        if type(domain) is not bytes or not domain:
-            raise StoredStateCorruptError("signed record domain is malformed")
-        try:
-            if type(signed_json) is not str or type(signature) is not str:
-                raise TypeError
-            payload = json.loads(
-                signed_json,
-                object_pairs_hook=_reject_duplicate_members,
-            )
-            if type(payload) is not dict:
-                raise TypeError
-            signature_bytes = base64.b64decode(signature, validate=True)
-            verify_domain_separated_ed25519(
-                hash_canonical_jcs(payload),
-                signature_bytes,
-                domain_separator=domain,
-                verify_key=self.__verify_key,
-            )
-        except (BadSignatureError, binascii.Error) as exc:
-            raise StoredStateCorruptError("signed record signature is invalid") from exc
-        except (CapsuleCanonicalizationError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise StoredStateCorruptError("signed record is malformed") from exc
-        if not isinstance(row_bindings, Mapping):
-            raise StoredStateCorruptError("signed record row bindings are malformed")
-        for field, value in row_bindings.items():
-            if type(field) is not str or field not in payload or payload[field] != value:
-                raise StoredStateCorruptError(
-                    f"signed record does not match row binding {field!r}"
-                )
-        return Verified(MappingProxyType(payload), _token=_VERIFIED_TOKEN)
-
-    def _matches(self, verify_key: VerifyKey) -> bool:
-        return hmac.compare_digest(bytes(self.__verify_key), bytes(verify_key))
 
 
 class PlatformSigner:

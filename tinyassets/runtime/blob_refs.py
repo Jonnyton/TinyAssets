@@ -35,6 +35,18 @@ _JSON_SAFE_INTEGER_MAX = 2**53 - 1
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _BLOB_REF_RE = re.compile(r"^blob:sha256:(?P<sha256>[0-9a-f]{64})$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9:_.-]+$", re.ASCII)
+_ROOT_LOCKS_GUARD = threading.Lock()
+_ROOT_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _shared_root_lock(root: Path) -> threading.RLock:
+    key = os.path.normcase(str(root))
+    with _ROOT_LOCKS_GUARD:
+        lock = _ROOT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _ROOT_LOCKS[key] = lock
+        return lock
 
 
 class BlobDeclarationV1(TypedDict):
@@ -197,7 +209,7 @@ class BlobStore:
         self._objects = self._root / "objects"
         self._uploads = self._root / "uploads"
         self._index_path = self._root / "index.json"
-        self._lock = threading.RLock()
+        self._lock = _shared_root_lock(self._root)
         for value, name in (
             (max_blob_bytes, "max_blob_bytes"),
             (owner_quota_bytes, "owner_quota_bytes"),
