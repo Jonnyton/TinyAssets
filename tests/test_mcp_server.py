@@ -405,6 +405,58 @@ class TestMCPConfig:
         assert "-m" in server["args"]
         assert "tinyassets.mcp_server" in server["args"]
 
+    def test_example_config_entry_point_resolves(self):
+        """The module a clean clone would launch must actually exist.
+
+        Tier-3 contributors copy ``.mcp.example.json`` to ``.mcp.json``
+        verbatim, so the config is only correct if ``python -m <module>``
+        resolves. The string assertions above stay green even when the module
+        behind them is renamed or retired (``mcp_server.py`` is slated for
+        exactly that in docs/audits/2026-04-28-commons-first-tool-surface-audit.md
+        F1), which would ship a clean clone pointed at nothing.
+        """
+        import importlib.util
+
+        config_path = Path(__file__).parent.parent / ".mcp.example.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        args = config["mcpServers"]["tinyassets"]["args"]
+        module_name = args[args.index("-m") + 1]
+
+        assert importlib.util.find_spec(module_name) is not None, (
+            f".mcp.example.json launches 'python -m {module_name}', which is "
+            "not importable — a clean clone would fail to start the server"
+        )
+        module = importlib.import_module(module_name)
+        assert callable(getattr(module, "main", None)), (
+            f"{module_name} has no callable main(); 'python -m {module_name}' "
+            "would not start a server"
+        )
+
+    def test_example_config_matches_console_script(self):
+        """``.mcp.example.json`` and the ``tinyassets-mcp`` script agree.
+
+        Two contributor-facing entry points name the same server. Repointing
+        one without the other is the drift this pins — a contributor following
+        the README's install path would get a different server than one
+        copying the example config.
+        """
+        import tomllib
+
+        root = Path(__file__).parent.parent
+        args = json.loads((root / ".mcp.example.json").read_text(encoding="utf-8"))[
+            "mcpServers"
+        ]["tinyassets"]["args"]
+        config_module = args[args.index("-m") + 1]
+
+        pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        script = pyproject["project"]["scripts"]["tinyassets-mcp"]
+        script_module = script.split(":")[0]
+
+        assert config_module == script_module, (
+            f".mcp.example.json launches {config_module!r} but the "
+            f"tinyassets-mcp console script points at {script_module!r}"
+        )
+
     def test_local_config_is_ignored(self):
         gitignore_path = Path(__file__).parent.parent / ".gitignore"
         ignored = {
