@@ -46,13 +46,6 @@ from tinyassets.runtime.execution_result import (
     result_blob_references,
     verify_execution_result,
 )
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 from tinyassets.runtime.signed_record_contracts import (
     COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
     LEASE_GRANT_DOMAIN_SEPARATOR,
@@ -60,17 +53,6 @@ from tinyassets.runtime.signed_record_contracts import (
     LeaseGrantValidationContext,
 )
 from tinyassets.runtime.signed_records import (
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-from tinyassets.runtime.signed_records import (
-    COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
-    LEASE_GRANT_DOMAIN_SEPARATOR,
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
     PlatformSigner,
     RecordVerifier,
     StoredStateCorruptError,
@@ -93,71 +75,11 @@ _RESULT_OUTCOMES = frozenset(
     }
 )
 
-<<<<<<< HEAD
 _SCHEMA_VERSION = 7
-=======
-<<<<<<< HEAD
-_SCHEMA_VERSION = 6
-=======
-<<<<<<< HEAD
-_SCHEMA_VERSION = 5
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 _LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v2"
 _LEASE_GRANT_DOMAIN_SEPARATOR = LEASE_GRANT_DOMAIN_SEPARATOR
 _COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
 _COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = COMPLETION_ATTESTATION_DOMAIN_SEPARATOR
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-_SCHEMA_VERSION = 4
-_LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v2"
-_LEASE_GRANT_DOMAIN_SEPARATOR = LEASE_GRANT_DOMAIN_SEPARATOR
-_LEASE_GRANT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "job_id",
-        "owner_user_id",
-        "daemon_id",
-        "device_key_id",
-        "device_verify_key",
-        "device_key_epoch",
-        "lease_id",
-        "fence",
-        "issued_at",
-        "expires_at",
-        "capsule_id",
-        "capsule_sha256",
-        "capability_class",
-        "repo_mode",
-        "runner_policy_sha256",
-        "image_digest",
-    }
-)
-_COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
-_COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = COMPLETION_ATTESTATION_DOMAIN_SEPARATOR
-_COMPLETION_ATTESTATION_FIELDS = frozenset(
-    {
-        "schema_version",
-        "receipt_id",
-        "job_id",
-        "owner_user_id",
-        "daemon_id",
-        "lease_id",
-        "fence",
-        "capsule_id",
-        "capsule_sha256",
-        "result_id",
-        "result_sha256",
-        "status",
-        "completed_at",
-    }
-)
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 _COMPLETION_ATTESTATION_COLUMNS = (
     ("attestation_id", "TEXT", 0, None, 1),
     ("task_id", "TEXT", 1, None, 0),
@@ -165,13 +87,10 @@ _COMPLETION_ATTESTATION_COLUMNS = (
     ("signature", "TEXT", 1, None, 0),
     ("created_at", "TEXT", 1, None, 0),
 )
-<<<<<<< HEAD
 _COMPLETION_ATTESTATION_TABLE_XINFO = tuple(
     (ordinal, *column, 0)
     for ordinal, column in enumerate(_COMPLETION_ATTESTATION_COLUMNS)
 )
-=======
->>>>>>> feat/lease-store-append-only
 _COMPLETION_ATTESTATION_TABLE = """
     CREATE TABLE lease_completion_attestations (
         attestation_id TEXT PRIMARY KEY,
@@ -181,7 +100,6 @@ _COMPLETION_ATTESTATION_TABLE = """
         created_at TEXT NOT NULL
     )
 """
-<<<<<<< HEAD
 _COMPLETION_ATTESTATION_TASK_INDEX_NAME = (
     "lease_completion_attestations_task_id_uq"
 )
@@ -199,9 +117,6 @@ _COMPLETION_ATTESTATION_INDEX_XINFO = {
         (1, -1, None, 0, "BINARY", 0),
     ),
 }
-=======
-<<<<<<< HEAD
->>>>>>> feat/lease-store-append-only
 _V5_COMPLETION_ATTESTATION_INSERT_TRIGGER = """
     CREATE TRIGGER lease_completion_attestations_append_only_insert
     BEFORE INSERT ON lease_completion_attestations
@@ -212,11 +127,6 @@ _V5_COMPLETION_ATTESTATION_INSERT_TRIGGER = """
         SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
     END
 """
-<<<<<<< HEAD
-=======
-=======
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 _COMPLETION_ATTESTATION_TRIGGERS = {
     "lease_completion_attestations_append_only_insert": """
         CREATE TRIGGER lease_completion_attestations_append_only_insert
@@ -224,14 +134,7 @@ _COMPLETION_ATTESTATION_TRIGGERS = {
         WHEN EXISTS (
             SELECT 1 FROM lease_completion_attestations
             WHERE attestation_id = NEW.attestation_id
-<<<<<<< HEAD
                 OR task_id = NEW.task_id
-=======
-<<<<<<< HEAD
-                OR task_id = NEW.task_id
-=======
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
         ) BEGIN
             SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
         END
@@ -452,7 +355,6 @@ class LeaseStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 30000")
         connection.execute("PRAGMA foreign_keys = ON")
-<<<<<<< HEAD
         connection.execute("PRAGMA recursive_triggers = ON")
         if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
             connection.close()
@@ -460,8 +362,6 @@ class LeaseStore:
         if connection.execute("PRAGMA recursive_triggers").fetchone()[0] != 1:
             connection.close()
             raise sqlite3.OperationalError("failed to enable recursive triggers")
-=======
->>>>>>> feat/lease-store-append-only
         connection.execute("PRAGMA synchronous = FULL")
         return connection
 
@@ -492,18 +392,7 @@ class LeaseStore:
                     lease_id TEXT,
                     lease_fence INTEGER NOT NULL DEFAULT 0 CHECK (lease_fence >= 0),
                     lease_daemon_id TEXT,
-<<<<<<< HEAD
                     lease_owner_user_id TEXT,
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id TEXT,
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id TEXT,
-=======
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                     lease_issued_at TEXT,
                     lease_expires_at TEXT,
                     lease_heartbeat_sequence INTEGER NOT NULL DEFAULT 0,
@@ -569,7 +458,6 @@ class LeaseStore:
         return actual_keys == _EVENT_INDEX_KEYS[name]
 
     @classmethod
-<<<<<<< HEAD
     def _validate_completion_attestation_schema(
         cls,
         connection: sqlite3.Connection,
@@ -729,8 +617,6 @@ class LeaseStore:
             )
 
     @classmethod
-=======
->>>>>>> feat/lease-store-append-only
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
         """Install and verify schema-owned ledger defenses atomically.
 
@@ -751,27 +637,11 @@ class LeaseStore:
                 row["name"]: row
                 for row in connection.execute("PRAGMA table_info(lease_tasks)")
             }
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             for name in (
                 "lease_grant_json",
                 "lease_grant_signature",
                 "lease_owner_user_id",
             ):
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-            for name in ("lease_grant_json", "lease_grant_signature"):
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                 column = task_columns.get(name)
                 if column is None:
                     connection.execute(f"ALTER TABLE lease_tasks ADD COLUMN {name} TEXT")
@@ -785,13 +655,6 @@ class LeaseStore:
                         f"lease grant column {name!r} has an incompatible shape"
                     )
 
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             if version < 5 and {
                 "status",
                 "lease_id",
@@ -829,7 +692,6 @@ class LeaseStore:
                     """
                 )
 
-<<<<<<< HEAD
             attestation_objects = connection.execute(
                 "SELECT type FROM main.sqlite_schema "
                 "WHERE name = 'lease_completion_attestations'"
@@ -840,57 +702,6 @@ class LeaseStore:
             for name, definition in _COMPLETION_ATTESTATION_TRIGGERS.items():
                 schema_row = connection.execute(
                     "SELECT sql FROM main.sqlite_schema WHERE type = 'trigger' "
-=======
-<<<<<<< HEAD
-=======
-=======
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
-            attestation_columns = tuple(
-                (
-                    row["name"],
-                    row["type"].upper(),
-                    row["notnull"],
-                    row["dflt_value"],
-                    row["pk"],
-                )
-                for row in connection.execute(
-                    "PRAGMA table_info(lease_completion_attestations)"
-                )
-            )
-            if version == 0 and not attestation_columns:
-                connection.execute(_COMPLETION_ATTESTATION_TABLE)
-                attestation_columns = tuple(
-                    (
-                        row["name"],
-                        row["type"].upper(),
-                        row["notnull"],
-                        row["dflt_value"],
-                        row["pk"],
-                    )
-                    for row in connection.execute(
-                        "PRAGMA table_info(lease_completion_attestations)"
-                    )
-                )
-            if attestation_columns != _COMPLETION_ATTESTATION_COLUMNS:
-                raise StoredStateCorruptError(
-                    "completion attestation table has an incompatible shape"
-                )
-            table_row = connection.execute(
-                "SELECT sql FROM sqlite_schema WHERE type = 'table' "
-                "AND name = 'lease_completion_attestations'"
-            ).fetchone()
-            if table_row is None or cls._normalized_schema_sql(
-                table_row["sql"]
-            ) != cls._normalized_schema_sql(_COMPLETION_ATTESTATION_TABLE):
-                raise StoredStateCorruptError(
-                    "completion attestation table has an incompatible definition"
-                )
-
-            for name, definition in _COMPLETION_ATTESTATION_TRIGGERS.items():
-                schema_row = connection.execute(
-                    "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
->>>>>>> feat/lease-store-append-only
                     "AND tbl_name = 'lease_completion_attestations' AND name = ?",
                     (name,),
                 ).fetchone()
@@ -904,18 +715,10 @@ class LeaseStore:
                 ):
                     connection.execute(definition)
                     schema_row = connection.execute(
-<<<<<<< HEAD
                         "SELECT sql FROM main.sqlite_schema WHERE type = 'trigger' "
                         "AND tbl_name = 'lease_completion_attestations' AND name = ?",
                         (name,),
                     ).fetchone()
-=======
-                        "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
-                        "AND tbl_name = 'lease_completion_attestations' AND name = ?",
-                        (name,),
-                    ).fetchone()
-<<<<<<< HEAD
->>>>>>> feat/lease-store-append-only
                 elif 4 <= version < 6 and name == (
                     "lease_completion_attestations_append_only_insert"
                 ):
@@ -934,20 +737,11 @@ class LeaseStore:
                         connection.execute(f"DROP TRIGGER IF EXISTS {name}")
                         connection.execute(definition)
                         schema_row = connection.execute(
-<<<<<<< HEAD
                             "SELECT sql FROM main.sqlite_schema WHERE type = 'trigger' "
-=======
-                            "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
->>>>>>> feat/lease-store-append-only
                             "AND tbl_name = 'lease_completion_attestations' "
                             "AND name = ?",
                             (name,),
                         ).fetchone()
-<<<<<<< HEAD
-=======
-=======
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                 if schema_row is None or cls._normalized_schema_sql(
                     schema_row["sql"]
                 ) != cls._normalized_schema_sql(definition):
@@ -955,7 +749,6 @@ class LeaseStore:
                         f"completion attestation trigger {name!r} is malformed"
                     )
 
-<<<<<<< HEAD
             cls._validate_completion_attestation_schema(
                 connection,
                 require_task_index=version >= 7,
@@ -978,8 +771,6 @@ class LeaseStore:
                 require_task_index=True,
             )
 
-=======
->>>>>>> feat/lease-store-append-only
             columns = {
                 row["name"]: row
                 for row in connection.execute("PRAGMA table_info(lease_events)")
@@ -1069,7 +860,6 @@ class LeaseStore:
         finally:
             connection.close()
 
-<<<<<<< HEAD
     @contextlib.contextmanager
     def _blob_transaction(
         self,
@@ -1080,8 +870,6 @@ class LeaseStore:
             with self._transaction() as connection:
                 yield connection
 
-=======
->>>>>>> feat/lease-store-append-only
     def _now_text(self) -> str:
         return self._time_text(self._now())
 
@@ -1192,18 +980,7 @@ class LeaseStore:
             )
         row_bindings = {
             "job_id": row["task_id"],
-<<<<<<< HEAD
             "owner_user_id": row["lease_owner_user_id"],
-=======
-<<<<<<< HEAD
-            "owner_user_id": row["lease_owner_user_id"],
-=======
-<<<<<<< HEAD
-            "owner_user_id": row["lease_owner_user_id"],
-=======
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             "daemon_id": row["lease_daemon_id"],
             "lease_id": row["lease_id"],
             "fence": row["lease_fence"],
@@ -1218,24 +995,9 @@ class LeaseStore:
                 signed_json=row["lease_grant_json"],
                 signature=row["lease_grant_signature"],
                 row_bindings=row_bindings,
-<<<<<<< HEAD
                 validation_context=LeaseGrantValidationContext(
                     self._key_registry
                 ),
-=======
-<<<<<<< HEAD
-                validation_context=LeaseGrantValidationContext(
-                    self._key_registry
-                ),
-=======
-<<<<<<< HEAD
-                validation_context=LeaseGrantValidationContext(
-                    self._key_registry
-                ),
-=======
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             )
         except StoredStateCorruptError as exc:
             if "signature" in str(exc):
@@ -1244,13 +1006,6 @@ class LeaseStore:
                 message = (
                     "platform lease grant does not match the current lease generation"
                 )
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             elif (
                 "specialized validation" in str(exc)
                 and exc.__cause__ is not None
@@ -1259,60 +1014,6 @@ class LeaseStore:
             else:
                 message = "platform lease grant is missing or malformed"
             raise StoredStateCorruptError(message) from exc
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-            else:
-                message = "platform lease grant is missing or malformed"
-            raise StoredStateCorruptError(message) from exc
-        binding = verified.payload
-        if not isinstance(binding, Mapping) or frozenset(binding) != _LEASE_GRANT_FIELDS:
-            raise StoredStateCorruptError(
-                "platform lease grant is missing or malformed"
-            )
-        required_strings = _LEASE_GRANT_FIELDS - {
-            "device_key_epoch",
-            "fence",
-            "repo_mode",
-        }
-        if any(
-            type(binding.get(field)) is not str or not binding[field]
-            for field in required_strings
-        ):
-            raise StoredStateCorruptError(
-                "platform lease grant is missing or malformed"
-            )
-        if (
-            binding["schema_version"] != _LEASE_GRANT_SCHEMA_VERSION
-            or type(binding["device_key_epoch"]) is not int
-            or binding["device_key_epoch"] < 1
-            or type(binding["fence"]) is not int
-            or binding["fence"] < 1
-        ):
-            raise StoredStateCorruptError(
-                "platform lease grant is missing or malformed"
-            )
-        self._parse_time(binding["issued_at"])
-        self._parse_time(binding["expires_at"])
-        self._grant_device_verify_key(binding)
-        try:
-            self._grant_policy_values(
-                LeaseGrantPolicy(
-                    capability_class=binding["capability_class"],
-                    repo_mode=binding["repo_mode"],
-                    runner_policy_sha256=binding["runner_policy_sha256"],
-                    image_digest=binding["image_digest"],
-                )
-            )
-        except LeaseStoreError as exc:
-            raise StoredStateCorruptError(
-                "platform lease grant is missing or malformed"
-            ) from exc
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
         return verified
 
     @staticmethod
@@ -1325,48 +1026,6 @@ class LeaseStore:
                 "platform lease grant has a malformed device verification key"
             ) from exc
 
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-    def _active_grant_device_key(self, grant: Mapping[str, Any]) -> VerifyKey:
-        """Return the signed grant key after applying the registry's vetoes.
-
-        The registry may revoke or epoch-fence a signed grant, but it cannot
-        choose a different verification key or widen what the grant authorizes.
-        """
-        device_key_id = grant["device_key_id"]
-        device_key_epoch = grant["device_key_epoch"]
-        grant_verify_key = self._grant_device_verify_key(grant)
-        if self._key_registry is None:
-            raise StoredStateCorruptError(
-                "platform device-key registry is unavailable"
-            )
-        registered = self._key_registry.resolve_device_key(device_key_id)
-        if registered is None or registered.device_key_id != device_key_id:
-            raise StoredStateCorruptError(
-                "stored candidate device key is not registered"
-            )
-        if registered.credential_epoch != device_key_epoch or registered.active is not True:
-            raise StoredStateCorruptError(
-                "stored candidate device key is inactive or has changed epoch"
-            )
-        if (
-            not isinstance(registered.verify_key, VerifyKey)
-            or not hmac.compare_digest(
-                bytes(registered.verify_key), bytes(grant_verify_key)
-            )
-        ):
-            raise StoredStateCorruptError(
-                "device registry does not match the grant's signed verification key"
-            )
-        return grant_verify_key
-
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
     @staticmethod
     def _task_row(
         connection: sqlite3.Connection, task_id: str
@@ -1473,19 +1132,7 @@ class LeaseStore:
     ) -> dict[str, Any]:
         grant = self._verified_lease_grant(row).payload
         device_key_id = grant["device_key_id"]
-<<<<<<< HEAD
         grant_verify_key = self._grant_device_verify_key(grant)
-=======
-<<<<<<< HEAD
-        grant_verify_key = self._grant_device_verify_key(grant)
-=======
-<<<<<<< HEAD
-        grant_verify_key = self._grant_device_verify_key(grant)
-=======
-        grant_verify_key = self._active_grant_device_key(grant)
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
         try:
             verified = verify_execution_result(
                 json.dumps(candidate, separators=(",", ":")).encode(),
@@ -1685,22 +1332,8 @@ class LeaseStore:
                     """
                     UPDATE lease_tasks SET
                         status = 'pending', lease_id = NULL,
-<<<<<<< HEAD
                         lease_daemon_id = NULL, lease_owner_user_id = NULL,
                         lease_issued_at = NULL,
-=======
-<<<<<<< HEAD
-                        lease_daemon_id = NULL, lease_owner_user_id = NULL,
-                        lease_issued_at = NULL,
-=======
-<<<<<<< HEAD
-                        lease_daemon_id = NULL, lease_owner_user_id = NULL,
-                        lease_issued_at = NULL,
-=======
-                        lease_daemon_id = NULL, lease_issued_at = NULL,
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                         lease_expires_at = NULL, lease_heartbeat_sequence = 0,
                         capsule_id = NULL, capsule_sha256 = NULL,
                         candidate_result_id = NULL,
@@ -1750,18 +1383,7 @@ class LeaseStore:
                 UPDATE lease_tasks SET
                     status = 'leased', lease_id = ?, lease_fence = lease_fence + 1,
                     lease_daemon_id = ?, lease_issued_at = ?, lease_expires_at = ?,
-<<<<<<< HEAD
                     lease_owner_user_id = NULL,
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id = NULL,
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id = NULL,
-=======
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                     lease_heartbeat_sequence = 0, capsule_id = NULL,
                     capsule_sha256 = NULL,
                     candidate_result_id = NULL, candidate_result_sha256 = NULL,
@@ -1802,13 +1424,6 @@ class LeaseStore:
                 )
             grant_json: str | None = None
             grant_signature: str | None = None
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             lease_owner_user_id: str | None = None
             if authenticated_daemon is not None:
                 if grant_issuer is None or policy is None:
@@ -1816,17 +1431,6 @@ class LeaseStore:
                 lease_owner_user_id = self._grant_principal_values(
                     authenticated_daemon
                 )[1]
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-            if authenticated_daemon is not None:
-                if grant_issuer is None or policy is None:
-                    raise LeaseStoreError("authenticated claim requires grant issuer")
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                 grant_json, grant_signature = grant_issuer._sign_lease_grant(
                     store=self,
                     identity=identity,
@@ -1837,22 +1441,8 @@ class LeaseStore:
             capsule_cursor = connection.execute(
                 """
                 UPDATE lease_tasks SET capsule_id = ?, capsule_sha256 = ?,
-<<<<<<< HEAD
                     lease_owner_user_id = ?, lease_grant_json = ?,
                     lease_grant_signature = ?
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id = ?, lease_grant_json = ?,
-                    lease_grant_signature = ?
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id = ?, lease_grant_json = ?,
-                    lease_grant_signature = ?
-=======
-                    lease_grant_json = ?, lease_grant_signature = ?
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                 WHERE task_id = ? AND status = 'leased' AND lease_id = ?
                     AND lease_fence = ? AND capsule_id IS NULL
                     AND capsule_sha256 IS NULL
@@ -1860,18 +1450,7 @@ class LeaseStore:
                 (
                     capsule.record_id,
                     capsule.content_sha256,
-<<<<<<< HEAD
                     lease_owner_user_id,
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id,
-=======
-<<<<<<< HEAD
-                    lease_owner_user_id,
-=======
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                     grant_json,
                     grant_signature,
                     task_id,
@@ -2099,27 +1678,19 @@ class LeaseStore:
         authenticated_daemon: AuthenticatedLeasePrincipal,
     ) -> dict[str, Any]:
         """Validate and persist one write-once S5 candidate under the job lock."""
-<<<<<<< HEAD
         with self._connect() as connection:
             started_while_leased = self._task_row(connection, job_id)["status"] == "leased"
         with self._blob_transaction(blob_store) as connection:
-=======
-        with self._transaction() as connection:
->>>>>>> feat/lease-store-append-only
             operation_now = self._now()
             operation_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
             self._require_generation_floor(connection, row)
-<<<<<<< HEAD
             terminal_replay = started_while_leased and row["status"] in {
                 "succeeded",
                 "cancelled",
                 "failed",
             }
             if row["status"] != "leased" and not terminal_replay:
-=======
-            if row["status"] != "leased":
->>>>>>> feat/lease-store-append-only
                 raise StaleLeaseError("job is not under an active lease")
             lease_expires_at = self._parse_time(row["lease_expires_at"])
             grant = self._verified_lease_grant(row).payload
@@ -2133,19 +1704,7 @@ class LeaseStore:
                 raise InvalidLeaseHolderError(
                     "signed lease grant differs from the authenticated daemon"
                 )
-<<<<<<< HEAD
             grant_verify_key = self._grant_device_verify_key(grant)
-=======
-<<<<<<< HEAD
-            grant_verify_key = self._grant_device_verify_key(grant)
-=======
-<<<<<<< HEAD
-            grant_verify_key = self._grant_device_verify_key(grant)
-=======
-            grant_verify_key = self._active_grant_device_key(grant)
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             if not isinstance(verify_key, VerifyKey) or not hmac.compare_digest(
                 bytes(verify_key), bytes(grant_verify_key)
             ):
@@ -2170,7 +1729,7 @@ class LeaseStore:
                     expected_image_digest=grant["image_digest"],
                 )
                 references = result_blob_references(verified)
-                for blob_ref, sha256, size_bytes in references:
+                blob_proofs = tuple(
                     blob_store.validate_reference(
                         blob_ref,
                         owner_user_id=grant["owner_user_id"],
@@ -2180,6 +1739,8 @@ class LeaseStore:
                         expected_sha256=sha256,
                         expected_size_bytes=size_bytes,
                     )
+                    for blob_ref, sha256, size_bytes in references
+                )
             except (ExecutionResultError, BlobError) as exc:
                 raise CandidateValidationError(str(exc)) from exc
 
@@ -2196,11 +1757,7 @@ class LeaseStore:
             if existing_hash is not None and existing_hash != result_sha256:
                 raise ResultConflictError("current lease already has another candidate result")
             if existing_hash == result_sha256:
-<<<<<<< HEAD
                 if not terminal_replay and operation_now >= lease_expires_at:
-=======
-                if operation_now >= lease_expires_at:
->>>>>>> feat/lease-store-append-only
                     raise StaleLeaseError("job lease has expired")
                 stored_candidate = metadata.get("candidate_result")
                 if not isinstance(stored_candidate, dict):
@@ -2221,21 +1778,18 @@ class LeaseStore:
                     accepted_at=verified["completed_at"],
                 )
 
-<<<<<<< HEAD
             if terminal_replay:
                 raise StoredStateCorruptError(
                     "terminal job is missing its durable candidate hash"
                 )
 
-=======
->>>>>>> feat/lease-store-append-only
             if operation_now >= lease_expires_at:
                 raise StaleLeaseError("job lease has expired")
 
             try:
-                for blob_ref, _, _ in references:
+                for blob_proof in blob_proofs:
                     blob_store.mark_referenced(
-                        blob_ref,
+                        blob_proof,
                         owner_user_id=grant["owner_user_id"],
                         job_id=grant["job_id"],
                         lease_id=grant["lease_id"],
@@ -2288,13 +1842,6 @@ class LeaseStore:
             )
             return dict(receipt)
 
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
     @staticmethod
     def _completion_row_bindings(row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -2325,113 +1872,12 @@ class LeaseStore:
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
         return {
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-    def _completion_attestation_receipt(
-        self,
-        *,
-        row: sqlite3.Row,
-        payload: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        if frozenset(payload) != _COMPLETION_ATTESTATION_FIELDS:
-            raise StoredStateCorruptError(
-                "platform completion attestation is missing or malformed"
-            )
-        required_strings = _COMPLETION_ATTESTATION_FIELDS - {"fence"}
-        if any(
-            type(payload.get(field)) is not str or not payload[field]
-            for field in required_strings
-        ) or type(payload.get("fence")) is not int:
-            raise StoredStateCorruptError(
-                "platform completion attestation is missing or malformed"
-            )
-        if (
-            payload["schema_version"] != _COMPLETION_ATTESTATION_SCHEMA_VERSION
-            or payload["fence"] < 1
-            or payload["status"] not in _TERMINAL_STATUSES
-            or not _SHA256_RE.fullmatch(payload["capsule_sha256"])
-            or not _SHA256_RE.fullmatch(payload["result_sha256"])
-            or payload["result_id"] != f"result:{payload['result_sha256']}"
-        ):
-            raise StoredStateCorruptError(
-                "platform completion attestation is missing or malformed"
-            )
-        self._parse_time(payload["completed_at"])
-        receipt_request = {
-            "job_id": payload["job_id"],
-            "daemon_id": payload["daemon_id"],
-            "lease_id": payload["lease_id"],
-            "fence": payload["fence"],
-            "capsule_sha256": payload["capsule_sha256"],
-            "result_sha256": payload["result_sha256"],
-        }
-        expected_receipt_id = f"completion:{hash_canonical_jcs(receipt_request).hex()}"
-        if payload["receipt_id"] != expected_receipt_id:
-            raise StoredStateCorruptError(
-                "platform completion attestation receipt id is invalid"
-            )
-        receipt = {
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             "receipt_id": payload["receipt_id"],
             "job_id": payload["job_id"],
             "status": payload["status"],
             "accepted_result_sha256": payload["result_sha256"],
             "completed_at": payload["completed_at"],
         }
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-        metadata = self._result_metadata(row)
-        stored_receipt = metadata.get("completion_receipt")
-        if not isinstance(stored_receipt, dict) or stored_receipt != receipt:
-            raise StoredStateCorruptError(
-                "durable completion receipt does not match signed attestation"
-            )
-        if row["status"] in _TERMINAL_STATUSES:
-            if row["status"] != payload["status"]:
-                raise StoredStateCorruptError(
-                    "terminal row status does not match signed attestation"
-                )
-        elif row["status"] != "leased":
-            raise StoredStateCorruptError(
-                "terminal row reset is inconsistent with signed attestation"
-            )
-        resettable_row_vetoes = {
-            "accepted_result_id": payload["result_id"],
-            "accepted_result_sha256": payload["result_sha256"],
-        }
-        for field, expected_value in resettable_row_vetoes.items():
-            row_value = row[field]
-            if row_value is not None and row_value != expected_value:
-                raise StoredStateCorruptError(
-                    f"terminal row {field} does not match signed attestation"
-                )
-        required_row_bindings = {
-            "candidate_result_id": payload["result_id"],
-            "candidate_result_sha256": payload["result_sha256"],
-            "lease_id": payload["lease_id"],
-            "lease_fence": payload["fence"],
-            "lease_daemon_id": payload["daemon_id"],
-            "capsule_id": payload["capsule_id"],
-            "capsule_sha256": payload["capsule_sha256"],
-        }
-        for field, expected_value in required_row_bindings.items():
-            if row[field] != expected_value:
-                raise StoredStateCorruptError(
-                    f"terminal row {field} does not match signed attestation"
-                )
-        return receipt
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 
     def _verified_completion_replay(
         self,
@@ -2441,11 +1887,7 @@ class LeaseStore:
         expected: Mapping[str, Any],
     ) -> dict[str, Any] | None:
         attestation_rows = connection.execute(
-<<<<<<< HEAD
             "SELECT signed_json, signature FROM main.lease_completion_attestations "
-=======
-            "SELECT signed_json, signature FROM lease_completion_attestations "
->>>>>>> feat/lease-store-append-only
             "WHERE task_id = ? ORDER BY attestation_id",
             (row["task_id"],),
         ).fetchall()
@@ -2455,38 +1897,15 @@ class LeaseStore:
             raise StoredStateCorruptError(
                 "platform completion-attestation verification key is unavailable"
             )
-<<<<<<< HEAD
         validation_context = self._completion_validation_context(row)
         verified_payloads: dict[bytes, Mapping[str, Any]] = {}
         receipt_mismatch_payloads: dict[bytes, Mapping[str, Any]] = {}
-=======
-<<<<<<< HEAD
-        validation_context = self._completion_validation_context(row)
-        verified_payloads: dict[bytes, Mapping[str, Any]] = {}
-        receipt_mismatch_payloads: dict[bytes, Mapping[str, Any]] = {}
-=======
-<<<<<<< HEAD
-        validation_context = self._completion_validation_context(row)
-        verified_payloads: dict[bytes, Mapping[str, Any]] = {}
-        receipt_mismatch_payloads: dict[bytes, Mapping[str, Any]] = {}
-=======
-        verified_payloads: dict[bytes, Mapping[str, Any]] = {}
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
         for attestation_row in attestation_rows:
             try:
                 verified = self._record_verifier.verify(
                     domain=_COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
                     signed_json=attestation_row["signed_json"],
                     signature=attestation_row["signature"],
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                     row_bindings=self._completion_row_bindings(row),
                     validation_context=validation_context,
                 )
@@ -2514,60 +1933,18 @@ class LeaseStore:
                         if key != "owner_user_id"
                     }
                 ),
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-                    row_bindings={"job_id": row["task_id"]},
-                )
-            except StoredStateCorruptError:
-                continue
-            verified_payloads.setdefault(
-                hash_canonical_jcs(dict(verified.payload)),
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
                 verified.payload,
             )
         if not verified_payloads:
             return None
-<<<<<<< HEAD
         if len(verified_payloads) > 1 or any(
             digest not in verified_payloads for digest in receipt_mismatch_payloads
         ):
-=======
-<<<<<<< HEAD
-        if len(verified_payloads) > 1 or any(
-            digest not in verified_payloads for digest in receipt_mismatch_payloads
-        ):
-=======
-<<<<<<< HEAD
-        if len(verified_payloads) > 1 or any(
-            digest not in verified_payloads for digest in receipt_mismatch_payloads
-        ):
-=======
-        if len(verified_payloads) > 1:
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             raise StoredStateCorruptError(
                 "distinct valid platform completion attestations conflict"
             )
         payload = next(iter(verified_payloads.values()))
-<<<<<<< HEAD
         receipt = self._completion_attestation_receipt(payload)
-=======
-<<<<<<< HEAD
-        receipt = self._completion_attestation_receipt(payload)
-=======
-<<<<<<< HEAD
-        receipt = self._completion_attestation_receipt(payload)
-=======
-        receipt = self._completion_attestation_receipt(row=row, payload=payload)
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
         if type(expected["lease_fence"]) is not int or expected["lease_fence"] != payload[
             "fence"
         ]:
@@ -2689,11 +2066,7 @@ class LeaseStore:
                 "completion signing and verification keys do not match"
             )
 
-<<<<<<< HEAD
         with self._blob_transaction(blob_store) as connection:
-=======
-        with self._transaction() as connection:
->>>>>>> feat/lease-store-append-only
             operation_now = self._now()
             completed_at = self._time_text(operation_now)
             row = self._task_row(connection, job_id)
@@ -2807,11 +2180,7 @@ class LeaseStore:
                         raise StaleLeaseError("job lease has expired")
                     raise StaleLeaseError("completion lost the current lease CAS")
                 connection.execute(
-<<<<<<< HEAD
                     "INSERT INTO main.lease_completion_attestations("
-=======
-                    "INSERT INTO lease_completion_attestations("
->>>>>>> feat/lease-store-append-only
                     "attestation_id, task_id, signed_json, signature, created_at"
                     ") VALUES (?, ?, ?, ?, ?)",
                     (

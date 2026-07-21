@@ -28,18 +28,7 @@ from tinyassets.runtime.execution_capsule import (
     sign_domain_separated_ed25519,
     verify_domain_separated_ed25519,
 )
-<<<<<<< HEAD
 from tinyassets.runtime.signed_record_contracts import SIGNED_RECORD_CONTRACTS
-=======
-<<<<<<< HEAD
-from tinyassets.runtime.signed_record_contracts import SIGNED_RECORD_CONTRACTS
-=======
-<<<<<<< HEAD
-from tinyassets.runtime.signed_record_contracts import SIGNED_RECORD_CONTRACTS
-=======
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 
 
 class StoredStateCorruptError(RuntimeError):
@@ -49,13 +38,6 @@ class StoredStateCorruptError(RuntimeError):
 T = TypeVar("T")
 
 
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 def _json_type_strict_equal(left: Any, right: Any) -> bool:
     if type(left) is not type(right):
         return False
@@ -69,103 +51,6 @@ def _json_type_strict_equal(left: Any, right: Any) -> bool:
             for left_item, right_item in zip(left, right, strict=True)
         )
     return bool(left == right)
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-@dataclass(frozen=True)
-class SignedFieldContract:
-    """Immutable accounting for every field signed under one domain."""
-
-    row_bound_fields: frozenset[str]
-    specialized_fields: frozenset[str]
-    inert_fields: frozenset[str]
-
-    def __post_init__(self) -> None:
-        partitions = (
-            self.row_bound_fields,
-            self.specialized_fields,
-            self.inert_fields,
-        )
-        if any(
-            type(partition) is not frozenset
-            or any(type(field) is not str or not field for field in partition)
-            for partition in partitions
-        ):
-            raise TypeError("signed field contract partitions must be frozensets of names")
-        if (
-            self.row_bound_fields & self.specialized_fields
-            or self.row_bound_fields & self.inert_fields
-            or self.specialized_fields & self.inert_fields
-        ):
-            raise ValueError("signed field contract partitions must not overlap")
-        if not self.fields:
-            raise ValueError("signed field contract must classify at least one field")
-
-    @property
-    def fields(self) -> frozenset[str]:
-        return self.row_bound_fields | self.specialized_fields | self.inert_fields
-
-
-LEASE_GRANT_DOMAIN_SEPARATOR = b"tinyassets.lease-grant.v2\0"
-COMPLETION_ATTESTATION_DOMAIN_SEPARATOR = b"tinyassets.completion-attestation.v1\0"
-
-DEFAULT_SIGNED_FIELD_CONTRACTS = MappingProxyType(
-    {
-        LEASE_GRANT_DOMAIN_SEPARATOR: SignedFieldContract(
-            row_bound_fields=frozenset(
-                {
-                    "job_id",
-                    "daemon_id",
-                    "lease_id",
-                    "fence",
-                    "issued_at",
-                    "expires_at",
-                    "capsule_id",
-                    "capsule_sha256",
-                }
-            ),
-            specialized_fields=frozenset(
-                {
-                    "schema_version",
-                    "owner_user_id",
-                    "device_key_id",
-                    "device_verify_key",
-                    "device_key_epoch",
-                    "capability_class",
-                    "repo_mode",
-                    "runner_policy_sha256",
-                    "image_digest",
-                }
-            ),
-            inert_fields=frozenset(),
-        ),
-        COMPLETION_ATTESTATION_DOMAIN_SEPARATOR: SignedFieldContract(
-            row_bound_fields=frozenset({"job_id"}),
-            specialized_fields=frozenset(
-                {
-                    "schema_version",
-                    "receipt_id",
-                    "owner_user_id",
-                    "daemon_id",
-                    "lease_id",
-                    "fence",
-                    "capsule_id",
-                    "capsule_sha256",
-                    "result_id",
-                    "result_sha256",
-                    "status",
-                    "completed_at",
-                }
-            ),
-            inert_fields=frozenset(),
-        ),
-    }
-)
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
 
 
 def _verified_contract():
@@ -174,13 +59,16 @@ def _verified_contract():
     @final
     @dataclass(frozen=True, init=False)
     class Verified(Generic[T]):
-        """Frozen DML-proof wrapper minted after record verification."""
+        """Frozen proof wrapper minted after an authority mechanism verifies."""
 
         payload: T
 
         def __init__(self, payload: T, *, _token: object | None = None) -> None:
             if _token is not construction_token:
-                raise TypeError("Verified can only be constructed by RecordVerifier")
+                raise TypeError(
+                    "Verified can only be constructed by an authority verifier "
+                    "such as RecordVerifier"
+                )
             object.__setattr__(self, "payload", payload)
 
         def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -214,31 +102,12 @@ def _verified_contract():
             signed_json: str,
             signature: str,
             row_bindings: Mapping[str, Any],
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             *,
             validation_context: object | None = None,
         ) -> Verified[Mapping[str, Any]]:
             if type(domain) is not bytes or not domain:
                 raise StoredStateCorruptError("signed record domain is malformed")
             contract = SIGNED_RECORD_CONTRACTS.get(domain)
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-        ) -> Verified[Mapping[str, Any]]:
-            if type(domain) is not bytes or not domain:
-                raise StoredStateCorruptError("signed record domain is malformed")
-            contract = DEFAULT_SIGNED_FIELD_CONTRACTS.get(domain)
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             if contract is None:
                 raise StoredStateCorruptError(
                     "signed record domain has no immutable field contract"
@@ -270,13 +139,6 @@ def _verified_contract():
                 json.JSONDecodeError,
             ) as exc:
                 raise StoredStateCorruptError("signed record is malformed") from exc
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
             if payload.keys() != contract.fields.keys():
                 raise StoredStateCorruptError(
                     "signed record fields differ from its immutable field contract"
@@ -308,37 +170,7 @@ def _verified_contract():
                     raise StoredStateCorruptError(
                         "signed record specialized validation failed"
                     ) from exc
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-            if not isinstance(row_bindings, Mapping):
-                raise StoredStateCorruptError(
-                    "signed record row bindings are malformed"
-                )
-            bound_fields = frozenset(row_bindings)
-            if any(type(field) is not str for field in bound_fields):
-                raise StoredStateCorruptError(
-                    "signed record row bindings are malformed"
-                )
-            if bound_fields != contract.row_bound_fields:
-                raise StoredStateCorruptError(
-                    "signed record row bindings differ from its immutable field contract"
-                )
-            if frozenset(payload) != contract.fields:
-                raise StoredStateCorruptError(
-                    "signed record fields differ from its immutable field contract"
-                )
-            for field, value in row_bindings.items():
-                if payload[field] != value:
-                    raise StoredStateCorruptError(
-                        f"signed record does not match row binding {field!r}"
-                    )
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
-            return Verified(MappingProxyType(payload), _token=construction_token)
+            return verified_after_mechanism_check(MappingProxyType(payload))
 
         def _matches(self, verify_key: VerifyKey) -> bool:
             return hmac.compare_digest(
@@ -346,10 +178,14 @@ def _verified_contract():
                 bytes(verify_key),
             )
 
-    return Verified, RecordVerifier
+    def verified_after_mechanism_check(payload: T) -> Verified[T]:
+        """Package-private mint seam for a completed authority check."""
+        return Verified(payload, _token=construction_token)
+
+    return Verified, RecordVerifier, verified_after_mechanism_check
 
 
-Verified, RecordVerifier = _verified_contract()
+Verified, RecordVerifier, _verified_after_mechanism_check = _verified_contract()
 
 
 def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -380,13 +216,6 @@ class PlatformSigner:
             raise TypeError("domain must be non-empty bytes")
         if not isinstance(payload, Mapping):
             raise TypeError("payload must be a mapping")
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
         contract = SIGNED_RECORD_CONTRACTS.get(domain)
         if contract is None:
             raise TypeError("signed record domain has no immutable field contract")
@@ -400,15 +229,6 @@ class PlatformSigner:
                 raise TypeError(
                     f"signed record field {field!r} has an invalid JSON type"
                 )
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-=======
-        record = dict(payload)
->>>>>>> feat/patch-loop-leasestore-fix2
->>>>>>> feat/m1-unbound-denylist
->>>>>>> feat/lease-store-append-only
         digest = hash_canonical_jcs(record)
         signature = sign_domain_separated_ed25519(
             digest,
