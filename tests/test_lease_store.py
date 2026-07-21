@@ -136,6 +136,19 @@ def _raw_dml_authority_probe(
     return rejection.value
 
 
+@contextmanager
+def _legacy_attestation_insert(connection: sqlite3.Connection):
+    """Install a pre-v6 duplicate row, then restore the exact insert guard."""
+    name = "lease_completion_attestations_append_only_insert"
+    connection.execute(f"DROP TRIGGER {name}")
+    try:
+        yield
+    finally:
+        connection.execute(
+            lease_store_module._COMPLETION_ATTESTATION_TRIGGERS[name]
+        )
+
+
 def test_time_text_is_fixed_width_for_sqlite_expiry_ordering() -> None:
     whole_second = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
     next_microsecond = whole_second + timedelta(microseconds=1)
@@ -521,18 +534,19 @@ def test_completion_owner_user_id_is_inert_audit_metadata(tmp_path: Path) -> Non
             lease_store_module._COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
             payload,
         )
-        connection.execute(
-            "INSERT INTO lease_completion_attestations("
-            "attestation_id, task_id, signed_json, signature, created_at"
-            ") VALUES (?, ?, ?, ?, ?)",
-            (
-                "changed-inert-owner",
-                task.branch_task_id,
-                changed_json,
-                changed_signature,
-                LeaseStore._time_text(clock.now),
-            ),
-        )
+        with _legacy_attestation_insert(connection):
+            connection.execute(
+                "INSERT INTO lease_completion_attestations("
+                "attestation_id, task_id, signed_json, signature, created_at"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (
+                    "changed-inert-owner",
+                    task.branch_task_id,
+                    changed_json,
+                    changed_signature,
+                    LeaseStore._time_text(clock.now),
+                ),
+            )
 
     assert _complete(store, task, blobs, expected, clock.now) == receipt
 
@@ -696,9 +710,14 @@ def test_completion_attestation_is_append_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("table", ["lease_completion_attestations", "lease_events"])
-def test_insert_or_replace_cannot_overwrite_append_only_rows(
+@pytest.mark.parametrize(
+    "operation",
+    ["insert", "insert_or_replace", "replace", "upsert"],
+)
+def test_duplicate_insert_cannot_overwrite_append_only_rows(
     tmp_path: Path,
     table: str,
+    operation: str,
 ) -> None:
     store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
     _record_candidate(store, task, blobs, key, raw, clock.now)
@@ -706,22 +725,56 @@ def test_insert_or_replace_cannot_overwrite_append_only_rows(
 
     with sqlite3.connect(store.db_path) as connection:
         connection.execute("PRAGMA recursive_triggers = OFF")
+        prefix = {
+            "insert": "INSERT",
+            "insert_or_replace": "INSERT OR REPLACE",
+            "replace": "REPLACE",
+            "upsert": "INSERT",
+        }[operation]
         if table == "lease_completion_attestations":
             statement = (
-                "INSERT OR REPLACE INTO lease_completion_attestations("
+                f"{prefix} INTO lease_completion_attestations("
                 "attestation_id, task_id, signed_json, signature, created_at) "
                 "SELECT attestation_id, task_id, signed_json, 'replaced', created_at "
                 "FROM lease_completion_attestations WHERE task_id = ?"
             )
+            if operation == "upsert":
+                statement += (
+                    " ON CONFLICT(attestation_id) DO UPDATE "
+                    "SET signature = excluded.signature"
+                )
         else:
             statement = (
-                "INSERT OR REPLACE INTO lease_events("
+                f"{prefix} INTO lease_events("
                 "event_id, task_id, kind, lease_id, fence, occurred_at, content_sha256) "
                 "SELECT event_id, task_id, 'replaced', lease_id, fence, occurred_at, "
                 "content_sha256 FROM lease_events WHERE task_id = ? LIMIT 1"
             )
+            if operation == "upsert":
+                statement += (
+                    " ON CONFLICT(event_id) DO UPDATE SET kind = excluded.kind"
+                )
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute(statement, (task.branch_task_id,))
+
+
+def test_attestation_insert_guard_rejects_second_row_for_task(
+    tmp_path: Path,
+) -> None:
+    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, blobs, expected, clock.now)
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("PRAGMA recursive_triggers = OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "INSERT INTO lease_completion_attestations("
+                "attestation_id, task_id, signed_json, signature, created_at) "
+                "SELECT 'second-attestation', task_id, signed_json, signature, "
+                "created_at FROM lease_completion_attestations WHERE task_id = ?",
+                (task.branch_task_id,),
+            )
 
 
 def test_terminal_row_and_forged_attestation_cannot_authorize_replay(
@@ -806,50 +859,49 @@ def test_terminal_row_and_forged_attestation_cannot_authorize_replay(
     print(f"FORGED_TERMINAL_ATTESTATION_REJECTED: {rejection}")
 
 
-@pytest.mark.parametrize("attack", ["junk_before_completion", "duplicate_valid"])
+@pytest.mark.parametrize("attack", ["unsigned_junk", "duplicate_valid"])
 def test_completion_ignores_invalid_or_duplicate_attestation_payloads(
     tmp_path: Path,
     attack: str,
 ) -> None:
     store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
     _record_candidate(store, task, blobs, key, raw, clock.now)
-    if attack == "junk_before_completion":
-        with sqlite3.connect(store.db_path) as connection:
-            connection.execute(
-                "INSERT INTO lease_completion_attestations("
-                "attestation_id, task_id, signed_json, signature, created_at"
-                ") VALUES (?, ?, ?, ?, ?)",
-                (
-                    "unsigned-junk",
-                    task.branch_task_id,
-                    "{}",
-                    base64.b64encode(bytes(64)).decode("ascii"),
-                    LeaseStore._time_text(clock.now),
-                ),
-            )
-        receipt = _complete(store, task, blobs, expected, clock.now)
-    else:
-        receipt = _complete(store, task, blobs, expected, clock.now)
-        with sqlite3.connect(store.db_path) as connection:
-            signed_json, signature, created_at = connection.execute(
-                "SELECT signed_json, signature, created_at "
-                "FROM lease_completion_attestations WHERE task_id = ?",
-                (task.branch_task_id,),
-            ).fetchone()
-            connection.execute(
-                "INSERT INTO lease_completion_attestations("
-                "attestation_id, task_id, signed_json, signature, created_at"
-                ") VALUES (?, ?, ?, ?, ?)",
-                (
-                    "duplicate-valid-payload",
-                    task.branch_task_id,
-                    signed_json,
-                    signature,
-                    created_at,
-                ),
-            )
-        assert _complete(store, task, blobs, expected, clock.now) == receipt
+    receipt = _complete(store, task, blobs, expected, clock.now)
+    with sqlite3.connect(store.db_path) as connection:
+        with _legacy_attestation_insert(connection):
+            if attack == "unsigned_junk":
+                connection.execute(
+                    "INSERT INTO lease_completion_attestations("
+                    "attestation_id, task_id, signed_json, signature, created_at"
+                    ") VALUES (?, ?, ?, ?, ?)",
+                    (
+                        "unsigned-junk",
+                        task.branch_task_id,
+                        "{}",
+                        base64.b64encode(bytes(64)).decode("ascii"),
+                        LeaseStore._time_text(clock.now),
+                    ),
+                )
+            else:
+                signed_json, signature, created_at = connection.execute(
+                    "SELECT signed_json, signature, created_at "
+                    "FROM lease_completion_attestations WHERE task_id = ?",
+                    (task.branch_task_id,),
+                ).fetchone()
+                connection.execute(
+                    "INSERT INTO lease_completion_attestations("
+                    "attestation_id, task_id, signed_json, signature, created_at"
+                    ") VALUES (?, ?, ?, ?, ?)",
+                    (
+                        "duplicate-valid-payload",
+                        task.branch_task_id,
+                        signed_json,
+                        signature,
+                        created_at,
+                    ),
+                )
 
+    assert _complete(store, task, blobs, expected, clock.now) == receipt
     assert receipt["status"] == "succeeded"
 
 
@@ -870,18 +922,19 @@ def test_completion_rejects_two_distinct_valid_attestation_payloads(
             domain=lease_store_module._COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
             payload=payload,
         )
-        connection.execute(
-            "INSERT INTO lease_completion_attestations("
-            "attestation_id, task_id, signed_json, signature, created_at"
-            ") VALUES (?, ?, ?, ?, ?)",
-            (
-                "distinct-valid-payload",
-                task.branch_task_id,
-                conflicting_json,
-                conflicting_signature,
-                LeaseStore._time_text(clock.now),
-            ),
-        )
+        with _legacy_attestation_insert(connection):
+            connection.execute(
+                "INSERT INTO lease_completion_attestations("
+                "attestation_id, task_id, signed_json, signature, created_at"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (
+                    "distinct-valid-payload",
+                    task.branch_task_id,
+                    conflicting_json,
+                    conflicting_signature,
+                    LeaseStore._time_text(clock.now),
+                ),
+            )
 
     with pytest.raises(StoredStateCorruptError, match="attestations conflict"):
         _complete(store, task, blobs, expected, clock.now)
@@ -4219,7 +4272,7 @@ def test_legacy_active_authenticated_lease_is_reset_without_owner_inference(
         assert legacy["lease_grant_signature"] is None
 
 
-def test_clean_v0_database_migrates_atomically_to_v5(tmp_path: Path) -> None:
+def test_clean_v0_database_migrates_atomically_to_v6(tmp_path: Path) -> None:
     db_path = tmp_path / "leases.sqlite3"
     _create_v0_lease_database(db_path)
 
@@ -4239,7 +4292,7 @@ def test_clean_v0_database_migrates_atomically_to_v5(tmp_path: Path) -> None:
             row[1]: row[2]
             for row in connection.execute("PRAGMA table_info(lease_tasks)")
         }
-    assert version == 5
+    assert version == 6
     assert columns["content_sha256"].upper() == "TEXT"
     assert task_columns["lease_grant_json"].upper() == "TEXT"
     assert task_columns["lease_grant_signature"].upper() == "TEXT"
@@ -4257,14 +4310,14 @@ def test_v0_database_with_anchor_column_already_present_resumes_migration(
     LeaseStore(db_path)
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
         assert sum(
             row[1] == "content_sha256"
             for row in connection.execute("PRAGMA table_info(lease_events)")
         ) == 1
 
 
-def test_schema_v5_reinitialization_is_a_noop(tmp_path: Path) -> None:
+def test_schema_v6_reinitialization_is_a_noop(tmp_path: Path) -> None:
     db_path = tmp_path / "leases.sqlite3"
     LeaseStore(db_path)
     with sqlite3.connect(db_path) as connection:
@@ -4284,8 +4337,81 @@ def test_schema_v5_reinitialization_is_a_noop(tmp_path: Path) -> None:
                 "WHERE name LIKE 'lease_events_%' ORDER BY type, name"
             )
         )
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
     assert after == before
+
+
+def test_schema_v5_migrates_exact_insert_guards_to_v6(tmp_path: Path) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    old_insert_guards = {
+        "lease_completion_attestations_append_only_insert": """
+            CREATE TRIGGER lease_completion_attestations_append_only_insert
+            BEFORE INSERT ON lease_completion_attestations
+            WHEN EXISTS (
+                SELECT 1 FROM lease_completion_attestations
+                WHERE attestation_id = NEW.attestation_id
+            ) BEGIN
+                SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
+            END
+        """,
+    }
+    with sqlite3.connect(db_path) as connection:
+        for name, definition in old_insert_guards.items():
+            connection.execute(f"DROP TRIGGER {name}")
+            connection.execute(definition)
+        connection.execute("PRAGMA user_version = 5")
+
+    LeaseStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        actual = {
+            name: connection.execute(
+                "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?",
+                (name,),
+            ).fetchone()[0]
+            for name in old_insert_guards
+        }
+    assert version == 6
+    assert all(
+        LeaseStore._normalized_schema_sql(actual[name])
+        == LeaseStore._normalized_schema_sql(definition)
+        for name, definition in (
+            lease_store_module._COMPLETION_ATTESTATION_TRIGGERS
+            | lease_store_module._EVENT_TRIGGERS
+        ).items()
+        if name in old_insert_guards
+    )
+
+
+@pytest.mark.parametrize(
+    ("table", "trigger_name"),
+    [
+        (
+            "lease_completion_attestations",
+            "lease_completion_attestations_append_only_insert",
+        ),
+        ("lease_events", "lease_events_append_only_insert"),
+    ],
+)
+def test_schema_v5_rejects_malformed_insert_guard_instead_of_repairing(
+    tmp_path: Path,
+    table: str,
+    trigger_name: str,
+) -> None:
+    db_path = tmp_path / "leases.sqlite3"
+    LeaseStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"DROP TRIGGER {trigger_name}")
+        connection.execute(
+            f"CREATE TRIGGER {trigger_name} BEFORE INSERT ON {table} "
+            "BEGIN SELECT 1; END"
+        )
+        connection.execute("PRAGMA user_version = 5")
+
+    with pytest.raises(StoredStateCorruptError, match="trigger"):
+        LeaseStore(db_path)
 
 
 @pytest.mark.parametrize(
@@ -4539,4 +4665,4 @@ def test_concurrent_schema_initializers_serialize(tmp_path: Path) -> None:
             future.result(timeout=30)
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6

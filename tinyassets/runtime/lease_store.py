@@ -75,7 +75,7 @@ _RESULT_OUTCOMES = frozenset(
     }
 )
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v2"
 _LEASE_GRANT_DOMAIN_SEPARATOR = LEASE_GRANT_DOMAIN_SEPARATOR
 _COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
@@ -96,6 +96,16 @@ _COMPLETION_ATTESTATION_TABLE = """
         created_at TEXT NOT NULL
     )
 """
+_V5_COMPLETION_ATTESTATION_INSERT_TRIGGER = """
+    CREATE TRIGGER lease_completion_attestations_append_only_insert
+    BEFORE INSERT ON lease_completion_attestations
+    WHEN EXISTS (
+        SELECT 1 FROM lease_completion_attestations
+        WHERE attestation_id = NEW.attestation_id
+    ) BEGIN
+        SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
+    END
+"""
 _COMPLETION_ATTESTATION_TRIGGERS = {
     "lease_completion_attestations_append_only_insert": """
         CREATE TRIGGER lease_completion_attestations_append_only_insert
@@ -103,6 +113,7 @@ _COMPLETION_ATTESTATION_TRIGGERS = {
         WHEN EXISTS (
             SELECT 1 FROM lease_completion_attestations
             WHERE attestation_id = NEW.attestation_id
+                OR task_id = NEW.task_id
         ) BEGIN
             SELECT RAISE(ABORT, 'lease_completion_attestations is append-only');
         END
@@ -555,6 +566,29 @@ class LeaseStore:
                         "AND tbl_name = 'lease_completion_attestations' AND name = ?",
                         (name,),
                     ).fetchone()
+                elif 4 <= version < 6 and name == (
+                    "lease_completion_attestations_append_only_insert"
+                ):
+                    actual_sql = cls._normalized_schema_sql(
+                        schema_row["sql"] if schema_row is not None else None
+                    )
+                    old_sql = cls._normalized_schema_sql(
+                        _V5_COMPLETION_ATTESTATION_INSERT_TRIGGER
+                    )
+                    current_sql = cls._normalized_schema_sql(definition)
+                    if actual_sql not in {old_sql, current_sql}:
+                        raise StoredStateCorruptError(
+                            f"completion attestation trigger {name!r} is malformed"
+                        )
+                    if actual_sql == old_sql:
+                        connection.execute(f"DROP TRIGGER IF EXISTS {name}")
+                        connection.execute(definition)
+                        schema_row = connection.execute(
+                            "SELECT sql FROM sqlite_schema WHERE type = 'trigger' "
+                            "AND tbl_name = 'lease_completion_attestations' "
+                            "AND name = ?",
+                            (name,),
+                        ).fetchone()
                 if schema_row is None or cls._normalized_schema_sql(
                     schema_row["sql"]
                 ) != cls._normalized_schema_sql(definition):
