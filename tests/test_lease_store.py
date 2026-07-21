@@ -405,6 +405,209 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("schema_version", "lease-grant/v999"),
+        ("device_key_id", "device-key:missing"),
+        ("device_verify_key", "bm90LWEta2V5"),
+        ("device_key_epoch", 2),
+        ("capability_class", "unknown"),
+        ("repo_mode", "unknown"),
+        ("runner_policy_sha256", "not-a-sha256"),
+        ("image_digest", "not-an-image-digest"),
+    ],
+)
+def test_lease_specialized_fields_reject_valid_signatures_before_verified(
+    tmp_path: Path,
+    field: str,
+    invalid_value: object,
+) -> None:
+    fixture = _result_lease(tmp_path)
+    store, task, *_ = fixture
+    with sqlite3.connect(store.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(row["lease_grant_json"])
+        payload[field] = invalid_value
+        signed_json, signature = PlatformSigner(fixture.capsule_signing_key).sign(
+            lease_store_module._LEASE_GRANT_DOMAIN_SEPARATOR,
+            payload,
+        )
+        connection.execute(
+            "UPDATE lease_tasks SET lease_grant_json = ?, lease_grant_signature = ? "
+            "WHERE task_id = ?",
+            (signed_json, signature, task.branch_task_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        assert row is not None
+
+    with pytest.raises(StoredStateCorruptError) as rejection:
+        store._verified_lease_grant(row)
+    assert isinstance(rejection.value.__cause__, StoredStateCorruptError)
+    assert "specialized validation" in str(rejection.value.__cause__)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("schema_version", "completion-attestation/v999"),
+        ("receipt_id", "completion:forged"),
+        ("status", "running"),
+        ("completed_at", "not-a-timestamp"),
+    ],
+)
+def test_completion_specialized_fields_reject_valid_signatures_before_verified(
+    tmp_path: Path,
+    field: str,
+    invalid_value: str,
+) -> None:
+    fixture = _result_lease(tmp_path)
+    store, task, _, blobs, key, _, raw, expected, clock = fixture
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    _complete(store, task, blobs, expected, clock.now)
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        attestation = connection.execute(
+            "SELECT signed_json FROM lease_completion_attestations "
+            "WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        assert row is not None and attestation is not None
+        payload = json.loads(attestation["signed_json"])
+        payload[field] = invalid_value
+        signed_json, signature = store._test_completion_signer.sign(
+            lease_store_module._COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
+            payload,
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="specialized validation"):
+        store._record_verifier.verify(
+            lease_store_module._COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
+            signed_json,
+            signature,
+            store._completion_row_bindings(row),
+            validation_context=store._completion_validation_context(row),
+        )
+
+
+def test_completion_owner_user_id_is_inert_audit_metadata(tmp_path: Path) -> None:
+    fixture = _result_lease(tmp_path)
+    store, task, _, blobs, key, _, raw, expected, clock = fixture
+    _record_candidate(store, task, blobs, key, raw, clock.now)
+    receipt = _complete(store, task, blobs, expected, clock.now)
+
+    with sqlite3.connect(store.db_path) as connection:
+        signed_json = connection.execute(
+            "SELECT signed_json FROM lease_completion_attestations "
+            "WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()[0]
+        payload = json.loads(signed_json)
+        payload["owner_user_id"] = "user:changed-audit-metadata"
+        changed_json, changed_signature = store._test_completion_signer.sign(
+            lease_store_module._COMPLETION_ATTESTATION_DOMAIN_SEPARATOR,
+            payload,
+        )
+        connection.execute(
+            "INSERT INTO lease_completion_attestations("
+            "attestation_id, task_id, signed_json, signature, created_at"
+            ") VALUES (?, ?, ?, ?, ?)",
+            (
+                "changed-inert-owner",
+                task.branch_task_id,
+                changed_json,
+                changed_signature,
+                LeaseStore._time_text(clock.now),
+            ),
+        )
+
+    assert _complete(store, task, blobs, expected, clock.now) == receipt
+
+
+def test_resigned_lease_owner_is_rejected_against_durable_owner(
+    tmp_path: Path,
+) -> None:
+    fixture = _result_lease(tmp_path)
+    store, task, *_ = fixture
+    with sqlite3.connect(store.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["lease_owner_user_id"] == "user:owner-1"
+        payload = json.loads(row["lease_grant_json"])
+        payload["owner_user_id"] = "user:attacker"
+        signed_json, signature = PlatformSigner(fixture.capsule_signing_key).sign(
+            lease_store_module._LEASE_GRANT_DOMAIN_SEPARATOR,
+            payload,
+        )
+        connection.execute(
+            "UPDATE lease_tasks SET lease_grant_json = ?, lease_grant_signature = ? "
+            "WHERE task_id = ?",
+            (signed_json, signature, task.branch_task_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        assert row is not None
+
+    with pytest.raises(StoredStateCorruptError) as rejection:
+        store._verified_lease_grant(row)
+    assert isinstance(rejection.value.__cause__, StoredStateCorruptError)
+    assert "owner_user_id" in str(rejection.value.__cause__)
+
+
+def test_durable_lease_owner_survives_heartbeat_and_clears_on_legacy_reclaim(
+    tmp_path: Path,
+) -> None:
+    fixture = _result_lease(tmp_path)
+    store, task, lease, *_, clock = fixture
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT lease_owner_user_id FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()[0] == "user:owner-1"
+
+    fixture.issuer.heartbeat(
+        store,
+        task.branch_task_id,
+        daemon_id=lease.daemon_id,
+        lease_id=lease.lease_id,
+        fence=lease.fence,
+        capsule_sha256=lease.capsule.content_sha256,
+        sequence=1,
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT lease_owner_user_id FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()[0] == "user:owner-1"
+
+    clock.advance(121)
+    _claim(store, task.branch_task_id, "daemon:legacy-reclaimer", seed="f")
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT lease_owner_user_id FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()[0] is None
+
+
 def test_terminal_row_reset_replays_one_verified_completion_attestation(
     tmp_path: Path,
 ) -> None:
@@ -3967,7 +4170,56 @@ def test_completion_rejects_terminal_row_reset_without_signed_attestation(
     print(f"TERMINAL_ROW_RESET_REPLAY_REJECTED: {rejection.value}")
 
 
-def test_clean_v0_database_migrates_atomically_to_v4(tmp_path: Path) -> None:
+def test_legacy_active_authenticated_lease_is_reset_without_owner_inference(
+    tmp_path: Path,
+) -> None:
+    fixture = _result_lease(tmp_path)
+    store, authenticated_task, *_ = fixture
+    legacy_task = _task()
+    store.add_task(legacy_task)
+    legacy_lease = _claim(
+        store,
+        legacy_task.branch_task_id,
+        "daemon:legacy",
+        seed="e",
+    )
+
+    with sqlite3.connect(store.db_path) as connection:
+        assert "lease_owner_user_id" in {
+            row[1] for row in connection.execute("PRAGMA table_info(lease_tasks)")
+        }
+        connection.execute(
+            "ALTER TABLE lease_tasks DROP COLUMN lease_owner_user_id"
+        )
+        connection.execute("PRAGMA user_version = 4")
+
+    LeaseStore(store.db_path)
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        authenticated = connection.execute(
+            "SELECT * FROM lease_tasks WHERE task_id = ?",
+            (authenticated_task.branch_task_id,),
+        ).fetchone()
+        legacy = connection.execute(
+            "SELECT * FROM lease_tasks WHERE task_id = ?",
+            (legacy_task.branch_task_id,),
+        ).fetchone()
+        assert authenticated is not None and legacy is not None
+        assert authenticated["status"] == "pending"
+        assert authenticated["lease_owner_user_id"] is None
+        assert authenticated["lease_id"] is None
+        assert authenticated["lease_daemon_id"] is None
+        assert authenticated["lease_grant_json"] is None
+        assert authenticated["lease_grant_signature"] is None
+        assert legacy["status"] == "leased"
+        assert legacy["lease_owner_user_id"] is None
+        assert legacy["lease_id"] == legacy_lease.lease_id
+        assert legacy["lease_grant_json"] is None
+        assert legacy["lease_grant_signature"] is None
+
+
+def test_clean_v0_database_migrates_atomically_to_v5(tmp_path: Path) -> None:
     db_path = tmp_path / "leases.sqlite3"
     _create_v0_lease_database(db_path)
 
@@ -3987,10 +4239,11 @@ def test_clean_v0_database_migrates_atomically_to_v4(tmp_path: Path) -> None:
             row[1]: row[2]
             for row in connection.execute("PRAGMA table_info(lease_tasks)")
         }
-    assert version == 4
+    assert version == 5
     assert columns["content_sha256"].upper() == "TEXT"
     assert task_columns["lease_grant_json"].upper() == "TEXT"
     assert task_columns["lease_grant_signature"].upper() == "TEXT"
+    assert task_columns["lease_owner_user_id"].upper() == "TEXT"
     assert indexes["lease_events_one_shot_generation_uq"] == (1, 1)
     assert indexes["lease_events_added_uq"] == (1, 1)
 
@@ -4004,14 +4257,14 @@ def test_v0_database_with_anchor_column_already_present_resumes_migration(
     LeaseStore(db_path)
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert sum(
             row[1] == "content_sha256"
             for row in connection.execute("PRAGMA table_info(lease_events)")
         ) == 1
 
 
-def test_schema_v4_reinitialization_is_a_noop(tmp_path: Path) -> None:
+def test_schema_v5_reinitialization_is_a_noop(tmp_path: Path) -> None:
     db_path = tmp_path / "leases.sqlite3"
     LeaseStore(db_path)
     with sqlite3.connect(db_path) as connection:
@@ -4031,7 +4284,7 @@ def test_schema_v4_reinitialization_is_a_noop(tmp_path: Path) -> None:
                 "WHERE name LIKE 'lease_events_%' ORDER BY type, name"
             )
         )
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert after == before
 
 
@@ -4286,4 +4539,4 @@ def test_concurrent_schema_initializers_serialize(tmp_path: Path) -> None:
             future.result(timeout=30)
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
