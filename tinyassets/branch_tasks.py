@@ -28,7 +28,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,16 @@ VALID_TRIGGER_SOURCES = frozenset({
 })
 
 VALID_STATUSES = frozenset({
-    "pending", "running", "succeeded", "failed", "cancelled",
+    "pending", "running", "succeeded", "failed", "cancelled", "dead_ref",
 })
-TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+# ``dead_ref`` (Codex r15 #5): a task whose handler branch was deleted while it
+# sat queued — refused at claim time, never run. A terminal SINK (counts as a
+# resolved row for the loop-stall signal, not a stuck backlog item).
+TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "dead_ref"})
+# Idempotent retries must preserve work already pending, running, completed, or
+# deliberately cancelled. ``dead_ref`` is the sole exception: it was refused
+# before execution, so retaining it would silently consume a retry request.
+_IDEMPOTENT_WINNER_STATUSES = VALID_STATUSES - {"dead_ref"}
 
 # Valid transitions. `pending` can go to running or cancelled;
 # running can go to any terminal state. Terminal states are sinks.
@@ -75,7 +82,7 @@ _VALID_TRANSITIONS = {
 class BranchTask:
     """Durable execution-intent record.
 
-    Reserved fields (bid, goal_id, required_llm_type, evidence_url)
+    Reserved fields (bid, goal_id, resolution_source, required_llm_type, evidence_url)
     are present in v1 with empty defaults so later producers can
     populate them without migration.
     """
@@ -92,6 +99,9 @@ class BranchTask:
     status: str = "pending"
     bid: float = 0.0
     goal_id: str = ""
+    # Explicit trigger provenance. Patch-loop tasks use goal_canonical or
+    # env_fallback; empty means a legacy row whose source was not persisted.
+    resolution_source: str = ""
     required_llm_type: str = ""
     directed_daemon_id: str = ""
     evidence_url: str = ""
@@ -110,6 +120,11 @@ class BranchTask:
     # transitions over a window is the 2026-06-25 wedge signature. Empty for
     # pre-field rows; stamped by mark_status on terminal transition.
     terminal_at: str = ""
+    # Codex r16 #4: why a task terminated ``dead_ref`` (handler branch deleted
+    # while the task was queued). A plain field so it survives ``from_dict``
+    # (which filters to declared dataclass fields) and users can retrieve the
+    # reason from the queue/archive row instead of it being silently dropped.
+    dead_ref_reason: str = ""
     rung_claim_recommendations: list[dict] = field(default_factory=list)
     # Spawn depth. 0 for user/forward-triggered tasks. A task enqueued from
     # inside a running branch (via the in-node enqueue verb) carries
@@ -268,6 +283,126 @@ def append_task(universe_path: Path, task: BranchTask) -> None:
         _write_raw(qp, raw)
 
 
+def _valid_runnable_task(
+    row: Any, *, expected: BranchTask,
+) -> "BranchTask | None":
+    """Return a durable winner for the expected idempotent request.
+
+    Presence by id is insufficient: defaults can make a malformed row appear
+    valid while changing its request type, tenant universe, or status. Validate
+    every field the dispatcher consumes and the identity fields that must match
+    this append before accepting a persisted winner. Completed and deliberately
+    cancelled tasks remain winners because replay would double-process them;
+    ``dead_ref`` never ran and must be healed against the current handler.
+    """
+    if not isinstance(row, dict):
+        return None
+    try:
+        t = BranchTask.from_dict(row)
+    except Exception:  # noqa: BLE001 — a malformed row is not runnable
+        return None
+    required_text_fields = (
+        t.branch_task_id,
+        t.branch_def_id,
+        t.universe_id,
+        t.trigger_source,
+        t.status,
+        t.request_type,
+        t.queued_at,
+    )
+    optional_text_fields = (
+        t.goal_id,
+        t.resolution_source,
+    )
+    if any(
+        not isinstance(value, str)
+        for value in (*required_text_fields, *optional_text_fields)
+    ):
+        return None
+    if not all(value.strip() for value in required_text_fields):
+        return None
+    numeric_fields = (t.priority_weight, t.pickup_signal_weight)
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in numeric_fields
+    ):
+        return None
+    if not isinstance(t.inputs, dict):
+        return None
+    if (
+        t.trigger_source not in VALID_TRIGGER_SOURCES
+        or t.status not in _IDEMPOTENT_WINNER_STATUSES
+    ):
+        return None
+    if t.branch_task_id != expected.branch_task_id:
+        return None
+    if t.universe_id != expected.universe_id:
+        return None
+    if t.request_type != expected.request_type:
+        return None
+    return t
+
+
+def append_task_if_absent(
+    universe_path: Path, task: BranchTask,
+) -> "tuple[bool, BranchTask]":
+    """IDEMPOTENT append keyed on ``branch_task_id`` that ATOMICALLY VALIDATES and
+    RETURNS the winning task (Codex r22 #1 + r25 #1). Under the queue file lock:
+
+    - If a VALID, runnable task with this id already exists -> retain one winner,
+      remove every duplicate-id row, and return ``(False, that_task)``.
+    - If duplicate-id rows exist but NONE is valid (corrupt / wrong request type /
+      wrong universe / invalid status or field types / never-run ``dead_ref``) ->
+      HEAL the entire set to one valid task and return ``(True, task)``.
+    - Else append and return ``(True, task)``.
+
+    The exactly-once primitive for the retry consumer: a STABLE
+    (deterministic) ``branch_task_id`` + this check-and-append-UNDER-THE-LOCK
+    means two concurrent pollers (or a crash + re-poll) can NEVER double-enqueue
+    one receipt; and the returned winner lets the caller derive receipt
+    provenance from the ACTUAL persisted task, never a dedup loser."""
+    if task.trigger_source not in VALID_TRIGGER_SOURCES:
+        raise ValueError(f"Invalid trigger_source: {task.trigger_source}")
+    if task.status not in VALID_STATUSES:
+        raise ValueError(f"Invalid status: {task.status}")
+    if not task.queued_at:
+        task.queued_at = _now_iso()
+    qp = queue_path(universe_path)
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        matches = [
+            i for i, row in enumerate(raw)
+            if isinstance(row, dict)
+            and row.get("branch_task_id") == task.branch_task_id
+        ]
+        if not matches:
+            raw.append(task.to_dict())
+            _write_raw(qp, raw)
+            return True, task
+
+        winner = None
+        for i in matches:
+            existing = _valid_runnable_task(raw[i], expected=task)
+            if existing is not None:
+                winner = existing
+                break
+        healed = winner is None
+        winner = winner or task
+        # Reconcile ALL duplicate-id rows under the same lock. Keep the first
+        # matching row's position, replace it with the one valid winner, and
+        # remove every other match so no duplicate can be claimed later.
+        first = matches[0]
+        reconciled = [row for i, row in enumerate(raw) if i not in matches]
+        reconciled.insert(first, winner.to_dict())
+        if reconciled != raw:
+            logger.warning(
+                "append_task_if_absent | reconciling %s queue row(s) for id %s "
+                "to one valid task", len(matches), task.branch_task_id,
+            )
+            _write_raw(qp, reconciled)
+        return healed, winner
+
+
 class QueueCapExceeded(RuntimeError):
     """A queue-growth cap (global active or per-origin lineage) would be
     exceeded. The task was NOT appended."""
@@ -346,6 +481,39 @@ def claim_task(
                 continue
             if row.get("status") != "pending":
                 return None
+            # CONSUMPTION-time dead-ref guard (Codex r15 #5): the enqueue-boundary
+            # check only narrows the deletion-race window; a concurrent delete can
+            # land while the task sits queued. Before transitioning a
+            # bug_investigation task to running, revalidate its handler branch
+            # still exists — never RUN against a dead reference. Mark it a
+            # structured ``dead_ref`` terminal state instead of claiming it.
+            if row.get("request_type") == "bug_investigation":
+                from tinyassets.bug_investigation import (
+                    revalidate_investigation_handler,
+                )
+
+                status, reason = revalidate_investigation_handler(
+                    universe_path, row.get("branch_def_id", ""),
+                )
+                if status == "dead":
+                    # DEFINITIVE missing handler → TERMINAL dead_ref. Stamp
+                    # terminal_at like mark_status does (Codex r16 #4), so
+                    # get_status's loop-stall signal counts this as a real
+                    # terminal transition (an empty terminal_at would make the
+                    # wedge gate miss it).
+                    row["status"] = "dead_ref"
+                    row["dead_ref_reason"] = reason
+                    row["terminal_at"] = _now_iso()
+                    _write_raw(qp, raw)
+                    return None
+                if status == "unavailable":
+                    # TRANSIENT registry error (e.g. SQLite 'database is locked')
+                    # — NOT proof the handler is gone (Codex r19 #2). Do NOT claim
+                    # and do NOT terminate: leave the task PENDING so a later
+                    # claim retries once storage recovers. Never permanently
+                    # discard a task on a transient error.
+                    return None
+                # status == "ok" → the handler exists; fall through and claim.
             heartbeat_at, lease_expires_at = _lease_window()
             row["status"] = "running"
             row["claimed_by"] = claimer

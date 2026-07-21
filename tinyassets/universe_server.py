@@ -2217,6 +2217,9 @@ def create_streamable_http_app() -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
+        # Reference branch designs are seeded on the transport-agnostic
+        # startup seam in ``main()`` (see ``_seed_reference_designs_best_effort``),
+        # so stdio/MCPB boots — which never build this ASGI app — get them too.
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
                 legacy_app.router.lifespan_context(legacy_app),
@@ -2254,6 +2257,80 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+# Last reference-design seed outcome — a cheap, checkable seed-health signal
+# (Finding 5). None until the first seed runs on startup.
+_LAST_SEED_RESULT: dict[str, list[str]] | None = None
+
+
+def _seed_reference_designs_best_effort() -> dict[str, list[str]]:
+    """Idempotently re-seed the durable reference branch designs at startup —
+    transport-agnostic so BOTH stdio/MCPB and Streamable-HTTP boots get the
+    commons reference designs.
+
+    stdio/MCPB startup goes straight to ``mcp.run()`` and never builds the
+    Streamable-HTTP ASGI app, so seeding cannot live in that app's lifespan —
+    it belongs on the shared ``main()`` seam invoked for every transport (S1 of
+    docs/design-notes/2026-07-15-user-patch-loop-reference-design.md; a
+    registry/volume wipe can never delete a design class again).
+
+    NEVER raises — the reference seed is a FEATURE, not a process-critical
+    fixture (Codex r13 #3, REVERSING r12 #3). Quarantining the reference after a
+    security rollback (or any seed failure) must NOT take down the whole MCP
+    service or restart-loop it: the Forever Rule makes 24/7 uptime top priority
+    and Hard Rule 4 forbids blocking unrelated work on a feature-health failure.
+    Failures are reported LOUDLY — ``get_status.reference_designs.healthy`` +
+    ``required_missing``, ERROR logs, and ``last_seed_result()``. Packaged-seed
+    VALIDITY (refuse to SHIP broken) is a CI/deploy-time gate
+    (``tests/test_branch_design_seed.py::test_packaged_reference_design_is_valid_and_seedable``),
+    not process death at runtime.
+
+    Detectability (Finding 5): a TOTAL crash still records a loud
+    ``<seed-crashed>`` marker in ``failed`` and stashes the result.
+    """
+    global _LAST_SEED_RESULT
+    try:
+        # EVERY feature import lives INSIDE the guard (Codex r19 #3): importing
+        # the feature module BEFORE the try meant a missing/broken package raised
+        # ModuleNotFoundError and crashed startup, breaking the "never raises"
+        # uptime contract. A broken import now degrades to <seed-crashed> like
+        # any other seed failure — the server stays UP.
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.branch_designs import (
+            seed_reference_designs,
+            unhealthy_packaged_designs,
+        )
+
+        results = seed_reference_designs(_base_path())
+        if results["failed"]:
+            logger.error("reference design seeding had failures: %s", results)
+        else:
+            logger.info("reference design seeding: %s", results)
+
+        # The reference seed is a COMMONS FEATURE, not a boot-critical fixture
+        # (Codex r15 #4). An unhealthy PACKAGED design is reported LOUDLY (log +
+        # get_status.reference_designs + last_seed_result) — the server STAYS UP
+        # and serves; it NEVER refuses startup (Forever Rule / Hard Rule 4). CI
+        # owns "refuse to SHIP broken".
+        unhealthy = unhealthy_packaged_designs(results)
+        if unhealthy:
+            logger.error(
+                "packaged reference design(s) unhealthy: %s — server stays UP, "
+                "reporting unhealthy via get_status.reference_designs", unhealthy,
+            )
+    except Exception:  # noqa: BLE001 - server must stay UP on ANY feature failure
+        logger.exception("reference design seeding crashed")
+        results = {"seeded": [], "present": [], "failed": ["<seed-crashed>"]}
+    _LAST_SEED_RESULT = results
+    return results
+
+
+def last_seed_result() -> dict[str, list[str]] | None:
+    """The most recent reference-design seed outcome, or None if seeding has not
+    run yet. Checkable seed-health signal (Finding 5) — a non-empty ``failed``
+    means the last boot's commons seed did not fully succeed."""
+    return _LAST_SEED_RESULT
+
+
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -2271,6 +2348,10 @@ def main(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,
     )
+
+    # Transport-agnostic startup seam: seed reference designs before dispatch
+    # so stdio/MCPB (which never builds the HTTP app) is seeded too.
+    _seed_reference_designs_best_effort()
 
     if transport == "streamable-http":
         app = create_streamable_http_app()

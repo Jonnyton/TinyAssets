@@ -379,11 +379,26 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
 
     visibility_in = (kwargs.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
+    # ``author`` must be a STRING — a non-string reaching ``.strip()`` crashes
+    # with AttributeError (Codex r12 #4). Reject cleanly at this public boundary
+    # (nothing persists), then strip the reserved seed author (Fable MAJOR): a
+    # user could otherwise create_branch author="reference-designs" + force-tag
+    # it and get their branch DELETED by the next boot's reserved-author prune.
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
+    author_in = kwargs.get("author")
+    if author_in is not None and not isinstance(author_in, str):
+        return json.dumps({
+            "error": (
+                f"author must be a string (got {type(author_in).__name__})."
+            ),
+        })
+    create_author = _sanitize_reserved_author(author_in).strip()
     branch = BranchDefinition(
         name=name,
         description=kwargs.get("description", ""),
         domain_id=kwargs.get("domain_id") or "workflow",
-        author=kwargs.get("author") or _current_actor(),
+        author=create_author or _current_actor(),
         visibility=visibility,
     )
     try:
@@ -426,6 +441,40 @@ def _resolve_branch_id(bid_or_name: str, base_path: str) -> str:
         if (b.get("name") or "").lower() == needle:
             return b["branch_def_id"]
     return bid_or_name
+
+
+def _reserved_seed_mutation_error(bid_or_name: str) -> str:
+    """Return a refusal string when ``bid_or_name`` resolves to the protected
+    reference-design seed (reserved author), else "". Empty means "not the seed,
+    proceed".
+
+    Codex r13 #2: ordinary write-scoped callers reproduced DELETING and
+    OVERWRITING the authoritative seed via ``delete_branch`` /
+    ``patch_branch(force=true)`` / atomic node mutations — none checked
+    ownership. The seed must be undeletable + immutable through EVERY public
+    mutation path; only the internal reference-design seeder (the daemon_server
+    save/delete path, which self-heals at startup) is the administrative
+    recovery route. This single guard is called at each public mutation entry
+    (resolves name-or-id the same way the handlers do)."""
+    from tinyassets.daemon_server import get_branch_definition
+
+    base = _base_path()
+    resolved = _resolve_branch_id((bid_or_name or "").strip(), base)
+    if not resolved:
+        return ""
+    try:
+        row = get_branch_definition(base, branch_def_id=resolved)
+    except KeyError:
+        return ""
+    from tinyassets.branch_designs import RESERVED_SEED_AUTHOR
+
+    if (row.get("author") or "") == RESERVED_SEED_AUTHOR:
+        return (
+            f"Branch '{resolved}' is a protected reference-design seed and "
+            "cannot be deleted or modified through the public API. It is owned "
+            "by the reference-design seeder and self-heals at startup."
+        )
+    return ""
 
 
 def _ext_branch_get(kwargs: dict[str, Any]) -> str:
@@ -487,6 +536,14 @@ def _ext_branch_approve_source_code(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
+    # approve_source_code SAVES the branch, so it is a mutation path — it must
+    # honor the reserved-seed immutability invariant (Codex r15 #6). The current
+    # seed has no source_code nodes, but future reference designs would be exposed
+    # without this. (Minimal reserved-author check; S3's REJECT rework of
+    # approval provenance may reconcile with this at integration.)
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
 
     try:
         source = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -579,12 +636,44 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
     for r in rows:
         published_version_id = None
         if scope == "published":
-            from tinyassets.branch_versions import list_branch_versions
+            from tinyassets.branch_versions import (
+                _canonical_snapshot,
+                compute_content_hash,
+                get_active_version_by_content_hash,
+            )
 
-            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
-            if not versions:
+            # Discovery must surface an ACTIVE published version whose content
+            # MATCHES the branch row being returned (Codex r16 #3, extends r15
+            # #1). Picking the newest active version regardless of content let a
+            # rolled-back reference get paired with an UNRELATED older active
+            # version — an inconsistent (branch, version) pair that kept a
+            # deliberately rolled-back reference remixable. Require content
+            # consistency: the published version's content_hash must equal the
+            # branch's current authoritative content. If no active version
+            # matches, the branch's live content has no active version (rolled
+            # back / quarantined) => it must vanish from discovery.
+            #
+            # DIRECT INDEXED lookup by (branch_def_id, content_hash, active),
+            # NOT a bounded LIMIT-N history scan (Codex r20 #3): a bounded scan
+            # missed the authoritative active version once a branch had >N
+            # versions, so a live reference vanished from discovery. The indexed
+            # query finds it regardless of version count.
+            #
+            # Integration convergence (S2): S2's list_visible_published_branch_ids
+            # does visibility+active selection in SQL. At the S1+S2 merge, route
+            # this through that single query — but the content-consistency
+            # requirement here MUST survive; do not regress to "any active
+            # version".
+            try:
+                current_hash = compute_content_hash(_canonical_snapshot(r))
+            except Exception:  # noqa: BLE001 — a malformed row simply won't match
+                current_hash = ""
+            active = get_active_version_by_content_hash(
+                _base_path(), r.get("branch_def_id", ""), current_hash,
+            ) if current_hash else None
+            if active is None:
                 continue
-            published_version_id = versions[0].branch_version_id
+            published_version_id = active.branch_version_id
         elif scope == "mine":
             if (r.get("author") or "") != actor:
                 continue
@@ -625,6 +714,9 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
     bid = kwargs.get("branch_def_id", "").strip()
     if not bid:
         return json.dumps({"error": "branch_def_id is required."})
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
     removed = delete_branch_definition(_base_path(), branch_def_id=bid)
     if not removed:
         return json.dumps({"error": f"Branch '{bid}' not found."})
@@ -648,6 +740,9 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
 
     # Normalize kwargs into a node spec dict so we can share the
     # build_branch resolver (which checks node_ref / intent and
@@ -716,6 +811,9 @@ def _ext_branch_connect_nodes(kwargs: dict[str, Any]) -> str:
 
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
     bid = kwargs.get("branch_def_id", "").strip()
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
     src = kwargs.get("from_node", "").strip()
     dst = kwargs.get("to_node", "").strip()
     if not (bid and src and dst):
@@ -768,6 +866,9 @@ def _ext_branch_set_entry_point(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -814,6 +915,9 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": "branch_def_id and field_name are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"error": _seed_err})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
@@ -1469,6 +1573,26 @@ def _resolve_node_spec(
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
+        # requires_sandbox override with DIRECTION validation (Codex r13 #5). The
+        # source's value is copied by default; a caller may ESCALATE (source
+        # false -> requested true) but must NEVER DOWNGRADE (source true ->
+        # requested false), which would silently un-sandbox a node meant to be
+        # confined. It was dropped from the overlay allowlist above, so an
+        # escalation request was silently ignored — support it, gated.
+        if "requires_sandbox" in raw:
+            requested = raw["requires_sandbox"]
+            if not isinstance(requested, bool):
+                return None, (
+                    "node_ref 'requires_sandbox' override must be a boolean"
+                )
+            source_requires = bool(resolved.get("requires_sandbox", False))
+            if source_requires and not requested:
+                return None, (
+                    "node_ref cannot downgrade requires_sandbox from true to "
+                    "false — that silently removes a required sandbox. Fork the "
+                    "node explicitly if an unsandboxed variant is truly intended."
+                )
+            merged["requires_sandbox"] = requested
         # SECURITY (Codex ADAPT, PR #1349): approval provenance must follow
         # the *executable content*, never the inherited boolean. A caller can
         # node_ref an approved node and then override ``source_code`` — that
@@ -1539,6 +1663,7 @@ def _lookup_node_body(
             "strict_input_isolation": bool(
                 hit.get("strict_input_isolation", True),
             ),
+            "requires_sandbox": bool(hit.get("requires_sandbox", False)),
             "source_code": hit.get("source_code", ""),
             "prompt_template": hit.get("prompt_template", ""),
             "author": hit.get("author", ""),
@@ -1574,6 +1699,7 @@ def _lookup_node_body(
                 "strict_input_isolation": bool(
                     nd.get("strict_input_isolation", True),
                 ),
+                "requires_sandbox": bool(nd.get("requires_sandbox", False)),
                 "source_code": nd.get("source_code", ""),
                 "prompt_template": nd.get("prompt_template", ""),
                 "author": nd.get("author", ""),
@@ -1614,6 +1740,17 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     if not isinstance(strict_input_isolation, bool):
         return (
             f"node '{nid}' strict_input_isolation must be a JSON boolean "
+            "(true or false)."
+        )
+    # A node that shells out to a sandboxed CLI (e.g. the patch loop's coding
+    # ``draft_patch`` node) declares ``requires_sandbox``. NodeDefinition
+    # already carries the field and the compiler / list filter read it, but
+    # this authoring plumbing was silently dropping it — so a seeded reference
+    # with a sandbox node showed up under ``requires_sandbox=none``. Thread it.
+    requires_sandbox = raw.get("requires_sandbox", False)
+    if not isinstance(requires_sandbox, bool):
+        return (
+            f"node '{nid}' requires_sandbox must be a JSON boolean "
             "(true or false)."
         )
 
@@ -1715,6 +1852,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             output_keys=out_keys,
             tools_allowed=tools_allowed,
             strict_input_isolation=strict_input_isolation,
+            requires_sandbox=requires_sandbox,
             source_code=source_code,
             prompt_template=prompt_template,
             model_hint=model_hint,
@@ -1777,14 +1915,33 @@ def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
                 "conditional edge outcome/target must be non-empty strings"
             )
         conditions[outcome_str] = target_str
+    # ``fallback`` pins the safe off-label branch as a SCALAR label immune to
+    # the registry's sort_keys serialization (Fable-5). It must be a STRING (a
+    # non-string like `fallback: 123` must be a clean validation error, NOT an
+    # AttributeError crash — Codex r11 #3) and one of the declared outcome
+    # labels, else it's a dangling route — reject loudly.
+    fallback_raw = raw.get("fallback")
+    if fallback_raw is not None and not isinstance(fallback_raw, str):
+        return (
+            "conditional edge 'fallback' must be a string outcome label "
+            f"(got {type(fallback_raw).__name__})"
+        )
+    fallback_str = (fallback_raw or "").strip()
+    if fallback_str and fallback_str not in conditions:
+        return (
+            f"conditional edge fallback '{fallback_str}' must be one of the "
+            f"declared outcome labels {sorted(conditions)!r}"
+        )
     # Merge onto any existing edge from the same source so callers can
     # add one outcome at a time without wiping siblings.
     for existing in branch.conditional_edges:
         if existing.from_node == src:
             existing.conditions.update(conditions)
+            if fallback_str:
+                existing.fallback = fallback_str
             return ""
     branch.conditional_edges.append(
-        ConditionalEdge(from_node=src, conditions=conditions)
+        ConditionalEdge(from_node=src, conditions=conditions, fallback=fallback_str)
     )
     return ""
 
@@ -1804,6 +1961,11 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     }
     if raw.get("reducer"):
         entry["reducer"] = raw["reducer"]
+    # Codex S1 r15 addendum A: preserve the is_binding marker through the
+    # build/seed path so S2's branch-version guard can keep a remix inert
+    # until the owner binds the execution-gating field (e.g. target_repo).
+    if raw.get("is_binding"):
+        entry["is_binding"] = True
     # BUG-094: ``default_value`` is the canonical StateFieldDecl key
     # (tinyassets/branches.py:224). Read it first, fall back to the legacy
     # ``default`` / ``field_default`` spec shapes. Write to ``default_value``
@@ -2084,12 +2246,26 @@ def _staged_branch_from_spec(
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
+    # ``author`` must be a STRING — a non-string (int/bool/list/dict) reaching
+    # ``.strip()`` crashes staging with AttributeError (Codex r12 #4). Reject it
+    # at this public boundary so build_branch returns a structured error and
+    # nothing persists; then strip the reserved seed author so a user build can
+    # never smuggle the seeder's ownership identity (Finding 1c).
+    from tinyassets.branch_designs import _sanitize_reserved_author
+
+    author_raw = spec.get("author")
+    if author_raw is not None and not isinstance(author_raw, str):
+        errors.append(
+            f"branch 'author' must be a string (got {type(author_raw).__name__})"
+        )
+        author_raw = None
+    spec_author = _sanitize_reserved_author(author_raw).strip()
     branch = BranchDefinition(
         name=(spec.get("name") or "").strip(),
         description=spec.get("description") or "",
         domain_id=(spec.get("domain_id") or "").strip() or "workflow",
         goal_id=(spec.get("goal_id") or "").strip(),
-        author=(spec.get("author") or _current_actor()),
+        author=(spec_author or _current_actor()),
         tags=list(spec.get("tags") or []),
         skills=[],
         fork_from=spec.get("fork_from") or None,
@@ -2575,6 +2751,11 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id is required.",
         })
+    # force=true here bypasses commit-time ownership, so the reserved-seed guard
+    # must run BEFORE the ops apply (Codex r13 #2 named this the force bypass).
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
     raw = (kwargs.get("changes_json") or "").strip()
     if not raw:
         return json.dumps({
@@ -2799,6 +2980,9 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
 
     # Accept updates as a JSON blob (changes_json) OR as individual
     # kwargs. Individual kwargs are the phone-friendly shape;
@@ -3109,6 +3293,9 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "branch_def_id is required for patch_nodes.",
         })
+    _seed_err = _reserved_seed_mutation_error(bid)
+    if _seed_err:
+        return json.dumps({"status": "rejected", "error": _seed_err})
     field = (kwargs.get("field") or "").strip()
     if field not in _PATCH_NODES_FIELDS:
         return json.dumps({

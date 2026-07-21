@@ -371,6 +371,23 @@ def select_next_task(
     Returns ``None`` on empty / no-eligible. Called event-driven at
     graph-cycle boundaries. NOT a polling loop.
     """
+    # Codex r21 #1c: the dispatcher IS the retry consumer. Drain recoverable
+    # investigation triggers each poll — a trigger left PENDING because its
+    # handler was transiently unavailable (r19-r21 retryable path) is re-attempted
+    # here; if the registry has recovered it's enqueued and becomes claimable
+    # below in the SAME poll. Best-effort — a retry failure must NEVER break task
+    # selection (Forever Rule).
+    try:
+        from tinyassets.bug_investigation import (
+            retry_pending_investigation_triggers,
+        )
+
+        retry_pending_investigation_triggers(
+            universe_path, universe_id=Path(universe_path).name,
+        )
+    except Exception:  # noqa: BLE001 - best-effort; selection must not depend on it
+        logger.debug("select_next_task | trigger retry sweep failed", exc_info=True)
+
     queue = read_queue(universe_path)
     if not queue:
         return None

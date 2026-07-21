@@ -427,6 +427,10 @@ def _compute_supervisor_liveness(
             "succeeded": 0,
             "failed": 0,
             "cancelled": 0,
+            # Codex r16 #4: dead_ref is a terminal status (a task whose handler
+            # branch was deleted while queued). Count it so loop-health surfaces
+            # the terminal event instead of silently dropping it.
+            "dead_ref": 0,
             "policy_parked_pending": 0,
             "stuck_pending_max_age_s": 0,
             "policy_parked_pending_max_age_s": 0,
@@ -628,6 +632,18 @@ def _compute_supervisor_liveness(
     # without claim means the supervisor restart logic isn't reaching
     # the queue (the exact pattern PR #205 fixed).
     out["queue_state"]["recent_succeeded_count"] = recent_succeeded_count
+
+    # Surface dead_ref terminals loudly (Codex r16 #4, Hard Rule #8). A task
+    # that terminated because its handler branch was deleted mid-flight is a
+    # real signal — never a silent drop. The per-task reason lives on the queue
+    # row's ``dead_ref_reason`` field for retrieval.
+    _dead_ref_count = out["queue_state"].get("dead_ref", 0)
+    if _dead_ref_count:
+        out["warnings"].append(
+            f"dead_ref_terminals: {_dead_ref_count} task(s) terminated "
+            "dead_ref (handler branch deleted while queued). See each row's "
+            "dead_ref_reason for the deleted handler id."
+        )
 
     if (
         out["queue_state"]["stuck_pending_max_age_s"]
@@ -1273,10 +1289,40 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
 
     release_state = _load_release_state()
 
+    # reference_designs — process-global seed-health signal (Codex F3 + r13 #3 +
+    # r15 #4). The reference seed is a FEATURE, not process-critical: the server
+    # STAYS UP even when the design is unhealthy (r13 reversed r12's
+    # startup-refusal — a feature rollback must not be a control-plane outage).
+    # This is the LOUD health surface a reader / canary checks; ``healthy`` is
+    # recomputed LIVE at read time, and the boot-seed snapshot is kept separately
+    # under ``last_seed``. Best-effort; never fail get_status on it.
+    try:
+        from tinyassets.branch_designs import reference_designs_live_health
+        from tinyassets.universe_server import last_seed_result
+
+        # LIVE health, recomputed at read time (Codex r14 #3) — NOT the boot
+        # cache. A row deleted after a healthy seed reports unhealthy here.
+        _live = reference_designs_live_health(_base_path())
+        _seed = last_seed_result()  # boot history, kept SEPARATE (may be stale)
+        reference_designs = {
+            "healthy": _live["healthy"],             # LIVE
+            "unhealthy": _live["unhealthy"],         # LIVE (packaged designs unhealthy)
+            "per_design": _live["per_design"],       # LIVE
+            "last_seed": {                           # boot snapshot
+                "ran": _seed is not None,
+                "seeded": list((_seed or {}).get("seeded", [])),
+                "present": list((_seed or {}).get("present", [])),
+                "failed": list((_seed or {}).get("failed", [])),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001 — best-effort observability
+        reference_designs = {"error": "compute_failed", "detail": str(exc)}
+
     response = {
         "schema_version": 1,
         "active_host": policy_payload["active_host"],
         "tier_routing_policy": tier_routing_policy,
+        "reference_designs": reference_designs,
         "evidence": {
             "last_completed_request_llm_used": last_completed_llm,
             "activity_log_tail": activity_tail,

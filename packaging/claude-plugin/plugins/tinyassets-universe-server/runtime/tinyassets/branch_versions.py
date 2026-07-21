@@ -398,6 +398,46 @@ def list_branch_versions(
     return [_row_to_version(r) for r in rows]
 
 
+def get_versions_by_content_hash(
+    base_path: str | Path,
+    branch_def_id: str,
+    content_hash: str,
+) -> list[BranchVersion]:
+    """All versions of ``branch_def_id`` carrying EXACTLY ``content_hash``, via the
+    indexed ``(branch_def_id, content_hash)`` lookup — NOT a bounded LIMIT-N
+    history scan (Codex r20 #3).
+
+    Durable discovery/health/quarantine must find the authoritative version
+    regardless of how many total versions exist. ``publish_branch_version`` dedups
+    on ``content_hash``, so this result is tiny (typically the active row + at most
+    a rolled-back row of the same content). Newest first.
+    """
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM branch_versions "
+            "WHERE branch_def_id = ? AND content_hash = ? "
+            "ORDER BY published_at DESC",
+            (branch_def_id, content_hash),
+        ).fetchall()
+    return [_row_to_version(r) for r in rows]
+
+
+def get_active_version_by_content_hash(
+    base_path: str | Path,
+    branch_def_id: str,
+    content_hash: str,
+) -> BranchVersion | None:
+    """The ACTIVE version carrying ``content_hash`` (newest), or None — an indexed
+    lookup, not a bounded scan (Codex r20 #3). ``active`` includes legacy
+    empty/NULL status to match the ``(status or 'active')`` convention used across
+    the reference-design health path."""
+    for v in get_versions_by_content_hash(base_path, branch_def_id, content_hash):
+        if (v.status or "active") == "active":
+            return v
+    return None
+
+
 def _validate_version_exists(conn: sqlite3.Connection, version_id: str) -> None:
     row = conn.execute(
         "SELECT 1 FROM branch_versions WHERE branch_version_id = ?",

@@ -2129,10 +2129,65 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
+class ReservedSeedMutationError(Exception):
+    """A PUBLIC writer tried to create, modify, or delete a reserved
+    reference-design seed. Only the internal seeder (``internal_seed_write=True``)
+    may write these rows.
+
+    Codex r17 #3 (CLASS fix): the reserved-seed guard used to live in the MCP
+    handlers (branches.py), so DIRECT storage writers — market goal-bind,
+    rollback, yaml-import, any FUTURE writer — bypassed it (goal-binding the
+    reserved seed succeeded). Centralizing the guard at the storage choke point
+    (save/update/delete_branch_definition) covers every writer by construction,
+    not by remembering to add a per-handler guard.
+    """
+
+
+# Update keys that are legitimate side effects of USING a reference (stats bumps
+# from forking/running it) — allowed on a reserved seed. Everything else is a
+# protected-field mutation and is refused.
+_RESERVED_SEED_BENIGN_UPDATE_KEYS = frozenset({"stats"})
+
+
+def _guard_reserved_seed_write(
+    branch_def_id: str,
+    *,
+    internal_seed_write: bool,
+    updates: dict[str, Any] | None = None,
+) -> None:
+    """Refuse a public write to a reserved reference-design seed. The internal
+    seeder passes ``internal_seed_write=True``. An update touching ONLY benign
+    stat fields (fork_count/run_count bumps) is allowed so the reference stays
+    forkable/runnable; any other update, a full save, or a delete is refused."""
+    if internal_seed_write:
+        return
+    # Import the TINY dependency-free core (Codex r21 #2), NOT the heavy
+    # branch_designs package. That package parses on-disk artifact JSON on
+    # import; importing it on every branch write meant a broken/optional seed
+    # package raised on import and the guard fail-closed-refused EVERY id —
+    # taking ordinary create/update/delete/fork/import offline (a Forever Rule
+    # violation: an optional-seed failure must not disable unrelated uptime
+    # surfaces). reference_seed_core is a pure hash over a STATIC manifest; it
+    # cannot fail to import because of a broken artifact, so ordinary
+    # (non-reserved) writes always proceed while reserved ids stay fail-closed.
+    from tinyassets.reference_seed_core import is_reserved_seed_id
+
+    if not is_reserved_seed_id(branch_def_id):
+        return
+    if updates is not None and set(updates) <= _RESERVED_SEED_BENIGN_UPDATE_KEYS:
+        return
+    raise ReservedSeedMutationError(
+        f"Branch '{branch_def_id}' is a protected reference-design seed and "
+        "cannot be created, modified, or deleted through the public API. It is "
+        "owned by the reference-design seeder and self-heals at startup."
+    )
+
+
 def save_branch_definition(
     base_path: str | Path,
     *,
     branch_def: dict[str, Any],
+    internal_seed_write: bool = False,
 ) -> dict[str, Any]:
     """Insert or replace a branch definition.
 
@@ -2146,6 +2201,7 @@ def save_branch_definition(
     """
     now = _now()
     branch_def_id = branch_def.get("branch_def_id", uuid.uuid4().hex[:12])
+    _guard_reserved_seed_write(branch_def_id, internal_seed_write=internal_seed_write)
 
     # Build graph topology JSON (LangGraph-native shape)
     graph = {
@@ -2302,6 +2358,7 @@ def update_branch_definition(
     *,
     branch_def_id: str,
     updates: dict[str, Any],
+    internal_seed_write: bool = False,
 ) -> dict[str, Any]:
     """Update specific fields of a branch definition.
 
@@ -2309,6 +2366,9 @@ def update_branch_definition(
     entry_point, graph_nodes, edges, conditional_edges, node_defs,
     state_schema, published, stats. Also accepts legacy "nodes" key.
     """
+    _guard_reserved_seed_write(
+        branch_def_id, internal_seed_write=internal_seed_write, updates=updates,
+    )
     now = _now()
     sets: list[str] = ["updated_at = ?"]
     params: list[Any] = [now]
@@ -2408,8 +2468,10 @@ def delete_branch_definition(
     base_path: str | Path,
     *,
     branch_def_id: str,
+    internal_seed_write: bool = False,
 ) -> bool:
     """Delete a branch definition. Returns True if a row was deleted."""
+    _guard_reserved_seed_write(branch_def_id, internal_seed_write=internal_seed_write)
     with _connect(base_path) as conn:
         cursor = conn.execute(
             "DELETE FROM branch_definitions WHERE branch_def_id = ?",
