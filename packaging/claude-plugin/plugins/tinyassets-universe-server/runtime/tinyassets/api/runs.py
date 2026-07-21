@@ -704,20 +704,12 @@ def _create_host_daemon_job(
 
     from tinyassets.api.execution_jobs import create_job_from_run
     from tinyassets.runs import get_run
-<<<<<<< HEAD
-    from tinyassets.runtime.lease_store import LeaseStore
-=======
     from tinyassets.runtime.execution_plane import ExecutionPlane
->>>>>>> feat/patch-loop-leasestore-fix2
 
     run = get_run(base_path, run_id)
     if run is None:
         raise RuntimeError(f"prepared run {run_id!r} could not be loaded")
-<<<<<<< HEAD
-    return create_job_from_run(LeaseStore(base_path / "leases.sqlite3"), run)
-=======
     return create_job_from_run(ExecutionPlane.from_config().lease_store, run)
->>>>>>> feat/patch-loop-leasestore-fix2
 
 
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
