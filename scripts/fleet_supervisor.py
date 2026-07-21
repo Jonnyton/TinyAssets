@@ -132,6 +132,17 @@ def _dispatch(brief: Path, provider: str, gate_dir: Path, queue_root: Path) -> b
         _log(queue_root, f"ERROR moving {brief.name} to dispatched: {exc}")
         return False
 
+    # peer_agent.py defaults Claude lanes to `--model fable`. When Fable is
+    # rate-limited the CLI exits 1 after ~25s with EMPTY stderr, so every Claude
+    # lane dies silently and the fleet reports "dispatched" while producing
+    # nothing — observed 2026-07-21, 4 lanes lost this way before anyone noticed
+    # because a dead lane and a working one look identical from the queue log.
+    # Pin a reachable model unless the brief pinned one itself.
+    if provider == "claude" and "--model" not in directive:
+        fallback = os.environ.get("WORKFLOW_CLAUDE_MODEL", "").strip()
+        if fallback:
+            directive = [*directive, "--model", fallback]
+
     cmd = [
         sys.executable,
         str(_peer_agent()),
