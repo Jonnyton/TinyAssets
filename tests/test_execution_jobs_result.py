@@ -553,6 +553,7 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         tmp_path / "leases.sqlite3",
         clock=lambda: lease_now,
         key_registry=registry,
+        grant_signing_key=SigningKey.generate(),
     )
     task = BranchTask(
         branch_task_id=JOB_ID,
@@ -578,6 +579,12 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
     lease = store.claim(
         JOB_ID,
         daemon_id="daemon:builder-1",
+        authenticated_daemon=SimpleNamespace(
+            daemon_id="daemon:builder-1",
+            owner_user_id="user:owner-1",
+            key_thumbprint="device-key:builder-1",
+            credential_epoch=1,
+        ),
         bind_capsule=lambda _identity: RecordReference(CAPSULE_ID, CAPSULE_SHA256),
     )
     opaque_request = {

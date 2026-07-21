@@ -1,8 +1,9 @@
 """Distributed execution job API contracts.
 
-This branch owns only the S5 candidate-result and completion-CAS section below.
-S4 polling, claim, heartbeat, and HTTP routing merge around this section.  The
-store protocol makes the lease store's lock/transaction the atomicity boundary.
+This module owns the narrow authenticated S4 grant seam plus the S5
+candidate-result and completion-CAS contract. Polling, heartbeat, and HTTP
+routing merge around these sections. The lease store's lock/transaction is the
+atomicity boundary.
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ from tinyassets.runtime.execution_capsule import (
 )
 from tinyassets.runtime.execution_result import ExecutionResultV1
 from tinyassets.runtime.lease_store import (
+    AuthenticatedLeasePrincipal,
+    CapsuleBinder,
+    Lease,
+    LeaseStore,
     LeaseStoreError,
 )
 from tinyassets.runtime.lease_store import (
@@ -48,6 +53,36 @@ from tinyassets.runtime.lease_store import (
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9:_.-]+$", re.ASCII)
 _JSON_SAFE_INTEGER_MAX = 2**53 - 1
+
+
+# ---------------------------------------------------------------------------
+# S4: authenticated lease grant seam
+# ---------------------------------------------------------------------------
+
+
+def grant_job_lease(
+    store: LeaseStore,
+    *,
+    job_id: str,
+    authenticated_daemon: AuthenticatedLeasePrincipal,
+    bind_capsule: CapsuleBinder,
+    lease_seconds: int = 120,
+    expected_lease_id: str | None = None,
+) -> Lease:
+    """Grant a job generation to the daemon authenticated by the control plane.
+
+    The store signs the exact grant tuple with its platform key in the same
+    transaction that mints the lease, fence, and capsule binding. Completion
+    trusts that signed tuple, never request or mutable-row key selectors.
+    """
+    return store.claim(
+        job_id,
+        daemon_id=authenticated_daemon.daemon_id,
+        authenticated_daemon=authenticated_daemon,
+        bind_capsule=bind_capsule,
+        lease_seconds=lease_seconds,
+        expected_lease_id=expected_lease_id,
+    )
 
 
 # ---------------------------------------------------------------------------

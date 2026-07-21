@@ -711,6 +711,70 @@ def test_positive_fresh_signed_request_succeeds(auth_harness):
     assert principal.credential_epoch == 1
 
 
+def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
+    auth_harness, tmp_path
+):
+    from uuid import uuid4
+
+    from tinyassets.api.execution_jobs import grant_job_lease
+    from tinyassets.branch_tasks import BranchTask
+    from tinyassets.runtime.lease_store import LeaseStore, RecordReference
+
+    daemon_auth, _, service, signer, completed, token, now = auth_harness
+    signed = _signed_request(
+        daemon_auth,
+        signer,
+        token,
+        now=now[0],
+        nonce="lease-grant",
+    )
+    principal = service.verify_request(
+        token.value,
+        signed,
+        b"{}",
+        expected_owner_user_id="owner-a",
+    )
+    grant_key = SigningKey.generate()
+    store = LeaseStore(
+        tmp_path / "leases.sqlite3",
+        key_registry=service,
+        grant_signing_key=grant_key,
+    )
+    task = BranchTask(
+        branch_task_id=str(uuid4()),
+        branch_def_id="branch-loop",
+        universe_id="universe-a",
+        queued_at="2026-07-19T12:00:00Z",
+    )
+    store.add_task(task)
+
+    lease = grant_job_lease(
+        store,
+        job_id=task.branch_task_id,
+        authenticated_daemon=principal,
+        bind_capsule=lambda _identity: RecordReference(
+            record_id=str(uuid4()),
+            content_sha256="a" * 64,
+        ),
+    )
+
+    with store._connect() as connection:
+        grant = store._verified_lease_grant(
+            store._task_row(connection, task.branch_task_id)
+        )
+    assert grant["job_id"] == task.branch_task_id
+    assert grant["lease_id"] == lease.lease_id
+    assert grant["fence"] == lease.fence
+    assert grant["daemon_id"] == completed.daemon_id == principal.daemon_id
+    assert grant["owner_user_id"] == completed.owner_user_id
+    assert grant["device_key_id"] == completed.key_thumbprint
+    assert grant["device_key_epoch"] == completed.credential_epoch
+    assert (
+        base64.b64decode(grant["device_verify_key"])
+        == signer.identity.ed25519_public_key
+    )
+
+
 def test_replay_of_previously_valid_nonce_and_timestamp_is_rejected(auth_harness):
     daemon_auth, daemon_api, service, signer, _, token, now = auth_harness
     signed = _signed_request(daemon_auth, signer, token, now=now[0], nonce="replay-me")
