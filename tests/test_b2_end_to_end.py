@@ -15,11 +15,25 @@ from nacl.signing import SigningKey
 from tinyassets.api.daemon_enrollment import DaemonEnrollmentService
 from tinyassets.api.execution_jobs import (
     complete_job,
-    create_job_from_run,
     grant_job_lease,
     submit_candidate_result,
 )
-from tinyassets.runs import create_run, get_run
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import DevAuthProvider, OAuthProvider
+from tinyassets.branches import (
+    BranchDefinition,
+    EdgeDefinition,
+    GraphNodeRef,
+    NodeDefinition,
+)
+from tinyassets.config import write_universe_config_fields
+from tinyassets.daemon_server import (
+    ensure_universe_registered,
+    ensure_universe_rules,
+    grant_universe_access,
+    save_branch_definition,
+)
+from tinyassets.runs import get_run, wait_for
 from tinyassets.runtime.blob_refs import BlobStore
 from tinyassets.runtime.daemon_auth import (
     DevicePublicIdentity,
@@ -42,6 +56,7 @@ from tinyassets.runtime.lease_store import (
     LeaseStore,
 )
 from tinyassets.runtime.signed_records import PlatformSigner, RecordVerifier
+from tinyassets.universe_server import run_graph
 
 
 def _b64(value: bytes) -> str:
@@ -245,9 +260,97 @@ def _result_body(
     }
 
 
-def test_b2_job_runs_end_to_end_through_real_authority_path(tmp_path: Path) -> None:
+def test_b2_job_runs_end_to_end_through_real_authority_path(
+    tmp_path: Path,
+    monkeypatch,
+    request,
+) -> None:
     now = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
     owner_user_id = "owner:b2-e2e"
+    run_root = tmp_path / "run-state"
+    run_root.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(run_root))
+
+    oauth_provider = OAuthProvider(tmp_path / "oauth.sqlite3")
+    oauth_client = oauth_provider.register_client({
+        "client_name": "B2 end-to-end entry test",
+        "redirect_uris": ["https://client.example/callback"],
+    })
+    code_verifier = "b2-entry-verifier"
+    authorization_code = oauth_provider.create_authorization(
+        oauth_client["client_id"],
+        "https://client.example/callback",
+        "tinyassets.extensions.costly",
+        "b2-entry-state",
+        _b64(hashlib.sha256(code_verifier.encode("utf-8")).digest()),
+        "S256",
+    )
+    # The local OAuth provider has no login UI; this row is where that UI would
+    # attach the authenticated subject to the otherwise-real PKCE flow.
+    with sqlite3.connect(oauth_provider._db_path) as connection:
+        connection.execute(
+            "UPDATE authorization_codes SET user_id = ? WHERE code = ?",
+            (owner_user_id, authorization_code),
+        )
+    oauth_tokens = oauth_provider.exchange_code(
+        authorization_code,
+        oauth_client["client_id"],
+        "https://client.example/callback",
+        code_verifier,
+    )
+    assert oauth_tokens is not None
+    set_provider(oauth_provider)
+    auth_middleware(oauth_tokens["access_token"])
+
+    def reset_auth() -> None:
+        set_provider(DevAuthProvider())
+        auth_middleware(None)
+
+    request.addfinalizer(reset_auth)
+
+    universe_id = "universe-b2-e2e"
+    universe_dir = run_root / universe_id
+    universe_dir.mkdir()
+    write_universe_config_fields(universe_dir, engine_source="host_daemon")
+    ensure_universe_registered(
+        run_root,
+        universe_id=universe_id,
+        universe_path=universe_dir,
+    )
+    ensure_universe_rules(run_root, universe_id=universe_id)
+    grant_universe_access(
+        run_root,
+        universe_id=universe_id,
+        actor_id=owner_user_id,
+        permission="admin",
+        granted_by=owner_user_id,
+    )
+    branch = BranchDefinition(
+        branch_def_id="branch:b2-e2e",
+        name="B2 end-to-end",
+        author=owner_user_id,
+        entry_point="execute",
+        node_defs=[NodeDefinition(
+            node_id="execute",
+            display_name="Execute",
+            prompt_template="write one executed artifact",
+            output_keys=["result"],
+        )],
+        graph_nodes=[GraphNodeRef(id="execute", node_def_id="execute")],
+        edges=[EdgeDefinition(from_node="execute", to_node="END")],
+    )
+    save_branch_definition(run_root, branch_def=branch.to_dict())
+
+    entry_result = json.loads(run_graph(
+        branch_def_id=branch.branch_def_id,
+        inputs_json=json.dumps({"payload": "create one artifact"}),
+        graph_id=universe_id,
+    ))
+    assert entry_result["status"] == "queued"
+    run_id = entry_result["run_id"]
+    job_id = entry_result["job_id"]
+    wait_for(run_id, timeout=5)
+
     device_signing_key = SigningKey.generate()
     identity = DevicePublicIdentity(
         installation_id="installation:b2-e2e",
@@ -306,29 +409,21 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(tmp_path: Path) -> N
         ),
     )
 
-    run_root = tmp_path / "run-state"
-    run_id = create_run(
-        run_root,
-        branch_def_id="branch:b2-e2e",
-        thread_id="thread:b2-e2e",
-        inputs={"payload": "create one artifact"},
-        actor=owner_user_id,
-        universe_id="universe:b2-e2e",
-        owner_user_id=owner_user_id,
-    )
     run = get_run(run_root, run_id)
     assert run is not None
+    assert run["owner_user_id"] == owner_user_id
+    assert "no_eligible_external_daemon" in run["error"]
 
     platform_key = SigningKey.generate()
     platform_signer = PlatformSigner(platform_key)
     record_verifier = RecordVerifier(platform_key.verify_key)
     lease_store = LeaseStore(
-        tmp_path / "leases.sqlite3",
+        run_root / "leases.sqlite3",
         clock=lambda: now,
         key_registry=enrollment_service,
         record_verifier=record_verifier,
     )
-    job = create_job_from_run(lease_store, run)
+    job = lease_store.read_task(job_id)
     assert str(UUID(job.branch_task_id)) == job.branch_task_id
     assert job.source_run_id == run_id
 
