@@ -5,19 +5,19 @@ import hashlib
 import json
 import os
 import sqlite3
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from nacl.bindings import crypto_scalarmult
 from nacl.public import PrivateKey
 from nacl.signing import SigningKey
 
-from tinyassets.api.daemon_enrollment import DaemonEnrollmentService
-from tinyassets.api.execution_jobs import (
-    complete_job,
-    grant_job_lease,
-    submit_candidate_result,
-)
+from tinyassets.api.execution_transport import create_router as create_execution_router
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import DevAuthProvider, OAuthProvider
 from tinyassets.branches import (
@@ -33,34 +33,110 @@ from tinyassets.daemon_server import (
     grant_universe_access,
     save_branch_definition,
 )
+from tinyassets.host_pool.client import HostPoolError
+from tinyassets.host_pool.execution_client import ExecutionClient
 from tinyassets.runs import get_run, wait_for
-from tinyassets.runtime.blob_refs import BlobStore
 from tinyassets.runtime.daemon_auth import (
+    DaemonAuthSession,
+    DaemonSigner,
     DevicePublicIdentity,
-    SignedRequest,
-    canonical_challenge,
-    canonical_challenge_creation,
-    canonical_enrollment_completion,
-    canonical_request,
-    request_body_hash,
 )
 from tinyassets.runtime.execution_capsule import (
     canonicalize_jcs,
     create_execution_capsule,
 )
+from tinyassets.runtime.execution_plane import (
+    ExecutionPlane,
+    ExecutionPlaneConfigurationError,
+)
 from tinyassets.runtime.execution_result import create_execution_result
 from tinyassets.runtime.lease_store import (
-    CapsuleVerificationKeyRecord,
     LeaseGrantCapsule,
-    LeaseGrantIssuer,
-    LeaseStore,
 )
-from tinyassets.runtime.signed_records import PlatformSigner, RecordVerifier
 from tinyassets.universe_server import run_graph
 
 
 def _b64(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+class _MemoryKeyStore:
+    """Test-only device-key custody behind the production signer interface."""
+
+    backend_name = "integration-test-memory"
+    hardware_non_exportable = False
+
+    def __init__(self) -> None:
+        self.signing_key = SigningKey.generate()
+        self.transfer_key = PrivateKey.generate()
+        self.installation_nonce = os.urandom(32)
+
+    def load_or_create(self, installation_id: str) -> DevicePublicIdentity:
+        return DevicePublicIdentity(
+            installation_id=installation_id,
+            ed25519_public_key=bytes(self.signing_key.verify_key),
+            x25519_public_key=bytes(self.transfer_key.public_key),
+            installation_nonce=self.installation_nonce,
+            key_backend=self.backend_name,
+            hardware_non_exportable=self.hardware_non_exportable,
+        )
+
+    def sign(self, installation_id: str, message: bytes) -> bytes:
+        del installation_id
+        return self.signing_key.sign(message).signature
+
+    def exchange(self, installation_id: str, peer_public_key: bytes) -> bytes:
+        del installation_id
+        return crypto_scalarmult(bytes(self.transfer_key), peer_public_key)
+
+
+class _TestClientHttp:
+    """Adapt FastAPI TestClient to the daemon client's injectable HTTP seam."""
+
+    def __init__(self, client: TestClient) -> None:
+        self.client = client
+        self.calls: list[tuple[str, str, dict[str, str], bytes | None, float]] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        timeout: float,
+    ) -> tuple[int, str]:
+        self.calls.append((method, url, dict(headers), body, timeout))
+        target = urllib.parse.urlsplit(url)
+        response = self.client.request(
+            method,
+            target.path + (f"?{target.query}" if target.query else ""),
+            headers=headers,
+            content=body,
+        )
+        return response.status_code, response.text
+
+
+def _enroll_daemon(service, signer: DaemonSigner, owner_user_id: str, now: datetime):
+    enrollment = service.create_enrollment(signer.identity)
+    service.approve_enrollment(
+        enrollment.enrollment_id,
+        owner_user_id=owner_user_id,
+    )
+    completed = service.complete_enrollment(
+        enrollment.enrollment_id,
+        **signer.enrollment_completion_proof(enrollment.enrollment_id),
+    )
+    proof = signer.challenge_creation_proof(
+        completed.daemon_id,
+        timestamp=int(now.timestamp()),
+    )
+    challenge = service.create_challenge(completed.daemon_id, **proof)
+    token = service.issue_access_token(
+        completed.daemon_id,
+        challenge.challenge,
+        signer.sign_challenge(completed.daemon_id, challenge.challenge),
+    )
+    return completed, token
 
 
 def _capsule_payload(
@@ -196,8 +272,8 @@ def _result_body(
     return {
         "schema_version": "execution-result/v1",
         "job_id": job_id,
-        "capsule_id": lease.capsule.record_id,
-        "capsule_sha256": lease.capsule.content_sha256,
+        "capsule_id": lease.capsule_id,
+        "capsule_sha256": lease.capsule_sha256,
         "lease_id": lease.lease_id,
         "fence": lease.fence,
         "outcome": "succeeded",
@@ -260,16 +336,62 @@ def _result_body(
     }
 
 
+def test_execution_plane_fails_closed_without_platform_signing_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TINYASSETS_EXECUTION_SIGNING_KEY", raising=False)
+
+    with pytest.raises(
+        ExecutionPlaneConfigurationError,
+        match="TINYASSETS_EXECUTION_SIGNING_KEY is required",
+    ):
+        ExecutionPlane.from_config()
+
+    assert not (tmp_path / "leases.sqlite3").exists()
+
+
+def test_execution_plane_rejects_invalid_signing_key_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "TINYASSETS_EXECUTION_SIGNING_KEY",
+        _b64(bytes(SigningKey.generate())),
+    )
+    monkeypatch.setenv("TINYASSETS_EXECUTION_SIGNING_KEY_ID", "../not-opaque")
+
+    with pytest.raises(
+        ExecutionPlaneConfigurationError,
+        match="TINYASSETS_EXECUTION_SIGNING_KEY_ID must be an ASCII opaque identifier",
+    ):
+        ExecutionPlane.from_config()
+
+    assert not (tmp_path / "leases.sqlite3").exists()
+
+
 def test_b2_job_runs_end_to_end_through_real_authority_path(
     tmp_path: Path,
     monkeypatch,
     request,
 ) -> None:
-    now = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+    now = datetime.now(UTC).replace(microsecond=0)
     owner_user_id = "owner:b2-e2e"
     run_root = tmp_path / "run-state"
     run_root.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(run_root))
+    platform_key = SigningKey.generate()
+    monkeypatch.setenv(
+        "TINYASSETS_EXECUTION_SIGNING_KEY",
+        _b64(bytes(platform_key)),
+    )
+    monkeypatch.setenv(
+        "TINYASSETS_EXECUTION_SIGNING_KEY_ID",
+        "platform-capsule:b2-e2e",
+    )
+    execution_plane = ExecutionPlane.from_config(clock=lambda: now)
 
     oauth_provider = OAuthProvider(tmp_path / "oauth.sqlite3")
     oauth_client = oauth_provider.register_client({
@@ -351,62 +473,18 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
     job_id = entry_result["job_id"]
     wait_for(run_id, timeout=5)
 
-    device_signing_key = SigningKey.generate()
-    identity = DevicePublicIdentity(
-        installation_id="installation:b2-e2e",
-        ed25519_public_key=bytes(device_signing_key.verify_key),
-        x25519_public_key=bytes(PrivateKey.generate().public_key),
-        installation_nonce=os.urandom(32),
-        key_backend="integration-test-memory",
-        hardware_non_exportable=False,
+    enrollment_service = execution_plane.enrollment_service
+    device_keys = _MemoryKeyStore()
+    daemon_signer = DaemonSigner(
+        "installation:b2-e2e",
+        key_store=device_keys,
     )
-    enrollment_service = DaemonEnrollmentService(
-        db_path=tmp_path / "daemon-auth.sqlite3",
-        clock=lambda: now.timestamp(),
-    )
-    enrollment = enrollment_service.create_enrollment(identity)
-    enrollment_service.approve_enrollment(
-        enrollment.enrollment_id,
-        owner_user_id=owner_user_id,
-    )
-    completed_enrollment = enrollment_service.complete_enrollment(
-        enrollment.enrollment_id,
-        installation_nonce=_b64(identity.installation_nonce),
-        signature=_b64(
-            device_signing_key.sign(
-                canonical_enrollment_completion(
-                    enrollment.enrollment_id,
-                    identity.installation_nonce,
-                )
-            ).signature
-        ),
-    )
-    challenge_nonce = "b2-e2e-challenge"
-    challenge = enrollment_service.create_challenge(
-        completed_enrollment.daemon_id,
-        timestamp=int(now.timestamp()),
-        nonce=challenge_nonce,
-        signature=_b64(
-            device_signing_key.sign(
-                canonical_challenge_creation(
-                    completed_enrollment.daemon_id,
-                    int(now.timestamp()),
-                    challenge_nonce,
-                )
-            ).signature
-        ),
-    )
-    access_token = enrollment_service.issue_access_token(
-        completed_enrollment.daemon_id,
-        challenge.challenge,
-        _b64(
-            device_signing_key.sign(
-                canonical_challenge(
-                    completed_enrollment.daemon_id,
-                    challenge.challenge,
-                )
-            ).signature
-        ),
+    device_signing_key = device_keys.signing_key
+    completed_enrollment, access_token = _enroll_daemon(
+        enrollment_service,
+        daemon_signer,
+        owner_user_id,
+        now,
     )
 
     run = get_run(run_root, run_id)
@@ -414,65 +492,12 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
     assert run["owner_user_id"] == owner_user_id
     assert "no_eligible_external_daemon" in run["error"]
 
-    platform_key = SigningKey.generate()
-    platform_signer = PlatformSigner(platform_key)
-    record_verifier = RecordVerifier(platform_key.verify_key)
-    lease_store = LeaseStore(
-        run_root / "leases.sqlite3",
-        clock=lambda: now,
-        key_registry=enrollment_service,
-        record_verifier=record_verifier,
-    )
+    lease_store = execution_plane.lease_store
     job = lease_store.read_task(job_id)
     assert str(UUID(job.branch_task_id)) == job.branch_task_id
     assert job.source_run_id == run_id
 
-    claim_body = json.dumps(
-        {"job_id": job.branch_task_id}, separators=(",", ":")
-    ).encode("utf-8")
-    claim_path = f"/v1/execution/jobs/{job.branch_task_id}:claim"
-    claim_timestamp = int(now.timestamp())
-    claim_nonce = "b2-e2e-claim"
-    claim_body_hash = request_body_hash(claim_body)
-    signed_claim = SignedRequest(
-        method="POST",
-        path=claim_path,
-        query="",
-        signed_headers=(),
-        body_hash=claim_body_hash,
-        timestamp=claim_timestamp,
-        nonce=claim_nonce,
-        signature=_b64(
-            device_signing_key.sign(
-                canonical_request(
-                    "POST",
-                    claim_path,
-                    "",
-                    {},
-                    claim_body_hash,
-                    claim_timestamp,
-                    claim_nonce,
-                )
-            ).signature
-        ),
-    )
-    authenticated_daemon = enrollment_service.verify_request(
-        access_token.value,
-        signed_claim,
-        claim_body,
-        expected_owner_user_id=owner_user_id,
-    )
-
-    capsule_key = CapsuleVerificationKeyRecord(
-        signing_key_id="platform-capsule:b2-e2e",
-        verify_key=platform_key.verify_key,
-        active=True,
-    )
-    issuer = LeaseGrantIssuer(
-        platform_signer=platform_signer,
-        capsule_key=capsule_key,
-        supported_request_schema_versions={3},
-    )
+    capsule_key = execution_plane.capsule_verification_key
 
     def bind_capsule(lease) -> LeaseGrantCapsule:
         capsule = create_execution_capsule(
@@ -489,13 +514,63 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
             raw_capsule=json.dumps(capsule, separators=(",", ":")).encode("utf-8")
         )
 
-    lease = grant_job_lease(
-        lease_store,
-        issuer,
-        job_id=job.branch_task_id,
-        authenticated_daemon=authenticated_daemon,
-        bind_capsule=bind_capsule,
+    app = FastAPI()
+    app.include_router(
+        create_execution_router(
+            execution_plane,
+            bind_capsule=bind_capsule,
+            clock=lambda: now,
+        )
     )
+    asgi_client = TestClient(app)
+    claim_path = f"/v1/execution/jobs/{job.branch_task_id}:claim"
+
+    unsigned_claim = asgi_client.post(claim_path, json={})
+    assert unsigned_claim.status_code == 401
+    assert lease_store.read_result_state(job.branch_task_id)["lease_id"] is None
+
+    other_keys = _MemoryKeyStore()
+    other_signer = DaemonSigner("installation:b2-other", key_store=other_keys)
+    _, other_token = _enroll_daemon(
+        enrollment_service,
+        other_signer,
+        "owner:b2-other",
+        now,
+    )
+    other_http = _TestClientHttp(asgi_client)
+    other_client = ExecutionClient(
+        "https://testserver",
+        auth=DaemonAuthSession(other_signer, token_supplier=lambda: other_token),
+        http=other_http,
+    )
+    with pytest.raises(HostPoolError) as different_owner:
+        other_client.claim_job(job.branch_task_id)
+    assert getattr(different_owner.value, "status", None) == 401
+    pending_state = lease_store.read_result_state(job.branch_task_id)
+    assert pending_state["lease_id"] is None
+    assert pending_state["lease_fence"] == 0
+
+    daemon_http = _TestClientHttp(asgi_client)
+    daemon_client = ExecutionClient(
+        "https://testserver",
+        auth=DaemonAuthSession(daemon_signer, token_supplier=lambda: access_token),
+        http=daemon_http,
+    )
+    lease = daemon_client.claim_job(job.branch_task_id)
+    assert lease.lease_id
+    assert lease.fence == 1
+    assert lease.capsule_sha256 == lease.capsule["integrity"]["capsule_sha256"]
+
+    replay_method, replay_url, replay_headers, replay_body, _ = daemon_http.calls[-1]
+    replay_target = urllib.parse.urlsplit(replay_url)
+    replayed_claim = asgi_client.request(
+        replay_method,
+        replay_target.path,
+        headers=replay_headers,
+        content=replay_body,
+    )
+    assert replayed_claim.status_code == 401
+    assert replayed_claim.json()["error"]["code"] == "REPLAY_DETECTED"
 
     executed_artifact = (
         b"diff --git a/executed.txt b/executed.txt\n"
@@ -506,7 +581,7 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
         b"+B2 executed end to end\n"
     )
     artifact_sha256 = hashlib.sha256(executed_artifact).hexdigest()
-    blob_store = BlobStore(tmp_path / "blobs")
+    blob_store = execution_plane.blob_store
     upload = blob_store.init_blob(
         {
             "sha256": artifact_sha256,
@@ -518,13 +593,13 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
             "fence": lease.fence,
         },
         owner_user_id=owner_user_id,
-        daemon_id=authenticated_daemon.daemon_id,
+        daemon_id=completed_enrollment.daemon_id,
     )
     blob_store.write_upload(upload.upload_id, executed_artifact)
     artifact = blob_store.commit_blob(
         upload.upload_id,
         owner_user_id=owner_user_id,
-        daemon_id=authenticated_daemon.daemon_id,
+        daemon_id=completed_enrollment.daemon_id,
     )
 
     completed_at = (now + timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
@@ -532,7 +607,7 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
         _result_body(
             job_id=job.branch_task_id,
             lease=lease,
-            daemon_id=authenticated_daemon.daemon_id,
+            daemon_id=completed_enrollment.daemon_id,
             device_key_id=completed_enrollment.key_thumbprint,
             artifact_ref=artifact.ref,
             artifact_sha256=artifact_sha256,
@@ -543,31 +618,18 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
         device_key_id=completed_enrollment.key_thumbprint,
         repo_mode="coding",
     )
-    raw_result = json.dumps(result, separators=(",", ":")).encode("utf-8")
-    candidate_receipt = submit_candidate_result(
-        lease_store,
-        job_id=job.branch_task_id,
-        raw_result=raw_result,
-        verify_key=device_signing_key.verify_key,
-        device_key_active=True,
-        blob_store=blob_store,
-        authenticated_daemon=authenticated_daemon,
-        now=now,
-    )
+    candidate_receipt = daemon_client.submit_result(job.branch_task_id, result)
     completion_request = {
         "job_id": job.branch_task_id,
-        "daemon_id": authenticated_daemon.daemon_id,
+        "daemon_id": completed_enrollment.daemon_id,
         "lease_id": lease.lease_id,
         "fence": lease.fence,
-        "capsule_sha256": lease.capsule.content_sha256,
+        "capsule_sha256": lease.capsule_sha256,
         "result_sha256": result["signature"]["result_sha256"],
     }
-    completion_receipt = complete_job(
-        lease_store,
+    completion_receipt = daemon_client.complete_job(
+        job.branch_task_id,
         completion_request,
-        blob_store=blob_store,
-        now=now,
-        completion_signer=platform_signer,
     )
 
     terminal_task = lease_store.read_task(job.branch_task_id)
@@ -575,9 +637,9 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
     assert terminal_task.status == "succeeded"
     assert terminal_task.accepted_result_sha256 == result["signature"]["result_sha256"]
     assert terminal_state["candidate_result"] == result
-    assert terminal_state["accepted_result_sha256"] == candidate_receipt.result_sha256
-    assert completion_receipt.accepted_result_sha256 == candidate_receipt.result_sha256
-    assert terminal_state["completion_receipt"] == completion_receipt.__dict__
+    assert terminal_state["accepted_result_sha256"] == candidate_receipt["result_sha256"]
+    assert completion_receipt["accepted_result_sha256"] == candidate_receipt["result_sha256"]
+    assert terminal_state["completion_receipt"] == completion_receipt
     assert terminal_state["candidate_result"]["repo_patch"]["blob_ref"] == artifact.ref
     assert terminal_state["candidate_result"]["repo_patch"]["blob_sha256"] == artifact_sha256
 
@@ -587,10 +649,7 @@ def test_b2_job_runs_end_to_end_through_real_authority_path(
             (job.branch_task_id,),
         ).fetchone()[0]
     assert attestation_count == 1
-    assert complete_job(
-        lease_store,
+    assert daemon_client.complete_job(
+        job.branch_task_id,
         completion_request,
-        blob_store=blob_store,
-        now=now,
-        completion_signer=platform_signer,
     ) == completion_receipt
