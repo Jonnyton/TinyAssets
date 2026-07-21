@@ -29,6 +29,7 @@ from tinyassets.runtime.daemon_auth import (
     canonical_challenge_creation,
     canonical_enrollment_completion,
     canonical_request,
+    device_key_thumbprint,
     request_body_hash,
 )
 from tinyassets.storage import data_dir
@@ -126,6 +127,36 @@ class RegisteredDeviceKey:
     verify_key: VerifyKey
     credential_epoch: int
     active: bool
+
+
+def _thumbprint_binds_key(public_key: Any, thumbprint: Any) -> bool:
+    """Return whether ``thumbprint`` is the digest of ``public_key``.
+
+    ``key_thumbprint`` is a pure function of the enrolled Ed25519 key
+    (:func:`device_key_thumbprint`) that is stored beside it only so rows can be
+    looked up by it. A row whose two columns disagree therefore cannot have been
+    produced by ``create_enrollment``; it is a corrupt or tampered projection.
+    """
+    if not isinstance(thumbprint, str) or not thumbprint:
+        return False
+    try:
+        expected = device_key_thumbprint(bytes(public_key))
+    except (TypeError, ValueError):
+        return False
+    return hmac.compare_digest(expected, thumbprint)
+
+
+def _bound_verify_key(public_key: Any, thumbprint: Any) -> VerifyKey:
+    """Return the verify key only when the stored thumbprint hash-binds it.
+
+    Re-deriving on every read is what stops a direct write to either column from
+    silently re-pointing an enrolled daemon identity at other key material: the
+    epoch/thumbprint cross-checks elsewhere compare the token row against the
+    daemon row, so they all still agree when only the key moves.
+    """
+    if not _thumbprint_binds_key(public_key, thumbprint):
+        raise DaemonApiError(401, "INVALID_AUTHENTICATION", "Authentication failed")
+    return VerifyKey(bytes(public_key))
 
 
 class DaemonEnrollmentService:
@@ -573,6 +604,8 @@ class DaemonEnrollmentService:
                     hashlib.sha256(nonce).digest(), row["installation_nonce_hash"]
                 ):
                     raise DaemonApiError(401, "INVALID_DEVICE_PROOF", "Device proof is invalid")
+                if not _thumbprint_binds_key(row["ed25519_public_key"], row["key_thumbprint"]):
+                    raise DaemonApiError(401, "INVALID_DEVICE_PROOF", "Device proof is invalid")
                 try:
                     VerifyKey(row["ed25519_public_key"]).verify(
                         canonical_enrollment_completion(enrollment_id, nonce),
@@ -643,7 +676,8 @@ class DaemonEnrollmentService:
         now = self._clock()
         with self._lock, self._immediate_transaction():
             daemon = self._connection.execute(
-                "SELECT ed25519_public_key, revoked_at FROM enrolled_daemons WHERE daemon_id = ?",
+                "SELECT ed25519_public_key, key_thumbprint, revoked_at "
+                "FROM enrolled_daemons WHERE daemon_id = ?",
                 (daemon_id,),
             ).fetchone()
             if daemon is None:
@@ -658,8 +692,11 @@ class DaemonEnrollmentService:
                 raise DaemonApiError(
                     401, "CLOCK_SKEW", "Challenge request timestamp is outside allowed skew"
                 )
+            challenge_key = _bound_verify_key(
+                daemon["ed25519_public_key"], daemon["key_thumbprint"]
+            )
             try:
-                VerifyKey(daemon["ed25519_public_key"]).verify(
+                challenge_key.verify(
                     canonical_challenge_creation(daemon_id, timestamp, nonce),
                     b64decode(signature),
                 )
@@ -784,8 +821,11 @@ class DaemonEnrollmentService:
                 raise DaemonApiError(404, "DAEMON_NOT_FOUND", "Daemon not found")
             if daemon["revoked_at"] is not None:
                 raise DaemonApiError(410, "CREDENTIAL_REVOKED", "Device credential is revoked")
+            issuance_key = _bound_verify_key(
+                daemon["ed25519_public_key"], daemon["key_thumbprint"]
+            )
             try:
-                VerifyKey(daemon["ed25519_public_key"]).verify(
+                issuance_key.verify(
                     canonical_challenge(daemon_id, challenge),
                     b64decode(signature),
                 )
@@ -904,6 +944,10 @@ class DaemonEnrollmentService:
             ).fetchone()
         if row is None:
             return None
+        if not _thumbprint_binds_key(row["ed25519_public_key"], row["key_thumbprint"]):
+            # Handing this back would verify against one key while attributing the
+            # result to another key's device_key_id. Unresolvable, not merely inactive.
+            return None
         return RegisteredDeviceKey(
             device_key_id=row["key_thumbprint"],
             verify_key=VerifyKey(row["ed25519_public_key"]),
@@ -940,6 +984,9 @@ class DaemonEnrollmentService:
                 actual_body_hash = request_body_hash(body)
                 if not hmac.compare_digest(actual_body_hash, signed_request.body_hash):
                     raise DaemonApiError(401, "BODY_HASH_MISMATCH", "Request body hash is invalid")
+                request_key = _bound_verify_key(
+                    token["ed25519_public_key"], token["current_thumbprint"]
+                )
                 try:
                     message = canonical_request(
                         signed_request.method,
@@ -950,7 +997,7 @@ class DaemonEnrollmentService:
                         signed_request.timestamp,
                         signed_request.nonce,
                     )
-                    VerifyKey(token["ed25519_public_key"]).verify(
+                    request_key.verify(
                         message,
                         b64decode(signed_request.signature),
                     )
