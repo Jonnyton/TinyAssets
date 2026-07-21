@@ -98,6 +98,21 @@ after introducing a global environment fixture, before the first full suite.
 
 ---
 
+What surprised me: the original "sealed" custody test exercised only friendly
+attribute names, while Python's real reconstruction paths and mangled key
+attributes remained reachable.
+
+Pattern worth capturing: authority-wrapper tests need an explicit adversary
+matrix. Prove the DML boundary, refuse cheap copy/pickle/subclass construction,
+avoid exporting a module-level mint helper, and demonstrate rather than conceal
+the arbitrary in-process Python boundary.
+
+One thing I would do differently: enumerate signed fields and reconstruction
+vectors from the gate repro before trusting either an aggregate field count or
+a friendly public-API custody test.
+
+---
+
 What surprised me: closing provider dispatch at the graph boundary still left
 an independently spawned live-auth probe, while the BYO scratch directory could
 create the exact legacy-vault sentinel that later credential resolution rejects.
@@ -139,3 +154,93 @@ a signature does not provide.
 One thing I would do differently: begin by enumerating each actor's exact write
 capabilities and mutate one guard per property before adding any corroborating
 count, index, or receipt layer.
+
+---
+
+What surprised me: signing the enrolled key identifier at grant time closed the
+reported row selector, but a hostile registry-row substitution could still
+replace the verifier unless the public key bytes were signed too.
+
+Pattern worth capturing: a cryptographic assignment grant should bind both the
+logical identity and the verification material. Mutable registries may revoke
+or advance epochs, but they must not select the key used to authenticate the
+assigned generation.
+
+One thing I would do differently: include two-real-key and registry-remap
+mutations in the first trust-root test matrix, before treating an authenticated
+identifier lookup as equivalent to a signed verification key.
+
+---
+
+What surprised me: binding the device key and lease generation still left a
+policy-oracle gap because a legitimately granted device could sign whichever
+execution policy mutable result metadata told completion to expect.
+
+Pattern worth capturing: enumerate every positive acceptance input before
+designing the signature envelope. Identity, generation, policy, and content
+selectors need one explicit provenance map; reject-only durability checks must
+be labeled separately so mutable evidence never quietly becomes authority.
+
+One thing I would do differently: start the adversarial matrix with one
+independent mutation per selector plus an all-selectors forge, then require the
+grant schema and issuer/verifier types to make the trust boundary visible in
+code rather than relying on deployment discipline.
+
+---
+
+What surprised me: removing event reads was insufficient by itself. A forged
+one-shot audit row could still make the store's later audit insert violate a
+unique index and roll back an otherwise valid signed/CAS transition.
+
+Pattern worth capturing: an audit-only channel must be non-authoritative in
+both directions. Its contents cannot prove acceptance, and attacker-authored
+duplicates cannot veto a transition whose cryptographic and CAS checks pass.
+
+One thing I would do differently: test every audit surface twice—once as a
+forged positive proof and once as a preinserted negative veto—when drawing the
+initial authority map.
+
+---
+
+What surprised me: the positive signed-replay test initially obscured the
+original fix-9 attack. A genuine reset row with an attestation must replay, while
+the same mutable projection without that artifact must fail closed.
+
+Pattern worth capturing: authority regression tests need paired mutation
+probes—one proving that mutable state cannot mint authority and one proving that
+an immutable signed artifact still works when its mutable projection is reset.
+
+One thing I would do differently: reproduce each gate forge verbatim before
+adding the intended success path, then keep both tests adjacent so the security
+boundary cannot be weakened by an apparently reasonable replay assertion.
+
+---
+
+What surprised me: the first real run-to-job attempt exposed that ordinary run
+IDs are 16 hex characters while the B2 protocol requires canonical UUID job
+IDs; isolated lease tests had hidden the seam completely.
+
+Pattern worth capturing: an authority subsystem is not proven by component
+tests until one normal producer-created record crosses every signed and durable
+boundary through terminal replay.
+
+One thing I would do differently: start hardening with one thin normal-producer
+end-to-end test, then attack the authority boundary that test actually reaches.
+
+---
+
+What surprised me: several old tests treated attacker-inserted high-fence audit
+events as harmless noise, but the approved monotonic-floor design intentionally
+turns that exact mutation into a fail-closed denial. The conflict surfaced only
+when the complete focused suite ran after the isolated RED/GREEN loops.
+
+Pattern worth capturing: mutation proof is strongest when each security test
+targets one missing guard and the final suite separately checks changed
+invariants against older expectations. Signed-field accounting must also live
+in an immutable domain registry, not merely move from a method argument to a
+constructor argument that another caller could still neutralize.
+
+One thing I would do differently: enumerate tests that deliberately inject
+higher generations before implementing a monotonic floor, and reject any
+"immutable" contract design that still exposes a caller-supplied construction
+seam during the first API sketch.
