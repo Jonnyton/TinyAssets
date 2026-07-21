@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +24,10 @@ from tinyassets.runtime.lease_store import (
     CandidateValidationError,
     InvalidLeaseHolderError,
     Lease,
+    LeaseGrantCapsule,
+    LeaseGrantIssuer,
     LeaseStore,
+    LeaseStoreError,
     RecordReference,
     ResultConflictError,
     StaleFenceError,
@@ -63,6 +66,14 @@ class StaticDeviceKeyRegistry:
         )
 
 
+def _capsule_key(signing_key, *, active: bool = True):
+    return SimpleNamespace(
+        signing_key_id="platform-capsule:1",
+        verify_key=signing_key.verify_key,
+        active=active,
+    )
+
+
 class SignalingLeaseStore(LeaseStore):
     def __init__(self, *args, transaction_boundary: threading.Event, **kwargs) -> None:
         self._transaction_boundary = transaction_boundary
@@ -84,6 +95,30 @@ def test_time_text_is_fixed_width_for_sqlite_expiry_ordering() -> None:
     assert LeaseStore._time_text(whole_second) < LeaseStore._time_text(next_microsecond)
 
 
+def test_completion_store_role_cannot_retain_a_grant_signing_key(tmp_path: Path) -> None:
+    from nacl.signing import SigningKey
+
+    assert "grant_signing_key" not in inspect.signature(LeaseStore).parameters
+    with pytest.raises(TypeError, match="grant_signing_key"):
+        LeaseStore(
+            tmp_path / "leases.sqlite3",
+            grant_signing_key=SigningKey.generate(),
+        )
+    signing_key = SigningKey.generate()
+    completion_store = LeaseStore(
+        tmp_path / "verify-only.sqlite3",
+        grant_verify_key=signing_key.verify_key,
+    )
+    issuer = LeaseGrantIssuer(
+        signing_key=signing_key,
+        capsule_key=_capsule_key(signing_key),
+        supported_request_schema_versions={3},
+    )
+    assert not hasattr(issuer, "complete_validated_result")
+    assert all(not isinstance(value, LeaseStore) for value in vars(issuer).values())
+    assert all("signing_key" not in name for name in vars(completion_store))
+
+
 def _task() -> BranchTask:
     task_id = str(uuid4())
     return BranchTask(
@@ -101,6 +136,51 @@ def _capsule(seed: str):
     return bind
 
 
+def _grant_capsule(seed: str, signing_key):
+    def bind(lease) -> LeaseGrantCapsule:
+        from tests.test_execution_capsule import _payload
+        from tinyassets.runtime.execution_capsule import create_execution_capsule
+
+        payload = _payload()
+        payload["job_id"] = lease.task_id
+        payload["audience_daemon_id"] = lease.daemon_id
+        payload["lease"] = {
+            "lease_id": lease.lease_id,
+            "fence": lease.fence,
+            "issued_at": lease.issued_at,
+            "expires_at": lease.expires_at,
+        }
+        payload["issued_at"] = lease.issued_at
+        payload["not_before"] = lease.issued_at
+        payload["expires_at"] = lease.expires_at
+        payload["model_broker_route"]["expires_at"] = lease.expires_at
+        payload["allowed_capability"].update(
+            runner_policy_sha256="c" * 64,
+            image_digest=f"sha256:{'d' * 64}",
+        )
+        capsule = create_execution_capsule(
+            payload,
+            signing_key=signing_key,
+            signing_key_id="platform-capsule:1",
+        )
+        raw_capsule = json.dumps(capsule, separators=(",", ":")).encode()
+        return LeaseGrantCapsule(
+            raw_capsule=raw_capsule,
+        )
+
+    return bind
+
+
+@dataclass(frozen=True)
+class ResultLeaseFixture:
+    values: tuple
+    issuer: LeaseGrantIssuer
+    capsule_signing_key: object
+
+    def __iter__(self):
+        return iter(self.values)
+
+
 def _claim(store: LeaseStore, task_id: str, daemon_id: str, seed: str = "a"):
     return store.claim(
         task_id,
@@ -108,6 +188,71 @@ def _claim(store: LeaseStore, task_id: str, daemon_id: str, seed: str = "a"):
         bind_capsule=_capsule(seed),
         lease_seconds=120,
     )
+
+
+def test_authenticated_claim_requires_signed_capsule_and_active_capsule_key(
+    tmp_path: Path,
+) -> None:
+    from nacl.signing import SigningKey
+
+    device_key = SigningKey.generate()
+    grant_key = SigningKey.generate()
+    registry = StaticDeviceKeyRegistry(device_key)
+    store = LeaseStore(
+        tmp_path / "leases.sqlite3",
+        key_registry=registry,
+        grant_verify_key=grant_key.verify_key,
+    )
+    issuer = LeaseGrantIssuer(
+        signing_key=grant_key,
+        capsule_key=_capsule_key(grant_key),
+        supported_request_schema_versions={3},
+    )
+    task = _task()
+    store.add_task(task)
+    signed_binder = _grant_capsule("a", grant_key)
+
+    def tampered_binder(identity):
+        bound = signed_binder(identity)
+        capsule = json.loads(bound.raw_capsule)
+        capsule["payload"]["allowed_capability"]["repo_mode"] = "repo_exec"
+        return replace(
+            bound,
+            raw_capsule=json.dumps(capsule, separators=(",", ":")).encode(),
+        )
+
+    with pytest.raises(LeaseStoreError, match="capsule authentication failed"):
+        issuer.claim(
+            store,
+            task.branch_task_id,
+            daemon_id="daemon:builder-1",
+            authenticated_daemon=SimpleNamespace(
+                daemon_id="daemon:builder-1",
+                owner_user_id="user:owner-1",
+                key_thumbprint=registry.device_key_id,
+                credential_epoch=registry.credential_epoch,
+            ),
+            bind_capsule=tampered_binder,
+        )
+
+    revoked_issuer = LeaseGrantIssuer(
+        signing_key=grant_key,
+        capsule_key=_capsule_key(grant_key, active=False),
+        supported_request_schema_versions={3},
+    )
+    with pytest.raises(LeaseStoreError, match="capsule authentication failed"):
+        revoked_issuer.claim(
+            store,
+            task.branch_task_id,
+            daemon_id="daemon:builder-1",
+            authenticated_daemon=SimpleNamespace(
+                daemon_id="daemon:builder-1",
+                owner_user_id="user:owner-1",
+                key_thumbprint=registry.device_key_id,
+                credential_epoch=registry.credential_epoch,
+            ),
+            bind_capsule=signed_binder,
+        )
 
 
 def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
@@ -125,7 +270,12 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
         tmp_path / "leases.sqlite3",
         clock=active_clock,
         key_registry=registry,
-        grant_signing_key=grant_key,
+        grant_verify_key=grant_key.verify_key,
+    )
+    issuer = LeaseGrantIssuer(
+        signing_key=grant_key,
+        capsule_key=_capsule_key(grant_key),
+        supported_request_schema_versions={3},
     )
     task = _task()
     store.add_task(
@@ -143,7 +293,8 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
             "completion_receipt": None,
         },
     )
-    lease = store.claim(
+    lease = issuer.claim(
+        store,
         task.branch_task_id,
         daemon_id="daemon:builder-1",
         authenticated_daemon=SimpleNamespace(
@@ -152,7 +303,7 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
             key_thumbprint=registry.device_key_id,
             credential_epoch=registry.credential_epoch,
         ),
-        bind_capsule=_capsule("a"),
+        bind_capsule=_grant_capsule("a", grant_key),
         lease_seconds=120,
     )
     body = result_body()
@@ -185,7 +336,21 @@ def _result_lease(tmp_path: Path, *, clock: MutableClock | None = None):
         "capsule_sha256": lease.capsule.content_sha256,
         "result_sha256": result["signature"]["result_sha256"],
     }
-    return store, task, lease, blob_store, key, result, raw_result, expected, active_clock
+    return ResultLeaseFixture(
+        (
+            store,
+            task,
+            lease,
+            blob_store,
+            key,
+            result,
+            raw_result,
+            expected,
+            active_clock,
+        ),
+        issuer,
+        grant_key,
+    )
 
 
 def _record_candidate(
@@ -401,9 +566,11 @@ def test_heartbeat_never_shortens_expiry_when_the_host_clock_moves_backward(
 def test_authenticated_heartbeat_resigns_grant_expiry_for_completion(
     tmp_path: Path,
 ) -> None:
-    store, task, lease, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    fixture = _result_lease(tmp_path)
+    store, task, lease, blobs, key, _, raw, expected, clock = fixture
     clock.advance(30)
-    renewed = store.heartbeat(
+    renewed = fixture.issuer.heartbeat(
+        store,
         task.branch_task_id,
         daemon_id=lease.daemon_id,
         lease_id=lease.lease_id,
@@ -886,6 +1053,154 @@ def test_completion_rejects_registry_row_key_substitution_after_grant(
         )
 
 
+def test_candidate_submission_uses_signed_grant_policy_not_result_state(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.runtime.execution_result import create_execution_result
+
+    store, task, _, blobs, key, honest, _, _, clock = _result_lease(tmp_path)
+    forged_body = copy.deepcopy(honest)
+    forged_body.pop("signature")
+    forged_body["outcome"] = "job_failed"
+    forged_body["executor"].update(
+        capability_class="source_exec",
+        runner_policy_sha256="0" * 64,
+        image_digest=f"sha256:{'0' * 64}",
+    )
+    forged_body["repo_patch"] = None
+    forged = create_execution_result(
+        forged_body,
+        signing_key=key,
+        device_key_id=forged_body["executor"]["device_key_id"],
+        repo_mode=None,
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT result_state_json FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        state = json.loads(row[0])
+        state.update(
+            capability_class="source_exec",
+            repo_mode=None,
+            runner_policy_sha256="0" * 64,
+            image_digest=f"sha256:{'0' * 64}",
+        )
+        connection.execute(
+            "UPDATE lease_tasks SET result_state_json = ? WHERE task_id = ?",
+            (
+                json.dumps(state, sort_keys=True, separators=(",", ":")),
+                task.branch_task_id,
+            ),
+        )
+
+    with pytest.raises(CandidateValidationError, match="repo_mode null"):
+        _record_candidate(
+            store,
+            task,
+            blobs,
+            key,
+            json.dumps(forged, separators=(",", ":")).encode(),
+            clock.now,
+        )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["capability_class", "repo_mode", "runner_policy_sha256", "image_digest", "all"],
+)
+def test_completion_rejects_device_signed_policy_selected_by_doctored_result_state(
+    tmp_path: Path,
+    attack: str,
+) -> None:
+    """Mutable result metadata cannot choose the policy a valid device may sign."""
+    from tinyassets.runtime.execution_result import create_execution_result
+
+    store, task, _, _, key, honest, _, expected, clock = _result_lease(tmp_path)
+    forged_body = copy.deepcopy(honest)
+    forged_body.pop("signature")
+    forged_body["outcome"] = "job_failed"
+    forged_body["repo_patch"] = None
+    policy_updates: dict[str, object] = {}
+    repo_mode: str | None = "coding"
+    if attack in {"capability_class", "all"}:
+        forged_body["executor"]["capability_class"] = "source_exec"
+        policy_updates.update(capability_class="source_exec", repo_mode=None)
+        repo_mode = None
+    elif attack == "repo_mode":
+        policy_updates["repo_mode"] = "repo_exec"
+        repo_mode = "repo_exec"
+        forged_body["outcome"] = "succeeded"
+    if attack in {"runner_policy_sha256", "all"}:
+        forged_body["executor"]["runner_policy_sha256"] = "0" * 64
+        policy_updates["runner_policy_sha256"] = "0" * 64
+    if attack in {"image_digest", "all"}:
+        forged_body["executor"]["image_digest"] = f"sha256:{'0' * 64}"
+        policy_updates["image_digest"] = f"sha256:{'0' * 64}"
+    forged = create_execution_result(
+        forged_body,
+        signing_key=key,
+        device_key_id=forged_body["executor"]["device_key_id"],
+        repo_mode=repo_mode,
+    )
+    forged_hash = forged["signature"]["result_sha256"]
+
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            "SELECT result_state_json FROM lease_tasks WHERE task_id = ?",
+            (task.branch_task_id,),
+        ).fetchone()
+        state = json.loads(row[0])
+        state.update(policy_updates)
+        state.update(
+            candidate_result=forged,
+            candidate_receipt={
+                "job_id": task.branch_task_id,
+                "result_sha256": forged_hash,
+                "outcome": forged["outcome"],
+                "accepted_at": LeaseStore._time_text(clock.now),
+            },
+        )
+        connection.execute(
+            """
+            UPDATE lease_tasks SET candidate_result_id = ?,
+                candidate_result_sha256 = ?, result_state_json = ?
+            WHERE task_id = ?
+            """,
+            (
+                str(uuid4()),
+                forged_hash,
+                json.dumps(state, sort_keys=True, separators=(",", ":")),
+                task.branch_task_id,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO lease_events(
+                task_id, kind, lease_id, fence, occurred_at, content_sha256
+            ) VALUES (?, 'result_submitted', ?, ?, ?, ?)
+            """,
+            (
+                task.branch_task_id,
+                expected["lease_id"],
+                expected["lease_fence"],
+                LeaseStore._time_text(clock.now),
+                forged_hash,
+            ),
+        )
+
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="stored candidate signature or signed bindings are invalid",
+    ) as rejection:
+        store.complete_validated_result(
+            task.branch_task_id,
+            expected=dict(expected, result_sha256=forged_hash),
+        )
+    if attack == "all":
+        print(f"POLICY_SELECTOR_FORGE_REJECTED: {rejection.value}")
+
+
 def test_completion_rejects_plaintext_grant_rewrite_without_platform_signature(
     tmp_path: Path,
 ) -> None:
@@ -908,6 +1223,91 @@ def test_completion_rejects_plaintext_grant_rewrite_without_platform_signature(
 
     with pytest.raises(StoredStateCorruptError, match="grant signature is invalid"):
         store.complete_validated_result(task.branch_task_id, expected=expected)
+
+
+def test_completion_rejects_signed_grant_replayed_to_another_job(
+    tmp_path: Path,
+) -> None:
+    from tests.test_execution_jobs_result import blob_store_with_result_blobs
+    from tests.test_execution_result import result_body
+    from tinyassets.runtime.execution_result import create_execution_result
+
+    fixture = _result_lease(tmp_path)
+    store, first_task, _, _, key, _, _, _, clock = fixture
+    with sqlite3.connect(store.db_path) as connection:
+        replayed_grant = connection.execute(
+            "SELECT lease_grant_json, lease_grant_signature FROM lease_tasks "
+            "WHERE task_id = ?",
+            (first_task.branch_task_id,),
+        ).fetchone()
+
+    second_task = _task()
+    store.add_task(
+        second_task,
+        result_state={
+            "owner_user_id": "user:owner-1",
+            "device_key_id": "device-key:builder-1",
+            "device_key_epoch": 1,
+            "capability_class": "repo",
+            "repo_mode": "coding",
+            "runner_policy_sha256": "c" * 64,
+            "image_digest": f"sha256:{'d' * 64}",
+            "candidate_result": None,
+            "candidate_receipt": None,
+            "completion_receipt": None,
+        },
+    )
+    second_lease = fixture.issuer.claim(
+        store,
+        second_task.branch_task_id,
+        daemon_id="daemon:builder-1",
+        authenticated_daemon=SimpleNamespace(
+            daemon_id="daemon:builder-1",
+            owner_user_id="user:owner-1",
+            key_thumbprint="device-key:builder-1",
+            credential_epoch=1,
+        ),
+        bind_capsule=_grant_capsule("b", fixture.capsule_signing_key),
+    )
+    body = result_body()
+    body.update(
+        job_id=second_task.branch_task_id,
+        capsule_id=second_lease.capsule.record_id,
+        capsule_sha256=second_lease.capsule.content_sha256,
+        lease_id=second_lease.lease_id,
+        fence=second_lease.fence,
+    )
+    blobs, body = blob_store_with_result_blobs(
+        tmp_path / "grant-replay-blobs",
+        body=body,
+        job_id=second_task.branch_task_id,
+        lease_id=second_lease.lease_id,
+        fence=second_lease.fence,
+    )
+    result = create_execution_result(
+        body,
+        signing_key=key,
+        device_key_id="device-key:builder-1",
+        repo_mode="coding",
+    )
+    raw = json.dumps(result, separators=(",", ":")).encode()
+    _record_candidate(store, second_task, blobs, key, raw, clock.now)
+    expected = {
+        "lease_id": second_lease.lease_id,
+        "lease_fence": second_lease.fence,
+        "daemon_id": second_lease.daemon_id,
+        "capsule_sha256": second_lease.capsule.content_sha256,
+        "result_sha256": result["signature"]["result_sha256"],
+    }
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE lease_tasks SET lease_grant_json = ?, "
+            "lease_grant_signature = ? WHERE task_id = ?",
+            (*replayed_grant, second_task.branch_task_id),
+        )
+
+    with pytest.raises(StoredStateCorruptError, match="current lease generation"):
+        store.complete_validated_result(second_task.branch_task_id, expected=expected)
 
 
 @pytest.mark.parametrize(
@@ -1063,12 +1463,8 @@ def test_completion_enforces_lease_bindings_and_expiry_under_the_store_lock(
 def test_completion_exact_expiry_handles_legacy_variable_width_timestamp(
     tmp_path: Path,
 ) -> None:
-    from tinyassets.runtime.execution_capsule import (
-        hash_canonical_jcs,
-        sign_domain_separated_ed25519,
-    )
-
-    store, task, _, blobs, key, _, raw, expected, clock = _result_lease(tmp_path)
+    fixture = _result_lease(tmp_path)
+    store, task, _, blobs, key, _, raw, expected, clock = fixture
     _record_candidate(store, task, blobs, key, raw, clock.now)
     legacy_expiry = "2026-07-19T12:02:00Z"
     with sqlite3.connect(store.db_path) as connection:
@@ -1078,18 +1474,14 @@ def test_completion_exact_expiry_handles_legacy_variable_width_timestamp(
         ).fetchone()
         grant = json.loads(row[0])
         grant["expires_at"] = legacy_expiry
-        signature = sign_domain_separated_ed25519(
-            hash_canonical_jcs(grant),
-            domain_separator=lease_store_module._LEASE_GRANT_DOMAIN_SEPARATOR,
-            signing_key=store._grant_signing_key,
-        )
+        grant_json, signature = fixture.issuer._encode_lease_grant(grant)
         connection.execute(
             "UPDATE lease_tasks SET lease_expires_at = ?, lease_grant_json = ?, "
             "lease_grant_signature = ? WHERE task_id = ?",
             (
                 legacy_expiry,
-                json.dumps(grant, sort_keys=True, separators=(",", ":")),
-                base64.b64encode(signature).decode("ascii"),
+                grant_json,
+                signature,
                 task.branch_task_id,
             ),
         )
@@ -1782,9 +2174,10 @@ def test_candidate_replay_with_equivalent_signature_is_idempotent(
     ) == receipt
 
 
-def test_record_candidate_rejects_missing_result_bindings(tmp_path: Path) -> None:
-    """Real-store pin: a task added without result_state bindings cannot take a
-    candidate — typed CandidateValidationError, not an untyped KeyError."""
+def test_record_candidate_rejects_unsigned_lease_as_store_corruption(
+    tmp_path: Path,
+) -> None:
+    """A legacy lease cannot make mutable result metadata authoritative."""
     from nacl.signing import SigningKey
 
     from tinyassets.runtime.blob_refs import BlobStore
@@ -1800,7 +2193,10 @@ def test_record_candidate_rejects_missing_result_bindings(tmp_path: Path) -> Non
         owner_quota_bytes=4096,
         daemon_quota_bytes=4096,
     )
-    with pytest.raises(CandidateValidationError, match="missing result bindings"):
+    with pytest.raises(
+        StoredStateCorruptError,
+        match="lease-grant verification key is unavailable",
+    ):
         store.record_validated_candidate(
             task.branch_task_id,
             raw_result=b"{}",

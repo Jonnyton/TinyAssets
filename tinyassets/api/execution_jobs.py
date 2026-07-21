@@ -31,9 +31,10 @@ from tinyassets.runtime.execution_capsule import (
 )
 from tinyassets.runtime.execution_result import ExecutionResultV1
 from tinyassets.runtime.lease_store import (
+    AuthenticatedCapsuleBinder,
     AuthenticatedLeasePrincipal,
-    CapsuleBinder,
     Lease,
+    LeaseGrantIssuer,
     LeaseStore,
     LeaseStoreError,
 )
@@ -62,20 +63,23 @@ _JSON_SAFE_INTEGER_MAX = 2**53 - 1
 
 def grant_job_lease(
     store: LeaseStore,
+    issuer: LeaseGrantIssuer,
     *,
     job_id: str,
     authenticated_daemon: AuthenticatedLeasePrincipal,
-    bind_capsule: CapsuleBinder,
+    bind_capsule: AuthenticatedCapsuleBinder,
     lease_seconds: int = 120,
     expected_lease_id: str | None = None,
 ) -> Lease:
     """Grant a job generation to the daemon authenticated by the control plane.
 
-    The store signs the exact grant tuple with its platform key in the same
-    transaction that mints the lease, fence, and capsule binding. Completion
-    trusts that signed tuple, never request or mutable-row key selectors.
+    The signing-only issuer signs the exact grant tuple with its platform key
+    in the same transaction that mints the lease, fence, capsule binding, and
+    capsule-derived execution policy. The completion store holds only the
+    public grant key and never trusts request or mutable-row selectors.
     """
-    return store.claim(
+    return issuer.claim(
+        store,
         job_id,
         daemon_id=authenticated_daemon.daemon_id,
         authenticated_daemon=authenticated_daemon,

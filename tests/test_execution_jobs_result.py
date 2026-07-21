@@ -532,13 +532,17 @@ def test_valid_current_fence_committed_blob_completes_exactly_once(tmp_path: Pat
 def test_lease_store_validated_s5_path_completes_exactly_once(
     tmp_path: Path,
 ) -> None:
+    from tests.test_lease_store import _capsule_key, _grant_capsule
     from tinyassets.api.execution_jobs import (
         CompletionConflictError,
         complete_job,
         submit_candidate_result,
     )
     from tinyassets.branch_tasks import BranchTask
-    from tinyassets.runtime.lease_store import LeaseStore, RecordReference
+    from tinyassets.runtime.lease_store import (
+        LeaseGrantIssuer,
+        LeaseStore,
+    )
 
     lease_now = datetime(2026, 7, 19, 0, 30, tzinfo=UTC)
     key = SigningKey.generate()
@@ -549,11 +553,17 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
         active=True,
     )
     registry = SimpleNamespace(resolve_device_key=lambda _key_id: registry_record)
+    grant_key = SigningKey.generate()
     store = LeaseStore(
         tmp_path / "leases.sqlite3",
         clock=lambda: lease_now,
         key_registry=registry,
-        grant_signing_key=SigningKey.generate(),
+        grant_verify_key=grant_key.verify_key,
+    )
+    issuer = LeaseGrantIssuer(
+        signing_key=grant_key,
+        capsule_key=_capsule_key(grant_key),
+        supported_request_schema_versions={3},
     )
     task = BranchTask(
         branch_task_id=JOB_ID,
@@ -576,7 +586,8 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
             "completion_receipt": None,
         },
     )
-    lease = store.claim(
+    lease = issuer.claim(
+        store,
         JOB_ID,
         daemon_id="daemon:builder-1",
         authenticated_daemon=SimpleNamespace(
@@ -585,7 +596,7 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
             key_thumbprint="device-key:builder-1",
             credential_epoch=1,
         ),
-        bind_capsule=lambda _identity: RecordReference(CAPSULE_ID, CAPSULE_SHA256),
+        bind_capsule=_grant_capsule("a", grant_key),
     )
     opaque_request = {
         "job_id": JOB_ID,
@@ -600,6 +611,8 @@ def test_lease_store_validated_s5_path_completes_exactly_once(
     assert store.read_task(JOB_ID).status == "leased"
 
     body = result_body()
+    body["capsule_id"] = lease.capsule.record_id
+    body["capsule_sha256"] = lease.capsule.content_sha256
     body["lease_id"] = lease.lease_id
     body["fence"] = lease.fence
     blob_store, body = blob_store_with_result_blobs(

@@ -716,9 +716,13 @@ def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
 ):
     from uuid import uuid4
 
+    from tests.test_lease_store import _capsule_key, _grant_capsule
     from tinyassets.api.execution_jobs import grant_job_lease
     from tinyassets.branch_tasks import BranchTask
-    from tinyassets.runtime.lease_store import LeaseStore, RecordReference
+    from tinyassets.runtime.lease_store import (
+        LeaseGrantIssuer,
+        LeaseStore,
+    )
 
     daemon_auth, _, service, signer, completed, token, now = auth_harness
     signed = _signed_request(
@@ -738,7 +742,12 @@ def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
     store = LeaseStore(
         tmp_path / "leases.sqlite3",
         key_registry=service,
-        grant_signing_key=grant_key,
+        grant_verify_key=grant_key.verify_key,
+    )
+    issuer = LeaseGrantIssuer(
+        signing_key=grant_key,
+        capsule_key=_capsule_key(grant_key),
+        supported_request_schema_versions={3},
     )
     task = BranchTask(
         branch_task_id=str(uuid4()),
@@ -750,12 +759,10 @@ def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
 
     lease = grant_job_lease(
         store,
+        issuer,
         job_id=task.branch_task_id,
         authenticated_daemon=principal,
-        bind_capsule=lambda _identity: RecordReference(
-            record_id=str(uuid4()),
-            content_sha256="a" * 64,
-        ),
+        bind_capsule=_grant_capsule("a", grant_key),
     )
 
     with store._connect() as connection:
@@ -768,6 +775,10 @@ def test_authenticated_request_principal_is_bound_into_platform_lease_grant(
     assert grant["daemon_id"] == completed.daemon_id == principal.daemon_id
     assert grant["owner_user_id"] == completed.owner_user_id
     assert grant["device_key_id"] == completed.key_thumbprint
+    assert grant["capability_class"] == "repo"
+    assert grant["repo_mode"] == "coding"
+    assert grant["runner_policy_sha256"] == "c" * 64
+    assert grant["image_digest"] == f"sha256:{'d' * 64}"
     assert grant["device_key_epoch"] == completed.credential_epoch
     assert (
         base64.b64decode(grant["device_verify_key"])

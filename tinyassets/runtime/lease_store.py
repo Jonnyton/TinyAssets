@@ -7,12 +7,11 @@ Every current-row mutation is CAS-guarded and mirrored into an append-only
 event ledger in the same transaction.
 
 Completion remains fail-closed even if an actor can doctor lease rows and insert
-permitted events: the control plane signs the authenticated daemon, device key,
-owner, job, capsule, lease, fence, and expiry at grant time with an Ed25519 key
-that is not stored in this database. Completion verifies that grant using its
-out-of-band public key before resolving the enrolled device key. Row DML can
-replace the plaintext binding or signature but cannot mint a valid binding for
-an invented generation or substitute another enrolled key.
+permitted events: the signing-only control-plane role signs the authenticated
+daemon, device key, owner, job, capsule, lease, fence, expiry, and every
+execution-policy selector at grant time. The completion store holds only the
+out-of-band public key. Row DML can replace plaintext state or signatures but
+cannot mint a generation, substitute a key, or choose acceptance policy.
 """
 
 from __future__ import annotations
@@ -26,11 +25,11 @@ import re
 import sqlite3
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from nacl.exceptions import BadSignatureError
 from nacl.signing import SigningKey, VerifyKey
@@ -39,9 +38,11 @@ from tinyassets.branch_tasks import SHARED_DEFAULT_WORKER_IDS, BranchTask
 from tinyassets.runtime.blob_refs import BlobError, BlobStore
 from tinyassets.runtime.execution_capsule import (
     CapsuleCanonicalizationError,
+    ExecutionCapsuleError,
     hash_canonical_jcs,
     sign_domain_separated_ed25519,
     verify_domain_separated_ed25519,
+    verify_execution_capsule,
 )
 from tinyassets.runtime.execution_result import (
     ExecutionResultError,
@@ -50,6 +51,7 @@ from tinyassets.runtime.execution_result import (
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
@@ -65,8 +67,8 @@ _RESULT_OUTCOMES = frozenset(
 )
 
 _SCHEMA_VERSION = 2
-_LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v1"
-_LEASE_GRANT_DOMAIN_SEPARATOR = b"tinyassets.lease-grant.v1\0"
+_LEASE_GRANT_SCHEMA_VERSION = "lease-grant/v2"
+_LEASE_GRANT_DOMAIN_SEPARATOR = b"tinyassets.lease-grant.v2\0"
 _LEASE_GRANT_FIELDS = frozenset(
     {
         "schema_version",
@@ -82,6 +84,10 @@ _LEASE_GRANT_FIELDS = frozenset(
         "expires_at",
         "capsule_id",
         "capsule_sha256",
+        "capability_class",
+        "repo_mode",
+        "runner_policy_sha256",
+        "image_digest",
     }
 )
 
@@ -182,13 +188,40 @@ class LeaseEvent:
     occurred_at: str
 
 
+@dataclass(frozen=True)
+class LeaseGrantPolicy:
+    """Execution policy the platform binds into a signed lease grant.
+
+    S4 constructs this only from a platform-created or platform-verified
+    execution capsule. It is signed together with the capsule reference and
+    lease generation before any completion process can consume it.
+    """
+
+    capability_class: str
+    repo_mode: str | None
+    runner_policy_sha256: str
+    image_digest: str
+
+
+@dataclass(frozen=True)
+class LeaseGrantCapsule:
+    raw_capsule: bytes
+
+
 CapsuleBinder = Callable[[LeaseIdentity], RecordReference]
+AuthenticatedCapsuleBinder = Callable[[LeaseIdentity], LeaseGrantCapsule]
 
 
 class DeviceVerificationKey(Protocol):
     device_key_id: str
     verify_key: VerifyKey
     credential_epoch: int
+    active: bool
+
+
+class CapsuleVerificationKey(Protocol):
+    signing_key_id: str
+    verify_key: VerifyKey
     active: bool
 
 
@@ -216,27 +249,14 @@ class LeaseStore:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         key_registry: DeviceKeyRegistry | None = None,
-        grant_signing_key: SigningKey | None = None,
         grant_verify_key: VerifyKey | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self._clock = clock
         self._key_registry = key_registry
-        if grant_signing_key is not None and not isinstance(grant_signing_key, SigningKey):
-            raise TypeError("grant_signing_key must be an Ed25519 SigningKey")
         if grant_verify_key is not None and not isinstance(grant_verify_key, VerifyKey):
             raise TypeError("grant_verify_key must be an Ed25519 VerifyKey")
-        derived_verify_key = (
-            grant_signing_key.verify_key if grant_signing_key is not None else None
-        )
-        if (
-            derived_verify_key is not None
-            and grant_verify_key is not None
-            and bytes(derived_verify_key) != bytes(grant_verify_key)
-        ):
-            raise ValueError("grant signing and verification keys do not match")
-        self._grant_signing_key = grant_signing_key
-        self._grant_verify_key = grant_verify_key or derived_verify_key
+        self._grant_verify_key = grant_verify_key
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -514,69 +534,41 @@ class LeaseStore:
             )
         return daemon_id, owner_user_id, device_key_id, credential_epoch
 
-    def _sign_lease_grant(
-        self,
-        *,
-        identity: LeaseIdentity,
-        capsule: RecordReference,
-        principal: AuthenticatedLeasePrincipal,
-    ) -> tuple[str, str]:
-        if self._grant_signing_key is None:
-            raise LeaseStoreError("platform lease-grant signing key is unavailable")
-        daemon_id, owner_user_id, device_key_id, credential_epoch = (
-            self._grant_principal_values(principal)
-        )
-        if daemon_id != identity.daemon_id:
-            raise InvalidLeaseHolderError(
-                "lease holder differs from the authenticated daemon"
+    @staticmethod
+    def _grant_policy_values(policy: LeaseGrantPolicy) -> dict[str, Any]:
+        if not isinstance(policy, LeaseGrantPolicy):
+            raise LeaseStoreError(
+                "authenticated claim requires capsule-derived execution policy"
             )
-        if self._key_registry is None:
-            raise LeaseStoreError("platform device-key registry is unavailable")
-        registered = self._key_registry.resolve_device_key(device_key_id)
         if (
-            registered is None
-            or registered.device_key_id != device_key_id
-            or registered.credential_epoch != credential_epoch
-            or registered.active is not True
-            or not isinstance(registered.verify_key, VerifyKey)
+            type(policy.capability_class) is not str
+            or policy.capability_class not in {"repo", "source_exec"}
         ):
-            raise InvalidLeaseHolderError(
-                "authenticated daemon device key is not active at the granted epoch"
-            )
-        binding = {
-            "schema_version": _LEASE_GRANT_SCHEMA_VERSION,
-            "job_id": identity.task_id,
-            "owner_user_id": owner_user_id,
-            "daemon_id": daemon_id,
-            "device_key_id": device_key_id,
-            "device_verify_key": base64.b64encode(
-                bytes(registered.verify_key)
-            ).decode("ascii"),
-            "device_key_epoch": credential_epoch,
-            "lease_id": identity.lease_id,
-            "fence": identity.fence,
-            "issued_at": identity.issued_at,
-            "expires_at": identity.expires_at,
-            "capsule_id": capsule.record_id,
-            "capsule_sha256": capsule.content_sha256,
+            raise LeaseStoreError("capsule execution policy class is invalid")
+        if policy.capability_class == "repo":
+            if (
+                type(policy.repo_mode) is not str
+                or policy.repo_mode not in {"repo_read", "repo_exec", "coding"}
+            ):
+                raise LeaseStoreError("capsule execution policy repo mode is invalid")
+        elif policy.repo_mode is not None:
+            raise LeaseStoreError("source execution policy requires repo_mode null")
+        if (
+            type(policy.runner_policy_sha256) is not str
+            or not _SHA256_RE.fullmatch(policy.runner_policy_sha256)
+        ):
+            raise LeaseStoreError("capsule runner policy hash is invalid")
+        if (
+            type(policy.image_digest) is not str
+            or not _OCI_DIGEST_RE.fullmatch(policy.image_digest)
+        ):
+            raise LeaseStoreError("capsule image digest is invalid")
+        return {
+            "capability_class": policy.capability_class,
+            "repo_mode": policy.repo_mode,
+            "runner_policy_sha256": policy.runner_policy_sha256,
+            "image_digest": policy.image_digest,
         }
-        return self._encode_lease_grant(binding)
-
-    def _encode_lease_grant(
-        self, binding: Mapping[str, Any]
-    ) -> tuple[str, str]:
-        if self._grant_signing_key is None:
-            raise LeaseStoreError("platform lease-grant signing key is unavailable")
-        digest = hash_canonical_jcs(binding)
-        signature = sign_domain_separated_ed25519(
-            digest,
-            domain_separator=_LEASE_GRANT_DOMAIN_SEPARATOR,
-            signing_key=self._grant_signing_key,
-        )
-        return (
-            json.dumps(binding, sort_keys=True, separators=(",", ":")),
-            base64.b64encode(signature).decode("ascii"),
-        )
 
     def _verified_lease_grant(self, row: sqlite3.Row) -> dict[str, Any]:
         if self._grant_verify_key is None:
@@ -599,6 +591,7 @@ class LeaseStore:
         required_strings = _LEASE_GRANT_FIELDS - {
             "device_key_epoch",
             "fence",
+            "repo_mode",
         }
         if any(
             type(binding.get(field)) is not str or not binding[field]
@@ -650,6 +643,19 @@ class LeaseStore:
         self._parse_time(binding["issued_at"])
         self._parse_time(binding["expires_at"])
         self._grant_device_verify_key(binding)
+        try:
+            self._grant_policy_values(
+                LeaseGrantPolicy(
+                    capability_class=binding["capability_class"],
+                    repo_mode=binding["repo_mode"],
+                    runner_policy_sha256=binding["runner_policy_sha256"],
+                    image_digest=binding["image_digest"],
+                )
+            )
+        except LeaseStoreError as exc:
+            raise StoredStateCorruptError(
+                "platform lease grant is missing or malformed"
+            ) from exc
         return binding
 
     @staticmethod
@@ -661,6 +667,39 @@ class LeaseStore:
             raise StoredStateCorruptError(
                 "platform lease grant has a malformed device verification key"
             ) from exc
+
+    def _active_grant_device_key(self, grant: Mapping[str, Any]) -> VerifyKey:
+        """Return the signed grant key after applying the registry's vetoes.
+
+        The registry may revoke or epoch-fence a signed grant, but it cannot
+        choose a different verification key or widen what the grant authorizes.
+        """
+        device_key_id = grant["device_key_id"]
+        device_key_epoch = grant["device_key_epoch"]
+        grant_verify_key = self._grant_device_verify_key(grant)
+        if self._key_registry is None:
+            raise StoredStateCorruptError(
+                "platform device-key registry is unavailable"
+            )
+        registered = self._key_registry.resolve_device_key(device_key_id)
+        if registered is None or registered.device_key_id != device_key_id:
+            raise StoredStateCorruptError(
+                "stored candidate device key is not registered"
+            )
+        if registered.credential_epoch != device_key_epoch or registered.active is not True:
+            raise StoredStateCorruptError(
+                "stored candidate device key is inactive or has changed epoch"
+            )
+        if (
+            not isinstance(registered.verify_key, VerifyKey)
+            or not hmac.compare_digest(
+                bytes(registered.verify_key), bytes(grant_verify_key)
+            )
+        ):
+            raise StoredStateCorruptError(
+                "device registry does not match the grant's signed verification key"
+            )
+        return grant_verify_key
 
     @staticmethod
     def _task_row(
@@ -805,75 +844,25 @@ class LeaseStore:
         candidate: dict[str, Any],
         candidate_hash: str,
     ) -> dict[str, Any]:
-        state = self._row_to_result_state(row)
         grant = self._verified_lease_grant(row)
         device_key_id = grant["device_key_id"]
-        device_key_epoch = grant["device_key_epoch"]
-        grant_verify_key = self._grant_device_verify_key(grant)
-        if (
-            state.get("owner_user_id") != grant["owner_user_id"]
-            or state.get("device_key_id") != device_key_id
-            or state.get("device_key_epoch") != device_key_epoch
-        ):
-            raise StoredStateCorruptError(
-                "platform lease grant does not match stored result bindings"
-            )
-        if self._key_registry is None:
-            raise StoredStateCorruptError(
-                "platform device-key registry is unavailable"
-            )
-        registered = self._key_registry.resolve_device_key(device_key_id)
-        if registered is None or registered.device_key_id != device_key_id:
-            raise StoredStateCorruptError(
-                "stored candidate device key is not registered"
-            )
-        if registered.credential_epoch != device_key_epoch or registered.active is not True:
-            raise StoredStateCorruptError(
-                "stored candidate device key is inactive or has changed epoch"
-            )
-        if (
-            not isinstance(registered.verify_key, VerifyKey)
-            or not hmac.compare_digest(
-                bytes(registered.verify_key), bytes(grant_verify_key)
-            )
-        ):
-            raise StoredStateCorruptError(
-                "device registry does not match the grant's signed verification key"
-            )
-        required_strings = (
-            "daemon_id",
-            "job_id",
-            "capsule_id",
-            "capsule_sha256",
-            "lease_id",
-            "capability_class",
-            "runner_policy_sha256",
-            "image_digest",
-        )
-        if any(type(state.get(key)) is not str or not state[key] for key in required_strings):
-            raise StoredStateCorruptError(
-                "stored candidate has incomplete signed bindings"
-            )
-        if type(state.get("lease_fence")) is not int or "repo_mode" not in state:
-            raise StoredStateCorruptError(
-                "stored candidate has incomplete signed bindings"
-            )
+        grant_verify_key = self._active_grant_device_key(grant)
         try:
             verified = verify_execution_result(
                 json.dumps(candidate, separators=(",", ":")).encode(),
                 verify_key=grant_verify_key,
                 expected_device_key_id=device_key_id,
-                device_key_active=registered.active,
+                device_key_active=True,
                 expected_daemon_id=grant["daemon_id"],
                 expected_job_id=grant["job_id"],
                 expected_capsule_id=grant["capsule_id"],
                 expected_capsule_sha256=grant["capsule_sha256"],
                 expected_lease_id=grant["lease_id"],
                 expected_fence=grant["fence"],
-                expected_capability_class=state["capability_class"],
-                expected_repo_mode=state.get("repo_mode"),
-                expected_runner_policy_sha256=state["runner_policy_sha256"],
-                expected_image_digest=state["image_digest"],
+                expected_capability_class=grant["capability_class"],
+                expected_repo_mode=grant["repo_mode"],
+                expected_runner_policy_sha256=grant["runner_policy_sha256"],
+                expected_image_digest=grant["image_digest"],
             )
         except (ExecutionResultError, TypeError, ValueError) as exc:
             raise StoredStateCorruptError(
@@ -1062,7 +1051,28 @@ class LeaseStore:
         *,
         daemon_id: str,
         bind_capsule: CapsuleBinder,
+        lease_seconds: int = 120,
+        expected_lease_id: str | None = None,
+    ) -> Lease:
+        """Claim an unsigned legacy lease; completion cannot trust this role."""
+        return self._claim(
+            task_id,
+            daemon_id=daemon_id,
+            bind_capsule=bind_capsule,
+            authenticated_daemon=None,
+            grant_issuer=None,
+            lease_seconds=lease_seconds,
+            expected_lease_id=expected_lease_id,
+        )
+
+    def _claim(
+        self,
+        task_id: str,
+        *,
+        daemon_id: str,
+        bind_capsule: CapsuleBinder | AuthenticatedCapsuleBinder,
         authenticated_daemon: AuthenticatedLeasePrincipal | None = None,
+        grant_issuer: LeaseGrantIssuer | None = None,
         lease_seconds: int = 120,
         expected_lease_id: str | None = None,
     ) -> Lease:
@@ -1191,13 +1201,31 @@ class LeaseStore:
                 raise AlreadyClaimedError(
                     f"task {task_id!r} was already claimed"
                 )
-            capsule = self._reference(bind_capsule(identity), "capsule")
+            bound_capsule = bind_capsule(identity)
+            if authenticated_daemon is None:
+                capsule = self._reference(bound_capsule, "capsule")
+                policy = None
+            else:
+                if not isinstance(bound_capsule, LeaseGrantCapsule):
+                    raise LeaseStoreError(
+                        "authenticated claim requires capsule-derived execution policy"
+                    )
+                if grant_issuer is None:
+                    raise LeaseStoreError("authenticated claim requires grant issuer")
+                capsule, policy = grant_issuer._verify_capsule_binding(
+                    identity=identity,
+                    bound_capsule=bound_capsule,
+                )
             grant_json: str | None = None
             grant_signature: str | None = None
             if authenticated_daemon is not None:
-                grant_json, grant_signature = self._sign_lease_grant(
+                if grant_issuer is None or policy is None:
+                    raise LeaseStoreError("authenticated claim requires grant issuer")
+                grant_json, grant_signature = grant_issuer._sign_lease_grant(
+                    store=self,
                     identity=identity,
                     capsule=capsule,
+                    policy=policy,
                     principal=authenticated_daemon,
                 )
             capsule_cursor = connection.execute(
@@ -1265,6 +1293,29 @@ class LeaseStore:
         sequence: int,
         lease_seconds: int = 120,
     ) -> Lease:
+        return self._heartbeat(
+            task_id,
+            daemon_id=daemon_id,
+            lease_id=lease_id,
+            fence=fence,
+            capsule_sha256=capsule_sha256,
+            sequence=sequence,
+            lease_seconds=lease_seconds,
+            grant_issuer=None,
+        )
+
+    def _heartbeat(
+        self,
+        task_id: str,
+        *,
+        daemon_id: str,
+        lease_id: str,
+        fence: int,
+        capsule_sha256: str,
+        sequence: int,
+        lease_seconds: int = 120,
+        grant_issuer: LeaseGrantIssuer | None = None,
+    ) -> Lease:
         """Extend the current lease after exact holder, capsule, and fence checks."""
         self._canonical_uuid(lease_id, "lease_id")
         if not _SHA256_RE.fullmatch(capsule_sha256):
@@ -1302,9 +1353,13 @@ class LeaseStore:
                     "platform lease grant is missing or malformed"
                 )
             if grant_json is not None:
+                if grant_issuer is None:
+                    raise LeaseStoreError(
+                        "authenticated lease heartbeat requires grant issuer"
+                    )
                 grant = self._verified_lease_grant(row)
                 grant["expires_at"] = expires_at
-                grant_json, grant_signature = self._encode_lease_grant(grant)
+                grant_json, grant_signature = grant_issuer._encode_lease_grant(grant)
             cursor = connection.execute(
                 """
                 UPDATE lease_tasks SET
@@ -1362,6 +1417,13 @@ class LeaseStore:
 
     @staticmethod
     def _result_metadata(row: sqlite3.Row) -> dict[str, Any]:
+        """Return the mutable result envelope, never completion authority.
+
+        Acceptance reads only ``candidate_result`` (device-signed and freshly
+        reverified) plus receipts that are recomputed from signed/row/ledger
+        state and can only trigger rejection. Identity, lease, and policy
+        selectors retained here for projections are deliberately ignored.
+        """
         metadata = LeaseStore._result_state(row)
         for key in (
             "job_id",
@@ -1395,41 +1457,18 @@ class LeaseStore:
             if row["status"] != "leased":
                 raise StaleLeaseError("job is not under an active lease")
             lease_expires_at = self._parse_time(row["lease_expires_at"])
-            state = self._row_to_result_state(row)
-            required_bindings = (
-                "owner_user_id",
-                "device_key_id",
-                "daemon_id",
-                "capsule_id",
-                "capsule_sha256",
-                "lease_id",
-                "capability_class",
-                "runner_policy_sha256",
-                "image_digest",
-            )
-            if "repo_mode" not in state or any(
-                type(state.get(key)) is not str or not state[key]
-                for key in required_bindings
-            ):
-                raise CandidateValidationError("leased job is missing result bindings")
-            if (
-                type(state.get("device_key_epoch")) is not int
-                or state["device_key_epoch"] < 1
-            ):
-                raise CandidateValidationError("leased job is missing device-key epoch")
             grant = self._verified_lease_grant(row)
-            if (
-                state["owner_user_id"] != grant["owner_user_id"]
-                or state["device_key_id"] != grant["device_key_id"]
-                or state["device_key_epoch"] != grant["device_key_epoch"]
+            grant_verify_key = self._active_grant_device_key(grant)
+            if not isinstance(verify_key, VerifyKey) or not hmac.compare_digest(
+                bytes(verify_key), bytes(grant_verify_key)
             ):
-                raise StoredStateCorruptError(
-                    "platform lease grant does not match stored result bindings"
+                raise CandidateValidationError(
+                    "candidate verification key does not match the signed lease grant"
                 )
             try:
                 verified = verify_execution_result(
                     raw_result,
-                    verify_key=verify_key,
+                    verify_key=grant_verify_key,
                     expected_device_key_id=grant["device_key_id"],
                     device_key_active=device_key_active,
                     expected_daemon_id=grant["daemon_id"],
@@ -1438,19 +1477,19 @@ class LeaseStore:
                     expected_capsule_sha256=grant["capsule_sha256"],
                     expected_lease_id=grant["lease_id"],
                     expected_fence=grant["fence"],
-                    expected_capability_class=state["capability_class"],
-                    expected_repo_mode=state.get("repo_mode"),
-                    expected_runner_policy_sha256=state["runner_policy_sha256"],
-                    expected_image_digest=state["image_digest"],
+                    expected_capability_class=grant["capability_class"],
+                    expected_repo_mode=grant["repo_mode"],
+                    expected_runner_policy_sha256=grant["runner_policy_sha256"],
+                    expected_image_digest=grant["image_digest"],
                 )
                 references = result_blob_references(verified)
                 for blob_ref, sha256, size_bytes in references:
                     blob_store.validate_reference(
                         blob_ref,
-                        owner_user_id=state["owner_user_id"],
-                        job_id=state["job_id"],
-                        lease_id=cast(str, state["lease_id"]),
-                        fence=state["lease_fence"],
+                        owner_user_id=grant["owner_user_id"],
+                        job_id=grant["job_id"],
+                        lease_id=grant["lease_id"],
+                        fence=grant["fence"],
                         expected_sha256=sha256,
                         expected_size_bytes=size_bytes,
                     )
@@ -1509,16 +1548,16 @@ class LeaseStore:
                 for blob_ref, _, _ in references:
                     blob_store.mark_referenced(
                         blob_ref,
-                        owner_user_id=state["owner_user_id"],
-                        job_id=state["job_id"],
-                        lease_id=cast(str, state["lease_id"]),
-                        fence=state["lease_fence"],
+                        owner_user_id=grant["owner_user_id"],
+                        job_id=grant["job_id"],
+                        lease_id=grant["lease_id"],
+                        fence=grant["fence"],
                     )
             except BlobError as exc:
                 raise CandidateValidationError(str(exc)) from exc
 
             receipt = {
-                "job_id": state["job_id"],
+                "job_id": grant["job_id"],
                 "result_sha256": result_sha256,
                 "outcome": verified["outcome"],
                 "accepted_at": accepted_at,
@@ -1687,10 +1726,10 @@ class LeaseStore:
             final_status = self._completion_status(outcome)
             receipt_request = {
                 "job_id": job_id,
-                "daemon_id": expected["daemon_id"],
-                "lease_id": expected["lease_id"],
-                "fence": expected["lease_fence"],
-                "capsule_sha256": expected["capsule_sha256"],
+                "daemon_id": row["lease_daemon_id"],
+                "lease_id": row["lease_id"],
+                "fence": row["lease_fence"],
+                "capsule_sha256": row["capsule_sha256"],
                 "result_sha256": candidate_hash,
             }
             receipt = {
@@ -1736,3 +1775,197 @@ class LeaseStore:
                 occurred_at=completed_at,
             )
             return dict(receipt)
+
+
+class LeaseGrantIssuer:
+    """Non-retaining signing role; completion storage is passed per operation."""
+
+    def __init__(
+        self,
+        *,
+        signing_key: SigningKey,
+        capsule_key: CapsuleVerificationKey,
+        supported_request_schema_versions: Collection[int],
+    ) -> None:
+        if not isinstance(signing_key, SigningKey):
+            raise TypeError("signing_key must be an Ed25519 SigningKey")
+        if (
+            not isinstance(capsule_key.verify_key, VerifyKey)
+            or type(capsule_key.signing_key_id) is not str
+            or not capsule_key.signing_key_id
+            or type(capsule_key.active) is not bool
+        ):
+            raise TypeError("capsule_key must be an authoritative key record")
+        self.__signing_key = signing_key
+        self.__capsule_key = capsule_key
+        self.__supported_request_schema_versions = frozenset(
+            supported_request_schema_versions
+        )
+
+    def claim(
+        self,
+        store: LeaseStore,
+        task_id: str,
+        *,
+        daemon_id: str,
+        authenticated_daemon: AuthenticatedLeasePrincipal,
+        bind_capsule: AuthenticatedCapsuleBinder,
+        lease_seconds: int = 120,
+        expected_lease_id: str | None = None,
+    ) -> Lease:
+        self._require_matching_store(store)
+        return store._claim(
+            task_id,
+            daemon_id=daemon_id,
+            authenticated_daemon=authenticated_daemon,
+            bind_capsule=bind_capsule,
+            grant_issuer=self,
+            lease_seconds=lease_seconds,
+            expected_lease_id=expected_lease_id,
+        )
+
+    def heartbeat(
+        self,
+        store: LeaseStore,
+        task_id: str,
+        *,
+        daemon_id: str,
+        lease_id: str,
+        fence: int,
+        capsule_sha256: str,
+        sequence: int,
+        lease_seconds: int = 120,
+    ) -> Lease:
+        self._require_matching_store(store)
+        return store._heartbeat(
+            task_id,
+            daemon_id=daemon_id,
+            lease_id=lease_id,
+            fence=fence,
+            capsule_sha256=capsule_sha256,
+            sequence=sequence,
+            lease_seconds=lease_seconds,
+            grant_issuer=self,
+        )
+
+    def _sign_lease_grant(
+        self,
+        *,
+        store: LeaseStore,
+        identity: LeaseIdentity,
+        capsule: RecordReference,
+        policy: LeaseGrantPolicy,
+        principal: AuthenticatedLeasePrincipal,
+    ) -> tuple[str, str]:
+        daemon_id, owner_user_id, device_key_id, credential_epoch = (
+            store._grant_principal_values(principal)
+        )
+        if daemon_id != identity.daemon_id:
+            raise InvalidLeaseHolderError(
+                "lease holder differs from the authenticated daemon"
+            )
+        registry = store._key_registry
+        if registry is None:
+            raise LeaseStoreError("platform device-key registry is unavailable")
+        registered = registry.resolve_device_key(device_key_id)
+        if (
+            registered is None
+            or registered.device_key_id != device_key_id
+            or registered.credential_epoch != credential_epoch
+            or registered.active is not True
+            or not isinstance(registered.verify_key, VerifyKey)
+        ):
+            raise InvalidLeaseHolderError(
+                "authenticated daemon device key is not active at the granted epoch"
+            )
+        binding = {
+            "schema_version": _LEASE_GRANT_SCHEMA_VERSION,
+            "job_id": identity.task_id,
+            "owner_user_id": owner_user_id,
+            "daemon_id": daemon_id,
+            "device_key_id": device_key_id,
+            "device_verify_key": base64.b64encode(
+                bytes(registered.verify_key)
+            ).decode("ascii"),
+            "device_key_epoch": credential_epoch,
+            "lease_id": identity.lease_id,
+            "fence": identity.fence,
+            "issued_at": identity.issued_at,
+            "expires_at": identity.expires_at,
+            "capsule_id": capsule.record_id,
+            "capsule_sha256": capsule.content_sha256,
+            **store._grant_policy_values(policy),
+        }
+        return self._encode_lease_grant(binding)
+
+    def _require_matching_store(self, store: LeaseStore) -> None:
+        if not isinstance(store, LeaseStore):
+            raise TypeError("store must be a LeaseStore")
+        if store._grant_verify_key is None or not hmac.compare_digest(
+            bytes(self.__signing_key.verify_key), bytes(store._grant_verify_key)
+        ):
+            raise ValueError("grant signing and verification keys do not match")
+
+    def _verify_capsule_binding(
+        self,
+        *,
+        identity: LeaseIdentity,
+        bound_capsule: LeaseGrantCapsule,
+    ) -> tuple[RecordReference, LeaseGrantPolicy]:
+        capsule_key = self.__capsule_key
+        try:
+            verified = verify_execution_capsule(
+                bound_capsule.raw_capsule,
+                verify_key=capsule_key.verify_key,
+                expected_signing_key_id=capsule_key.signing_key_id,
+                signing_key_active=capsule_key.active,
+                expected_audience_daemon_id=identity.daemon_id,
+                expected_job_id=identity.task_id,
+                expected_lease_fence=identity.fence,
+                supported_request_schema_versions=(
+                    self.__supported_request_schema_versions
+                ),
+                now=LeaseStore._parse_time(identity.issued_at),
+            )
+        except ExecutionCapsuleError as exc:
+            raise LeaseStoreError("execution capsule authentication failed") from exc
+        payload = verified["payload"]
+        lease = payload["lease"]
+        if (
+            lease["lease_id"] != identity.lease_id
+            or lease["issued_at"] != identity.issued_at
+            or lease["expires_at"] != identity.expires_at
+            or payload["issued_at"] != identity.issued_at
+            or payload["not_before"] != identity.issued_at
+            or payload["expires_at"] != identity.expires_at
+        ):
+            raise LeaseStoreError("execution capsule lease binding mismatch")
+        capsule_sha256 = verified["integrity"]["capsule_sha256"]
+        reference = LeaseStore._reference(
+            RecordReference(
+                record_id=payload["capsule_id"],
+                content_sha256=capsule_sha256,
+            ),
+            "capsule",
+        )
+        allowed = payload["allowed_capability"]
+        return reference, LeaseGrantPolicy(
+            capability_class=allowed["class"],
+            repo_mode=allowed["repo_mode"],
+            runner_policy_sha256=allowed["runner_policy_sha256"],
+            image_digest=allowed["image_digest"],
+        )
+
+    def _encode_lease_grant(
+        self, binding: Mapping[str, Any]
+    ) -> tuple[str, str]:
+        digest = hash_canonical_jcs(binding)
+        signature = sign_domain_separated_ed25519(
+            digest,
+            domain_separator=_LEASE_GRANT_DOMAIN_SEPARATOR,
+            signing_key=self.__signing_key,
+        )
+        return (
+            json.dumps(binding, sort_keys=True, separators=(",", ":")),
+            base64.b64encode(signature).decode("ascii"),
+        )
