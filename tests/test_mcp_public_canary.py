@@ -42,20 +42,20 @@ def _scripted_post(tool_names):
     return _post
 
 
-_FIVE_PLUS_STATUS = [
+_CANONICAL_PLUS_STATUS = [
     "read_graph", "write_graph", "run_graph", "read_page", "write_page",
-    "get_status",
+    "converse", "get_status",
 ]
 
 
 def test_assert_handles_passes_on_exact_surface(monkeypatch):
-    monkeypatch.setattr(canary, "_post", _scripted_post(_FIVE_PLUS_STATUS))
+    monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
     # No exception == green.
     canary.assert_five_handles("https://example/mcp", 5.0)
 
 
 def test_assert_handles_fails_on_legacy_leak(monkeypatch):
-    leaky = _FIVE_PLUS_STATUS + ["universe", "extensions"]
+    leaky = _CANONICAL_PLUS_STATUS + ["universe", "extensions"]
     monkeypatch.setattr(canary, "_post", _scripted_post(leaky))
     with pytest.raises(canary.CanaryError) as exc:
         canary.assert_five_handles("https://example/mcp", 5.0)
@@ -64,7 +64,7 @@ def test_assert_handles_fails_on_legacy_leak(monkeypatch):
 
 
 def test_assert_handles_fails_on_missing_handle(monkeypatch):
-    short = [n for n in _FIVE_PLUS_STATUS if n != "run_graph"]
+    short = [n for n in _CANONICAL_PLUS_STATUS if n != "run_graph"]
     monkeypatch.setattr(canary, "_post", _scripted_post(short))
     with pytest.raises(canary.CanaryError) as exc:
         canary.assert_five_handles("https://example/mcp", 5.0)
@@ -73,14 +73,14 @@ def test_assert_handles_fails_on_missing_handle(monkeypatch):
 
 
 def test_advertised_tool_names_round_trips(monkeypatch):
-    monkeypatch.setattr(canary, "_post", _scripted_post(_FIVE_PLUS_STATUS))
+    monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
     names = canary.advertised_tool_names("https://example/mcp", 5.0)
-    assert names == set(_FIVE_PLUS_STATUS)
+    assert names == set(_CANONICAL_PLUS_STATUS)
 
 
 def test_retry_recovers_from_transient_blip(monkeypatch):
     """A transient failure that clears on a later attempt must NOT fail."""
-    good = _scripted_post(_FIVE_PLUS_STATUS)
+    good = _scripted_post(_CANONICAL_PLUS_STATUS)
     calls = {"n": 0}
 
     def flaky(url, payload, timeout, session_id=None):
@@ -100,7 +100,7 @@ def test_retry_recovers_from_transient_blip(monkeypatch):
 def test_retry_propagates_persistent_drift(monkeypatch):
     """A genuine, persistent regression still fails after retries exhaust."""
     monkeypatch.setattr(
-        canary, "_post", _scripted_post(_FIVE_PLUS_STATUS + ["universe"])
+        canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS + ["universe"])
     )
     with pytest.raises(canary.CanaryError) as exc:
         canary.assert_five_handles_with_retry(

@@ -17,10 +17,12 @@ Exit codes
 3   Response parsed but MCP-level error returned (``jsonrpc`` error
     field present).
 4   ``--assert-handles`` drift: the live ``tools/list`` does not advertise
-    exactly the five canonical handles (``read_graph`` / ``write_graph`` /
-    ``run_graph`` / ``read_page`` / ``write_page``, plus the optional
-    ``get_status`` read). This is the PR-178 drift guard required by Hard
-    Rule #11 after any DNS/tunnel/Worker/connector change.
+    exactly the canonical handle set (``read_graph`` / ``write_graph`` /
+    ``run_graph`` / ``read_page`` / ``write_page`` / ``converse``, plus the
+    optional ``get_status`` read — see ``CANONICAL_HANDLES`` below and
+    ``openspec/specs/live-mcp-connector-surface/spec.md``). This is the
+    PR-178 drift guard required by Hard Rule #11 after any
+    DNS/tunnel/Worker/connector change.
 
 Usage
 -----
@@ -184,7 +186,7 @@ def advertised_tool_names(url: str, timeout: float) -> set[str]:
 
 
 def assert_five_handles(url: str, timeout: float) -> None:
-    """Raise ``CanaryError(4)`` unless tools/list is exactly the five handles."""
+    """Raise ``CanaryError(4)`` unless tools/list is exactly the canonical set."""
     names = advertised_tool_names(url, timeout)
     missing = CANONICAL_HANDLES - names
     extra = names - _ALLOWED_ADVERTISED
@@ -298,8 +300,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--verbose", action="store_true",
                     help="print success line to stdout")
     ap.add_argument("--assert-handles", action="store_true",
-                    help="also assert tools/list advertises exactly the five "
-                         "canonical handles (PR-178 drift guard, Hard Rule #11)")
+                    help="also assert tools/list advertises exactly the "
+                         "canonical handle set incl. converse (PR-178 drift "
+                         "guard, Hard Rule #11)")
     ap.add_argument("--assert-handles-retries", type=int, default=5,
                     help="retry the handle assertion N times before failing "
                          "(default 5) — absorbs transient post-deploy blips")
@@ -321,7 +324,7 @@ def main(argv: list[str]) -> int:
             _die(exc.code, exc.msg)
 
     if args.verbose:
-        suffix = " (5 handles advertised)" if args.assert_handles else ""
+        suffix = " (canonical handle set advertised)" if args.assert_handles else ""
         print(f"[canary] OK {args.url}{suffix}")
     return 0
 
