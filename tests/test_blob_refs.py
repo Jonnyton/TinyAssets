@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -429,10 +430,37 @@ def test_blob_store_lock_identity_collapses_windows_extended_path_alias(
     from tinyassets.runtime.blob_refs import BlobStore
 
     root = (tmp_path / "blob-store").resolve()
-    ordinary = BlobStore(root)
-    extended = BlobStore(f"\\\\?\\{root}")
+    root.mkdir()
+    extended_root = f"\\\\?\\{root}"
+    assert os.path.samefile(root, extended_root)
 
-    assert ordinary._lock is extended._lock
+    ordinary = BlobStore(root)
+    extended = BlobStore(extended_root)
+
+    assert ordinary._coordinator is extended._coordinator
+    assert ordinary._coordinator.identity == extended._coordinator.identity
+
+
+def test_blob_store_fails_closed_when_physical_root_identity_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tinyassets.runtime.blob_refs as blob_refs
+
+    def unavailable(_root: Path):
+        raise OSError("directory identity unavailable")
+
+    monkeypatch.setattr(blob_refs, "_physical_root_identity", unavailable)
+
+    with pytest.raises(blob_refs.BlobStateError, match="physical identity"):
+        blob_refs.BlobStore(tmp_path / "blob-store")
+
+
+def test_blob_index_persistence_requires_the_root_coordinator(tmp_path: Path) -> None:
+    blob_store = store(tmp_path)
+
+    with pytest.raises(AssertionError, match="coordinator lock"):
+        blob_store._persist(blob_store._load_index())
 
 
 def test_two_live_blob_stores_do_not_lose_each_others_committed_bindings(
@@ -443,6 +471,8 @@ def test_two_live_blob_stores_do_not_lose_each_others_committed_bindings(
     root = tmp_path / "blob-store"
     first = BlobStore(root)
     second = BlobStore(root)
+    assert "_index" not in vars(first)
+    assert "_index" not in vars(second)
     first_content = b"first concurrent binding"
     first_decl = declaration(first_content)
     first_upload = init_write(first, first_decl, first_content)
@@ -473,4 +503,54 @@ def test_two_live_blob_stores_do_not_lose_each_others_committed_bindings(
             fence=declared["fence"],
             expected_sha256=ref.sha256,
             expected_size_bytes=ref.size_bytes,
+        )
+
+
+def test_stale_instance_cannot_resurrect_collected_binding(tmp_path: Path) -> None:
+    from tinyassets.runtime.blob_refs import BlobBindingError, BlobStore
+
+    root = tmp_path / "blob-store"
+    producer = BlobStore(root, unreferenced_ttl_seconds=60)
+    content = b"binding that must stay collected"
+    ref = producer.register_owner_blob(
+        declaration(content, confidentiality="owner_private"),
+        owner_user_id="user:owner-1",
+        daemon_id="daemon:builder-1",
+        owner_blob_ref="owner-cas:collected-binding",
+        possession_proof=b"proof",
+        verify_possession=lambda *_: True,
+    )
+    stale = BlobStore(root, unreferenced_ttl_seconds=60)
+    collector = BlobStore(root, unreferenced_ttl_seconds=60)
+    failed_at = datetime(2026, 7, 21, tzinfo=UTC)
+    collector.mark_job_failed(
+        owner_user_id="user:owner-1",
+        job_id=JOB_ID,
+        failed_at=failed_at,
+    )
+    assert collector.collect_garbage(
+        now=failed_at + timedelta(seconds=61)
+    ) == (ref.ref,)
+
+    validation = {
+        "owner_user_id": "user:owner-1",
+        "job_id": JOB_ID,
+        "lease_id": LEASE_ID,
+        "fence": 17,
+    }
+    with pytest.raises(BlobBindingError):
+        stale.mark_referenced(ref.ref, **validation)
+    with pytest.raises(BlobBindingError):
+        stale.validate_reference(
+            ref.ref,
+            expected_sha256=ref.sha256,
+            expected_size_bytes=ref.size_bytes,
+            **validation,
+        )
+    with pytest.raises(BlobBindingError):
+        BlobStore(root).validate_reference(
+            ref.ref,
+            expected_sha256=ref.sha256,
+            expected_size_bytes=ref.size_bytes,
+            **validation,
         )
