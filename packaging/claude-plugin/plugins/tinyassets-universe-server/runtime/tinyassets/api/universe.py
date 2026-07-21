@@ -647,20 +647,22 @@ def _extract_set_engine(
     )
 
 
-def _extract_offer_engine(
+def _extract_bind_design(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
-    """Ledger extractor for offer_engine (founder market supply). Never logs the
-    engine credential — offers carry only service/model/rate/cap metadata."""
+    """Ledger a binding mutation without ever reading or recording its values."""
     from tinyassets.api.engine_helpers import _truncate
+
+    branch_def_id = str(result.get("branch_def_id", ""))
+    bound_fields = list(result.get("bound_fields") or [])
     return (
-        str(result.get("founder_id", "")),
-        _truncate(f"market offer: {result.get('status', '')} "
-                  f"{result.get('offer_key', '')}"),
+        branch_def_id,
+        _truncate(f"design bindings updated: {', '.join(bound_fields)}"),
         {
+            "branch_def_id": branch_def_id,
+            "bound_fields": bound_fields,
+            "missing_fields": list(result.get("missing_fields") or []),
             "status": result.get("status", ""),
-            "offer_key": str(result.get("offer_key", "")),
-            "offer_count": len(result.get("offers", []) or []),
         },
     )
 
@@ -671,7 +673,7 @@ WRITE_ACTIONS: dict[str, Any] = {
     "set_premise": (_extract_set_premise, None),
     "soul.edit": (_extract_soul_edit, None),
     "set_engine": (_extract_set_engine, None),
-    "offer_engine": (_extract_offer_engine, None),
+    "bind_design": (_extract_bind_design, None),
     "add_canon": (_extract_add_canon, None),
     "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
@@ -4713,8 +4715,26 @@ def _action_create_universe(
     if udir.exists():
         return json.dumps({"error": f"Universe '{uid}' already exists."})
 
+    # Round-21 #2: claim the directory ATOMICALLY. ``exist_ok=False`` makes mkdir the
+    # single source of truth for "who created this dir" — a concurrent create that
+    # loses the race raises FileExistsError here (returned as already-exists), so it
+    # never proceeds to seed/clean up ANOTHER request's directory. The prior
+    # ``exists()`` check + ``exist_ok=True`` was racy: two requests could both pass the
+    # check, both mkdir (one a no-op), and the loser's failure-cleanup ``rmtree`` would
+    # delete the WINNER's completed universe. ``created_here`` scopes the failure
+    # cleanup to ONLY the dir THIS invocation created.
+    created_here = False
+    marker_path: Path | None = None
+    marker_existed = False
+    previous_marker = ""
     try:
-        udir.mkdir(parents=True, exist_ok=True)
+        try:
+            udir.mkdir(parents=True, exist_ok=False)
+            created_here = True
+        except FileExistsError:
+            # Lost a concurrent create race — the dir now exists (another request's).
+            # Never touch it.
+            return json.dumps({"error": f"Universe '{uid}' already exists."})
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
         # universe-creation D4/D5: seed the linked OKF soul bundle. Creation
@@ -4754,6 +4774,10 @@ def _action_create_universe(
         # last-created home and leaks it to other founders' omitted-scope reads.
         if not permissions.is_authenticated_request():
             marker = base / ".active_universe"
+            marker_path = marker
+            marker_existed = marker.is_file()
+            if marker_existed:
+                previous_marker = marker.read_text(encoding="utf-8")
             marker.write_text(uid, encoding="utf-8")
             result["note"] = (
                 f"Universe '{uid}' created. "
@@ -4762,33 +4786,12 @@ def _action_create_universe(
         else:
             result["note"] = f"Universe '{uid}' created."
 
-        # D0a founder-grant-on-create: the authenticated founder OWNS the
-        # universe they create (admin grant) — the mechanism that makes the
-        # per-universe write boundary real. Ownership is orthogonal to
-        # visibility: we do NOT touch public_read, so the universe stays
-        # publicly readable by default. A dev/no-auth (anonymous) create
-        # seeds no grant, so local dev-mode creates keep working.
-        # Register in the universes index so a founder universe has a
-        # universes + universe_rules row (not just an ACL grant) — home
-        # resolution + reset rely on a consistent registry.
-        try:
-            from tinyassets.daemon_server import ensure_universe_registered
-
-            ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-        except Exception:  # noqa: BLE001 - registry is best-effort at create
-            logger.warning("ensure_universe_registered failed for %s", uid, exc_info=True)
-
+        # Registry, defaults, ACL, and optional home binding commit together.
+        # A failed statement rolls back only this transaction, preserving any
+        # pre-existing orphan rows byte-for-byte instead of broadly deleting by uid.
         founder = permissions.current_actor_id()
+        bind_founder_home = False
         if permissions.is_authenticated_request():
-            from tinyassets.daemon_server import grant_universe_access, set_founder_home
-
-            grant_universe_access(
-                base,
-                universe_id=uid,
-                actor_id=founder,
-                permission="admin",
-                granted_by=founder,
-            )
             # Bind this as the founder's home when they don't already have a
             # LIVING one — no binding, or a binding to a removed/incomplete dir.
             # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
@@ -4798,28 +4801,61 @@ def _action_create_universe(
             from tinyassets.daemon_server import get_founder_home
 
             _home = get_founder_home(base, founder)
-            if not _home or not (base / _home / "soul.md").is_file():
-                set_founder_home(base, founder_sub=founder, universe_id=uid)
+            bind_founder_home = (
+                not _home or not (base / _home / "soul.md").is_file()
+            )
             result["founder_id"] = founder
         else:
             result["founder_id"] = ""
+
+        from tinyassets.daemon_server import create_universe_persistent_state
+
+        create_universe_persistent_state(
+            base,
+            universe_id=uid,
+            universe_path=udir,
+            founder_sub=founder if permissions.is_authenticated_request() else "",
+            bind_founder_home=bind_founder_home,
+        )
 
         return json.dumps(result)
     except Exception as exc:  # noqa: BLE001 - roll back a partial create
         # Atomic create: a failure AFTER mkdir (e.g. seed_okf_bundle raising
         # mid-bundle, or a grant/bind error) must NOT leave a bare/partial
         # universe dir — it would read as a "living" home (.is_dir()) and
-        # get_status would announce a broken universe (Codex 2026-07-15). We only
-        # reach mkdir when the dir did not pre-exist (guarded above), so the dir
-        # is ours to remove. Preserve prior behavior: OSError → error envelope,
-        # anything else re-raises (after the partial dir is cleaned up).
+        # get_status would announce a broken universe (Codex 2026-07-15).
+        # Round-21 #2: clean up ONLY the dir THIS invocation created (``created_here``)
+        # — NEVER a concurrent request's directory (the FileExistsError loser already
+        # returned above without setting the flag).
+        # Round-22 #3: the rollback must be ATOMIC ACROSS PERSISTENT STATE, not just the
+        # directory. A LATE failure (e.g. set_founder_home) after registration + the ACL
+        # grant would otherwise leave an orphaned registry row + ACL row (dir gone). Run
+        # the compensating delete across registry/rules/branches/ACL/home for THIS uid.
+        # Preserve prior behavior: OSError → error envelope, else re-raise (after undo).
         import shutil
 
-        try:
-            if udir.is_dir():
-                shutil.rmtree(udir)
-        except OSError:
-            pass
+        if created_here:
+            from tinyassets.daemon_server import UniversePersistentStateRollbackError
+
+            # When SQLite cannot CONFIRM rollback, retain the directory so DB state
+            # never points at a path we knowingly deleted. The typed error stays loud.
+            if not isinstance(exc, UniversePersistentStateRollbackError):
+                try:
+                    if udir.is_dir():
+                        shutil.rmtree(udir)
+                except OSError:
+                    pass
+            if marker_path is not None:
+                try:
+                    if marker_existed:
+                        marker_path.write_text(previous_marker, encoding="utf-8")
+                    elif marker_path.is_file():
+                        marker_path.unlink()
+                except OSError:
+                    logger.warning(
+                        "active-universe marker rollback failed for %s", uid,
+                        exc_info=True,
+                    )
         if isinstance(exc, OSError):
             return json.dumps({"error": f"Failed to create universe: {exc}"})
         raise
@@ -4833,23 +4869,84 @@ def _action_create_universe(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _action_bind_design(
+    universe_id: str = "",
+    branch_def_id: str = "",
+    inputs_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Bind a design's declared repo/policy slots in a private universe store."""
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_bindings import BranchBindingError, bind_branch_values
+    from tinyassets.daemon_server import get_branch_definition
+
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({
+            "error": f"Universe '{uid}' not found.",
+            "status": "rejected",
+        })
+
+    bid = (branch_def_id or "").strip()
+    if not bid:
+        return json.dumps({
+            "error": "branch_def_id is required.",
+            "status": "rejected",
+        })
+    try:
+        branch = get_branch_definition(_base_path(), branch_def_id=bid)
+    except KeyError:
+        return json.dumps({
+            "error": "Design not found.",
+            "status": "rejected",
+        })
+
+    actor = _current_actor()
+    if str(branch.get("author") or "anonymous") != actor:
+        return json.dumps({
+            "error": "Only the design owner can bind it to a private universe.",
+            "status": "rejected",
+        })
+
+    try:
+        values = json.loads(inputs_json or "{}")
+    except json.JSONDecodeError:
+        return json.dumps({
+            "error": "changes_json must be a valid JSON object.",
+            "status": "rejected",
+        })
+    try:
+        result = bind_branch_values(
+            udir,
+            bid,
+            branch.get("state_schema", []),
+            values,
+            actor=actor,
+        )
+    except BranchBindingError as exc:
+        return json.dumps({"error": str(exc), "status": "rejected"})
+
+    return json.dumps({
+        "status": "bound",
+        "universe_id": uid,
+        "branch_def_id": bid,
+        **result,
+        "credential_resolution": "vault_by_destination",
+    })
+
+
 def _action_set_engine(
     universe_id: str = "",
     inputs_json: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Founder-only: assign the universe's engine (`universe action=set_engine`).
+    """Founder-only: DECLARE the universe's engine lane (`universe action=set_engine`).
 
-    Deposits a BYO LLM API key into the universe's credential vault and sets the
-    preferred writer, so the universe's own intelligence runs on the founder's
-    engine (BYO API key → CLI-subprocess provider). Founder-only: gated by the
-    ``universe:admin`` scope + the universe write ACL. The key is stored in the
-    per-universe vault and injected into the CLI subprocess env at call time; it
-    is never echoed back or written to the ledger.
-
-    ``inputs_json``: ``{"service": "anthropic"|"openai", "api_key": "...",
-    "preferred_writer": "claude-code"|"codex"}`` (preferred_writer inferred from
-    service when omitted).
+    Records a non-secret lane choice, or accepts a founder-authenticated BYO API
+    key for immediate deposit into the encrypted platform vault. The raw value
+    is never written to universe config or returned; the response exposes only
+    an opaque credential reference. Subscription tokens remain unsupported.
     """
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
@@ -4860,16 +4957,23 @@ def _action_set_engine(
     if not raw:
         return json.dumps({
             "error": "inputs_json is required.",
+            "note": "Choose a non-secret engine lane or use the "
+                    "founder-authenticated BYO deposit seam. A deposited key is "
+                    "stored only in the encrypted platform vault and represented "
+                    "outside custody by an opaque reference.",
             "expected": {
                 "engine_source": "byo_api_key | self_hosted_endpoint | "
                                  "market_rented | host_daemon",
-                "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
-                                "preferred_writer": "claude-code|codex (opt)"},
+                "byo_api_key": {"service": "anthropic|openai",
+                                "api_key": "founder credential deposit"},
                 "self_hosted_endpoint": {"endpoint": "https://…",
                                          "preferred_writer": "…"},
                 "market_rented": {"market_model": "glm-5.2", "market_rate": 0.0,
                                   "spending_cap": 0.0},
-                "host_daemon": {"provider": "claude-code|codex"},
+                "host_daemon": {"provider": "claude-code|codex",
+                                "note": "run the daemon on YOUR device to use "
+                                        "your subscription — the platform never "
+                                        "custodies subscription tokens"},
             },
         })
     try:
@@ -4884,6 +4988,22 @@ def _action_set_engine(
 
     if engine_source == "byo_api_key":
         return _set_engine_byo_api_key(uid, udir, data, preferred_writer)
+    if engine_source == "subscription":
+        # BLOCKED lane (docs/design-notes/2026-07-02-universe-engine-credential-
+        # custody-research.md §0/§4): the platform may NOT custody a founder's
+        # personal subscription tokens (Anthropic + OpenAI ToS). Reject with the
+        # sanctioned lanes rather than building the blocked surface.
+        return json.dumps({
+            "error": "Per-universe subscription custody is not a sanctioned "
+                     "engine lane — the platform never stores your subscription "
+                     "tokens (Anthropic/OpenAI ToS).",
+            "use_instead": [
+                "self_hosted_endpoint — point at your own OSS endpoint",
+                "market_rented — rent daemon capacity from the market",
+                "host_daemon — run the daemon on YOUR own device to use your "
+                "subscription CLI (tokens never leave your machine)",
+            ],
+        })
     if engine_source == "self_hosted_endpoint":
         return _set_engine_self_hosted(uid, udir, data, preferred_writer)
     if engine_source == "market_rented":
@@ -4898,12 +5018,15 @@ def _action_set_engine(
 
 
 def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
-    """BYO API key → per-universe vault + preferred_writer (fully wired)."""
+    """BYO API key → platform credential vault + preferred_writer."""
     from tinyassets.config import write_universe_config_fields
-    from tinyassets.credential_vault import (
+    from tinyassets.credential_broker import (
+        LegacyCredentialVaultError,
+        deposit_engine_api_key,
+        require_no_legacy_vault,
         supported_llm_api_key_services,
-        write_credential_vault,
     )
+    from tinyassets.credentials import CredentialUnavailable
 
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
@@ -4920,18 +5043,23 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
             "expected_services": sorted(supported_llm_api_key_services()),
         })
 
-    import base64
     try:
-        vault_summary = write_credential_vault(udir, [{
-            "credential_type": "llm_api_key",
-            "service": service,
-            # base64 at rest (the vault's existing convention; _secret_value
-            # decodes secret_b64). Envelope encryption is the deferred hardening
-            # flagged in the credential-custody research.
-            "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
-        }])
-    except ValueError as exc:
-        return json.dumps({"error": f"Failed to store engine credential: {exc}"})
+        require_no_legacy_vault(udir)
+        projection = deposit_engine_api_key(
+            universe_id=uid,
+            founder_id=permissions.current_actor_id(),
+            service=service,
+            api_key=api_key,
+        )
+    except LegacyCredentialVaultError as exc:
+        return json.dumps({"error": str(exc)})
+    except CredentialUnavailable as exc:
+        # Typed vault failure — the code names the class, never the key.
+        return json.dumps({
+            "error": f"Failed to store engine credential [{exc.code}]. "
+                     "The platform vault refused the deposit; nothing was "
+                     "stored.",
+        })
 
     fields = {"engine_source": "byo_api_key"}
     if preferred_writer:
@@ -4940,209 +5068,305 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
         write_universe_config_fields(udir, **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
-
     return json.dumps({
         "status": "engine_set",
         "universe_id": uid,
         "engine_source": "byo_api_key",
         "service": service,
         "preferred_writer": preferred_writer,
-        "credential_types": vault_summary.get("credential_types", []),
-        "note": "Engine credential stored in the per-universe vault (never "
+        # Non-secret public projection: opaque ref + kind only.
+        "credential_ref": projection.get("ref", ""),
+        "credential_kind": projection.get("kind", ""),
+        "note": "Engine credential stored in the platform vault (never "
                 "echoed).",
     })
 
 
+_KNOWN_ENGINE_PROVIDERS: frozenset[str] = frozenset({"claude-code", "codex"})
+
+# Round-12 #5: the full engine-lane namespace in config.yaml. A lane switch
+# REPLACES this namespace (clears the fields the new lane does not set) so a
+# stale market_rate / engine_endpoint / declared writer from a previous lane
+# never leaks into the new one. Each _set_engine_* clears NAMESPACE − its fields.
+#
+# Round-14 #1: a DECLARATION is INERT metadata — it must NEVER write a field the
+# router/executor consumes. ``preferred_writer`` (which the provider router reads
+# to prioritize a provider with PLATFORM credentials) is therefore in the clear
+# set BUT never in a declaration's fields; the founder's stated writer preference
+# is stored inertly as ``declared_preferred_writer`` (nothing reads it) until a
+# real executor is bound (Phase 2), which will promote it.
+_ENGINE_CONFIG_NAMESPACE: frozenset[str] = frozenset({
+    "engine_source", "engine_endpoint", "preferred_writer",
+    "declared_preferred_writer", "market_model", "market_rate", "spending_cap",
+})
+
+
+def _engine_lane_clear(fields: dict[str, Any]) -> frozenset[str]:
+    """Return the engine-namespace keys to clear when writing *fields* (the
+    fields the new lane does NOT set), so a lane switch replaces, not merges."""
+    return _ENGINE_CONFIG_NAMESPACE - set(fields)
+
+
+# A field name that looks secret-bearing — a NON-SECRET declaration must never
+# carry one (a client that sends a raw secret would leak it into the relay, #3).
+_SECRET_FIELD_TOKENS: tuple[str, ...] = (
+    "key", "token", "secret", "password", "passwd", "auth", "credential",
+    "cred", "oauth", "bearer", "session", "cookie", "apikey",
+)
+
+
+def _reject_secret_or_unknown_fields(data: dict, allowed: frozenset[str]) -> str | None:
+    """Strict per-lane schema (#3): reject any field not in *allowed*, and reject
+    any field whose NAME looks secret-bearing — a non-secret declaration must
+    never carry a secret over the chat/relay."""
+    for field in data:
+        lname = str(field).lower()
+        if any(tok in lname for tok in _SECRET_FIELD_TOKENS):
+            return (
+                f"field {field!r} looks like a secret — the engine-declaration "
+                "declaration surface never accepts secrets; use the dedicated "
+                "founder-authenticated credential deposit seam."
+            )
+        if field not in allowed:
+            return (
+                f"unknown field {field!r} for this engine lane; allowed: "
+                f"{sorted(allowed)}."
+            )
+    return None
+
+
+# Round-21 #3: API-key / token shapes that must never appear in an endpoint PATH. A
+# credential smuggled into the path (``.../v1/sk-ant-api03-SECRET``) is stored verbatim
+# in config.yaml → plaintext custody of a secret, the exact class S5 forbids. Known
+# provider key prefixes; matched case-insensitively at a path-segment start.
+_ENDPOINT_CREDENTIAL_PREFIXES: tuple[str, ...] = (
+    "sk-ant-", "sk-", "sk_live_", "sk_test_", "pk-", "pk_live_", "pk_test_",
+    "xai-", "gsk_", "ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "aiza",
+)
+
+
+def _decode_path_repeatedly(path: str, *, rounds: int = 5) -> str:
+    """Fully percent-decode *path* to its canonical form for secret scanning (round-22
+    #4). A single decode is not enough — a doubly-encoded secret ``%2573k-ant-`` decodes
+    to ``%73k-ant-`` then ``sk-ant-``. Bounded rounds; converges when a decode is a
+    no-op."""
+    from urllib.parse import unquote
+
+    current = path
+    for _ in range(rounds):
+        nxt = unquote(current)
+        if nxt == current:
+            break
+        current = nxt
+    return current
+
+
+def _path_carries_credential(path: str) -> bool:
+    """True iff any path segment looks like an embedded API key / token (round-21 #3 /
+    round-22 #4).
+
+    Scans the FULLY PERCENT-DECODED path (so a reversibly-encoded secret can't bypass)
+    against known provider key prefixes AND a conservative high-entropy heuristic (a
+    long single segment mixing upper+lower+digits with no separators — almost never a
+    route path). Ordinary route segments (``v1``), model ids, and lowercase UUIDs pass.
+    """
+    path = _decode_path_repeatedly(path)
+    for raw in path.split("/"):
+        seg = raw.strip()
+        if not seg:
+            continue
+        low = seg.lower()
+        if any(low.startswith(prefix) for prefix in _ENDPOINT_CREDENTIAL_PREFIXES):
+            return True
+        if (
+            len(seg) >= 32
+            and re.fullmatch(r"[A-Za-z0-9._~-]+", seg)
+            and any(c.isdigit() for c in seg)
+            and any(c.islower() for c in seg)
+            and any(c.isupper() for c in seg)
+        ):
+            return True
+    return False
+
+
+def _validate_engine_endpoint(endpoint: str) -> str | None:
+    """Return an error string for an invalid self-hosted endpoint, else None.
+
+    Policy (#3/F6): ``http(s)`` URL with a host, NO embedded credentials
+    (userinfo), NO query/fragment (an engine base URL needs none, and they are
+    the ``?api_key=…`` credential-smuggling vector), NO credential-shaped path
+    content (round-21 #3 — a key smuggled into the PATH would be stored plaintext),
+    and not the cloud-metadata SSRF address. Deeper egress policy lands with the
+    Phase-2 executor."""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(endpoint)
+    except ValueError as exc:
+        return f"endpoint is not a valid URL: {exc}"
+    if parsed.scheme not in ("http", "https"):
+        return "endpoint must be an http(s) URL."
+    if not parsed.hostname:
+        return "endpoint must include a host."
+    if parsed.username or parsed.password:
+        return "endpoint must not embed credentials (user:pass@)."
+    if parsed.query or parsed.fragment:
+        return (
+            "endpoint must not carry a query string or fragment — an engine base "
+            "URL needs none, and they are a credential-smuggling vector "
+            "(e.g. ?api_key=…)."
+        )
+    if parsed.path:
+        # Round-22 #4: reject a MALFORMED percent-encoding (a stray '%' not part of a
+        # valid %XX) — it is a decode-bypass vector — then scan the fully decoded path.
+        if re.search(r"%(?![0-9A-Fa-f]{2})", parsed.path):
+            return (
+                "endpoint path has a malformed percent-encoding — rejected (a "
+                "malformed escape is a credential-smuggling bypass vector)."
+            )
+        if _path_carries_credential(parsed.path):
+            return (
+                "endpoint path appears to embed an API key / credential — an engine "
+                "base URL must not carry secrets in its path (they would be stored "
+                "plaintext). Remove the credential from the path (declare only the "
+                "base URL)."
+            )
+    host = parsed.hostname.strip("[]").lower()
+    if host in ("169.254.169.254", "fd00:ec2::254", "metadata.google.internal"):
+        return "endpoint points at a cloud-metadata address (SSRF) — rejected."
+    return None
+
+
+def _redact_endpoint(endpoint: str) -> str:
+    """Echo only scheme://host[:port] — never the full endpoint (#3)."""
+    from urllib.parse import urlparse
+
+    try:
+        p = urlparse(endpoint)
+        host = p.hostname or ""
+        port = f":{p.port}" if p.port else ""
+        return f"{p.scheme}://{host}{port}" if host else "<redacted>"
+    except ValueError:
+        return "<redacted>"
+
+
 def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
-    """Self-hosted endpoint → persist the endpoint + writer choice."""
+    """Self-hosted endpoint → DECLARE the endpoint (not executable yet)."""
     from tinyassets.config import write_universe_config_fields
 
+    schema_err = _reject_secret_or_unknown_fields(
+        data, frozenset({"engine_source", "endpoint", "preferred_writer"}),
+    )
+    if schema_err:
+        return json.dumps({"error": schema_err})
     endpoint = str(data.get("endpoint", "")).strip()
     if not endpoint:
         return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
+    endpoint_err = _validate_engine_endpoint(endpoint)
+    if endpoint_err:
+        return json.dumps({"error": endpoint_err})
     fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
     if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
+        fields["declared_preferred_writer"] = preferred_writer  # inert (#1)
     try:
-        write_universe_config_fields(udir, **fields)
+        write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
-        "status": "engine_set", "universe_id": uid,
-        "engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint,
-        "preferred_writer": preferred_writer,
+        "status": "engine_declared", "universe_id": uid,
+        "engine_source": "self_hosted_endpoint",
+        "engine_endpoint_redacted": _redact_endpoint(endpoint),  # response echo only
+        "declared_preferred_writer": preferred_writer,
+        "executable": False,
+        "note": "Endpoint DECLARED as inert metadata. Round-14 #6 truthfulness: the "
+                "FULL endpoint is stored server-side in config.yaml (nothing "
+                "routes/executes on it yet); only THIS response echoes a redacted "
+                "form. Self-hosted execution routing does not exist yet (Phase 2) — "
+                "run the daemon on your own device to use this endpoint now.",
     })
 
 
 def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
-    """Market-rented → persist model + rate + spending cap."""
+    """Market-rented → DECLARE model + rate + cap (not executable yet)."""
     from tinyassets.config import write_universe_config_fields
 
+    schema_err = _reject_secret_or_unknown_fields(
+        data, frozenset({
+            "engine_source", "market_model", "market_rate", "spending_cap",
+            "preferred_writer",
+        }),
+    )
+    if schema_err:
+        return json.dumps({"error": schema_err})
     market_model = str(data.get("market_model", "")).strip()
     if not market_model:
         return json.dumps({"error": "market_model is required for market_rented."})
+    import math
     try:
         market_rate = float(data.get("market_rate", 0.0) or 0.0)
         spending_cap = float(data.get("spending_cap", 0.0) or 0.0)
     except (TypeError, ValueError):
         return json.dumps({"error": "market_rate and spending_cap must be numbers."})
+    # F6: reject NaN / inf / negative — a spending cap must be a finite,
+    # non-negative amount (an inf/NaN cap would silently disable the ceiling).
+    for name, value in (("market_rate", market_rate), ("spending_cap", spending_cap)):
+        if not math.isfinite(value) or value < 0:
+            return json.dumps({
+                "error": f"{name} must be a finite, non-negative number.",
+            })
     fields = {
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
     }
     if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
+        fields["declared_preferred_writer"] = preferred_writer  # inert (#1)
     try:
-        write_universe_config_fields(udir, **fields)
+        write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
-        "status": "engine_set", "universe_id": uid,
+        "status": "engine_declared", "universe_id": uid,
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
-        "note": "Your universe will run on a market-rented daemon within the "
-                "spending cap. Market matching runs when a market host is live "
-                "(post-M1 runtime).",
+        "executable": False,
+        "note": "Market rental DECLARED. It will NOT run yet — market matching + "
+                "a live executor are Phase 2. Run the daemon on your own device "
+                "to power this universe now.",
     })
 
 
 def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
-    """Host-your-own daemon → persist the choice + preferred provider.
-
-    The founder hosts a daemon bound to this universe. Recording the choice is
-    the onboard step; the actual runtime instance is bound via the existing
-    ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
-    worker to consume it.
-    """
+    """Host-your-own daemon → DECLARE the choice (not executable via platform)."""
     from tinyassets.config import write_universe_config_fields
 
+    schema_err = _reject_secret_or_unknown_fields(
+        data, frozenset({"engine_source", "provider", "preferred_writer"}),
+    )
+    if schema_err:
+        return json.dumps({"error": schema_err})
     provider = str(data.get("provider", "")).strip() or "claude-code"
+    if provider not in _KNOWN_ENGINE_PROVIDERS:
+        return json.dumps({
+            "error": f"unknown provider {provider!r} for host_daemon.",
+            "expected_providers": sorted(_KNOWN_ENGINE_PROVIDERS),
+        })
+    # Round-14 #1: store the declared provider INERTLY — NEVER preferred_writer
+    # (the router reads preferred_writer and would prioritize this provider with
+    # PLATFORM credentials, even though the declaration is executable:false).
     fields = {"engine_source": "host_daemon",
-              "preferred_writer": preferred_writer or provider}
+              "declared_preferred_writer": preferred_writer or provider}
     try:
-        write_universe_config_fields(udir, **fields)
+        write_universe_config_fields(udir, clear=_engine_lane_clear(fields), **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
-        "status": "engine_set", "universe_id": uid,
+        "status": "engine_declared", "universe_id": uid,
         "engine_source": "host_daemon", "provider": provider,
-        "preferred_writer": fields["preferred_writer"],
-        "next_step": "Host a daemon for this universe via "
-                     "`universe action=daemon_summon` to bind a runtime instance.",
-    })
-
-
-def _founder_offers_path(founder_id: str) -> Path:
-    from tinyassets.storage import data_dir
-    safe = "".join(
-        c if c.isalnum() or c in "-_" else "-" for c in (founder_id or "")
-    ) or "anon"
-    d = data_dir() / "founder_offers"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{safe}.json"
-
-
-def _read_founder_offers(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-        offers = loaded.get("offers") if isinstance(loaded, dict) else None
-        return offers if isinstance(offers, list) else []
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def _write_founder_offers(path: Path, offers: list[dict[str, Any]]) -> None:
-    import os
-    import tempfile
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".offers.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"offers": offers}, fh, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _action_offer_engine(
-    universe_id: str = "",
-    inputs_json: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Founder-only: offer an engine to the market (`universe action=offer_engine`).
-
-    Supply side (the inverse of set_engine): records / lists / toggles engines the
-    founder offers to the market for OTHER universes to rent when the founder is
-    not running their own. Founder-scoped (keyed on the authenticated founder),
-    togglable. No credential is stored here — only offer terms (service, model,
-    rate, cap). Founder-only via the universe:admin scope + write ACL.
-
-    ``inputs_json``: ``{"action": "list"|"set"|"toggle", "service": "anthropic",
-    "model": "…", "rate": 0.0, "cap": 0.0, "enabled": true, "key": "…" (toggle)}``.
-    """
-    from tinyassets.api.permissions import current_actor_id
-
-    founder_id = current_actor_id()
-    path = _founder_offers_path(founder_id)
-    offers = _read_founder_offers(path)
-
-    raw = (inputs_json or "").strip()
-    data: dict[str, Any] = {}
-    if raw:
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
-        if not isinstance(data, dict):
-            return json.dumps({"error": "inputs_json must decode to a JSON object."})
-
-    op = str(data.get("action", "list")).strip().lower()
-    if op == "list":
-        return json.dumps({"status": "offers", "founder_id": founder_id,
-                           "offers": offers})
-    if op == "set":
-        service = str(data.get("service", "")).strip().lower()
-        model = str(data.get("model", "")).strip()
-        if not service:
-            return json.dumps({"error": "service is required to set an offer."})
-        try:
-            rate = float(data.get("rate", 0.0) or 0.0)
-            cap = float(data.get("cap", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            return json.dumps({"error": "rate and cap must be numbers."})
-        key = f"{service}:{model}"
-        offers = [o for o in offers if o.get("key") != key]
-        offers.append({"key": key, "service": service, "model": model,
-                       "rate": rate, "cap": cap,
-                       "enabled": bool(data.get("enabled", True))})
-        try:
-            _write_founder_offers(path, offers)
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"error": f"Failed to save offer: {exc}"})
-        return json.dumps({"status": "offer_set", "founder_id": founder_id,
-                           "offer_key": key, "offers": offers})
-    if op == "toggle":
-        key = str(data.get("key", "")).strip()
-        found = False
-        for o in offers:
-            if o.get("key") == key:
-                o["enabled"] = not o.get("enabled", True)
-                found = True
-        if not found:
-            return json.dumps({"error": f"no offer with key {key!r}."})
-        try:
-            _write_founder_offers(path, offers)
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"error": f"Failed to toggle offer: {exc}"})
-        return json.dumps({"status": "offer_toggled", "founder_id": founder_id,
-                           "offer_key": key, "offers": offers})
-    return json.dumps({
-        "error": f"unknown action {op!r}; expected list | set | toggle.",
+        "declared_preferred_writer": fields["declared_preferred_writer"],
+        "executable": False,
+        "note": "host_daemon DECLARED. The platform does not run it — run the "
+                "daemon on YOUR OWN device (a real device-executor binding is "
+                "Phase 2). Your subscription tokens never leave your machine.",
     })
 
 
@@ -5235,7 +5459,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "set_premise": _action_set_premise,
     "soul.edit": _action_soul_edit,
     "set_engine": _action_set_engine,
-    "offer_engine": _action_offer_engine,
+    "bind_design": _action_bind_design,
     "add_canon": _action_add_canon,
     "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,

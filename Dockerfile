@@ -191,6 +191,12 @@ RUN chmod 0755 /usr/local/bin/codex && \
 WORKDIR /app
 
 # Copy the populated venv + source from the builder.
+# NOTE (round-17 #2): the deployable predeployment migration lives INSIDE the
+# tinyassets package (tinyassets/migrations/retired_subscription_records.py), so it
+# ships with this /app/tinyassets copy — no separate scripts/ COPY (scripts/ is not
+# in the image, which is exactly why the old scripts/ migration path was
+# undeployable). The deploy pipeline runs it via
+# `python -m tinyassets.migrations.retired_subscription_records`.
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/domains /app/domains
@@ -210,12 +216,23 @@ COPY data/world_rules.lp /app/data/world_rules.lp
 # surface. Copied directly (not via the builder stage) because the
 # script is pure stdlib — no compilation needed.
 COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py
+# Operator-only DR commands invoked by deploy/backup-restore.sh and RESTORE.md.
+COPY scripts/vault_restore_bump.py /app/scripts/vault_restore_bump.py
+COPY scripts/vault_restore_recover.py /app/scripts/vault_restore_recover.py
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
+
+# Round-17 #2: fail the build if the deployable predeployment migration is not
+# importable in the RUNTIME image (PYTHONPATH=/app is now set). The deploy pipeline
+# runs `python -m tinyassets.migrations.retired_subscription_records` in a one-shot
+# container from this image BEFORE starting the daemon; if it can't import here it
+# would fail on the droplet too (the round-17 #2 `ModuleNotFoundError: tinyassets`
+# regression). Verifying at build time makes the migration provably deployable.
+RUN python -c "import tinyassets.migrations.retired_subscription_records as m; assert callable(m.main)"
 
 # Data directory — Row B will wire TINYASSETS_DATA_DIR through all
 # on-disk state. For now, /data is the expected bind-mount target;
@@ -225,7 +242,10 @@ RUN mkdir -p /data && \
     chmod +x /app/docker-entrypoint.sh && \
     chown -R tinyassets:tinyassets /data /app
 
-USER tinyassets
+# Start the entrypoint as root so it can validate/read the root-owned 0400 KEK
+# mount. tinyassets.vault_bootstrap preloads the keys and irrevocably drops to
+# UID/GID 1001 before importing or running the daemon.
+USER root
 
 EXPOSE 8001
 

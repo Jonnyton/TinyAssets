@@ -123,6 +123,36 @@ def test_state_summary_includes_counters():
 # ---- run_supervisor — happy path + backoff paths -------------------------
 
 
+def test_r21_1_supervisor_skips_retired_universe_with_flag_off(tmp_path, monkeypatch):
+    """Round-21 #1: a RETIRED universe (subscription lane retired → non-secret marker,
+    not re-bound) must NOT be spawned by the supervisor even with the non-ambient flag
+    OFF (the default) — it would otherwise run on ambient HOST credentials (a
+    cross-identity leak). The preflight runs regardless of the flag: spawn_fn is never
+    called; the retired counter increments; it backs off."""
+    monkeypatch.delenv("TINYASSETS_NON_AMBIENT_WORK", raising=False)  # flag OFF (default)
+    from tinyassets.credential_broker import MIGRATION_MARKER_FILENAME
+
+    # A REAL retired-marker universe at the supervisor's universe path.
+    (tmp_path / MIGRATION_MARKER_FILENAME).write_text("{}", encoding="utf-8")
+
+    spawned = {"n": 0}
+
+    def spawn(universe):
+        spawned["n"] += 1
+        return FakeProc(returncode=0, steps_until_exit=0)
+
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    state = cw.run_supervisor(
+        tmp_path,
+        idle_backoff=5.0,
+        max_iterations=2,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+    assert spawned["n"] == 0, "a retired universe must NOT spawn on ambient host creds"
+    assert state.retired_fail_closed_count >= 1
+
+
 def test_supervisor_clean_exit_uses_idle_backoff(tmp_path):
     """First clean exit sleeps idle_backoff (not crash_backoff)."""
     sleep_calls, sleep_fn = _make_sleep_recorder()

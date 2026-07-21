@@ -176,3 +176,35 @@ def universe_input() -> dict[str, Any]:
         "cross_series_facts": [],
         "quality_trace": [],
     }
+
+
+@pytest.fixture()
+def platform_vault_env(tmp_path, monkeypatch):
+    """Isolated platform credential-vault environment (S5 seam tests).
+
+    Provides: a tmp data root (``TINYASSETS_DATA_DIR``), a per-test
+    anti-rollback guard, and an in-memory KEK provider monkeypatched over
+    ``credential_broker.platform_key_provider`` (FileKeyProvider's root-only
+    POSIX custody gates cannot be satisfied by an unprivileged test run).
+    Yields the data root; universes live directly under it.
+    """
+    import nacl.bindings as sodium
+
+    from tinyassets import credential_broker
+    from tinyassets.credentials import InMemoryKeyProvider
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setenv(
+        "TINYASSETS_VAULT_ROLLBACK_GUARD", str(tmp_path / "_vault_guard")
+    )
+    monkeypatch.delenv("TINYASSETS_VAULT_KEK_DIR", raising=False)
+    monkeypatch.delenv("TINYASSETS_VAULT_ACTIVE_KEY_ID", raising=False)
+    keys = InMemoryKeyProvider({"k1": sodium.randombytes(32)}, "k1")
+    monkeypatch.setattr(
+        credential_broker, "platform_key_provider", lambda: keys
+    )
+    credential_broker._reset_backend_cache()
+    yield data_root
+    credential_broker._reset_backend_cache()

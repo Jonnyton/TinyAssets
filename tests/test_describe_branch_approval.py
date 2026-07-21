@@ -260,14 +260,19 @@ class TestValidateBranchApproval:
         assert result["unapproved_source_code_nodes"][0]["node_id"] == "sc1"
         assert result["unapproved_source_code_nodes"][0]["display_name"] == "Custom Script"
 
-    def test_approved_source_code_node_runnable(self):
-        """validate_branch: approved source_code node → runnable True."""
+    def test_approved_source_code_node_not_runnable_phase1(self):
+        """validate_branch: even an APPROVED source_code node is NOT runnable in
+        Phase 1 (Codex S3 r11 #1) — a source_code adapter is in-process host code
+        and fails closed at the sandbox gate until the per-job runner lands. It is
+        still structurally valid; approval is no longer sufficient to run it."""
         node = _make_node(source_code="def run(state): ...", approved=True)
         branch = _make_branch_dict(node_defs=[node])
         result = _call_validate(branch)
 
         assert result["valid"] is True
-        assert result["runnable"] is True
+        assert result["runnable"] is False
+        assert result["sandbox_blocked"] is True
+        # Approval provenance is fine — it's the sandbox runner that's missing.
         assert result["unapproved_source_code_nodes"] == []
 
     def test_structural_errors_make_not_runnable(self):

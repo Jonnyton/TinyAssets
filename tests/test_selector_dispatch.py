@@ -372,7 +372,7 @@ def _selector_stub_provider(*, candidate_ids: list[str]):
     """
     import json as _json
 
-    def _call(prompt, system="", *, role=""):
+    def _call(prompt, system="", *, role="", **_kw):
         ranked = [
             {
                 "branch_def_id": cid,

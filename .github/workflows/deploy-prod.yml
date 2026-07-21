@@ -674,8 +674,22 @@ jobs:
             echo "- API-key providers forced off when the Codex subscription bundle is synced."
             echo "- TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          # Pull + restart via the systemd unit (which runs docker
-          # compose down + up with the new env).
+          # Pull + restart via the systemd unit (docker compose down + up with the new
+          # env).
+          #
+          # Round-20 #1 (DEPLOY ORDERING — the destructive migration is NOT auto-run):
+          # this deploy does NOT run the retired-subscription record removal. Current
+          # origin/main OVERLAYS subscription records into CODEX_HOME / CLAUDE_CONFIG_DIR
+          # / OAuth env, so REMOVING those records here would make either the new image
+          # OR an image-only rollback fall back to the HOST's ambient credentials for an
+          # affected universe — a cross-identity leak. This release ships the FAIL-CLOSED
+          # CODE instead: a retired universe (present record OR persistent non-secret
+          # marker) refuses to execute, never ambient (credential_vault
+          # is_retired_universe + provider_auth_env_overrides). The raw-record removal is
+          # deferred to a later HOST-GATED step once this fail-closed release is the
+          # stable baseline — the host runs the packaged migration module manually then
+          # (see tinyassets/migrations/retired_subscription_records.py; it writes only a
+          # NON-SECRET marker, never raw token custody).
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
@@ -924,6 +938,16 @@ jobs:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
         run: |
           echo "::warning::Rolling back to ${PREV_IMAGE}"
+          # Round-19 (SAFE-FORWARD, IMAGE-ONLY rollback): the retired-subscription
+          # migration is forward-only, so this rollback restores ONLY the image. The
+          # quarantined credentials do NOT need restoring: a universe whose retired
+          # llm_subscription record was quarantined-away reads as "no record", which
+          # BOTH the new and the previous image tolerate (they fall back to ambient /
+          # idle — absence is the default state of every fresh universe). Coupling a
+          # credential rollback here would be the WRONG complexity (it was global, not
+          # deployment-scoped, could destroy archives, and was bypassed on restart
+          # failure — Codex r19 criticals). Image-only rollback closes all three at the
+          # root.
           # Restore previous tag via the atomic helper (same root:tinyassets
           # 640 invariant as the deploy step). The helper is already in
           # /tmp/install-tinyassets-env.sh from the deploy step's scp; if

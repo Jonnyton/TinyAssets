@@ -427,6 +427,10 @@ def _compute_supervisor_liveness(
             "succeeded": 0,
             "failed": 0,
             "cancelled": 0,
+            # Codex r16 #4: dead_ref is a terminal status (a task whose handler
+            # branch was deleted while queued). Count it so loop-health surfaces
+            # the terminal event instead of silently dropping it.
+            "dead_ref": 0,
             "policy_parked_pending": 0,
             "stuck_pending_max_age_s": 0,
             "policy_parked_pending_max_age_s": 0,
@@ -628,6 +632,18 @@ def _compute_supervisor_liveness(
     # without claim means the supervisor restart logic isn't reaching
     # the queue (the exact pattern PR #205 fixed).
     out["queue_state"]["recent_succeeded_count"] = recent_succeeded_count
+
+    # Surface dead_ref terminals loudly (Codex r16 #4, Hard Rule #8). A task
+    # that terminated because its handler branch was deleted mid-flight is a
+    # real signal — never a silent drop. The per-task reason lives on the queue
+    # row's ``dead_ref_reason`` field for retrieval.
+    _dead_ref_count = out["queue_state"].get("dead_ref", 0)
+    if _dead_ref_count:
+        out["warnings"].append(
+            f"dead_ref_terminals: {_dead_ref_count} task(s) terminated "
+            "dead_ref (handler branch deleted while queued). See each row's "
+            "dead_ref_reason for the deleted handler id."
+        )
 
     if (
         out["queue_state"]["stuck_pending_max_age_s"]
@@ -1218,6 +1234,42 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         sandbox_status = get_sandbox_status()
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         sandbox_status = {"bwrap_available": False, "reason": f"probe_error: {exc}"}
+    # Sandbox-required node runnability (Codex S3 REJECT R4/5c + r15 #1 + r16 #4):
+    # bwrap_available alone hid whether repo/source nodes can ACTUALLY run. There
+    # are now TWO SEPARATE readiness classes, each meaning "an ISOLATED EXECUTOR
+    # for this class is available and the adapter routes through it" (a boolean is
+    # not a boundary — Codex r16 #1): `coding_nodes_runnable` = the per-job REPO
+    # executor; `source_exec_runnable` = the in-process-code OS-isolation worker.
+    # Both are ALWAYS False in this deploy (no isolated executor exists), so
+    # get_status can never claim "ready because a CLI is on PATH". Surface the
+    # attestation for operators too.
+    try:
+        from tinyassets.providers.base import os_sandbox_attested
+        sandbox_status["os_sandbox_attested"] = bool(os_sandbox_attested())
+    except Exception:  # noqa: BLE001
+        sandbox_status["os_sandbox_attested"] = False
+    try:
+        from tinyassets.sandbox_policy import (
+            coding_nodes_runnable,
+            source_exec_runnable,
+        )
+        _repo_ok, _repo_reason = coding_nodes_runnable()
+        _src_ok, _src_reason = source_exec_runnable()
+    except Exception as exc:  # noqa: BLE001 — unknown ⇒ not runnable (honest)
+        _repo_ok, _repo_reason = False, f"readiness check failed: {exc}"
+        _src_ok, _src_reason = False, f"readiness check failed: {exc}"
+    sandbox_status["coding_nodes_runnable"] = bool(_repo_ok)  # repo-runner readiness
+    if not _repo_ok:
+        sandbox_status["coding_nodes_note"] = _repo_reason
+    sandbox_status["source_exec_runnable"] = bool(_src_ok)  # in-process-code readiness
+    if not _src_ok:
+        sandbox_status["source_exec_note"] = _src_reason
+    sandbox_status["sandbox_readiness_model"] = (
+        "readiness = an ISOLATED EXECUTOR (subprocess/container) is available AND "
+        "the adapter is DISPATCHED to it — NOT a boolean flip. Phase 2 must build "
+        "the executor + route through it; flipping a readiness flag alone does "
+        "nothing (the runtime requires an executor handle)."
+    )
 
     # BUG-027 — probe required static data files so operators can see which
     # files are absent in the cloud image without waiting for ASP to fail.
@@ -1271,12 +1323,163 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
             "read_only": True,
         }
 
+    # engine_binding (design note 2026-07-15 gap G7 — onboarding surface).
+    # Honestly report whether this universe has engine/daemon capacity bound to
+    # it. A universe with no bound capacity is idle-until-bound: surface the
+    # bind next-step so a founder is offered "bind an engine so your universe
+    # can run". Additive + best-effort — a status read must never FAIL on this,
+    # so a misconfigured binding is *reported*, never raised here. The
+    # non_ambient_gate field echoes the flag state so the note is honest about
+    # whether ambient work still runs (flag off) or not (flag on).
+    from tinyassets.engine_binding import (
+        EngineMisconfiguredError,
+        non_ambient_work_enabled,
+        resolve_engine_binding,
+    )
+
+    gate_on = non_ambient_work_enabled()
+    engine_binding: dict[str, Any]
+    if not universe_exists:
+        engine_binding = {
+            "bound": False,
+            "engine_source": "",
+            "capacity_kinds": [],
+            "non_ambient_gate": gate_on,
+            "workable": False,
+            "note": "Universe does not exist yet — nothing to bind.",
+        }
+    else:
+        try:
+            binding = resolve_engine_binding(udir)
+            engine_binding = binding.as_dict()
+            engine_binding["non_ambient_gate"] = gate_on
+            # workable = will the daemon work this universe? Bound universes
+            # always; unbound universes only while the gate is off (ambient).
+            # A needs-migration universe is NEVER workable — every spawn would
+            # raise until its legacy subscription record is migrated out (#3).
+            engine_binding["workable"] = (
+                binding.bound or (not gate_on and not binding.needs_migration)
+            )
+            if binding.needs_record_migration:
+                # A RAW subscription record is still present → run the migration.
+                engine_binding["status"] = "misconfigured"
+                engine_binding["note"] = (
+                    "MISCONFIGURED — a RAW legacy subscription credential in this "
+                    "universe's vault blocks every engine spawn. Migrate it out "
+                    "(quarantine the subscription record), then re-bind a "
+                    "sanctioned engine. Until then this universe cannot run."
+                )
+                caveats.append(
+                    "engine_binding.needs_record_migration is true — a raw legacy "
+                    "subscription record must be stripped before this universe can run."
+                )
+                actionable_next_steps.append(
+                    "Migrate this universe off the retired subscription lane: run "
+                    "`python scripts/migrate_legacy_credential_vaults.py`, "
+                    "then re-bind a sanctioned engine via write_graph target=engine."
+                )
+            elif binding.retired_needs_rebind:
+                # Round-21 #4: the migration is ALREADY DONE (raw token removed, a
+                # non-secret marker remains) — do NOT tell the operator to re-run it.
+                # The correct remediation is to RE-BIND a sanctioned engine.
+                engine_binding["status"] = "retired_needs_rebind"
+                engine_binding["note"] = (
+                    "RETIRED — this universe's subscription lane was retired (the raw "
+                    "credential was already removed). It FAILS CLOSED (never runs on "
+                    "the host's identity) until you RE-BIND a sanctioned engine. The "
+                    "subscription-record migration is already complete — do not re-run "
+                    "it."
+                )
+                caveats.append(
+                    "engine_binding.retired_needs_rebind is true — the retired "
+                    "subscription record was already removed; re-bind a sanctioned "
+                    "engine to run (the migration is complete, do not re-run it)."
+                )
+                actionable_next_steps.append(
+                    "Re-bind a sanctioned engine via write_graph target=engine (BYO "
+                    "API key / self-hosted endpoint / market / your own device). The "
+                    "record-removal migration is already done — do NOT re-run it."
+                )
+            elif not binding.bound:
+                engine_binding["note"] = (
+                    "This universe has no engine bound to it and will stay idle "
+                    "until you bind one — no ambient work runs for it."
+                    if gate_on
+                    else "This universe has no engine bound to it. Bind one so "
+                    "it runs on capacity you control (your own engine, a hosted "
+                    "daemon, or offered cloud capacity)."
+                )
+                caveats.append(
+                    "engine_binding.bound is false — no engine/daemon capacity "
+                    "is bound to this universe. It is idle-until-bound."
+                    if gate_on
+                    else "engine_binding.bound is false — no engine/daemon "
+                    "capacity is bound to this universe, but it is currently "
+                    "workable via ambient legacy execution (non-ambient gate "
+                    "off)."
+                )
+                actionable_next_steps.append(
+                    "Bind a sanctioned engine. A founder can deposit a BYO API "
+                    "key through the authenticated credential seam; the platform "
+                    "stores it in the encrypted vault and exposes only an opaque "
+                    "reference. BYO execution remains dark until the isolated "
+                    "runner attestation is enabled. Self-hosted, market-rented, "
+                    "and host-daemon declarations remain non-executable here. "
+                    "The platform never custodies personal subscription tokens."
+                )
+        except EngineMisconfiguredError as exc:
+            engine_binding = {
+                "bound": False,
+                "engine_source": exc.engine_source,
+                "capacity_kinds": [],
+                "misconfigured": True,
+                "non_ambient_gate": gate_on,
+                "workable": not gate_on,
+                "detail": exc.detail,
+                "note": (
+                    "This universe declares an engine but its capacity is "
+                    "misconfigured — re-declare it via write_graph target=engine."
+                ),
+            }
+            caveats.append(
+                f"engine_binding is MISCONFIGURED: {exc.detail}. Re-declare via "
+                "write_graph target=engine."
+            )
+            actionable_next_steps.append(
+                "Re-declare this universe's engine — the declared binding is "
+                "broken: write_graph target=engine."
+            )
+
     release_state = _load_release_state()
+
+    # Reference designs are optional feature state, so status reporting must
+    # never take down the control plane. Recompute registry health on every
+    # read; the process-global seed result is retained separately as history.
+    try:
+        from tinyassets.branch_designs import reference_designs_live_health
+        from tinyassets.universe_server import last_seed_result
+
+        live_reference_designs = reference_designs_live_health(_base_path())
+        seed_result = last_seed_result()
+        reference_designs = {
+            "healthy": live_reference_designs["healthy"],
+            "unhealthy": live_reference_designs["unhealthy"],
+            "per_design": live_reference_designs["per_design"],
+            "last_seed": {
+                "ran": seed_result is not None,
+                "seeded": list((seed_result or {}).get("seeded", [])),
+                "present": list((seed_result or {}).get("present", [])),
+                "failed": list((seed_result or {}).get("failed", [])),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001 - best-effort observability
+        reference_designs = {"error": "compute_failed", "detail": str(exc)}
 
     response = {
         "schema_version": 1,
         "active_host": policy_payload["active_host"],
         "tier_routing_policy": tier_routing_policy,
+        "reference_designs": reference_designs,
         "evidence": {
             "last_completed_request_llm_used": last_completed_llm,
             "activity_log_tail": activity_tail,
@@ -1295,6 +1498,7 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         "supervisor_liveness": supervisor_liveness,
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
+        "engine_binding": engine_binding,
         "release_state": release_state,
         "universe_id": uid,
         "universe_exists": universe_exists,

@@ -2100,7 +2100,8 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     ) or "public"
     fork_from = row["fork_from"] if "fork_from" in row_keys else None
     skills = _json_loads(row["skills_json"], []) if "skills_json" in row_keys else []
-    return {
+    graph = _json_loads(row["graph_json"], {})
+    result = {
         "branch_def_id": row["branch_def_id"],
         "name": row["name"],
         "description": row["description"],
@@ -2111,7 +2112,7 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "skills": skills,
         "parent_def_id": row["parent_def_id"],
         "entry_point": row["entry_point"],
-        "graph": _json_loads(row["graph_json"], {}),
+        "graph": graph,
         "node_defs": _json_loads(row["node_defs_json"], []),
         "state_schema": _json_loads(row["state_schema_json"], []),
         "published": bool(row["published"]),
@@ -2122,6 +2123,14 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "visibility": visibility,
         "fork_from": fork_from,
     }
+    # Surface the branch-level knobs stored in graph_json as top-level keys so
+    # BranchDefinition.from_dict picks them up (Codex S2 F2).
+    if isinstance(graph, dict):
+        if graph.get("default_llm_policy") is not None:
+            result["default_llm_policy"] = graph["default_llm_policy"]
+        if graph.get("concurrency_budget") is not None:
+            result["concurrency_budget"] = graph["concurrency_budget"]
+    return result
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2129,10 +2138,86 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
+def _enforce_user_branch_capabilities(
+    node_defs: Any, domain_id: Any, trusted: bool,
+) -> None:
+    """Fail closed (Codex S3 r14 #2 / r15 #3) if a USER branch selects a
+    capability it may never run (host-only / unclassified adapter). ``trusted``
+    (daemon-internal persistence) skips the gate. Shared by every write path so
+    the storage choke point validates the fully-merged record, not a subset."""
+    if trusted:
+        return
+    from tinyassets.sandbox_policy import user_branch_capability_rejections
+    rejections = user_branch_capability_rejections(
+        node_defs or [], str(domain_id or ""),
+    )
+    if rejections:
+        raise ValueError(
+            "Refusing to persist a user-authored branch that selects a "
+            "capability it may never run: " + "; ".join(rejections)
+        )
+
+
+class ReservedSeedMutationError(Exception):
+    """A PUBLIC writer tried to create, modify, or delete a reserved
+    reference-design seed. Only the internal seeder (``internal_seed_write=True``)
+    may write these rows.
+
+    Codex r17 #3 (CLASS fix): the reserved-seed guard used to live in the MCP
+    handlers (branches.py), so DIRECT storage writers — market goal-bind,
+    rollback, yaml-import, any FUTURE writer — bypassed it (goal-binding the
+    reserved seed succeeded). Centralizing the guard at the storage choke point
+    (save/update/delete_branch_definition) covers every writer by construction,
+    not by remembering to add a per-handler guard.
+    """
+
+
+# Update keys that are legitimate side effects of USING a reference (stats bumps
+# from forking/running it) — allowed on a reserved seed. Everything else is a
+# protected-field mutation and is refused.
+_RESERVED_SEED_BENIGN_UPDATE_KEYS = frozenset({"stats"})
+
+
+def _guard_reserved_seed_write(
+    branch_def_id: str,
+    *,
+    internal_seed_write: bool,
+    updates: dict[str, Any] | None = None,
+) -> None:
+    """Refuse a public write to a reserved reference-design seed. The internal
+    seeder passes ``internal_seed_write=True``. An update touching ONLY benign
+    stat fields (fork_count/run_count bumps) is allowed so the reference stays
+    forkable/runnable; any other update, a full save, or a delete is refused."""
+    if internal_seed_write:
+        return
+    # Import the TINY dependency-free core (Codex r21 #2), NOT the heavy
+    # branch_designs package. That package parses on-disk artifact JSON on
+    # import; importing it on every branch write meant a broken/optional seed
+    # package raised on import and the guard fail-closed-refused EVERY id —
+    # taking ordinary create/update/delete/fork/import offline (a Forever Rule
+    # violation: an optional-seed failure must not disable unrelated uptime
+    # surfaces). reference_seed_core is a pure hash over a STATIC manifest; it
+    # cannot fail to import because of a broken artifact, so ordinary
+    # (non-reserved) writes always proceed while reserved ids stay fail-closed.
+    from tinyassets.reference_seed_core import is_reserved_seed_id
+
+    if not is_reserved_seed_id(branch_def_id):
+        return
+    if updates is not None and set(updates) <= _RESERVED_SEED_BENIGN_UPDATE_KEYS:
+        return
+    raise ReservedSeedMutationError(
+        f"Branch '{branch_def_id}' is a protected reference-design seed and "
+        "cannot be created, modified, or deleted through the public API. It is "
+        "owned by the reference-design seeder and self-heals at startup."
+    )
+
+
 def save_branch_definition(
     base_path: str | Path,
     *,
     branch_def: dict[str, Any],
+    _trusted: bool = False,
+    internal_seed_write: bool = False,
 ) -> dict[str, Any]:
     """Insert or replace a branch definition.
 
@@ -2143,9 +2228,30 @@ def save_branch_definition(
 
     Also accepts legacy format with "nodes" key (flat node list stored
     in graph_json for backward compatibility during migration).
+
+    SECURITY (Codex S3 r14 #2): this is the SINGLE storage choke point for branch
+    persistence, so the fail-closed user-branch capability validator runs HERE —
+    no authoring path (build / add_node / patch_branch / update_node / patch_nodes
+    / fork / rollback / import / selector) can bypass it. A user branch selecting a
+    HOST-ONLY or UNCLASSIFIED opaque adapter is refused (ValueError). ``_trusted``
+    (daemon-internal persistence only) skips the gate.
     """
+    # Codex S3 r16 #2: NORMALIZE the effective domain ONCE (resolve the "workflow"
+    # default) so validation and storage use the IDENTICAL resolved domain —
+    # omitting domain_id previously validated under "" but PERSISTED under
+    # "workflow", a bypass for a node that's host-only under the default domain.
+    effective_domain = (branch_def.get("domain_id") or "").strip() or "workflow"
+    # Codex S3 r15 #3: validate the FULLY-MERGED node set — node_defs UNION the
+    # legacy ``nodes`` input (a legacy node dict can carry source_code / node_kind
+    # / an opaque adapter selection, so validating only node_defs left the legacy
+    # path as a bypass).
+    _nodes_to_check = list(branch_def.get("node_defs") or [])
+    if "nodes" in branch_def:
+        _nodes_to_check += list(branch_def.get("nodes") or [])
+    _enforce_user_branch_capabilities(_nodes_to_check, effective_domain, _trusted)
     now = _now()
     branch_def_id = branch_def.get("branch_def_id", uuid.uuid4().hex[:12])
+    _guard_reserved_seed_write(branch_def_id, internal_seed_write=internal_seed_write)
 
     # Build graph topology JSON (LangGraph-native shape)
     graph = {
@@ -2154,6 +2260,15 @@ def save_branch_definition(
         "conditional_edges": branch_def.get("conditional_edges", []),
         "entry_point": branch_def.get("entry_point", ""),
     }
+    # Branch-level routing/concurrency knobs ride the existing graph_json blob
+    # so they persist without a schema migration (Codex S2 F2). Previously
+    # dropped on save -> always None on reload (the root of the export/import
+    # drop the reviewer probed). _canonical_snapshot excludes these keys, so
+    # version content hashes are unaffected.
+    if branch_def.get("default_llm_policy") is not None:
+        graph["default_llm_policy"] = branch_def["default_llm_policy"]
+    if branch_def.get("concurrency_budget") is not None:
+        graph["concurrency_budget"] = branch_def["concurrency_budget"]
 
     # Legacy compat: if "nodes" key exists and graph_nodes doesn't,
     # store nodes in graph_json (migration path from old format)
@@ -2188,7 +2303,7 @@ def save_branch_definition(
                 branch_def.get("name", ""),
                 branch_def.get("description", ""),
                 branch_def.get("author", "anonymous"),
-                branch_def.get("domain_id", "workflow"),
+                effective_domain,  # Codex S3 r16 #2: same resolved domain as validated
                 _json_dumps(branch_def.get("tags", [])),
                 branch_def.get("version", 1),
                 _json_dumps(skills),
@@ -2236,10 +2351,15 @@ def list_branch_definitions(
     goal_id: str = "",
     viewer: str = "",
     include_private: bool = False,
+    limit: int = 0,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """List branch definitions with optional filters.
 
     Args:
+        limit: SQL ``LIMIT`` (>0) so discovery paginates at the DB boundary
+            instead of loading every row (Codex r11 #6). 0 = no limit.
+        offset: SQL ``OFFSET`` cursor for keyset-style paging.
         published_only: If True, return only published branches.
         author: Filter by author name (exact match).
         domain_id: Filter by domain (exact match).
@@ -2285,16 +2405,90 @@ def list_branch_definitions(
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
+    # DB-boundary pagination (Codex r11 #6): LIMIT/OFFSET in the query, keyed by
+    # the stable updated_at DESC, branch_def_id order so paging is deterministic.
+    page = ""
+    if limit and limit > 0:
+        page = "LIMIT ? OFFSET ?"
+        params = [*params, int(limit), max(0, int(offset))]
+
     with _connect(base_path) as conn:
         rows = conn.execute(
             f"""
             SELECT * FROM branch_definitions
             {where}
-            ORDER BY updated_at DESC
+            ORDER BY updated_at DESC, branch_def_id ASC
+            {page}
             """,
             params,
         ).fetchall()
     return [_branch_def_from_row(row) for row in rows]
+
+
+def list_visible_published_branch_ids(
+    base_path: str | Path,
+    *,
+    viewer: str = "",
+    author: str = "",
+    limit: int = 0,
+    offset: int = 0,
+) -> list[str]:
+    """Branch_def_ids that are BOTH active-published AND visible to ``viewer``,
+    newest-published first — filtered AND paginated in ONE cross-DB query.
+
+    Codex r13: pagination must apply visibility BEFORE LIMIT/OFFSET, or newer
+    private designs consume the public page and hide older public designs behind
+    a cursor. branch_definitions (visibility) lives in ``.tinyassets.db`` and
+    branch_versions (active status) in ``.runs.db``, so the runs DB is ATTACHed
+    and joined. ``viewer`` empty = strictly public (the directory surface).
+
+    Codex r14 #4: ``author``, when set, is an ADDITIONAL predicate applied inside
+    the SQL (before LIMIT/OFFSET). The published listing forwarded ``author`` but
+    dropped it here, so filtering published designs by author was a silent no-op.
+    It composes with the visibility clause (you still only see public rows plus
+    your own), it does not widen visibility.
+    """
+    from tinyassets.branch_versions import initialize_branch_versions_db
+    from tinyassets.runs import runs_db_path
+
+    # Guarantee the runs DB + branch_versions table exist before ATTACH/JOIN.
+    initialize_branch_versions_db(base_path)
+    runs_db = str(runs_db_path(base_path))
+
+    if viewer:
+        clauses = ["(bd.visibility = 'public' OR bd.author = ?)"]
+        params: list[Any] = [viewer]
+    else:
+        clauses = ["bd.visibility = 'public'"]
+        params = []
+    if author:
+        clauses.append("bd.author = ?")
+        params.append(author)
+    where = " AND ".join(clauses)
+    page = ""
+    if limit and limit > 0:
+        page = "LIMIT ? OFFSET ?"
+        params += [int(limit), max(0, int(offset))]
+
+    with _connect(base_path) as conn:
+        conn.execute("ATTACH DATABASE ? AS rdb", (runs_db,))
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT bd.branch_def_id AS bid, MAX(v.published_at) AS latest
+                FROM branch_definitions bd
+                JOIN rdb.branch_versions v
+                    ON v.branch_def_id = bd.branch_def_id AND v.status = 'active'
+                WHERE {where}
+                GROUP BY bd.branch_def_id
+                ORDER BY latest DESC, bd.branch_def_id ASC
+                {page}
+                """,
+                params,
+            ).fetchall()
+        finally:
+            conn.execute("DETACH DATABASE rdb")
+    return [row["bid"] for row in rows]
 
 
 def update_branch_definition(
@@ -2302,6 +2496,8 @@ def update_branch_definition(
     *,
     branch_def_id: str,
     updates: dict[str, Any],
+    _trusted: bool = False,
+    internal_seed_write: bool = False,
 ) -> dict[str, Any]:
     """Update specific fields of a branch definition.
 
@@ -2309,15 +2505,23 @@ def update_branch_definition(
     entry_point, graph_nodes, edges, conditional_edges, node_defs,
     state_schema, published, stats. Also accepts legacy "nodes" key.
     """
+    _guard_reserved_seed_write(
+        branch_def_id, internal_seed_write=internal_seed_write, updates=updates,
+    )
     now = _now()
+
+    # Field updates that do NOT depend on the existing row (built first; the
+    # DB-dependent parts — fork_from immutability, graph merge, and the fail-closed
+    # capability gate — run INSIDE the atomic transaction below).
     sets: list[str] = ["updated_at = ?"]
     params: list[Any] = [now]
 
+    # ``domain_id`` is handled specially (normalized) inside the transaction so
+    # validation and storage use the IDENTICAL resolved domain (Codex S3 r16 #2).
     simple_fields = {
         "name": "name",
         "description": "description",
         "author": "author",
-        "domain_id": "domain_id",
         "version": "version",
         "entry_point": "entry_point",
         # Phase 5: goal binding. `None` or empty string unbinds.
@@ -2332,6 +2536,12 @@ def update_branch_definition(
             sets.append(f"{col} = ?")
             params.append(value)
 
+    if "domain_id" in updates:
+        # Codex S3 r16 #2: normalize once — the SAME resolved domain is validated
+        # (below) and stored, so omitting/emptying domain_id can't diverge.
+        sets.append("domain_id = ?")
+        params.append((updates.get("domain_id") or "").strip() or "workflow")
+
     if "visibility" in updates:
         # Phase 6.2.2. Default to public for any unrecognized string
         # so the column never holds an unknown state.
@@ -2339,16 +2549,6 @@ def update_branch_definition(
         normalized = "private" if incoming == "private" else "public"
         sets.append("visibility = ?")
         params.append(normalized)
-
-    if "fork_from" in updates:
-        # fork_from is immutable-after-set. Only write if not already set.
-        existing_row = get_branch_definition(base_path, branch_def_id=branch_def_id)
-        if existing_row.get("fork_from") is not None:
-            raise ValueError(
-                f"fork_from is immutable after set on branch '{branch_def_id}'."
-            )
-        sets.append("fork_from = ?")
-        params.append(updates["fork_from"] or None)
 
     json_fields = {
         "tags": "tags_json",
@@ -2374,28 +2574,71 @@ def update_branch_definition(
         sets.append("node_defs_json = ?")
         params.append(_json_dumps(updates["node_defs"]))
 
-    # If graph topology fields are updated, rebuild graph_json
-    graph_keys = {"graph_nodes", "edges", "conditional_edges", "nodes"}
-    if graph_keys & updates.keys():
-        existing = get_branch_definition(base_path, branch_def_id=branch_def_id)
-        graph = existing.get("graph", {})
-        if "graph_nodes" in updates:
-            graph["nodes"] = updates["graph_nodes"]
-        elif "nodes" in updates:
-            # Legacy compat
-            graph["nodes"] = updates["nodes"]
-        if "edges" in updates:
-            graph["edges"] = updates["edges"]
-        if "conditional_edges" in updates:
-            graph["conditional_edges"] = updates["conditional_edges"]
-        if "entry_point" in updates:
-            graph["entry_point"] = updates["entry_point"]
-        sets.append("graph_json = ?")
-        params.append(_json_dumps(graph))
-
-    params.append(branch_def_id)
-
+    # Codex S3 r16 #3: read/merge/normalize/validate/write in ONE atomic
+    # transaction. ``BEGIN IMMEDIATE`` takes the write lock BEFORE the read, so a
+    # concurrent writer blocks until this one commits and then sees the merged
+    # row (no two-writers-both-validate-stale race). Validation raises INSIDE the
+    # transaction → the whole update rolls back (nothing persisted).
     with _connect(base_path) as conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM branch_definitions WHERE branch_def_id = ?",
+            (branch_def_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(branch_def_id)
+        existing = _branch_def_from_row(row)
+
+        if "fork_from" in updates:
+            # fork_from is immutable-after-set. Only write if not already set.
+            if existing.get("fork_from") is not None:
+                raise ValueError(
+                    f"fork_from is immutable after set on branch '{branch_def_id}'."
+                )
+            sets.append("fork_from = ?")
+            params.append(updates["fork_from"] or None)
+
+        # If graph topology fields are updated, rebuild graph_json (merge existing).
+        graph_keys = {"graph_nodes", "edges", "conditional_edges", "nodes"}
+        if graph_keys & updates.keys():
+            graph = existing.get("graph", {}) or {}
+            if "graph_nodes" in updates:
+                graph["nodes"] = updates["graph_nodes"]
+            elif "nodes" in updates:
+                graph["nodes"] = updates["nodes"]  # legacy compat
+            if "edges" in updates:
+                graph["edges"] = updates["edges"]
+            if "conditional_edges" in updates:
+                graph["conditional_edges"] = updates["conditional_edges"]
+            if "entry_point" in updates:
+                graph["entry_point"] = updates["entry_point"]
+            sets.append("graph_json = ?")
+            params.append(_json_dumps(graph))
+
+        # SECURITY (Codex S3 r16 #2/#3): validate the FULLY-MERGED row — BOTH node
+        # containers (each from updates if supplied, else existing) under the
+        # normalized effective domain. A partial update touching one container must
+        # NOT leave a forbidden node in the untouched container persisted.
+        if not _trusted:
+            merged_domain = (
+                (updates.get("domain_id") if "domain_id" in updates
+                 else existing.get("domain_id")) or ""
+            ).strip() or "workflow"
+            merged_nodes: list[Any] = []
+            if "node_defs" in updates:
+                merged_nodes += list(updates.get("node_defs") or [])
+            else:
+                merged_nodes += list(existing.get("node_defs") or [])
+            if "nodes" in updates:
+                merged_nodes += list(updates.get("nodes") or [])
+            else:
+                merged_nodes += list(
+                    (existing.get("graph", {}) or {}).get("nodes", []) or []
+                )
+            _enforce_user_branch_capabilities(merged_nodes, merged_domain, _trusted)
+
+        params.append(branch_def_id)
         conn.execute(
             f"UPDATE branch_definitions SET {', '.join(sets)} "
             f"WHERE branch_def_id = ?",
@@ -2408,8 +2651,10 @@ def delete_branch_definition(
     base_path: str | Path,
     *,
     branch_def_id: str,
+    internal_seed_write: bool = False,
 ) -> bool:
     """Delete a branch definition. Returns True if a row was deleted."""
+    _guard_reserved_seed_write(branch_def_id, internal_seed_write=internal_seed_write)
     with _connect(base_path) as conn:
         cursor = conn.execute(
             "DELETE FROM branch_definitions WHERE branch_def_id = ?",
@@ -4157,6 +4402,130 @@ def set_founder_home(
             """,
             (founder, uid, now),
         )
+
+
+class UniversePersistentStateError(RuntimeError):
+    """Universe creation database work failed and was rolled back."""
+
+
+class UniversePersistentStateRollbackError(UniversePersistentStateError):
+    """Universe creation failed and SQLite could not confirm rollback."""
+
+
+def create_universe_persistent_state(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    universe_path: str | Path,
+    founder_sub: str = "",
+    bind_founder_home: bool = False,
+) -> None:
+    """Create registry, defaults, ownership, and home in one transaction.
+
+    SQLite rollback restores pre-existing orphan rows exactly; no broad DELETE
+    compensation is used. A rollback failure is a distinct loud error so the
+    caller retains the directory rather than manufacturing DB/filesystem split
+    brain.
+    """
+    uid = (universe_id or "").strip()
+    founder = (founder_sub or "").strip()
+    if not uid:
+        raise ValueError("universe_id is required")
+    initialize_author_server(base_path)
+    now = _now()
+    branch_id = _branch_id_for(uid, "free-roam")
+    conn = sqlite3.connect(db_path(base_path), timeout=30.0)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT created_at FROM universes WHERE universe_id = ?",
+            (uid,),
+        ).fetchone()
+        created_at = float(existing[0]) if existing is not None else now
+        conn.execute(
+            """
+            INSERT INTO universes (
+                universe_id, display_name, host_path, created_at, metadata_json
+            ) VALUES (?, ?, ?, ?, '{}')
+            ON CONFLICT(universe_id) DO UPDATE SET
+                display_name=excluded.display_name,
+                host_path=excluded.host_path,
+                metadata_json=excluded.metadata_json
+            """,
+            (uid, uid, str(Path(universe_path).resolve()), created_at),
+        )
+        conn.execute(
+            """
+            INSERT INTO universe_rules (
+                universe_id, public_read, public_fork, branch_mode,
+                quick_vote_seconds, updated_at, metadata_json
+            ) VALUES (?, 1, 1, ?, ?, ?, '{}')
+            ON CONFLICT(universe_id) DO NOTHING
+            """,
+            (uid, DEFAULT_BRANCH_MODE, DEFAULT_QUICK_VOTE_SECONDS, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO branches (
+                branch_id, universe_id, name, parent_branch_id, is_public,
+                status, created_by, created_at, updated_at, metadata_json
+            ) VALUES (?, ?, 'free-roam', NULL, 1, 'active', 'system', ?, ?, ?)
+            ON CONFLICT(branch_id) DO NOTHING
+            """,
+            (
+                branch_id,
+                uid,
+                now,
+                now,
+                _json_dumps({"default": True, "branch_mode": DEFAULT_BRANCH_MODE}),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO branch_heads (branch_id, snapshot_id, updated_at, metadata_json)
+            VALUES (?, NULL, ?, '{}')
+            ON CONFLICT(branch_id) DO NOTHING
+            """,
+            (branch_id, now),
+        )
+        if founder and founder != "anonymous":
+            conn.execute(
+                """
+                INSERT INTO universe_acl
+                  (universe_id, actor_id, permission, granted_at, granted_by)
+                VALUES (?, ?, 'admin', ?, ?)
+                ON CONFLICT(universe_id, actor_id) DO UPDATE SET
+                    permission = excluded.permission,
+                    granted_at = excluded.granted_at,
+                    granted_by = excluded.granted_by
+                """,
+                (uid, founder, now, founder),
+            )
+            if bind_founder_home:
+                conn.execute(
+                    """
+                    INSERT INTO founder_home (founder_sub, universe_id, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(founder_sub) DO UPDATE SET
+                        universe_id = excluded.universe_id
+                    """,
+                    (founder, uid, now),
+                )
+        conn.commit()
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error as rollback_exc:
+            raise UniversePersistentStateRollbackError(
+                f"universe state rollback failed for {uid}: {rollback_exc}"
+            ) from rollback_exc
+        raise UniversePersistentStateError(
+            f"universe state transaction failed for {uid}: {exc}"
+        ) from exc
+    finally:
+        conn.close()
 
 
 def get_founder_home(base_path: str | Path, founder_sub: str) -> str:

@@ -26,10 +26,12 @@ Design rules (from `docs/specs/community_branches_phase3.md`):
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import copy
 import hashlib
 import json
 import logging
+import math
 import operator
 import os
 import re
@@ -37,12 +39,15 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import TYPE_CHECKING, Annotated, Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
 from tinyassets.branches import BranchDefinition, GraphNodeRef, NodeDefinition
 from tinyassets.exceptions import AllProvidersExhaustedError
+
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +208,10 @@ def _run_with_timeout(
     instead of hanging the executor.
     """
     executor = _get_timeout_executor()
-    future = executor.submit(fn)
+    # ContextVars do not cross ThreadPoolExecutor boundaries automatically.
+    # Carry the immutable execution-universe pin into provider/source workers.
+    context = contextvars.copy_context()
+    future = executor.submit(context.run, fn)
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
@@ -223,29 +231,72 @@ def _call_policy_router_with_retry(
     system: str,
     policy: dict[str, Any],
     config: Any = None,
+    needs_sandbox: bool = False,
+    universe_context: Any = None,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
-    # Only forward config when set AND the router's call_with_policy_sync
-    # actually accepts it — protects 4-arg routers/stubs (backward-compat),
-    # mirroring the injected provider_call bridge guard.
-    pass_config = config is not None
-    if pass_config:
-        try:
-            import inspect as _inspect
-            _params = _inspect.signature(router.call_with_policy_sync).parameters
-            pass_config = ("config" in _params) or any(
-                p.kind == p.VAR_KEYWORD for p in _params.values()
-            )
-        except (ValueError, TypeError):
-            pass_config = False
+    # Only forward config / universe_context when the router's
+    # call_with_policy_sync actually accepts them — protects older routers/stubs
+    # (backward-compat), mirroring the injected provider_call bridge guard.
+    try:
+        import inspect as _inspect
+        _params = _inspect.signature(router.call_with_policy_sync).parameters
+        _accepts_kwargs = any(
+            p.kind == p.VAR_KEYWORD for p in _params.values()
+        )
+        pass_config = (config is not None) and (
+            ("config" in _params) or _accepts_kwargs
+        )
+        # C2 (Codex S3 REJECT): forward the run's UniverseContext so per-universe
+        # vault auth resolves on the policy path too (mirrors the bridge partial).
+        pass_uctx = (universe_context is not None) and (
+            ("universe_context" in _params) or _accepts_kwargs
+        )
+    except (ValueError, TypeError):
+        pass_config = False
+        pass_uctx = False
+    # Fail closed (Codex S3 r9 #1, extends round-4 FINDING 2): a node whose config
+    # carries ANY hardened posture — os_sandbox_required OR the closed
+    # `--tools ""` text surface — must NEVER run through a compat/legacy policy
+    # router that cannot carry that config; dropping it dispatches UNRESTRICTED
+    # (claude keeps default Bash). Mirrors the _bridge refusal, and now covers
+    # ordinary prompt nodes (every text node is closed_tool_surface).
+    _cfg_hardened = config is not None and (
+        getattr(config, "os_sandbox_required", False)
+        or getattr(config, "closed_tool_surface", False)
+    )
+    if (needs_sandbox or _cfg_hardened) and not pass_config:
+        from tinyassets.providers.base import SandboxUnavailableError
+
+        raise SandboxUnavailableError(
+            "Node cannot run through this policy router: its call_with_policy_sync "
+            "does not carry a 'config' kwarg, so the hardened / closed-tool-surface "
+            "config would be silently dropped and the provider would run "
+            "UNRESTRICTED. Refusing (fail closed)."
+        )
+    # Fail closed (Codex S3 r9 #1): a supplied scoped UniverseContext that this
+    # router cannot forward would silently fall back to process-global provider /
+    # vault state — a cross-tenant leak. Refuse rather than drop tenant scope.
+    if universe_context is not None and not pass_uctx:
+        from tinyassets.providers.base import SandboxUnavailableError
+
+        raise SandboxUnavailableError(
+            "Node has an explicit UniverseContext but this policy router's "
+            "call_with_policy_sync cannot forward it, so the run would fall back "
+            "to process-global provider/vault credentials (cross-tenant leak). "
+            "Refusing (fail closed)."
+        )
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
+    _uctx_kw = {"universe_context": universe_context} if pass_uctx else {}
     for attempt_index in range(attempts):
         try:
             if pass_config:
                 return router.call_with_policy_sync(
-                    role, prompt, system, policy, config,
+                    role, prompt, system, policy, config, **_uctx_kw,
                 )
-            return router.call_with_policy_sync(role, prompt, system, policy)
+            return router.call_with_policy_sync(
+                role, prompt, system, policy, **_uctx_kw,
+            )
         except AllProvidersExhaustedError:
             if attempt_index == attempts - 1:
                 raise
@@ -757,7 +808,9 @@ def seed_initial_state(
     BUG-085 M3 — used at branch invocation to pre-populate the runtime
     state with any state_schema field that carries a ``default_value``.
     Explicit caller-provided ``inputs`` always win; defaults only fill
-    keys the caller did not pass.
+    keys the caller did not pass. (Binding fields carry NO default value —
+    they are owner-bound and the run-entry guard rejects run-time values for
+    them; PLAN §4.)
     """
     seeded = dict(_state_schema_defaults(state_schema))
     seeded.update(inputs or {})
@@ -888,6 +941,58 @@ def _extract_json_object(response: str) -> dict[str, Any]:
     return parsed
 
 
+class SandboxEnforcementUnavailableError(RuntimeError):
+    """Raised at INVOKE time when a ``requires_sandbox`` node would execute but no
+    real sandbox RUNNER can confine it (Codex r13 #1, r14 #1/#2).
+
+    S1 does not confine ``requires_sandbox`` nodes — the compiler has no
+    enforcement — so honestly failing closed (refuse to run) is safer than
+    silently executing a node that was declared to need a sandbox. S3 adds
+    fail-closed ENFORCEMENT only (``coding_nodes_runnable() == False``); the
+    per-job RUNNER that actually confines + executes such a node is an explicit
+    host-approved Phase-2 slice. So this fires on S1 AND on S1+S3, and stops only
+    when the Phase-2 runner lands."""
+
+
+def _sandbox_enforcement_available() -> bool:
+    """True ONLY when a real sandbox RUNNER can confine + execute a
+    ``requires_sandbox`` node (Codex r14 #1/#2).
+
+    NO environment assertion — a truthy env var does NOT prove confinement, so it
+    must never enable execution (that was the r13 bypass). The capability is
+    feature-detected from S3's policy module
+    (``tinyassets.sandbox_policy.coding_nodes_runnable``): ABSENT on this branch
+    (ImportError -> False), and once S3 is integrated it returns
+    ``(runnable: bool, reason: str)`` — False (enforcement-only) until the
+    host-approved Phase-2 per-job runner lands. We UNPACK that tuple (Codex r15
+    #3): a non-empty ``(False, reason)`` tuple is TRUTHY, so ``bool(result)``
+    would wrongly read "available". Pinned to S3's CURRENT signature; if S3's
+    contract changes we re-sync. Tests get their seam by monkeypatching THIS
+    function (a test fixture), never a production env var. Never raises."""
+    try:
+        from tinyassets.sandbox_policy import coding_nodes_runnable  # type: ignore
+
+        result = coding_nodes_runnable()
+    except Exception:  # noqa: BLE001 — absent (S1) / broken => not runnable
+        return False
+    # Accept ONLY a REAL boolean signal (Codex r18 #3). S3's documented contract
+    # is EXACTLY (runnable: bool, reason: str); a bare bool is also honored for
+    # forward/backward compat. Never ``bool()``-coerce the flag — a drifted
+    # policy returning ("false", "malformed") would coerce truthy and enable
+    # execution UNCONFINED. So require result[0] to BE a bool and the tuple to be
+    # exactly length 2. ANY other shape (wrong length, non-bool flag, a list, a
+    # non-bool non-tuple) is a broken/drifted policy module => FAIL CLOSED.
+    if isinstance(result, bool):
+        return result
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], bool)
+    ):
+        return result[0]
+    return False
+
+
 def _build_prompt_template_node(
     node: NodeDefinition,
     *,
@@ -932,30 +1037,79 @@ def _build_prompt_template_node(
     # fast+cheap) + the node's own timeout. Built once per node. ModelConfig is
     # imported lazily so graph_compiler keeps no hard provider import.
     _node_reasoning_effort = (getattr(node, "reasoning_effort", "") or "").strip()
+    # NOTE (Codex S3 r18 #1): this is a PURE adapter builder — the sandbox
+    # capability gate lives ONLY at the single choke point (``_build_node``), which
+    # refuses a repo-touching node BEFORE it ever reaches this builder in the
+    # daemon. The ISOLATED WORKER (Phase-2 runner) uses this builder directly to
+    # run a dispatched node inside its own isolation, so it must NOT re-refuse a
+    # repo/coding node here (a redundant second gate blocked the worker). Approval
+    # + config-build fail-closed guards below remain. ``_node_needs_sandbox`` is
+    # still computed — it drives the config-forwarding refusal + policy-router
+    # ``needs_sandbox`` below (a hardened node must never dispatch config-less).
+    from tinyassets.sandbox_policy import (
+        node_requires_sandbox_runner as _node_requires_sandbox_runner,
+    )
+    _node_needs_sandbox = _node_requires_sandbox_runner(node)
     try:
-        from tinyassets.providers.base import ModelConfig as _ModelConfig
-        _node_cfg: Any = _ModelConfig(
-            # Floor at 1s: a sub-second node timeout (e.g. 0.5) must not become
-            # a provider timeout of 0 (int(0.5)==0 → instant provider timeout).
-            timeout=max(1, int(timeout_s)),
+        from tinyassets.sandbox_policy import (
+            text_node_model_config as _text_node_model_config,
+        )
+        _node_cfg: Any = _text_node_model_config(
+            timeout=timeout_s,
             reasoning_effort=_node_reasoning_effort,
         )
-    except Exception:  # pragma: no cover - defensive; provider import is optional
-        _node_cfg = None
+    except Exception as _cfg_exc:  # noqa: BLE001
+        # FAIL CLOSED (Codex S3 REJECT r3 C1b): a ModelConfig that cannot be built
+        # (e.g. a bad timeout that slipped past authoring validation) must NEVER
+        # fall through to a config-less / UNRESTRICTED dispatch. Refuse the node
+        # deterministically — never None-then-unrestricted.
+        try:
+            from tinyassets.providers.base import (
+                SandboxUnavailableError as _CfgSUE,
+            )
+        except Exception:  # noqa: BLE001
+            _CfgSUE = type("_SandboxUnavailableError", (Exception,), {})
+        _cfg_exc_msg = f"{type(_cfg_exc).__name__}: {_cfg_exc}"
+        _cfg_nid = node.node_id
+
+        def _config_build_fail_closed(
+            state: dict[str, Any],
+        ) -> dict[str, Any]:
+            exc = _CfgSUE(
+                f"Node '{_cfg_nid}': its hardened ModelConfig could not be built "
+                f"({_cfg_exc_msg}); refusing to run it unrestricted (fail closed)."
+            )
+            # Codex r10 #2: terminal sandbox refusal → emit failed event.
+            _emit_failed_event(event_sink, _cfg_nid, exc)
+            raise exc
+
+        return _config_build_fail_closed
     # Only pass config to the injected provider bridge when its signature
     # accepts it (protects test stubs / older bridges).
     try:
         import inspect as _inspect
+        _bp = _inspect.signature(provider_call).parameters
+        # A bridge carries config when it names ``config`` OR accepts **kwargs
+        # (mirrors the policy-router guard). The real bridge (call_provider) names
+        # config; a ``*a, **kw`` stub also carries it.
         _bridge_takes_config = bool(provider_call) and (
-            "config" in _inspect.signature(provider_call).parameters
+            ("config" in _bp)
+            or any(p.kind == p.VAR_KEYWORD for p in _bp.values())
         )
     except (ValueError, TypeError):
         _bridge_takes_config = False
 
-    def _bridge(_p: str, _s: str) -> str:
-        if _bridge_takes_config and _node_cfg is not None:
-            return provider_call(_p, _s, role=role, config=_node_cfg)
-        return provider_call(_p, _s, role=role)
+    # C2 (Codex S3 REJECT): run_branch binds the run's per-universe UniverseContext
+    # into the provider bridge via ``functools.partial(call_provider,
+    # universe_context=uctx)``; the bridge path carries it automatically. Surface
+    # it here so the policy-router path forwards the SAME universe scope (so a
+    # policy text node also resolves its own universe's vault, never another's).
+    try:
+        _universe_context = getattr(provider_call, "keywords", {}).get(
+            "universe_context",
+        )
+    except Exception:  # noqa: BLE001
+        _universe_context = None
 
     # Lazy import so graph_compiler doesn't hard-depend on providers at import
     # time. Aliased so the except-clauses below can reference it by name without
@@ -965,7 +1119,47 @@ def _build_prompt_template_node(
     except Exception:  # noqa: BLE001 — import failure must not break compilation
         _SandboxUnavailableError = type("_SandboxUnavailableError", (Exception,), {})  # type: ignore[assignment,misc]
 
+    # A config that carries ANY security-relevant posture (sandbox OR the closed
+    # `--tools ""` text surface) MUST reach the provider — running the provider
+    # without it drops the policy (claude would keep default Bash). Every text
+    # node has closed_tool_surface, so this is set for every runnable node.
+    _cfg_is_hardened = _node_cfg is not None and (
+        getattr(_node_cfg, "os_sandbox_required", False)
+        or getattr(_node_cfg, "closed_tool_surface", False)
+    )
+
+    def _bridge(_p: str, _s: str) -> str:
+        if _bridge_takes_config and _node_cfg is not None:
+            return provider_call(_p, _s, role=role, config=_node_cfg)
+        if _node_needs_sandbox or _cfg_is_hardened:
+            # Fail closed (Codex S3 REJECT r3 C1c, extends round-3 FINDING 3): a
+            # config that carries a hardened / closed-surface posture must NEVER
+            # run through a bridge that cannot carry it — a config-less bridge
+            # would dispatch the provider UNRESTRICTED (bypassing the sandbox tool
+            # policy for a coding node, or leaving claude with default Bash for a
+            # closed-surface text node). Refuse rather than run unrestricted.
+            raise _SandboxUnavailableError(
+                f"Node '{node.node_id}' requires a hardened config (sandbox / "
+                "closed tool surface) but its provider bridge cannot carry it "
+                "(the injected provider_call takes no 'config' kwarg). Refusing to "
+                "dispatch it unrestricted (fail closed)."
+            )
+        return provider_call(_p, _s, role=role)
+
     def _fn(state: dict[str, Any]) -> dict[str, Any]:
+        # Fail-closed sandbox gate (Codex r13 #1): the compiler does NOT confine
+        # a ``requires_sandbox`` node, so it must REFUSE to run — before ANY
+        # provider dispatch — while sandbox enforcement is unavailable
+        # (feature-detected; always absent on S1, binds to S3's real gate at
+        # integration). Honestly fail-closed instead of silently executing
+        # unconfined. Checked FIRST so the provider is never called.
+        if getattr(node, "requires_sandbox", False) and not _sandbox_enforcement_available():
+            raise SandboxEnforcementUnavailableError(
+                f"Node '{node.node_id}' requires_sandbox=true but sandbox "
+                "enforcement is unavailable on this build — refusing to execute "
+                "before any provider dispatch (fail-closed; the S3 sandbox runner "
+                "is not integrated)."
+            )
         # Normalize Jinja-style ``{{var}}`` into Python's ``{var}``.
         # Claude.ai-authored prompt_templates tend to use doubled braces
         # by convention; without this the braces are passed through to
@@ -1105,6 +1299,22 @@ def _build_prompt_template_node(
             provider_served: str = "unknown"
             provider_meta: dict[str, Any] = {}
             if provider_call is None:
+                # Codex S3 r13 #3 (Hard Rule 8): a mock response is a TEST-ONLY
+                # affordance, never a production fallback. It fires ONLY behind the
+                # explicit force-mock switch (tests set it in conftest via
+                # providers.call.set_force_mock). In production, a missing provider
+                # (e.g. an import failure that left provider_call=None) FAILS LOUD
+                # — a silent "[Mock response …]" that looks real is worse than a
+                # crash.
+                from tinyassets.providers.call import is_force_mock
+                if not is_force_mock():
+                    raise CompilerError(
+                        f"Node '{node.node_id}' has no provider (provider_call is "
+                        "None) and mock responses are disabled outside tests. "
+                        "Refusing to emit fake output in production (Hard Rule 8, "
+                        "fail loud) — a missing/failed provider import must crash, "
+                        "not silently return a mock string."
+                    )
                 response = f"[Mock response for {node.node_id}]"
                 provider_served = "mock"
             elif effective_policy:
@@ -1126,6 +1336,8 @@ def _build_prompt_template_node(
                                 system="",
                                 policy=effective_policy,
                                 config=_node_cfg,
+                                needs_sandbox=_node_needs_sandbox,
+                                universe_context=_universe_context,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
@@ -1143,7 +1355,11 @@ def _build_prompt_template_node(
                         )
                 except NodeTimeoutError:
                     raise
-                except _SandboxUnavailableError:
+                except _SandboxUnavailableError as exc:
+                    # Sandbox refusals are terminal node failures too (Codex r10
+                    # #2): emit the same failed event every other failure gets so
+                    # the run record names the refusing node + reason.
+                    _emit_failed_event(event_sink, node.node_id, exc)
                     raise
                 except Exception as exc:
                     logger.exception("Policy provider call failed in %s", node.node_id)
@@ -1158,7 +1374,9 @@ def _build_prompt_template_node(
                     )
                 except NodeTimeoutError:
                     raise
-                except _SandboxUnavailableError:
+                except _SandboxUnavailableError as exc:
+                    # Sandbox refusals are terminal node failures too (Codex r10 #2).
+                    _emit_failed_event(event_sink, node.node_id, exc)
                     raise
                 except Exception as exc:
                     logger.exception("Provider call failed in %s", node.node_id)
@@ -1413,6 +1631,9 @@ class NodeEnqueueContext:
     actor: str = ""
     parent_branch_task_id: str = ""
     origin_branch_task_id: str = ""
+    review_destination: str = ""
+    review_pr_number: int = 0
+    expected_head_sha: str = ""
 
 
 def _node_enqueue_branch_run(
@@ -1555,6 +1776,15 @@ def _node_enqueue_branch_run(
         parent_branch_task_id=parent,
         origin_branch_task_id=origin,
     )
+    # A review-revision run is head-bound for its whole execution generation.
+    # Reuse that SAME authoritative guard at the first in-graph durable effect,
+    # immediately before the queue append.  The binding travels in the trusted,
+    # serializable enqueue context so fresh and resumed isolated executions
+    # cannot enable this dark verb without carrying the guard with it.
+    if str(ctx.expected_head_sha or "").strip():
+        from tinyassets.runs import require_review_revision_task_head
+
+        require_review_revision_task_head(_universe_dir(uid), task=ctx)
     # Fix 2 — global active-queue cap + per-origin lineage cap, enforced
     # atomically under one lock (no read-then-append race).
     try:
@@ -2117,11 +2347,14 @@ def _build_invoke_branch_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_spec`` node.
 
     The callable spawns a child branch run (blocking or async) and writes
-    declared output_mapping fields back into the parent state.
+    declared output_mapping fields back into the parent state. The child INHERITS
+    the parent's authoritative :class:`ExecutionScope` (Codex S3 r20 #2) so a
+    scoped parent never spawns a child that drops to ambient credentials.
     """
     from tinyassets.runs import (
         _runtime_max_invocation_depth,
@@ -2194,6 +2427,7 @@ def _build_invoke_branch_node(
                     actor=actor_arg,
                     provider_call=provider_call,
                     _invocation_depth=depth + 1,
+                    execution_scope=execution_scope,
                 )
                 if outcome.status == "completed":
                     try:
@@ -2242,6 +2476,7 @@ def _build_invoke_branch_node(
                 actor=actor_arg,
                 provider_call=provider_call,
                 _invocation_depth=depth + 1,
+                execution_scope=execution_scope,
             )
             # async: write the child run_id into the first output_mapping target.
             # design_used emit deferred to await_branch_run on success
@@ -2263,6 +2498,7 @@ def _build_invoke_branch_version_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_version_spec`` node.
 
@@ -2361,6 +2597,7 @@ def _build_invoke_branch_version_node(
                     actor=actor_arg,
                     provider_call=provider_call,
                     _invocation_depth=depth + 1,
+                    execution_scope=execution_scope,
                 )
                 # Block until the child terminates; harvest its output dict.
                 record = poll_child_run_status(_base, outcome.run_id)
@@ -2418,6 +2655,7 @@ def _build_invoke_branch_version_node(
                 actor=actor_arg,
                 provider_call=provider_call,
                 _invocation_depth=depth + 1,
+                execution_scope=execution_scope,
             )
             # design_used emit deferred to await on success (mirrors
             # invoke_branch async path).
@@ -2481,6 +2719,461 @@ def _build_await_branch_run_node(
     return _node_fn
 
 
+# Version of the serializable execution request / dispatch protocol (Codex S3
+# r18 #1). The isolated worker declares which versions it supports; bump on any
+# breaking change to the request shape so the runner build has a stable contract.
+# v2 (Codex S3 r19): opaque workspace_ref (no host path) + opaque credential_grant
+# (no forgeable universe_id) + a JSON-validated request/response contract.
+# v3: the trusted enqueue context carries the review-revision head binding so
+# an isolated in-node queue write can re-run the execution-generation guard.
+EXECUTION_REQUEST_SCHEMA_VERSION = 3
+
+_REQUEST_KIND = "isolated_execution_request"
+_RESPONSE_KIND = "isolated_execution_response"
+
+# Strict-transport limits (Codex S3 r20 #4). The request/response cross a REAL
+# process boundary, so validation is STRICT JSON (reject NaN/Infinity + a real
+# decode round-trip, not merely a json.dumps() that succeeds) with BOUNDED payload
+# and error sizes. A remote error is a STRUCTURED dict with a bounded type +
+# message — never a bare string the daemon would then call ``.get()`` on.
+_MAX_TRANSPORT_BYTES = 4_000_000
+_MAX_ERROR_TYPE_CHARS = 200
+_MAX_ERROR_MESSAGE_CHARS = 4000
+_RESPONSE_STATUSES = ("ok", "error", "cancelled")
+_EXECUTOR_CLASSES = frozenset({"repo", "source_exec"})
+_REQUEST_FIELDS = frozenset({
+    "kind", "schema_version", "capability_class", "domain_id", "node_spec",
+    "inputs", "workspace_ref", "parent_run_id", "invocation_depth",
+    "enqueue_context", "state_schema", "effective_llm_policy",
+    "concurrency_budget", "credential_grant", "credential_scope_required",
+})
+_RESPONSE_FIELDS = frozenset({"kind", "schema_version", "status", "result", "error"})
+
+
+def issue_executor_credential_grant(
+    *, run_id: str, universe_dir: str | None,
+) -> str | None:
+    """Integration seam for a runner-specific broker adapter; fail closed by default.
+
+    The platform broker mints grants for a specific persisted binding. S3 does not
+    know which provider binding a future isolated runner selected, so installing a
+    runner must also install this adapter instead of reviving the retired vault.
+    """
+    if universe_dir is None:
+        return None
+    raise CompilerError(
+        "isolated executor credential-grant adapter is not installed"
+    )
+
+
+def _assert_json_native(value: Any, *, path: str) -> None:
+    """Reject values whose JSON encoding changes their Python data model."""
+    if value is None or type(value) in (bool, int, str):
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise CompilerError(f"{path} contains a non-finite float")
+        return
+    if type(value) is list:
+        for index, item in enumerate(value):
+            _assert_json_native(item, path=f"{path}[{index}]")
+        return
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise CompilerError(f"{path} contains non-string keys")
+            _assert_json_native(item, path=f"{path}.{key}")
+        return
+    raise CompilerError(f"{path} contains non-JSON-native {type(value).__name__}")
+
+
+def _strict_json_roundtrip(obj: Any, *, label: str) -> Any:
+    """STRICT-encode (reject NaN/Infinity) then DECODE back, proving the payload
+    survives real cross-process transport and is size-bounded (Codex S3 r20 #4).
+    Returns the decoded object. Fail LOUD."""
+    _assert_json_native(obj, path=label)
+    try:
+        encoded = json.dumps(obj, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise CompilerError(
+            f"{label} is not strict-JSON-serializable (non-JSON value or "
+            f"NaN/Infinity, which is not valid JSON): {exc}"
+        ) from exc
+    if len(encoded.encode("utf-8")) > _MAX_TRANSPORT_BYTES:
+        raise CompilerError(
+            f"{label} exceeds the {_MAX_TRANSPORT_BYTES}-byte transport limit."
+        )
+    try:
+        return json.loads(encoded)
+    except (TypeError, ValueError) as exc:  # pragma: no cover — defensive
+        raise CompilerError(
+            f"{label} did not survive a JSON decode round-trip: {exc}"
+        ) from exc
+
+
+def validate_execution_request(request: "dict[str, Any]") -> "dict[str, Any]":
+    """Validate the execution request is a COMPLETE, STRICT-JSON, discriminated
+    contract (Codex S3 r19 #3 / r20 #4): STRICT-JSON round-trip (so a `Path`/`set`/
+    `NaN` value is rejected BEFORE dispatch, never at the transport), size-bounded,
+    with the required fields present AND of the exact declared types, matching the
+    current schema version, and no raw host path. Fail LOUD."""
+    if not isinstance(request, dict):
+        raise CompilerError("execution request must be a dict")
+    request = _strict_json_roundtrip(request, label="execution request")
+    missing = _REQUEST_FIELDS - request.keys()
+    unexpected = request.keys() - _REQUEST_FIELDS
+    if missing:
+        raise CompilerError(f"execution request missing fields {sorted(missing)}")
+    if unexpected:
+        raise CompilerError(f"execution request has unexpected fields {sorted(unexpected)}")
+    for key in ("kind", "schema_version", "capability_class", "node_spec", "inputs"):
+        if key not in request:
+            raise CompilerError(f"execution request missing required field '{key}'")
+    if request.get("kind") != _REQUEST_KIND:
+        raise CompilerError(f"execution request has wrong kind {request.get('kind')!r}")
+    if request.get("schema_version") != EXECUTION_REQUEST_SCHEMA_VERSION:
+        raise CompilerError(
+            f"execution request schema v{request.get('schema_version')} != "
+            f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
+        )
+    if type(request["schema_version"]) is not int:
+        raise CompilerError("execution request 'schema_version' must be an int")
+    # Discriminated field types (r20 #4) — exact types, not just presence.
+    if not isinstance(request.get("capability_class"), str):
+        raise CompilerError("execution request 'capability_class' must be a str")
+    if not isinstance(request.get("node_spec"), dict):
+        raise CompilerError("execution request 'node_spec' must be a dict")
+    if not isinstance(request.get("inputs"), dict):
+        raise CompilerError("execution request 'inputs' must be a dict")
+    if not isinstance(request.get("workspace_ref", ""), str):
+        raise CompilerError("execution request 'workspace_ref' must be a str")
+    if "credential_scope_required" in request and not isinstance(
+        request["credential_scope_required"], bool
+    ):
+        raise CompilerError("execution request 'credential_scope_required' must be a bool")
+    # A raw host path must NEVER be present (host-path invisibility, r19 #3).
+    if "base_path" in request:
+        raise CompilerError(
+            "execution request must carry an opaque 'workspace_ref', never a raw "
+            "'base_path' (host-path invisibility)."
+        )
+    if request["capability_class"] not in _EXECUTOR_CLASSES:
+        raise CompilerError("execution request has unknown capability_class")
+    for key in ("domain_id", "parent_run_id"):
+        if type(request[key]) is not str:
+            raise CompilerError(f"execution request '{key}' must be a str")
+    depth = request["invocation_depth"]
+    if type(depth) is not int or not 0 <= depth <= 64:
+        raise CompilerError("execution request 'invocation_depth' must be an int in 0..64")
+    context = request["enqueue_context"]
+    if context is not None:
+        expected_context = {
+            "universe_id", "actor", "parent_branch_task_id", "origin_branch_task_id",
+            "review_destination", "review_pr_number", "expected_head_sha",
+        }
+        if type(context) is not dict or set(context) != expected_context:
+            raise CompilerError("execution request 'enqueue_context' has invalid fields")
+        string_fields = expected_context - {"review_pr_number"}
+        if any(type(context[field]) is not str for field in string_fields):
+            raise CompilerError("execution request 'enqueue_context' string values must be str")
+        if type(context["review_pr_number"]) is not int:
+            raise CompilerError("execution request 'enqueue_context' review_pr_number must be int")
+    state_schema = request["state_schema"]
+    if type(state_schema) is not list or any(type(item) is not dict for item in state_schema):
+        raise CompilerError("execution request 'state_schema' must be a list of dicts")
+    if request["effective_llm_policy"] is not None and type(
+        request["effective_llm_policy"]
+    ) is not dict:
+        raise CompilerError("execution request 'effective_llm_policy' must be a dict or null")
+    budget = request["concurrency_budget"]
+    if budget is not None and (type(budget) is not int or not 1 <= budget <= 10_000):
+        raise CompilerError("execution request 'concurrency_budget' must be null or a positive int")
+    if request["credential_grant"] is not None and type(
+        request["credential_grant"]
+    ) is not str:
+        raise CompilerError("execution request 'credential_grant' must be a str or null")
+    return request
+
+
+def make_execution_response(
+    *,
+    status: str,
+    result: "dict[str, Any] | None" = None,
+    error: "Any" = None,
+) -> "dict[str, Any]":
+    """Build the typed, STRICT-JSON execution RESPONSE envelope (Codex S3 r19 #3 /
+    r20 #4) an isolated worker returns: ``status`` is ``ok`` | ``error`` |
+    ``cancelled``. A remote failure is a STRUCTURED, size-bounded error dict (type +
+    message) the daemon reconstructs — never a bare string. Any ``error`` (dict or
+    string) is normalized + truncated so the transport can never carry an unbounded
+    or non-structured error."""
+    norm_error: dict[str, str] | None = None
+    if error is not None:
+        if isinstance(error, dict):
+            etype = str(error.get("type", "Error"))
+            emsg = str(error.get("message", ""))
+        else:
+            etype, emsg = "Error", str(error)
+        norm_error = {
+            "type": etype[:_MAX_ERROR_TYPE_CHARS],
+            "message": emsg[:_MAX_ERROR_MESSAGE_CHARS],
+        }
+    return {
+        "kind": _RESPONSE_KIND,
+        "schema_version": EXECUTION_REQUEST_SCHEMA_VERSION,
+        "status": status,
+        "result": result,
+        "error": norm_error,
+    }
+
+
+def validate_execution_response(envelope: Any) -> "dict[str, Any]":
+    """Validate the worker's response envelope is a STRICT-JSON, discriminated
+    contract (Codex S3 r19 #3 / r20 #4). Fail LOUD on a non-dict, non-strict-JSON,
+    oversized, unknown-status, or wrong-schema envelope — and specifically require a
+    STRUCTURED error dict for ``status='error'`` (fixing the ``.get()``-on-a-string
+    crash) and a dict ``result`` for ``status='ok'``."""
+    if not isinstance(envelope, dict):
+        raise CompilerError(
+            f"isolated executor returned {type(envelope).__name__}, expected a "
+            "response envelope dict."
+        )
+    envelope = _strict_json_roundtrip(envelope, label="execution response")
+    if set(envelope) != _RESPONSE_FIELDS:
+        raise CompilerError("execution response has missing or unexpected fields")
+    if envelope.get("kind") != _RESPONSE_KIND:
+        raise CompilerError(f"execution response has wrong kind {envelope.get('kind')!r}")
+    if envelope.get("schema_version") != EXECUTION_REQUEST_SCHEMA_VERSION:
+        raise CompilerError(
+            f"execution response schema v{envelope.get('schema_version')} != "
+            f"v{EXECUTION_REQUEST_SCHEMA_VERSION}"
+        )
+    if type(envelope["schema_version"]) is not int:
+        raise CompilerError("execution response 'schema_version' must be an int")
+    status = envelope.get("status")
+    if status not in _RESPONSE_STATUSES:
+        raise CompilerError(f"execution response has unknown status {status!r}")
+    if status == "ok" and not isinstance(envelope.get("result"), dict):
+        raise CompilerError(
+            "execution response status='ok' must carry a dict 'result'"
+        )
+    if status == "error":
+        err = envelope.get("error")
+        if not isinstance(err, dict) or set(err) != {"type", "message"}:
+            raise CompilerError(
+                "execution response status='error' must carry a STRUCTURED error "
+                "dict (type + message), never a bare string."
+            )
+        if not isinstance(err.get("type"), str) or not isinstance(err.get("message"), str):
+            raise CompilerError(
+                "execution response error dict must have str 'type' and 'message'"
+            )
+        if (
+            len(err["type"]) > _MAX_ERROR_TYPE_CHARS
+            or len(err["message"]) > _MAX_ERROR_MESSAGE_CHARS
+        ):
+            raise CompilerError("execution response error exceeds the bounded size")
+    if status != "error" and envelope["error"] is not None:
+        raise CompilerError("non-error execution response must carry null 'error'")
+    if status != "ok" and envelope["result"] is not None:
+        raise CompilerError("non-ok execution response must carry null 'result'")
+    return envelope
+
+
+def build_executor_execution_request(
+    node: NodeDefinition,
+    inputs: "dict[str, Any]",
+    executor_class: str,
+    *,
+    domain_id: str = "",
+    workspace_ref: str = "",
+    parent_run_id: str = "",
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
+    state_schema: "list[dict[str, Any]] | None" = None,
+    effective_llm_policy: "dict[str, Any] | None" = None,
+    concurrency_budget: int | None = None,
+    credential_grant: Any = None,
+    credential_scope_required: bool = False,
+) -> "dict[str, Any]":
+    """Build the SERIALIZABLE, JSON-VALIDATED execution REQUEST (Codex S3
+    r17/r18/r19) an isolated executor consumes: pure DATA — node spec, inputs,
+    capability class, domain, and the COMPLETE effective context ``compile_branch``
+    computes (state schema, effective llm_policy, concurrency budget) — NO callable,
+    NO raw host path, NO forgeable universe_id.
+
+    ``workspace_ref`` is an OPAQUE reference (r19 #3) the worker resolves to its OWN
+    workspace — the host path is never in the request. ``credential_grant`` is an
+    OPAQUE, daemon-issued, JOB-SCOPED grant (r19 #1) the worker redeems via the
+    vault broker — never a raw universe id. ``credential_scope_required`` is the
+    daemon's AUTHORITATIVE signal (True ⟺ the run is universe-bound) so the worker
+    FAILS CLOSED for a scoped run whose grant is missing/unredeemable instead of
+    ever falling back to process-global creds. Validated JSON-serializable before it
+    is returned (a non-JSON input value fails loud here, not at the transport)."""
+    import dataclasses as _dc
+
+    request = {
+        "kind": _REQUEST_KIND,
+        "schema_version": EXECUTION_REQUEST_SCHEMA_VERSION,
+        "capability_class": executor_class,
+        "domain_id": domain_id,
+        "node_spec": node.to_dict(),
+        "inputs": dict(inputs) if inputs else {},
+        "workspace_ref": workspace_ref or "",
+        "parent_run_id": parent_run_id,
+        "invocation_depth": int(invocation_depth),
+        "enqueue_context": (
+            _dc.asdict(enqueue_context) if enqueue_context is not None else None
+        ),
+        "state_schema": list(state_schema) if state_schema else [],
+        "effective_llm_policy": (
+            dict(effective_llm_policy) if effective_llm_policy else None
+        ),
+        "concurrency_budget": concurrency_budget,
+        "credential_grant": credential_grant,
+        "credential_scope_required": bool(credential_scope_required),
+    }
+    return validate_execution_request(request)
+
+
+def _build_executor_request_dispatch_node(
+    node: NodeDefinition,
+    executor: Any,
+    executor_class: str,
+    *,
+    domain_id: str,
+    workspace_ref: str,
+    parent_run_id: str,
+    invocation_depth: int,
+    enqueue_context: "NodeEnqueueContext | None",
+    state_schema: "list[dict[str, Any]] | None",
+    effective_llm_policy: "dict[str, Any] | None",
+    concurrency_budget: int | None,
+    credential_grant: Any,
+    credential_scope_required: bool,
+    event_sink: Callable[..., None] | None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """DISPATCH a sandbox-required adapter to the isolated executor (Codex S3 r16
+    #1 + r17 #2) — DATA, NOT CODE. Returns a node fn that, at run time, builds a
+    SERIALIZABLE execution request (:func:`build_executor_execution_request`) and
+    hands it to ``executor.dispatch(request)``; the worker compiles + executes it
+    INSIDE the isolated environment and returns the result. The daemon possesses
+    NO callable that runs the adapter and NO gate that skips the executor. Only
+    reachable when a TYPED, healthy executor exists (Phase 2) — in Phase 1
+    ``resolve_isolated_executor`` returns ``None`` so the choke point refuses
+    before ever calling this.
+    """
+    _nid = node.node_id
+    # Contract compatibility (Codex S3 r18 #1): the executor must DECLARE support
+    # for this request schema version, else it would receive a request it cannot
+    # parse. Fail loud at compile.
+    _schema_support = getattr(executor, "supported_request_schema_versions", None)
+    if callable(_schema_support):
+        try:
+            _supported_versions = _schema_support()
+        except Exception:  # noqa: BLE001 — unknown support ⇒ fail closed
+            _supported_versions = frozenset()
+        if EXECUTION_REQUEST_SCHEMA_VERSION not in _supported_versions:
+            raise CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' executor does not "
+                f"support execution-request schema v{EXECUTION_REQUEST_SCHEMA_VERSION} "
+                f"(supports {sorted(_supported_versions)}); refusing to dispatch."
+            )
+    # DAEMON-side authorization (data check, NOT execution): a source_code node's
+    # host-approval provenance is validated here at COMPILE time so an unapproved
+    # source is refused before any dispatch — the daemon never trusts the worker
+    # to gate approval. (Inspecting the source hash is a data check; it does NOT
+    # run the adapter.)
+    if (node.source_code or "").strip():
+        _validate_source_code(node)
+
+    def _dispatch_fn(state: dict[str, Any]) -> dict[str, Any]:
+        # Build + VALIDATE the JSON-safe request (rejects a non-JSON input value
+        # BEFORE dispatch, Codex S3 r19 #3).
+        request = build_executor_execution_request(
+            node, state, executor_class,
+            domain_id=domain_id, workspace_ref=workspace_ref,
+            parent_run_id=parent_run_id, invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context, state_schema=state_schema,
+            effective_llm_policy=effective_llm_policy,
+            concurrency_budget=concurrency_budget, credential_grant=credential_grant,
+            credential_scope_required=credential_scope_required,
+        )
+        if event_sink is not None:
+            try:
+                event_sink(
+                    node_id=_nid, phase="starting",
+                    isolated_executor=executor_class,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception("event_sink raised in %s (starting)", _nid)
+        try:
+            envelope = executor.dispatch(request)
+        except Exception as exc:
+            # Codex S3 r18 #2 / r19 #3: a TRANSPORT/IPC failure (the dispatch call
+            # itself raises) is a TERMINAL node failure — emit the failed event
+            # (wrapped with node/executor context) before re-raising. Cancellation
+            # propagates untouched.
+            if _is_cancel_exception(exc):
+                raise
+            wrapped = CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' executor dispatch "
+                f"failed (transport): {type(exc).__name__}: {exc}"
+            )
+            _emit_failed_event(event_sink, _nid, wrapped)
+            raise wrapped from exc
+        # Codex S3 r19 #3: the worker returns a TYPED response ENVELOPE — the daemon
+        # RECONSTRUCTS a REMOTE failure (real cross-process IPC), not just an
+        # in-process exception. Validate the envelope, then branch on status.
+        try:
+            envelope = validate_execution_response(envelope)
+        except CompilerError as exc:
+            _emit_failed_event(event_sink, _nid, exc)
+            raise
+        status = envelope["status"]
+        if status == "cancelled":
+            # Name-matched so ``_is_cancel_exception`` treats it as cancellation
+            # (graph_compiler intentionally does not import runs' RunCancelledError).
+            _Cancelled = type("RunCancelledError", (Exception,), {})
+            raise _Cancelled(
+                f"Node '{_nid}': isolated '{executor_class}' worker reported the "
+                "job was cancelled."
+            )
+        if status == "error":
+            err = envelope.get("error") or {}
+            exc = CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' worker failed: "
+                f"{err.get('type', 'Error')}: {err.get('message', '')}"
+            )
+            _emit_failed_event(event_sink, _nid, exc)
+            raise exc
+        result = envelope.get("result")
+        if not isinstance(result, dict):
+            exc = CompilerError(
+                f"Node '{_nid}': isolated '{executor_class}' worker returned "
+                f"status=ok but result is {type(result).__name__}, expected a dict."
+            )
+            _emit_failed_event(event_sink, _nid, exc)
+            raise exc
+        # Emit the terminal 'ran' event (matching every adapter) so the runner's
+        # node-status callback flips the node to 'ran'.
+        if event_sink is not None:
+            try:
+                event_sink(
+                    node_id=_nid, phase="ran",
+                    isolated_executor=executor_class, output=result,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception("event_sink raised in %s (ran)", _nid)
+        return result
+
+    return _dispatch_fn
+
+
 def _build_node(
     node: NodeDefinition,
     *,
@@ -2494,6 +3187,8 @@ def _build_node(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
+    trusted: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2507,8 +3202,170 @@ def _build_node(
     own policy or the branch default; resolved by ``compile_branch``.
     ``concurrency_tracker`` limits concurrent LLM/sandbox calls via a
     semaphore acquired before the provider call and released after.
+
+    ``trusted`` marks a DAEMON-INTERNAL compile (Codex S3 r13 #1). Only a trusted
+    compile may build a HOST-ONLY opaque adapter (e.g. ``universe_cycle_wrapper``);
+    a user-authored branch (``trusted=False``, the default and the only value the
+    ``run_branch`` path ever passes) fails closed on a host-only adapter.
     """
     from tinyassets.domain_registry import resolve_domain_callable
+
+    # SECURITY (Codex S3 r9 #3 + r12 #1 + r13 #1): the capability fail-closed gate
+    # lives at THIS single choke point — BEFORE the adapter fan-out — so
+    # source_code / opaque / invoke nodes cannot route AROUND it. Capability is the
+    # EFFECTIVE capability: source/metadata classification PLUS opaque-adapter
+    # resolution (a registered opaque callable's capability is its adapter type,
+    # invisible to node fields — a repo-reading `read_repo_files` node otherwise
+    # looks like plain text). A repo-touching node with no per-job runner, an
+    # UNCLASSIFIED opaque adapter, and a HOST-ONLY adapter reached by an untrusted
+    # (user-authored) compile all fail closed deterministically — matching what
+    # validate + get_status report.
+    from tinyassets.sandbox_policy import (
+        _HOST_ONLY as _HOST_ONLY,
+    )
+    from tinyassets.sandbox_policy import (
+        _OPAQUE_UNCLASSIFIED as _OPAQUE_UNCLASSIFIED,
+    )
+    from tinyassets.sandbox_policy import (
+        _SOURCE_EXEC_CAPABILITY as _SOURCE_EXEC,
+    )
+    from tinyassets.sandbox_policy import (
+        EXECUTOR_CLASS_REPO as _EXEC_REPO,
+    )
+    from tinyassets.sandbox_policy import (
+        EXECUTOR_CLASS_SOURCE_EXEC as _EXEC_SRC,
+    )
+    from tinyassets.sandbox_policy import (
+        ExecutionScope as _ExecScope,
+    )
+    from tinyassets.sandbox_policy import (
+        effective_node_capability as _eff_cap,
+    )
+    from tinyassets.sandbox_policy import (
+        executor_satisfies as _executor_satisfies,
+    )
+    from tinyassets.sandbox_policy import (
+        resolve_isolated_executor as _resolve_executor,
+    )
+    _node_eff_cap = _eff_cap(node, domain_id)
+    # A HOST-ONLY adapter is allowed ONLY for a trusted (daemon) compile.
+    if _node_eff_cap == _HOST_ONLY and trusted:
+        _node_eff_cap = "text"  # trusted daemon path — proceed to opaque dispatch
+    if _node_eff_cap != "text":
+        _refuse = True
+        if _node_eff_cap == _HOST_ONLY:
+            # A user-authored branch selected a daemon-internal callable.
+            _runner_reason = (
+                "it is a HOST-ONLY (daemon-internal) adapter that a user-authored "
+                "branch may not compile/queue/execute; refusing (fail closed)"
+            )
+        elif _node_eff_cap == _OPAQUE_UNCLASSIFIED:
+            # An opaque adapter with no declared capability refuses unconditionally
+            # — no isolated executor can vouch for an adapter nobody classified.
+            _runner_reason = (
+                "it is a registered opaque adapter with NO declared sandbox "
+                "capability class; refusing an unclassified host-code adapter "
+                "(fail closed)"
+            )
+        else:
+            # SECURITY (Codex S3 r16 #1 + r17 #1/#2): a sandbox-required adapter
+            # (source_exec / coding / repo_exec / repo_read) must be DISPATCHED to
+            # an ISOLATED EXECUTOR as a SERIALIZABLE REQUEST (data — node spec +
+            # inputs + class; NO callable) that the worker compiles+executes INSIDE
+            # itself — NEVER invoked as fn(state) in the daemon. The gate requires a
+            # TYPED, healthy executor (executor_satisfies), not "a handle is
+            # non-None". In Phase 1 none exists → ALWAYS refuse (no in-process
+            # fall-through, and the daemon holds no callable that runs the adapter).
+            _exec_class = _EXEC_SRC if _node_eff_cap == _SOURCE_EXEC else _EXEC_REPO
+            _executor = _resolve_executor(_exec_class)
+            # AUTHORITATIVE tenant scope is carried EXPLICITLY (Codex S3 r20 #2),
+            # NOT inferred from the provider-callable shape (a direct callable /
+            # alternate wrapper would silently read as "unscoped" → ambient). An
+            # UNKNOWN scope FAILS CLOSED before any dispatch — a caller that did not
+            # declare scope can never run a sandbox-required node on ambient auth.
+            _scope = _ExecScope.coerce(execution_scope)
+            if _executor_satisfies(_executor, _exec_class) and _scope.is_unknown:
+                _refuse = True
+                _runner_reason = (
+                    "its execution scope is UNKNOWN (the run did not declare a "
+                    "bound universe or an explicit legacy-unbound scope); refusing "
+                    "to dispatch a sandbox-required node on undeclared scope "
+                    "(fail closed, Codex S3 r20 #2)"
+                )
+            elif _executor_satisfies(_executor, _exec_class):
+                # Phase 2: emit a serializable execution REQUEST + dispatch it to
+                # the isolated worker. The daemon builds NO adapter callable here;
+                # checkpoints are evaluated against the returned delta (a data op).
+                # Carry the COMPLETE effective context compile_branch computed
+                # (Codex S3 r18 #1): state schema, effective llm_policy, concurrency
+                # budget. Credential scope + workspace are OPAQUE, daemon-issued
+                # references (Codex S3 r19 #1/#3), NEVER a raw universe_id or host
+                # path. Scope comes from the EXPLICIT ExecutionScope (r20 #2): a
+                # BOUND scope requires a redeemable grant; LEGACY_UNBOUND has no
+                # bound tenant so ambient is acceptable.
+                from tinyassets.sandbox_policy import (
+                    issue_workspace_ref as _issue_workspace_ref,
+                )
+                _scope_required = _scope.is_bound
+                _credential_grant = (
+                    issue_executor_credential_grant(
+                        run_id=parent_run_id, universe_dir=_scope.universe_dir,
+                    )
+                    if _scope_required else None
+                )
+                _workspace_ref = _issue_workspace_ref(
+                    run_id=parent_run_id, base_path=base_path,
+                    audience=_exec_class,
+                )
+                _dispatch = _build_executor_request_dispatch_node(
+                    node, _executor, _exec_class,
+                    domain_id=domain_id, workspace_ref=_workspace_ref,
+                    parent_run_id=parent_run_id, invocation_depth=invocation_depth,
+                    enqueue_context=enqueue_context, state_schema=state_schema,
+                    effective_llm_policy=llm_policy,
+                    concurrency_budget=getattr(concurrency_tracker, "budget", None),
+                    credential_grant=_credential_grant,
+                    # AUTHORITATIVE: a BOUND scope ⇒ scope is required ⇒ the worker
+                    # must redeem the grant or FAIL CLOSED (never fall back to
+                    # process-global creds for a scoped run). Codex S3 r19 #1/r20 #2.
+                    credential_scope_required=_scope_required,
+                    event_sink=event_sink,
+                )
+                return _wrap_with_checkpoints(_dispatch, node, event_sink)
+            else:
+                _refuse = True
+                _runner_reason = (
+                    f"it requires a TYPED, healthy isolated {_exec_class} executor "
+                    f"(subprocess/container) it can be DISPATCHED to as a serializable "
+                    f"request — a readiness flag / bare handle is not a boundary; NO "
+                    f"such executor is available, so the adapter is refused (never "
+                    f"invoked in the daemon process, fail closed)"
+                )
+        if _refuse:
+            try:
+                from tinyassets.providers.base import (
+                    SandboxUnavailableError as _NodeSUE,
+                )
+            except Exception:  # noqa: BLE001
+                _NodeSUE = type("_SandboxUnavailableError", (Exception,), {})
+            _cap_kind = _node_eff_cap
+            _cap_nid = node.node_id
+
+            def _repo_capability_fail_closed_node(
+                state: dict[str, Any],
+            ) -> dict[str, Any]:
+                exc = _NodeSUE(
+                    f"Node '{_cap_nid}' has {_cap_kind} (sandbox-required) "
+                    f"capability and cannot run: {_runner_reason}"
+                )
+                # Codex r10 #2: a sandbox refusal is a terminal node failure —
+                # emit the same failed event every other failure gets so a failed
+                # run records the refusing node + reason (not a silent raise).
+                _emit_failed_event(event_sink, _cap_nid, exc)
+                raise exc
+
+            # Deterministic fail-closed — before ANY adapter / provider dispatch.
+            return _repo_capability_fail_closed_node
 
     has_template = bool((node.prompt_template or "").strip())
     has_source = bool((node.source_code or "").strip())
@@ -2518,6 +3375,17 @@ def _build_node(
             f"source_code — exactly one must be set."
         )
     if has_source:
+        # SANDBOX ENFORCEMENT COMPOSITION (Codex r16 #1): source_code is
+        # dispatched here, BEFORE the prompt-template adapter that carries S1's
+        # requires_sandbox fail-closed gate (see _build_prompt_template_node) —
+        # so on S1-ALONE an approved source_code node with requires_sandbox=True
+        # is NOT confined at this choke point. That gap is S3-owned: S3's
+        # node_capability classifier routes source_code to a sandboxed exec path
+        # at this same _build_node choke point (f19eb589). S1 must NOT add a
+        # duplicate guard here — the two would conflict at the S1+S3 merge. The
+        # BUNDLED integration acceptance proves fail-closed for EVERY executable
+        # node type (prompt_template + source_code + future adapters). Marker
+        # test: test_sandbox_enforcement_composition_boundary_is_documented.
         inner = _build_source_code_node(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
             invocation_depth=invocation_depth,
@@ -2555,6 +3423,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_scope=execution_scope,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
@@ -2568,6 +3437,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_scope=execution_scope,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
@@ -2601,6 +3471,7 @@ def _build_node(
 def _build_conditional_router(
     source_node: NodeDefinition | None,
     conditions: dict[str, str],
+    declared_fallback: str = "",
 ) -> Callable[[dict[str, Any]], str]:
     """Return a LangGraph-compatible router function.
 
@@ -2610,8 +3481,17 @@ def _build_conditional_router(
     a target node directly makes LangGraph raise ``KeyError`` (the
     target isn't a path_map key). Conditions IS the path_map here, so
     the router reads the state's output_key and returns it verbatim
-    when it's a valid label; otherwise falls back to the first declared
-    label so the graph cannot hang on a missing/malformed output.
+    when it's a valid label; otherwise falls back to the declared fallback.
+
+    Off-label fallback selection (Fable-5 CRITICAL, 2026-07-15): the fallback
+    MUST be the edge's explicitly declared ``fallback`` label when present —
+    NOT ``next(iter(conditions))``. The registry serializes ``conditions``
+    through ``_json_dumps(sort_keys=True)``, which ALPHABETIZES the keys, so
+    "the first condition key is the safe branch" does not survive save/load
+    (e.g. verify ``{red, green}`` persists as ``{green, red}`` -> an off-label
+    verdict would route to ``present``; owner_gate would MERGE on any off-label
+    decision). A declared scalar fallback is immune to key sorting. First-key
+    is kept ONLY as the last resort for legacy edges that declare no fallback.
 
     Rationale for returning-label-not-target: matches
     ``graph.add_conditional_edges(..., path_map=conditions)`` semantics.
@@ -2624,8 +3504,13 @@ def _build_conditional_router(
     if source_node and source_node.output_keys:
         output_key = source_node.output_keys[0]
 
-    # Fallback must be a LABEL (path_map key), not a target.
-    fallback = next(iter(conditions.keys()), END)
+    # Fallback must be a LABEL (path_map key), not a target. Prefer the
+    # explicitly declared fallback (persistence-order-independent); fall back
+    # to the first declared label only when no fallback is declared.
+    if declared_fallback and declared_fallback in conditions:
+        fallback = declared_fallback
+    else:
+        fallback = next(iter(conditions.keys()), END)
 
     def _route(state: dict[str, Any]) -> str:
         if not output_key:
@@ -2634,8 +3519,8 @@ def _build_conditional_router(
         if not isinstance(value, str):
             value = str(value)
         # Return the label when it's a valid path_map key; otherwise
-        # fall back to the first declared label so the graph advances
-        # rather than KeyError-ing.
+        # fall back to the declared safe label so the graph advances
+        # rather than KeyError-ing — and never drifts to an unsafe branch.
         if value in conditions:
             return value
         return fallback
@@ -2670,6 +3555,7 @@ class CompiledBranch:
 def compile_branch(
     branch: BranchDefinition,
     *,
+    start_node: str = "",
     provider_call: Callable[..., str] | None = None,
     event_sink: Callable[..., None] | None = None,
     concurrency_budget_override: int | None = None,
@@ -2677,6 +3563,8 @@ def compile_branch(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
+    trusted: bool = False,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2684,10 +3572,27 @@ def compile_branch(
     ----------
     branch
         The branch to compile. Must have passed ``branch.validate()``.
+    start_node
+        Optional graph node that replaces the branch's normal ``START``
+        routing for a continuation run.
     provider_call
-        Synchronous LLM caller with signature ``(prompt, system, *, role)
-        -> str``. When ``None``, prompt_template nodes return a mock
-        string (useful for tests).
+        Synchronous, CAPABILITY-BEARING LLM caller. Enforced signature (matches
+        ``tinyassets.providers.call.call_provider``)::
+
+            (prompt, system, *, role, config=None, universe_context=None) -> str
+
+        ``config`` is a first-class parameter, NOT optional plumbing: it carries
+        the node's hardened ``ModelConfig`` (the closed ``--tools ""`` text
+        surface, and any sandbox posture) that MUST reach the subprocess. Every
+        runnable text node is ``closed_tool_surface``, so the bridge REFUSES
+        (fail closed, ``SandboxUnavailableError``) any ``provider_call`` that
+        cannot carry ``config`` — i.e. one whose signature names neither
+        ``config`` nor ``**kwargs``. The legacy config-less
+        ``(prompt, system, *, role)`` trusted-callback form is therefore no
+        longer sufficient to RUN a node; it is rejected before dispatch rather
+        than run unrestricted (a config-less provider would drop the tool
+        policy and leave claude with default Bash). ``None`` disables provider
+        dispatch — runnable (closed-surface) nodes then fail closed at run.
     event_sink
         Optional callable invoked after each node executes with
         per-node diagnostics. Used by the runner to record
@@ -2762,6 +3667,11 @@ def compile_branch(
     graph_node_by_id: dict[str, GraphNodeRef] = {
         gn.id: gn for gn in branch.graph_nodes
     }
+    continuation_start = (start_node or "").strip()
+    if continuation_start and continuation_start not in graph_node_by_id:
+        raise CompilerError(
+            f"Continuation start node '{continuation_start}' is not a graph node."
+        )
 
     node_ids_in_order = [gn.id for gn in branch.graph_nodes]
 
@@ -2791,24 +3701,33 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            execution_scope=execution_scope,
+            trusted=trusted,
         )
         graph.add_node(gn.id, fn)
 
-    # Entry point: connect START to the declared entry node.
-    if branch.entry_point:
-        graph.add_edge(START, branch.entry_point)
+    # Entry point: a continuation may deliberately skip predecessor nodes.
+    effective_entry = continuation_start or branch.entry_point
+    if effective_entry:
+        graph.add_edge(START, effective_entry)
 
     # Simple edges.
     for edge in branch.edges:
         src = START if edge.from_node == "START" else edge.from_node
         dst = END if edge.to_node == "END" else edge.to_node
-        if src == START and branch.entry_point == edge.to_node:
-            # Already wired via add_edge(START, entry_point) above.
-            continue
+        if src == START:
+            if continuation_start:
+                # A target-node continuation has exactly one entry edge.
+                continue
+            if branch.entry_point == edge.to_node:
+                # Already wired via add_edge(START, entry_point) above.
+                continue
         graph.add_edge(src, dst)
 
     # Conditional edges.
     for cedge in branch.conditional_edges:
+        if continuation_start and cedge.from_node == "START":
+            continue
         source_ref = graph_node_by_id.get(cedge.from_node)
         source_def_id = source_ref.node_def_id if source_ref else cedge.from_node
         source_def = node_by_id.get(source_def_id or cedge.from_node)
@@ -2816,7 +3735,9 @@ def compile_branch(
             label: (END if tgt == "END" else tgt)
             for label, tgt in cedge.conditions.items()
         }
-        router = _build_conditional_router(source_def, conditions)
+        router = _build_conditional_router(
+            source_def, conditions, getattr(cedge, "fallback", ""),
+        )
         graph.add_conditional_edges(cedge.from_node, router, conditions)
 
     return CompiledBranch(

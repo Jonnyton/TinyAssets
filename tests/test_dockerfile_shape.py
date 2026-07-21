@@ -535,8 +535,8 @@ def test_claude_auth_keepalive_exercises_shared_config_dir():
 
 def test_entrypoint_execs_cmd():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert 'exec "$@"' in text, (
-        "entrypoint must end with exec \"$@\" to preserve tini PID-1 signal forwarding"
+    assert 'exec python -m tinyassets.vault_bootstrap "$@"' in text, (
+        "entrypoint must exec the privilege-dropping bootstrap under tini"
     )
 
 
@@ -552,5 +552,16 @@ def test_dockerfile_entrypoint_uses_entrypoint_script():
     assert "docker-entrypoint.sh" in text, (
         "Dockerfile ENTRYPOINT must invoke docker-entrypoint.sh"
     )
+
+
+def test_vault_bootstrap_starts_root_then_drops_to_daemon_user():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
+    compose = COMPOSE.read_text(encoding="utf-8")
+
+    assert "USER tinyassets" not in dockerfile
+    assert 'python -m tinyassets.vault_bootstrap "$@"' in entrypoint
+    assert 'chown -R tinyassets:tinyassets "${TINYASSETS_VAULT_ROLLBACK_GUARD}"' in entrypoint
+    assert 'user: "0:0"' in compose
     # tini must still be PID 1
-    assert "tini" in text, "tini must remain as PID 1 in ENTRYPOINT"
+    assert "tini" in dockerfile, "tini must remain as PID 1 in ENTRYPOINT"

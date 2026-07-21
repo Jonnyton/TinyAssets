@@ -15,7 +15,8 @@
 # 4. Keep Claude subscription auth under CLAUDE_CONFIG_DIR, defaulting
 #    to /data/.claude on the same durable tinyassets-data volume.
 # 5. Fail loud if required static data files are missing from the image.
-# 6. exec the passed CMD (preserves tini PID-1 signal forwarding).
+# 6. Initialize writable vault state as root, preload root-only KEKs, then
+#    drop permanently to the tinyassets user in the Python bootstrap.
 #
 # Placed before CMD so operators can override CMD freely.
 
@@ -79,6 +80,29 @@ if ! _truthy "${TINYASSETS_ALLOW_API_KEY_PROVIDERS:-}"; then
 else
     echo "[entrypoint] API-key providers explicitly enabled by TINYASSETS_ALLOW_API_KEY_PROVIDERS=1" >&2
 fi
+
+# ── Coding-node OS-sandbox attestation (patch-loop S3) ───────────────────────
+# TINYASSETS_OS_SANDBOX_ATTESTED is DELIBERATELY UNSET here.
+#
+# Sandbox-required coding nodes (the patch loop's draft_patch etc.) run a coding
+# agent with real filesystem/shell tools. tinyassets/providers/base.py
+# enforce_os_sandbox() FAILS CLOSED unless this var is truthy — so on this
+# container (which does NOT yet provide per-job OS isolation) every coding node
+# is refused at run time BY DESIGN. That is the intended state until a host that
+# actually confines each job exists; the S6 daemon-setup walkthrough expects
+# users to hit this wall. Design-only branches are unaffected.
+#
+# TINYASSETS_OS_SANDBOX_ATTESTED may ONLY be set by an entrypoint whose per-job
+# runner provides ALL of (the deferred production enabler — NOT built yet):
+#   (a) a prepared per-job repo checkout (the job's own working tree),
+#   (b) tenant/host path invisibility (no /data, no other tenants, no platform
+#       source visible to the job),
+#   (c) restricted network egress,
+#   (d) resource limits (cpu/mem/pids/time), and
+#   (e) scoped credential brokering — the job sees ONLY its own owner-scoped
+#       credential, never the platform-global CODEX_HOME / CLAUDE_* on /data.
+# Setting it without ALL five re-opens the exact exfiltration vector the gate
+# closes. Do not add it here as a convenience.
 
 # Codex stores auth in CODEX_HOME/auth.json. In production CODEX_HOME
 # defaults to /data/.codex so daemon + worker share one durable auth
@@ -170,6 +194,19 @@ else
 fi
 unset TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64
 
+# The production image intentionally starts this entrypoint as root. Root may
+# read the 0400 KEK mount, but the daemon must not. Prepare the persistent
+# writable domains here; tinyassets.vault_bootstrap validates/preloads KEKs
+# and drops UID/GID before importing daemon code. Non-root execution remains a
+# supported packaging/test probe and passes through without privileged setup.
+export TINYASSETS_VAULT_ROLLBACK_GUARD="${TINYASSETS_VAULT_ROLLBACK_GUARD:-/vault-guard}"
+if [[ "$(id -u)" -eq 0 ]]; then
+    mkdir -p "${TINYASSETS_VAULT_ROLLBACK_GUARD}"
+    chown -R tinyassets:tinyassets "${TINYASSETS_VAULT_ROLLBACK_GUARD}"
+    chown tinyassets:tinyassets "${TINYASSETS_DATA_DIR:-/data}"
+    chown -R tinyassets:tinyassets "${CODEX_HOME}" "${CLAUDE_CONFIG_DIR}"
+fi
+
 _tinyassets_bash_path() {
     local _path="${1:-}"
     if [[ "${_path}" =~ ^([A-Za-z]):([\\/].*)$ ]]; then
@@ -206,4 +243,7 @@ for _rel in "${_required_data_files[@]}"; do
     fi
 done
 
+if [[ "$(id -u)" -eq 0 ]]; then
+    exec python -m tinyassets.vault_bootstrap "$@"
+fi
 exec "$@"

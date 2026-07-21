@@ -72,7 +72,7 @@ def _compile_with_capture(
     events: list[dict] = []
     prompts: list[str] = []
 
-    def _provider(prompt: str, system: str, *, role: str = "writer") -> str:
+    def _provider(prompt: str, system: str, *, role: str = "writer", **_kw) -> str:
         prompts.append(prompt)
         return f"[response to: {prompt[:40]}]"
 
@@ -149,7 +149,7 @@ def test_pinned_preferred_used_when_available():
     with patch(
         "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
-        def _provider(prompt, system, *, role="writer"):
+        def _provider(prompt, system, *, role="writer", **_kw):
             return "[plain-provider]"
 
         def _sink(**kw):
@@ -183,7 +183,7 @@ def test_policy_router_empty_registry_falls_back_to_injected_provider_call():
     events: list[dict] = []
     prompts: list[str] = []
 
-    def _provider(prompt, system, *, role="writer"):
+    def _provider(prompt, system, *, role="writer", **_kw):
         prompts.append(prompt)
         return "served by injected provider"
 
@@ -220,7 +220,7 @@ def test_branch_default_policy_applies_when_node_unset():
     with patch(
         "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
     ):
-        def _provider(prompt, system, *, role="writer"):
+        def _provider(prompt, system, *, role="writer", **_kw):
             return "[plain]"
 
         def _sink(**kw):
@@ -258,7 +258,7 @@ def test_node_policy_overrides_branch_default():
     ):
         compiled = compile_branch(
             branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
+            provider_call=lambda p, s, *, role="writer", **_kw: "[plain]",
         )
         app = compiled.graph.compile()
         app.invoke(
@@ -294,7 +294,7 @@ def test_fallback_fires_when_preferred_exhausted():
     ):
         compiled = compile_branch(
             branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
+            provider_call=lambda p, s, *, role="writer", **_kw: "[plain]",
         )
         app = compiled.graph.compile()
         with pytest.raises(Exception):
@@ -328,7 +328,7 @@ def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
     ):
         compiled = compile_branch(
             branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
+            provider_call=lambda p, s, *, role="writer", **_kw: "[plain]",
         )
         app = compiled.graph.compile()
         out = app.invoke(
@@ -364,7 +364,7 @@ def test_difficulty_override_passed_through():
     ):
         compiled = compile_branch(
             branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
+            provider_call=lambda p, s, *, role="writer", **_kw: "[plain]",
         )
         app = compiled.graph.compile()
         app.invoke(

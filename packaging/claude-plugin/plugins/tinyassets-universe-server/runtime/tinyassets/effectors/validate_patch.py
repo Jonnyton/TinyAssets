@@ -203,7 +203,12 @@ def register_validate_patch() -> None:
     """
     from tinyassets.domain_registry import register_domain_callable
 
-    register_domain_callable(DOMAIN_ID, NODE_ID, validate_patch)
+    # Codex S3 r12 #1: validate_patch is PURE TEXT — it validates a patch against
+    # the file contents ALREADY in state (read_repo_files supplied them); it never
+    # touches a repo or the network itself. Safe to run today → capability="text".
+    register_domain_callable(
+        DOMAIN_ID, NODE_ID, validate_patch, capability="text",
+    )
 
 
 __all__ = ["validate_patch", "register_validate_patch", "DOMAIN_ID", "NODE_ID"]

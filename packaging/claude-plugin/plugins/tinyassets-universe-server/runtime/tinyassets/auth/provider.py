@@ -35,9 +35,10 @@ logger = logging.getLogger("universe_server.auth")
 # daemon-side consumer (the PR/push effector today; read/search later)
 # resolves a destination-scoped token through one helper instead of each
 # effector hand-parsing its own JSON-map env var. This is the operator
-# (process-env) capability tier; the per-universe credential vault
-# (``tinyassets.credential_vault``) remains the higher-priority source —
-# effectors check the vault first and fall through to this vended token.
+# (process-env) capability tier; the platform credential vault
+# (``tinyassets.credential_broker``) remains the higher-priority source —
+# effectors check the vault first, and only a universe that is not
+# vault-routed at all falls through to this vended token.
 #
 # ``push`` reads the canonical ``TINYASSETS_GITHUB_PUSH_CAPABILITIES`` map
 # and accepts the older ``TINYASSETS_GITHUB_PR_CAPABILITIES`` as a legacy
@@ -385,7 +386,6 @@ _UNIVERSE_ADMIN_ACTIONS = frozenset({
     "control_daemon",
     "set_tier_config",
     "set_engine",
-    "offer_engine",
     "daemon_banish",
     "daemon_pause",
     "daemon_resume",
@@ -406,6 +406,10 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "escrow_refund",
     "record_outcome",
     "record_remix",
+    # remix_design is a COMPOSITE that internally calls record_remix (costly);
+    # it must carry the strictest scope it composes, or a write-scoped token
+    # could drive a costly op through it (Codex S2 adapt round 2, finding 2).
+    "remix_design",
 })
 _EXTENSIONS_ADMIN_ACTIONS = frozenset({
     "approve",
@@ -502,6 +506,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _GOAL_WRITE_ACTIONS,
         _OUTCOME_ACTIONS,
     )
+    from tinyassets.api.review_queue_actions import _REVIEW_QUEUE_ACTIONS
     from tinyassets.api.runs import _RUN_ACTIONS, _RUN_WRITE_ACTIONS
     from tinyassets.api.runtime_ops import (
         _INSPECT_DRY_ACTIONS,
@@ -548,6 +553,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _EFFECTOR_CONSENT_ACTIONS,
         _ATTRIBUTION_ACTIONS,
         _LEADERBOARD_ACTIONS,
+        _REVIEW_QUEUE_ACTIONS,
     ):
         extension_actions.update(action_map)
     extension_writes.update(_BRANCH_WRITE_ACTIONS)
@@ -576,6 +582,16 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     extension_writes.update({"record_outcome", "record_remix"})
     extension_writes.update({
         "grant_effector_consent", "revoke_effector_consent",
+    })
+    # Patch-loop S4 (GitHub-native): owner review decisions are owner WRITES
+    # (approve/reshape/reject record intent + the GitHub call; set_preference
+    # mutates the merge-preference binding). `review_queue_list` stays
+    # read-effect; the handler's owner-gate confines every verb to the universe
+    # owner regardless. (Codex r11 #5: set_preference is a write, not a read;
+    # the old hold/release verbs no longer exist.)
+    extension_writes.update({
+        "review_queue_approve", "review_queue_reshape", "review_queue_reject",
+        "review_queue_merge", "review_queue_set_preference",
     })
     _extend_scope_rows(
         rows,

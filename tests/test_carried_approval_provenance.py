@@ -70,15 +70,25 @@ class TestFailClosedRuntimeGate:
         return b
 
     def test_empty_hash_approved_node_fails_closed(self):
-        """approved=True + empty hash → UnapprovedNodeError (the residual)."""
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+        """approved=True + empty hash → UnapprovedNodeError (the residual).
+
+        NOTE (Codex S3 r11 #1): a source_code node now ALSO fails closed at the
+        graph sandbox choke-point (SandboxUnavailableError) BEFORE the approval
+        gate runs — source_code never executes in-process in Phase 1. This test
+        exercises the SECONDARY approval-provenance defense directly so its
+        coverage survives (it matters again when the Phase-2 runner lands).
+        """
+        from tinyassets.graph_compiler import (
+            UnapprovedNodeError,
+            _validate_source_code,
+        )
 
         src = "def run(state): return {'out': 1}\n"
         b = self._one_node_branch(
             source_code=src, approved=True, approved_source_hash="",
         )
         with pytest.raises(UnapprovedNodeError, match="no.*provenance|fail-closed"):
-            compile_branch(b)
+            _validate_source_code(b.node_defs[0])
 
     def test_matching_hash_approved_node_passes(self):
         """pass-with: approved=True + matching hash → compiles."""
@@ -92,8 +102,16 @@ class TestFailClosedRuntimeGate:
         compile_branch(b)
 
     def test_mismatched_hash_approved_node_fails_closed(self):
-        """approved=True + stale/forged hash → UnapprovedNodeError."""
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+        """approved=True + stale/forged hash → UnapprovedNodeError.
+
+        Secondary approval-provenance gate exercised directly (see the note on
+        ``test_empty_hash_approved_node_fails_closed``): the source_code node also
+        fails closed at the sandbox choke-point in Phase 1.
+        """
+        from tinyassets.graph_compiler import (
+            UnapprovedNodeError,
+            _validate_source_code,
+        )
 
         approved_src = "def run(state): return {}\n"
         running_src = "def run(state): return {'x': 1}\n"
@@ -102,7 +120,7 @@ class TestFailClosedRuntimeGate:
             approved_source_hash=_hash(approved_src),
         )
         with pytest.raises(UnapprovedNodeError, match="does not match"):
-            compile_branch(b)
+            _validate_source_code(b.node_defs[0])
 
     def test_mark_approved_helper_passes_gate(self):
         """The sanctioned in-process approval helper records a matching hash,
@@ -216,12 +234,20 @@ class TestForkCopyReconcilesCarriedApproval:
 
     def test_forked_carried_node_fails_runtime_gate(self, tmp_path, monkeypatch):
         """End-to-end: the forked branch with the demoted carried node is
-        refused by the fail-closed runtime gate (fail-without-approval).
+        refused. In Phase 1 the source_code node fails closed at the sandbox
+        choke-point (SandboxUnavailableError); the demoted-approval provenance
+        gate (UnapprovedNodeError) is the secondary defense. Either terminal
+        refusal proves NO in-process execution — assert both are reachable.
         """
         from tinyassets.api.branches import _ext_branch_build
         from tinyassets.branches import BranchDefinition
         from tinyassets.daemon_server import get_branch_definition
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.graph_compiler import (
+            UnapprovedNodeError,
+            _validate_source_code,
+        )
+        from tinyassets.providers.base import SandboxUnavailableError
+        from tinyassets.sandbox_policy import node_requires_sandbox_runner
 
         base = tmp_path / "output"
         base.mkdir()
@@ -235,8 +261,20 @@ class TestForkCopyReconcilesCarriedApproval:
         assert result["status"] == "built", result
 
         forked = get_branch_definition(base, branch_def_id=result["branch_def_id"])
+        carried = next(
+            n for n in BranchDefinition.from_dict(forked).node_defs
+            if n.node_id == "carried"
+        )
+        # Primary Phase-1 defense: a source_code node is repo/host-code touching.
+        assert node_requires_sandbox_runner(carried) is True
+        # The compiled node fails closed at run (no per-job runner).
+        from tinyassets.graph_compiler import _build_node
+        fn = _build_node(carried, provider_call=None, event_sink=None)
+        with pytest.raises(SandboxUnavailableError):
+            fn({})
+        # Secondary defense: the demoted carried approval is refused directly.
         with pytest.raises(UnapprovedNodeError):
-            compile_branch(BranchDefinition.from_dict(forked))
+            _validate_source_code(carried)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

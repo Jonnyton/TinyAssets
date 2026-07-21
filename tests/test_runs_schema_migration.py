@@ -30,6 +30,7 @@ from tinyassets.runs import (
     get_run,
     initialize_runs_db,
     list_recent_runs,
+    runs_db_path,
     update_run_status,
 )
 
@@ -76,6 +77,22 @@ class TestNewColumnsExist:
         with _connect(tmp_path) as conn:
             cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
         assert "branch_version_id" in cols
+
+    def test_checkpoint_backend_column_present(self, tmp_path: Path) -> None:
+        initialize_runs_db(tmp_path)
+        with _connect(tmp_path) as conn:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+        assert "checkpoint_backend" in cols
+
+    def test_create_run_persists_checkpoint_backend(self, tmp_path: Path) -> None:
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            inputs={},
+            checkpoint_backend="memory",
+        )
+        assert get_run(tmp_path, run_id)["checkpoint_backend"] == "memory"
 
     def test_branch_version_id_index_present(self, tmp_path: Path) -> None:
         """Task #65a — index on runs.branch_version_id for attribution queries."""
@@ -163,9 +180,10 @@ class TestNewColumnsExist:
 
 
 class TestMigrationExistingDb:
-    def _old_schema_db(self, base: Path) -> None:
+    def _old_schema_db(self, base: Path) -> str:
         """Create a DB with the old runs schema (no new columns)."""
-        with sqlite3.connect(str(base / "runs.db")) as conn:
+        legacy_run_id = "legacy-run"
+        with sqlite3.connect(runs_db_path(base)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS runs (
@@ -183,11 +201,23 @@ class TestMigrationExistingDb:
                     finished_at    REAL
                 )
             """)
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    run_id, branch_def_id, run_name, thread_id, status,
+                    actor, inputs_json, output_json, error, last_node_id,
+                    started_at
+                ) VALUES (?, 'legacy-branch', '', ?, 'interrupted', 'owner',
+                          '{}', '{}', '', '', ?)
+                """,
+                (legacy_run_id, legacy_run_id, time.time()),
+            )
+        return legacy_run_id
 
     def test_migration_adds_columns_to_old_db(self, tmp_path: Path) -> None:
-        self._old_schema_db(tmp_path)
+        legacy_run_id = self._old_schema_db(tmp_path)
         # Verify columns are absent before migration
-        with sqlite3.connect(str(tmp_path / "runs.db")) as conn:
+        with sqlite3.connect(runs_db_path(tmp_path)) as conn:
             conn.row_factory = sqlite3.Row
             cols_before = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
         assert "provider_used" not in cols_before
@@ -199,6 +229,11 @@ class TestMigrationExistingDb:
         assert "provider_used" in cols_after
         assert "model" in cols_after
         assert "token_count" in cols_after
+        assert "checkpoint_backend" in cols_after
+        migrated = get_run(tmp_path, legacy_run_id)
+        assert migrated is not None
+        assert migrated["branch_def_id"] == "legacy-branch"
+        assert migrated["checkpoint_backend"] == ""
 
     def test_migration_idempotent(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)

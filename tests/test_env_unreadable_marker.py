@@ -197,7 +197,8 @@ def test_entrypoint_data_file_probe_does_not_require_python_alias():
     """The startup data-file probe must stay shell-only for Git Bash hosts."""
     text = _ENTRYPOINT.read_text(encoding="utf-8")
     probe_start = text.index("_tinyassets_bash_path()")
-    probe_text = text[probe_start:text.index('exec "$@"', probe_start)]
+    privilege_handoff = text.index('if [[ "$(id -u)" -eq 0 ]]', probe_start)
+    probe_text = text[probe_start:privilege_handoff]
 
     assert "python" not in probe_text.lower()
     assert "cygpath" in probe_text

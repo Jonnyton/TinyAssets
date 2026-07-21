@@ -129,7 +129,7 @@ def test_compiler_wraps_provider_call_with_node_timeout():
     NodeTimeoutError through the compiled graph."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    def _slow_provider(prompt, system, *, role):
+    def _slow_provider(prompt, system, *, role, **_kw):
         time.sleep(0.5)
         return "late"
 
@@ -170,7 +170,7 @@ def test_runner_emits_node_timeout_event_and_marks_run_failed(
         wait_for,
     )
 
-    def _slow_provider(prompt, system, *, role):
+    def _slow_provider(prompt, system, *, role, **_kw):
         time.sleep(0.5)
         return "late"
 
@@ -231,7 +231,7 @@ def test_runner_emits_node_empty_response_event_and_marks_run_failed(
         wait_for,
     )
 
-    def _empty_provider(prompt, system, *, role):
+    def _empty_provider(prompt, system, *, role, **_kw):
         return ""  # simulate silent auth failure / codex 401
 
     initialize_author_server(base)
@@ -286,7 +286,7 @@ def test_fast_provider_does_not_hit_timeout(tmp_path, monkeypatch):
         wait_for,
     )
 
-    def _fast(prompt, system, *, role):
+    def _fast(prompt, system, *, role, **_kw):
         return "quick"
 
     initialize_author_server(base)

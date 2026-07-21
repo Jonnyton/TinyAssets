@@ -6,7 +6,8 @@ from pathlib import Path
 
 from tinyassets.auto_ship_ledger import ShipAttempt, find_attempt, record_attempt
 from tinyassets.auto_ship_pr import PR_CREATE_FLAG, open_auto_ship_pr
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.credential_broker import deposit_credential
+from tinyassets.credentials import SecretKind
 
 
 def _attempt(
@@ -98,20 +99,16 @@ def test_enabled_requires_token(tmp_path):
     assert row.ship_status == "failed"
 
 
-def test_enabled_uses_vault_token_and_ignores_env(tmp_path, monkeypatch):
+def test_enabled_uses_vault_token_and_ignores_env(
+    platform_vault_env, tmp_path, monkeypatch
+):
     attempt_id = _record(tmp_path)
     monkeypatch.setenv("GH_TOKEN", "env-token")
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "vcs",
-                "service": "github",
-                "destination": "Jonnyton/TinyAssets",
-                "purpose": "write",
-                "token": "vault-token",
-            }
-        ],
+    deposit_credential(
+        universe_id=tmp_path.name, founder_id="founder-1",
+        provider="github", destination="Jonnyton/TinyAssets",
+        purpose="external_write",
+        kind=SecretKind.GITHUB_PAT, value=b"vault-token",
     )
     calls = []
 
