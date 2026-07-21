@@ -191,9 +191,9 @@ def test_add_node_commits_branch_and_node_yamls(repo_env):
     assert "gap_finder" in subject
 
     files = _last_commit_files(repo)
-    assert any("branches/workflow-a.yaml" in f for f in files)
+    assert any("branches/tinyassets-a.yaml" in f for f in files)
     assert any(
-        "nodes/workflow-a/gap_finder.yaml" in f for f in files
+        "nodes/tinyassets-a/gap_finder.yaml" in f for f in files
     )
 
 

@@ -44,7 +44,12 @@ from typing import Any
 # -------------------------------------------------------------------
 
 DB_FILENAME = ".tinyassets.db"
-_LEGACY_DB_FILENAME = ".author_server.db"
+# Superseded on-disk names, OLDEST generation first. `.author_server.db` was
+# renamed to `.workflow.db` by 20047d1d (2026-05-01), which the TinyAssets hard
+# rename (89edf995, 2026-06-26) then superseded with DB_FILENAME. A universe
+# last booted inside that window still carries `.workflow.db` on disk, so every
+# generation has to stay in the chain until the fleet is known-migrated.
+_LEGACY_DB_FILENAMES = (".author_server.db", ".workflow.db")
 _SQLITE_SIBLING_SUFFIXES = ("-wal", "-shm")
 DEFAULT_BRANCH_MODE = "no_fixed_mainline"
 DEFAULT_QUICK_VOTE_SECONDS = 300
@@ -305,51 +310,193 @@ def _legacy_backup_path(legacy_db_path: Path) -> Path:
     return candidate
 
 
-def _move_db_with_sqlite_siblings(source: Path, target: Path) -> list[str]:
+def _move_db_with_sqlite_siblings(
+    source: Path,
+    target: Path,
+    *,
+    primary_last: bool,
+) -> list[str]:
+    """Move a SQLite DB and its ``-wal``/``-shm`` sidecars to ``target``.
+
+    ``primary_last`` selects which half of the set survives an interruption,
+    and the two call sites need opposite answers:
+
+    ``primary_last=True`` (promotion onto ``DB_FILENAME``). The canonical
+    primary's existence is the marker that suppresses re-migration, so it must
+    arrive last. The reverse order silently loses data: it can leave a
+    canonical primary beside a stranded legacy WAL, and the next boot sees a
+    canonical file, skips migration, and opens a database whose
+    committed-but-uncheckpointed pages live in a WAL it will never read.
+
+    ``primary_last=False`` (backup of a superseded generation). The backup
+    destination is timestamped, so a resumed backup can never rejoin a
+    half-moved destination. Moving sidecars first makes the collision counter
+    in `_legacy_backup_path` treat the interrupted attempt's own sidecars as a
+    conflict and bump the primary to ``<name>-1``, permanently divorcing it
+    from the ``-wal`` holding its committed pages while still logging a
+    successful backup. Moving the primary first instead leaves any unmoved
+    sidecar at its original legacy name, where
+    `_preserve_orphaned_legacy_sidecars` finds it and preserves it loudly.
+    """
     moved = []
-    if _replace_if_exists(source, target):
-        moved.append(source.name)
-    for source_sibling, target_sibling in zip(
+    siblings = list(zip(
         _sqlite_db_siblings(source), _sqlite_db_siblings(target),
         strict=True,
-    ):
-        if _replace_if_exists(source_sibling, target_sibling):
-            moved.append(source_sibling.name)
+    ))
+
+    def move_primary() -> None:
+        if _replace_if_exists(source, target):
+            moved.append(source.name)
+
+    def move_siblings() -> None:
+        for source_sibling, target_sibling in siblings:
+            if _replace_if_exists(source_sibling, target_sibling):
+                moved.append(source_sibling.name)
+
+    if primary_last:
+        move_siblings()
+        move_primary()
+    else:
+        move_primary()
+        move_siblings()
     return moved
 
 
+def _incomplete_backup_primary(
+    base: Path,
+    legacy_name: str,
+    suffix: str,
+) -> Path | None:
+    """Return the newest backup of ``legacy_name`` still missing ``suffix``.
+
+    Identifies an interrupted backup by name alone, so no durable migration
+    state is needed. Returns None when every backup already has that sidecar
+    (nothing to reunite) or when none exist (the orphan is unexplained, and
+    the caller must fail closed rather than guess).
+    """
+    candidates = sorted(
+        (
+            p for p in base.iterdir()
+            if p.name.startswith(f"{legacy_name}.legacy-")
+            and not p.name.endswith(_SQLITE_SIBLING_SUFFIXES)
+            and not (base / f"{p.name}{suffix}").exists()
+        ),
+        key=lambda p: p.name,
+    )
+    return candidates[-1] if candidates else None
+
+
+def _reject_orphaned_legacy_sidecars(base: Path) -> None:
+    """Fail closed when a legacy ``-wal``/``-shm`` outlives its primary DB.
+
+    Only reachable for universes interrupted by the pre-fix migrator, which
+    renamed the primary before its sidecars. A WAL holds committed
+    transactions that are not yet in the database file, and SQLite validates a
+    WAL against the exact database that wrote it, so the orphan can neither be
+    safely re-attached nor assumed redundant.
+
+    Per AGENTS.md hard rule #8 the only honest response is to refuse: opening
+    the canonical database here would silently serve state that is missing
+    committed transactions. The orphan is deliberately left untouched so the
+    refusal is sticky -- archiving it first would make the next boot succeed
+    silently, which is the exact failure this guards against.
+    """
+    for name in _LEGACY_DB_FILENAMES:
+        legacy_db = base / name
+        if legacy_db.exists():
+            continue
+        for sidecar in _sqlite_db_siblings(legacy_db):
+            if not sidecar.exists():
+                continue
+
+            # An interrupted *backup* of this generation leaves the sidecar
+            # here while its primary already sits in a timestamped backup.
+            # Canonical is unaffected in that case, so reunite the set rather
+            # than refusing: the backup primary is this sidecar's own primary.
+            suffix = sidecar.name[len(name):]
+            adopter = _incomplete_backup_primary(base, name, suffix)
+            if adopter is not None:
+                os.replace(sidecar, adopter.with_name(adopter.name + suffix))
+                _logger.warning(
+                    "Reunited orphaned SQLite sidecar %s in %s with its "
+                    "interrupted backup %s; a previous migration was cut "
+                    "short mid-backup.",
+                    sidecar.name,
+                    base,
+                    adopter.name,
+                )
+                continue
+
+            raise RuntimeError(
+                f"Refusing to open {base / DB_FILENAME}: found orphaned "
+                f"legacy SQLite sidecar {sidecar} with no {name} primary. A "
+                f"previous filename migration was interrupted, and that WAL "
+                f"may hold committed transactions absent from "
+                f"{DB_FILENAME}. Continuing would silently serve incomplete "
+                f"state. Recover by restoring the matching {name} primary "
+                f"beside this sidecar and restarting so the migration can "
+                f"complete, or, once you have confirmed the sidecar is "
+                f"redundant, move it out of {base} to clear this error."
+            )
+
+
 def _migrate_legacy_db_filename(base_path: str | Path) -> None:
+    """Promote the newest surviving on-disk generation onto ``DB_FILENAME``.
+
+    Option A per ``docs/design-notes/2026-04-27-author-server-db-filename-migration.md``:
+    a one-shot forward rename, never a dual-read fallback. Superseded
+    generations are backed up rather than deleted, so a wrong guess about
+    which file is authoritative stays recoverable by the host.
+    """
     base = Path(base_path)
-    legacy_db = base / _LEGACY_DB_FILENAME
     canonical_db = base / DB_FILENAME
 
-    if not legacy_db.exists():
-        return
+    # Newest generation first: it is the best candidate to promote, and any
+    # older name beside it is superseded history rather than live data.
+    present = [
+        base / name
+        for name in reversed(_LEGACY_DB_FILENAMES)
+        if (base / name).exists()
+    ]
+    if present:
+        if canonical_db.exists():
+            promote, superseded = None, present
+        else:
+            promote, superseded = present[0], present[1:]
 
-    if canonical_db.exists():
-        backup = _legacy_backup_path(legacy_db)
-        moved = _move_db_with_sqlite_siblings(legacy_db, backup)
-        _logger.warning(
-            "Both %s and %s existed in %s; using %s and backed up legacy "
-            "SQLite files to %s (%s)",
-            canonical_db.name,
-            legacy_db.name,
-            base,
-            canonical_db.name,
-            backup.name,
-            ", ".join(moved) if moved else "no files moved",
-        )
-        return
+        if promote is not None:
+            moved = _move_db_with_sqlite_siblings(
+                promote, canonical_db, primary_last=True,
+            )
+            if moved:
+                _logger.info(
+                    "Migrated legacy SQLite filename in %s from %s to %s (%s)",
+                    base,
+                    promote.name,
+                    canonical_db.name,
+                    ", ".join(moved),
+                )
 
-    moved = _move_db_with_sqlite_siblings(legacy_db, canonical_db)
-    if moved:
-        _logger.info(
-            "Migrated legacy SQLite filename in %s from %s to %s (%s)",
-            base,
-            legacy_db.name,
-            canonical_db.name,
-            ", ".join(moved),
-        )
+        for legacy_db in superseded:
+            backup = _legacy_backup_path(legacy_db)
+            moved = _move_db_with_sqlite_siblings(
+                legacy_db, backup, primary_last=False,
+            )
+            _logger.warning(
+                "Superseded SQLite generation %s existed in %s alongside %s; "
+                "using %s and backed up legacy SQLite files to %s (%s)",
+                legacy_db.name,
+                base,
+                canonical_db.name,
+                canonical_db.name,
+                backup.name,
+                ", ".join(moved) if moved else "no files moved",
+            )
+
+    # Runs on every path: a legacy sidecar left without its primary is an
+    # orphan from an interrupted pre-fix migration, including the mixed case
+    # where one generation still has a primary and another does not.
+    _reject_orphaned_legacy_sidecars(base)
 
 
 def db_path(base_path: str | Path) -> Path:
