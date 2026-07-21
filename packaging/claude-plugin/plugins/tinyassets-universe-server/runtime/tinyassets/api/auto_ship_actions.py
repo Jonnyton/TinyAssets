@@ -17,10 +17,6 @@ Sequencing:
   to record every validator outcome (passed → ship_status="skipped" row,
   blocked → ship_status="blocked" row with violations encoded). Recording
   is OFF by default so existing PR #224 callers keep their exact shape.
-- PR #243 / slice #3 adds ``open_auto_ship_pr``: a feature-flagged PR-open
-  action that takes an existing passed ledger row and opens a PR from an
-  ``auto-change/*`` branch only when ``TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED``
-  is explicitly enabled. It does not auto-merge.
 - A future loop-content PR (Mark's lane) updates change_loop_v1's
   release_safety_gate to call this action with ``record_in_ledger=true``
   and emit APPROVE_AUTO_SHIP only when ``would_open_pr`` is True.
@@ -290,91 +286,6 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
     return json.dumps(augmented)
 
 
-def _resolve_universe_path(universe_id: str) -> tuple[Any | None, str]:
-    try:
-        from tinyassets.api.helpers import _request_universe, _universe_dir
-    except Exception as exc:  # noqa: BLE001
-        return None, f"universe helper import failed: {exc}"
-
-    target_universe = _request_universe(universe_id)
-    if not target_universe:
-        return None, "no universe resolvable"
-    try:
-        return _universe_dir(target_universe), ""
-    except ValueError as exc:
-        return None, f"invalid universe_id {target_universe!r}: {exc}"
-
-
-def _action_open_auto_ship_pr(kwargs: dict[str, Any]) -> str:
-    """Open a GitHub PR from an existing ``auto-change/*`` branch.
-
-    Required args:
-        ship_attempt_id: existing auto_ship_attempts row produced by
-            ``validate_ship_packet(record_in_ledger=true)``.
-        head_branch: same-repo branch, restricted to ``auto-change/*``.
-
-    Optional args:
-        title, body, base_branch (default ``main``), universe_id
-        (default ``_default_universe()``).
-
-    The feature flag is intentionally environment-only, not caller-supplied:
-    ``TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED`` must be explicitly truthy. When
-    disabled, the action records/returns ``pr_create_disabled`` and performs
-    no network IO.
-    """
-    ship_attempt_id = str(kwargs.get("ship_attempt_id") or "").strip()
-    head_branch = str(kwargs.get("head_branch") or "").strip()
-    if not ship_attempt_id:
-        return json.dumps({
-            "ship_status": "failed",
-            "error_class": "ship_attempt_id_required",
-            "error_message": "ship_attempt_id is required",
-        })
-    if not head_branch:
-        return json.dumps({
-            "ship_attempt_id": ship_attempt_id,
-            "ship_status": "failed",
-            "error_class": "head_branch_required",
-            "error_message": "head_branch is required",
-        })
-
-    target_universe, access_error = _require_universe_write(
-        str(kwargs.get("universe_id") or ""),
-        action="open_auto_ship_pr",
-    )
-    if access_error is not None:
-        return json.dumps(access_error)
-
-    universe_path, error = _resolve_universe_path(target_universe)
-    if error:
-        return json.dumps({
-            "ship_attempt_id": ship_attempt_id,
-            "ship_status": "failed",
-            "error_class": "universe_resolve_failed",
-            "error_message": error,
-        })
-
-    try:
-        from tinyassets.auto_ship_pr import open_auto_ship_pr
-        result = open_auto_ship_pr(
-            universe_path=universe_path,
-            ship_attempt_id=ship_attempt_id,
-            head_branch=head_branch,
-            title=str(kwargs.get("title") or ""),
-            body=str(kwargs.get("body") or ""),
-            base_branch=str(kwargs.get("base_branch") or "main"),
-        )
-    except Exception as exc:  # noqa: BLE001 - preserve MCP JSON response
-        return json.dumps({
-            "ship_attempt_id": ship_attempt_id,
-            "ship_status": "failed",
-            "error_class": type(exc).__name__,
-            "error_message": f"open_auto_ship_pr raised: {exc}",
-        })
-    return json.dumps(result)
-
-
 _AUTO_SHIP_ACTIONS: dict[str, Any] = {
     "validate_ship_packet": _action_validate_ship_packet,
-    "open_auto_ship_pr": _action_open_auto_ship_pr,
 }

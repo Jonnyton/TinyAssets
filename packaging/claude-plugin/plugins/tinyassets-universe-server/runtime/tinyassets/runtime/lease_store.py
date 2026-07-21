@@ -56,6 +56,7 @@ from tinyassets.runtime.signed_records import (
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OBJECT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
@@ -93,6 +94,9 @@ _LEASE_GRANT_FIELDS = frozenset(
         "repo_mode",
         "runner_policy_sha256",
         "image_digest",
+        "universe_id",
+        "base_commit",
+        "base_tree",
     }
 )
 _COMPLETION_ATTESTATION_SCHEMA_VERSION = "completion-attestation/v1"
@@ -283,6 +287,9 @@ class LeaseGrantPolicy:
     repo_mode: str | None
     runner_policy_sha256: str
     image_digest: str
+    universe_id: str
+    base_commit: str
+    base_tree: str
 
 
 @dataclass(frozen=True)
@@ -736,11 +743,20 @@ class LeaseStore:
             or not _OCI_DIGEST_RE.fullmatch(policy.image_digest)
         ):
             raise LeaseStoreError("capsule image digest is invalid")
+        if type(policy.universe_id) is not str or not policy.universe_id:
+            raise LeaseStoreError("capsule universe binding is invalid")
+        if not _GIT_OBJECT_RE.fullmatch(policy.base_commit):
+            raise LeaseStoreError("capsule base commit is invalid")
+        if not _GIT_OBJECT_RE.fullmatch(policy.base_tree):
+            raise LeaseStoreError("capsule base tree is invalid")
         return {
             "capability_class": policy.capability_class,
             "repo_mode": policy.repo_mode,
             "runner_policy_sha256": policy.runner_policy_sha256,
             "image_digest": policy.image_digest,
+            "universe_id": policy.universe_id,
+            "base_commit": policy.base_commit,
+            "base_tree": policy.base_tree,
         }
 
     def _verified_lease_grant(
@@ -815,6 +831,9 @@ class LeaseStore:
                     repo_mode=binding["repo_mode"],
                     runner_policy_sha256=binding["runner_policy_sha256"],
                     image_digest=binding["image_digest"],
+                    universe_id=binding["universe_id"],
+                    base_commit=binding["base_commit"],
+                    base_tree=binding["base_tree"],
                 )
             )
         except LeaseStoreError as exc:
@@ -1460,6 +1479,34 @@ class LeaseStore:
         """Return a read-only projection of the current S5 result state."""
         with self._connect() as connection:
             return self._row_to_result_state(self._task_row(connection, job_id))
+
+    def _load_verified_capsule(
+        self, job_id: str, capsule_sha256: str
+    ) -> dict[str, Any]:
+        """Return only capsule bindings authenticated by the signed lease grant."""
+        with self._connect() as connection:
+            row = self._task_row(connection, job_id)
+            grant = self._verified_lease_grant(row).payload
+        if not hmac.compare_digest(grant["capsule_sha256"], capsule_sha256):
+            raise StoredStateCorruptError(
+                "requested capsule does not match the platform lease grant"
+            )
+        return {
+            "payload": {
+                "job_id": grant["job_id"],
+                "owner_user_id": grant["owner_user_id"],
+                "universe_scope": {"universe_id": grant["universe_id"]},
+                "base": {
+                    "commit": grant["base_commit"],
+                    "tree": grant["base_tree"],
+                },
+                "lease": {
+                    "lease_id": grant["lease_id"],
+                    "fence": grant["fence"],
+                },
+            },
+            "integrity": {"capsule_sha256": grant["capsule_sha256"]},
+        }
 
     def events(self, task_id: str) -> tuple[LeaseEvent, ...]:
         """Return the immutable lease event history in append order."""
@@ -2221,11 +2268,15 @@ class LeaseGrantIssuer:
             "capsule",
         )
         allowed = payload["allowed_capability"]
+        base = payload["base"]
         return reference, LeaseGrantPolicy(
             capability_class=allowed["class"],
             repo_mode=allowed["repo_mode"],
             runner_policy_sha256=allowed["runner_policy_sha256"],
             image_digest=allowed["image_digest"],
+            universe_id=payload["universe_scope"]["universe_id"],
+            base_commit=base["commit"],
+            base_tree=base["tree"],
         )
 
     def _encode_lease_grant(

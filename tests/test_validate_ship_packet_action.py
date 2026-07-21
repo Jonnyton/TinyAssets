@@ -17,10 +17,13 @@ import pytest
 
 from tinyassets.api.auto_ship_actions import (
     _AUTO_SHIP_ACTIONS,
-    _action_open_auto_ship_pr,
     _action_validate_ship_packet,
 )
 from tinyassets.api.extensions import _extensions_impl
+from tinyassets.api.github_effect_actions import (
+    apply_github_pr_authorization,
+    create_github_pr_authorization,
+)
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 from tinyassets.daemon_server import grant_universe_access
@@ -105,8 +108,22 @@ class TestHandlerLayer:
     def test_dispatch_dict_exposes_action(self):
         assert "validate_ship_packet" in _AUTO_SHIP_ACTIONS
         assert _AUTO_SHIP_ACTIONS["validate_ship_packet"] is _action_validate_ship_packet
-        assert "open_auto_ship_pr" in _AUTO_SHIP_ACTIONS
-        assert _AUTO_SHIP_ACTIONS["open_auto_ship_pr"] is _action_open_auto_ship_pr
+        assert "open_auto_ship_pr" not in _AUTO_SHIP_ACTIONS
+
+    def test_result_bound_pr_api_accepts_authority_ids_only(self):
+        assert set(inspect.signature(create_github_pr_authorization).parameters) == {
+            "service",
+            "job_id",
+            "grant_id",
+            "review_record_id",
+            "authenticated_owner_id",
+            "expires_at",
+        }
+        assert set(inspect.signature(apply_github_pr_authorization).parameters) == {
+            "service",
+            "authorization_id",
+            "idempotency_key",
+        }
 
     def test_missing_body_json_returns_error(self):
         result = json.loads(_action_validate_ship_packet({}))
@@ -176,6 +193,16 @@ class TestDispatchIntegration:
         from tinyassets import universe_server as us
 
         params = inspect.signature(us.extensions).parameters
+        impl_params = inspect.signature(_extensions_impl).parameters
+        legacy_pr_parameters = {
+            "ship_attempt_id",
+            "head_branch",
+            "title",
+            "pr_body",
+            "base_branch",
+        }
+        assert not legacy_pr_parameters & set(params)
+        assert not legacy_pr_parameters & set(impl_params)
         for name in (
             "record_in_ledger",
             "universe_id",
@@ -331,36 +358,16 @@ class TestDispatchIntegration:
         assert row.branch_def_id == "branch-def"
         assert row.stable_evidence_handle == "wrapper-evidence"
 
-    def test_open_auto_ship_pr_routes_to_handler_disabled(self, tmp_path, monkeypatch):
-        from tinyassets.auto_ship_ledger import ShipAttempt, find_attempt, record_attempt
+    def test_result_bound_pr_route_replaces_legacy_mcp_dispatch(self):
+        result = json.loads(_extensions_impl(action="open_auto_ship_pr"))
 
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-uni")
-        monkeypatch.delenv("TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED", raising=False)
-        universe = tmp_path / "test-uni"
-        universe.mkdir(parents=True, exist_ok=True)
-        _authenticate_owner(Path(tmp_path), universe_id="test-uni")
-        record_attempt(universe, ShipAttempt(
-            ship_attempt_id="ship_route",
-            created_at="2026-05-03T00:00:00+00:00",
-            updated_at="2026-05-03T00:00:00+00:00",
-            ship_status="skipped",
-            would_open_pr=True,
-        ))
-
-        result_str = _extensions_impl(
-            action="open_auto_ship_pr",
-            ship_attempt_id="ship_route",
-            head_branch="auto-change/issue-999-codex-123",
-            title="[auto-change] BUG-999",
-        )
-        result = json.loads(result_str)
-
-        assert result["ship_status"] == "skipped"
-        assert result["error_class"] == "pr_create_disabled"
-        row = find_attempt(universe, "ship_route")
-        assert row is not None
-        assert row.error_class == "pr_create_disabled"
+        assert result["error"] == "Unknown action 'open_auto_ship_pr'."
+        assert "open_auto_ship_pr" not in result["available_actions"]
+        assert set(inspect.signature(apply_github_pr_authorization).parameters) == {
+            "service",
+            "authorization_id",
+            "idempotency_key",
+        }
 
 
 # ── Wrapper resilience ─────────────────────────────────────────────────────

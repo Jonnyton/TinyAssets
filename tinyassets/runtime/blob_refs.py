@@ -635,6 +635,47 @@ class BlobStore:
                 self._verify_platform_object(binding["sha256"], binding["size_bytes"])
             return self._reference_from_binding(binding)
 
+    def read_verified_bytes(
+        self,
+        *,
+        blob_ref: str,
+        owner_user_id: str,
+        job_id: str,
+        lease_id: str,
+        fence: int,
+        expected_sha256: str,
+        expected_size_bytes: int,
+    ) -> bytes:
+        """Read an exact platform-CAS binding and recompute its content hash.
+
+        Owner-controlled private blobs deliberately have no plaintext read path
+        through the control plane.
+        """
+        reference = self.validate_reference(
+            blob_ref,
+            owner_user_id=owner_user_id,
+            job_id=job_id,
+            lease_id=lease_id,
+            fence=fence,
+            expected_sha256=expected_sha256,
+            expected_size_bytes=expected_size_bytes,
+        )
+        if reference.owner_controlled:
+            raise BlobPolicyError("owner-controlled blob plaintext is unavailable")
+        with self._lock:
+            object_path = self._object_path(reference.sha256)
+            try:
+                content = object_path.read_bytes()
+            except OSError as exc:
+                raise BlobStateError("committed CAS object is unreadable") from exc
+            if len(content) != reference.size_bytes:
+                raise BlobSizeMismatchError("committed CAS object size changed during read")
+            if not hmac.compare_digest(
+                hashlib.sha256(content).hexdigest(), reference.sha256
+            ):
+                raise BlobHashMismatchError("committed CAS object hash changed during read")
+            return content
+
     def mark_referenced(
         self,
         blob_ref: str,

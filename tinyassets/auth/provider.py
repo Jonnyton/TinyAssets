@@ -398,7 +398,6 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "resume_run",
     "rollback_merge",
     "rollback_node",
-    "open_auto_ship_pr",
     "schedule_branch",
     "subscribe_branch",
     "escrow_lock",
@@ -574,7 +573,6 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         "attest_gate_event", "verify_gate_event", "dispute_gate_event",
         "retract_gate_event",
     })
-    extension_writes.update({"open_auto_ship_pr"})
     extension_writes.update({
         "schedule_branch", "unschedule_branch", "subscribe_branch",
         "unsubscribe_branch", "pause_schedule", "unpause_schedule",
