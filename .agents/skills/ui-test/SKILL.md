@@ -126,8 +126,19 @@ findings had to be retracted.
    # non-empty => you are NOT anonymous. Any "anonymous" finding is invalid.
    ```
 
-2. **Use a CLEAN BROWSER PROFILE** (a fresh `--user-data-dir`) for first-contact auth testing.
-   Incognito chat is not sufficient and never was.
+2. **A clean browser profile is NOT sufficient either.** Claude.ai connectors are **account-level**:
+   the connector list and its OAuth grant are stored server-side by Anthropic, not in the browser. A
+   brand-new `--user-data-dir` logged into the same Claude account still shows the connector already
+   attached and already authorized, with **zero** AuthKit cookies in the jar. Verified 2026-07-21:
+   fresh profile, `auth_cookies=0`, and TinyAssets still present in the connector table.
+
+   **Corollary — an empty cookie jar does NOT prove unauthenticated.** The MCP OAuth token is held by
+   Anthropic, so cookie inspection can only ever *disprove* anonymity, never establish it. Step 1
+   above is a necessary check, not a sufficient one.
+
+   To genuinely test first contact you must **REMOVE the connector from the Claude.ai account**
+   (which revokes the grant server-side) and then re-add it. That is a change to the host's account
+   settings — ask first.
 3. **Corroborate through a second channel.** An unauthenticated `curl` against the same live endpoint
    is the cheapest check: if curl gets `401` while the chat succeeds, the chat is authenticated. That
    contradiction is what exposed the 2026-07-21 error — treat any such mismatch as proof your premise
