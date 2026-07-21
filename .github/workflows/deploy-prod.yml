@@ -18,11 +18,6 @@ name: Deploy prod
 #   DO_SSH_USER      — SSH user on the Droplet (e.g. root or deploy)
 #   DO_SSH_KEY       — Private key PEM for the above user
 #
-# Optional subscription auth secret:
-#   TINYASSETS_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
-#   When present, deploy syncs it into /etc/tinyassets/env without printing it
-#   and forces TINYASSETS_ALLOW_API_KEY_PROVIDERS=0 for the public daemon.
-#
 # Optional PR-122 Phase 2 capability secret (PR-128):
 #   TINYASSETS_GITHUB_PR_CAPABILITIES - JSON object mapping
 #   "<owner>/<repo>" -> "<token>". Read by
@@ -68,18 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HAS_CODEX_AUTH_BUNDLE: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 != '' }}
-      # Claude provider auth on the droplet. CLAUDE_CODE_OAUTH_TOKEN is a
-      # `claude setup-token` long-lived token Claude Code reads from the env
-      # (rotation-safe, no file). When set, the deploy syncs it into
-      # /etc/tinyassets/env so a fresh /data volume is not left "Not logged in"
-      # (the 2026-06-25 loop-wedge root cause). Same secret the CI workers use.
-      HAS_CLAUDE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-      # Codex-style fallback: base64 of a subscription ~/.claude/.credentials.json.
-      # The entrypoint seeds it to $CLAUDE_CONFIG_DIR/.credentials.json only when
-      # missing. Preferred is CLAUDE_CODE_OAUTH_TOKEN above (rotation-safe); this
-      # is the file path for hosts without a setup-token.
-      HAS_CLAUDE_CREDENTIALS_BUNDLE: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 != '' }}
       # PR-128 — PR-122 Phase 2 capability map sync. When the
       # TINYASSETS_GITHUB_PR_CAPABILITIES GH Actions secret is set
       # (JSON object keyed by "<owner>/<repo>" -> "<token>"), the
@@ -215,9 +198,8 @@ jobs:
       # droplet env file, making wiki_path() resolve to /app/C:\Users\...
       # Strip explicit TINYASSETS_WIKI_PATH so the resolver falls back to
       # $TINYASSETS_DATA_DIR/wiki (=/data/wiki).
-      # Also strip TINYASSETS_UNIVERSE: it is a stdio-shim override, and
-      # leaving it in the cloud env can bind tinyassets-worker to a
-      # different universe than the public MCP default.
+      # Also strip TINYASSETS_UNIVERSE: it is a stdio-shim override and must
+      # not bind the public MCP service to a different universe.
       # Hard rename cutover: /etc/tinyassets/env may have been bootstrapped
       # from /etc/workflow/env on first deploy. Strip every legacy
       # WORKFLOW_* override and workflow-named backup/log target so the
@@ -226,7 +208,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_DEST BACKUP_GH_REPO LOG_DEST" \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_ALLOW_API_KEY_PROVIDERS TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY TINYASSETS_CODEX_AUTH_JSON_B64 TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 CLAUDE_CODE_OAUTH_TOKEN CODEX_HOME CLAUDE_CONFIG_DIR OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_BASE_URL GEMINI_API_KEY GROQ_API_KEY XAI_API_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_DEST BACKUP_GH_REPO LOG_DEST" \
               < deploy/install-tinyassets-env.sh
 
       - name: Sync runtime deploy files
@@ -310,121 +292,23 @@ jobs:
           fi
           SH
 
-      # Codex CLI rotates single-use OAuth refresh tokens in-place inside
-      # the container. compose.yml sets CODEX_HOME=/data/.codex and
-      # CLAUDE_CONFIG_DIR=/data/.claude for daemon + worker, backed by the
-      # shared tinyassets-data volume, so rotated subscription auth survives
-      # container restart. This step makes those directories self-provisioning
-      # on every deploy — idempotent, no host hands required, per the Forever
-      # Rule (24/7 uptime, zero hosts online).
-      #
-      # Three idempotent branches:
-      #   - tinyassets-data/.codex already present -> skip creation
-      #   - /data/.codex/auth.json already in volume -> skip migration
-      #   - no running container with /data/.codex/auth.json or legacy
-      #     /app/.codex/auth.json -> skip migration
-      #     (new container will seed from TINYASSETS_CODEX_AUTH_JSON_B64 on first boot)
-      #   - /data/.claude already present -> preserve; otherwise migrate from
-      #     a running container's /data/.claude or legacy /app/.claude.
-      #
-      # The migration branch only fires once: the first deploy after this
-      # CODEX_HOME move onto a live droplet where tinyassets-worker has a
-      # rotated auth.json at either the new or legacy location.
-      - name: Prepare codex auth persistent volume
+      - name: Prepare control-plane data volume
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               'sudo bash -s' <<'SH'
           set -euo pipefail
-
-          VOLUME_NAME="tinyassets-data"
-          TINYASSETS_UID=1001
-          TINYASSETS_GID=1001
-
-          docker volume create "$VOLUME_NAME" >/dev/null
-          VOLUME_DIR="$(docker volume inspect "$VOLUME_NAME" --format '{{ .Mountpoint }}')"
-          CODEX_DIR="$VOLUME_DIR/.codex"
-          CLAUDE_DIR="$VOLUME_DIR/.claude"
-
-          # OAuth registration state lives directly at /data/.auth.db.
-          # The volume root must be writable by the container's uid 1001;
-          # otherwise every public MCP initialize request fails in
-          # OptionalOAuthProvider with sqlite3 "unable to open database file".
-          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$VOLUME_DIR"
-          chmod 755 "$VOLUME_DIR"
-          find "$VOLUME_DIR" -maxdepth 1 -type f \
+          volume_name="tinyassets-data"
+          tinyassets_uid=1001
+          tinyassets_gid=1001
+          docker volume create "$volume_name" >/dev/null
+          volume_dir="$(docker volume inspect "$volume_name" --format '{{ .Mountpoint }}')"
+          chown "$tinyassets_uid:$tinyassets_gid" "$volume_dir"
+          chmod 755 "$volume_dir"
+          find "$volume_dir" -maxdepth 1 -type f \
             \( -name '.auth.db' -o -name '.auth.db-*' \) \
-            -exec chown "$TINYASSETS_UID:$TINYASSETS_GID" {} + \
+            -exec chown "$tinyassets_uid:$tinyassets_gid" {} + \
             -exec chmod 600 {} + || true
-
-          # Create the directory if missing. mkdir -p is itself a no-op
-          # when the path already exists.
-          if [ ! -d "$CODEX_DIR" ]; then
-            echo "creating codex auth persistent directory at $CODEX_DIR"
-            mkdir -p "$CODEX_DIR"
-          fi
-
-          # Ownership + mode are repaired UNCONDITIONALLY every deploy.
-          # If a prior attempt left the dir root-owned, this heals the
-          # posture so uid 1001 can write. Both chown and chmod are
-          # themselves idempotent — no-op when state already matches.
-          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"
-          chmod 700 "$CODEX_DIR"
-
-          # Migration: if the volume is empty but a tinyassets-worker container is
-          # currently running with a Codex auth.json inside it, copy the live
-          # refresh chain into /data/.codex so the new container preserves it
-          # instead of falling back to the stale env-var secret.
-          if [ ! -f "$CODEX_DIR/auth.json" ]; then
-            tmp_dir="$(mktemp -d)"
-            trap 'rm -rf "$tmp_dir"' EXIT
-            if docker inspect tinyassets-worker >/dev/null 2>&1; then
-              if docker exec tinyassets-worker test -f /data/.codex/auth.json 2>/dev/null; then
-                echo "migrating live codex auth.json from tinyassets-worker:/data/.codex"
-                docker cp tinyassets-worker:/data/.codex/auth.json "$tmp_dir/auth.json"
-              elif docker exec tinyassets-worker test -f /app/.codex/auth.json 2>/dev/null; then
-                echo "migrating legacy codex auth.json from tinyassets-worker:/app/.codex"
-                docker cp tinyassets-worker:/app/.codex/auth.json "$tmp_dir/auth.json"
-              fi
-            fi
-            if [ -s "$tmp_dir/auth.json" ]; then
-              cp "$tmp_dir/auth.json" "$CODEX_DIR/auth.json"
-              chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"
-              chmod 600 "$CODEX_DIR/auth.json"
-            fi
-          fi
-
-          # Confirm final state for the log.
-          ls -la "$CODEX_DIR" || true
-
-          if [ ! -d "$CLAUDE_DIR" ]; then
-            echo "creating Claude auth persistent directory at $CLAUDE_DIR"
-            mkdir -p "$CLAUDE_DIR"
-          fi
-          chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
-          chmod 700 "$CLAUDE_DIR"
-
-          if ! find "$CLAUDE_DIR" -mindepth 1 -maxdepth 1 | grep -q .; then
-            tmp_claude="$(mktemp -d)"
-            if docker inspect tinyassets-worker >/dev/null 2>&1; then
-              if docker exec tinyassets-worker test -d /data/.claude 2>/dev/null; then
-                echo "migrating live Claude config from tinyassets-worker:/data/.claude"
-                docker cp tinyassets-worker:/data/.claude/. "$tmp_claude/" || true
-              elif docker exec tinyassets-worker test -d /app/.claude 2>/dev/null; then
-                echo "migrating legacy Claude config from tinyassets-worker:/app/.claude"
-                docker cp tinyassets-worker:/app/.claude/. "$tmp_claude/" || true
-              fi
-            fi
-            if find "$tmp_claude" -mindepth 1 -maxdepth 1 | grep -q .; then
-              cp -a "$tmp_claude"/. "$CLAUDE_DIR"/
-              chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
-              find "$CLAUDE_DIR" -type d -exec chmod 700 {} +
-              find "$CLAUDE_DIR" -type f -exec chmod 600 {} +
-            fi
-            rm -rf "$tmp_claude"
-          fi
-
-          ls -la "$CLAUDE_DIR" || true
           SH
 
       - name: Retire legacy Workflow service
@@ -499,9 +383,6 @@ jobs:
       - name: Deploy new image
         id: deploy
         env:
-          TINYASSETS_CODEX_AUTH_JSON_B64: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 }}
           # PR-128 — Phase 2 effector capability map. JSON object
           # mapping "<owner>/<repo>" -> "<token>" (round-2 P1.2
           # shape). Read by tinyassets.effectors.github_pr at
@@ -601,38 +482,6 @@ jobs:
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo bash /tmp/install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH"
           fi
-          if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
-            echo "Deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
-            printf '%s' "${TINYASSETS_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64"
-            printf '%s' '0' | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_ALLOW_API_KEY_PROVIDERS"
-          else
-            echo "::warning::TINYASSETS_CODEX_AUTH_JSON_B64 is not visible to deploy; leaving any existing droplet subscription auth untouched."
-          fi
-          # Claude provider auth: sync CLAUDE_CODE_OAUTH_TOKEN into
-          # /etc/tinyassets/env (same atomic helper) so claude-code workers
-          # authenticate from the env on a fresh /data volume. Without it the
-          # deploy could only migrate creds from a live container — a circular
-          # dependency that fails once the credentials are gone (the 2026-06-25
-          # loop-wedge root cause). The entrypoint also seeds a credentials file
-          # from TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 when present; the env token
-          # is preferred (rotation-safe).
-          if [ "${HAS_CLAUDE_OAUTH_TOKEN}" = "true" ]; then
-            echo "Deploy-visible CLAUDE_CODE_OAUTH_TOKEN found; syncing claude-code auth token."
-            printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set CLAUDE_CODE_OAUTH_TOKEN"
-          elif [ "${HAS_CLAUDE_CREDENTIALS_BUNDLE}" = "true" ]; then
-            echo "Deploy-visible TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 found; syncing claude credentials bundle."
-            printf '%s' "${TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64"
-          else
-            echo "::warning::No claude auth (CLAUDE_CODE_OAUTH_TOKEN / TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64) visible to deploy; leaving any existing droplet claude auth untouched."
-          fi
           # PR-128 — sync the Phase 2 effector capability map. Same
           # install-tinyassets-env.sh helper, same atomic write
           # contract. The map MUST decode to a JSON object keyed by
@@ -668,14 +517,15 @@ jobs:
                 "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
           fi
           {
-            echo "## Deploy subscription auth"
+            echo "## Deploy capabilities"
             echo ""
-            echo "- TINYASSETS_CODEX_AUTH_JSON_B64 visible to deploy: \`${HAS_CODEX_AUTH_BUNDLE}\`"
-            echo "- API-key providers forced off when the Codex subscription bundle is synced."
             echo "- TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          # Pull + restart via the systemd unit (which runs docker
-          # compose down + up with the new env).
+          # Pull + restart via the systemd unit (docker compose down + up with the new
+          # env).
+          #
+          # Retired subscription-record removal remains a separate host-gated
+          # migration; production deploys do not mutate credential records.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
@@ -714,72 +564,6 @@ jobs:
             fi
           done
 
-      - name: Verify cloud worker is running
-        run: |
-          worker_containers="tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2"
-          for container in ${worker_containers}; do
-            running=""
-            for i in $(seq 1 30); do
-              running=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "sudo docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null || true")
-              if [ "${running}" = "true" ]; then
-                echo "${container} running after ${i} poll(s)"
-                break
-              fi
-              sleep 2
-            done
-            if [ "${running}" != "true" ]; then
-              echo "::error::${container} is not running after deploy; node execution fleet is not 24/7."
-              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "sudo docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml ps; sudo docker ps -a --filter name=${container}; sudo docker logs --tail 120 ${container} 2>&1 || true"
-              exit 1
-            fi
-            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker exec ${container} env | grep -q '^TINYASSETS_UNIVERSE='"; then
-              echo "::error::${container} inherited TINYASSETS_UNIVERSE from /etc/tinyassets/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
-              exit 1
-            fi
-            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker logs --tail 160 ${container} 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
-          done
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo docker exec -i tinyassets-worker python -' <<'PY'
-          import os
-          from pathlib import Path
-          from tinyassets.cloud_worker import _resolve_universe_path
-
-          root = Path(os.environ.get("TINYASSETS_DATA_DIR", "/data"))
-          active_marker = root / ".active_universe"
-          try:
-              active = active_marker.read_text(encoding="utf-8").strip()
-          except OSError:
-              active = ""
-
-          universe = _resolve_universe_path()
-          print(f"worker diagnostic: data_root={root}")
-          print(f"worker diagnostic: active_marker={active or '<unset>'}")
-          print(f"worker diagnostic: resolved_universe={universe}")
-          for name in (
-              ".runtime_status.json",
-              "status.json",
-              "activity.log",
-              "enrichment_signals.json",
-              "worldbuild_signals.json",
-              "work_targets.json",
-          ):
-              path = universe / name
-              try:
-                  size = path.stat().st_size if path.exists() else 0
-              except OSError:
-                  size = -1
-              print(f"worker diagnostic: {name} exists={path.exists()} bytes={size}")
-          PY
-
       - name: Post-deploy canary — canonical URL only
         id: canary
         run: |
@@ -794,21 +578,6 @@ jobs:
           # optional get_status). Fails the deploy if the user surface
           # regresses to the legacy fat tools.
           python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles --verbose
-
-      - name: Verify subscription LLM binding after synced Codex auth
-        if: env.HAS_CODEX_AUTH_BUNDLE == 'true'
-        run: |
-          python scripts/verify_llm_binding.py \
-              --url "${CANARY_URL}" --timeout 20 --require-sandbox \
-              --retries 12 --retry-delay 10
-
-      - name: Report subscription LLM binding when no deploy auth bundle is configured
-        if: env.HAS_CODEX_AUTH_BUNDLE != 'true'
-        run: |
-          python scripts/verify_llm_binding.py \
-              --url "${CANARY_URL}" --timeout 20 --require-sandbox \
-              --retries 12 --retry-delay 10
-          echo "Subscription LLM binding and sandbox runtime are already live."
 
       - name: Verify CF Access gates direct URL (expects 403/401)
         id: access-gate
@@ -897,7 +666,7 @@ jobs:
           # Ownership MUST be the container uid/gid 1001 NUMERICALLY. The host
           # user named "tinyassets" is uid 994 — `install -d -o tinyassets` on
           # the (already-existing) volume root re-chowned /data to 994 on every
-          # deploy, reverting the "Prepare codex auth" step's chown and leaving
+          # deploy, reverting the control-plane data-volume step's chown and leaving
           # uid-1001 daemon processes unable to create SQLite journal/WAL files
           # next to /data/.auth.db ("attempt to write a readonly database",
           # 500 on every POST /mcp after the next restart — the 2026-07-12
@@ -924,6 +693,16 @@ jobs:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
         run: |
           echo "::warning::Rolling back to ${PREV_IMAGE}"
+          # Round-19 (SAFE-FORWARD, IMAGE-ONLY rollback): the retired-subscription
+          # migration is forward-only, so this rollback restores ONLY the image. The
+          # quarantined credentials do NOT need restoring: a universe whose retired
+          # llm_subscription record was quarantined-away reads as "no record", which
+          # BOTH the new and the previous image tolerate (they fall back to ambient /
+          # idle — absence is the default state of every fresh universe). Coupling a
+          # credential rollback here would be the WRONG complexity (it was global, not
+          # deployment-scoped, could destroy archives, and was bypassed on restart
+          # failure — Codex r19 criticals). Image-only rollback closes all three at the
+          # root.
           # Restore previous tag via the atomic helper (same root:tinyassets
           # 640 invariant as the deploy step). The helper is already in
           # /tmp/install-tinyassets-env.sh from the deploy step's scp; if

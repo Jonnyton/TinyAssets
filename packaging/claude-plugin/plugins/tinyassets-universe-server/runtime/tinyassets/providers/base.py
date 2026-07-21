@@ -8,9 +8,19 @@ from __future__ import annotations
 
 import abc
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from tinyassets.control_plane import (
+    API_KEY_PROVIDER_ENV_VARS,
+    CONTROL_PLANE_ENV,
+    HOST_AUTH_ENV_VARS,
+)
+from tinyassets.control_plane import (
+    truthy_env as _truthy_env,
+)
 
 if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
@@ -60,7 +70,38 @@ class ModelConfig:
     checkout, exposing repo files / ``CLAUDE.md`` / other universes). Set for the
     founder-facing universe-intelligence turn; leave False for host-trusted engine
     roles. The isolation is only as strong as the tool policy below — pair it with
-    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out)."""
+    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out).
+
+    This is the *conversation* sandbox profile (WebFetch-only, no filesystem
+    tools): safe WITHOUT an OS sandbox because the tool denylist removes every
+    filesystem/shell tool. Coding nodes that must actually READ/WRITE a repo use
+    ``os_sandbox_required`` instead — they keep the coding tools, so their
+    confinement depends on an OS-level sandbox, not the tool denylist."""
+
+    os_sandbox_required: bool = False
+    """Require an OS-level sandbox (bwrap / container) to confine this call, and
+    FAIL CLOSED if none is available. Set for coding nodes (``requires_sandbox``
+    on the NodeDefinition, e.g. the patch loop's ``draft_patch``) that run a
+    coding agent with real filesystem/shell tools against a checked-out repo.
+
+    Unlike ``sandbox_workspace`` (which is safe unsandboxed because it denies all
+    filesystem tools), a coding node KEEPS Read/Write/Edit/Bash so it can produce
+    a patch — and the claude CLI cannot confine those tools to a directory
+    (Read/Glob/Grep are default-allowed, and a bare deny is all-or-nothing). The
+    only real confinement for a repo-touching coding turn is therefore an OS
+    sandbox around the whole subprocess. When True, subprocess providers MUST:
+    (1) refuse to run when no OS sandbox is available (raise
+    :class:`SandboxUnavailableError` — never run unconfined), and (2) never use
+    any bypass-sandbox escape hatch (codex ``--dangerously-bypass-approvals-and-
+    sandbox``). Host-trusted roles leave this False (default) and are unaffected."""
+
+    closed_tool_surface: bool = False
+    """Disable ALL built-in tools for this call (maps to ``claude -p --tools ""``,
+    per Anthropic's CLI docs). Set for text-generation nodes: a plain prompt node
+    produces text and needs NO tools, so the honest closed surface is "no tools at
+    all" (plus a strict empty MCP config) rather than a rotting per-name denylist.
+    This is how a non-coding node is kept incapable of repo write — coding tools
+    are reachable only through the coding classifier."""
 
     allowed_tools: tuple[str, ...] | None = None
     """Allowlist of CLI tool names the subprocess may use (e.g.
@@ -99,18 +140,57 @@ DEGRADED_JUDGE_RESPONSE = ProviderResponse(
 )
 
 
-API_KEY_PROVIDER_ENV_VARS: tuple[str, ...] = (
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
-    "GEMINI_API_KEY",
-    "GROQ_API_KEY",
-    "XAI_API_KEY",
-)
+def _explicit_provider_subprocess_env(
+    env: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Enforce the provider-process boundary immediately before every spawn."""
+    from tinyassets.exceptions import ProviderUnavailableError
+
+    if env is None:
+        raise TypeError("provider subprocesses require an explicit environment")
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        raise ProviderUnavailableError(
+            "control-plane services cannot spawn model providers; external work "
+            "must remain queued for an owner-authorized BYO or market daemon"
+        )
+    return dict(env)
 
 
-def _truthy_env(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+def run_provider_subprocess(command, *, env: Mapping[str, str], **kwargs):
+    """Run a provider CLI through the single control-plane/env gate."""
+    import subprocess
+
+    return subprocess.run(
+        command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
+
+
+async def create_provider_subprocess_exec(
+    *command: str, env: Mapping[str, str], **kwargs
+):
+    """Spawn an argv-based provider CLI through the shared gate."""
+    import asyncio
+
+    return await asyncio.create_subprocess_exec(
+        *command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
+
+
+async def create_provider_subprocess_shell(
+    command: str, *, env: Mapping[str, str], **kwargs
+):
+    """Spawn a shell-wrapped provider CLI through the shared gate."""
+    import asyncio
+
+    return await asyncio.create_subprocess_shell(
+        command,
+        env=_explicit_provider_subprocess_env(env),
+        **kwargs,
+    )
 
 
 def api_key_providers_enabled() -> bool:
@@ -141,6 +221,57 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     return env
 
 
+# NOTE (Codex S3 r9 #4 — dead-stack removal): the sanitized minimal-allowlist +
+# per-universe vault-only env (`sanitized_subprocess_env`, `_has_provider_vault_auth`,
+# the vault-auth refusal) was the ENVIRONMENT materialization for a repo-writing
+# coding subprocess. Repo-touching nodes fail closed at the graph choke point
+# before any provider spawn (no per-job runner), so that plumbing is unreachable
+# and has been REMOVED as dead security surface — git history preserves it as the
+# Phase-2 per-job runner slice's contract. Text nodes use the normal
+# `subprocess_env_for_provider`; their cwd isolation is the per-job scratch below.
+
+
+def new_sandbox_job_dir() -> str:
+    """Create a fresh, empty per-job scratch dir for a sandbox-required spawn.
+
+    The coding node's cwd is pinned here — NOT the daemon's source checkout
+    (which exposes our platform source) and NOT ``/data`` (cross-tenant data).
+    Caller removes it via :func:`cleanup_sandbox_job_dir` when the job ends.
+    """
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="tinyassets-sandbox-job-")
+
+
+def cleanup_sandbox_job_dir(scratch_dir: str | None) -> None:
+    """Best-effort removal of a per-job scratch dir (no-op for ``None``)."""
+    if not scratch_dir:
+        return
+    import shutil
+
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def sandbox_spawn_env_and_dir(
+    provider_name: str,
+    config: "ModelConfig",  # noqa: ARG001 — kept for call-site stability
+    *,
+    universe_dir: Path | None = None,
+) -> tuple[dict[str, str], str | None]:
+    """Return ``(proc_env, None)`` for a provider subprocess spawn.
+
+    Returns the normal provider env; the coding-EXECUTION env materialization
+    (sanitized vault-only env + vault-auth refusal) was Phase-2 runner plumbing
+    and has been removed (see the note above) — repo/coding nodes never reach a
+    provider. The per-job scratch cwd for hardened text spawns is created by the
+    provider itself (codex `-C`, claude cwd) via :func:`new_sandbox_job_dir`.
+    """
+    return (
+        subprocess_env_for_provider(provider_name, universe_dir=universe_dir),
+        None,
+    )
+
+
 def subprocess_env_for_provider(
     provider_name: str, *, universe_dir: Path | None = None,
 ) -> dict[str, str]:
@@ -149,19 +280,121 @@ def subprocess_env_for_provider(
     When *universe_dir* is given it takes precedence over the process-global
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
+    Engine credentials come from the platform vault via
+    :mod:`tinyassets.credential_broker`. Fail-closed states — unresolved
+    external routes, unmigrated legacy plaintext, and
+    ``needs_redeposit``/revoked bindings — RAISE before a child can spawn.
     """
-    env = subprocess_env_without_api_keys() or os.environ.copy()
-    try:
-        from tinyassets.credential_vault import apply_provider_auth_env
+    from tinyassets.exceptions import ProviderUnavailableError
 
-        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
-    except ValueError:
-        raise
-    except Exception:
-        # Provider calls should not crash merely because no universe/vault
-        # helper is available in a local import context. Malformed vaults still
-        # raise ValueError above and fail loudly.
-        pass
+    # The env-independent binding gate below covers declared external sources;
+    # this marker also stops legacy/empty-engine_source universes on control plane.
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        raise ProviderUnavailableError(
+            "control-plane services cannot spawn model providers; external work "
+            "must remain queued for an owner-authorized BYO or market daemon"
+        )
+
+    host_env = subprocess_env_without_api_keys() or os.environ.copy()
+    from tinyassets.credential_broker import (
+        provider_auth_env_overrides,
+        resolve_universe_from_env,
+    )
+    from tinyassets.engine_binding import (
+        RetiredCredentialStateError,
+        byo_credential_digest,
+        byo_execution_enabled,
+        get_pinned_byo_snapshot,
+        resolve_engine_binding,
+    )
+    resolved_universe = (
+        Path(universe_dir)
+        if universe_dir is not None
+        else resolve_universe_from_env(host_env)
+    )
+    if resolved_universe is None:
+        return host_env
+
+    from tinyassets.config import load_universe_config
+
+    engine_source = (
+        load_universe_config(resolved_universe).engine_source.strip().lower()
+    )
+    binding = resolve_engine_binding(resolved_universe)
+    if binding.external_route_declared and not binding.bound:
+        raise ProviderUnavailableError(
+            "declared external daemon route is unresolved; refusing ambient "
+            "provider auth until an owner-authorized or market lease is bound"
+        )
+    if binding.needs_migration:
+        raise RetiredCredentialStateError(
+            "retired credential state cannot use ambient provider auth"
+        )
+
+    provider = provider_name.strip()
+    byo_bound = binding.is_eligible_for(provider)
+    if engine_source == "byo_api_key":
+        if not byo_execution_enabled(resolved_universe):
+            raise ProviderUnavailableError(
+                "BYO execution is not fully attested; refusing ambient provider auth."
+            )
+        if not binding.bound or not byo_bound:
+            raise ProviderUnavailableError(
+                f"BYO provider {provider!r} is not an eligible executable binding; "
+                "refusing ambient provider auth."
+            )
+
+    snapshot = get_pinned_byo_snapshot()
+    routing_binding = (
+        snapshot
+        if snapshot is not None
+        and snapshot.enabled
+        and snapshot.credential_digest is not None
+        and snapshot.universe_dir == str(resolved_universe)
+        else None
+    )
+    if routing_binding is not None:
+        fresh_digest = byo_credential_digest(resolved_universe)
+        if fresh_digest != routing_binding.credential_digest:
+            raise ProviderUnavailableError(
+                "BYO credential changed or disappeared between routing and spawn; "
+                "refusing ambient provider auth."
+            )
+
+    env = os.environ.copy()
+    for name in HOST_AUTH_ENV_VARS:
+        env.pop(name, None)
+    # A bare-host CLI must never fall back to the daemon user's default config
+    # directory after ambient auth is scrubbed. Pin each supported CLI to an
+    # empty/universe-owned home; OAuth materialization may populate the same path.
+    if provider == "codex":
+        env["CODEX_HOME"] = str(resolved_universe / ".engine-auth" / "codex")
+    elif provider == "claude-code":
+        env["CLAUDE_CONFIG_DIR"] = str(
+            resolved_universe / ".engine-auth" / "claude"
+        )
+    # A retained credential is not authority to use it after the universe
+    # switches to another engine lane. Only an executable, attested BYO
+    # binding may materialize broker-held auth into a child process.
+    overrides = (
+        provider_auth_env_overrides(
+            provider,
+            resolved_universe,
+            require_binding=True,
+        )
+        if byo_bound
+        else {}
+    )
+    env.update(overrides)
+    if routing_binding is not None:
+        fresh_digest = byo_credential_digest(resolved_universe)
+        if fresh_digest != routing_binding.credential_digest:
+            raise ProviderUnavailableError(
+                "BYO credential changed during spawn materialization; refusing "
+                "ambient provider auth."
+            )
+    if byo_bound and provider == "claude-code":
+        env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
     return env
 
 
@@ -193,6 +426,38 @@ DEFAULT_AUTH_PROBE_TTL_S = 1800.0
 DEFAULT_AUTH_PROBE_TIMEOUT_S = 120.0
 
 _PROBE_FALSY = {"0", "false", "off", "no"}
+
+_CODEX_AUTH_PROBE_ENV_VARS: tuple[str, ...] = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "NO_COLOR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CODEX_HOME",
+)
 
 # Live-probe verdict cache. The supervisor calls the gate every loop tick;
 # the probe subprocess must not run per tick. The AUTHORITATIVE cache is a
@@ -333,6 +598,12 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
     Uses whatever ``codex`` is on PATH so flock-wrapper deployments keep
     their single-use refresh-token serialization.
     """
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "status": "inconclusive",
+            "detail": "live auth probe is not applicable on the control plane",
+        }
+
     import subprocess
     import tempfile
 
@@ -343,9 +614,15 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
         *base_cmd, "exec", "--skip-git-repo-check", "-s", "read-only",
         _AUTH_PROBE_PROMPT,
     ]
+    probe_env = {
+        name: os.environ[name]
+        for name in _CODEX_AUTH_PROBE_ENV_VARS
+        if os.environ.get(name)
+    }
     try:
-        proc = subprocess.run(
+        proc = run_provider_subprocess(
             cmd if not use_shell else subprocess.list2cmdline(cmd),
+            env=probe_env,
             shell=use_shell,
             capture_output=True,
             text=True,
@@ -406,8 +683,7 @@ def _codex_refresh_viability(
     an MCP request must never block on a probe subprocess): it serves the
     freshness fast path and any cached verdict, and reports stale creds as
     "ok" with a probe-deferred detail instead of probing inline. The
-    quarantine decision itself lives in the cloud_worker gate, which always
-    probes.
+    execution-gate decision belongs to the external daemon, which may probe.
     """
     import time as _time
 
@@ -433,8 +709,7 @@ def _codex_refresh_viability(
         "TINYASSETS_AUTH_PROBE_TTL_S", DEFAULT_AUTH_PROBE_TTL_S,
     )
     now = _time.time()
-    # Disk cache first (cross-process/container truth: the worker's probe
-    # verdict must be visible to the daemon's get_status), then the
+    # Disk cache first (cross-process truth for an external daemon fleet), then the
     # in-memory layer (covers read-only CODEX_HOMEs).
     cached = _read_probe_cache_file(codex_home)
     if cached is None:
@@ -446,7 +721,7 @@ def _codex_refresh_viability(
         presence_ok["detail"] = (
             f"auth.json present at {codex_home}; last_refresh stale "
             f"(age {'unknown' if age is None else f'{age:.0f}s'}) — live "
-            "probe deferred to the worker gate"
+            "probe deferred to the external daemon"
         )
         return presence_ok
 
@@ -468,13 +743,12 @@ def _codex_refresh_viability(
     return health
 
 
-# Subscription-auth health. The 2026-06-25 loop-wedge root cause was a worker
+# Subscription-auth health. The 2026-06-25 loop-wedge root cause was an executor
 # whose claude-code auth was dead (no credentials) that kept claiming tasks
 # and failing every one, poisoning the queue for ~3 weeks undetected.
 # ``is_available()`` only checks the binary is on PATH (``shutil.which``); it
-# does NOT check login state. This helper checks login state so workers can
-# self-quarantine (cloud_worker) and get_status can surface dead writer auth
-# instead of leaving it buried in worker logs.
+# does NOT check login state. This helper lets an external daemon fail closed
+# before claiming work instead of leaving the failure buried in executor logs.
 #
 # Returns ``{"provider", "status", "detail"}`` where status is one of:
 #   "ok"            — subscription credentials are present (and, for codex,
@@ -483,6 +757,7 @@ def _codex_refresh_viability(
 #                     failure)
 #   "unknown"       — no checkable subscription auth here (API-key providers,
 #                     ollama, or an unrecognized name); callers never gate on it
+#   "not_applicable"— provider execution and probing are disabled on control plane
 #
 # Codex gets a layered refresh-viability check on top of presence
 # (live-proven gap 2026-07-14: a stale /data/.codex/auth.json stranded by the
@@ -514,6 +789,12 @@ def subscription_auth_health(
     spawns the live-probe subprocess; serves fast paths + cached verdicts.
     """
     name = (provider_name or "").strip()
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "provider": name,
+            "status": "not_applicable",
+            "detail": "provider auth health is not applicable on the control plane",
+        }
     if name == "codex":
         codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         if not (codex_home / "auth.json").is_file():
@@ -590,12 +871,97 @@ def check_bwrap_failure(stderr_text: str) -> None:
             )
 
 
+OS_SANDBOX_ATTESTATION_ENV = "TINYASSETS_OS_SANDBOX_ATTESTED"
+
+
+def os_sandbox_attested() -> bool:
+    """True only when the ENTIRE server process is attested to run under real OS
+    isolation.
+
+    Meant to be set (``TINYASSETS_OS_SANDBOX_ATTESTED=1``) ONLY by a container
+    entrypoint that has genuinely confined the whole process (container-per-job /
+    gVisor / microVM / namespaces). This is the ONLY thing that confines an
+    in-process, NON-self-sandboxing coding agent like ``claude -p`` — which is
+    spawned with Bash/Read/Write and has no sandbox flag of its own. A launchable
+    ``bwrap`` (``get_sandbox_status``) proves only that bwrap CAN start a sandbox;
+    it does NOT prove the running ``claude -p`` subprocess is confined (Codex S3
+    review). So confinement of that class is gated on this attestation, never on
+    bwrap-launchability.
+
+    Reality today (patch-loop S3): the production entrypoint / compose
+    (``deploy/docker-entrypoint.sh``, ``deploy/compose.yml``) DELIBERATELY do NOT
+    set this — the current droplet provides no per-job OS isolation, so every
+    sandbox-required coding node fails closed at run time BY DESIGN until such a
+    host exists. Do not set it as a convenience; that re-opens the exact
+    exfiltration vector the gate closes.
+
+    ``TINYASSETS_OS_SANDBOX_ATTESTED`` may ONLY be set when a real per-job runner
+    provides ALL of (Codex latest-model FINDING 3, the deferred production
+    enabler — NOT built in this slice):
+      (a) a prepared per-job repo checkout (the job's own working tree),
+      (b) tenant/host path invisibility (no /data, no other tenants, no platform
+          source visible to the job),
+      (c) restricted network egress,
+      (d) resource limits (cpu/mem/pids/time), and
+      (e) scoped credential brokering — the job sees ONLY its own owner-scoped
+          credential, never platform-global auth (see sanitized_subprocess_env /
+          FINDING 2).
+    Until a runner enforces all five, coding nodes stay fail-closed in prod — that
+    is the design, stated loudly.
+    """
+    return _truthy_env(os.environ.get(OS_SANDBOX_ATTESTATION_ENV))
+
+
+def enforce_os_sandbox(config: "ModelConfig") -> None:
+    """Fail closed unless the running process is attested to be OS-isolated.
+
+    The build-blocking gate for coding nodes (``os_sandbox_required``): a node
+    that runs a coding agent with real filesystem/shell tools against a repo can
+    only be confined by an OS-level sandbox around the WHOLE process — the CLI
+    tool denylist cannot pin Read/Bash to a directory, and ``claude -p`` does not
+    self-sandbox. Requiring merely that ``bwrap`` can launch is insufficient: a
+    bare Linux host where bwrap works would pass yet still spawn ``claude -p``
+    UNCONFINED (Codex S3 CRITICAL). So the gate requires
+    :func:`os_sandbox_attested` — a positive attestation from the container
+    entrypoint that the process is actually isolated. No attestation ⇒ raise so
+    the node fails LOUDLY (hard rule #8) rather than run a coding agent
+    unconfined on the capacity host (arbitrary-repo exfiltration / abuse vector).
+    Called by the router preflight and the claude provider BEFORE spawning.
+    No-op for host-trusted roles (``os_sandbox_required`` is False by default).
+
+    (Codex ``codex exec`` self-confines via ``--full-auto`` + bwrap and enforces
+    that in its own provider path; this whole-process attestation is the gate for
+    the non-self-sandboxing ``claude -p`` path and the provider-agnostic router
+    preflight.)
+    """
+    if not getattr(config, "os_sandbox_required", False):
+        return
+    if not os_sandbox_attested():
+        raise SandboxUnavailableError(
+            "This node runs a coding agent with real filesystem/shell tools and "
+            "requires the ENTIRE server process to run under verified OS "
+            "isolation (a container entrypoint that confines the process and "
+            f"sets {OS_SANDBOX_ATTESTATION_ENV}=1). That attestation is absent — "
+            "and a launchable bwrap does NOT prove the running claude -p "
+            "subprocess is confined (it is spawned with Bash/Read/Write and no "
+            "self-sandbox). Refusing to run the coding node unconfined (fail "
+            "closed). Run the daemon inside the attested OS-isolation container, "
+            "or use a design-only branch with no requires_sandbox nodes."
+        )
+
+
 def probe_sandbox_available() -> dict[str, object]:
     """Probe whether bwrap is available on this host.
 
     Returns {bwrap_available: bool, reason: str | None}.  Cached at
     module level after first call so get_status probes once at startup.
     """
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "bwrap_available": False,
+            "reason": "not applicable on a control-plane host",
+        }
+
     import shutil as _shutil
     import subprocess as _subprocess
     import sys as _sys
@@ -610,7 +976,11 @@ def probe_sandbox_available() -> dict[str, object]:
     try:
         version_result = _subprocess.run(
             [bwrap_path, "--version"],
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env={"PATH": os.defpath},
         )
         if version_result.returncode != 0:
             return {
@@ -623,7 +993,11 @@ def probe_sandbox_available() -> dict[str, object]:
 
         launch_result = _subprocess.run(
             [bwrap_path, "--ro-bind", "/", "/", "/bin/sh", "-c", "true"],
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env={"PATH": os.defpath},
         )
         if launch_result.returncode == 0:
             return {"bwrap_available": True, "reason": None}
@@ -649,6 +1023,11 @@ _sandbox_probe_cache: dict[str, object] | None = None
 
 def get_sandbox_status() -> dict[str, object]:
     """Return cached sandbox probe result (probes once per process)."""
+    if _truthy_env(os.environ.get(CONTROL_PLANE_ENV)):
+        return {
+            "bwrap_available": False,
+            "reason": "not applicable on a control-plane host",
+        }
     global _sandbox_probe_cache  # noqa: PLW0603
     if _sandbox_probe_cache is None:
         _sandbox_probe_cache = probe_sandbox_available()
@@ -663,6 +1042,24 @@ class BaseProvider(abc.ABC):
 
     family: str = ""
     """Model family for judge diversity enforcement."""
+
+    supports_coding_sandbox: bool = False
+    """Whether this provider DECLARES AND ENFORCES the hardened coding-sandbox
+    contract (os_sandbox attestation / bwrap self-confinement + sanitized env +
+    tool policy). Only the subprocess CLI providers (claude-code, codex) do. A
+    sandbox-required call is HARD-FILTERED to these providers before dispatch
+    (Codex latest-model FINDING 4): a text/HTTP/local provider (e.g. ollama)
+    silently ignores the hardened config and would return a fake 'patched'
+    without ever confining anything — never let it serve a coding job."""
+
+    enforces_closed_tool_surface: bool = False
+    """Whether this provider actually HONORS a closed / text-only tool surface
+    (``ModelConfig.closed_tool_surface`` → claude ``--tools ""``). TRUE only for
+    claude-code. FALSE for codex — codex ignores tool allow/deny fields entirely,
+    so a ``closed_tool_surface`` node routed to codex would silently keep tools.
+    A call whose config requires the closed surface is HARD-FILTERED to enforcing
+    providers before dispatch (Codex S3 REJECT r2 C1b); if none is available it
+    fails closed rather than run on a provider that can't honor it."""
 
     @classmethod
     def is_available(cls) -> bool:

@@ -61,7 +61,12 @@ register_validate_patch()
 
 
 def _branch_without_github_merge(branch):
-    """Return a branch-like view with github_merge removed from effects."""
+    """Return a branch-like view with github_merge removed from effects.
+
+    Preserves the AUTHORITATIVE ``branch_def_id`` (Codex r11 #3) so the github_pr
+    effector still resolves the owner-bound review preference from the run
+    context — stripping it forced a fallback to model-emitted packet identity,
+    exactly the trust-from-packet hole the design closes."""
     from types import SimpleNamespace
 
     filtered_nodes = []
@@ -77,7 +82,10 @@ def _branch_without_github_merge(branch):
                 effects=kept,
             )
         )
-    return SimpleNamespace(node_defs=filtered_nodes)
+    return SimpleNamespace(
+        node_defs=filtered_nodes,
+        branch_def_id=getattr(branch, "branch_def_id", "") or "",
+    )
 
 
 def run_effects_for_branch(
@@ -96,6 +104,12 @@ def run_effects_for_branch(
         run_id=run_id,
         dry_run=dry_run,
     )
+    # Authoritative identity from the RUN CONTEXT (Codex r11 #3): the merge
+    # effector resolves the owner-bound merge preference by this branch_def_id
+    # (+ the universe from base_path), never by model-emitted packet identity.
+    # The CODEOWNERS owner (Codex r14 #2) is NOT a BranchDefinition field — the
+    # merge effector resolves it from the authoritative merge-preference binding.
+    authoritative_branch_def_id = str(getattr(branch, "branch_def_id", "") or "")
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])
         if EXTERNAL_WRITE_SINK_GITHUB_MERGE not in effects:
@@ -111,6 +125,7 @@ def run_effects_for_branch(
                 base_path=base_path,
                 run_id=run_id,
                 dry_run=bool(dry_run),
+                authoritative_branch_def_id=authoritative_branch_def_id,
             )
         except Exception as exc:  # defensive: never raise from completion path
             result = {

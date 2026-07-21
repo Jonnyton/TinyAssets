@@ -14,6 +14,8 @@ This test file exercises:
 
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -61,19 +63,36 @@ def _run_entrypoint_via_stdin(
     extra_env: dict[str, str] | None = None,
     raw_preamble_lines: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run docker-entrypoint.sh with a harnessed exec line, fed via stdin.
+    """Run a materialized docker-entrypoint.sh with a harnessed exec line.
 
-    Avoids Windows path-translation issues — bash reads the script from
-    stdin so no cross-OS argv path munging is needed. Git Bash on Windows
-    does not reliably forward freshly-added env vars from Python's
-    subprocess env= dict, so we prepend the env assignments directly into
-    the piped script body. Also clear the sentinels in-script in case the
-    parent shell inherited them.
+    The production script resolves security data relative to its own file, so
+    the harness mirrors the installed ``deploy/`` + ``tinyassets/`` layout.
+    Git Bash on Windows does not reliably forward freshly-added env vars from
+    Python's subprocess env= dict, so assignments remain in the script body.
+    Also clear the sentinels in-script in case the parent shell inherited them.
     """
     script = _ENTRYPOINT.read_text(encoding="utf-8").replace(
         'exec "$@"', exec_replacement,
     )
-    scratch = Path(tempfile.mkdtemp(prefix="tinyassets-entrypoint-"))
+    scratch_parent = Path(
+        os.environ.get("TINYASSETS_DATA_DIR", tempfile.gettempdir()),
+    )
+    scratch_parent.mkdir(parents=True, exist_ok=True)
+    scratch = Path(
+        tempfile.mkdtemp(prefix="tinyassets-entrypoint-", dir=scratch_parent),
+    )
+    harness_root = scratch / "package"
+    harness_entrypoint = harness_root / "deploy" / "docker-entrypoint.sh"
+    harness_manifest = (
+        harness_root / "tinyassets" / "provider_credential_env_vars.txt"
+    )
+    harness_entrypoint.parent.mkdir(parents=True)
+    harness_manifest.parent.mkdir(parents=True)
+    harness_entrypoint.write_text(script, encoding="utf-8", newline="\n")
+    shutil.copyfile(
+        _REPO / "tinyassets" / "provider_credential_env_vars.txt",
+        harness_manifest,
+    )
     preamble_lines = [
         # Clear sentinels first so ambient-shell values don't leak through.
         "unset CLOUDFLARE_TUNNEL_TOKEN SUPABASE_DB_URL TINYASSETS_IMAGE",
@@ -85,11 +104,16 @@ def _run_entrypoint_via_stdin(
     preamble_lines.extend(raw_preamble_lines or [])
     for key, value in (extra_env or {}).items():
         preamble_lines.append(f"export {key}={value!r}")
-    combined = "\n".join(preamble_lines) + "\n" + script
+    combined = (
+        "\n".join(preamble_lines)
+        + "\nsource "
+        + shlex.quote(_bash_readable_path(harness_entrypoint))
+        + " /bin/true\n"
+    )
     # Pass bytes to avoid Windows cp1252 encode errors on Unicode chars
     # (e.g. the → in our own comments).
     result = subprocess.run(
-        ["bash", "-s", "--", "/bin/true"],
+        ["bash", "-s"],
         input=combined.encode("utf-8"),
         capture_output=True,
         timeout=15,
@@ -197,7 +221,8 @@ def test_entrypoint_data_file_probe_does_not_require_python_alias():
     """The startup data-file probe must stay shell-only for Git Bash hosts."""
     text = _ENTRYPOINT.read_text(encoding="utf-8")
     probe_start = text.index("_tinyassets_bash_path()")
-    probe_text = text[probe_start:text.index('exec "$@"', probe_start)]
+    privilege_handoff = text.index('if [[ "$(id -u)" -eq 0 ]]', probe_start)
+    probe_text = text[probe_start:privilege_handoff]
 
     assert "python" not in probe_text.lower()
     assert "cygpath" in probe_text

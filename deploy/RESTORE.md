@@ -162,6 +162,75 @@ Log the drill date + result in SUCCESSION.md acceptance criteria.
 
 ---
 
+## Credential vault after a restore (intended fail-closed)
+
+`backup-restore.sh` advances the vault's anti-rollback guard
+(`scripts/vault_restore_bump.py`, run through the daemon image against the
+`tinyassets-vault-guard` volume) after every restore. From that moment every
+stored universe/founder credential raises `REAUTHORIZATION_REQUIRED` until an
+operator runs the authenticated recovery reset below; the reset erases the
+uncertain store, after which each founder reconnects. **This is the intended
+contract, not a failure:**
+a restored one-use refresh token may already have been redeemed at the
+provider, so serving restored credential state would be dishonest. The same
+applies to a failed vault mutation commit at runtime — the whole store fails
+closed into re-authorization rather than guessing.
+
+Do NOT restore or delete the `tinyassets-vault-guard` volume itself: it is
+an independent recovery domain by design. If the bump step warned/failed,
+rerun the root one-shot `docker run --entrypoint /opt/venv/bin/python ...
+/app/scripts/vault_restore_bump.py` command from `backup-restore.sh`.
+
+### Operator re-deposit path
+
+1. Stop the daemon. Leave the guard advanced; do not copy pre-restore
+   ciphertext, delete the guard, or retry reads until one happens to work.
+2. From a root/operator shell, run the recovery command against both persistent
+   volumes (replace the image value if the daemon container is not present):
+
+   ```bash
+   DAEMON_IMAGE="$(sudo docker inspect tinyassets-daemon --format '{{.Config.Image}}')"
+   sudo docker run --rm \
+     --entrypoint /opt/venv/bin/python \
+     -e TINYASSETS_DATA_DIR=/data \
+     -e TINYASSETS_VAULT_ROLLBACK_GUARD=/vault-guard \
+     -v tinyassets-data:/data \
+     -v tinyassets-vault-guard:/vault-guard \
+     "${DAEMON_IMAGE}" /app/scripts/vault_restore_recover.py
+   ```
+
+   **Authorization boundary:** root/admin access to the daemon image plus both
+   mounted volumes authorizes this destructive reset. There is no independent
+   recovery-token check. Protect that host access accordingly: anyone who can
+   run this command with both volumes can irreversibly erase every uncertain
+   credential and job grant. The command is deliberately unavailable through
+   MCP, workers, and normal `VaultBroker` construction, and it accepts only a
+   guard-ahead restored store before atomically establishing the guard's new
+   clean epoch; a current store fails closed.
+3. Restart the daemon. For every affected universe, have its founder repeat the
+   same authenticated
+   deposit flow that originally created each binding. Engine API keys are
+   re-entered with `universe action=set_engine` and
+   `inputs_json={"engine_source":"byo_api_key","service":"…","api_key":"…"}`.
+   Connected GitHub/provider credentials are reconnected through their normal
+   founder-authenticated connection or OAuth flow. Never paste credentials into
+   branch bindings, run inputs, config files, logs, or the ledger.
+4. Repeat per universe and per provider/destination. A deposit in universe A
+   does not and must not repair universe B.
+5. Verify each replacement through the normal status/connection surface, then
+   run one clean universe-scoped operation. `REAUTHORIZATION_REQUIRED` should
+   be replaced by `NOT_FOUND` until that binding is re-deposited; any remaining
+   failure means another binding still needs its founder to reconnect.
+
+The restored records and pre-restore grants are intentionally erased, never made
+usable again. Re-deposit writes fresh provider state under new opaque bindings
+while preserving the anti-rollback evidence.
+
+**Grant GC (S3 seam):** expired `vault_job_grants` rows are inert (resolve
+fails `EXPIRED`) but need `revoke_grant` on job completion for tidy storage.
+The daemon-side completion hook lands with the S3 executor merge — until
+then expired rows simply accumulate; there is no dual cleanup path.
+
 ## What this runbook does NOT cover
 
 - **Partial restore** (one universe's state, not whole-volume). Extract

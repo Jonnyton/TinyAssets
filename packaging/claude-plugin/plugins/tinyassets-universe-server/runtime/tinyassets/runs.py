@@ -34,7 +34,10 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
 
 from tinyassets.branches import BranchDefinition
 from tinyassets.graph_compiler import (
@@ -46,6 +49,9 @@ from tinyassets.graph_compiler import (
     compile_branch,
     seed_initial_state,
 )
+
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +68,7 @@ NODE_STATUS_PENDING = "pending"
 NODE_STATUS_RUNNING = "running"
 NODE_STATUS_RAN = "ran"
 NODE_STATUS_FAILED = "failed"
+NODE_STATUS_SKIPPED = "skipped"
 
 
 class RunCancelledError(Exception):
@@ -80,8 +87,8 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
     try:
         yield conn
         conn.commit()
@@ -249,8 +256,12 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         thread_id      TEXT NOT NULL,
         status         TEXT NOT NULL DEFAULT 'queued',
         actor          TEXT NOT NULL DEFAULT 'anonymous',
+        universe_id    TEXT NOT NULL DEFAULT '',
         owner_user_id  TEXT NOT NULL DEFAULT '',
         inputs_json    TEXT NOT NULL DEFAULT '{}',
+        invocation_depth INTEGER NOT NULL DEFAULT 0,
+        enqueue_context_json TEXT NOT NULL DEFAULT '{}',
+        checkpoint_backend TEXT NOT NULL DEFAULT '',
         output_json    TEXT NOT NULL DEFAULT '{}',
         error          TEXT NOT NULL DEFAULT '',
         last_node_id   TEXT NOT NULL DEFAULT '',
@@ -428,9 +439,13 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             ("model",         "TEXT"),
             ("token_count",   "INTEGER"),
             ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
+            ("universe_id", "TEXT NOT NULL DEFAULT ''"),
             ("daemon_id",     "TEXT"),
             ("runtime_instance_id", "TEXT"),
             ("worker_id",     "TEXT"),
+            ("invocation_depth", "INTEGER NOT NULL DEFAULT 0"),
+            ("enqueue_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("checkpoint_backend", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in existing_runs:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
@@ -450,9 +465,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
     return runs_db_path(base_path)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Run record shape
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @dataclass
@@ -486,10 +499,23 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "thread_id": row["thread_id"],
         "status": row["status"],
         "actor": row["actor"],
+        "universe_id": row["universe_id"] if "universe_id" in col_names else "",
         "owner_user_id": (
             row["owner_user_id"] if "owner_user_id" in col_names else ""
         ),
         "inputs": json.loads(row["inputs_json"] or "{}"),
+        "invocation_depth": (
+            int(row["invocation_depth"] or 0)
+            if "invocation_depth" in col_names else 0
+        ),
+        "enqueue_context": json.loads(
+            row["enqueue_context_json"] or "{}"
+        ) if "enqueue_context_json" in col_names else {},
+        "checkpoint_backend": (
+            row["checkpoint_backend"]
+            if "checkpoint_backend" in col_names
+            else ""
+        ),
         "output": json.loads(row["output_json"] or "{}"),
         "error": row["error"],
         "last_node_id": row["last_node_id"],
@@ -733,53 +759,79 @@ def _row_to_receipt(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Persistence CRUD
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def create_run(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch_def_id: str,
     thread_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "anonymous",
+    universe_id: str = "",
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
     branch_version_id: str | None = None,
     owner_user_id: str | None = None,
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    checkpoint_backend: str = "",
+    _conn: sqlite3.Connection | None = None,
 ) -> str:
-    initialize_runs_db(base_path)
-    run_id = uuid.uuid4().hex[:16]
+    if _conn is None:
+        initialize_runs_db(base_path)
+    resolved_run_id = (run_id or "").strip() or uuid.uuid4().hex[:16]
     resolved_owner_user_id = (
         str(owner_user_id or "")
         if owner_user_id is not None
         else _resolve_owner_user_id(base_path, daemon_id)
     )
-    with _connect(base_path) as conn:
+    connection = (
+        contextlib.nullcontext(_conn)
+        if _conn is not None
+        else _connect(base_path)
+    )
+    with connection as conn:
         conn.execute(
             """
             INSERT INTO runs (
                 run_id, branch_def_id, run_name, thread_id,
-                status, actor, owner_user_id, inputs_json, started_at,
+                status, actor, universe_id, owner_user_id, inputs_json, started_at,
+                invocation_depth, enqueue_context_json,
+                checkpoint_backend,
                 branch_version_id, daemon_id, runtime_instance_id,
                 worker_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                run_id, branch_def_id, run_name, thread_id,
-                RUN_STATUS_QUEUED, actor, resolved_owner_user_id,
+                resolved_run_id, branch_def_id, run_name, thread_id,
+                RUN_STATUS_QUEUED, actor, (universe_id or "").strip(),
+                resolved_owner_user_id,
                 json.dumps(inputs, default=str), _now(),
+                int(invocation_depth),
+                json.dumps(
+                    {
+                        "universe_id": enqueue_context.universe_id,
+                        "actor": enqueue_context.actor,
+                        "parent_branch_task_id": enqueue_context.parent_branch_task_id,
+                        "origin_branch_task_id": enqueue_context.origin_branch_task_id,
+                        "review_destination": enqueue_context.review_destination,
+                        "review_pr_number": enqueue_context.review_pr_number,
+                        "expected_head_sha": enqueue_context.expected_head_sha,
+                    } if enqueue_context is not None else {}
+                ),
+                checkpoint_backend,
                 branch_version_id,
                 daemon_id,
                 runtime_instance_id,
                 worker_id,
             ),
         )
-    return run_id
+    return resolved_run_id
 
 
 def update_run_status(
@@ -885,6 +937,14 @@ def update_run_status(
                     "status update preserved",
                     run_id, status, exc,
                 )
+            # Terminal-run cleanup: REVOKE this run's opaque workspace refs (Codex
+            # S3 r20 #3) so a token captured from a finished / failed / cancelled
+            # run can never be replayed. Best-effort — never blocks a status update.
+            try:
+                from tinyassets.sandbox_policy import release_run_workspace_refs
+                release_run_workspace_refs(run_id)
+            except Exception:  # noqa: BLE001 — cleanup is best-effort observability
+                logger.debug("workspace-ref release failed for run %s", run_id)
 
 
 def record_run_receipt(
@@ -1416,9 +1476,17 @@ def latest_run_by_name(
 
 
 def record_event(
-    base_path: str | Path, event: RunStepEvent,
+    base_path: str | Path,
+    event: RunStepEvent,
+    *,
+    _conn: sqlite3.Connection | None = None,
 ) -> None:
-    with _connect(base_path) as conn:
+    connection = (
+        contextlib.nullcontext(_conn)
+        if _conn is not None
+        else _connect(base_path)
+    )
+    with connection as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO run_events (
@@ -1524,9 +1592,7 @@ def await_run_events(
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Phase 4: judgments, lineage, node edit audit
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _iso_now() -> str:
@@ -1646,12 +1712,19 @@ def record_lineage(
     branch_def_id: str,
     branch_version: int,
     edits_since_parent: list[str] | None = None,
+    _conn: sqlite3.Connection | None = None,
 ) -> None:
     """Store a lineage row at run start. ``parent_run_id`` is resolved by
     the caller (usually: most recent terminal run on the same branch by
     the same actor)."""
-    initialize_runs_db(base_path)
-    with _connect(base_path) as conn:
+    if _conn is None:
+        initialize_runs_db(base_path)
+    connection = (
+        contextlib.nullcontext(_conn)
+        if _conn is not None
+        else _connect(base_path)
+    )
+    with connection as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO run_lineage (
@@ -1921,9 +1994,7 @@ def node_output_from_run(
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Cooperative cancel
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def request_cancel(base_path: str | Path, run_id: str) -> bool:
@@ -1945,9 +2016,7 @@ def is_cancel_requested(base_path: str | Path, run_id: str) -> bool:
     return row is not None
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Synchronous runner
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @dataclass
@@ -2004,17 +2073,50 @@ def _graph_node_order(branch: BranchDefinition) -> list[str]:
     return [gn.id for gn in branch.graph_nodes]
 
 
+def _nodes_reachable_from(branch: BranchDefinition, start_node: str) -> set[str]:
+    if not start_node:
+        return set(_graph_node_order(branch))
+    adjacency: dict[str, set[str]] = {}
+    for edge in branch.edges:
+        source = str(edge.from_node or "")
+        target = str(edge.to_node or "")
+        if source and target and target != "END":
+            adjacency.setdefault(source, set()).add(target)
+    for edge in branch.conditional_edges:
+        source = str(edge.from_node or "")
+        for target_value in edge.conditions.values():
+            target = str(target_value or "")
+            if source and target and target != "END":
+                adjacency.setdefault(source, set()).add(target)
+    reachable: set[str] = set()
+    frontier = [start_node]
+    while frontier:
+        node_id = frontier.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        frontier.extend(adjacency.get(node_id, ()))
+    return reachable
+
+
 def _prepare_run(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str,
     actor: str,
+    universe_id: str = "",
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
     branch_version_id: str | None = None,
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    owner_user_id: str | None = None,
+    lineage_parent_run_id: str = "",
+    start_node: str = "",
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
 
@@ -2025,44 +2127,26 @@ def _prepare_run(
     (Phase A item 6, Task #65). Def-based runs leave it as None.
     """
     initialize_runs_db(base_path)
-    run_id = create_run(
-        base_path,
-        branch_def_id=branch.branch_def_id,
-        thread_id="",
-        inputs=inputs,
-        run_name=run_name,
-        actor=actor,
-        branch_version_id=branch_version_id,
-        daemon_id=daemon_id,
-        runtime_instance_id=runtime_instance_id,
-        worker_id=worker_id,
-    )
-    thread_id = run_id
-    with _connect(base_path) as conn:
-        conn.execute(
-            "UPDATE runs SET thread_id = ? WHERE run_id = ?",
-            (thread_id, run_id),
-        )
-    for step, node_id in enumerate(_graph_node_order(branch)):
-        record_event(base_path, RunStepEvent(
-            run_id=run_id,
-            step_index=step,
-            node_id=node_id,
-            status=NODE_STATUS_PENDING,
-            started_at=_now(),
-        ))
+    from tinyassets.branch_bindings import declared_binding_fields
 
+    checkpoint_backend = (
+        "memory"
+        if declared_binding_fields(getattr(branch, "state_schema", None))
+        else "sqlite"
+    )
     # Phase 4: record lineage so `compare_runs` and "what changed since
     # the last run" work. Parent is the most recent terminal run on this
     # branch by the same actor (best-effort — falls back to branch-wide
     # latest if no same-actor match).
-    parent = latest_terminal_run(
-        base_path, branch_def_id=branch.branch_def_id, actor=actor,
-    )
+    parent = (lineage_parent_run_id or "").strip() or None
     if parent is None:
         parent = latest_terminal_run(
-            base_path, branch_def_id=branch.branch_def_id,
+            base_path, branch_def_id=branch.branch_def_id, actor=actor,
         )
+        if parent is None:
+            parent = latest_terminal_run(
+                base_path, branch_def_id=branch.branch_def_id,
+            )
     branch_version = int(getattr(branch, "version", 1) or 1)
     edits_since_parent: list[str] = []
     if parent is not None:
@@ -2082,14 +2166,60 @@ def _prepare_run(
                         edits_since_parent.extend(a.get("nodes_changed", []))
             except Exception:
                 logger.exception("lineage edit summary failed for %s", run_id)
-    record_lineage(
-        base_path,
-        run_id=run_id,
-        parent_run_id=parent,
-        branch_def_id=branch.branch_def_id,
-        branch_version=branch_version,
-        edits_since_parent=edits_since_parent,
-    )
+
+    # A caller-supplied deterministic run_id is the revision idempotency key.
+    # Commit its row, initial event timeline, and lineage as one unit so a crash
+    # cannot leave a winner that replay mistakes for a fully prepared run.
+    with _connect(base_path) as conn:
+        run_id = create_run(
+            base_path,
+            run_id=run_id,
+            branch_def_id=branch.branch_def_id,
+            thread_id="",
+            inputs=inputs,
+            run_name=run_name,
+            actor=actor,
+            universe_id=universe_id,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
+            branch_version_id=branch_version_id,
+            owner_user_id=owner_user_id,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            checkpoint_backend=checkpoint_backend,
+            _conn=conn,
+        )
+        conn.execute(
+            "UPDATE runs SET thread_id = ? WHERE run_id = ?",
+            (run_id, run_id),
+        )
+        reachable_nodes = _nodes_reachable_from(branch, start_node)
+        for step, node_id in enumerate(_graph_node_order(branch)):
+            record_event(
+                base_path,
+                RunStepEvent(
+                    run_id=run_id,
+                    step_index=step,
+                    node_id=node_id,
+                    status=(
+                        NODE_STATUS_PENDING
+                        if node_id in reachable_nodes
+                        else NODE_STATUS_SKIPPED
+                    ),
+                    started_at=_now(),
+                ),
+                _conn=conn,
+            )
+        record_lineage(
+            base_path,
+            run_id=run_id,
+            parent_run_id=parent,
+            branch_def_id=branch.branch_def_id,
+            branch_version=branch_version,
+            edits_since_parent=edits_since_parent,
+            _conn=conn,
+        )
     return run_id
 
 
@@ -2101,6 +2231,218 @@ def _prepare_run(
 DEFAULT_RECURSION_LIMIT = 100
 
 
+def _execution_blocked_reason(universe_dir: Path | None) -> str | None:
+    """Thin wrapper over :func:`tinyassets.engine_binding.execution_blocked_reason` —
+    THE single fail-closed gate. Any resolution error keeps the run BLOCKED (round-22
+    #2: never fail open on unreadable credential state)."""
+    if universe_dir is None:
+        return None
+    try:
+        from tinyassets.engine_binding import execution_blocked_reason
+
+        return execution_blocked_reason(universe_dir)
+    except Exception as exc:  # noqa: BLE001 — cannot evaluate the gate → fail closed.
+        return f"credential-state gate could not be evaluated ({exc}) — fail closed."
+
+
+def _record_blocked_run(
+    base_path: str | Path,
+    run_id: str,
+    block_reason: str,
+) -> RunOutcome:
+    """Keep external-capacity work queued; terminally fail other gate blocks."""
+    from tinyassets.engine_binding import EXTERNAL_CAPACITY_PENDING_REASON
+
+    pending_external = block_reason.startswith(EXTERNAL_CAPACITY_PENDING_REASON)
+    status = RUN_STATUS_QUEUED if pending_external else RUN_STATUS_FAILED
+    update_kwargs: dict[str, Any] = {
+        "status": status,
+        "error": block_reason,
+    }
+    if not pending_external:
+        update_kwargs["finished_at"] = _now()
+    update_run_status(base_path, run_id, **update_kwargs)
+    return RunOutcome(
+        run_id=run_id,
+        status=status,
+        output={},
+        error=block_reason,
+    )
+
+
+def _default_execution_scope(
+    base_path: str | Path,
+    universe_id: str,
+) -> "ExecutionScope":
+    """Resolve an explicit universe id to the shared S3/S5 scope contract."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ExecutionScope.legacy_unbound()
+    root = Path(base_path).resolve()
+    try:
+        universe_dir = (root / uid).resolve()
+        if not universe_dir.is_relative_to(root) or not universe_dir.is_dir():
+            return ExecutionScope.unknown()
+    except (OSError, RuntimeError, ValueError):
+        return ExecutionScope.unknown()
+    return ExecutionScope.bound(universe_dir)
+
+
+def _execution_scope_for_run(
+    base_path: str | Path,
+    run_id: str,
+) -> "ExecutionScope":
+    """Load the persisted scope; actor parsing is only a migration bridge."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    run = get_run(base_path, run_id)
+    if run is None:
+        return ExecutionScope.unknown()
+    universe_id = str(run.get("universe_id") or "").strip()
+    if not universe_id:
+        actor = str(run.get("actor") or "")
+        if actor.startswith("universe:"):
+            universe_id = actor.removeprefix("universe:").strip()
+    return _default_execution_scope(base_path, universe_id)
+
+
+def _authoritative_execution_scope(
+    base_path: str | Path,
+    run_id: str,
+    asserted_scope: "ExecutionScope | None",
+) -> "ExecutionScope":
+    """Return the persisted run scope, rejecting a contradictory assertion."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    persisted = _execution_scope_for_run(base_path, run_id)
+    if asserted_scope is None:
+        return persisted
+    asserted = ExecutionScope.coerce(asserted_scope)
+    if asserted.kind is not persisted.kind:
+        return ExecutionScope.unknown()
+    if persisted.is_bound:
+        try:
+            if Path(asserted.universe_dir or "").resolve() != Path(
+                persisted.universe_dir or ""
+            ).resolve():
+                return ExecutionScope.unknown()
+        except (OSError, RuntimeError, ValueError):
+            return ExecutionScope.unknown()
+    return persisted
+
+
+def _persisted_execution_context(
+    run: dict[str, Any] | None,
+) -> tuple[int, NodeEnqueueContext]:
+    """Reconstruct trusted compile context stored with the original run."""
+    record = run or {}
+    raw = record.get("enqueue_context")
+    raw = raw if isinstance(raw, dict) else {}
+    return int(record.get("invocation_depth") or 0), NodeEnqueueContext(
+        universe_id=str(raw.get("universe_id") or ""),
+        actor=str(raw.get("actor") or ""),
+        parent_branch_task_id=str(raw.get("parent_branch_task_id") or ""),
+        origin_branch_task_id=str(raw.get("origin_branch_task_id") or ""),
+        review_destination=str(raw.get("review_destination") or ""),
+        review_pr_number=int(raw.get("review_pr_number") or 0),
+        expected_head_sha=str(raw.get("expected_head_sha") or ""),
+    )
+
+
+def _scope_universe_dir(
+    base_path: str | Path,
+    scope: "ExecutionScope | None",
+) -> tuple[Path | None, str | None]:
+    """Validate *scope* and return its context pin plus any block reason."""
+    from tinyassets.sandbox_policy import ExecutionScope, ScopeKind
+
+    resolved = ExecutionScope.coerce(scope)
+    if resolved.is_unknown:
+        return None, "execution universe is unknown — fail closed."
+    if resolved.kind is ScopeKind.LEGACY_UNBOUND:
+        return None, None
+
+    root = Path(base_path).resolve()
+    try:
+        universe_dir = Path(resolved.universe_dir or "").resolve()
+        if not universe_dir.is_relative_to(root) or not universe_dir.is_dir():
+            return None, "execution universe could not be resolved — fail closed."
+    except (OSError, RuntimeError, ValueError):
+        return None, "execution universe could not be resolved — fail closed."
+    return universe_dir, _execution_blocked_reason(universe_dir)
+
+
+def _universe_id_for_scope(scope: "ExecutionScope | None") -> str:
+    """Return the bound universe directory name for persistence."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    resolved = ExecutionScope.coerce(scope)
+    if not resolved.is_bound or not resolved.universe_dir:
+        return ""
+    return Path(resolved.universe_dir).name
+
+
+def _coherent_execution_scope(
+    base_path: str | Path,
+    universe_id: str,
+    scope: "ExecutionScope | None",
+) -> "ExecutionScope":
+    """Resolve scope and fail closed when explicit id and path disagree."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uid = (universe_id or "").strip()
+    resolved = (
+        ExecutionScope.coerce(scope)
+        if scope is not None
+        else _default_execution_scope(base_path, uid)
+    )
+    if not uid:
+        return resolved
+    expected = _default_execution_scope(base_path, uid)
+    if not expected.is_bound or not resolved.is_bound:
+        return ExecutionScope.unknown()
+    if Path(expected.universe_dir or "").resolve() != Path(
+        resolved.universe_dir or ""
+    ).resolve():
+        return ExecutionScope.unknown()
+    return resolved
+
+
+_PRIVATE_BINDING_REDACTION = "[private binding]"
+
+
+def _redact_private_binding_values(value: Any, bindings: dict[str, Any]) -> Any:
+    """Recursively remove private binding values from durable run telemetry."""
+    private_values = [item for item in bindings.values() if item is not None]
+    for private in private_values:
+        if not isinstance(value, (dict, list, tuple)) and value == private:
+            return _PRIVATE_BINDING_REDACTION
+    if isinstance(value, str):
+        redacted = value
+        for private in private_values:
+            candidates = {str(private)}
+            try:
+                candidates.add(json.dumps(private, sort_keys=True))
+            except (TypeError, ValueError):
+                pass
+            for candidate in candidates:
+                if candidate:
+                    redacted = redacted.replace(candidate, _PRIVATE_BINDING_REDACTION)
+        return redacted
+    if isinstance(value, dict):
+        return {
+            key: _redact_private_binding_values(item, bindings)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_private_binding_values(item, bindings) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_private_binding_values(item, bindings) for item in value)
+    return value
+
+
 def _invoke_graph(
     base_path: str | Path,
     *,
@@ -2108,19 +2450,95 @@ def _invoke_graph(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     provider_call: Callable[..., str] | None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
+    start_node: str = "",
+    execution_guard: Callable[[], None] | None = None,
+) -> RunOutcome:
+    """Authorize and pin a prepared run under its immutable tenant scope."""
+    scope = _authoritative_execution_scope(base_path, run_id, execution_scope)
+    universe_dir, block_reason = _scope_universe_dir(base_path, scope)
+    if block_reason is not None:
+        logger.error(
+            "run %s BLOCKED — refusing ambient credential execution: %s",
+            run_id,
+            block_reason,
+        )
+        return _record_blocked_run(base_path, run_id, block_reason)
+
+    from tinyassets.execution_context import pin_execution_universe
+
+    with pin_execution_universe(universe_dir):
+        return _invoke_graph_inner(
+            base_path,
+            run_id=run_id,
+            branch=branch,
+            inputs=inputs,
+            provider_call=provider_call,
+            runtime_bindings=runtime_bindings,
+            recursion_limit=recursion_limit,
+            concurrency_budget_override=concurrency_budget_override,
+            on_node_status=on_node_status,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
+            execution_scope=scope,
+            start_node=start_node,
+            execution_guard=execution_guard,
+        )
+
+
+def _invoke_graph_inner(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    branch: BranchDefinition,
+    inputs: dict[str, Any],
+    provider_call: Callable[..., str] | None,
+    runtime_bindings: dict[str, Any] | None = None,
+    recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    concurrency_budget_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
+    start_node: str = "",
+    execution_guard: Callable[[], None] | None = None,
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
     Blocks until the graph finishes or is cancelled. Updates run status
     to RUNNING on entry, COMPLETED / FAILED / CANCELLED on exit.
+
+    ``execution_scope`` is the AUTHORITATIVE tenant scope (Codex S3 r20 #2),
+    threaded EXPLICITLY to the compiler so a sandbox-required node with an UNKNOWN
+    scope fails closed. ``None`` → UNKNOWN (fail closed) at the choke point.
     """
     thread_id = run_id
     execution_cursor = {"step": 0}
+    private_bindings = dict(runtime_bindings or {})
+
+    def _safe_private(value: Any) -> Any:
+        return _redact_private_binding_values(value, private_bindings)
+
+    if private_bindings and provider_call is not None:
+        raw_provider_call = provider_call
+
+        def _private_safe_provider_call(*args: Any, **kwargs: Any) -> str:
+            try:
+                return raw_provider_call(*args, **kwargs)
+            except Exception as exc:
+                safe = RuntimeError(f"{type(exc).__name__}: {_safe_private(str(exc))}")
+                for attr in ("chain_state", "attempts"):
+                    if hasattr(exc, attr):
+                        setattr(safe, attr, _safe_private(getattr(exc, attr)))
+                raise safe from None
+
+        provider_call = _private_safe_provider_call
     # Telemetry accumulator: "last" feeds runs.provider_used (legacy
     # last-wins), "model" feeds the runs.model column, "calls" becomes a
     # per-run ``provider_calls`` system event (one entry per provider-served
@@ -2185,6 +2603,10 @@ def _invoke_graph(
         # Cancelling mid-provider-call would orphan the LLM call; the
         # node boundary is the right checkpoint.
         phase = detail.pop("phase", "ran")
+        detail = _redact_private_binding_values(
+            detail,
+            dict(runtime_bindings or {}),
+        )
         step = execution_cursor["step"]
         execution_cursor["step"] += 1
 
@@ -2290,6 +2712,7 @@ def _invoke_graph(
     try:
         compiled = compile_branch(
             branch,
+            start_node=start_node,
             provider_call=provider_call,
             event_sink=_on_node,
             concurrency_budget_override=concurrency_budget_override,
@@ -2297,6 +2720,7 @@ def _invoke_graph(
             parent_run_id=run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            execution_scope=execution_scope,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -2328,7 +2752,10 @@ def _invoke_graph(
     # Emit recursion_limit_applied event so get_run can surface the cap used.
     record_event(base_path, RunStepEvent(
         run_id=run_id,
-        step_index=0,
+        # Prepared node-state rows occupy the low cursor range.  Keep the
+        # synthetic run event immediately before live execution events so it
+        # cannot overwrite the first node (including a skipped predecessor).
+        step_index=_PENDING_OFFSET - 1,
         node_id="__system__",
         status="recursion_limit_applied",
         started_at=_now(),
@@ -2353,17 +2780,49 @@ def _invoke_graph(
     _retry_budget_reset()
 
     try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
+        # Binding values may exist in live graph state, but never in the durable
+        # SqliteSaver checkpoint. Bound runs are terminal-on-restart already, so
+        # an in-memory checkpointer preserves the v1 contract without a second
+        # private-value store.
+        from tinyassets.branch_bindings import declared_binding_fields
 
-        saver_path = str(Path(base_path) / ".langgraph_runs.db")
-        Path(saver_path).parent.mkdir(parents=True, exist_ok=True)
-        with SqliteSaver.from_conn_string(saver_path) as checkpointer:
+        binding_fields = declared_binding_fields(
+            getattr(branch, "state_schema", None),
+        )
+        missing_bindings = sorted(binding_fields - set(private_bindings))
+        if missing_bindings:
+            reason = (
+                "This design is inert until all declared repo/policy slots "
+                "are bound to its universe with write_graph target=binding."
+            )
+            update_run_status(
+                base_path, run_id, status=RUN_STATUS_FAILED,
+                error=reason, finished_at=_now(),
+            )
+            return RunOutcome(
+                run_id=run_id, status=RUN_STATUS_FAILED,
+                output={}, error=reason,
+            )
+
+        if binding_fields:
+            from langgraph.checkpoint.memory import MemorySaver
+
+            checkpointer_context = contextlib.nullcontext(MemorySaver())
+        else:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+
+            saver_path = str(Path(base_path) / ".langgraph_runs.db")
+            Path(saver_path).parent.mkdir(parents=True, exist_ok=True)
+            checkpointer_context = SqliteSaver.from_conn_string(saver_path)
+
+        with checkpointer_context as checkpointer:
             app = compiled.graph.compile(checkpointer=checkpointer)
             # BUG-085 M3: seed state_schema defaults UNDER caller inputs so
             # state_schema-declared fields with defaults are available to
             # strict-isolation prompt placeholders from step 1.
             initial_state = seed_initial_state(
-                dict(inputs), getattr(branch, "state_schema", None),
+                {**inputs, **private_bindings},
+                getattr(branch, "state_schema", None),
             )
             result = app.invoke(
                 initial_state,
@@ -2373,15 +2832,16 @@ def _invoke_graph(
                 },
             )
     except RunCancelledError as exc:
+        msg = str(_safe_private(str(exc)))
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_CANCELLED,
-            error=str(exc),
+            error=msg,
             finished_at=_now(),
         )
         return RunOutcome(
             run_id=run_id, status=RUN_STATUS_CANCELLED,
-            output={}, error=str(exc),
+            output={}, error=msg,
         )
     except ChildFailedError as exc:
         # Phase A item 5 / Task #76b — sub-branch propagated a non-completed
@@ -2389,7 +2849,7 @@ def _invoke_graph(
         # ChildFailure surfaced on RunOutcome.child_failures so downstream
         # observers (Task #48 contribution-ledger caused_regression emit;
         # Task #53 route-back gate verdicts) can consume the failure.
-        msg = str(exc)
+        msg = str(_safe_private(str(exc)))
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_FAILED, error=msg, finished_at=_now(),
@@ -2447,6 +2907,7 @@ def _invoke_graph(
                     f"GraphRecursionError: recursion limit {recursion_limit} reached. "
                     f"Raise via recursion_limit_override on run_branch. Detail: {exc}"
                 )
+                msg = str(_safe_private(msg))
                 update_run_status(
                     base_path, run_id,
                     status=RUN_STATUS_FAILED, error=msg, finished_at=_now(),
@@ -2476,7 +2937,7 @@ def _invoke_graph(
         # node_id and timeout value.
         timeout_exc = _find_timeout_exception(exc)
         if timeout_exc is not None:
-            msg = f"Node timeout: {timeout_exc}"
+            msg = str(_safe_private(f"Node timeout: {timeout_exc}"))
             step = execution_cursor["step"]
             execution_cursor["step"] += 1
             record_event(base_path, RunStepEvent(
@@ -2486,7 +2947,7 @@ def _invoke_graph(
                 status=NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
-                detail={"reason": "timeout", "message": str(timeout_exc)},
+                detail={"reason": "timeout", "message": msg},
             ))
             _emit_node_status(
                 _node_id_from_timeout_exc(timeout_exc),
@@ -2504,7 +2965,7 @@ def _invoke_graph(
             )
         empty_exc = _find_empty_response_exception(exc)
         if empty_exc is not None:
-            msg = f"Empty LLM response: {empty_exc}"
+            msg = str(_safe_private(f"Empty LLM response: {empty_exc}"))
             step = execution_cursor["step"]
             execution_cursor["step"] += 1
             record_event(base_path, RunStepEvent(
@@ -2514,7 +2975,7 @@ def _invoke_graph(
                 status=NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
-                detail={"reason": "empty_response", "message": str(empty_exc)},
+                detail={"reason": "empty_response", "message": msg},
             ))
             _emit_node_status(
                 empty_exc.node_id or "(unknown)",
@@ -2530,16 +2991,20 @@ def _invoke_graph(
                 run_id=run_id, status=RUN_STATUS_FAILED,
                 output={}, error=msg,
             )
-        logger.exception("Run %s failed at invoke", run_id)
+        msg = str(_safe_private(f"{type(exc).__name__}: {exc}"))
+        if private_bindings:
+            logger.error("Run %s failed at invoke: %s", run_id, msg)
+        else:
+            logger.exception("Run %s failed at invoke", run_id)
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_FAILED,
-            error=f"{type(exc).__name__}: {exc}",
+            error=msg,
             finished_at=_now(),
         )
         return RunOutcome(
             run_id=run_id, status=RUN_STATUS_FAILED,
-            output={}, error=f"{type(exc).__name__}: {exc}",
+            output={}, error=msg,
         )
 
     output = dict(result) if isinstance(result, dict) else {"result": result}
@@ -2580,21 +3045,81 @@ def _invoke_graph(
     # the run output's ``external_write_errors`` metadata; they never
     # raise into the user-facing run status. Hard-rule #8 (fail loudly)
     # is satisfied by the structured error fields on each evidence entry.
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_external_writes",
+    )
+    if guarded is not None:
+        return guarded
     _quarantine_branch_authored_external_write_keys(output)
     external_write_evidence = _run_external_write_effectors(
-        branch, output, base_path=base_path, run_id=run_id,
+        branch,
+        output,
+        base_path=_effector_base_path(base_path, execution_scope),
+        run_id=run_id,
     )
+
+    # Effectors need the real private binding values while executing.  Apply
+    # redaction only after that boundary, before any run output is persisted.
+    output = _safe_private(output)
+    for field_name in binding_fields:
+        output.pop(field_name, None)
     if external_write_evidence:
         # PR-122 Phase 1 round-2 (Codex finding #2): the receipt is
         # system-authoritative. Overwrite unconditionally — any branch
         # that tries to forge ``external_write_results`` /
         # ``external_write_errors`` has already been moved to
         # ``_branch_authored_*`` for forensics above.
-        output["external_write_results"] = external_write_evidence
+        output["external_write_results"] = _safe_private(external_write_evidence)
         errors = _collect_external_write_errors(external_write_evidence)
         if errors:
-            output["external_write_errors"] = errors
+            output["external_write_errors"] = _safe_private(errors)
 
+    # S4 / E3 (Codex r12 #1 + #5): a present node that opened + projected a PR
+    # for owner review installs a durable review CHECKPOINT and the run must NOT
+    # sail past it. The disposition of that checkpoint decides the run's status:
+    #   - failed:    a REQUIRED review checkpoint could not be persisted →
+    #                fail VISIBLY (Hard Rule 8); never complete past an
+    #                un-checkpointed gate.
+    #   - suspended: the checkpoint persisted → the canonical run stays
+    #                INTERRUPTED (awaiting the owner's decision), NOT completed;
+    #                the owner's durable decision-effect plan finalizes it.
+    #   - complete:  no review checkpoint → normal completion.
+    disposition, detail = _review_gate_disposition(external_write_evidence)
+    if disposition == "failed":
+        msg = (
+            "review checkpoint could not be persisted; refusing to complete a "
+            f"run past an un-checkpointed required review gate: {detail}"
+        )
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_FAILED, output=output, error=msg, finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_FAILED, output=output, error=msg,
+        )
+    if disposition == "suspended":
+        output["awaiting_owner_review"] = detail
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_INTERRUPTED, output=output, finished_at=_now(),
+            provider_used=provider_tracker["last"], model=provider_tracker["model"],
+        )
+        return RunOutcome(
+            run_id=run_id, status=RUN_STATUS_INTERRUPTED, output=output,
+            error="awaiting_owner_review",
+        )
+
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_completion",
+    )
+    if guarded is not None:
+        return guarded
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -2607,6 +3132,43 @@ def _invoke_graph(
         run_id=run_id, status=RUN_STATUS_COMPLETED,
         output=output, error="",
     )
+
+
+def _fail_run_if_execution_guard_rejects(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    execution_guard: Callable[[], None] | None,
+    stage: str,
+) -> RunOutcome | None:
+    """Terminalize a run when its authoritative execution generation moved."""
+    if execution_guard is None:
+        return None
+    try:
+        execution_guard()
+    except Exception as exc:  # noqa: BLE001 -- the guard is fail-closed
+        error = str(exc) or type(exc).__name__
+        logger.error(
+            "Run %s execution guard rejected at %s: %s",
+            run_id,
+            stage,
+            error,
+        )
+        update_run_status(
+            base_path,
+            run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=error,
+            finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=error,
+        )
+    return None
 
 
 # PR-122 Phase 1 round-2 (Codex finding #2): reserved system keys
@@ -2677,6 +3239,18 @@ def _run_external_write_effectors(
         return {}
 
 
+def _effector_base_path(
+    base_path: str | Path,
+    execution_scope: "ExecutionScope | None",
+) -> str | Path:
+    """Use the run's authoritative universe for universe-scoped effect state."""
+    if execution_scope is not None and execution_scope.is_bound:
+        universe_dir = (execution_scope.universe_dir or "").strip()
+        if universe_dir:
+            return universe_dir
+    return base_path
+
+
 def _collect_external_write_errors(
     evidence_map: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -2701,6 +3275,1408 @@ def _collect_external_write_errors(
                     "error_kind": ev.get("error_kind") or "unknown",
                 })
     return errors
+
+
+def _review_gate_disposition(
+    evidence_map: dict[str, Any],
+) -> tuple[str, Any]:
+    """Decide how a run's review checkpoint disposes the run status (Codex r12
+    #1 / #5). Returns ``(disposition, detail)`` where disposition is one of
+    ``"complete"`` / ``"suspended"`` / ``"failed"``.
+
+    Reads the present node's github_pull_request evidence:
+    - ``review_queue_enqueue_error`` present ⇒ ``failed`` (a required review
+      checkpoint could not be persisted — the run must not complete past it).
+    - ``review_queue_run_suspended`` truthy ⇒ ``suspended`` (the run pauses
+      awaiting the owner's decision).
+    - otherwise ⇒ ``complete``.
+    """
+    suspended_detail: dict[str, Any] | None = None
+    for node_id, per_node in (evidence_map or {}).items():
+        if not isinstance(per_node, dict):
+            continue
+        for _sink, ev in per_node.items():
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("review_queue_enqueue_error"):
+                return "failed", ev.get("review_queue_enqueue_error")
+            if ev.get("review_queue_run_suspended"):
+                suspended_detail = {
+                    "node_id": node_id,
+                    "pr_number": ev.get("review_queue_pr_number"),
+                    "destination": ev.get("destination"),
+                }
+    if suspended_detail is not None:
+        return "suspended", suspended_detail
+    return "complete", None
+
+
+_GH_CALL_KEYS = ("kind", "transport", "method", "path", "params", "summary")
+
+
+_REVIEW_EVENT_STATE = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}
+_REVIEW_DECISION_DRAIN_LIMIT = 100
+
+
+class _TerminalDecisionEffect(RuntimeError):
+    """A replay that is permanently unsafe and must not be retried."""
+
+
+def _require_review_effect_head(pull: dict[str, Any], expected_head: str) -> None:
+    live_head = str(pull.get("head_sha") or "").strip()
+    if live_head != expected_head:
+        raise _TerminalDecisionEffect("head_moved")
+
+
+def _review_already_on_github(
+    github_api: Any, call_dict: dict[str, Any], *, expected_owner: str = "",
+) -> bool:
+    """Codex r15 #3 + REJECT #3: reconcile against GitHub's ACTUAL state before
+    re-submitting — was a review with THIS commit_id, by the CONNECTED OWNER, in
+    the matching state already submitted? Closes the crash-after-remote-before-
+    receipt double-submit window WITHOUT accepting a DIFFERENT actor's review at
+    the same commit (the security hole the REJECT reproduced).
+
+    ``expected_owner`` is the resolved connected-owner login; an EMPTY owner
+    NEVER reconciles (fail safe → re-submit with the owner's own token rather
+    than trust an unattributed review). Tolerant of a client without
+    ``list_pull_reviews`` (returns False → submit)."""
+    params = call_dict.get("params") or {}
+    commit_id = (params.get("commit_id") or "").strip()
+    want_event = (params.get("event") or "").strip().upper()
+    owner = (expected_owner or "").strip().lstrip("@").lower()
+    path = call_dict.get("path") or ""
+    # path is /repos/{owner}/{repo}/pulls/{n}/reviews
+    m = re.search(r"/repos/([^/]+/[^/]+)/pulls/(\d+)/reviews", path)
+    if not commit_id or not owner or m is None:
+        return False
+    destination, pr_number = m.group(1), int(m.group(2))
+    try:
+        reviews = github_api.list_pull_reviews(
+            destination=destination, pr_number=pr_number,
+        )
+    except Exception:  # noqa: BLE001 — no reconcile method / error ⇒ submit
+        return False
+    want_state = _REVIEW_EVENT_STATE.get(want_event, want_event)
+    for rv in reviews or []:
+        if (
+            (rv.get("commit_id") or "").strip() == commit_id
+            and (rv.get("user_login") or "").strip().lstrip("@").lower() == owner
+            and (rv.get("state") or "").strip().upper() == want_state
+        ):
+            return True
+    return False
+
+
+def execute_next_review_decision_effect(
+    base_path: str | Path,
+    *,
+    worker_id: str,
+    github_api: Any = None,
+    verifier_api: Any = None,
+    app_actor_id: Any = None,
+    expected_owner: str = "",
+    client_factory: Any = None,
+    verifier_factory: Any = None,
+    owner_resolver: Any = None,
+    app_actor_resolver: Any = None,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Claim and execute one ordered review-decision effect.
+
+    Queue lifecycle (ordering, leases, retry ownership) belongs to
+    ``storage.review_queue``.  This function contains only effect policy and
+    reconciliation.  Reshape emits a canonical ``BranchTask``; it never starts
+    or recovers a run here.
+    """
+    from tinyassets import github_native as _gn
+    from tinyassets.branch_tasks import BranchTask, append_task_if_absent
+    from tinyassets.github_native import GitHubCall
+    from tinyassets.storage import review_queue as _rq
+
+    effect = _rq.claim_next_decision_effect(
+        base_path, worker_id=worker_id, now=now
+    )
+    if effect is None:
+        return None
+    effect_id = effect["effect_id"]
+    decision_id = effect["decision_id"]
+    kind = effect["kind"]
+    payload = effect.get("payload") or {}
+    destination = str(payload.get("destination") or "").strip()
+    effect_api = github_api
+    effect_verifier = verifier_api
+    effect_owner = expected_owner
+    effect_actor_id = app_actor_id
+    try:
+        if kind in {
+            "submit_review",
+            "apply_merge_preference",
+            "enqueue_revision",
+            "finalize_run",
+        }:
+            effect_api = _resolve_worker_client(
+                github_api, client_factory, destination
+            )
+            effect_verifier = _resolve_worker_client(
+                verifier_api, verifier_factory, destination
+            )
+            if not effect_owner and owner_resolver is not None:
+                effect_owner = owner_resolver(destination) or ""
+            if effect_actor_id in (None, "") and app_actor_resolver is not None:
+                effect_actor_id = app_actor_resolver(destination)
+    except Exception as exc:  # noqa: BLE001 -- client resolution is retryable
+        _rq.release_decision_effect(
+            base_path,
+            effect_id=effect_id,
+            worker_id=worker_id,
+            claim_token=effect["claim_token"],
+            error=f"client_error:{exc}",
+            now=now,
+        )
+        decision_status = _rq.get_decision_status(
+            base_path, decision_id=decision_id
+        )
+        if decision_status == "failed":
+            _surface_terminal_review_failure(
+                base_path,
+                decision_id=decision_id,
+                effect_id=effect_id,
+                kind=kind,
+                reason=f"client_error:{exc}",
+            )
+        return {
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": kind,
+            "executed": False,
+            "reason": f"client_error:{exc}",
+            "terminal": decision_status == "failed",
+            "decision_status": decision_status,
+        }
+    result: dict[str, Any]
+    try:
+        if kind == "submit_review":
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
+            event = str(payload.get("event") or "APPROVE").strip().upper()
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(pull, head)
+            if event == "APPROVE":
+                app_ok, app_reason = _app_authored_pr(
+                    pull, expected_owner=effect_owner
+                )
+                if not app_ok:
+                    raise RuntimeError(app_reason)
+                call = _gn.review_approve(
+                    destination=destination, pr_number=pr_number, head_sha=head
+                )
+            else:
+                call = _gn.review_request_changes(
+                    destination=destination,
+                    pr_number=pr_number,
+                    head_sha=head,
+                    body=str(payload.get("body") or ""),
+                )
+            call_dict = call.to_dict()
+            if _review_already_on_github(
+                effect_api, call_dict, expected_owner=effect_owner
+            ):
+                result = {"detail": "already_on_github"}
+            else:
+                response = effect_api.run_call(call)
+                if not response.get("ok"):
+                    raise RuntimeError("review_call_failed")
+                result = {"detail": "submitted", "status": response.get("status")}
+            confirmed_pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(confirmed_pull, head)
+
+        elif kind == "apply_merge_preference":
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(pull, head)
+            if pull.get("merged"):
+                result = {"detail": "already_merged", "state": "merged"}
+            elif pull.get("auto_merge_enabled"):
+                result = {
+                    "detail": "already_enabled",
+                    "state": "approved_auto_merge_enabled",
+                }
+            else:
+                from tinyassets.effectors import github_merge as _gm
+
+                merge = _gm.run_autonomous_merge(
+                    base_path,
+                    destination=destination,
+                    pr_number=pr_number,
+                    branch_def_id=str(payload.get("branch_def_id") or ""),
+                    expected_head_sha=head,
+                    github_api=effect_api,
+                    verifier_api=effect_verifier,
+                    app_actor_id=effect_actor_id,
+                    expected_owner=effect_owner,
+                    now=now,
+                )
+                if not merge.get("ok"):
+                    raise RuntimeError(
+                        str(merge.get("error_kind") or "merge_preference_failed")
+                    )
+                if merge.get("action") == "enable_auto_merge":
+                    call_dict = merge.get("github_call") or {}
+                    response = effect_api.run_call(GitHubCall(**{
+                        key: call_dict[key]
+                        for key in _GH_CALL_KEYS
+                        if key in call_dict
+                    }))
+                    if not response.get("ok"):
+                        raise RuntimeError("enable_auto_merge_failed")
+                result = {
+                    "detail": str(merge.get("action") or "merge_preference_applied"),
+                    "state": str(merge.get("state") or ""),
+                }
+
+        elif kind == "enqueue_revision":
+            route = payload.get("route_back") or {}
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
+            branch_task_id = str(payload.get("branch_task_id") or "").strip()
+            source_run_id = str(route.get("run_id") or "").strip()
+            branch_def_id = str(route.get("branch_def_id") or "").strip()
+            universe_id = str(route.get("universe_id") or "").strip()
+            target_node = str(route.get("target_node") or "").strip()
+            if not all((branch_task_id, source_run_id, branch_def_id, universe_id,
+                        target_node)):
+                raise RuntimeError("invalid_revision_route")
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(pull, head)
+            _created, task = append_task_if_absent(
+                Path(base_path),
+                BranchTask(
+                    branch_task_id=branch_task_id,
+                    branch_def_id=branch_def_id,
+                    universe_id=universe_id,
+                    trigger_source="owner_queued",
+                    request_type="review_revision",
+                    inputs={
+                        "reshape_notes": str(route.get("owner_notes") or "").strip()
+                    },
+                    review_decision_id=decision_id,
+                    source_run_id=source_run_id,
+                    target_node=target_node,
+                    review_destination=destination,
+                    review_pr_number=pr_number,
+                    expected_head_sha=head,
+                ),
+            )
+            result = {"branch_task_id": task.branch_task_id}
+
+        elif kind == "finalize_run":
+            pr_number = int(payload.get("pr_number") or 0)
+            head = str(payload.get("expected_head_sha") or "").strip()
+            if effect_api is None:
+                raise RuntimeError("no_client")
+            pull = effect_api.get_pull(
+                destination=destination, pr_number=pr_number
+            )
+            _require_review_effect_head(pull, head)
+            source_run_id = str(payload.get("run_id") or "").strip()
+            run_base_path = _review_run_storage_path(base_path, source_run_id)
+            source = get_run(run_base_path, source_run_id)
+            if source is None:
+                raise RuntimeError("run_not_found")
+            decision = str(payload.get("decision") or "").strip()
+            output = dict(source.get("output") or {})
+            if source.get("status") != RUN_STATUS_COMPLETED:
+                if source.get("status") != RUN_STATUS_INTERRUPTED:
+                    raise RuntimeError(
+                        f"run_not_awaiting_review:{source.get('status')}"
+                    )
+                if "awaiting_owner_review" not in output:
+                    raise RuntimeError("not_a_review_suspension")
+                prior = _rq.list_decision_effects(
+                    base_path, decision_id=decision_id
+                )
+                prior_results = {
+                    row["kind"]: row.get("result") or {}
+                    for row in prior
+                    if row["position"] < effect["position"]
+                }
+                state = {
+                    _rq.INTENT_APPROVE: (
+                        prior_results.get("apply_merge_preference", {}).get("state")
+                        or "await_owner_merge"
+                    ),
+                    _rq.INTENT_RESHAPE: "reshaped_revising",
+                    _rq.INTENT_REJECT: "rejected",
+                }.get(decision, "resumed")
+                output["review_decision"] = decision
+                output["review_workflow_state"] = state
+                output["review_continuation_effects"] = prior_results
+                output.pop("awaiting_owner_review", None)
+                update_run_status(
+                    run_base_path,
+                    source_run_id,
+                    status=RUN_STATUS_COMPLETED,
+                    output=output,
+                    finished_at=_now(),
+                )
+            _rq.ack_continuation(base_path, run_id=source_run_id)
+            result = {"run_id": source_run_id, "decision": decision}
+
+        else:
+            raise RuntimeError(f"unknown_decision_effect:{kind}")
+    except Exception as exc:  # noqa: BLE001 -- storage decides retry vs terminal
+        permanently_unsafe = isinstance(exc, _TerminalDecisionEffect)
+        settle = (
+            _rq.fail_decision_effect
+            if permanently_unsafe
+            else _rq.release_decision_effect
+        )
+        settle(
+            base_path,
+            effect_id=effect_id,
+            worker_id=worker_id,
+            claim_token=effect["claim_token"],
+            error=str(exc),
+            now=now,
+        )
+        decision_status = _rq.get_decision_status(
+            base_path, decision_id=decision_id
+        )
+        if decision_status == "failed":
+            _surface_terminal_review_failure(
+                base_path,
+                decision_id=decision_id,
+                effect_id=effect_id,
+                kind=kind,
+                reason=str(exc),
+            )
+        return {
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": kind,
+            "executed": False,
+            "reason": str(exc),
+            "terminal": decision_status == "failed",
+            "decision_status": decision_status,
+        }
+
+    if not _rq.complete_decision_effect(
+        base_path,
+        effect_id=effect_id,
+        worker_id=worker_id,
+        claim_token=effect["claim_token"],
+        result=result,
+        now=now,
+    ):
+        decision_status = _rq.get_decision_status(
+            base_path, decision_id=decision_id
+        )
+        return {
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": kind,
+            "executed": False,
+            "reason": "claim_lost",
+            "terminal": decision_status == "failed",
+            "decision_status": decision_status,
+        }
+    response = {
+        "decision_id": decision_id,
+        "effect_id": effect_id,
+        "kind": kind,
+        "executed": True,
+    }
+    response.update(result)
+    return response
+
+
+def execute_pending_review_decisions(
+    base_path: str | Path,
+    *,
+    worker_id: str,
+    github_api: Any = None,
+    verifier_api: Any = None,
+    app_actor_id: Any = None,
+    expected_owner: str = "",
+    client_factory: Any = None,
+    verifier_factory: Any = None,
+    owner_resolver: Any = None,
+    app_actor_resolver: Any = None,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Drain a bounded batch of ready effects across independent decisions."""
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    attempts = 0
+    for _ in range(_REVIEW_DECISION_DRAIN_LIMIT):
+        attempts += 1
+        result = execute_next_review_decision_effect(
+            base_path,
+            worker_id=worker_id,
+            github_api=github_api,
+            verifier_api=verifier_api,
+            app_actor_id=app_actor_id,
+            expected_owner=expected_owner,
+            client_factory=client_factory,
+            verifier_factory=verifier_factory,
+            owner_resolver=owner_resolver,
+            app_actor_resolver=app_actor_resolver,
+            now=now,
+        )
+        if result is None:
+            break
+        if result.get("terminal"):
+            claimed_reports = _rq.claim_terminal_decision_effect_reports(
+                base_path,
+                worker_id=worker_id,
+                effect_ids=[str(result.get("effect_id") or "")],
+                limit=1,
+                now=now,
+            )
+            if not claimed_reports:
+                continue
+            report = claimed_reports[0]
+            result["report_claim_token"] = report["report_claim_token"]
+            result["report_claimed_by"] = report["report_claimed_by"]
+        results.append(result)
+    remaining = _REVIEW_DECISION_DRAIN_LIMIT - attempts
+    if remaining:
+        results.extend(
+            _surface_unreported_terminal_review_failures(
+                base_path,
+                worker_id=worker_id,
+                limit=remaining,
+                now=now,
+            )
+        )
+    return results
+
+
+def _surface_terminal_review_failure(
+    base_path: str | Path,
+    *,
+    decision_id: str,
+    effect_id: str,
+    kind: str,
+    reason: str,
+) -> bool:
+    """Close the failed decision generation and surface its source run."""
+    from tinyassets.storage import review_queue as _rq
+
+    generation_terminalized = _rq.terminalize_failed_decision_generation(
+        base_path,
+        decision_id=decision_id,
+    )
+    finalize = next(
+        (
+            effect
+            for effect in _rq.list_decision_effects(
+                base_path, decision_id=decision_id
+            )
+            if effect["kind"] == "finalize_run"
+        ),
+        None,
+    )
+    run_id = str(((finalize or {}).get("payload") or {}).get("run_id") or "")
+    if not run_id:
+        return generation_terminalized
+    run_base_path = _review_run_storage_path(base_path, run_id)
+    source = get_run(run_base_path, run_id)
+    if source is None:
+        return generation_terminalized
+    output = dict(source.get("output") or {})
+    if (
+        output.get("review_decision_id") == decision_id
+        and output.get("review_decision_status") == "failed"
+    ):
+        return generation_terminalized
+    if (
+        source.get("status") != RUN_STATUS_INTERRUPTED
+        or "awaiting_owner_review" not in output
+    ):
+        return generation_terminalized
+    output.update({
+        "review_decision_id": decision_id,
+        "review_decision_status": "failed",
+        "review_workflow_state": "decision_failed",
+        "review_decision_failure": {
+            "effect_id": effect_id,
+            "kind": kind,
+            "reason": reason,
+        },
+    })
+    output.pop("awaiting_owner_review", None)
+    update_run_status(
+        run_base_path,
+        run_id,
+        status=RUN_STATUS_FAILED,
+        output=output,
+        error=f"review decision failed: {reason}",
+        finished_at=_now(),
+    )
+    return True
+
+
+def _surface_unreported_terminal_review_failures(
+    base_path: str | Path,
+    *,
+    worker_id: str,
+    limit: int,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Surface lease-expiry terminalizations that produced no worker result."""
+    from tinyassets.storage import review_queue as _rq
+
+    surfaced: list[dict[str, Any]] = []
+    for effect in _rq.claim_terminal_decision_effect_reports(
+        base_path,
+        worker_id=worker_id,
+        limit=limit,
+        now=now,
+    ):
+        decision_id = str(effect.get("decision_id") or "")
+        effect_id = str(effect.get("effect_id") or "")
+        reason = str(effect.get("last_error") or "effect_failed")
+        _surface_terminal_review_failure(
+            base_path,
+            decision_id=decision_id,
+            effect_id=effect_id,
+            kind=str(effect.get("kind") or ""),
+            reason=reason,
+        )
+        surfaced.append({
+            "decision_id": decision_id,
+            "effect_id": effect_id,
+            "kind": str(effect.get("kind") or ""),
+            "executed": False,
+            "reason": reason,
+            "terminal": True,
+            "decision_status": "failed",
+            "report_claim_token": effect["report_claim_token"],
+            "report_claimed_by": effect["report_claimed_by"],
+        })
+    return surfaced
+
+
+def _review_run_storage_path(base_path: str | Path, run_id: str) -> Path:
+    """Resolve a review-queue universe path to its canonical run store."""
+    queue_path = Path(base_path)
+    if runs_db_path(queue_path).is_file() and get_run(queue_path, run_id) is not None:
+        return queue_path
+    parent = queue_path.parent
+    if parent != queue_path and runs_db_path(parent).is_file():
+        run = get_run(parent, run_id)
+        if run is not None and run.get("universe_id") == queue_path.name:
+            return parent
+    return queue_path
+
+
+def supersede_stranded_review_runs(
+    base_path: str | Path, run_ids: list[str] | None,
+) -> list[str]:
+    """Cancel the CANONICAL runs of suspensions that were superseded by a newer
+    run on the same PR (Codex r13 #5) — otherwise an older run stranded at
+    INTERRUPTED waits for an owner decision that will never come. Returns the
+    run_ids actually cancelled. Only an interrupted awaiting-review run is
+    touched."""
+    cancelled: list[str] = []
+    for rid in run_ids or []:
+        run_base_path = _review_run_storage_path(base_path, rid)
+        run = get_run(run_base_path, rid)
+        if run is None or run.get("status") != RUN_STATUS_INTERRUPTED:
+            continue
+        output = dict(run.get("output") or {})
+        if "awaiting_owner_review" not in output:
+            continue
+        output["review_workflow_state"] = "superseded"
+        output.pop("awaiting_owner_review", None)
+        update_run_status(
+            run_base_path, rid,
+            status=RUN_STATUS_CANCELLED, output=output,
+            error="superseded by a newer run on the same PR", finished_at=_now(),
+        )
+        cancelled.append(rid)
+    return cancelled
+
+
+def _app_authored_pr(pull: dict[str, Any], *, expected_owner: str) -> tuple[bool, str]:
+    """App-authored-PR invariant (Codex r17 #4). Returns ``(ok, reason)``.
+
+    GitHub blocks a PR author from approving their own PR, so a PR authored by the
+    connected owner (e.g. via a founder PAT) could NEVER receive the required owner
+    review — reject it before merge instead of merging on a self-approval that
+    can't exist. App-installation-authored PRs carry ``author_type == "Bot"``; a
+    human/PAT author is rejected. Fail closed when author identity is absent (can't
+    verify App authorship)."""
+    owner = (expected_owner or "").strip().lstrip("@").lower()
+    author = (pull.get("author_login") or "").strip().lstrip("@").lower()
+    author_type = (pull.get("author_type") or "").strip().lower()
+    if not author:
+        return False, "pr_author_unknown"
+    if owner and author == owner:
+        return False, "pr_authored_by_owner"  # self-approval is impossible
+    if author_type != "bot":
+        return False, "pr_not_app_authored"  # a human/PAT-authored PR
+    return True, "app_authored"
+
+
+def _owner_approval_confirmed(
+    github_api: Any, *, destination: str, pr_number: int, head: str,
+    expected_owner: str,
+) -> bool:
+    """PLATFORM-ENFORCED owner-review gate (Codex r17 #1): is there, RIGHT NOW on
+    GitHub, an APPROVED review by the CONNECTED OWNER at the EXACT head (not
+    dismissed/superseded)? This does NOT trust local ``WORKFLOW_APPROVED`` — so an
+    UNPROTECTED repo (no required-review ruleset) still cannot be merged without a
+    real owner approval on GitHub. An empty owner or head, an unreadable reviews
+    list, or no matching review ⇒ False (fail closed, refuse the merge)."""
+    owner = (expected_owner or "").strip().lstrip("@").lower()
+    want = (head or "").strip()
+    if not owner or not want:
+        return False
+    try:
+        reviews = github_api.list_pull_reviews(
+            destination=destination, pr_number=pr_number,
+        )
+    except Exception:  # noqa: BLE001 — can't verify ⇒ fail closed
+        return False
+    effective_states = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+    latest = next(
+        (
+            rv
+            for rv in reversed(reviews or [])
+            if (rv.get("user_login") or "").strip().lstrip("@").lower() == owner
+            and (rv.get("state") or "").strip().upper() in effective_states
+        ),
+        None,
+    )
+    return bool(
+        latest
+        and (latest.get("commit_id") or "").strip() == want
+        and (latest.get("state") or "").strip().upper() == "APPROVED"
+    )
+
+
+def execute_manual_merge(
+    base_path: str | Path, *, destination: str, pr_number: int,
+    expected_head_sha: str, github_api: Any = None, expected_owner: str = "",
+) -> dict[str, Any]:
+    """Execute the MANUAL merge (Codex r15 #1b / r17 #1) — the default flow.
+
+    GATE (Codex r17 #1): before submitting the merge this REQUIRES a CONFIRMED
+    APPROVED review by the CONNECTED OWNER at the exact reviewed head — read from
+    GitHub, never local ``WORKFLOW_APPROVED``. So even an unprotected repo cannot
+    merge without a real owner approval on GitHub. Head-bound: reports
+    pending→merged ONLY after re-reading GitHub confirms the merge at the reviewed
+    head.
+
+    Idempotent + crash-safe (r15 #3): reconciles against GitHub state (is the PR
+    ALREADY merged at this sha?) before submitting, so a replay never
+    double-merges. Without a client → ``confirmed=False`` (pending), never a
+    false 'merged'. Returns ``{"confirmed", "state", ...}``."""
+    from tinyassets import github_native as _gn
+    from tinyassets.storage import review_queue as _rq
+
+    want = (expected_head_sha or "").strip()
+    if not want:
+        # Head-bound by contract (Codex REJECT #5): without the reviewed head we
+        # cannot prove the head that merges is the head the owner approved.
+        return {"confirmed": False, "state": "missing_expected_head",
+                "reason": "manual merge requires the reviewed expected_head_sha"}
+    # HEAD-BOUND receipt (Codex REJECT #5): a receipt only vouches for THIS head,
+    # so a later head can't ride a prior head's confirmation.
+    receipt_kind = f"manual_merge:{pr_number}:{want[:12]}"
+    if _rq.has_effect_receipt(base_path, run_id=destination, effect_kind=receipt_kind):
+        return {"confirmed": True, "state": "merged", "detail": "receipt"}
+    if github_api is None:
+        return {"confirmed": False, "state": "pending_no_client",
+                "github_call": _gn.merge_pr(
+                    destination=destination, pr_number=pr_number,
+                    expected_head_sha=want).to_dict()}
+    # Reconcile: is the PR ALREADY merged AT THE REVIEWED HEAD? A merged PR whose
+    # live head != the reviewed head means head A was replaced and head B merged
+    # (a real security hole the REJECT reproduced) — refuse, never confirm.
+    try:
+        pull = github_api.get_pull(destination=destination, pr_number=pr_number)
+    except Exception as exc:  # noqa: BLE001 — can't confirm ⇒ pending
+        return {"confirmed": False, "state": "pull_unreadable", "reason": str(exc)}
+    live_head = (pull.get("head_sha") or "").strip()
+    if pull.get("merged"):
+        if live_head and live_head != want:
+            return {"confirmed": False, "state": "head_replaced_merge",
+                    "reason": (f"PR merged at head {live_head[:8]} != reviewed head "
+                               f"{want[:8]}; a replaced head merged")}
+        _rq.record_effect_receipt(
+            base_path, run_id=destination, effect_kind=receipt_kind,
+            detail={"reconciled": True, "head_sha": want,
+                    "merge_commit_sha": pull.get("merge_commit_sha")},
+        )
+        return {"confirmed": True, "state": "merged", "detail": "reconciled",
+                "head_sha": want, "merge_commit_sha": pull.get("merge_commit_sha")}
+    if live_head and want != live_head:
+        return {"confirmed": False, "state": "head_moved",
+                "reason": f"reviewed head {want[:8]} != live {live_head[:8]}"}
+    # APP-AUTHORED-PR INVARIANT (Codex r17 #4): reject a PR the connected owner (or
+    # a non-App human/PAT) authored BEFORE merging — GitHub blocks self-approval, so
+    # such a PR can never carry the required owner review.
+    app_ok, app_reason = _app_authored_pr(pull, expected_owner=expected_owner)
+    if not app_ok:
+        return {"confirmed": False, "state": "pr_author_invalid", "reason": app_reason}
+    # PLATFORM OWNER-REVIEW GATE (Codex r17 #1): require a confirmed owner approval
+    # on GitHub at this exact head BEFORE merging — never trust WORKFLOW_APPROVED.
+    if not _owner_approval_confirmed(
+        github_api, destination=destination, pr_number=pr_number, head=want,
+        expected_owner=expected_owner,
+    ):
+        return {"confirmed": False, "state": "owner_review_unconfirmed",
+                "reason": (
+                    "no confirmed GitHub APPROVED review by the connected owner "
+                    f"at head {want[:8]}; refusing to merge (local approval is not "
+                    "sufficient)")}
+    from tinyassets.github_native import GitHubCall
+    # The merge call carries sha=want, so GitHub ALSO rejects a moved head (409).
+    call = _gn.merge_pr(destination=destination, pr_number=pr_number,
+                        expected_head_sha=want)
+    cd = call.to_dict()
+    res = github_api.run_call(GitHubCall(**{k: cd[k] for k in _GH_CALL_KEYS if k in cd}))
+    if not res.get("ok"):
+        return {"confirmed": False, "state": "merge_failed", "reason": "merge_call_failed"}
+    # Re-read GitHub to CONFIRM the merge happened AT THE REVIEWED HEAD before
+    # reporting merged (head-bound receipt identity — Codex REJECT #5).
+    confirm = github_api.get_pull(destination=destination, pr_number=pr_number)
+    confirm_head = (confirm.get("head_sha") or "").strip()
+    if not confirm.get("merged"):
+        return {"confirmed": False, "state": "merge_unconfirmed"}
+    if confirm_head and confirm_head != want:
+        return {"confirmed": False, "state": "head_replaced_merge",
+                "reason": (f"post-merge head {confirm_head[:8]} != reviewed head "
+                           f"{want[:8]}")}
+    _rq.record_effect_receipt(
+        base_path, run_id=destination, effect_kind=receipt_kind,
+        detail={"head_sha": want, "merge_commit_sha": confirm.get("merge_commit_sha")},
+    )
+    return {"confirmed": True, "state": "merged", "head_sha": want,
+            "merge_commit_sha": confirm.get("merge_commit_sha")}
+
+
+def _resolve_worker_client(
+    github_api: Any, client_factory: Any, destination: str
+) -> Any:
+    """Resolve the credentialed client a recovery worker uses for ``destination``:
+    the directly-injected ``github_api`` (tests / single-repo), else
+    ``client_factory(destination)`` which the daemon builds from the per-universe
+    vault BY DESTINATION. Returns None when neither yields a client (fail closed —
+    the row stays queued)."""
+    if github_api is not None:
+        return github_api
+    if client_factory is None:
+        return None
+    return client_factory(destination)
+
+
+def execute_pending_manual_merges(
+    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
+    expected_owner: str = "", owner_resolver: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — drain the head-bound MANUAL-MERGE outbox (Codex REJECT
+    #1). For each queued merge it resolves the credentialed client (injected, or
+    built from the vault BY DESTINATION via ``client_factory``) AND the connected
+    owner login (``expected_owner`` or ``owner_resolver(destination)``), runs the
+    head-bound + owner-review-gated :func:`execute_manual_merge`, and marks the
+    outbox row executed ONLY when GitHub confirms the merge at the reviewed head.
+    On confirmation it reconciles the PR projection to ``merged``. Without a client
+    (or a confirmed owner review) the row stays queued (honest — never falsely
+    drained). The REAL daemon path the chat verb's ``pending`` merge depends on."""
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    for row in _rq.list_pending_manual_merges(base_path):
+        merge_id = row["merge_id"]
+        dest = (row.get("destination") or "").strip()
+        pr = row.get("pr_number")
+        head = (row.get("expected_head_sha") or "").strip()
+        try:
+            client = _resolve_worker_client(github_api, client_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": f"client_error:{exc}"})
+            continue
+        if client is None:
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": "no_client"})
+            continue
+        owner = expected_owner
+        if not owner and owner_resolver is not None:
+            try:
+                owner = owner_resolver(dest) or ""
+            except Exception:  # noqa: BLE001 — unresolvable owner ⇒ gate fails closed
+                owner = ""
+        try:
+            outcome = execute_manual_merge(
+                base_path, destination=dest, pr_number=pr,
+                expected_head_sha=head, github_api=client, expected_owner=owner,
+            )
+        except Exception as exc:  # noqa: BLE001 — leave queued for retry
+            logger.exception("manual merge drain failed for %s#%s", dest, pr)
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "reason": f"error:{exc}"})
+            continue
+        if outcome.get("confirmed"):
+            _rq.mark_manual_merge_executed(base_path, merge_id=merge_id)
+            try:
+                _rq.reconcile_projection(
+                    base_path, destination=dest, pr_number=pr,
+                    github_state="merged",
+                    merge_commit_sha=outcome.get("merge_commit_sha") or "",
+                    head_sha=head,
+                )
+            except Exception:  # noqa: BLE001 — merge is durable; cache is advisory
+                logger.exception("projection reconcile after merge failed")
+            results.append({"merge_id": merge_id, "confirmed": True, "pr_number": pr,
+                            "merge_commit_sha": outcome.get("merge_commit_sha")})
+        else:
+            results.append({"merge_id": merge_id, "confirmed": False,
+                            "state": outcome.get("state"),
+                            "reason": outcome.get("reason")})
+    return results
+
+
+def _resolve_owner_approval_id(
+    reviews: list[dict[str, Any]] | None, *, owner: str, head: str
+) -> int | None:
+    """The review_id of the CONNECTED OWNER's APPROVED review at ``head`` (Codex
+    REJECT #4) — the EXACT id a dismissal needs, never the hardcoded 0. Matches on
+    the reviewer login AND (when known) the reviewed commit, returning the most
+    recent match. None when no such standing owner approval exists."""
+    want_owner = (owner or "").strip().lstrip("@").lower()
+    want_head = (head or "").strip()
+    if not want_owner:
+        return None
+    resolved: int | None = None
+    for rv in reviews or []:
+        if (rv.get("user_login") or "").strip().lstrip("@").lower() != want_owner:
+            continue
+        if (rv.get("state") or "").strip().upper() != "APPROVED":
+            continue
+        if want_head and (rv.get("commit_id") or "").strip() != want_head:
+            continue
+        rid = rv.get("id")
+        if isinstance(rid, int):
+            resolved = rid  # most recent matching approval wins
+    return resolved
+
+
+def execute_pending_revocations(
+    base_path: str | Path, *, github_api: Any = None, client_factory: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — execute queued preference-tightening revocations (Codex
+    r15 #2): actually DISABLE auto-merge / DISMISS the prior approval via the
+    client and confirm, then mark the revocation executed. The client is the
+    injected ``github_api`` or ``client_factory(destination)`` (vault-built by
+    destination). Without a client the revocations stay queued (honest — nothing
+    is falsely marked done). Daemon-loop registration is the integration seam.
+
+    Dismissal (Codex REJECT #4): the EXACT owner review_id is resolved from
+    GitHub via ``list_pull_reviews`` (owner login + reviewed head) — never the
+    old hardcoded ``review_id=0`` that the permissive fake accepted. The dismiss
+    call runs under the owner USER token (the authorized dismisser on a protected
+    branch), not the App's minimal installation scope. When no standing owner
+    approval exists (already dismissed / head auto-dismissed), the revocation
+    goal is already met and the row is marked done."""
+    from tinyassets import github_native as _gn
+    from tinyassets.github_native import GitHubCall
+    from tinyassets.storage import review_queue as _rq
+
+    results: list[dict[str, Any]] = []
+    for rev in _rq.list_pending_revocations(base_path):
+        rev_id = rev["revocation_id"]
+        dest, pr, kind = rev.get("destination") or "", rev.get("pr_number"), rev.get("kind")
+        try:
+            github_api_dest = _resolve_worker_client(github_api, client_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ retry later
+            results.append({"revocation_id": rev_id, "executed": False,
+                            "reason": f"client_error:{exc}"})
+            continue
+        if github_api_dest is None:
+            results.append({"revocation_id": rev_id, "executed": False,
+                            "reason": "no_client"})
+            continue
+        try:
+            if kind == "disable_auto_merge":
+                call = _gn.disable_auto_merge(destination=dest, pr_number=pr)
+            elif kind == "dismiss_prior_approval":
+                # Resolve the EXACT owner review_id from GitHub (never 0).
+                try:
+                    reviews = github_api_dest.list_pull_reviews(
+                        destination=dest, pr_number=pr
+                    )
+                except Exception as exc:  # noqa: BLE001 — unreadable ⇒ retry later
+                    results.append({"revocation_id": rev_id, "executed": False,
+                                    "reason": f"reviews_unreadable:{exc}"})
+                    continue
+                review_id = _resolve_owner_approval_id(
+                    reviews, owner=rev.get("founder_handle") or "",
+                    head=rev.get("expected_head_sha") or "",
+                )
+                if review_id is None:
+                    # No standing owner approval to dismiss → goal already met.
+                    _rq.mark_revocation_executed(base_path, revocation_id=rev_id)
+                    results.append({"revocation_id": rev_id, "executed": True,
+                                    "kind": kind, "pr_number": pr,
+                                    "detail": "no_standing_owner_approval"})
+                    continue
+                call = _gn.dismiss_review(
+                    destination=dest, pr_number=pr, review_id=review_id,
+                    message="merge preference changed; renewed owner consent required",
+                )
+            else:
+                results.append({"revocation_id": rev_id, "executed": False,
+                                "reason": f"unknown_kind:{kind}"})
+                continue
+            cd = call.to_dict()
+            res = github_api_dest.run_call(GitHubCall(**{
+                k: cd[k] for k in _GH_CALL_KEYS if k in cd
+            }))
+            if not res.get("ok"):
+                results.append({"revocation_id": rev_id, "executed": False,
+                                "reason": "call_failed"})
+                continue
+            _rq.mark_revocation_executed(base_path, revocation_id=rev_id)
+            results.append({"revocation_id": rev_id, "executed": True,
+                            "kind": kind, "pr_number": pr})
+        except Exception as exc:  # noqa: BLE001 — leave queued for retry
+            logger.exception("revocation execution failed")
+            results.append({"revocation_id": rev_id, "executed": False,
+                            "reason": f"error:{exc}"})
+    return results
+
+
+def fire_due_not_before_timers(
+    base_path: str | Path, *, github_api: Any = None, verifier_api: Any = None,
+    app_actor_id: Any = None, expected_owner: str = "", now: float | None = None,
+    client_factory: Any = None, verifier_factory: Any = None,
+    owner_resolver: Any = None, app_actor_resolver: Any = None,
+) -> list[dict[str, Any]]:
+    """RECOVERY WORKER — the not_before timer-watcher (Codex r14 #5 / r17 #3). For
+    each due timer it RE-VALIDATES the binding revision + GitHub head, RE-RUNS the
+    shared fail-closed autonomous gate (VERIFIER identity + fresh base/head), and
+    only then executes the auto-merge enable — marking the timer fired ONLY on
+    confirmed success (idempotent via receipt). A stale binding (owner tightened)
+    or moved head refuses without firing.
+
+    Per-destination wiring (Codex r17 #3): the merge client, the ruleset-read
+    VERIFIER client, the connected owner, and the App bypass-actor id are resolved
+    PER DESTINATION via the factories/resolvers (the daemon builds them from the
+    vault) — falling back to the single injected values for tests. Without a
+    verifier the autonomous gate fails closed and the timer stays due."""
+    from tinyassets.effectors import github_merge as _gm
+    from tinyassets.github_native import GitHubCall
+    from tinyassets.storage import review_queue as _rq
+
+    ts = now if now is not None else _now()
+    fired: list[dict[str, Any]] = []
+    for timer in _rq.due_not_before_timers(base_path, now=ts):
+        dest = timer.get("destination") or ""
+        pr = timer.get("pr_number")
+        bdid = timer.get("branch_def_id") or ""
+        binding = _rq.resolve_merge_preference_binding(base_path, branch_def_id=bdid)
+        ok, reason = _rq.authorize_timer_fire(
+            timer, current_revision=int(binding.get("revision") or 0),
+        )
+        if not ok:
+            fired.append({"pr_number": pr, "fired": False, "reason": reason})
+            continue
+        # Resolve the per-destination merge client + verifier + owner + App actor.
+        try:
+            github_api_dest = _resolve_worker_client(github_api, client_factory, dest)
+            verifier_dest = _resolve_worker_client(verifier_api, verifier_factory, dest)
+        except Exception as exc:  # noqa: BLE001 — client build failed ⇒ stay due
+            fired.append({"pr_number": pr, "fired": False,
+                          "reason": f"client_error:{exc}"})
+            continue
+        owner_dest = expected_owner or (
+            (owner_resolver(dest) or "") if owner_resolver else "")
+        actor_dest = app_actor_id if app_actor_id not in (None, "") else (
+            (app_actor_resolver(dest) or None) if app_actor_resolver else None)
+        # Re-run the shared fail-closed gate against FRESH GitHub state.
+        merge = _gm.run_autonomous_merge(
+            base_path, destination=dest, pr_number=pr, branch_def_id=bdid,
+            expected_head_sha=timer.get("expected_head_sha") or "",
+            github_api=github_api_dest, verifier_api=verifier_dest,
+            app_actor_id=actor_dest, expected_owner=owner_dest,
+            firing=True, now=ts,
+        )
+        if not merge.get("ok") or merge.get("action") != "enable_auto_merge":
+            fired.append({"pr_number": pr, "fired": False,
+                          "reason": merge.get("error_kind") or merge.get("action")})
+            continue
+        # Reconcile the remote goal before mutating.  If the prior process died
+        # after GitHub accepted enablePullRequestAutoMerge but before local ack,
+        # REST already reports the feature enabled and replay only repairs local
+        # state.
+        current_pull = github_api_dest.get_pull(destination=dest, pr_number=pr)
+        if current_pull.get("auto_merge_enabled"):
+            _rq.mark_timer_fired(base_path, destination=dest, pr_number=pr, now=ts)
+            fired.append({"pr_number": pr, "fired": True, "detail": "reconciled"})
+            continue
+        receipt_key = (
+            f"timer_enable_auto_merge:{pr}:"
+            f"{(timer.get('expected_head_sha') or '')[:12]}:"
+            f"r{int(timer.get('binding_revision') or 0)}"
+        )
+        if _rq.has_effect_receipt(base_path, run_id=dest, effect_kind=receipt_key) is None:
+            call = merge.get("github_call") or {}
+            res = github_api_dest.run_call(GitHubCall(**{
+                k: call[k] for k in _GH_CALL_KEYS if k in call
+            }))
+            if not res.get("ok"):
+                fired.append({"pr_number": pr, "fired": False, "reason": "enable_failed"})
+                continue
+            _rq.record_effect_receipt(
+                base_path, run_id=dest, effect_kind=receipt_key,
+                detail={"status": res.get("status")},
+            )
+        _rq.mark_timer_fired(base_path, destination=dest, pr_number=pr, now=ts)
+        fired.append({"pr_number": pr, "fired": True})
+    return fired
+
+
+def register_review_workers(
+    *, base_path: str | Path, github_api: Any = None, verifier_api: Any = None,
+    app_actor_id: Any = None, expected_owner: str = "", client_factory: Any = None,
+    verifier_factory: Any = None, owner_resolver: Any = None,
+    app_actor_resolver: Any = None,
+) -> dict[str, Callable[[], list[dict[str, Any]]]]:
+    """Register the review-decision and related recovery workers.
+
+    The daemon invokes the leased ordered decision executor, manual-merge drain,
+    revocation executor, and not-before timer watcher on each tick — each
+    bound to the credentialed client (``github_api`` directly, or
+    ``client_factory(destination)`` / ``verifier_factory(destination)`` built from
+    the vault per destination), with the owner + App-actor resolved per
+    destination.
+
+    Live wiring: :func:`run_review_recovery_for_universe` builds the factories +
+    resolvers from the per-universe vault and the daemon loop calls it each cycle
+    (:func:`fantasy_daemon.__main__._dispatcher_startup`)."""
+    return {
+        "execute_decisions": lambda: execute_pending_review_decisions(
+            base_path,
+            worker_id=(
+                os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+                or f"review-worker-{os.getpid()}"
+            ),
+            github_api=github_api,
+            verifier_api=verifier_api,
+            app_actor_id=app_actor_id,
+            expected_owner=expected_owner,
+            client_factory=client_factory,
+            verifier_factory=verifier_factory,
+            owner_resolver=owner_resolver,
+            app_actor_resolver=app_actor_resolver,
+        ),
+        "drain_manual_merges": lambda: execute_pending_manual_merges(
+            base_path, github_api=github_api, client_factory=client_factory,
+            expected_owner=expected_owner, owner_resolver=owner_resolver,
+        ),
+        "execute_revocations": lambda: execute_pending_revocations(
+            base_path, github_api=github_api, client_factory=client_factory,
+        ),
+        "fire_timers": lambda: fire_due_not_before_timers(
+            base_path, github_api=github_api, verifier_api=verifier_api,
+            app_actor_id=app_actor_id, expected_owner=expected_owner,
+            client_factory=client_factory, verifier_factory=verifier_factory,
+            owner_resolver=owner_resolver, app_actor_resolver=app_actor_resolver,
+        ),
+    }
+
+
+@dataclass(frozen=True)
+class ReviewRevisionExecutionGuard:
+    """One review head binding used before, during, and after execution."""
+
+    universe_dir: str | Path
+    review_destination: str
+    review_pr_number: int
+    expected_head_sha: str
+
+    @classmethod
+    def from_task(
+        cls, universe_dir: str | Path, task: Any,
+    ) -> "ReviewRevisionExecutionGuard":
+        return cls(
+            universe_dir=universe_dir,
+            review_destination=str(
+                getattr(task, "review_destination", "") or ""
+            ).strip(),
+            review_pr_number=int(
+                getattr(task, "review_pr_number", 0) or 0
+            ),
+            expected_head_sha=str(
+                getattr(task, "expected_head_sha", "") or ""
+            ).strip(),
+        )
+
+    def __call__(self) -> None:
+        require_review_revision_task_head(self.universe_dir, task=self)
+
+    def bind_enqueue_context(
+        self, context: NodeEnqueueContext,
+    ) -> NodeEnqueueContext:
+        """Carry this guard into the graph's sole durable node verb."""
+        return NodeEnqueueContext(
+            universe_id=context.universe_id,
+            actor=context.actor,
+            parent_branch_task_id=context.parent_branch_task_id,
+            origin_branch_task_id=context.origin_branch_task_id,
+            review_destination=self.review_destination,
+            review_pr_number=self.review_pr_number,
+            expected_head_sha=self.expected_head_sha,
+        )
+
+
+def require_review_revision_task_head(
+    universe_dir: str | Path,
+    *,
+    task: Any,
+    github_api: Any = None,
+) -> None:
+    """Fail closed unless a revision task still targets its reviewed PR head."""
+    destination = str(
+        getattr(task, "review_destination", "") or ""
+    ).strip()
+    pr_number = int(getattr(task, "review_pr_number", 0) or 0)
+    expected_head = str(
+        getattr(task, "expected_head_sha", "") or ""
+    ).strip()
+    if not destination or pr_number <= 0 or not expected_head:
+        raise _TerminalDecisionEffect("invalid_revision_head_binding")
+    client = github_api
+    if client is None:
+        from tinyassets.github_http import github_client_from_vault
+
+        client = github_client_from_vault(universe_dir, destination)
+    if client is None:
+        raise RuntimeError("no_client")
+    pull = client.get_pull(destination=destination, pr_number=pr_number)
+    _require_review_effect_head(pull, expected_head)
+
+
+def resolve_review_revision_request(
+    base_path: str | Path,
+    universe_dir: str | Path,
+    *,
+    task: Any,
+    branch: BranchDefinition,
+) -> dict[str, Any]:
+    """Resolve trusted inputs/identity for a claimed review-revision task.
+
+    This is decision policy only. The BranchTask queue owns execution lifecycle,
+    and :func:`execute_claimed_branch_request` owns run lifecycle.
+    """
+    from tinyassets.api.runs import (
+        _bind_universe_context,
+        _resolve_runtime_bindings,
+        _run_execution_scope,
+    )
+    from tinyassets.daemon_registry import get_daemon
+    from tinyassets.daemon_server import get_runtime_instance
+
+    source_run_id = str(getattr(task, "source_run_id", "") or "").strip()
+    source = get_run(base_path, source_run_id)
+    if source is None:
+        raise LookupError("reshape source run was not found")
+    branch_def_id = str(getattr(task, "branch_def_id", "") or "").strip()
+    if branch_def_id != str(source.get("branch_def_id") or "").strip():
+        raise RuntimeError("reshape task does not match its source branch")
+    universe_id = str(getattr(task, "universe_id", "") or "").strip()
+    if universe_id != str(source.get("universe_id") or "").strip():
+        raise RuntimeError("reshape task does not match its source universe")
+    target_node = str(getattr(task, "target_node", "") or "").strip()
+    if target_node not in {node.id for node in branch.graph_nodes}:
+        raise LookupError("reshape target node was not found in the branch")
+
+    runtime_bindings, refusal = _resolve_runtime_bindings(branch, universe_id)
+    if refusal is not None:
+        raise RuntimeError("reshape runtime bindings are unavailable")
+    owner_user_id = str(source.get("owner_user_id") or "").strip()
+    runtime_instance_id = str(source.get("runtime_instance_id") or "").strip()
+    if not owner_user_id or not runtime_instance_id:
+        raise RuntimeError("reshape source has no trusted owner or live runtime")
+    try:
+        runtime = get_runtime_instance(base_path, instance_id=runtime_instance_id)
+    except KeyError as exc:
+        raise RuntimeError("reshape source has no live runtime") from exc
+    if (
+        str(runtime.get("status") or "").strip() != "provisioned"
+        or str(runtime.get("universe_id") or "").strip() != universe_id
+    ):
+        raise RuntimeError("reshape source has no executable runtime")
+    runtime_metadata = runtime.get("metadata") or {}
+    daemon_id = str(source.get("daemon_id") or "").strip()
+    if daemon_id != str(runtime_metadata.get("daemon_id") or "").strip():
+        raise RuntimeError("reshape runtime identity does not match its daemon")
+    daemon = get_daemon(base_path, daemon_id=daemon_id)
+    if str(runtime.get("author_id") or "").strip() != str(
+        daemon.get("legacy_author_id") or ""
+    ).strip():
+        raise RuntimeError("reshape runtime identity does not match its daemon")
+    if owner_user_id != str(daemon.get("owner_user_id") or "").strip():
+        raise RuntimeError("reshape runtime identity does not match its owner")
+    runtime_owner = str(runtime_metadata.get("owner_user_id") or "").strip()
+    if runtime_owner and runtime_owner != owner_user_id:
+        raise RuntimeError("reshape runtime identity does not match its owner")
+    worker_id = str(source.get("worker_id") or "").strip()
+    runtime_worker = str(runtime_metadata.get("worker_id") or "").strip()
+    if not worker_id or (runtime_worker and runtime_worker != worker_id):
+        raise RuntimeError("reshape runtime identity does not match its worker")
+
+    source_state = {
+        **dict(source.get("inputs") or {}),
+        **dict(source.get("output") or {}),
+    }
+    state_fields = {
+        str(field.get("name") or "")
+        for field in branch.state_schema
+        if str(field.get("name") or "")
+    }
+    inputs = {key: value for key, value in source_state.items() if key in state_fields}
+    inputs["reshape_notes"] = str(
+        (getattr(task, "inputs", {}) or {}).get("reshape_notes") or ""
+    ).strip()
+    task_id = str(getattr(task, "branch_task_id", "") or "").strip()
+    revised_run_id = hashlib.sha256(
+        f"claimed-branch-task\0{task_id}".encode("utf-8")
+    ).hexdigest()[:32]
+    try:
+        from tinyassets.providers.call import call_provider as provider_call
+    except ImportError:
+        provider_call = None
+    return {
+        "run_id": revised_run_id,
+        "inputs": inputs,
+        "run_name": f"branch-task-{task_id}",
+        "actor": str(source.get("actor") or "anonymous"),
+        "provider_call": _bind_universe_context(provider_call, universe_id),
+        "runtime_bindings": runtime_bindings,
+        "owner_user_id": owner_user_id,
+        "daemon_id": daemon_id,
+        "runtime_instance_id": runtime_instance_id,
+        "worker_id": worker_id,
+        "lineage_parent_run_id": source_run_id,
+        "start_node": target_node,
+        "universe_id": universe_id,
+        "execution_scope": _run_execution_scope(universe_id),
+    }
+
+
+def run_review_recovery_for_universe(
+    universe_dir: str | Path, *, request_fn: Any = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Drive review recovery for one universe with vault-built clients.
+
+    Builds, from the platform credential vault BY DESTINATION: the merge/read
+    client (:func:`github_http.github_client_from_vault`), the ruleset-read
+    VERIFIER client (:func:`github_http.verifier_client_from_vault`), the connected
+    owner login and App bypass-actor id from the non-secret connection metadata.
+    The ordered decision executor owns review submission, merge-preference
+    application, revision-task enqueue, and source-run finalization. Related
+    workers drain explicit manual merges, execute revocations, and fire due
+    not-before timers through the verifier.
+
+    Fail-closed everywhere: a destination with no connected credential yields no
+    client, so its rows stay queued; a manual merge with no CONFIRMED owner review
+    on GitHub is refused; an autonomous timer with no verifier stays due. Called
+    each cycle from the daemon's per-universe startup recovery; safe to call
+    repeatedly (every worker is idempotent + receipt- / outbox-guarded). Returns
+    per-worker result lists for observability."""
+    from tinyassets.credential_broker import github_connection_metadata
+    from tinyassets.github_http import (
+        github_client_from_vault,
+        verifier_client_from_vault,
+    )
+    _client_cache: dict[str, Any] = {}
+    _verifier_cache: dict[str, Any] = {}
+    universe_id = Path(universe_dir).name
+
+    def client_factory(destination: str) -> Any:
+        dest = (destination or "").strip()
+        if dest not in _client_cache:
+            try:
+                _client_cache[dest] = github_client_from_vault(
+                    universe_dir, dest, request_fn=request_fn,
+                )
+            except Exception:  # noqa: BLE001 — no/invalid credential ⇒ fail closed
+                logger.exception("building github client for %s failed", dest)
+                _client_cache[dest] = None
+        return _client_cache[dest]
+
+    def verifier_factory(destination: str) -> Any:
+        dest = (destination or "").strip()
+        if dest not in _verifier_cache:
+            try:
+                _verifier_cache[dest] = verifier_client_from_vault(
+                    universe_dir, dest, request_fn=request_fn,
+                )
+            except Exception:  # noqa: BLE001 — no ruleset-verify grant ⇒ fail closed
+                logger.exception("building verifier client for %s failed", dest)
+                _verifier_cache[dest] = None
+        return _verifier_cache[dest]
+
+    def owner_resolver(destination: str) -> str:
+        return github_connection_metadata(
+            universe_id, destination
+        ).get("account_login", "")
+
+    def app_actor_resolver(destination: str) -> str:
+        return github_connection_metadata(
+            universe_id, destination
+        ).get("app_actor_id", "")
+
+    worker_id = (
+        os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+        or f"review-worker-{os.getpid()}"
+    )
+    decisions = execute_pending_review_decisions(
+        universe_dir,
+        worker_id=worker_id,
+        client_factory=client_factory,
+        verifier_factory=verifier_factory,
+        owner_resolver=owner_resolver,
+        app_actor_resolver=app_actor_resolver,
+    )
+
+    return {
+        "execute_decisions": decisions,
+        "drain_manual_merges": execute_pending_manual_merges(
+            universe_dir, client_factory=client_factory, owner_resolver=owner_resolver,
+        ),
+        "execute_revocations": execute_pending_revocations(
+            universe_dir, client_factory=client_factory,
+        ),
+        "fire_timers": fire_due_not_before_timers(
+            universe_dir, client_factory=client_factory,
+            verifier_factory=verifier_factory, owner_resolver=owner_resolver,
+            app_actor_resolver=app_actor_resolver,
+        ),
+    }
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
@@ -2780,6 +4756,7 @@ def execute_branch(
     run_name: str = "",
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -2790,6 +4767,7 @@ def execute_branch(
     _enqueue_universe_id: str = "",
     _parent_branch_task_id: str = "",
     _origin_branch_task_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Synchronous end-to-end execution.
 
@@ -2805,14 +4783,20 @@ def execute_branch(
         Optional override for LangGraph's recursion limit. When ``None``
         (default), uses :data:`DEFAULT_RECURSION_LIMIT` (100). Branches
         with deep conditional loops (Tier-1 Step 6) bump this.
+    execution_scope
+        The AUTHORITATIVE tenant scope (Codex S3 r20 #2). When ``None``, a default
+        is derived from ``_enqueue_universe_id`` (empty → legacy-unbound; a bound id
+        → bound). Callers that know the scope pass it explicitly. UNKNOWN fails
+        closed for sandbox-required nodes.
     """
-    run_id = _prepare_run(
+    execution_scope = _coherent_execution_scope(
         base_path,
-        branch=branch, inputs=inputs,
-        run_name=run_name, actor=actor,
-        daemon_id=daemon_id,
-        runtime_instance_id=runtime_instance_id,
-        worker_id=worker_id,
+        _enqueue_universe_id,
+        execution_scope,
+    )
+    persisted_universe_id = (
+        (_enqueue_universe_id or "").strip()
+        or _universe_id_for_scope(execution_scope)
     )
     enqueue_context = NodeEnqueueContext(
         universe_id=_enqueue_universe_id,
@@ -2820,26 +4804,186 @@ def execute_branch(
         parent_branch_task_id=_parent_branch_task_id,
         origin_branch_task_id=_origin_branch_task_id,
     )
+    run_id = _prepare_run(
+        base_path,
+        branch=branch, inputs=inputs,
+        run_name=run_name, actor=actor,
+        universe_id=persisted_universe_id,
+        invocation_depth=_invocation_depth,
+        enqueue_context=enqueue_context,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
+    )
     return _invoke_graph(
         base_path,
         run_id=run_id, branch=branch, inputs=inputs,
         provider_call=provider_call,
+        runtime_bindings=runtime_bindings,
         recursion_limit=recursion_limit_override or DEFAULT_RECURSION_LIMIT,
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
+        execution_scope=execution_scope,
         enqueue_context=enqueue_context,
     )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Async executor pool — in-process background worker for graph runs
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Phase 3.5: the MCP tool returns a `run_id` in <1s. The graph runs in a
 # background thread. `cancel_run` flips the flag, the next inter-node
 # `event_sink` check unwinds the graph. Restart recovery marks in-flight
 # runs as `interrupted` so clients see a clean terminal state and can
 # choose to rerun.
+
+def execute_claimed_branch_request(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    branch: BranchDefinition,
+    inputs: dict[str, Any],
+    run_name: str,
+    actor: str,
+    provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    owner_user_id: str = "",
+    daemon_id: str = "",
+    runtime_instance_id: str = "",
+    worker_id: str = "",
+    lineage_parent_run_id: str = "",
+    start_node: str = "",
+    universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
+    execution_guard: Callable[[], None] | None = None,
+) -> RunOutcome:
+    """Execute one request already owned by a durable queue claim.
+
+    The queue owns cross-process exclusivity and retry leases. This adapter owns
+    deterministic run identity and crash recovery, so queue consumers do not
+    recreate run lifecycle handling.
+    """
+    request_run_id = (run_id or "").strip()
+    if not request_run_id:
+        raise ValueError("run_id is required for a claimed branch request")
+    guard_binding = (
+        execution_guard
+        if isinstance(execution_guard, ReviewRevisionExecutionGuard)
+        else None
+    )
+    enqueue_context = NodeEnqueueContext(universe_id=universe_id, actor=actor)
+    if guard_binding is not None:
+        enqueue_context = guard_binding.bind_enqueue_context(enqueue_context)
+    scope = _coherent_execution_scope(base_path, universe_id, execution_scope)
+    existing = get_run(base_path, request_run_id)
+    if existing is not None:
+        expected = {
+            "branch_def_id": branch.branch_def_id,
+            "run_name": run_name,
+            "actor": actor,
+            "universe_id": universe_id,
+            "owner_user_id": owner_user_id,
+            "daemon_id": daemon_id,
+            "runtime_instance_id": runtime_instance_id,
+            "worker_id": worker_id,
+            "inputs": inputs,
+        }
+        if any(existing.get(field) != value for field, value in expected.items()):
+            raise RuntimeError("existing claimed-request run does not match request")
+        lineage = get_lineage(base_path, request_run_id)
+        if (
+            lineage is None
+            or lineage.get("parent_run_id") != lineage_parent_run_id
+            or lineage.get("branch_def_id") != branch.branch_def_id
+        ):
+            raise RuntimeError("existing claimed-request run lineage does not match")
+        status = str(existing.get("status") or "")
+        if status in {
+            RUN_STATUS_COMPLETED,
+            RUN_STATUS_FAILED,
+            RUN_STATUS_CANCELLED,
+        }:
+            return RunOutcome(
+                run_id=request_run_id,
+                status=status,
+                output=dict(existing.get("output") or {}),
+                error=str(existing.get("error") or ""),
+            )
+        if status in {RUN_STATUS_QUEUED, RUN_STATUS_RUNNING}:
+            update_run_status(
+                base_path,
+                request_run_id,
+                status=RUN_STATUS_INTERRUPTED,
+                error="Durable request reclaimed after its execution lease ended.",
+                finished_at=_now(),
+            )
+            status = RUN_STATUS_INTERRUPTED
+        if status not in {RUN_STATUS_INTERRUPTED, RUN_STATUS_RESUMED}:
+            raise RuntimeError(f"claimed-request run has invalid status: {status}")
+        if _has_checkpoint(base_path, request_run_id):
+            update_run_status(base_path, request_run_id, status=RUN_STATUS_RESUMED)
+            return _invoke_graph_resume(
+                base_path,
+                run_id=request_run_id,
+                branch=branch,
+                thread_id=request_run_id,
+                provider_call=provider_call,
+                execution_scope=scope,
+                execution_guard=execution_guard,
+            )
+        made_progress = any(
+            event.get("status") in {
+                NODE_STATUS_RUNNING,
+                NODE_STATUS_RAN,
+                NODE_STATUS_FAILED,
+            }
+            for event in list_events(base_path, request_run_id)
+        )
+        if made_progress:
+            raise RuntimeError(
+                "interrupted claimed-request run has progress but no checkpoint"
+            )
+        with _connect(base_path) as conn:
+            conn.execute(
+                "UPDATE runs SET status = ?, error = '', finished_at = NULL "
+                "WHERE run_id = ?",
+                (RUN_STATUS_QUEUED, request_run_id),
+            )
+            conn.execute(
+                "DELETE FROM run_cancels WHERE run_id = ?", (request_run_id,)
+            )
+    else:
+        _prepare_run(
+            base_path,
+            run_id=request_run_id,
+            branch=branch,
+            inputs=inputs,
+            run_name=run_name,
+            actor=actor,
+            universe_id=universe_id,
+            enqueue_context=enqueue_context,
+            owner_user_id=owner_user_id,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            lineage_parent_run_id=lineage_parent_run_id,
+            start_node=start_node,
+        )
+    return _invoke_graph(
+        base_path,
+        run_id=request_run_id,
+        branch=branch,
+        inputs=inputs,
+        provider_call=provider_call,
+        runtime_bindings=runtime_bindings,
+        recursion_limit=DEFAULT_RECURSION_LIMIT,
+        on_node_status=on_node_status,
+        execution_scope=scope,
+        enqueue_context=enqueue_context,
+        start_node=start_node,
+        execution_guard=execution_guard,
+    )
+
 
 _DEFAULT_MAX_WORKERS = 4
 # Phase A item 5 / Task #76c — two-pool model. Top-level runs (depth=0)
@@ -2961,11 +5105,13 @@ def wait_for(run_id: str, timeout: float | None = None) -> None:
 def _execute_branch_core(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -2973,7 +5119,12 @@ def _execute_branch_core(
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    owner_user_id: str | None = None,
+    lineage_parent_run_id: str = "",
+    start_node: str = "",
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -2992,14 +5143,34 @@ def _execute_branch_core(
     inside an ``invoke_branch_spec`` / ``invoke_branch_version_spec``
     node body.
     """
+    execution_scope = _coherent_execution_scope(
+        base_path,
+        _enqueue_universe_id,
+        execution_scope,
+    )
+    persisted_universe_id = (
+        (_enqueue_universe_id or "").strip()
+        or _universe_id_for_scope(execution_scope)
+    )
+    enqueue_context = NodeEnqueueContext(
+        universe_id=_enqueue_universe_id,
+        actor=actor,
+    )
     run_id = _prepare_run(
         base_path,
+        run_id=run_id,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
+        universe_id=persisted_universe_id,
+        invocation_depth=_invocation_depth,
+        enqueue_context=enqueue_context,
         branch_version_id=branch_version_id,
+        owner_user_id=owner_user_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
+        lineage_parent_run_id=lineage_parent_run_id,
+        start_node=start_node,
     )
 
     executor = _get_executor(invocation_depth=_invocation_depth)
@@ -3011,10 +5182,14 @@ def _execute_branch_core(
                 base_path,
                 run_id=run_id, branch=branch, inputs=inputs,
                 provider_call=provider_call,
+                runtime_bindings=runtime_bindings,
                 recursion_limit=effective_limit,
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
                 invocation_depth=_invocation_depth,
+                enqueue_context=enqueue_context,
+                execution_scope=execution_scope,
+                start_node=start_node,
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -3044,15 +5219,25 @@ def _execute_branch_core(
 def execute_branch_async(
     base_path: str | Path,
     *,
+    run_id: str | None = None,
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
+    owner_user_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
+    lineage_parent_run_id: str = "",
+    start_node: str = "",
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
     in the background. Returns within a few ms with ``status=queued``.
@@ -3075,19 +5260,33 @@ def execute_branch_async(
     _invocation_depth
         Phase A item 5 / Task #76c — sub-branch builders pass ``depth+1``
         when spawning a child. Top-level callers leave default (0).
+    execution_scope
+        The AUTHORITATIVE tenant scope (Codex S3 r20 #2). MCP handlers compute it
+        from the run's universe id and pass it explicitly; ``None`` → UNKNOWN
+        (fail closed) for a sandbox-required node.
     """
     return _execute_branch_core(
         base_path,
+        run_id=run_id,
         branch=branch,
         inputs=inputs,
         run_name=run_name,
         actor=actor,
         provider_call=provider_call,
+        runtime_bindings=runtime_bindings,
         recursion_limit_override=recursion_limit_override,
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
+        owner_user_id=owner_user_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
+        lineage_parent_run_id=lineage_parent_run_id,
+        start_node=start_node,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
+        _enqueue_universe_id=_enqueue_universe_id,
+        execution_scope=execution_scope,
     )
 
 
@@ -3119,6 +5318,8 @@ def execute_branch_version_async(
     recursion_limit_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -3177,6 +5378,8 @@ def execute_branch_version_async(
         on_node_status=on_node_status,
         branch_version_id=branch_version_id,
         _invocation_depth=_invocation_depth,
+        _enqueue_universe_id=_enqueue_universe_id,
+        execution_scope=execution_scope,
     )
 
 
@@ -3222,6 +5425,7 @@ def resume_run(
     actor: str,
     branch_lookup: Callable[[str, int], BranchDefinition | None],
     provider_call: Callable[..., str] | None = None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> RunOutcome:
     """Resume an INTERRUPTED run from its SqliteSaver checkpoint.
 
@@ -3247,6 +5451,8 @@ def resume_run(
         raise ResumeError(
             f"Run '{run_id}' not found.", reason="not_found",
         )
+    if execution_scope is None:
+        execution_scope = _execution_scope_for_run(base_path, run_id)
 
     # Auth gate: caller must own the run.
     if run["actor"] != actor:
@@ -3277,6 +5483,14 @@ def resume_run(
     # Checkpoint gate.
     thread_id = run.get("thread_id") or run_id
     if not _has_checkpoint(base_path, thread_id):
+        if run.get("checkpoint_backend") == "memory":
+            raise ResumeError(
+                f"Run '{run_id}' used a memory-only checkpoint so private "
+                "binding values were never written to durable storage. "
+                "Bound runs cannot resume after restart; rerun from scratch "
+                "with run_branch using the same inputs.",
+                reason="bound_run_memory_only",
+            )
         raise ResumeError(
             f"No SqliteSaver checkpoint found for run '{run_id}'. "
             "The run predates resume support or the checkpoint was evicted. "
@@ -3287,7 +5501,8 @@ def resume_run(
     # Branch version gate: re-compile the exact version used in the original run.
     lineage = get_lineage(base_path, run_id)
     branch_version = int(
-        (lineage or {}).get("branch_version") or getattr(branch_lookup, "_fallback_version", 1)
+        (lineage or {}).get("branch_version")
+        or getattr(branch_lookup, "_fallback_version", 1)
     )
     branch_def_id = run["branch_def_id"]
     branch = branch_lookup(branch_def_id, branch_version)
@@ -3325,6 +5540,7 @@ def resume_run(
             branch=branch,
             thread_id=thread_id,
             provider_call=provider_call,
+            execution_scope=execution_scope,
         )
 
     future = executor.submit(_resume_worker)
@@ -3343,8 +5559,56 @@ def _invoke_graph_resume(
     branch: BranchDefinition,
     thread_id: str,
     provider_call: Callable[..., str] | None,
+    execution_scope: "ExecutionScope | None" = None,
+    execution_guard: Callable[[], None] | None = None,
 ) -> RunOutcome:
-    """Compile branch + invoke with None inputs to resume from checkpoint."""
+    """Authorize and pin a resumed run under its persisted tenant scope."""
+    run = get_run(base_path, run_id)
+    scope = _authoritative_execution_scope(base_path, run_id, execution_scope)
+    invocation_depth, enqueue_context = _persisted_execution_context(run)
+    if isinstance(execution_guard, ReviewRevisionExecutionGuard):
+        enqueue_context = execution_guard.bind_enqueue_context(enqueue_context)
+    universe_dir, block_reason = _scope_universe_dir(base_path, scope)
+    if block_reason is not None:
+        logger.error(
+            "resume %s BLOCKED — refusing ambient credential execution: %s",
+            run_id,
+            block_reason,
+        )
+        return _record_blocked_run(base_path, run_id, block_reason)
+
+    from tinyassets.execution_context import pin_execution_universe
+
+    with pin_execution_universe(universe_dir):
+        return _invoke_graph_resume_inner(
+            base_path,
+            run_id=run_id,
+            branch=branch,
+            thread_id=thread_id,
+            provider_call=provider_call,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
+            execution_scope=scope,
+            execution_guard=execution_guard,
+        )
+
+
+def _invoke_graph_resume_inner(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    branch: BranchDefinition,
+    thread_id: str,
+    provider_call: Callable[..., str] | None,
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
+    execution_guard: Callable[[], None] | None = None,
+) -> RunOutcome:
+    """Compile branch + invoke with None inputs to resume from checkpoint.
+
+    ``execution_scope`` is the AUTHORITATIVE tenant scope (Codex S3 r20 #2) —
+    ``None`` → UNKNOWN (fail closed) for a sandbox-required node on resume."""
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
     provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
 
@@ -3409,6 +5673,11 @@ def _invoke_graph_resume(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
+            base_path=base_path,
+            parent_run_id=run_id,
+            invocation_depth=invocation_depth,
+            enqueue_context=enqueue_context,
+            execution_scope=execution_scope,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -3472,12 +5741,23 @@ def _invoke_graph_resume(
         )
 
     output = dict(result) if isinstance(result, dict) else {}
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_external_writes",
+    )
+    if guarded is not None:
+        return guarded
     # PR-122 Phase 1 — also fire external-write effectors on resume
     # completion so a re-run that finishes via resume_run still emits
     # declared PR sinks. Same no-raise contract as the primary path.
     _quarantine_branch_authored_external_write_keys(output)
     external_write_evidence = _run_external_write_effectors(
-        branch, output, base_path=base_path, run_id=run_id,
+        branch,
+        output,
+        base_path=_effector_base_path(base_path, execution_scope),
+        run_id=run_id,
     )
     if external_write_evidence:
         # System-authoritative receipt — overwrite unconditionally
@@ -3486,6 +5766,14 @@ def _invoke_graph_resume(
         errors = _collect_external_write_errors(external_write_evidence)
         if errors:
             output["external_write_errors"] = errors
+    guarded = _fail_run_if_execution_guard_rejects(
+        base_path,
+        run_id=run_id,
+        execution_guard=execution_guard,
+        stage="before_completion",
+    )
+    if guarded is not None:
+        return guarded
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -3542,9 +5830,7 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
 _PENDING_OFFSET = 1_000_000
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Presentation helpers
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def build_node_status_map(
@@ -3745,9 +6031,7 @@ def query_runs(
     return {"rows": result_rows, "count": len(result_rows)}
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Sub-branch invocation helpers
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #: Maximum nesting depth for invoke_branch nodes. A child run increments
 #: the depth counter; reaching this cap raises CompilerError at runtime.
@@ -3794,7 +6078,7 @@ def poll_child_run_status(
         time.sleep(min(poll_interval, remaining))
 
 
-# â”€â”€â”€ Teammate messaging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- Teammate messaging ---
 
 _VALID_MESSAGE_TYPES = frozenset({
     "request", "response", "broadcast",
@@ -4155,6 +6439,7 @@ __all__ = [
     "NODE_STATUS_RUNNING",
     "NODE_STATUS_RAN",
     "NODE_STATUS_FAILED",
+    "NODE_STATUS_SKIPPED",
     "ACTIONABLE_BY",
     "ChildRunAttachmentError",
     "ChildRunAwaitTimeout",
@@ -4169,6 +6454,9 @@ __all__ = [
     "create_run",
     "execute_branch",
     "execute_branch_async",
+    "execute_claimed_branch_request",
+    "execute_next_review_decision_effect",
+    "execute_pending_review_decisions",
     "find_node_snapshot",
     "get_future",
     "get_lineage",
@@ -4190,6 +6478,7 @@ __all__ = [
     "record_run_receipt",
     "recover_in_flight_runs",
     "request_cancel",
+    "resolve_review_revision_request",
     "runs_db_path",
     "shutdown_executor",
     "update_run_status",

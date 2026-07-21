@@ -46,6 +46,7 @@ from tinyassets.api import market as market_mod
 from tinyassets.api import runs as runs_mod
 from tinyassets.api import runtime_ops as runtime_ops_mod
 from tinyassets.api import universe as universe_mod  # noqa: F401
+from tinyassets.api.review_queue_actions import _REVIEW_QUEUE_ACTIONS
 
 # ---------------------------------------------------------------------------
 # KNOWN_DEBT — pre-existing undocumented dispatch keys.
@@ -127,13 +128,12 @@ def _universe_dispatch_keys() -> set[str]:
 
 
 def _wiki_dispatch_keys() -> set[str]:
-    """Mirror of the local `dispatch = {...}` literal inside `wiki()`."""
-    return {
-        "read", "search", "list", "lint",
-        "write", "consolidate", "promote", "ingest", "supersede",
-        "sync_projects",
-        "file_bug", "cosign_bug",
-    }
+    """The AUTHORITATIVE wiki dispatch keys, read from the real dispatch dict
+    (`tinyassets.api.wiki.WIKI_ACTIONS`) rather than a hand-maintained mirror that
+    silently drifts — the prior literal was stale (missing since/patch/delete)."""
+    from tinyassets.api.wiki import WIKI_ACTIONS
+
+    return set(WIKI_ACTIONS.keys())
 
 
 def _extensions_dispatch_keys() -> set[str]:
@@ -156,6 +156,7 @@ def _extensions_dispatch_keys() -> set[str]:
         | set(runtime_ops_mod._SCHEDULER_ACTIONS.keys())
         | set(market_mod._OUTCOME_ACTIONS.keys())
         | set(market_mod._ATTRIBUTION_ACTIONS.keys())
+        | set(_REVIEW_QUEUE_ACTIONS.keys())
     )
 
 

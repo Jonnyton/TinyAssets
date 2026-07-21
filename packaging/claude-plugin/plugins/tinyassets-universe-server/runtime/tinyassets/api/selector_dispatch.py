@@ -738,6 +738,11 @@ def dispatch_selector(
             provider_call = None
 
     try:
+        # No ``execution_scope`` (Codex S3 r20 #2): the selector runs a USER's
+        # published branch snapshot in a host context with no bound tenant, so the
+        # scope stays UNKNOWN → any sandbox-required node in that snapshot FAILS
+        # CLOSED (a host selector must never grant a user branch ambient creds).
+        # Selector-eval branches are plain text nodes, unaffected.
         outcome = _execute_branch_core(
             base_path,
             branch=branch_def,

@@ -32,7 +32,7 @@ from tinyassets.universe_soul import (
 )
 
 # tkinter requires libtk (system lib). Headless Docker containers
-# don't ship it; the cloud_worker's fantasy_daemon subprocess imports
+# don't ship it; a headless local-daemon subprocess imports
 # the desktop tree at load time before --no-tray is parsed. Tolerate
 # ImportError so the module surface stays loadable; call-time use
 # (host laptop only) errors with a clear NoneType.

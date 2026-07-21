@@ -46,6 +46,8 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `TINYASSETS_PRODUCER_INTERFACE` | Enables the producer-interface surface — multi-producer concurrency for branches. | `on`. |
 | `TINYASSETS_TIERED_SCOPE` | Enables the tiered-memory-scope retrieval router (`workflow.retrieval.router`). Memory scope is tier-gated (node/branch/goal/user/universe). | `off` (Stage 1 monitoring; flip to `on` at Stage 2c per task #19). |
 | `GATES_ENABLED` | Enables outcome-gate claims (Phase 6). When off, `gates` tool returns placeholder. | `off`. |
+| `TINYASSETS_NON_AMBIENT_WORK` | **Phase-1 SCAFFOLDING — keep OFF.** Arms the non-ambient work gate (design note 2026-07-15 gap G7): the cloud-worker supervisor works a universe only if it has bound capacity. **It does NOT yet fully prevent ambient execution at every boundary** — the router still permits ambient execution when BYO is dark / no universe context is threaded / role is non-writer. The complete guarantee needs S3 universe-context threading + an all-roles router gate (Phase 2, custody note §0.2). Flipping this ON is **unsafe** until Phase 2 closes the execution-boundary gate. Off = byte-for-byte today's behavior. | `off`. |
+| `TINYASSETS_BYO_VAULT_ENCRYPTED` | Operator opt-in for the executable BYO-API-key path (env overlay injection + bound resolution + direct BYO routing), INDEPENDENT of the non-ambient flag. **The flag ALONE cannot unlock it:** `engine_binding.byo_execution_enabled()` also requires a code-backed encryption-capability attestation (`_vault_encryption_capability_attested()`) that returns False until Phase-2 envelope encryption / an external secret manager is implemented AND verified — so a bare truthy flag can never unlock plaintext-key deposit+execution. Separately, a raw key can never be deposited through the chatbot (Phase-2 out-of-chat flow). OFF/unattested (this deploy) → the executable BYO path is DARK end-to-end. | `off` (+ attestation False in this deploy). |
 | `TINYASSETS_STORAGE_BACKEND` | Catalog storage backend selection. Values: empty (default), `"git"`, `"sqlite"`. | Empty (auto-select per backend factory). |
 | `TINYASSETS_RUN_MAX_CONCURRENT` | Integer cap on concurrent in-flight branch runs. | Unset = unlimited. |
 | `TINYASSETS_IDLE_CYCLE_SINGLE_FLIGHT` | Dedupe the no-claim idle heartbeat cycle across fleet workers (`tinyassets/idle_cycle.py`): the winner holds a run lock for the cycle's lifetime (long cycles exclude others; released on process death), and a worker skips when a DIFFERENT worker's stamp is fresh; own stamps never block. Falsy = `"0"`/`"false"`/`"off"`/`"no"`. | `on`. |
@@ -81,6 +83,24 @@ the precedence logic elsewhere — call the resolver.
 
 **Container deploys:** set `TINYASSETS_DATA_DIR=/data` + bind-mount the
 host path to `/data`. See `deploy/README.md` for the full pattern.
+
+## Credential vault (platform custody)
+
+The provider-generic credential vault (`tinyassets/credentials/` +
+`tinyassets/credential_broker.py`) — universe/founder credentials, NOT the
+operator secrets in the next section.
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `TINYASSETS_VAULT_KEK_DIR` | Root-only directory holding the platform vault's KEK files (`<key_id>.bin`, 32 bytes each, plus an `active` marker file). MUST live OUTSIDE `/data` so a stolen data volume or backup cannot decrypt the vault. Unset ⇒ platform custody is unavailable and every vault operation fails closed (`KEY_UNAVAILABLE`). | Unset (fail closed). |
+| `TINYASSETS_VAULT_ACTIVE_KEY_ID` | Overrides which KEK id is active for new writes (rotation window). | The `active` file in `TINYASSETS_VAULT_KEK_DIR`. |
+| `TINYASSETS_VAULT_ROLLBACK_GUARD` | Directory for the vault's anti-rollback epoch guard (a tiny SQLite DB). MUST be a persistent volume OUTSIDE `/data`: under `/data` a restore would carry the guard with the vault and mask the rollback; on an ephemeral container home every rebuild would read as a rollback and force full re-authorization of every stored credential. Deploy sets it to the `tinyassets-vault-guard` named volume (`/vault-guard`); `deploy/backup-restore.sh` bumps it via `scripts/vault_restore_bump.py` after every restore. | `~/.tinyassets-vault-guard`. |
+
+Fail-closed note (intended, not a bug): a failed vault mutation commit or a
+detected rollback surfaces as `REAUTHORIZATION_REQUIRED` for the WHOLE store —
+founders must reconnect their credentials. A restored one-use refresh token may
+already be redeemed at the provider, so serving restored/uncertain state would
+be dishonest.
 
 ## Local secrets — vault-first
 

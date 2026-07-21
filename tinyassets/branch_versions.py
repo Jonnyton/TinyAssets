@@ -206,12 +206,44 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
         )
 
 
+# Declarative binding-schema contract (Codex r11 re-scope, PLAN §4).
+#
+# A state field is a personal BINDING slot when its SCHEMA is flagged
+# ``is_binding`` (aliases ``bound`` / ``sensitive``). The flag is a property of
+# the field, decided from the schema alone. Phase 1 carries ONLY the schema (the
+# flag + an empty slot) through every shared artifact; binding VALUES do not
+# exist platform-side at all (deferred to a Phase-2 bound engine/vault), so there
+# is nothing to redact and nothing to leak. These predicates are the single
+# source consumers use to decide "is this a binding slot?" (the run-entry guard
+# rejects run-time values for them).
+BINDING_FLAG = "is_binding"
+_BINDING_FLAG_KEYS = ("is_binding", "bound", "sensitive")
+
+
+def is_binding_field(field: Any) -> bool:
+    """True when a state_schema field is declared a personal binding slot."""
+    return isinstance(field, dict) and any(
+        field.get(flag) for flag in _BINDING_FLAG_KEYS
+    )
+
+
+def branch_has_bound_fields(state_schema: Any) -> bool:
+    """True when any state field is a binding slot (decided from the schema)."""
+    return any(is_binding_field(f) for f in (state_schema or []))
+
+
 def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
-    """Extract fields that define published branch behavior."""
+    """Extract fields that define published branch behavior.
+
+    The ``state_schema`` (incl. any ``is_binding`` slot declarations) travels
+    verbatim — Phase 1 stores no binding VALUES, so there is nothing to redact.
+    Branch-level routing/concurrency knobs are included so publish ->
+    remix/rollback/export preserve them (behavior-affecting -> in the hash).
+    """
     from tinyassets.branches import BranchDefinition
 
     normalized = BranchDefinition.from_dict(branch_dict).to_dict()
-    return {
+    snapshot = {
         "branch_def_id": normalized.get("branch_def_id", ""),
         "skills": normalized.get("skills", []),
         "entry_point": normalized.get("entry_point", ""),
@@ -221,6 +253,11 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
         "node_defs": normalized.get("node_defs", []),
         "state_schema": normalized.get("state_schema", []),
     }
+    if normalized.get("default_llm_policy") is not None:
+        snapshot["default_llm_policy"] = normalized["default_llm_policy"]
+    if normalized.get("concurrency_budget") is not None:
+        snapshot["concurrency_budget"] = normalized["concurrency_budget"]
+    return snapshot
 
 
 def compute_content_hash(snapshot: dict[str, Any]) -> str:
@@ -380,6 +417,90 @@ def get_branch_version(
     return _row_to_version(row)
 
 
+def get_newest_active_version(
+    base_path: str | Path,
+    branch_def_id: str,
+) -> BranchVersion | None:
+    """Newest version whose ``status == 'active'``, or ``None``.
+
+    Direct SQL (``WHERE status='active' ORDER BY published_at DESC LIMIT 1``) so
+    it is correct no matter how many rolled-back/superseded versions are newer —
+    a bounded scan of the newest N would report ``None`` when all N are rolled
+    back but an older active version exists (Codex S2 latest-model F3).
+    """
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM branch_versions WHERE branch_def_id = ? "
+            "AND status = 'active' ORDER BY published_at DESC LIMIT 1",
+            (branch_def_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_version(row)
+
+
+def get_newest_active_versions(
+    base_path: str | Path,
+    branch_def_ids: "list[str]",
+    *,
+    content_hashes: dict[str, str] | None = None,
+) -> dict[str, BranchVersion]:
+    """Newest discoverable ACTIVE version per branch_def_id in ONE query.
+
+    Codex S2 F4: the published listing used one query per row (N+1). This
+    batches the active-version lookup into a single ``WHERE branch_def_id IN
+    (...)`` scan so the listing's query count is bounded.
+
+    When ``content_hashes`` is supplied, an active version normally must match
+    the current branch definition exactly. The sole fallback is a legitimate
+    rollback shape: the current content has a rolled-back version and an older
+    version remains active. A mismatched active version published after the
+    rollback target is rejected, preventing unrelated/stale content from
+    silently keeping a rolled-back design discoverable.
+    """
+    ids = [str(i) for i in (branch_def_ids or []) if i]
+    if not ids:
+        return {}
+    initialize_branch_versions_db(base_path)
+    placeholders = ",".join("?" * len(ids))
+    with _connect(base_path) as conn:
+        status_clause = "" if content_hashes is not None else "AND status = 'active' "
+        rows = conn.execute(
+            f"SELECT * FROM branch_versions WHERE branch_def_id IN ({placeholders}) "
+            f"{status_clause}ORDER BY published_at DESC",
+            ids,
+        ).fetchall()
+    versions = [_row_to_version(row) for row in rows]
+    out: dict[str, BranchVersion] = {}
+    if content_hashes is None:
+        for version in versions:
+            # Newest first -> first active row per branch_def_id wins.
+            out.setdefault(version.branch_def_id, version)
+        return out
+
+    rolled_back_current_at: dict[str, str] = {}
+    for version in versions:
+        expected_hash = content_hashes.get(version.branch_def_id)
+        if version.content_hash != expected_hash:
+            continue
+        if version.status == "active":
+            out.setdefault(version.branch_def_id, version)
+        elif version.status == "rolled_back":
+            rolled_back_current_at.setdefault(
+                version.branch_def_id,
+                version.published_at,
+            )
+
+    for version in versions:
+        if version.branch_def_id in out or version.status != "active":
+            continue
+        rollback_at = rolled_back_current_at.get(version.branch_def_id)
+        if rollback_at is not None and version.published_at < rollback_at:
+            out[version.branch_def_id] = version
+    return out
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,
@@ -396,6 +517,46 @@ def list_branch_versions(
             (branch_def_id, limit),
         ).fetchall()
     return [_row_to_version(r) for r in rows]
+
+
+def get_versions_by_content_hash(
+    base_path: str | Path,
+    branch_def_id: str,
+    content_hash: str,
+) -> list[BranchVersion]:
+    """All versions of ``branch_def_id`` carrying EXACTLY ``content_hash``, via the
+    indexed ``(branch_def_id, content_hash)`` lookup — NOT a bounded LIMIT-N
+    history scan (Codex r20 #3).
+
+    Durable discovery/health/quarantine must find the authoritative version
+    regardless of how many total versions exist. ``publish_branch_version`` dedups
+    on ``content_hash``, so this result is tiny (typically the active row + at most
+    a rolled-back row of the same content). Newest first.
+    """
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM branch_versions "
+            "WHERE branch_def_id = ? AND content_hash = ? "
+            "ORDER BY published_at DESC",
+            (branch_def_id, content_hash),
+        ).fetchall()
+    return [_row_to_version(r) for r in rows]
+
+
+def get_active_version_by_content_hash(
+    base_path: str | Path,
+    branch_def_id: str,
+    content_hash: str,
+) -> BranchVersion | None:
+    """The ACTIVE version carrying ``content_hash`` (newest), or None — an indexed
+    lookup, not a bounded scan (Codex r20 #3). ``active`` includes legacy
+    empty/NULL status to match the ``(status or 'active')`` convention used across
+    the reference-design health path."""
+    for v in get_versions_by_content_hash(base_path, branch_def_id, content_hash):
+        if (v.status or "active") == "active":
+            return v
+    return None
 
 
 def _validate_version_exists(conn: sqlite3.Connection, version_id: str) -> None:

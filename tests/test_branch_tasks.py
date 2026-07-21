@@ -9,6 +9,7 @@ import pytest
 from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
+    append_task_if_absent,
     claim_task,
     mark_status,
     mark_task_progress,
@@ -66,6 +67,30 @@ def test_legacy_branch_task_rows_default_missing_lease_fields(tmp_path: Path) ->
     assert loaded.lease_expires_at == ""
     assert loaded.heartbeat_at == ""
     assert loaded.last_progress_at == ""
+
+
+@pytest.mark.parametrize(
+    "status", ["pending", "running", "succeeded", "failed", "cancelled"],
+)
+def test_idempotent_append_preserves_every_non_dead_ref_status(
+    tmp_path: Path, status: str,
+) -> None:
+    """Only never-run dead_ref is healable; every other valid state owns the id."""
+    existing = _task("bt_stable")
+    existing.status = status
+    existing.queued_at = "2026-07-17T00:00:00+00:00"
+    queue_path(tmp_path).write_text(
+        json.dumps([existing.to_dict()]), encoding="utf-8",
+    )
+    replacement = _task("bt_stable")
+    replacement.branch_def_id = "replacement-handler"
+
+    appended, winner = append_task_if_absent(tmp_path, replacement)
+
+    assert appended is False
+    assert winner.status == status
+    assert winner.branch_def_id == existing.branch_def_id
+    assert read_queue(tmp_path) == [winner]
 
 
 def test_claim_task_stamps_write_only_lease_metadata(tmp_path: Path) -> None:
@@ -375,14 +400,12 @@ def test_dispatcher_startup_no_predecessor_reclaim_without_worker_id(
 def test_dispatcher_startup_skips_shared_default_worker_id(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    """The shared 'cloud-droplet' fallback id is NOT predecessor-reclaimed —
-    several manually-started supervisors could share it, so reclaiming it would
-    risk stealing a live twin's task (Codex review). Falls back to TTL."""
+    """The shared fallback id cannot prove predecessor ownership."""
     from fantasy_daemon.__main__ import _dispatcher_startup
-    from tinyassets.cloud_worker import DEFAULT_HOST_USER
 
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", DEFAULT_HOST_USER)
-    _claim_running(tmp_path, worker=DEFAULT_HOST_USER)  # fresh lease under default id
+    shared_worker_id = "cloud-droplet"
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", shared_worker_id)
+    _claim_running(tmp_path, worker=shared_worker_id)
 
     _dispatcher_startup(tmp_path)
 

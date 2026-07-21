@@ -258,6 +258,52 @@ def test_restore_dry_run_exits_0(tmp_path):
     assert result.returncode == 0, f"exit {result.returncode}\n{result.stdout}\n{result.stderr}"
 
 
+def test_restore_aborts_when_vault_guard_cannot_be_advanced(tmp_path):
+    fake_bin = _fake_rclone_bin(tmp_path)
+    call_log = tmp_path / "calls.log"
+    for command, body in {
+        "docker": """#!/usr/bin/env bash
+echo "docker $*" >> "$CALL_LOG"
+case "$1" in
+  stop) exit 0 ;;
+  inspect) echo tinyassets:test; exit 0 ;;
+  volume)
+    if [[ "$2" == inspect ]]; then echo "$VOLUME_DIR"; fi
+    exit 0 ;;
+  run) exit 42 ;;
+esac
+exit 0
+""",
+        "tar": """#!/usr/bin/env bash
+exit 0
+""",
+        "rm": """#!/usr/bin/env bash
+exit 0
+""",
+        "stat": """#!/usr/bin/env bash
+echo 1
+""",
+    }.items():
+        path = fake_bin / command
+        path.write_text(body, encoding="utf-8", newline="\n")
+        path.chmod(0o755)
+
+    volume_dir = tmp_path / "volume" / "_data"
+    volume_dir.mkdir(parents=True)
+    env = {
+        "BACKUP_DEST": "s3://test-bucket/tinyassets-backups",
+        "BACKUP_LOG": _bash_path(tmp_path / "backup.log"),
+        "CALL_LOG": _bash_path(call_log),
+        "VOLUME_DIR": _bash_path(volume_dir),
+        "PATH": _bash_path_env(fake_bin),
+    }
+    result = _run(RESTORE_SH, env)
+
+    assert result.returncode == 6
+    assert "vault guard" in (result.stdout + result.stderr).lower()
+    assert "restore complete" not in result.stdout.lower()
+
+
 def test_restore_dry_run_prints_dry_run_indicator(tmp_path):
     """DRY_RUN=1 restore output must mention 'dry'."""
     fake_bin = _fake_rclone_bin(tmp_path)

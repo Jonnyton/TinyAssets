@@ -334,6 +334,16 @@ class NodeDefinition:
     # host's sandbox probe fails. Default False preserves back-compat.
     requires_sandbox: bool = False
 
+    # STABLE capability classifier (patch-loop S3, Codex adapt): what KIND of
+    # work this node does, independent of the editable node_id. A repo-writing
+    # coding node declares node_kind="coding" (e.g. the patch loop's draft_patch)
+    # so the runtime can require the hardened sandbox posture BY CAPABILITY — a
+    # remix that RENAMES the node still carries its node_kind, so it cannot rename
+    # its way out of confinement (which keying on node_id=="draft_patch" alone
+    # allowed). See tinyassets.sandbox_policy.node_requires_sandbox. Persisted +
+    # round-trips via to_dict/from_dict; empty = unclassified (back-compat).
+    node_kind: str = ""
+
     # Partial-credit checkpoints authored into node_def.
     # Each entry: {
     #   "checkpoint_id": str (unique within node),
@@ -594,19 +604,35 @@ class ConditionalEdge:
 
     Maps outcomes to target nodes. The routing function is determined
     by the source node's evaluation at runtime.
+
+    ``fallback`` is the scalar outcome label selected for an off-label value.
+    Persisting it explicitly avoids relying on mapping insertion order, which
+    does not survive sorted JSON serialization.
     """
 
     from_node: str
     conditions: dict[str, str] = field(default_factory=dict)
+    fallback: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"from": self.from_node, "conditions": self.conditions}
+        out: dict[str, Any] = {"from": self.from_node, "conditions": self.conditions}
+        if self.fallback:
+            out["fallback"] = self.fallback
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ConditionalEdge:
+        raw_fallback = data.get("fallback")
+        if isinstance(raw_fallback, str):
+            fallback: Any = raw_fallback.strip()
+        elif raw_fallback is None:
+            fallback = ""
+        else:
+            fallback = raw_fallback
         return cls(
             from_node=data.get("from", data.get("from_node", "")),
             conditions=data.get("conditions", {}),
+            fallback=fallback,
         )
 
 
@@ -1115,6 +1141,17 @@ class BranchDefinition:
                         f"'{ce.from_node}' is not defined."
                     )
                 adjacency.setdefault(ce.from_node, set()).add(target)
+            if ce.fallback and not isinstance(ce.fallback, str):
+                errors.append(
+                    f"Conditional edge fallback from '{ce.from_node}' must be a "
+                    f"string outcome label, got {type(ce.fallback).__name__}."
+                )
+            elif ce.fallback and ce.fallback not in ce.conditions:
+                errors.append(
+                    f"Conditional edge fallback '{ce.fallback}' from "
+                    f"'{ce.from_node}' is not one of its outcome labels "
+                    f"{sorted(ce.conditions)!r}."
+                )
 
         # Orphan detection: check all graph nodes are reachable from entry point
         if self.entry_point and seen_graph:
@@ -1323,7 +1360,11 @@ class BranchDefinition:
         forked = BranchDefinition.from_dict(self.to_dict())
         forked.branch_def_id = _new_id()
         forked.name = new_name or f"{self.name} (fork)"
-        forked.author = author
+        # A fork records the FORKING user as author; the reserved seed identity
+        # must never propagate or be smuggled in (Finding 1c).
+        from tinyassets.branch_designs import _sanitize_reserved_author
+
+        forked.author = _sanitize_reserved_author(author) or "anonymous"
         forked.version = 1
         forked.parent_def_id = self.branch_def_id
         forked.published = False

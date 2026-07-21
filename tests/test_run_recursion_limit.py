@@ -46,6 +46,7 @@ class TestOverrideThreading:
 
     def test_override_flows_through_to_invoke_config(self, monkeypatch, tmp_path):
         captured_configs: list[dict] = []
+        runs.initialize_runs_db(tmp_path)
 
         class _FakeApp:
             def invoke(self, state, config):
@@ -94,6 +95,7 @@ class TestOverrideThreading:
             inputs={"a": 1},
             provider_call=None,
             recursion_limit=250,
+            execution_scope=runs._default_execution_scope(tmp_path, ""),
         )
 
         assert captured_configs, "app.invoke was not called"
@@ -141,6 +143,7 @@ class TestRecursionLimitAppliedEvent:
 
     def test_recursion_limit_applied_event_emitted(self, monkeypatch, tmp_path):
         recorded_events = []
+        runs.initialize_runs_db(tmp_path)
         monkeypatch.setattr(
             runs, "record_event",
             lambda _base, ev: recorded_events.append(ev),
@@ -154,6 +157,7 @@ class TestRecursionLimitAppliedEvent:
             inputs={},
             provider_call=None,
             recursion_limit=42,
+            execution_scope=runs._default_execution_scope(tmp_path, ""),
         )
 
         system_events = [

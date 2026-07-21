@@ -28,6 +28,8 @@ import pytest
 _REPO = Path(__file__).resolve().parent.parent
 _RESTORE = _REPO / "deploy" / "backup-restore.sh"
 _DR_DRILL = _REPO / ".github" / "workflows" / "dr-drill.yml"
+_DOCKERFILE = _REPO / "Dockerfile"
+_VAULT_RECOVER = _REPO / "scripts" / "vault_restore_recover.py"
 
 
 # ---- (a) restore script: no start-daemon coupling ------------------------
@@ -35,6 +37,29 @@ _DR_DRILL = _REPO / ".github" / "workflows" / "dr-drill.yml"
 
 def test_restore_script_exists():
     assert _RESTORE.is_file()
+
+
+def test_daemon_image_contains_vault_restore_commands():
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    for script in ("vault_restore_bump.py", "vault_restore_recover.py"):
+        assert f"COPY scripts/{script} /app/scripts/{script}" in dockerfile
+
+
+def test_restore_guard_bump_bypasses_daemon_entrypoint_as_root_operator():
+    code = _restore_code()
+    assert "--entrypoint /opt/venv/bin/python" in code
+    assert "/app/scripts/vault_restore_bump.py" in code
+
+
+def test_vault_recovery_uses_privileged_container_boundary_not_caller_token():
+    """The one-shot command is authorized by root access to both volumes.
+
+    A token generated and then compared by the same caller is self-validating,
+    so it must never be presented as an independent authentication boundary.
+    """
+    code = _VAULT_RECOVER.read_text(encoding="utf-8")
+    assert "TINYASSETS_VAULT_RECOVERY_TOKEN" not in code
+    assert "os.environ" not in code
 
 
 def _restore_code() -> str:

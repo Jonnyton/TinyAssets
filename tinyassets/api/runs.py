@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import (
@@ -108,12 +109,13 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
 
 
 def _run_universe_id(record: dict[str, Any]) -> str:
-    """The universe a run is bound to, derived from its actor.
+    """The universe a run is bound to, preferring the persisted scope id.
 
-    Branch runs are executed by a universe (actor ``universe:<uid>``), so the
-    actor carries the owning universe. A run with any other actor is not
-    universe-brain data.
+    Actor parsing remains solely for rows written before ``runs.universe_id``.
     """
+    persisted = str((record or {}).get("universe_id") or "").strip()
+    if persisted:
+        return persisted
     actor = str((record or {}).get("actor") or "")
     prefix = "universe:"
     return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
@@ -179,7 +181,7 @@ _EMPTY_LLM_RESPONSE_ACTION = (
 
 
 # Phase 3: Graph Runner — execute a BranchDefinition
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
 # The runner compiles a validated branch into a LangGraph StateGraph via
 # `tinyassets.graph_compiler.compile_branch`, runs it synchronously against
 # user-supplied inputs, and persists run metadata + per-node events in
@@ -526,8 +528,196 @@ def _run_error_detail(
     return detail
 
 
+def _run_universe_context(universe_id: str = "") -> Any:
+    """Build the run's per-universe :class:`UniverseContext`, or ``None``.
+
+    C2 (Codex S3 REJECT): the run is scoped to a universe; its provider calls
+    must resolve that universe's OWN vault auth and no other's.
+
+    - GENUINELY UNBOUND legacy call (no universe id at all) → ``None`` (the
+      single-universe process-global fallback is acceptable — no bound tenant to
+      leak).
+    - An EXPLICIT / run-record universe binding → resolve FULLY or **FAIL CLOSED**
+      (raise) on ANY resolution / path / config failure, including a missing or
+      unresolvable directory (Codex S3 REJECT r3 C2). NEVER silently fall back to
+      process-global creds for a scoped run.
+    """
+    from pathlib import Path as _Path
+
+    from tinyassets.config import load_universe_config
+    from tinyassets.providers.base import (
+        SandboxUnavailableError,
+        UniverseContext,
+    )
+
+    if not (universe_id or "").strip():
+        # No universe was bound — legacy single-universe call. Global is OK.
+        return None
+
+    # An EXPLICIT binding was given: any failure fails CLOSED (do NOT swallow into
+    # a process-global fallback — that would cross-resolve another tenant's vault).
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
+    if udir is None or not _Path(udir).is_dir():
+        raise SandboxUnavailableError(
+            f"Universe {universe_id!r} could not be resolved to a directory "
+            f"(uid={uid!r}, dir={udir!r}). Refusing to run a scoped run on "
+            "process-global credentials (fail closed)."
+        )
+    return UniverseContext(
+        universe_dir=_Path(udir), config=load_universe_config(udir),
+    )
+
+
+def _bind_universe_context(provider_call: Any, universe_id: str) -> Any:
+    """Bind the run's :class:`UniverseContext` into the provider bridge so
+    per-universe vault auth resolves (C2). No-op when there is no provider bridge
+    or no bound universe. Raises (fail closed) when a bound universe cannot
+    resolve — never runs a scoped run on process-global credentials.
+
+    Used by EVERY run path (run_branch, resume_run, run_branch_version) so no
+    path drops the universe scope and cross-resolves another tenant's vault.
+    """
+    if provider_call is None:
+        return provider_call
+    uctx = _run_universe_context(universe_id)
+    if uctx is None:
+        return provider_call
+    import functools as _functools
+
+    return _functools.partial(provider_call, universe_context=uctx)
+
+
+def _run_execution_scope(universe_id: str = "") -> Any:
+    """The AUTHORITATIVE :class:`ExecutionScope` for a run (Codex S3 r20 #2),
+    resolved the SAME way :func:`_bind_universe_context` resolves the provider
+    binding — so the tenant scope carried to the dispatch choke point and the
+    provider's vault auth never drift. Empty id → LEGACY_UNBOUND (single-universe
+    legacy, ambient OK); a bound id → BOUND(resolved dir), or FAIL CLOSED (raise)
+    when it cannot resolve (never silently unscoped — the same fail-closed contract
+    as ``_run_universe_context``). Passed EXPLICITLY into the run APIs, never
+    inferred from the provider-callable shape."""
+    from tinyassets.sandbox_policy import ExecutionScope
+
+    uctx = _run_universe_context(universe_id)  # raises on an unresolvable bound id
+    if uctx is None:
+        return ExecutionScope.legacy_unbound()
+    return ExecutionScope.bound(str(uctx.universe_dir))
+
+
+def _sandbox_enqueue_refusal(branch: Any) -> str | None:
+    """Refuse a known-unrunnable branch at QUEUE TIME (Codex r10 #1).
+
+    Uses the SAME sandbox readiness check ``validate_branch`` uses
+    (:func:`tinyassets.sandbox_policy.branch_sandbox_status`). A branch with a
+    repo-touching node (coding / repo_exec / repo_read) and no per-job sandbox
+    runner would otherwise be queued and then fail per-node at the graph choke
+    point. Refusing synchronously returns an actionable structured error instead
+    of a doomed ``run_id``. Fails closed — classification errors block the run.
+    Returns a JSON refusal string, or ``None`` when the branch is runnable.
+
+    Applied to EVERY enqueue entry point (run_branch, resume_run,
+    run_branch_version) so no path can queue a branch that validate would refuse.
+    """
+    from tinyassets.sandbox_policy import branch_sandbox_status
+
+    sandbox_blocked, repo_nodes, sandbox_warnings = branch_sandbox_status(
+        getattr(branch, "node_defs", []) or [],
+        getattr(branch, "domain_id", "") or "",
+    )
+    if not sandbox_blocked:
+        return None
+    return json.dumps({
+        "error": (
+            "Branch cannot run: it has repo-touching node(s) that require the "
+            "per-job sandbox runner subsystem, which is not available in this "
+            "deployment. Refused at queue time (no run was started)."
+        ),
+        "sandbox_blocked": True,
+        "repo_touching_nodes": repo_nodes,
+        "sandbox_warnings": sandbox_warnings,
+    })
+
+
+def _resolve_runtime_bindings(
+    branch: Any,
+    universe_id: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Load private design bindings for one universe, or return an opaque refusal."""
+    from tinyassets.branch_bindings import (
+        BranchBindingError,
+        declared_binding_fields,
+        load_branch_values,
+    )
+
+    declared = declared_binding_fields(getattr(branch, "state_schema", None))
+    if not declared:
+        return {}, None
+    if not (universe_id or "").strip():
+        return {}, json.dumps({
+            "error": (
+                "This design is inert until its declared repo/policy slots are "
+                "bound to a universe with write_graph target=binding."
+            ),
+            "failure_class": "binding_unbound_phase1",
+            "actionable_by": "chatbot",
+        })
+    try:
+        context = _run_universe_context(universe_id)
+        values = load_branch_values(
+            context.universe_dir,
+            branch.branch_def_id,
+            branch.state_schema,
+        )
+    except (BranchBindingError, OSError, ValueError):
+        logger.exception("private binding resolution failed for %s", branch.branch_def_id)
+        return {}, json.dumps({
+            "error": "Private design bindings could not be resolved; the run was refused.",
+            "failure_class": "binding_resolution_failed",
+            "actionable_by": "host",
+        })
+    missing = sorted(declared - set(values))
+    if missing:
+        return {}, json.dumps({
+            "error": (
+                "This design is inert until all declared repo/policy slots are "
+                "bound with write_graph target=binding."
+            ),
+            "failure_class": "binding_unbound_phase1",
+            "missing_fields": missing,
+            "actionable_by": "chatbot",
+        })
+    return values, None
+
+
+def _create_host_daemon_job(
+    base_path: Path,
+    *,
+    universe_id: str,
+    run_id: str,
+) -> Any | None:
+    """Bridge a prepared host-daemon run into the B2 lease queue."""
+    from tinyassets.config import load_universe_config
+
+    if load_universe_config(_universe_dir(universe_id)).engine_source != "host_daemon":
+        return None
+
+    from tinyassets.api.execution_jobs import create_job_from_run
+    from tinyassets.runs import get_run
+    from tinyassets.runtime.execution_plane import ExecutionPlane
+
+    run = get_run(base_path, run_id)
+    if run is None:
+        raise RuntimeError(f"prepared run {run_id!r} could not be loaded")
+    return create_job_from_run(ExecutionPlane.from_config().lease_store, run)
+
+
 def _action_run_branch(kwargs: dict[str, Any]) -> str:
     """Execute a branch once.
+
+    Internal dispatch handler: external callers enter through
+    :func:`_dispatch_run_action`, which applies the universe access gate before
+    this function receives arguments. This function is not a trust boundary.
 
     Durability guarantee (v1): runs are *terminal-on-restart*. If the
     daemon exits while a run is in flight, the row is marked
@@ -565,6 +755,19 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     except KeyError:
         return json.dumps({"error": f"Branch '{bid}' not found."})
 
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.branch_bindings import declared_binding_fields
+
+    request_actor = _current_actor()
+    branch_author = str(source_dict.get("author") or "anonymous")
+    is_private = str(source_dict.get("visibility") or "public") != "public"
+    has_private_bindings = bool(
+        declared_binding_fields(source_dict.get("state_schema", [])),
+    )
+    if branch_author != request_actor and (is_private or has_private_bindings):
+        # Deliberately indistinguishable from a missing private design.
+        return json.dumps({"error": f"Branch '{bid}' not found."})
+
     branch = BranchDefinition.from_dict(source_dict)
     errors = branch.validate()
     if errors:
@@ -572,6 +775,15 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             "error": "Branch is not valid. Fix these before running:",
             "validation_errors": errors,
         })
+
+    universe_id = str(kwargs.get("universe_id") or "").strip()
+    runtime_bindings, binding_refusal = _resolve_runtime_bindings(branch, universe_id)
+    if binding_refusal is not None:
+        return binding_refusal
+
+    _sandbox_refusal = _sandbox_enqueue_refusal(branch)
+    if _sandbox_refusal is not None:
+        return _sandbox_refusal
 
     inputs_raw = kwargs.get("inputs_json", "").strip()
     inputs: dict[str, Any] = {}
@@ -648,6 +860,16 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     except ImportError:
         provider_call = None
 
+    # C2 (Codex S3 REJECT): bind this run's own UniverseContext into the provider
+    # bridge so per-universe vault auth resolves (universe A's run sees ONLY A's
+    # vault; fail closed if a bound universe can't resolve). Also unblocks S5 BYO-key.
+    provider_call = _bind_universe_context(
+        provider_call, kwargs.get("universe_id") or "",
+    )
+    # The AUTHORITATIVE tenant scope, carried EXPLICITLY to the compiler (Codex S3
+    # r20 #2) — not inferred from the provider-callable shape.
+    _exec_scope = _run_execution_scope(kwargs.get("universe_id") or "")
+
     # Parse + validate recursion_limit_override (10-1000).
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
@@ -666,14 +888,24 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         recursion_limit_override = _rl_val
 
     try:
+        base_path = _base_path()
         outcome = execute_branch_async(
-            _base_path(),
+            base_path,
             branch=branch,
             inputs=inputs,
             run_name=kwargs.get("run_name", ""),
             actor=actor,
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            runtime_bindings=runtime_bindings,
+            _enqueue_universe_id=universe_id,
+            execution_scope=_exec_scope,
+            owner_user_id=request_actor,
+        )
+        job = _create_host_daemon_job(
+            base_path,
+            universe_id=universe_id,
+            run_id=outcome.run_id,
         )
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)
@@ -708,6 +940,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "output": outcome.output,
         "error": outcome.error,
     }
+    if job is not None:
+        result["job_id"] = job.branch_task_id
     if source_run is not None:
         branch_version = int(getattr(branch, "version", 1) or 1)
         record_lineage(
@@ -786,6 +1020,15 @@ def _compose_run_snapshot(
         [f"  - {s['node_id']}: {s['status']}" for s in node_statuses]
         or ["  (no nodes reported)"]
     )
+    output = run_record.get("output")
+    review_lines: list[str] = []
+    if isinstance(output, dict) and output.get("review_decision_status") == "failed":
+        failure = output.get("review_decision_failure") or {}
+        review_lines = [
+            "",
+            "Review decision execution failed: "
+            f"{failure.get('reason') or 'unknown error'}",
+        ]
     # Phone-legible header — name first, IDs only in structuredContent.
     header_branch = branch_name or "(branch)"
     summary = "\n".join([
@@ -795,6 +1038,7 @@ def _compose_run_snapshot(
         "",
         "Nodes:",
         *node_lines,
+        *review_lines,
         "",
         "Graph:",
         mermaid,
@@ -825,9 +1069,14 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
-    output = run_record.get("output")
     if isinstance(output, dict):
-        for key in ("external_write_results", "external_write_errors"):
+        for key in (
+            "external_write_results",
+            "external_write_errors",
+            "review_decision_id",
+            "review_decision_status",
+            "review_decision_failure",
+        ):
             if key in output:
                 snapshot[key] = output[key]
     # INTERRUPTED runs are terminal in v1 (durability guarantee — see
@@ -1240,6 +1489,28 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
     except ImportError:
         provider_call = None
 
+    # C2 r2: the resumed run's universe comes from its record — bind it so the
+    # resume path resolves the run's OWN vault (not process-global / another
+    # tenant's), same as run_branch.
+    _resume_universe_id = (
+        _run_universe_id(_resume_record) if _resume_record is not None else ""
+    )
+    provider_call = _bind_universe_context(provider_call, _resume_universe_id)
+    # AUTHORITATIVE tenant scope on resume, explicit (Codex S3 r20 #2).
+    _exec_scope = _run_execution_scope(_resume_universe_id)
+
+    # Codex r10 #1: refuse a sandbox-blocked branch at RESUME time too — a resumed
+    # run re-executes its repo-touching node(s), which fail closed with no per-job
+    # runner. Refuse synchronously rather than resume into a doomed run.
+    if _resume_record is not None:
+        _resume_bid = str(_resume_record.get("branch_def_id") or "").strip()
+        if _resume_bid:
+            _resume_branch = _branch_lookup(_resume_bid, 0)
+            if _resume_branch is not None:
+                _sandbox_refusal = _sandbox_enqueue_refusal(_resume_branch)
+                if _sandbox_refusal is not None:
+                    return _sandbox_refusal
+
     try:
         outcome = resume_run(
             _base_path(),
@@ -1247,6 +1518,7 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
             actor=actor,
             branch_lookup=_branch_lookup,
             provider_call=provider_call,
+            execution_scope=_exec_scope,
         )
     except ResumeError as exc:
         return json.dumps({
@@ -1559,9 +1831,9 @@ def _action_run_routing_evidence(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Memory-scope status
 # get_memory_scope_status — self-auditing primitive §4.1
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
 
 
 def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
@@ -1698,6 +1970,14 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     except ImportError:
         provider_call = None
 
+    # C2 r2: bind this version-run's universe context so its provider calls
+    # resolve the run's OWN vault (same as run_branch / resume_run).
+    provider_call = _bind_universe_context(
+        provider_call, kwargs.get("universe_id") or "",
+    )
+    # AUTHORITATIVE tenant scope, explicit (Codex S3 r20 #2).
+    _exec_scope = _run_execution_scope(kwargs.get("universe_id") or "")
+
     # Parse + validate recursion_limit_override (10-1000) — same shape as run_branch.
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
@@ -1715,15 +1995,48 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             })
         recursion_limit_override = _rl_val
 
+    # Codex r11 #5: refuse a sandbox-blocked version snapshot at QUEUE TIME, and
+    # FAIL CLOSED on a malformed/unclassifiable snapshot. Only a not-found (the
+    # lookup returns None) defers to the executor's canonical not-found error —
+    # a reconstruction or classification error must NOT continue into execution
+    # (the r10 code caught every exception and fell through, contradicting the
+    # "all three enqueue paths refuse" guarantee).
+    from tinyassets.branch_versions import get_branch_version
     try:
+        _bv = get_branch_version(_base_path(), branch_version_id=bvid)
+    except Exception:  # noqa: BLE001 — a lookup failure defers to the executor,
+        _bv = None      # which re-looks-up and returns the canonical not-found.
+    if _bv is not None:
+        try:
+            from tinyassets.branches import BranchDefinition as _BranchDef
+            _version_branch = _BranchDef.from_dict(_bv.snapshot)
+            _sandbox_refusal = _sandbox_enqueue_refusal(_version_branch)
+        except Exception as _snap_exc:  # noqa: BLE001 — unclassifiable ⇒ fail closed
+            return json.dumps({
+                "error": (
+                    "Branch version snapshot could not be reconstructed or "
+                    "classified for the sandbox gate; refusing to run it "
+                    f"(fail closed): {type(_snap_exc).__name__}: {_snap_exc}"
+                ),
+                "sandbox_blocked": True,
+                "branch_version_id": bvid,
+            })
+        if _sandbox_refusal is not None:
+            return _sandbox_refusal
+
+    try:
+        base_path = _base_path()
+        universe_id = str(kwargs.get("universe_id") or "").strip()
         outcome = execute_branch_version_async(
-            _base_path(),
+            base_path,
             branch_version_id=bvid,
             inputs=inputs,
             run_name=kwargs.get("run_name", ""),
             actor=_run_actor_for_kwargs(kwargs),
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            _enqueue_universe_id=universe_id,
+            execution_scope=_exec_scope,
         )
     except KeyError as exc:
         return json.dumps({"error": str(exc).strip("'\"")})

@@ -33,7 +33,8 @@ from unittest.mock import patch
 import pytest
 
 from tinyassets.branches import NodeDefinition
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.credential_broker import deposit_credential
+from tinyassets.credentials import SecretKind
 from tinyassets.effectors import EXTERNAL_WRITE_SINK_GITHUB_PR
 from tinyassets.effectors.github_pr import (
     _CAPABILITIES_ENV,
@@ -194,31 +195,33 @@ def test_read_capability_unset_env_returns_empty():
     assert _read_capability("Jonnyton/TinyAssets") == ""
 
 
-def test_read_capability_uses_universe_vault_before_env(universe_dir, monkeypatch):
+def test_read_capability_uses_universe_vault_before_env(
+    platform_vault_env, universe_dir, monkeypatch
+):
     monkeypatch.setenv(
         _CAPABILITIES_ENV, json.dumps({_DESTINATION: "env-token"}),
     )
-    write_credential_vault(
-        universe_dir,
-        [
-            {
-                "credential_type": "vcs",
-                "service": "github",
-                "destination": _DESTINATION,
-                "purpose": "write",
-                "token": "vault-token",
-            }
-        ],
+    deposit_credential(
+        universe_id=universe_dir.name, founder_id="founder-1",
+        provider="github", destination=_DESTINATION, purpose="external_write",
+        kind=SecretKind.GITHUB_PAT, value=b"vault-token",
     )
 
     assert _read_capability(_DESTINATION, universe_dir) == "vault-token"
 
 
-def test_read_capability_empty_universe_vault_blocks_env(universe_dir, monkeypatch):
+def test_read_capability_vault_routed_universe_blocks_env(
+    platform_vault_env, universe_dir, monkeypatch
+):
+    """Vault-routed but not authorized for this destination -> '' (no env)."""
     monkeypatch.setenv(
         _CAPABILITIES_ENV, json.dumps({_DESTINATION: "env-token"}),
     )
-    write_credential_vault(universe_dir, [])
+    deposit_credential(
+        universe_id=universe_dir.name, founder_id="founder-1",
+        provider="github", destination="octo/unrelated", purpose="external_write",
+        kind=SecretKind.GITHUB_PAT, value=b"other-token",
+    )
 
     assert _read_capability(_DESTINATION, universe_dir) == ""
 

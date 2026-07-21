@@ -191,18 +191,25 @@ def read_graph(
     tags: str = "",
     author: str = "",
     run_status: str = "",
+    branch_id: str = "",
     limit: int = 30,
+    offset: int = 0,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
     Args:
-        target: What to read: status, graphs, graph, goals, goal, or runs.
+        target: What to read: status, graphs, graph, goals, goal, runs, designs
+            (list remixable branch designs — public published plus your own;
+            other users' private designs are never listed), or design (export
+            one branch as a portable design artifact).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
         run_status: Optional run status filter.
+        branch_id: Branch identifier for target=design (the branch to export).
+            Falls back to graph_id.
         limit: Maximum number of records to return.
     """
     normalized = (target or "status").strip().lower()
@@ -220,10 +227,25 @@ def read_graph(
         return _goals_impl(action="get", goal_id=goal_id)
     if normalized == "runs":
         return _extensions_impl(action="list_runs", status=run_status, limit=limit)
+    if normalized == "designs":
+        # DISCOVER: PUBLIC-ONLY on the unauthenticated directory host (Codex
+        # F2) — never the env/server identity as viewer, so a private design is
+        # never listed regardless of UNIVERSE_SERVER_USER.
+        return _extensions_impl(
+            action="list_branches", scope="published",
+            author=author, limit=limit, offset=offset, public_only=True,
+        )
+    if normalized == "design":
+        # EXPORT: PUBLIC-ONLY — a private design returns not-found here.
+        return _extensions_impl(
+            action="export_design", branch_def_id=(branch_id or graph_id),
+            public_only=True,
+        )
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs"),
+        ("status", "graphs", "graph", "goals", "goal", "runs",
+         "designs", "design"),
     )
 
 
@@ -257,7 +279,12 @@ def write_graph(
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal or request.
+        target: What to write: goal or request. Design remix/import (write) is
+            deliberately NOT offered here — the directory host is the public
+            DISCOVERY surface (read designs/export only). Authenticated
+            remix/import/bind lives on the /mcp universe connector, which is
+            OAuth-gated (the directory surface is excluded from OAuth challenges,
+            so writes there can't authenticate).
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.

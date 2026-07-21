@@ -34,13 +34,26 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _base_universe_dir():
-    """Resolve the active universe directory for storage I/O.
+def _base_universe_dir(universe_id: str = ""):
+    """Resolve the TARGET UNIVERSE directory for consent storage I/O.
+
+    Consent must be stored in the SAME per-universe directory the effectors read
+    it from (Codex R7 F4). The EXPLICIT ``universe_id`` (threaded from the MCP
+    call) wins so an owner administering another universe writes THAT universe's
+    consent, not their resolved home (Codex R10 #5). Falls back to the root only
+    if a universe is not resolvable (dev/no-tenant).
 
     Lazy import so this module is safe to import at extensions.py
     top-of-module without dragging the helpers chain into a cycle.
     """
-    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
+
+    target = _request_universe(universe_id or "")
+    if target:
+        try:
+            return _universe_dir(target)
+        except ValueError:
+            pass
     return _base_path()
 
 
@@ -49,22 +62,42 @@ def _current_actor() -> str:
     return _actor()
 
 
+def _consent_owner_gate(universe_id: str = "") -> tuple[str, dict[str, Any] | None]:
+    """Consent grants/revokes authorize the universe to make EXTERNAL WRITES on
+    its behalf — an owner-level decision. Require the authenticated owner of the
+    EXPLICIT target universe (Codex R10 #5), and return the AUTHENTICATED grantor
+    identity so a caller cannot spoof ``granted_by`` (Codex R7 C3). Returns
+    ``(grantor, error_or_None)``.
+    """
+    from tinyassets.api.helpers import _request_universe
+    from tinyassets.api.permissions import (
+        current_actor_id,
+        current_actor_is_universe_owner,
+    )
+
+    target = _request_universe(universe_id or "")
+    if not current_actor_is_universe_owner(target):
+        return "", {
+            "error": (
+                "effector consent grant/revoke is owner-only; only the "
+                "universe owner/founder may authorize external writes"
+            ),
+            "failure_class": "owner_required",
+            "actionable_by": "user",
+            "universe_id": target,
+        }
+    return current_actor_id(), None
+
+
 def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
-    """Insert / refresh an active consent grant.
+    """Insert / refresh an active consent grant. OWNER-ONLY (Codex R7 C3): the
+    authenticated universe owner authorizes it, and the grantor is derived from
+    the authenticated actor — a caller-supplied ``granted_by`` is IGNORED.
 
-    Required kwargs:
-      - ``sink``: sink name, e.g. ``"github_pull_request"``.
-      - ``destination``: per-sink destination, e.g. ``"Jonnyton/TinyAssets"``.
-
-    Optional:
-      - ``granted_by``: actor recording the grant. Defaults to the
-        current MCP actor when omitted.
-
-    Returns the inserted row as JSON.
+    Required kwargs: ``sink``, ``destination``.
     """
     sink = (kwargs.get("sink") or "").strip()
     destination = (kwargs.get("destination") or "").strip()
-    granted_by = (kwargs.get("granted_by") or "").strip() or _current_actor()
     if not sink:
         return json.dumps({
             "error": "grant_effector_consent requires 'sink'",
@@ -77,22 +110,23 @@ def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_destination",
             "actionable_by": "chatbot",
         })
-    if not granted_by:
+    universe_id = (kwargs.get("universe_id") or "").strip()
+    grantor, gate_err = _consent_owner_gate(universe_id)
+    if gate_err is not None:
+        return json.dumps(gate_err)
+    if not grantor:
         return json.dumps({
-            "error": (
-                "grant_effector_consent requires 'granted_by' "
-                "(could not derive current actor)"
-            ),
+            "error": "could not derive an authenticated grantor identity",
             "failure_class": "missing_granted_by",
             "actionable_by": "user",
         })
     try:
         from tinyassets.storage.effector_consents import grant_consent
         record = grant_consent(
-            _base_universe_dir(),
+            _base_universe_dir(universe_id),
             sink=sink,
             destination=destination,
-            granted_by=granted_by,
+            granted_by=grantor,
         )
     except Exception as exc:
         logger.exception("grant_effector_consent failed")
@@ -108,7 +142,7 @@ def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
 
 
 def _action_revoke_effector_consent(kwargs: dict[str, Any]) -> str:
-    """Flip ``revoked_at`` on an existing grant.
+    """Flip ``revoked_at`` on an existing grant. OWNER-ONLY (Codex R7 C3).
 
     Required: ``sink`` + ``destination``. Returns ``status="revoked"``
     on hit, ``status="no_active_grant"`` when no row matched (the
@@ -130,10 +164,14 @@ def _action_revoke_effector_consent(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_destination",
             "actionable_by": "chatbot",
         })
+    universe_id = (kwargs.get("universe_id") or "").strip()
+    _, gate_err = _consent_owner_gate(universe_id)
+    if gate_err is not None:
+        return json.dumps(gate_err)
     try:
         from tinyassets.storage.effector_consents import revoke_consent
         hit = revoke_consent(
-            _base_universe_dir(),
+            _base_universe_dir(universe_id),
             sink=sink,
             destination=destination,
         )
@@ -168,10 +206,11 @@ def _action_list_effector_consents(kwargs: dict[str, Any]) -> str:
     else:
         # None or empty string -> default True.
         active_only = True
+    universe_id = (kwargs.get("universe_id") or "").strip()
     try:
         from tinyassets.storage.effector_consents import list_consents
         rows = list_consents(
-            _base_universe_dir(),
+            _base_universe_dir(universe_id),
             sink=sink_filter,
             active_only=active_only,
         )

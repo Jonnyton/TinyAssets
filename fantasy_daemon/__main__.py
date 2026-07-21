@@ -204,16 +204,10 @@ def _dispatcher_startup(universe_path: Path) -> None:
         # our own worker_id is that predecessor's orphan — reclaim it in seconds
         # instead of waiting out the TTL. Scoped to our own id, so unlike the
         # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
-        # Require a genuinely UNIQUE worker id: when TINYASSETS_WORKER_ID is unset,
-        # cloud_worker materializes the shared DEFAULT_HOST_USER ("cloud-droplet")
-        # into the child env, which several manually-started supervisors could
-        # share — and reclaiming "our own" non-unique id would steal a live
-        # twin's task (Codex review). The compose fleet assigns unique ids
-        # (claude-1/codex-2/...), so this only excludes the un-configured default.
-        from tinyassets.cloud_worker import DEFAULT_HOST_USER
-
+        # Only a unique process identity is safe to reclaim. The branch-task
+        # boundary rejects blank and known shared fallback ids.
         worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
-        if worker_id and worker_id != DEFAULT_HOST_USER:
+        if worker_id:
             reclaim_predecessor_tasks(universe_path, worker_id=worker_id)
         # reclaim_leaseless=True: startup is the one safe place to also reset
         # running rows that carry no lease (pre-lease-era / corrupt orphans),
@@ -224,6 +218,58 @@ def _dispatcher_startup(universe_path: Path) -> None:
     except Exception:  # noqa: BLE001
         logger.exception(
             "Phase E dispatcher_startup failed for %s", universe_path,
+        )
+    _run_review_recovery(universe_path)
+
+
+def _run_review_recovery(universe_path: Path) -> None:
+    """LIVE daemon caller for the S4 review-recovery workers (Codex REJECT #1):
+    each cycle, drain this universe's head-bound manual-merge outbox + revocation
+    outbox with the REAL credentialed client built from the universe's vault. Only
+    runs when the universe actually has a review-queue DB (no empty-DB creation on
+    universes with no patch loop), and fail-closed when no GitHub credential is
+    connected (rows stay queued). Isolated in its own try/except so a review-queue
+    hiccup never wedges the dispatcher startup path."""
+    try:
+        from tinyassets.storage.review_queue import review_queue_db_path
+
+        if not review_queue_db_path(universe_path).exists():
+            return
+        from tinyassets.runs import run_review_recovery_for_universe
+
+        recovery = run_review_recovery_for_universe(universe_path)
+        for result in recovery.get("execute_decisions", []):
+            if not result.get("terminal"):
+                continue
+            payload = {
+                "event": "review_decision_terminal_failure",
+                "universe_path": str(universe_path),
+                "decision_id": result.get("decision_id") or "",
+                "effect_id": result.get("effect_id") or "",
+                "kind": result.get("kind") or "",
+                "reason": result.get("reason") or "",
+            }
+            logger.error(
+                "review_decision_terminal_failure %s",
+                json.dumps(payload, sort_keys=True),
+            )
+            from tinyassets.storage.review_queue import (
+                ack_decision_effect_reported,
+            )
+
+            if not ack_decision_effect_reported(
+                universe_path,
+                effect_id=str(result.get("effect_id") or ""),
+                worker_id=str(result.get("report_claimed_by") or ""),
+                claim_token=str(result.get("report_claim_token") or ""),
+            ):
+                logger.warning(
+                    "review decision terminal-report acknowledgment lost for %s",
+                    result.get("effect_id") or "",
+                )
+    except Exception:  # noqa: BLE001 — recovery is best-effort; never wedge startup
+        logger.exception(
+            "S4 review-recovery drain failed for %s", universe_path,
         )
 
 
@@ -786,7 +832,7 @@ def _should_execute_claimed_branch_directly(claimed_task: Any) -> bool:
     if not branch_def_id or branch_def_id in _UNIVERSE_CYCLE_BRANCH_IDS:
         return False
     request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
-    return request_type in {"branch_run", "bug_investigation"}
+    return request_type in {"branch_run", "bug_investigation", "review_revision"}
 
 
 def _branch_task_inputs_for_execution(claimed_task: Any) -> dict[str, Any]:
@@ -884,21 +930,39 @@ def _try_execute_claimed_branch_task(
         from tinyassets.branches import BranchDefinition
         from tinyassets.daemon_server import get_branch_definition
         from tinyassets.runs import (
+            RUN_STATUS_CANCELLED,
             RUN_STATUS_COMPLETED,
+            RUN_STATUS_FAILED,
+            ReviewRevisionExecutionGuard,
             execute_branch,
+            execute_claimed_branch_request,
             latest_run_by_name,
+            require_review_revision_task_head,
+            resolve_review_revision_request,
         )
         from tinyassets.storage import data_dir
 
         base_path = data_dir()
         requested = str(getattr(claimed_task, "branch_def_id", "") or "")
-        branch_def_id = _resolve_branch_id(requested, base_path)
+        request_type = str(
+            getattr(claimed_task, "request_type", "") or "branch_run"
+        )
+        definition_path = (
+            universe_path if request_type == "review_revision" else base_path
+        )
+        branch_def_id = (
+            requested
+            if request_type == "review_revision"
+            else _resolve_branch_id(requested, base_path)
+        )
         if not branch_def_id:
             return False, f"branch_not_found: {requested}", {
                 "requested_branch_def_id": requested,
             }
         try:
-            source_dict = get_branch_definition(base_path, branch_def_id=branch_def_id)
+            source_dict = get_branch_definition(
+                definition_path, branch_def_id=branch_def_id
+            )
         except KeyError:
             return False, f"branch_not_found: {branch_def_id}", {
                 "branch_def_id": branch_def_id,
@@ -910,6 +974,11 @@ def _try_execute_claimed_branch_task(
                 "branch_def_id": branch_def_id,
                 "validation_errors": errors,
             }
+        if request_type == "review_revision":
+            require_review_revision_task_head(
+                universe_path,
+                task=claimed_task,
+            )
 
         run_name = f"branch-task-{claimed_task.branch_task_id}"
         existing_run = latest_run_by_name(
@@ -917,18 +986,23 @@ def _try_execute_claimed_branch_task(
             run_name=run_name,
             branch_def_id=branch_def_id,
         )
-        if existing_run and existing_run.get("status") == RUN_STATUS_COMPLETED:
+        if existing_run and existing_run.get("status") in {
+            RUN_STATUS_COMPLETED,
+            RUN_STATUS_FAILED,
+            RUN_STATUS_CANCELLED,
+        }:
             output = existing_run.get("output", {})
+            run_status = str(existing_run["status"])
             metadata = {
                 "branch_def_id": branch_def_id,
                 "run_id": existing_run["run_id"],
-                "run_status": existing_run["status"],
+                "run_status": run_status,
                 "actor": existing_run.get("actor") or "",
                 "reused_existing_run": True,
             }
             attach_result = _maybe_attach_bug_investigation_patch_packet(
                 claimed_task,
-                existing_run["status"],
+                run_status,
                 output if isinstance(output, dict) else {},
             )
             if attach_result.get("status") != "skipped":
@@ -940,7 +1014,13 @@ def _try_execute_claimed_branch_task(
                 branch_def_id,
                 existing_run["run_id"],
             )
-            return True, "", metadata
+            return (
+                run_status == RUN_STATUS_COMPLETED,
+                "" if run_status == RUN_STATUS_COMPLETED else str(
+                    existing_run.get("error") or f"run_{run_status}"
+                ),
+                metadata,
+            )
 
         provider_call: Any = None
         try:
@@ -957,33 +1037,52 @@ def _try_execute_claimed_branch_task(
         executor_runtime_id = str(
             getattr(claimed_task, "executor_runtime_id", "") or "",
         )
-        outcome = execute_branch(
-            base_path,
-            branch=branch,
-            inputs=_branch_task_inputs_for_execution(claimed_task),
-            run_name=run_name,
-            actor=actor,
-            daemon_id=daemon_id,
-            runtime_instance_id=executor_runtime_id,
-            worker_id=executor_worker_id,
-            provider_call=provider_call,
-            on_node_status=on_node_status,
-            # Carry spawn depth across the queue boundary so an in-node enqueue
-            # from this run is depth+1 and the depth cap can bound the chain.
-            _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
-            # Trusted enqueue context (Codex review 2026-05-30): the run's own
-            # universe + spawn lineage, server-set from the claimed task so an
-            # in-node enqueue targets THIS universe and the per-origin cap can
-            # bound the whole spawn chain. origin falls back to this task when
-            # it starts a new chain (resolved in the enqueue helper).
-            _enqueue_universe_id=str(getattr(claimed_task, "universe_id", "") or ""),
-            _parent_branch_task_id=str(
-                getattr(claimed_task, "branch_task_id", "") or ""
-            ),
-            _origin_branch_task_id=str(
-                getattr(claimed_task, "origin_branch_task_id", "") or ""
-            ),
-        )
+        if str(getattr(claimed_task, "request_type", "") or "") == "review_revision":
+            request = resolve_review_revision_request(
+                base_path,
+                universe_path,
+                task=claimed_task,
+                branch=branch,
+            )
+            outcome = execute_claimed_branch_request(
+                base_path,
+                branch=branch,
+                on_node_status=on_node_status,
+                execution_guard=ReviewRevisionExecutionGuard.from_task(
+                    universe_path, claimed_task,
+                ),
+                **request,
+            )
+        else:
+            outcome = execute_branch(
+                base_path,
+                branch=branch,
+                inputs=_branch_task_inputs_for_execution(claimed_task),
+                run_name=run_name,
+                actor=actor,
+                daemon_id=daemon_id,
+                runtime_instance_id=executor_runtime_id,
+                worker_id=executor_worker_id,
+                provider_call=provider_call,
+                on_node_status=on_node_status,
+                # Carry spawn depth across the queue boundary so an in-node enqueue
+                # from this run is depth+1 and the depth cap can bound the chain.
+                _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
+                # Trusted enqueue context (Codex review 2026-05-30): the run's own
+                # universe + spawn lineage, server-set from the claimed task so an
+                # in-node enqueue targets THIS universe and the per-origin cap can
+                # bound the whole spawn chain. origin falls back to this task when
+                # it starts a new chain (resolved in the enqueue helper).
+                _enqueue_universe_id=str(
+                    getattr(claimed_task, "universe_id", "") or ""
+                ),
+                _parent_branch_task_id=str(
+                    getattr(claimed_task, "branch_task_id", "") or ""
+                ),
+                _origin_branch_task_id=str(
+                    getattr(claimed_task, "origin_branch_task_id", "") or ""
+                ),
+            )
         metadata = {
             "branch_def_id": branch_def_id,
             "run_id": outcome.run_id,
@@ -1081,7 +1180,12 @@ def _build_unified_graph_builder() -> Any:
         )
     raw = yaml.safe_load(seed_path.read_text(encoding="utf-8"))
     branch = BranchDefinition.from_dict(raw)
-    compiled_branch = compile_branch(branch)
+    # Codex S3 r13 #1: this is the DAEMON compiling its own host-authored seed
+    # branch (loaded from disk, not user-authored) — the ONLY trusted compile, so
+    # its HOST-ONLY ``universe_cycle_wrapper`` adapter is permitted. The user
+    # run_branch path never passes trusted=True, so a stranger's remixed branch
+    # selecting domain_id="fantasy_author" fails closed at the choke point.
+    compiled_branch = compile_branch(branch, trusted=True)
     return compiled_branch.graph
 
 
@@ -1853,7 +1957,7 @@ class DaemonController:
                         self._paused.wait(timeout=1.0)
 
                     # Activity/status handling must run even in --no-tray
-                    # cloud-worker mode; dashboard emission is gated inside
+                    # headless local-daemon mode; dashboard emission is gated inside
                     # _handle_node_output.
                     if isinstance(event, dict):
                         for node_name, node_output in event.items():

@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 # pystray requires a display (X server / DWM / WindowServer). In
-# headless container environments (e.g. the cloud_worker's
-# fantasy_daemon subprocess on the DO droplet), the import fails.
+# headless external-daemon environments, the import fails.
 # Defer + tolerate ImportError so the module still loads for its
 # non-tray API surface. Any code that actually instantiates the tray
 # will get a clear error at call-time.

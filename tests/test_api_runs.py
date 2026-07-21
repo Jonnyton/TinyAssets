@@ -299,6 +299,43 @@ def test_failed_run_snapshot_marks_last_running_node_failed(monkeypatch):
     assert "- step1: failed" in snapshot["summary"]
 
 
+def test_run_snapshot_surfaces_terminal_review_decision_failure(monkeypatch):
+    def _missing_branch(*_args, **_kwargs):
+        raise KeyError("missing-branch")
+
+    monkeypatch.setattr("tinyassets.daemon_server.get_branch_definition", _missing_branch)
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda _branch_def_id, _node_statuses: "```mermaid\nflowchart LR\n```",
+    )
+    failure = {
+        "effect_id": "effect-1",
+        "kind": "submit_review",
+        "reason": "head_moved",
+    }
+
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-1",
+            "branch_def_id": "missing-branch",
+            "status": "interrupted",
+            "actor": "tester",
+            "output": {
+                "review_decision_id": "decision-1",
+                "review_decision_status": "failed",
+                "review_decision_failure": failure,
+            },
+        },
+        [],
+    )
+
+    assert snapshot["review_decision_id"] == "decision-1"
+    assert snapshot["review_decision_status"] == "failed"
+    assert snapshot["review_decision_failure"] == failure
+    assert "Review decision execution failed" in snapshot["summary"]
+
+
 def test_failed_run_snapshot_surfaces_provider_chain_from_failed_event(monkeypatch):
     provider_chain = {
         "role": "writer",

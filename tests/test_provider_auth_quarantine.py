@@ -1,254 +1,196 @@
-"""Tests for the provider-auth health + worker self-quarantine feature.
+"""Provider-launch quarantine coverage without the retired cloud worker.
 
-Behind the 2026-06-25 loop-wedge: a worker whose writer-provider credentials
-were missing kept claiming tasks and failing every one for ~3 weeks, poisoning
-the queue, with no signal in get_status. This feature:
-
-  1. ``subscription_auth_health`` — a presence-based auth probe (one source of
-     truth shared by the worker gate + get_status).
-  2. ``run_supervisor`` self-quarantine — a dead-auth worker skips spawning the
-     claim subprocess entirely (no claim, no poison).
-  3. ``_compute_supervisor_liveness`` provider_auth block — surfaces dead writer
-     auth + an ``all_writers_unauthenticated`` roll-up warning.
+The surviving launch boundary is ``subprocess_env_for_provider``: it resolves
+the universe's engine binding, rejects an ineligible route, and scrubs ambient
+host credentials before any provider process can start.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import pytest
 
-_WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
-if str(_WORKFLOW.parent) not in sys.path:
-    sys.path.insert(0, str(_WORKFLOW.parent))
-
-import tinyassets.cloud_worker as cw  # noqa: E402
-from tinyassets.api.status import _compute_supervisor_liveness  # noqa: E402
-from tinyassets.providers.base import subscription_auth_health  # noqa: E402
-
-# ---- minimal Popen stand-in (never claims real subprocesses) --------------
-
-
-class _FakeProc:
-    def __init__(self, returncode: int = 0):
-        self.returncode: int | None = None
-        self._rc = returncode
-
-    def poll(self):
-        self.returncode = self._rc
-        return self._rc
-
-    def wait(self, timeout=None):
-        self.returncode = self._rc
-        return self._rc
+import tinyassets.engine_binding as engine_binding
+from tinyassets.config import write_universe_config_fields
+from tinyassets.credential_broker import (
+    MIGRATION_MARKER_FILENAME,
+    deposit_engine_api_key,
+)
+from tinyassets.engine_binding import (
+    BYO_VAULT_ENCRYPTED_ENV,
+    NON_AMBIENT_WORK_ENV,
+    EngineMisconfiguredError,
+    RetiredCredentialStateError,
+    resolve_engine_binding,
+)
+from tinyassets.exceptions import ProviderUnavailableError
+from tinyassets.providers.base import (
+    subprocess_env_for_provider,
+    subscription_auth_health,
+)
 
 
-def _sleep_recorder():
-    calls: list[float] = []
-    return calls, calls.append
+@pytest.fixture
+def attested_byo(monkeypatch):
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+    monkeypatch.setattr(engine_binding, "_sandbox_execution_attested", lambda: True)
 
 
-# ---- subscription_auth_health: codex --------------------------------------
+def _bound_anthropic_universe(root, name: str = "u-bound"):
+    universe = root / name
+    universe.mkdir()
+    write_universe_config_fields(universe, engine_source="byo_api_key")
+    deposit_engine_api_key(
+        universe_id=universe.name,
+        founder_id="founder-1",
+        service="anthropic",
+        api_key="sk-ant-api03-quarantine-test",
+    )
+    return universe
 
 
-def test_codex_ok_when_auth_json_present(tmp_path, monkeypatch):
+def test_codex_auth_health_is_ok_when_auth_record_exists(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text("{}", encoding="utf-8")
-    health = subscription_auth_health("codex")
+
+    health = subscription_auth_health("codex", allow_probe=False)
+
     assert health["status"] == "ok"
     assert health["provider"] == "codex"
 
 
-def test_codex_not_logged_in_when_auth_json_absent(tmp_path, monkeypatch):
+def test_codex_auth_health_is_quarantined_when_auth_record_is_absent(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
     assert subscription_auth_health("codex")["status"] == "not_logged_in"
 
 
-# ---- subscription_auth_health: claude-code --------------------------------
-
-
-def test_claude_ok_with_oauth_token(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
-    # Empty config dir — the token must win regardless.
+def test_claude_auth_health_accepts_explicit_oauth_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "token")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
     assert subscription_auth_health("claude-code")["status"] == "ok"
 
 
-def test_claude_ok_with_populated_config_dir(tmp_path, monkeypatch):
+def test_claude_auth_health_accepts_populated_config_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     (tmp_path / ".credentials.json").write_text("{}", encoding="utf-8")
+
     assert subscription_auth_health("claude-code")["status"] == "ok"
 
 
-def test_claude_not_logged_in_when_no_token_and_empty_dir(tmp_path, monkeypatch):
+def test_claude_auth_health_quarantines_empty_config_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "absent"))
+
     assert subscription_auth_health("claude-code")["status"] == "not_logged_in"
 
 
-# ---- subscription_auth_health: unknown providers are never gated -----------
+@pytest.mark.parametrize("provider", ["gemini-free", ""])
+def test_unprobed_provider_auth_health_is_unknown(provider):
+    assert subscription_auth_health(provider)["status"] == "unknown"
 
 
-def test_unknown_provider_is_unknown():
-    assert subscription_auth_health("gemini-free")["status"] == "unknown"
+@pytest.mark.parametrize(
+    "provider",
+    ("claude-code", "codex"),
+)
+def test_unbound_universe_is_quarantined_even_with_ambient_provider_auth(
+    tmp_path, monkeypatch, provider
+):
+    universe = tmp_path / "u-legacy-unbound"
+    universe.mkdir()
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ambient-anthropic")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-oauth")
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai")
+
+    binding = resolve_engine_binding(universe)
+
+    assert binding.bound is False
+    assert binding.capacity_kinds == ()
+    with pytest.raises(ProviderUnavailableError, match="refusing ambient"):
+        subprocess_env_for_provider(provider, universe_dir=universe)
 
 
-def test_empty_provider_is_unknown():
-    assert subscription_auth_health("")["status"] == "unknown"
+@pytest.mark.parametrize("provider", ("claude-code", "codex"))
+def test_unbound_universe_is_quarantined_without_global_provider_auth(
+    tmp_path, monkeypatch, provider
+):
+    universe = tmp_path / "u-no-global-auth"
+    universe.mkdir()
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    empty_auth = tmp_path / "empty-global-auth"
+    empty_auth.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(empty_auth / "claude"))
+    monkeypatch.setenv("CODEX_HOME", str(empty_auth / "codex"))
+
+    with pytest.raises(ProviderUnavailableError, match="refusing ambient"):
+        subprocess_env_for_provider(provider, universe_dir=universe)
 
 
-# ---- run_supervisor self-quarantine ---------------------------------------
+def test_declared_broken_binding_fails_before_launch_with_flag_off(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv(NON_AMBIENT_WORK_ENV, raising=False)
+    write_universe_config_fields(tmp_path, engine_source="byo_api_key")
+
+    with pytest.raises(EngineMisconfiguredError, match="no active broker-backed"):
+        subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
 
 
-def test_supervisor_quarantines_dead_auth_writer(tmp_path, monkeypatch):
+def test_bound_route_quarantines_nonmatching_provider_without_ambient_fallback(
+    platform_vault_env, attested_byo, monkeypatch
+):
+    universe = _bound_anthropic_universe(platform_vault_env)
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai")
+    monkeypatch.setenv("CODEX_HOME", str(platform_vault_env / "ambient-codex"))
+
+    with pytest.raises(ProviderUnavailableError, match="not an eligible"):
+        subprocess_env_for_provider("codex", universe_dir=universe)
+
+
+def test_byo_bound_route_runs_without_global_auth_and_uses_only_broker_secret(
+    platform_vault_env, attested_byo, monkeypatch
+):
+    universe = _bound_anthropic_universe(platform_vault_env)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-creds"))
-    spawn_calls: list[Path] = []
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(platform_vault_env / "ambient-claude"))
 
-    def spawn(universe):
-        spawn_calls.append(universe)
-        return _FakeProc()
+    env = subprocess_env_for_provider("claude-code", universe_dir=universe)
 
-    sleep_calls, sleep_fn = _sleep_recorder()
-    state = cw.run_supervisor(
-        tmp_path,
-        max_iterations=2,
-        daemon_args=["--provider", "claude-code"],
-        spawn_fn=spawn,
-        sleep_fn=sleep_fn,
-        auth_quarantine_backoff=42.0,
-    )
-    # The dead-auth worker must NEVER claim — that is the whole point.
-    assert spawn_calls == []
-    assert state.auth_quarantine_count == 2
-    assert sleep_calls == [42.0, 42.0]
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-quarantine-test"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert env["CLAUDE_CONFIG_DIR"] == str(universe / ".engine-auth" / "claude")
+    assert env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"
 
 
-def test_supervisor_spawns_when_writer_auth_present(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
-    spawn_calls: list[Path] = []
+def test_unattested_byo_route_quarantines_instead_of_using_ambient_auth(
+    platform_vault_env, monkeypatch
+):
+    monkeypatch.setenv(BYO_VAULT_ENCRYPTED_ENV, "1")
+    monkeypatch.setattr(engine_binding, "_sandbox_execution_attested", lambda: False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-oauth")
+    universe = _bound_anthropic_universe(platform_vault_env)
 
-    def spawn(universe):
-        spawn_calls.append(universe)
-        return _FakeProc(returncode=0)
-
-    _, sleep_fn = _sleep_recorder()
-    state = cw.run_supervisor(
-        tmp_path,
-        max_iterations=1,
-        daemon_args=["--provider", "claude-code"],
-        spawn_fn=spawn,
-        sleep_fn=sleep_fn,
-    )
-    assert len(spawn_calls) == 1
-    assert state.auth_quarantine_count == 0
+    with pytest.raises(ProviderUnavailableError, match="not fully attested"):
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
 
 
-def test_supervisor_does_not_gate_generic_worker(tmp_path, monkeypatch):
-    # No --provider and no pin → no resolvable writer → no gate (the worker may
-    # legitimately route across the fallback chain), so it spawns normally.
-    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
-    spawn_calls: list[Path] = []
+def test_retired_binding_is_terminal_and_never_falls_back_to_host_auth(
+    tmp_path, monkeypatch
+):
+    (tmp_path / MIGRATION_MARKER_FILENAME).write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-oauth")
 
-    def spawn(universe):
-        spawn_calls.append(universe)
-        return _FakeProc(returncode=0)
-
-    _, sleep_fn = _sleep_recorder()
-    state = cw.run_supervisor(
-        tmp_path, max_iterations=1, spawn_fn=spawn, sleep_fn=sleep_fn,
-    )
-    assert len(spawn_calls) == 1
-    assert state.auth_quarantine_count == 0
-
-
-# ---- supervisor_liveness provider_auth block ------------------------------
-
-
-def test_liveness_provider_auth_block_ok(tmp_path, monkeypatch):
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
-
-    out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["writers"]["codex"]["status"] == "ok"
-    assert out["provider_auth"]["writers"]["claude-code"]["status"] == "ok"
-    assert out["provider_auth"]["all_writers_unauthenticated"] is False
-    assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
-
-
-def test_liveness_all_writers_unauthenticated_warns(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-absent"))
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-absent"))
-
-    out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["all_writers_unauthenticated"] is True
-    assert any("all_writers_unauthenticated" in w for w in out["warnings"])
-
-
-def test_liveness_partial_writer_warns(tmp_path, monkeypatch):
-    # The exact 2026-06-25 shape: claude dead, codex alive. Must warn even
-    # though the loop still produces (Codex review finding #1).
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-absent"))
-
-    out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["all_writers_unauthenticated"] is False
-    assert out["provider_auth"]["writers"]["claude-code"]["status"] == "not_logged_in"
-    assert out["provider_auth"]["writers"]["codex"]["status"] == "ok"
-    assert any("writer_unauthenticated" in w for w in out["warnings"])
-    assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
-
-
-def test_supervisor_quarantines_via_pin_writer_env(tmp_path, monkeypatch):
-    # No --provider; the writer comes from TINYASSETS_PIN_WRITER (Codex #9).
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-creds"))
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "claude-code")
-    spawn_calls: list[Path] = []
-
-    def spawn(universe):
-        spawn_calls.append(universe)
-        return _FakeProc()
-
-    _, sleep_fn = _sleep_recorder()
-    state = cw.run_supervisor(
-        tmp_path, max_iterations=1, spawn_fn=spawn, sleep_fn=sleep_fn,
-    )
-    assert spawn_calls == []
-    assert state.auth_quarantine_count == 1
-
-
-def test_supervisor_resumes_after_reauth(tmp_path, monkeypatch):
-    # Quarantined worker must resume claiming once creds are re-seeded — the
-    # gate re-checks every tick, no restart needed (Codex #9).
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    config_dir = tmp_path / "claude"
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
-    spawn_calls: list[Path] = []
-
-    def spawn(universe):
-        spawn_calls.append(universe)
-        return _FakeProc(returncode=0)
-
-    def sleep_fn(_delay):
-        # Re-seed credentials mid-quarantine; the next iteration should spawn.
-        config_dir.mkdir(exist_ok=True)
-        (config_dir / ".credentials.json").write_text("{}", encoding="utf-8")
-
-    state = cw.run_supervisor(
-        tmp_path,
-        max_iterations=2,
-        daemon_args=["--provider", "claude-code"],
-        spawn_fn=spawn,
-        sleep_fn=sleep_fn,
-    )
-    assert state.auth_quarantine_count == 1  # only the first iteration
-    assert len(spawn_calls) == 1             # second iteration claims
+    with pytest.raises(RetiredCredentialStateError, match="cannot use ambient"):
+        subprocess_env_for_provider("claude-code", universe_dir=tmp_path)

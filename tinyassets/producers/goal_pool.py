@@ -192,7 +192,7 @@ def _accessible_branch_slugs(repo_root: Path, universe_path: Path | None = None)
     import-time side effect. Per the engine-is-infrastructure principle
     (``tinyassets/domain_registry.py``) the engine never imports a specific
     domain, so this set is **process-dependent by design**: a process that has
-    not loaded a domain (the cloud-worker producer pump, the plugin runtime)
+    not loaded a domain (an external-daemon producer pump, the plugin runtime)
     will not see that domain's slugs, and a goal-pool task targeting one is
     skipped here **when the subscriber can reach at least one other branch**
     (the accessibility filter in ``_parse_pool_yaml`` fail-OPENS on a fully

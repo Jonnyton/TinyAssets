@@ -494,26 +494,34 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
         )
 
     def worker(run_id: str) -> None:
-        with patch(
-            "tinyassets.effectors.github_pr.subprocess.run",
-            side_effect=fake_run,
-        ):
-            results[run_id] = run_github_pr_effector(
-                node_id="emit",
-                output_keys=["pr_packet"],
-                run_state={"pr_packet": packet},
-                base_path=universe,
-                run_id=run_id,
-            )
+        results[run_id] = run_github_pr_effector(
+            node_id="emit",
+            output_keys=["pr_packet"],
+            run_state={"pr_packet": packet},
+            base_path=universe,
+            run_id=run_id,
+        )
 
     threads = [
         threading.Thread(target=worker, args=("run-A",)),
         threading.Thread(target=worker, args=("run-B",)),
     ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=5.0)
+    # Patch once around both workers. Overlapping patch contexts in separate
+    # threads can restore mocks out of order and leak a fake subprocess.run to
+    # every later test in the process.
+    with patch(
+        "tinyassets.effectors.github_pr.subprocess.run",
+        side_effect=fake_run,
+    ):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+        assert all(not t.is_alive() for t in threads), (
+            "Both concurrent dedup callers must terminate before the shared "
+            "subprocess patch is removed."
+        )
+        assert set(results) == {"run-A", "run-B"}
 
     assert call_count["n"] == 0, (
         "An already-finalized receipt must dedup-hit; no thread should "

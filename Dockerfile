@@ -98,8 +98,8 @@ RUN mkdir -p /opt/codex-install && \
     npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
     /opt/codex-install/node_modules/.bin/codex --version
 
-# Install Claude Code CLI next to Codex so the daemon can register the
-# subscription-backed claude-code provider when CLAUDE_CONFIG_DIR is present.
+# Install Claude Code CLI next to Codex so the same OSS image can support
+# separately operated daemon runtimes outside the production control plane.
 RUN mkdir -p /opt/claude-code-install && \
     npm install --prefix /opt/claude-code-install "@anthropic-ai/claude-code@${CLAUDE_CODE_CLI_VERSION}" && \
     /opt/claude-code-install/node_modules/.bin/claude --version
@@ -111,9 +111,7 @@ COPY pyproject.toml ./
 COPY PLAN.md ./
 COPY tinyassets/ ./tinyassets/
 COPY domains/ ./domains/
-# fantasy_daemon is the node-execution runtime invoked by
-# tinyassets.cloud_worker. Without it in the image, the cloud worker
-# supervisor crash-loops with `No module named fantasy_daemon`.
+# Keep the legacy local daemon package importable for non-production OSS use.
 COPY fantasy_daemon/ ./fantasy_daemon/
 
 # Install into a venv that we'll copy to the final stage. Keeps the
@@ -191,6 +189,12 @@ RUN chmod 0755 /usr/local/bin/codex && \
 WORKDIR /app
 
 # Copy the populated venv + source from the builder.
+# NOTE (round-17 #2): the deployable predeployment migration lives INSIDE the
+# tinyassets package (tinyassets/migrations/retired_subscription_records.py), so it
+# ships with this /app/tinyassets copy — no separate scripts/ COPY (scripts/ is not
+# in the image, which is exactly why the old scripts/ migration path was
+# undeployable). The deploy pipeline runs it via
+# `python -m tinyassets.migrations.retired_subscription_records`.
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/domains /app/domains
@@ -210,12 +214,23 @@ COPY data/world_rules.lp /app/data/world_rules.lp
 # surface. Copied directly (not via the builder stage) because the
 # script is pure stdlib — no compilation needed.
 COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py
+# Operator-only DR commands invoked by deploy/backup-restore.sh and RESTORE.md.
+COPY scripts/vault_restore_bump.py /app/scripts/vault_restore_bump.py
+COPY scripts/vault_restore_recover.py /app/scripts/vault_restore_recover.py
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
+
+# Round-17 #2: fail the build if the deployable predeployment migration is not
+# importable in the RUNTIME image (PYTHONPATH=/app is now set). The deploy pipeline
+# runs `python -m tinyassets.migrations.retired_subscription_records` in a one-shot
+# container from this image BEFORE starting the daemon; if it can't import here it
+# would fail on the droplet too (the round-17 #2 `ModuleNotFoundError: tinyassets`
+# regression). Verifying at build time makes the migration provably deployable.
+RUN python -c "import tinyassets.migrations.retired_subscription_records as m; assert callable(m.main)"
 
 # Data directory — Row B will wire TINYASSETS_DATA_DIR through all
 # on-disk state. For now, /data is the expected bind-mount target;
@@ -225,7 +240,10 @@ RUN mkdir -p /data && \
     chmod +x /app/docker-entrypoint.sh && \
     chown -R tinyassets:tinyassets /data /app
 
-USER tinyassets
+# Start the entrypoint as root so it can validate/read the root-owned 0400 KEK
+# mount. tinyassets.vault_bootstrap preloads the keys and irrevocably drops to
+# UID/GID 1001 before importing or running the daemon.
+USER root
 
 EXPOSE 8001
 
