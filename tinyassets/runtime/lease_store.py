@@ -301,6 +301,13 @@ class CapsuleVerificationKey(Protocol):
     active: bool
 
 
+@dataclass(frozen=True)
+class CapsuleVerificationKeyRecord:
+    signing_key_id: str
+    verify_key: VerifyKey
+    active: bool = True
+
+
 class DeviceKeyRegistry(Protocol):
     """Platform-owned enrolled-device key lookup used by completion."""
 

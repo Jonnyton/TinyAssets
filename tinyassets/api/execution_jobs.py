@@ -24,6 +24,7 @@ from typing import (
 
 from nacl.signing import VerifyKey
 
+from tinyassets.branch_tasks import BranchTask
 from tinyassets.runtime.blob_refs import BlobStore
 from tinyassets.runtime.execution_capsule import (
     CapsulePolicyError,
@@ -60,6 +61,62 @@ _JSON_SAFE_INTEGER_MAX = 2**53 - 1
 # ---------------------------------------------------------------------------
 # S4: authenticated lease grant seam
 # ---------------------------------------------------------------------------
+
+
+def create_job_from_run(
+    store: LeaseStore,
+    run: Mapping[str, Any],
+) -> BranchTask:
+    """Persist one queued run as an idempotent B2 execution job."""
+    if not isinstance(store, LeaseStore):
+        raise TypeError("store must be a LeaseStore")
+    if not isinstance(run, Mapping) or isinstance(run, (str, bytes)):
+        raise ValueError("run must be a run record")
+    run_id = run.get("run_id")
+    if type(run_id) is not str or not run_id.strip():
+        raise ValueError("run.run_id must be a non-empty string")
+    run_id = run_id.strip()
+    required_text = {}
+    for field in ("branch_def_id", "universe_id", "owner_user_id"):
+        value = run.get(field)
+        if type(value) is not str or not value.strip():
+            raise ValueError(f"run.{field} must be a non-empty string")
+        required_text[field] = value.strip()
+    job_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"tinyassets:run:{required_text['universe_id']}:{run_id}",
+        )
+    )
+    inputs = run.get("inputs")
+    if type(inputs) is not dict:
+        raise ValueError("run.inputs must be an object")
+    started_at = run.get("started_at")
+    if type(started_at) not in (int, float):
+        raise ValueError("run.started_at must be a Unix timestamp")
+    queued_at = datetime.fromtimestamp(started_at, UTC).isoformat().replace(
+        "+00:00", "Z"
+    )
+    task = BranchTask(
+        branch_task_id=job_id,
+        branch_def_id=required_text["branch_def_id"],
+        universe_id=required_text["universe_id"],
+        inputs=dict(inputs),
+        trigger_source="run_bridge",
+        queued_at=queued_at,
+        request_type="distributed_execution",
+        source_run_id=run_id,
+    )
+    store.add_task(
+        task,
+        result_state={
+            "owner_user_id": required_text["owner_user_id"],
+            "candidate_result": None,
+            "candidate_receipt": None,
+            "completion_receipt": None,
+        },
+    )
+    return task
 
 
 def grant_job_lease(
