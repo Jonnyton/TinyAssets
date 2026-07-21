@@ -398,3 +398,91 @@ def test_reopened_challenge_cannot_mint_a_token_without_the_device_key(
 
     assert rejection.value.as_dict()["error"]["code"] == "INVALID_SIGNATURE"
     print(f"REOPENED_CHALLENGE_REJECTED: {rejection.value.as_dict()}")
+
+
+# ---------------------------------------------------------------------------
+# Per-fence revocation probes.
+#
+# `test_clearing_revoked_at_does_not_resurrect_a_revoked_access_token` above
+# says so itself: it "goes RED only when BOTH fences are removed; it pins
+# 'revocation is enforced', not either fence alone." A mutation run confirmed
+# that -- dropping ONE revocation fence left the suite GREEN, i.e. that fence
+# was load-bearing in production and unprotected by any test.
+#
+# Revocation is checked at five independent sinks. A probe that only fails when
+# ALL of them are gone lets four regress silently. Each probe below isolates one
+# sink so that removing exactly that check turns exactly this test RED.
+# ---------------------------------------------------------------------------
+
+
+def test_revoked_daemon_cannot_create_a_challenge(harness: _Harness) -> None:
+    """Isolates the `create_challenge` fence.
+
+    Challenge creation is the entry point of token minting: a revoked daemon that
+    can still open a challenge has a live path toward credentials, even if a
+    later fence happens to stop it today.
+    """
+    harness.service.revoke_daemon(OWNER, harness.daemon_id)
+
+    with pytest.raises(DaemonApiError) as rejection:
+        harness.service.create_challenge(
+            harness.daemon_id,
+            **harness.signer.challenge_creation_proof(
+                harness.daemon_id, timestamp=int(harness.service._clock())
+            ),
+        )
+
+    assert rejection.value.as_dict()["error"]["code"] == "CREDENTIAL_REVOKED"
+
+
+def test_revoked_daemon_cannot_mint_an_access_token(harness: _Harness) -> None:
+    """Pins "a revoked daemon cannot mint", NOT a single fence.
+
+    Measured, not assumed: `issue_access_token` guards the mint twice -- once on
+    the initial row read and again on a re-read inside the transaction (TOCTOU
+    cover). Removing EITHER alone leaves this test green; removing BOTH turns it
+    RED. That redundancy is deliberate defense-in-depth, so the honest claim is
+    behavioural coverage, not fence isolation.
+
+    Stated explicitly because the first version of this docstring claimed to
+    isolate the `issue_access_token` fence, and mutation testing disproved it.
+    A probe whose comment overstates what it detects is how the vacuity above
+    survived in the first place.
+    """
+    challenge = harness.service.create_challenge(
+        harness.daemon_id,
+        **harness.signer.challenge_creation_proof(
+            harness.daemon_id, timestamp=int(harness.service._clock())
+        ),
+    )
+    harness.service.revoke_daemon(OWNER, harness.daemon_id)
+
+    with pytest.raises(DaemonApiError) as rejection:
+        harness.service.issue_access_token(
+            harness.daemon_id,
+            challenge.challenge,
+            harness.signer.sign_challenge(harness.daemon_id, challenge.challenge),
+        )
+
+    assert rejection.value.as_dict()["error"]["code"] == "CREDENTIAL_REVOKED"
+
+
+def test_resolve_device_key_reports_a_revoked_daemon_as_inactive(
+    harness: _Harness,
+) -> None:
+    """Isolates the `resolve_device_key` active flag.
+
+    This sink does not raise -- it reports. Callers gate on `active`, so a
+    revoked daemon surfacing as active is a silent authorization grant rather
+    than a visible failure, which is exactly the class that hides from tests
+    asserting only on exceptions.
+    """
+    thumbprint = harness.completed.key_thumbprint
+    resolved = harness.service.resolve_device_key(thumbprint)
+    assert resolved is not None and resolved.active is True
+
+    harness.service.revoke_daemon(OWNER, harness.daemon_id)
+
+    revoked = harness.service.resolve_device_key(thumbprint)
+    assert revoked is not None, "revocation must not make the key unresolvable"
+    assert revoked.active is False
