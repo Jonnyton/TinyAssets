@@ -369,10 +369,78 @@ def _wrap_provider_failure(node_id: str, exc: BaseException) -> "CompilerError":
 
 
 def _dict_merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
-    """Shallow merge reducer for state fields declared ``reducer="merge"``."""
+    """Shallow merge for compile-enforced single-writer state fields."""
     out = dict(left)
     out.update(right)
     return out
+
+
+def _merge_reducer_fields(schema: list[dict[str, Any]]) -> set[str]:
+    return {
+        field["name"]
+        for field in schema
+        if field.get("name")
+        and (field.get("reducer") or "").strip().lower() == "merge"
+    }
+
+
+def _declared_node_outputs(node: NodeDefinition) -> set[str]:
+    outputs = set(node.output_keys or [])
+    for spec_name in (
+        "invoke_branch_spec",
+        "invoke_branch_version_spec",
+        "await_run_spec",
+    ):
+        spec = getattr(node, spec_name, None)
+        if isinstance(spec, dict) and isinstance(spec.get("output_mapping"), dict):
+            outputs.update(spec["output_mapping"])
+    return outputs
+
+
+def _validate_single_writer_merge_fields(
+    branch: BranchDefinition,
+    merge_fields: set[str],
+) -> None:
+    node_by_id = {node.node_id: node for node in branch.node_defs}
+    for field_name in sorted(merge_fields):
+        writers = [
+            graph_node.id
+            for graph_node in branch.graph_nodes
+            if field_name in _declared_node_outputs(
+                node_by_id[graph_node.node_def_id or graph_node.id],
+            )
+        ]
+        if len(writers) > 1:
+            raise CompilerError(
+                f"State field '{field_name}' uses reducer='merge' and requires "
+                f"a single writer; graph nodes {writers!r} declare it as output."
+            )
+
+
+def _guard_single_writer_merge_outputs(
+    fn: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    graph_node_id: str,
+    declared_outputs: set[str],
+    merge_fields: set[str],
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    undeclared_merge_fields = merge_fields - declared_outputs
+    if not undeclared_merge_fields:
+        return fn
+
+    def _guarded(state: dict[str, Any]) -> dict[str, Any]:
+        result = fn(state)
+        unexpected = sorted(undeclared_merge_fields.intersection(result))
+        if unexpected:
+            raise CompilerError(
+                f"Graph node '{graph_node_id}' wrote merge-reduced state "
+                f"field(s) {unexpected!r} without declaring it in "
+                "output_keys/output_mapping; single-writer merge fields "
+                "fail closed."
+            )
+        return result
+
+    return _guarded
 
 
 _BUILTIN_TYPES: dict[str, Any] = {
@@ -400,7 +468,8 @@ def _build_state_typeddict(schema: list[dict[str, Any]]) -> type:
 
     Honors PLAN.md hard rule #5: fields declared with ``reducer="append"`` use
     ``Annotated[list, operator.add]``; ``reducer="merge"`` uses a shallow
-    dict merger; anything else overwrites.
+    dict merger after compile-time single-writer enforcement; anything else
+    overwrites.
     """
     annotations: dict[str, Any] = {}
     for field in schema:
@@ -2710,6 +2779,9 @@ def compile_branch(
             "Cannot compile invalid branch:\n  - " + "\n  - ".join(errors)
         )
 
+    merge_fields = _merge_reducer_fields(branch.state_schema or [])
+    _validate_single_writer_merge_fields(branch, merge_fields)
+
     # Build-time warnings (input_keys leaks, etc.) — emit through the
     # event_sink so callers' per-run event logs see them before the
     # first node runs. Warnings are non-fatal regardless of strict
@@ -2791,6 +2863,12 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+        )
+        fn = _guard_single_writer_merge_outputs(
+            fn,
+            graph_node_id=gn.id,
+            declared_outputs=_declared_node_outputs(node_def),
+            merge_fields=merge_fields,
         )
         graph.add_node(gn.id, fn)
 
