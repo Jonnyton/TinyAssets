@@ -75,7 +75,28 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tinyassets.engine_binding import (
+    EngineMisconfiguredError,
+    non_ambient_work_enabled,
+    resolve_engine_binding,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _universe_is_retired_and_not_rebound(universe: "Path") -> bool:
+    """Round-21 #1 / round-22 #2: True iff *universe* must NOT be worked on ambient host
+    creds — its credential state is RETIRED (present raw ``llm_subscription`` record OR a
+    persistent non-secret marker) OR UNREADABLE, AND it is not re-bound to a sanctioned
+    engine. Regardless of the non-ambient flag. Uses the SAME strict fail-closed gate as
+    the graph-execution + router chokepoints (a malformed vault BLOCKS, never reads as
+    fresh); any evaluation error also fails closed (skip work)."""
+    from tinyassets.engine_binding import execution_blocked_reason
+
+    try:
+        return execution_blocked_reason(universe) is not None
+    except Exception:  # noqa: BLE001 — cannot evaluate the gate → fail closed (skip).
+        return True
 
 # Defaults tuned for a droplet-scale workload.
 DEFAULT_IDLE_BACKOFF_S = 10.0     # Seconds to sleep after a clean exit.
@@ -203,7 +224,10 @@ def _worker_model_for_provider(provider_name: str) -> str:
     if explicit:
         return explicit
     if provider_name == "codex":
-        return os.environ.get("TINYASSETS_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
+        return (
+            os.environ.get("TINYASSETS_CODEX_MODEL", "").strip()
+            or DEFAULT_WORKER_MODELS["codex"]
+        )
     if provider_name == "claude-code":
         return (
             os.environ.get("TINYASSETS_CLAUDE_MODEL", "").strip()
@@ -502,6 +526,15 @@ class SupervisorState:
         # Times this worker skipped spawning a claim-subprocess because its
         # writer provider was unauthenticated (auth self-quarantine).
         self.auth_quarantine_count = 0
+        # Non-ambient work gate (flag-gated): times a spawn was skipped because
+        # the universe had no bound engine capacity (idle-until-bound), and
+        # times a DECLARED-but-broken binding failed the gate loudly.
+        self.idle_until_bound_count = 0
+        self.engine_misconfigured_count = 0
+        # Round-21 #1: times a spawn was skipped because the universe is RETIRED
+        # (subscription lane retired, not re-bound) — fail closed regardless of the
+        # non-ambient flag, so it never runs on ambient host creds.
+        self.retired_fail_closed_count = 0
         self.started_at = _utcnow_iso()
         self.last_spawn_at = ""
         self.last_exit_rc: int | None = None
@@ -524,7 +557,9 @@ class SupervisorState:
             f"clean={self.total_clean_exits} "
             f"crashes={self.total_crashes} "
             f"consec={self.crash_count} "
-            f"auth_quarantined={self.auth_quarantine_count}"
+            f"auth_quarantined={self.auth_quarantine_count} "
+            f"idle_until_bound={self.idle_until_bound_count} "
+            f"engine_misconfigured={self.engine_misconfigured_count}"
         )
 
 
@@ -567,6 +602,9 @@ def write_supervisor_heartbeat(
         "total_spawns": state.total_spawns,
         "total_crashes": state.total_crashes,
         "consec_crashes": state.crash_count,
+        "idle_until_bound_count": state.idle_until_bound_count,
+        "engine_misconfigured_count": state.engine_misconfigured_count,
+        "retired_fail_closed_count": state.retired_fail_closed_count,
         "subprocess_pid": subprocess_pid,
         "subprocess_alive": subprocess_alive,
         "planned_sleep_s": planned_sleep_s,
@@ -749,13 +787,118 @@ def run_supervisor(
             break
         iteration += 1
 
+        # This worker's pinned writer provider (from --provider or
+        # TINYASSETS_PIN_WRITER). Empty = generic worker that routes the whole
+        # fallback chain. Used by BOTH gates below.
+        pinned_provider = (
+            _provider_from_daemon_args(daemon_args)
+            or os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
+        )
+        binding = None
+
+        # Round-21 #1: RETIRED-universe fail-closed PREFLIGHT — runs REGARDLESS of the
+        # non-ambient flag. A universe whose subscription lane was retired (present raw
+        # record OR a persistent non-secret marker) must NEVER be worked on ambient host
+        # credentials (a cross-identity leak), even in the flag-off default. It may be
+        # worked ONLY after a sanctioned RE-BIND (resolve_engine_binding().bound). Fails
+        # closed on any resolution error. Independent of, and BEFORE, the non-ambient
+        # gate below.
+        if _universe_is_retired_and_not_rebound(universe):
+            state.retired_fail_closed_count += 1
+            logger.warning(
+                "cloud_worker: universe %s is RETIRED (subscription lane retired, not "
+                "re-bound) — NOT working it on ambient host creds. Re-bind a sanctioned "
+                "engine via write_graph target=engine.",
+                universe,
+            )
+            write_supervisor_heartbeat(
+                universe, state, iteration=iteration,
+                phase="retired_needs_rebind",
+                planned_sleep_s=idle_backoff,
+            )
+            sleep_fn(idle_backoff)
+            continue
+
+        # Non-ambient work gate (design note 2026-07-15 gap G7). FLAG-GATED and
+        # DEFAULT OFF: with TINYASSETS_NON_AMBIENT_WORK unset this whole block is
+        # skipped, so the loop spawns exactly as it does today (a byte-for-byte
+        # no-op — ambient work). When the flag is ON, a universe runs only on
+        # capacity explicitly bound to it: an unbound universe is not worked
+        # (honestly idle-until-bound), and a DECLARED-but-broken binding fails
+        # LOUD (Hard Rule #8) rather than being silently skipped. Flipping the
+        # flag on is NOT the host-gated production switch-off of the
+        # platform-global daemon — that decision is made elsewhere.
+        if non_ambient_work_enabled():
+            try:
+                binding = resolve_engine_binding(universe)
+            except EngineMisconfiguredError as exc:
+                state.engine_misconfigured_count += 1
+                logger.error(
+                    "cloud_worker: universe %s has a MISCONFIGURED engine "
+                    "binding — NOT working it (%s). Fix the binding via "
+                    "write_graph target=engine. (non-ambient gate)",
+                    universe, exc,
+                )
+                write_supervisor_heartbeat(
+                    universe, state, iteration=iteration,
+                    phase="engine_misconfigured",
+                    planned_sleep_s=idle_backoff,
+                )
+                sleep_fn(idle_backoff)
+                continue
+            if not binding.bound:
+                state.idle_until_bound_count += 1
+                logger.info(
+                    "cloud_worker: universe %s has no bound engine capacity — "
+                    "idle until an engine is bound (non-ambient gate). Bind one "
+                    "via write_graph target=engine.",
+                    universe,
+                )
+                write_supervisor_heartbeat(
+                    universe, state, iteration=iteration,
+                    phase="idle_until_bound",
+                    planned_sleep_s=idle_backoff,
+                )
+                sleep_fn(idle_backoff)
+                continue
+            # Provider-level gate: the universe's capacity must serve THIS
+            # worker's pinned provider. An Anthropic-only universe must not let a
+            # Codex-pinned worker spawn (which would run on global Codex auth).
+            if pinned_provider and not binding.is_eligible_for(pinned_provider):
+                state.idle_until_bound_count += 1
+                logger.info(
+                    "cloud_worker: universe %s bound capacity (%s) does not "
+                    "serve pinned provider %s — idle-until-bound for this "
+                    "provider (non-ambient gate).",
+                    universe, sorted(binding.eligible_providers), pinned_provider,
+                )
+                write_supervisor_heartbeat(
+                    universe, state, iteration=iteration,
+                    phase="idle_provider_not_eligible",
+                    planned_sleep_s=idle_backoff,
+                )
+                sleep_fn(idle_backoff)
+                continue
+
         # Pre-claim auth gate (2026-06-25 loop-wedge root cause): a worker
         # whose writer provider is unauthenticated must NOT spawn the claim
         # subprocess. A dead-auth worker claims tasks, fails every one, and
         # corrupts the queue (failed > succeeded; genuine peer successes lost
         # to Invalid-transition). Self-quarantine: skip the spawn, beat, back
         # off, re-check — a re-seeded credential resumes claiming next tick.
-        auth = _worker_auth_health(daemon_args)
+        #
+        # Vault-aware skip (non-ambient gate ON only — keeps flag-OFF identical):
+        # when the pinned provider's bound capacity is PER-UNIVERSE VAULT auth,
+        # the child materializes that auth at spawn, so the process-global auth
+        # probe would wrongly quarantine a universe that can run. Skip the global
+        # probe for those — resolve_engine_binding already validated the vault
+        # credential is usable.
+        skip_global_auth = bool(
+            binding is not None
+            and pinned_provider
+            and binding.serves_via_vault(pinned_provider)
+        )
+        auth = None if skip_global_auth else _worker_auth_health(daemon_args)
         if auth is not None and auth.get("status") == "not_logged_in":
             state.auth_quarantine_count += 1
             logger.error(

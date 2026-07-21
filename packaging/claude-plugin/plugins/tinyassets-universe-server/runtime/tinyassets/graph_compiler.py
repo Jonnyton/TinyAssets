@@ -26,6 +26,7 @@ Design rules (from `docs/specs/community_branches_phase3.md`):
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import copy
 import hashlib
 import json
@@ -37,7 +38,10 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import TYPE_CHECKING, Annotated, Any, Callable
+
+if TYPE_CHECKING:
+    from tinyassets.sandbox_policy import ExecutionScope
 
 from langgraph.graph import END, START, StateGraph
 
@@ -203,7 +207,10 @@ def _run_with_timeout(
     instead of hanging the executor.
     """
     executor = _get_timeout_executor()
-    future = executor.submit(fn)
+    # ContextVars do not cross ThreadPoolExecutor boundaries automatically.
+    # Carry the immutable execution-universe pin into provider/source workers.
+    context = contextvars.copy_context()
+    future = executor.submit(context.run, fn)
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
@@ -2117,6 +2124,7 @@ def _build_invoke_branch_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_spec`` node.
 
@@ -2194,6 +2202,7 @@ def _build_invoke_branch_node(
                     actor=actor_arg,
                     provider_call=provider_call,
                     _invocation_depth=depth + 1,
+                    execution_scope=execution_scope,
                 )
                 if outcome.status == "completed":
                     try:
@@ -2242,6 +2251,7 @@ def _build_invoke_branch_node(
                 actor=actor_arg,
                 provider_call=provider_call,
                 _invocation_depth=depth + 1,
+                execution_scope=execution_scope,
             )
             # async: write the child run_id into the first output_mapping target.
             # design_used emit deferred to await_branch_run on success
@@ -2263,6 +2273,7 @@ def _build_invoke_branch_version_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_scope: "ExecutionScope | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_version_spec`` node.
 
@@ -2361,6 +2372,7 @@ def _build_invoke_branch_version_node(
                     actor=actor_arg,
                     provider_call=provider_call,
                     _invocation_depth=depth + 1,
+                    execution_scope=execution_scope,
                 )
                 # Block until the child terminates; harvest its output dict.
                 record = poll_child_run_status(_base, outcome.run_id)
@@ -2418,6 +2430,7 @@ def _build_invoke_branch_version_node(
                 actor=actor_arg,
                 provider_call=provider_call,
                 _invocation_depth=depth + 1,
+                execution_scope=execution_scope,
             )
             # design_used emit deferred to await on success (mirrors
             # invoke_branch async path).
@@ -2494,6 +2507,7 @@ def _build_node(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2555,6 +2569,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_scope=execution_scope,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
@@ -2568,6 +2583,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_scope=execution_scope,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
@@ -2677,6 +2693,7 @@ def compile_branch(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    execution_scope: "ExecutionScope | None" = None,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2791,6 +2808,7 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            execution_scope=execution_scope,
         )
         graph.add_node(gn.id, fn)
 

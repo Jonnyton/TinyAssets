@@ -8,10 +8,15 @@ secret values only to daemon-side effectors/providers that need them.
 from __future__ import annotations
 
 import base64
+import contextlib
+import hashlib
 import json
 import os
+import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
@@ -52,27 +57,6 @@ def _chmod_best_effort(path: Path, mode: int) -> None:
         os.chmod(path, mode)
     except OSError:
         pass
-
-
-def _as_path(value: Any, universe_dir: Path) -> Path | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    candidate = Path(value.strip()).expanduser()
-    if not candidate.is_absolute():
-        candidate = universe_dir / candidate
-    return candidate
-
-
-def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
-    service_part = "".join(
-        ch if ch.isalnum() or ch in {"-", "_"} else "-"
-        for ch in service.strip().lower()
-    ) or "credential"
-    target = universe_dir / CREDENTIAL_ARTIFACT_DIR / service_part
-    target.mkdir(parents=True, exist_ok=True)
-    _chmod_best_effort(target.parent, 0o700)
-    _chmod_best_effort(target, 0o700)
-    return target
 
 
 def _normalize_record(raw: Any) -> dict[str, Any]:
@@ -164,6 +148,16 @@ def _service(record: dict[str, Any]) -> str:
     return str(record.get("service") or record.get("provider") or "").strip().lower()
 
 
+# NOTE: an add-or-replace `upsert_credential` primitive was removed in Phase-1
+# (round 10, F4). It had NO production caller (hosted BYO deposit is refused
+# through the chat until Phase 2) and its claimed atomicity was FALSE across
+# processes (process-local lock + a shared fixed ``.tmp`` name → lost writes +
+# Windows PermissionError under concurrency). A real multiprocess-safe atomic
+# vault (OS-level lock + unique temp files + a transactional backend) lands with
+# the Phase-2 out-of-chat deposit flow. A false atomicity claim on dead code is
+# worse than its absence.
+
+
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:
     expected = purpose.strip()
     record_purpose = record.get("purpose")
@@ -214,154 +208,460 @@ def resolve_github_token(
     return ""
 
 
-def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str, Any]]:
+class RetiredSubscriptionLaneError(RuntimeError):
+    """A per-universe vault holds a legacy ``llm_subscription`` record.
+
+    Founder subscription custody is a RETIRED, BLOCKED lane (2026-07-02 custody
+    research §0/§4): the platform must NOT custody + drive a founder's personal
+    subscription token (Anthropic/OpenAI ToS). The host's OWN subscription auth is
+    exclusively PROCESS-GLOBAL first-party (Option E) — it never flows through the
+    per-universe vault. A legacy per-universe ``llm_subscription`` record is
+    therefore never injected into a spawn; it is rejected here (fail loud, Hard
+    Rule #8) so the record is migrated/removed rather than silently skipped
+    (round-12 #1). Carries the offending service so the operator can locate it.
+    """
+
+    def __init__(self, service: str, universe_dir: str) -> None:
+        self.service = service
+        self.universe_dir = universe_dir
+        super().__init__(
+            f"per-universe llm_subscription record (service={service!r}) at "
+            f"{universe_dir} is a RETIRED credential lane — the platform never "
+            "custodies subscription tokens (host auth is process-global). Remove "
+            "or migrate the record; bind a sanctioned engine via "
+            "write_graph target=engine (BYO key / self-hosted / market / "
+            "host-your-own-device)."
+        )
+
+
+def _llm_subscription_records(universe_dir: str | Path | None) -> list[dict[str, Any]]:
+    """Return ANY legacy ``llm_subscription`` records in the universe vault.
+
+    The subscription-custody lane is retired (:class:`RetiredSubscriptionLaneError`):
+    these records are never a spawn auth source. This helper exists ONLY to DETECT
+    a legacy record so the spawn path can fail loud instead of silently consuming
+    it. Propagates ``ValueError`` (malformed vault) to the caller.
+    """
     if universe_dir is None:
         return []
-    service_key = service.strip().lower()
     return [
         record
         for record in load_credential_vault(universe_dir)
         if record.get("credential_type") == "llm_subscription"
-        and _service(record) == service_key
     ]
 
 
-def _codex_home_from_record(record: dict[str, Any], universe_dir: Path) -> Path | None:
-    for key in ("codex_home", "home", "auth_home", "path"):
-        resolved = _as_path(record.get(key), universe_dir)
-        if resolved is not None:
-            return resolved
-    auth_path = _as_path(record.get("auth_json_path"), universe_dir)
-    if auth_path is not None:
-        return auth_path.parent
-    return None
+def _reject_retired_subscription_records(universe_dir: str | Path | None) -> None:
+    """Raise :class:`RetiredSubscriptionLaneError` if a legacy subscription record
+    is present in the universe vault (round-12 #1: quarantine, not silent skip)."""
+    for record in _llm_subscription_records(universe_dir):
+        raise RetiredSubscriptionLaneError(
+            _service(record) or "unknown", str(universe_dir),
+        )
 
 
-def resolve_codex_home(universe_dir: str | Path | None) -> Path | None:
-    """Return the configured CODEX_HOME path for this universe, if any."""
+def has_legacy_subscription_records(universe_dir: str | Path | None) -> bool:
+    """Return True iff the universe vault holds a legacy ``llm_subscription`` record
+    (round-14 #3 status probe). Fails CLOSED-quiet on a resolution error (returns
+    False) — a malformed vault surfaces separately as an EngineMisconfiguredError."""
+    try:
+        return bool(_llm_subscription_records(universe_dir))
+    except (ValueError, OSError):
+        return False
+
+
+#: NON-SECRET retired-subscription marker archive (round-20 #1/#2). Its PRESENCE
+#: means this universe HAD a subscription lane that was retired — the fail-closed
+#: signal that survives the raw record's removal. Contents are non-secret metadata
+#: only (service + token hash + retired_at); NEVER the raw token.
+QUARANTINE_FILENAME = ".credential-vault-quarantine.json"
+
+#: Sidecar lock serializing the quarantine/rollback migration for one universe.
+VAULT_LOCK_FILENAME = ".credential-vault.lock"
+
+
+def _has_retired_subscription_marker(universe_dir: str | Path | None) -> bool:
+    """Return True iff a NON-SECRET retired-subscription marker archive is present
+    (round-20 #1). Its presence means this universe HAD a subscription lane that was
+    retired, so any spawn that would otherwise run on AMBIENT host creds must FAIL
+    CLOSED (never leak the host's identity) until the universe is re-bound. A missing
+    file → False (never retired). An EXISTING-but-unreadable file → True (it was
+    retired; fail closed rather than risk leaking). The marker survives the raw
+    record's removal, which is exactly why it, not the record, gates fail-closed."""
     if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "codex"):
-        home = _codex_home_from_record(record, universe)
-        if home is not None:
-            return home
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "codex"
-    if (materialized / "auth.json").is_file():
-        return materialized
-    return None
+        return False
+    qpath = Path(universe_dir) / QUARANTINE_FILENAME
+    if not qpath.is_file():
+        return False
+    try:
+        return bool(_read_quarantine_archive(qpath))
+    except (ValueError, OSError):
+        # Present but unreadable → the universe WAS retired; fail closed (never leak).
+        return True
 
 
-def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None:
-    """Materialize any vault-backed Codex auth bundle and return CODEX_HOME."""
+def is_retired_universe(universe_dir: str | Path | None) -> bool:
+    """Return True iff the universe is RETIRED — it had a subscription lane, shown by
+    EITHER a present raw ``llm_subscription`` record OR a persistent non-secret retired
+    marker (round-20 #1). A retired universe must FAIL CLOSED — it must never execute
+    on ambient host credentials (a cross-identity leak) — until it is re-bound to a
+    sanctioned engine. This is DISTINCT from a FRESH universe (never had a
+    subscription), for which ambient is the legitimate single-tenant host default.
+
+    NOTE: this is the QUIET status predicate — a malformed vault reads as not-retired
+    (``has_legacy_subscription_records`` swallows the error). The SECURITY gate must
+    use :func:`credential_state_blocks_ambient_execution`, which FAILS CLOSED on an
+    unreadable vault (round-22 #2)."""
+    return (
+        has_legacy_subscription_records(universe_dir)
+        or _has_retired_subscription_marker(universe_dir)
+    )
+
+
+def credential_state_blocks_ambient_execution(
+    universe_dir: str | Path | None,
+) -> bool:
+    """STRICT security classifier (round-22 #2): return True iff this universe's
+    credential state means it must NOT execute on ambient host credentials.
+
+    Unlike :func:`is_retired_universe` (a quiet status probe), this FAILS CLOSED on an
+    UNREADABLE vault — a malformed/corrupt/unreadable credential file must BLOCK all
+    providers (regardless of feature flags), never be silently classified as "fresh"
+    and allowed to run on the host's identity. Blocks on ANY of:
+
+    * an unreadable / malformed credential vault (can't prove it's clean),
+    * a present raw ``llm_subscription`` record (retired lane),
+    * a persistent non-secret retired marker (record already removed).
+
+    Only a cleanly-readable, non-retired universe returns False (execution may proceed
+    on ambient auth for a FRESH single-tenant universe). ``None`` → False (no
+    per-universe credential state — the host-global path)."""
     if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "codex"):
-        home = _codex_home_from_record(record, universe) or _secret_artifact_dir(universe, "codex")
-        home.mkdir(parents=True, exist_ok=True)
-        _chmod_best_effort(home, 0o700)
-        auth_b64 = record.get("auth_json_b64")
-        auth_file = home / "auth.json"
-        if isinstance(auth_b64, str) and auth_b64.strip() and not auth_file.exists():
-            tmp = auth_file.with_name("auth.json.tmp")
-            tmp.write_bytes(base64.b64decode(auth_b64.strip()))
-            _chmod_best_effort(tmp, 0o600)
-            tmp.replace(auth_file)
-            _chmod_best_effort(auth_file, 0o600)
-        config_file = home / "config.toml"
-        if auth_file.exists() and not config_file.exists():
-            config_file.write_text(
-                'cli_auth_credentials_store = "file"\n',
-                encoding="utf-8",
+        return False
+    try:
+        records = load_credential_vault(universe_dir)  # raises on malformed vault
+    except (ValueError, OSError):
+        # Unreadable credential state → FAIL CLOSED. Never classify as fresh.
+        return True
+    if any(r.get("credential_type") == "llm_subscription" for r in records):
+        return True
+    return _has_retired_subscription_marker(universe_dir)
+
+
+def _retired_marker_service(universe_dir: str | Path | None) -> str:
+    """Best-effort service name from the retired marker, for the fail-closed error
+    message. Returns ``"retired-subscription"`` when it can't be resolved (never
+    raises — the fail-closed decision has already been made by the caller)."""
+    if universe_dir is None:
+        return "retired-subscription"
+    try:
+        markers = _read_quarantine_archive(Path(universe_dir) / QUARANTINE_FILENAME)
+    except (ValueError, OSError):
+        return "retired-subscription"
+    if markers and isinstance(markers[0], dict):
+        return str(markers[0].get("service") or "retired-subscription")
+    return "retired-subscription"
+
+
+@contextlib.contextmanager
+def _vault_lock(universe_dir: Path) -> Iterator[None]:
+    """Cross-platform exclusive lock serializing quarantine/rollback for one
+    universe (round-17 #3).
+
+    Mirrors :func:`tinyassets.soul_edit._soul_lock` (msvcrt on Windows, fcntl on
+    POSIX). Held across the whole read→write-marker→rewrite-vault section so two
+    concurrent migrations cannot interleave their read-modify-write on the vault +
+    marker files. Combined with marker dedup (:func:`_dedup_markers`), this makes the
+    migration crash-idempotent at EVERY write boundary.
+    """
+    universe_dir = Path(universe_dir)
+    universe_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = universe_dir / VAULT_LOCK_FILENAME
+    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                import msvcrt
+
+                try:
+                    os.lseek(fd, 0, 0)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                import fcntl
+
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+    finally:
+        os.close(fd)
+
+
+def _read_quarantine_archive(qpath: Path) -> list[dict[str, Any]]:
+    """Strictly read + validate an existing quarantine archive; return its records.
+
+    THE single archive parser (round-19 #1): validates the top-level shape AND every
+    record (each must be a JSON object) BEFORE the caller mutates anything. Raises
+    ``ValueError`` — PRESERVING the file on disk untouched — when the archive is
+    unreadable, has the wrong top-level shape, or contains any non-object element
+    (e.g. ``{"quarantined": [42]}``). Never silently drops or overwrites malformed
+    data (round-18 #4 don't-destroy-on-corruption). Because the migration reads the
+    prior archive through here before writing, a malformed archive can never pass one
+    path and corrupt another — it fails loud at the boundary and stays on disk for
+    manual recovery. Missing file → ``[]`` (nothing to merge)."""
+    if not qpath.is_file():
+        return []
+    try:
+        loaded = json.loads(qpath.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"quarantine archive at {qpath} is unreadable/corrupt; refusing to "
+            "overwrite it (preserved for recovery). Investigate + repair or remove "
+            f"it before re-running the migration: {exc}"
+        ) from exc
+    if not (isinstance(loaded, dict) and isinstance(loaded.get("quarantined"), list)):
+        raise ValueError(
+            f"quarantine archive at {qpath} has an unexpected shape; refusing to "
+            "overwrite it (preserved for recovery). Investigate + repair or remove "
+            "it before re-running the migration."
+        )
+    records = loaded["quarantined"]
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"quarantine archive at {qpath} record #{index} is not a JSON object "
+                f"({type(record).__name__}); refusing to overwrite it (preserved for "
+                "recovery). Investigate + repair or remove it before re-running the "
+                "migration."
             )
-            _chmod_best_effort(config_file, 0o600)
-        return home
-    return resolve_codex_home(universe)
+    return records
 
 
-def codex_subscription_auth_available(universe_dir: str | Path | None) -> bool:
-    """Return True when the vault can provide or points at Codex auth."""
-    home = ensure_codex_home_from_vault(universe_dir)
-    return bool(home and (home / "auth.json").is_file())
+#: Secret-bearing fields a legacy ``llm_subscription`` record may carry. Used ONLY
+#: to compute a one-way audit hash (round-20 #2) — never persisted raw.
+_SUBSCRIPTION_SECRET_FIELDS: tuple[str, ...] = (
+    "oauth_token", "token", "access_token", "refresh_token",
+    "auth_json_b64", "credentials_json_b64", "secret", "secret_b64", "token_b64",
+)
 
 
-def _claude_config_dir_from_record(record: dict[str, Any], universe_dir: Path) -> Path | None:
-    for key in ("claude_config_dir", "config_dir", "path"):
-        resolved = _as_path(record.get(key), universe_dir)
-        if resolved is not None:
-            return resolved
-    for key in ("claude_home", "home", "auth_home"):
-        home = _as_path(record.get(key), universe_dir)
-        if home is not None:
-            return home / ".claude"
-    return None
-
-
-def resolve_claude_config_dir(universe_dir: str | Path | None) -> Path | None:
-    """Return the CLAUDE_CONFIG_DIR path for this universe, if any."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "claude"):
-        config_dir = _claude_config_dir_from_record(record, universe)
-        if config_dir is not None:
-            return config_dir
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "claude"
-    if materialized.is_dir():
-        return materialized
-    return None
-
-
-def ensure_claude_config_dir_from_vault(universe_dir: str | Path | None) -> Path | None:
-    """Create the configured Claude config directory and return it."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "claude"):
-        config_dir = _claude_config_dir_from_record(record, universe)
-        if config_dir is None:
-            config_dir = _secret_artifact_dir(universe, "claude")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        _chmod_best_effort(config_dir, 0o700)
-        return config_dir
-    return resolve_claude_config_dir(universe)
-
-
-def resolve_claude_home(universe_dir: str | Path | None) -> Path | None:
-    """Deprecated compatibility: return CLAUDE_CONFIG_DIR's parent."""
-    config_dir = resolve_claude_config_dir(universe_dir)
-    return config_dir.parent if config_dir is not None else None
-
-
-def ensure_claude_home_from_vault(universe_dir: str | Path | None) -> Path | None:
-    """Deprecated compatibility: create CLAUDE_CONFIG_DIR and return parent."""
-    config_dir = ensure_claude_config_dir_from_vault(universe_dir)
-    return config_dir.parent if config_dir is not None else None
-
-
-def resolve_claude_oauth_token(universe_dir: str | Path | None) -> str:
-    """Return a Claude subscription OAuth token from the vault, if present."""
-    for record in _llm_records(universe_dir, "claude"):
-        return _secret_value(record, "oauth_token", "claude_code_oauth_token")
+def _subscription_token_sha256(source: dict[str, Any]) -> str:
+    """Return a sha256 of a subscription record's raw token, for AUDIT only (round-20
+    #2), or ''. The quarantine archive keeps ONLY this hash — never the raw token — so
+    the platform proves WHICH credential was retired without custodying it. Checks the
+    known secret-bearing fields in order."""
+    for key in _SUBSCRIPTION_SECRET_FIELDS:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return hashlib.sha256(value.strip().encode("utf-8")).hexdigest()
     return ""
 
 
-def claude_subscription_auth_available(universe_dir: str | Path | None) -> bool:
-    """Return True when the vault provides a Claude subscription auth route."""
-    if resolve_claude_oauth_token(universe_dir):
-        return True
-    config_dir = ensure_claude_config_dir_from_vault(universe_dir)
-    return bool(config_dir and config_dir.is_dir())
+def _to_retired_marker(source: dict[str, Any], default_retired_at: str) -> dict[str, Any]:
+    """Reduce a source (a raw legacy record OR a prior archive entry) to a NON-SECRET
+    retired marker (round-20 #2): ``{credential_type, service, token_sha256,
+    retired_at}`` and NOTHING ELSE. A raw secret field on the source is HASHED (for the
+    audit trail) then DROPPED — it never survives into the archive. A pre-existing
+    ``token_sha256`` / ``retired_at`` on a prior marker entry is preserved (so the
+    earliest retired_at is kept across crash-retries)."""
+    token_hash = str(source.get("token_sha256") or "").strip() or _subscription_token_sha256(source)
+    service = str(source.get("service") or source.get("provider") or "").strip().lower()
+    return {
+        "credential_type": "llm_subscription",
+        "service": service or "unknown",
+        "token_sha256": token_hash,
+        "retired_at": str(source.get("retired_at") or "").strip() or default_retired_at,
+    }
+
+
+def _dedup_markers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Dedup retired-marker entries by ``(service, token_sha256)``, keeping the FIRST
+    (earliest retired_at). This stable identity ignores the volatile ``retired_at``, so
+    a crash-then-retry converges to exactly one marker per retired credential (round-17
+    #3 crash-idempotency, adapted to the non-secret marker shape)."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        key = (str(entry.get("service") or ""), str(entry.get("token_sha256") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
+
+def quarantine_legacy_subscription_records(
+    universe_dir: str | Path,
+) -> dict[str, Any]:
+    """RETIRE a universe's legacy ``llm_subscription`` lane (round-14 #3 / round-20).
+
+    DELETES every raw ``llm_subscription`` record from the vault (the platform must
+    never custody subscription tokens — 2026-07-02 custody research §0/§4) and writes a
+    NON-SECRET retired MARKER to :data:`QUARANTINE_FILENAME`. Raises ``ValueError`` on a
+    malformed vault or a malformed existing archive (fail loud — never silently rewrite
+    unreadable state). Returns a non-secret summary.
+
+    ROUND-20 #2 — NO RAW TOKEN CUSTODY: the archive keeps ONLY non-secret audit metadata
+    per retired credential (``service`` + a one-way ``token_sha256`` + ``retired_at``) —
+    NEVER the raw OAuth/subscription token. "Moving a secret to another file still
+    custodies it" is exactly what this avoids: the raw token is hashed for audit, then
+    the whole raw record is dropped from the vault. (Provider-side revocation of the
+    retired token is IDEAL but out of scope here; a recovery copy of raw tokens would
+    need legal approval + separate encrypted custody + auditing + bounded retention —
+    NOT built.)
+
+    ROUND-20 #1 — the marker is the FAIL-CLOSED signal that SURVIVES record removal: a
+    universe with this marker reads as :func:`is_retired_universe`, so its spawns FAIL
+    CLOSED (never ambient host creds) until re-bound — see
+    :func:`provider_auth_env_overrides`. This is why removing the record is safe ONLY
+    together with the fail-closed marker code (never as a standalone deploy step).
+
+    CRASH-IDEMPOTENT (round-17 #3): serialized under :func:`_vault_lock`; the marker is
+    written BEFORE the vault is rewritten (so a crash between never loses the
+    fail-closed signal); the marker set is deduped by ``(service, token_sha256)`` so a
+    retry converges to exactly one entry per retired credential. Reads the prior archive
+    through the strict :func:`_read_quarantine_archive`. An already-clean vault is a
+    no-op.
+    """
+    universe = Path(universe_dir)
+    with _vault_lock(universe):
+        records = load_credential_vault(universe)  # raises ValueError if malformed
+        legacy = [
+            r for r in records if r.get("credential_type") == "llm_subscription"
+        ]
+        if not legacy:
+            return {
+                "migrated": 0, "remaining": len(records), "quarantine_path": None,
+            }
+        kept = [
+            r for r in records if r.get("credential_type") != "llm_subscription"
+        ]
+        qpath = universe / QUARANTINE_FILENAME
+        # Round-19 #1: read the prior archive through THE strict shared parser, which
+        # validates every entry and fails loud (preserving the file) on any malformed
+        # input — so a bad archive can never be silently propagated or dropped.
+        prior = _read_quarantine_archive(qpath)
+        retired_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        # Round-20 #2: sanitize BOTH prior entries and the newly-retired records into
+        # NON-SECRET markers (any raw token is hashed then dropped — even if a prior
+        # archive somehow carried one). Dedup by (service, token_sha256) — round-17 #3
+        # crash-idempotency on the non-secret shape.
+        merged = _dedup_markers(
+            [_to_retired_marker(e, retired_at) for e in prior]
+            + [_to_retired_marker(r, retired_at) for r in legacy]
+        )
+        tmp = qpath.with_name(f"{qpath.name}.tmp")
+        tmp.write_text(
+            json.dumps({"schema_version": 2, "quarantined": merged}, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+        _chmod_best_effort(tmp, 0o600)
+        tmp.replace(qpath)
+        _chmod_best_effort(qpath, 0o600)
+        write_credential_vault(universe, kept)  # DELETE the raw subscription tokens
+        return {
+            "migrated": len(legacy),
+            "remaining": len(kept),
+            "quarantine_path": str(qpath),
+            "retired_at": retired_at,
+        }
+
+
+#: SANCTIONED-CUSTODY registry (round-17 #5, extended to CONSUMPTION round-18 #1).
+#: DISTINCT from the transport mapping ``_LLM_API_KEY_ENV_BY_SERVICE`` (which
+#: providers the router CAN call once a key is present). This is the set of services
+#: whose custody the platform sanctions — gated at BOTH the DEPOSIT surface AND at
+#: CONSUMPTION (binding in engine_binding._vault_capacity + injection via
+#: resolve_llm_api_key). A service absent here can never be deposited, bound, or
+#: injected — including a legacy/manually-written record. DEFAULT-DENY: EMPTY until a
+#: provider's custody path is EXPLICITLY approved (dedicated-key + founder consent +
+#: spend-limit + LEGAL review per the 2026-07-02 credential-custody research §2b). No
+#: provider is approved yet:
+#:   - OpenAI: NOT-OFFERED — the Services Agreement prohibits transferring an API
+#:     key to a third party; consent + encryption + spend-limits do not cure it. It
+#:     needs a provider-approved delegated/service path (the GitHub-App analogue).
+#:   - Gemini / Groq / xAI: not-offered pending per-provider terms research.
+#:   - Anthropic: CONDITIONAL — its Commercial Terms permit powering products for
+#:     your users, but the contracting-party/agent relationship still needs legal
+#:     resolution before it is implementation authority (custody note §2b, §0).
+#: A transport-consumable service (anthropic/openai) is therefore NOT automatically
+#: a sanctioned deposit target — that was the round-17 #5 fail-open. Add a service
+#: here ONLY when its custody path is explicitly approved.
+_SANCTIONED_CUSTODY_SERVICES: frozenset[str] = frozenset()
+
+
+def sanctioned_custody_services() -> frozenset[str]:
+    """Services whose custody path is EXPLICITLY approved — the DEFAULT-DENY gate for
+    both deposit AND consumption (round-17 #5 / round-18 #1).
+
+    Empty until a provider's raw-key custody is approved (dedicated key + consent +
+    spend-limit + legal review; see the 2026-07-02 custody research §2b). Enforced at
+    the deposit surface (:func:`supported_llm_api_key_services`), at binding
+    (:func:`tinyassets.engine_binding._vault_capacity`), and at injection/consumption
+    (:func:`resolve_llm_api_key`). Deliberately SEPARATE from the transport mapping
+    (:func:`per_universe_byo_services`), which only says which provider env var a key
+    WOULD map to if one were present — transport capability is NOT custody
+    sanction."""
+    return _SANCTIONED_CUSTODY_SERVICES
 
 
 def supported_llm_api_key_services() -> frozenset[str]:
     """Services a BYO ``llm_api_key`` deposit may target.
 
-    Only these reach a CLI-subprocess provider via the vault env overlay; a
-    deposit for any other service would never inject and the founder's engine
-    would silently not run (validate at deposit time — Hard Rule #8)."""
-    return frozenset(_LLM_API_KEY_ENV_BY_SERVICE)
+    The DEPOSIT-sanction allowlist: the intersection of the explicitly-approved
+    sanctioned-custody registry (:func:`sanctioned_custody_services`, DEFAULT-DENY)
+    and the transport-consumable services (a key that could actually reach a
+    CLI-subprocess provider via the vault env overlay). EMPTY today because no
+    provider's custody path is approved yet — advertising OpenAI + unresearched
+    Gemini/Groq/xAI as deposit targets (the round-16 behavior) contradicted the
+    OpenAI-NOT-OFFERED + research-others-first decisions (round-17 #5). Deposit is
+    validated against THIS set — never against the raw transport mapping — so an
+    unsanctioned service is refused loudly at deposit time (Hard Rule #8)."""
+    return _SANCTIONED_CUSTODY_SERVICES & frozenset(_LLM_API_KEY_ENV_BY_SERVICE)
+
+
+# Only these env vars are overlaid per-universe onto the CLI subprocess by
+# ``provider_auth_env_overrides`` (codex → OPENAI_API_KEY, claude-code →
+# ANTHROPIC_API_KEY). A BYO key for any OTHER service maps only to a
+# process-global HTTP provider (gemini/groq/xai), so it is NOT
+# per-universe-consumable today.
+_PER_UNIVERSE_BYO_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY"})
+
+
+def per_universe_byo_services() -> frozenset[str]:
+    """BYO ``llm_api_key`` services whose key actually flows to a per-universe
+    CLI subprocess today (via :func:`provider_auth_env_overrides`).
+
+    gemini / groq / xai keys map only to process-global HTTP providers, so
+    binding one per-universe would fake capacity the daemon cannot consume
+    (Hard Rule #8). Until per-universe HTTP-provider instantiation is wired,
+    only the CLI-subprocess services (anthropic/claude/claude-code,
+    openai/codex) are per-universe-consumable."""
+    return frozenset(
+        svc
+        for svc, env in _LLM_API_KEY_ENV_BY_SERVICE.items()
+        if env in _PER_UNIVERSE_BYO_ENV_VARS
+    )
 
 
 def resolve_llm_api_key(
@@ -374,53 +674,175 @@ def resolve_llm_api_key(
     var. This is the founder's BYO-engine path — the deposited key is injected
     into the CLI subprocess env so ``claude -p`` / ``codex exec`` authenticate
     with the founder's own key instead of the platform's subscription.
+
+    Round-18 #1 — DEFAULT-DENY AT CONSUMPTION: a record whose ``service`` is NOT in
+    the sanctioned-custody registry (:func:`sanctioned_custody_services`) is NEVER
+    returned, even if it is present, decodable, and transport-consumable — including
+    a LEGACY or MANUALLY-WRITTEN record. This is the single consumption chokepoint:
+    injection (the provider overlay), the routing snapshot (:func:`byo_credential_digest`),
+    the byo-bound decision (:func:`provider_is_byo_bound`) and the binding auth-health
+    probe all resolve the key HERE, so an unsanctioned key can never enter a child
+    environment or satisfy a binding. Enforcement is separate from the deposit surface
+    (which is refused entirely in Phase-1) — default-deny governs CONSUMPTION too.
     """
     if universe_dir is None:
         return ""
+    sanctioned = sanctioned_custody_services()
     for record in load_credential_vault(universe_dir):
         if record.get("credential_type") != "llm_api_key":
             continue
         service = _service(record)
         if _LLM_API_KEY_ENV_BY_SERVICE.get(service) != env_var:
             continue
+        if service not in sanctioned:
+            # Unsanctioned custody target — never consumed (round-18 #1). A legacy /
+            # manually-written record for an unapproved provider is ignored, not
+            # injected, so consumption can never bypass the empty deposit registry.
+            continue
         return _secret_value(record, "api_key", "key", "token")
     return ""
+
+
+def byo_credential_digest(
+    universe_dir: str | Path | None, env_var: str = "ANTHROPIC_API_KEY",
+) -> str | None:
+    """Return an IMMUTABLE identity+version digest of the SELECTED BYO credential,
+    or ``None`` when there is none / it can't be resolved (round-16 #1).
+
+    A stable content digest (sha256) of the resolved BYO key. The router captures
+    it at ROUTE-selection time and threads it (via the pinned snapshot) to the
+    subprocess spawn; the spawn recomputes and compares. If the credential CHANGED
+    or DISAPPEARED in the interval, the digests differ (or one is ``None``) and the
+    caller FAILS CLOSED — never falling back to ambient platform auth. This is the
+    S5 side of the credential vault's immutable-binding (SecretBinding) contract;
+    at integration it binds to the vault's real record identity + version.
+    """
+    if universe_dir is None:
+        return None
+    try:
+        key = resolve_llm_api_key(universe_dir, env_var)
+    except Exception:  # noqa: BLE001 — an unresolvable credential is "no binding"
+        return None
+    if not key:
+        return None
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _byo_injection_enabled(universe_dir: str | Path | None = None) -> bool:
+    """True iff a founder BYO key may be injected into a CLI subprocess.
+
+    Round-15 #2: threads the record locus (``universe_dir``) into the per-record
+    attestation so the byo-bound / injection decision is context-aware (under the
+    router pin the value is already fixed for the routing universe).
+
+    Gated on the executable-BYO prerequisite (:func:`engine_binding.
+    byo_execution_enabled` — KMS-attested, DEFAULT False). When False (this
+    deploy) NO BYO key is injected — even a LEGACY ``llm_api_key`` row written by
+    the old ungated set_engine — so "BYO path dark" is TRUE for legacy vaults too
+    (C2). Lazy import avoids a credential_vault ↔ engine_binding cycle.
+    """
+    try:
+        from tinyassets.engine_binding import byo_execution_enabled
+
+        return byo_execution_enabled(universe_dir)
+    except Exception:  # noqa: BLE001 — a resolution problem must not enable BYO
+        return False
+
+
+def _byo_lane_selected(universe_dir: str | Path | None) -> bool:
+    """True iff the universe's declared engine lane is the BYO-key lane (round-13
+    #2). Gates BOTH the overlay and the byo-bound decision so a universe switched
+    AWAY from BYO (market/host_daemon/self_hosted) never gets its retained vault
+    key injected. Fails CLOSED (no injection) on any resolution error. Lazy import
+    avoids a credential_vault <-> engine_binding cycle."""
+    if universe_dir is None:
+        return False
+    try:
+        from tinyassets.engine_binding import byo_lane_selected
+
+        return byo_lane_selected(universe_dir)
+    except Exception:  # noqa: BLE001 — a resolution problem must not enable BYO
+        return False
+
+
+def _byo_isolated_config_dir(universe_dir: str | Path | None) -> Path | None:
+    """Return an EMPTY, per-universe CLAUDE_CONFIG_DIR for a BYO claude-code spawn.
+
+    Round-12 #2: scrubbing ``CLAUDE_CONFIG_DIR`` alone would let claude-code fall
+    back to the host's ``~/.claude`` (which may hold the host's OWN subscription
+    OAuth) — the BYO child could then authenticate as the platform instead of with
+    the founder's key. Pointing ``CLAUDE_CONFIG_DIR`` at an isolated EMPTY dir
+    (bare mode) forecloses that: no cached OAuth is present, so ``ANTHROPIC_API_KEY``
+    (the BYO key) is the only credential the child can use.
+    """
+    if universe_dir is None:
+        return None
+    iso = Path(universe_dir) / CREDENTIAL_ARTIFACT_DIR / "claude-byo-isolated"
+    iso.mkdir(parents=True, exist_ok=True)
+    _chmod_best_effort(iso.parent, 0o700)
+    _chmod_best_effort(iso, 0o700)
+    return iso
 
 
 def provider_auth_env_overrides(
     universe_dir: str | Path | None,
     provider_name: str,
+    *,
+    byo_enabled: bool | None = None,
 ) -> dict[str, str]:
     """Return subprocess env overrides for a CLI-subprocess provider.
 
-    Composes subscription auth (CODEX_HOME / CLAUDE_CONFIG_DIR) with an optional
-    founder-deposited BYO API key (OPENAI_API_KEY / ANTHROPIC_API_KEY). The key
-    is overlaid here, AFTER ``subprocess_env_without_api_keys`` has stripped the
-    process-global keys, so a per-universe key never leaks across universes and
-    the platform default is not exposed to a BYO-key universe.
+    ``byo_enabled`` is the caller's ONE authoritative attestation snapshot
+    (round-11 #2 / round-12 #3 TOCTOU fix): when threaded, this function does NOT
+    recompute ``_byo_injection_enabled()`` — so the byo-bound decision and the
+    overlay can never disagree across a mid-call attestation flip. ``None``
+    recomputes (for standalone callers).
+
+    ONLY the sanctioned BYO ``llm_api_key`` lane produces overrides, and only when
+    (a) executable BYO is enabled (:func:`_byo_injection_enabled`, DARK by default)
+    and (b) the provider is BYO-EXECUTABLE — **claude-code only** today (Codex BYO
+    needs unmet sandboxing, so a codex key is NEVER injected; C2). A per-universe
+    ``llm_subscription`` record is a RETIRED lane and is REJECTED
+    (:class:`RetiredSubscriptionLaneError`, round-12 #1) — it is never a spawn auth
+    source; host subscription auth stays exclusively process-global. When the BYO
+    key is chosen the overlay also pins an ISOLATED empty ``CLAUDE_CONFIG_DIR`` so
+    the child can't fall back to the host's ``~/.claude`` OAuth (round-12 #2).
     """
+    if byo_enabled is None:
+        byo_enabled = _byo_injection_enabled(universe_dir)
     provider = provider_name.strip()
-    if provider == "codex":
-        overrides: dict[str, str] = {}
-        codex_home = ensure_codex_home_from_vault(universe_dir)
-        if codex_home:
-            overrides["CODEX_HOME"] = str(codex_home)
-        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
-        if api_key:
-            overrides["OPENAI_API_KEY"] = api_key
-        return overrides
-    if provider == "claude-code":
-        overrides = {}
-        claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)
-        if claude_config_dir:
-            overrides["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
-        oauth_token = resolve_claude_oauth_token(universe_dir)
-        if oauth_token:
-            overrides["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+    # Round-12 #1: a legacy per-universe subscription record is NEVER consumed —
+    # fail loud (quarantine) rather than silently inject or skip it.
+    _reject_retired_subscription_records(universe_dir)
+    if (
+        provider == "claude-code"
+        and byo_enabled
+        and _byo_lane_selected(universe_dir)
+    ):
         api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
         if api_key:
-            overrides["ANTHROPIC_API_KEY"] = api_key
-        return overrides
+            # Per-universe BYO key = the universe's OWN identity. Safe even for a
+            # retired universe (it is re-bound to a sanctioned engine), so return
+            # BEFORE the retired-marker fail-closed gate below.
+            overrides: dict[str, str] = {"ANTHROPIC_API_KEY": api_key}
+            iso = _byo_isolated_config_dir(universe_dir)
+            if iso is not None:
+                overrides["CLAUDE_CONFIG_DIR"] = str(iso)
+            return overrides
+    # Round-20 #1 — FAIL CLOSED for a RETIRED universe, NEVER ambient. Reaching here
+    # means NO per-universe credential will be injected, so this spawn would run on
+    # the host's AMBIENT credentials (CODEX_HOME / CLAUDE_CONFIG_DIR / OAuth env). For
+    # a universe that HAD a subscription lane (a persistent retired marker survives the
+    # raw record's removal), that is a CROSS-IDENTITY LEAK — it would execute with the
+    # host's identity. Refuse (fail closed) until it is re-bound to a sanctioned engine.
+    # A FRESH universe (never had a subscription, no marker) legitimately runs ambient
+    # (the single-tenant host default).
+    if _has_retired_subscription_marker(universe_dir):
+        raise RetiredSubscriptionLaneError(
+            _retired_marker_service(universe_dir), str(universe_dir),
+        )
+    # A FRESH universe: the host's process-global first-party auth (inherited env)
+    # stands. Codex + all non-BYO paths inject nothing here.
     return {}
 
 
@@ -431,13 +853,142 @@ def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     return Path(value) if value else None
 
 
+#: BYO-EXECUTABLE providers → their BYO env var. Only claude-code is
+#: BYO-executable (Codex BYO needs unmet sandboxing, C2).
+_PROVIDER_BYO_ENV_VAR: dict[str, str] = {
+    "claude-code": "ANTHROPIC_API_KEY",
+}
+
+#: Round-12 #2 — POSITIVE auth allowlist for a BYO claude-code child. Claude Code
+#: consults SEVERAL credential selectors at a HIGHER precedence than (or as an
+#: alternative to) ``ANTHROPIC_API_KEY`` — a Bedrock/Vertex flag, cloud creds, an
+#: OAuth token, an auth-token, a config dir with a cached login. A deny-list can't
+#: anticipate them all, so when the BYO lane is chosen we strip EVERY auth selector
+#: and let ONLY ``ANTHROPIC_API_KEY`` (the founder's BYO key) authenticate the
+#: child. Named selectors + namespace prefixes (below) are both swept so an
+#: undocumented future selector in those families can't leak.
+#: Basis: code.claude.com/docs/en/authentication (auth precedence: Bedrock/Vertex,
+#: ANTHROPIC_AUTH_TOKEN, cloud creds all outrank the API key).
+_BYO_AUTH_SELECTOR_NAMES: frozenset[str] = frozenset({
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GCLOUD_PROJECT",
+    "CLOUD_ML_REGION",
+    "VERTEX_REGION",
+})
+#: Whole namespace families to sweep (every var whose name starts with one of
+#: these is an auth selector for Bedrock/Vertex/AWS/GCP or a Claude OAuth
+#: credential and must not survive). ``CLAUDE_CODE_OAUTH_`` sweeps the WHOLE OAuth
+#: family — round-12 removed only ``CLAUDE_CODE_OAUTH_TOKEN`` by exact name, so
+#: ``CLAUDE_CODE_OAUTH_REFRESH_TOKEN`` (and any future OAuth var) survived into a
+#: BYO child (round-13 #1: don't rely on an exact-name denylist for OAuth creds).
+_BYO_AUTH_SELECTOR_PREFIXES: tuple[str, ...] = (
+    "AWS_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_", "GOOGLE_", "GCLOUD_",
+    "VERTEX_",
+)
+
+
+def scrub_byo_child_auth(env: dict[str, str]) -> None:
+    """Positive-allowlist the AUTH surface of a BYO claude-code child in place.
+
+    Removes EVERY credential selector except ``ANTHROPIC_API_KEY`` (which the
+    caller sets to the founder's BYO key): the named higher-precedence selectors,
+    the cloud-auth namespace families, and every ``ANTHROPIC_*`` other than
+    ``ANTHROPIC_API_KEY``. After this, ``ANTHROPIC_API_KEY`` is the only auth the
+    child can use (round-12 #2)."""
+    for name in list(env):
+        if name == "ANTHROPIC_API_KEY":
+            continue
+        if (
+            name in _BYO_AUTH_SELECTOR_NAMES
+            or name.startswith(_BYO_AUTH_SELECTOR_PREFIXES)
+            or name.startswith("ANTHROPIC_")
+        ):
+            env.pop(name, None)
+
+
+def provider_is_byo_bound(
+    provider_name: str,
+    *,
+    env: dict[str, str] | None = None,
+    universe_dir: str | Path | None = None,
+    byo_enabled: bool | None = None,
+) -> bool:
+    """Return True iff the resolved universe holds an INJECTABLE BYO key for
+    *provider* — i.e. executable BYO is enabled AND *provider* is BYO-executable.
+
+    ``byo_enabled`` is the caller's ONE authoritative attestation snapshot
+    (round-11 #2); ``None`` recomputes. A BYO-bound spawn must FAIL CLOSED on any
+    materialization error rather than silently fall through to platform-global
+    auth. A broken BYO secret (``resolve_llm_api_key`` raising) still counts as
+    BYO-bound so the caller fails closed."""
+    env_var = _PROVIDER_BYO_ENV_VAR.get(provider_name.strip())
+    if not env_var:
+        return False
+    resolved = (
+        Path(universe_dir)
+        if universe_dir is not None
+        else resolve_universe_from_env(env)
+    )
+    if resolved is None:
+        return False
+    # Round-15 #2: resolve the record locus FIRST so the per-record attestation
+    # sees this universe's context (not a context-free global read).
+    if byo_enabled is None:
+        byo_enabled = _byo_injection_enabled(resolved)
+    if not byo_enabled:
+        return False  # BYO dark (C2/C4) — no BYO-bound spawn to fail closed on
+    # Round-13 #2: lane-aware. A universe switched AWAY from BYO (market/host/
+    # self-hosted) is NOT byo-bound even if a stale key lingers in the vault —
+    # otherwise the spawn would scrub+inject/harden for a non-BYO lane.
+    if not _byo_lane_selected(resolved):
+        return False
+    try:
+        return bool(resolve_llm_api_key(resolved, env_var))
+    except ValueError:
+        return True  # a BYO record exists but its secret is broken → fail closed
+
+
 def apply_provider_auth_env(
     env: dict[str, str],
     provider_name: str,
     *,
     universe_dir: str | Path | None = None,
+    byo_enabled: bool | None = None,
 ) -> dict[str, str]:
-    """Overlay per-universe subscription auth settings onto *env*."""
+    """Overlay per-universe auth settings onto *env*.
+
+    ``byo_enabled`` is the caller's ONE authoritative attestation snapshot
+    (round-11 #2 TOCTOU fix) — threaded straight into
+    :func:`provider_auth_env_overrides` so the byo-bound decision and the overlay
+    can never disagree across a mid-call attestation flip.
+
+    When the BYO-key lane is chosen for a CLI-subprocess provider, positive-
+    allowlist the child's AUTH surface (:func:`scrub_byo_child_auth`, round-12 #2)
+    so ONLY the BYO key authenticates it — every higher-precedence selector
+    (Bedrock/Vertex flags, AWS/GCP creds, OAuth/auth tokens, config dir) is
+    stripped before the key + isolated config are overlaid. Propagates errors
+    (``ValueError`` malformed vault, :class:`RetiredSubscriptionLaneError` legacy
+    record) so a BYO spawn fails closed instead of running on ambient platform
+    auth.
+    """
     resolved_universe = (
         Path(universe_dir)
         if universe_dir is not None
@@ -445,8 +996,14 @@ def apply_provider_auth_env(
     )
     if resolved_universe is None:
         return env
-    try:
-        env.update(provider_auth_env_overrides(resolved_universe, provider_name))
-    except ValueError:
-        raise
+    overrides = provider_auth_env_overrides(
+        resolved_universe, provider_name, byo_enabled=byo_enabled,
+    )
+    provider = provider_name.strip()
+    byo_var = _PROVIDER_BYO_ENV_VAR.get(provider)
+    if byo_var and byo_var in overrides:
+        # BYO lane chosen — positive-allowlist the auth surface so no ambient
+        # higher-precedence selector can outrank / substitute for the BYO key.
+        scrub_byo_child_auth(env)
+    env.update(overrides)
     return env

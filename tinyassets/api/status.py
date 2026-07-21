@@ -1271,6 +1271,135 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
             "read_only": True,
         }
 
+    # engine_binding (design note 2026-07-15 gap G7 — onboarding surface).
+    # Honestly report whether this universe has engine/daemon capacity bound to
+    # it. A universe with no bound capacity is idle-until-bound: surface the
+    # bind next-step so a founder is offered "bind an engine so your universe
+    # can run". Additive + best-effort — a status read must never FAIL on this,
+    # so a misconfigured binding is *reported*, never raised here. The
+    # non_ambient_gate field echoes the flag state so the note is honest about
+    # whether ambient work still runs (flag off) or not (flag on).
+    from tinyassets.engine_binding import (
+        EngineMisconfiguredError,
+        non_ambient_work_enabled,
+        resolve_engine_binding,
+    )
+
+    gate_on = non_ambient_work_enabled()
+    engine_binding: dict[str, Any]
+    if not universe_exists:
+        engine_binding = {
+            "bound": False,
+            "engine_source": "",
+            "capacity_kinds": [],
+            "non_ambient_gate": gate_on,
+            "workable": False,
+            "note": "Universe does not exist yet — nothing to bind.",
+        }
+    else:
+        try:
+            binding = resolve_engine_binding(udir)
+            engine_binding = binding.as_dict()
+            engine_binding["non_ambient_gate"] = gate_on
+            # workable = will the daemon work this universe? Bound universes
+            # always; unbound universes only while the gate is off (ambient).
+            # A needs-migration universe is NEVER workable — every spawn would
+            # raise until its legacy subscription record is migrated out (#3).
+            engine_binding["workable"] = (
+                binding.bound or (not gate_on and not binding.needs_migration)
+            )
+            if binding.needs_record_migration:
+                # A RAW subscription record is still present → run the migration.
+                engine_binding["status"] = "misconfigured"
+                engine_binding["note"] = (
+                    "MISCONFIGURED — a RAW legacy subscription credential in this "
+                    "universe's vault blocks every engine spawn. Migrate it out "
+                    "(quarantine the subscription record), then re-bind a "
+                    "sanctioned engine. Until then this universe cannot run."
+                )
+                caveats.append(
+                    "engine_binding.needs_record_migration is true — a raw legacy "
+                    "subscription record must be stripped before this universe can run."
+                )
+                actionable_next_steps.append(
+                    "Migrate this universe off the retired subscription lane: run "
+                    "the subscription-record quarantine migration "
+                    "(credential_vault.quarantine_legacy_subscription_records), "
+                    "then re-bind a sanctioned engine via write_graph target=engine."
+                )
+            elif binding.retired_needs_rebind:
+                # Round-21 #4: the migration is ALREADY DONE (raw token removed, a
+                # non-secret marker remains) — do NOT tell the operator to re-run it.
+                # The correct remediation is to RE-BIND a sanctioned engine.
+                engine_binding["status"] = "retired_needs_rebind"
+                engine_binding["note"] = (
+                    "RETIRED — this universe's subscription lane was retired (the raw "
+                    "credential was already removed). It FAILS CLOSED (never runs on "
+                    "the host's identity) until you RE-BIND a sanctioned engine. The "
+                    "subscription-record migration is already complete — do not re-run "
+                    "it."
+                )
+                caveats.append(
+                    "engine_binding.retired_needs_rebind is true — the retired "
+                    "subscription record was already removed; re-bind a sanctioned "
+                    "engine to run (the migration is complete, do not re-run it)."
+                )
+                actionable_next_steps.append(
+                    "Re-bind a sanctioned engine via write_graph target=engine (BYO "
+                    "API key / self-hosted endpoint / market / your own device). The "
+                    "record-removal migration is already done — do NOT re-run it."
+                )
+            elif not binding.bound:
+                engine_binding["note"] = (
+                    "This universe has no engine bound to it and will stay idle "
+                    "until you bind one — no ambient work runs for it."
+                    if gate_on
+                    else "This universe has no engine bound to it. Bind one so "
+                    "it runs on capacity you control (your own engine, a hosted "
+                    "daemon, or offered cloud capacity)."
+                )
+                caveats.append(
+                    "engine_binding.bound is false — no engine/daemon capacity "
+                    "is bound to this universe. It is idle-until-bound."
+                    if gate_on
+                    else "engine_binding.bound is false — no engine/daemon "
+                    "capacity is bound to this universe, but it is currently "
+                    "workable via ambient legacy execution (non-ambient gate "
+                    "off)."
+                )
+                actionable_next_steps.append(
+                    "Hosted engines are NOT available yet: a founder-authenticated "
+                    "out-of-chat secret deposit + KMS-encrypted per-tenant vault + "
+                    "a real executor are Phase 2. Hosted BYO API keys cannot be "
+                    "deposited through the chatbot (a raw key must never travel "
+                    "over the relay), and hosted / market-rented / self-hosted "
+                    "execution routing does not exist yet. To run now, run the "
+                    "daemon on YOUR OWN device to use your own engine; the "
+                    "platform never custodies your subscription tokens."
+                )
+        except EngineMisconfiguredError as exc:
+            engine_binding = {
+                "bound": False,
+                "engine_source": exc.engine_source,
+                "capacity_kinds": [],
+                "misconfigured": True,
+                "non_ambient_gate": gate_on,
+                "workable": not gate_on,
+                "detail": exc.detail,
+                "note": (
+                    "This universe declares an engine but its capacity is "
+                    "misconfigured — re-declare it via write_graph target=engine."
+                ),
+            }
+            caveats.append(
+                f"engine_binding is MISCONFIGURED: {exc.detail}. Re-declare via "
+                "write_graph target=engine."
+            )
+            actionable_next_steps.append(
+                "Re-declare this universe's engine — the declared binding is "
+                "broken: write_graph target=engine."
+            )
+
     release_state = _load_release_state()
 
     response = {
@@ -1295,6 +1424,7 @@ def get_status(universe_id: str = "", *, allow_first_contact_birth: bool = True)
         "supervisor_liveness": supervisor_liveness,
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
+        "engine_binding": engine_binding,
         "release_state": release_state,
         "universe_id": uid,
         "universe_exists": universe_exists,

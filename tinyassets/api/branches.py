@@ -1826,6 +1826,13 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
+# model_hint is stored FREE-FORM (round-11 revert): an authoring-time whitelist
+# was an unnecessary breaking API change (it rejected previously-valid values like
+# "reviewer"/"checker"). The security invariant lives at the SHARED router
+# boundary — providers.router classifies ANY unknown role as a writer route (see
+# _enforce_writer_binding + its ALL-dispatch-path tests), so an arbitrary stored
+# hint can never route around per-universe writer binding. Do not re-add a
+# write-surface whitelist here.
 def _coerce_model_hint_update(raw: Any, field: str) -> tuple[str, str]:
     if raw is None:
         return "", ""
