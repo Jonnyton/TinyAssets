@@ -44,7 +44,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from codex_review import resolve_codex, to_native_path  # noqa: E402
 
-from workflow.providers.base import subprocess_env_for_provider  # noqa: E402
+from tinyassets.providers.base import subprocess_env_for_provider  # noqa: E402
 
 # codex v0.122+ can exit 0 with empty output on auth failure (see
 # workflow/providers/codex_provider.py). Same heuristic here — stderr only,
