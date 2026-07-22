@@ -54,6 +54,8 @@ def _mock_selector_passthrough(monkeypatch):
     ``list_branch_definitions`` + ``_fork_count`` before dispatch)
     is what's under test.
     """
+    candidate_sets = []
+
     def _passthrough(
         base_path,
         *,
@@ -63,6 +65,7 @@ def _mock_selector_passthrough(monkeypatch):
         timeout_s=None,
         **_extra,
     ):
+        candidate_sets.append({c["branch_def_id"] for c in candidate_branches})
         return {
             "ok": True,
             "branch_version_id": "mock_selector@authtest",
@@ -82,6 +85,7 @@ def _mock_selector_passthrough(monkeypatch):
         "tinyassets.api.quality_leaderboard.dispatch_selector",
         _passthrough,
     )
+    return candidate_sets
 
 
 @pytest.fixture
@@ -310,7 +314,9 @@ def test_owner_sees_own_private_rows(us_env, monkeypatch):
         importlib.reload(us)
 
 
-def test_recommended_parent_for_fork_inherits_same_visibility(us_env):
+def test_recommended_parent_for_fork_inherits_same_visibility(
+    us_env, _mock_selector_passthrough,
+):
     """The recommended-parent action shares the visibility surface;
     eve cannot reach a private branch via the rationale path either."""
     us, base = us_env
@@ -319,10 +325,17 @@ def test_recommended_parent_for_fork_inherits_same_visibility(us_env):
         us, "recommended_parent_for_fork",
         goal_id="g-test", author="alice", force=True,
     )
-    parent = result.get("recommended_parent")
-    if parent is not None:
-        assert parent["branch_def_id"] != "priv-alice"
-        assert parent["branch_def_id"] != "priv-bob-fork"
+    assert result["ok"] is True
+    assert result["leaderboard_size"] == 3
+    assert _mock_selector_passthrough == [{
+        "pub-eve", "pub-bob", "pub-bob-public-fork",
+    }]
+    parent = result["recommended_parent"]
+    assert parent is not None
+    assert parent["branch_def_id"] != "priv-alice"
+    assert parent["branch_def_id"] != "priv-bob-fork"
+    assert parent["branch_def_id"] not in {"priv-alice", "priv-bob-fork"}
+    assert "PRIVATE" not in result["rationale"]
 
 
 # ---------------------------------------------------------------------------

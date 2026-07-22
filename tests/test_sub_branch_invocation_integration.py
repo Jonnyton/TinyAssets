@@ -45,7 +45,9 @@ def _make_child_branch(*, author: str = "child-author") -> BranchDefinition:
     nd = NodeDefinition(
         node_id="cn1",
         display_name="ChildNode",
-        source_code="state['child_out'] = 'child-success'\nreturn state",
+        source_code=(
+            "def run(state): return {'child_out': 'child-success'}\n"
+        ),
     ).mark_approved()
     return BranchDefinition(
         branch_def_id="child-bdef",
@@ -110,11 +112,10 @@ class TestParentInvokesChildEndToEnd:
         outcome = execute_branch(
             base, branch=parent, inputs={}, actor="alice",
         )
-        # Parent reaches a terminal state; we don't assert ``completed``
-        # specifically since source_code nodes go through approval/exec
-        # paths that can yield other terminal states in this test stack.
         assert outcome.run_id
         assert outcome.status
+        assert outcome.status == "completed"
+        assert outcome.output["parent_out"] == "child-success"
 
     def test_child_actor_flows_into_child_run(self, seeded_base):
         base, parent, _child = seeded_base
@@ -130,9 +131,7 @@ class TestParentInvokesChildEndToEnd:
         actors_by_branch = {r["branch_def_id"]: r["actor"] for r in rows}
         # Parent should be present.
         assert actors_by_branch.get("parent-bdef") == "alice"
-        # Child may or may not have been spawned depending on whether the
-        # parent's source_code path was approved & executed; assert only
-        # if the child ran.
+        assert set(actors_by_branch) == {"parent-bdef", "child-bdef"}
         if "child-bdef" in actors_by_branch:
             assert actors_by_branch["child-bdef"] == "bob"
 
@@ -153,9 +152,7 @@ class TestDesignUsedIntegration:
                 ("design_used",),
             ).fetchall()
 
-        # If a design_used row exists, it must be for the child author and
-        # the child branch_def. Zero rows is acceptable when the
-        # source_code child node didn't reach completed in this stack.
+        assert len(rows) == 1
         for r in rows:
             assert r["actor_id"] == "child-author"
             assert r["source_artifact_kind"] == "branch_def"
