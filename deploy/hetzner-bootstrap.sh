@@ -84,7 +84,6 @@ apt-get install -y -qq \
     python3 \
     python3-pip \
     jq \
-    lsof \
     rclone \
     zstd
 

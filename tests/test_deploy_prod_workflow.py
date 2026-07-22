@@ -1076,11 +1076,6 @@ def test_engine_assignment_fence_quiesces_every_writer_and_proves_zero_mount_use
     assert "|| true" not in run_script
 
 
-def test_host_bootstrap_installs_open_file_proof_dependency():
-    bootstrap = (_REPO / "deploy" / "hetzner-bootstrap.sh").read_text(encoding="utf-8")
-    assert "lsof" in bootstrap
-
-
 def test_engine_assignment_migration_uses_reviewed_manifest_and_exact_new_image():
     step = _step(_load(), "Apply reviewed engine assignment migration")
     run_script = step.get("run", "") or ""
