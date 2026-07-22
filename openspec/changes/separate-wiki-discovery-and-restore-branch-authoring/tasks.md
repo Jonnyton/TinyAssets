@@ -18,7 +18,7 @@
 
 ## 4. Verification and publication
 
-- [ ] 4.1 Run focused suites, ruff on touched Python, OpenSpec/spec consistency checks, and the relevant broader suite.
-- [ ] 4.2 Review the diff independently where available and address findings.
-- [ ] 4.3 Run provider foldback gate; commit, push, and open a draft PR with live baseline and deployment acceptance requirements.
-- [ ] 4.4 Leave rendered chatbot `ui-test` and post-fix organic-use proof explicitly pending deployment; add/retain a STATUS watch until observed.
+- [x] 4.1 Run focused suites, ruff on touched Python, OpenSpec/spec consistency checks, the 256-call concurrency proof, and the relevant broader suite (249 passed).
+- [ ] 4.2 Review the diff independently where available and address findings. Opposite-provider Claude dispatch was attempted three times; the harness produced no review (two trust failures, then an empty provider exit), so draft-PR review remains required.
+- [ ] 4.3 Run provider foldback gate; commit, push, and open a draft PR with live baseline and deployment acceptance requirements. Foldback and commits are complete; shell network is denied and the GitHub connector cancelled branch creation twice.
+- [x] 4.4 Leave rendered chatbot `ui-test` and post-fix organic-use proof explicitly pending deployment; retain a STATUS watch until observed.
