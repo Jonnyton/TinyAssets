@@ -429,3 +429,48 @@ Reasoning, and why the alternatives are worse:
   today — the idiom is ad-hoc, which is why it has no exclusion. Recording the corrected idiom
   here is the smallest durable fix; promoting it into a script is a separate, larger lane (it
   would want `openspec list` parity too) and should not be smuggled into this one.
+
+## Cross-provider review — section 6 definition layer
+
+Opposite-provider gate dispatched to Codex 2026-07-22 (`codex exec`, `--sandbox read-only`),
+framed as a **refutation** ask: eight claims, each to be marked REFUTED unless confirmable with a
+concrete file+line, defaulting to refuted under uncertainty.
+
+> ### Verdict: **APPROVE** (Codex, 2026-07-22) — 8/8 claims UPHELD.
+
+Codex independently re-derived each classification from the code rather than from this document.
+It upheld every landedness call, including the three that carry the most weight: that only one
+speaking surface exists (C1), that `actor_id` never reaches prompt assembly (C2), and that no
+`identity_tier` machinery exists (C3).
+
+Two items from its response, both re-verified here rather than accepted on report:
+
+**1. Citation note — checked, no change required.** Codex flagged that
+`tests/test_persona.py:286` is `test_server_instructions_carry_relay_markers`, not
+`test_server_instructions_relay_not_embody`. Both tests exist: `carry_relay_markers` at `:286`
+and `relay_not_embody` at `:392` (`grep -n test_server_instructions tests/test_persona.py`). The
+mismatch was in the dispatch prose, which paired one name with the other's line; this document
+cites line numbers without names, so the 6.4 row is accurate as written. Recorded so the point is
+not re-litigated.
+
+**2. A fork primitive already exists — folded into 6.8's scoping.** Codex surfaced
+`list_universe_forks` (`tinyassets/daemon_server.py:829-852`): universes already fork as a
+**snapshot lineage** (the `branches` SQL table with `branch_heads` + `snapshot_id`), deliberately
+distinct from `BranchDefinition`. Verified: these forks copy snapshot state and **do not clone
+persona content**.
+
+This does not change 6.8's classification — *persona* forking is still unbuilt — but it changes
+how 6.8 should be built. The implementer inherits a decision that was previously invisible:
+
+> **Does persona-fork extend `list_universe_forks`, or is it a separate axis?** A universe
+> snapshot fork today carries the universe's files (and therefore `identity.md` / `founder.md`
+> on disk) without any persona-level semantics. Either the snapshot fork already *implicitly*
+> forks persona identity — in which case 6.8's real work is defining and testing what that
+> already does, not building something new — or persona is a separate forkable axis and the two
+> must be reconciled so a snapshot fork cannot silently produce two universes claiming the same
+> learned identity.
+
+That second failure mode is the one worth a test: fork a named universe via the existing snapshot
+path and assert what the fork's persona resolves to. It is reachable **today**, before any of 6.8
+is built, and it is exactly the "one identity" invariant 6.9 is supposed to protect. Recommend it
+as the first concrete step on 6.8 rather than the fork operation itself.

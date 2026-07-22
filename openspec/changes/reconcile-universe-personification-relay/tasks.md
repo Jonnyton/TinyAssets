@@ -94,7 +94,11 @@
       landed and proven (`persona.py:119-122`; `tests/test_persona.py:101,198`), as is first-party
       custody (`universe_intelligence.py:123-131`; `tests/test_persona.py:326`). **Remaining: the
       fork itself** — zero `fork` hits in `persona.py`, `universe_self_model.py`,
-      `universe_bundle.py`. No fork operation, no fork test.
+      `universe_bundle.py`. No persona fork operation, no fork test. **But a universe-level fork
+      primitive already exists** (`list_universe_forks`, `daemon_server.py:829-852` — snapshot
+      lineage, does not clone persona content; surfaced by the Codex gate). Start 6.8 by testing
+      what a snapshot fork's persona resolves to today — reachable now, and it is the "one
+      identity" invariant 6.9 protects. See `design.md` §"Cross-provider review".
 - [ ] 6.9 Implement one learned identity across speaking surfaces with tests for surface/interlocutor modulation without identity replacement
       → **UNBUILT AS STATED, and currently VACUOUS.** Two of its three surfaces do not exist (no
       visitor path — see 6.5; no outbound surface — see 6.4). A test written today would pass
