@@ -89,13 +89,40 @@ def release(owner: str) -> bool:
 
 
 def _pid_alive(pid: int | None) -> bool:
-    if not pid:
-        return False
     try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ValueError):
+        parsed_pid = int(pid) if pid is not None else 0
+    except (TypeError, ValueError):
         return False
+    if parsed_pid <= 0:
+        return False
+
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(
+            process_query_limited_information, False, parsed_pid,
+        )
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+
+    try:
+        os.kill(parsed_pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 def main() -> int:
