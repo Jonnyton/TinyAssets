@@ -13,6 +13,8 @@ Exercises:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -187,6 +189,10 @@ def test_red_exit_99_unexpected_exception(tmp_env):
 
 
 # ---- Browser lock skip path ------------------------------------------------
+
+
+def test_browser_lock_pid_probe_does_not_terminate_current_process():
+    assert browser_lock._pid_alive(os.getpid()) is True
 
 
 def test_skip_exit_0_when_lock_held(tmp_env):
@@ -366,7 +372,7 @@ def test_red_alarm_also_mirrored_in_gha_mode(tmp_env, monkeypatch, capsys):
 
 
 def _stub_claude_chat(tmp_path, *, exit_code: int, trace_body: str | None = None,
-                     stderr: str = "", hang: bool = False) -> Path:
+                     stderr: str = "") -> Path:
     """Write a stub `claude_chat.py` that exits with `exit_code` and optionally
     writes `trace_body` to `<tmp>/output/claude_chat_trace.md` before exiting.
 
@@ -382,32 +388,25 @@ def _stub_claude_chat(tmp_path, *, exit_code: int, trace_body: str | None = None
     if trace_body is not None:
         trace_path.write_text(trace_body, encoding="utf-8")
 
-    if hang:
-        body = (
-            "import time, sys\n"
-            "time.sleep(600)\n"
-            "sys.exit(0)\n"
+    # Append a fresh assistant block to the trace BEFORE exiting (mimics
+    # cmd_ask flow). We only do this when caller didn't pre-populate.
+    body_lines = ["import sys"]
+    if trace_body is None and exit_code == 0:
+        stub_block = (
+            "\n\n## [2026-04-28T00:00:00.000-07:00] CLAUDE -> USER_SIM\n"
+            "stub response calling get_status; llm_endpoint_bound=ok\n"
         )
-    else:
-        # Append a fresh assistant block to the trace BEFORE exiting (mimics
-        # cmd_ask flow). We only do this when caller didn't pre-populate.
-        body_lines = ["import sys"]
-        if trace_body is None and exit_code == 0:
-            stub_block = (
-                "\n\n## [2026-04-28T00:00:00.000-07:00] CLAUDE -> USER_SIM\n"
-                "stub response calling get_status; llm_endpoint_bound=ok\n"
-            )
-            body_lines += [
-                "from pathlib import Path",
-                "trace = (Path(__file__).resolve().parent.parent / "
-                "'output' / 'claude_chat_trace.md')",
-                "trace.parent.mkdir(parents=True, exist_ok=True)",
-                f"trace.write_text({stub_block!r}, encoding='utf-8')",
-            ]
-        if stderr:
-            body_lines.append(f"sys.stderr.write({stderr!r})")
-        body_lines.append(f"sys.exit({exit_code})")
-        body = "\n".join(body_lines) + "\n"
+        body_lines += [
+            "from pathlib import Path",
+            "trace = (Path(__file__).resolve().parent.parent / "
+            "'output' / 'claude_chat_trace.md')",
+            "trace.parent.mkdir(parents=True, exist_ok=True)",
+            f"trace.write_text({stub_block!r}, encoding='utf-8')",
+        ]
+    if stderr:
+        body_lines.append(f"sys.stderr.write({stderr!r})")
+    body_lines.append(f"sys.exit({exit_code})")
+    body = "\n".join(body_lines) + "\n"
 
     (repo / "scripts" / "claude_chat.py").write_text(body, encoding="utf-8")
     return repo
@@ -453,10 +452,15 @@ def test_real_browser_probe_exit_zero_no_trace_raises(tmp_path, monkeypatch):
 
 
 def test_real_browser_probe_subprocess_timeout_raises(tmp_path, monkeypatch):
-    """Stub hangs forever → subprocess timeout → _BrowserLoadError."""
-    repo = _stub_claude_chat(tmp_path, exit_code=0, hang=True)
+    """A subprocess timeout becomes _BrowserLoadError without starting a sleeper."""
+    repo = _stub_claude_chat(tmp_path, exit_code=0)
     monkeypatch.setattr(l2, "_REPO_ROOT", repo)
-    monkeypatch.setattr(l2, "_PROBE_SUBPROCESS_TIMEOUT_S", 1)  # 1s for the test
+
+    def raise_timeout(cmd, **kwargs):
+        assert kwargs["timeout"] == l2._PROBE_SUBPROCESS_TIMEOUT_S
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", raise_timeout)
 
     with pytest.raises(l2._BrowserLoadError) as exc_info:
         l2._real_browser_probe(l2.PROBE_URL, "stub message")
