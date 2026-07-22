@@ -702,3 +702,42 @@ Notes:
 - Ship condition: focused tests pass, branch pushed, PR opened, then deploy
   brings runtime_count to 4 while goal_pool remains a follow-on.
 - 2026-06-24 CREATE wf-branch-lifecycle-automation branch=worktree-branch-lifecycle-automation base=origin/main provider=claude-code (branch lifecycle automation — design note + L0-L4)
+- 2026-07-22 CREATE wf-status-janitor-0722 branch=claude/status-janitor-0722 base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-ledger-reconcile branch=claude/ledger-reconcile base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-ui-test-deployed-build branch=claude/ui-test-deployed-build base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-release-chain-log branch=claude/release-chain-log base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-status-release-cron-watch branch=claude/status-release-cron-watch base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-worktree-sweep-0722 branch=claude/worktree-sweep-0722 base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-plan-authority-model branch=docs/plan-authority-derivation base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-audit-release-chain branch=audit/audit-release-chain base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-audit-vacuous-tests branch=audit/audit-vacuous-tests base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-audit-status-backlog branch=audit/audit-status-backlog base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-audit-stale-pr-triage branch=audit/audit-stale-pr-triage base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-activity-null-results branch=tmp/activity-null-results base=origin/main provider=claude-code
+- 2026-07-22 REMOVE codex-dispatch-reflex branch=codex-programmatic-dispatch merged=True forced=False
+- 2026-07-22 REMOVE paid-market-core branch=worktree-paid-market-core merged=True forced=False
+- 2026-07-22 REMOVE write-gate branch=claude/status-d2-remaining merged=True forced=False
+- 2026-07-22 REMOVE wf-card-matcher branch=fix/card-matcher-fallback merged=True forced=False
+- 2026-07-22 REMOVE wf-command-center branch=feat/agent-village-command-center merged=True forced=False
+- 2026-07-22 REMOVE wf-docs-recovery branch=chore/recover-untracked-docs merged=True forced=False
+- 2026-07-22 REMOVE wf-phase6 branch=feat/phase6-workflow-db merged=True forced=False
+- 2026-07-22 REMOVE wf-typing-ext branch=fix/declare-typing-extensions merged=True forced=False
+- 2026-07-22 REMOVE wf-backlog-audit branch=chore/status-backlog-audit merged=True forced=False
+- 2026-07-22 REMOVE wf-hook-repair branch=fix/pre-commit-rename-rot merged=True forced=False
+- 2026-07-22 REMOVE wf-impersonation branch=fix/daemon-impersonation merged=True forced=False
+- 2026-07-22 REMOVE wf-storage-aliases branch=feat/storage-env-aliases merged=True forced=False
+- 2026-07-22 CREATE audit-canary-false-red-0722 branch=claude/docs/audit-canary-false-red-0722 base=origin/main provider=claude-code
+- 2026-07-22 CREATE agents-monitor-contract-rule branch=claude/docs/agents-monitor-contract-rule base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-audit-stranded-work branch=claude/audit-stranded-work base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-personification-reconcile branch=claude/personification-reconcile base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-carry-0722-audits branch=claude/carry-0722-audits base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-gitignore-scratch-gap branch=claude/gitignore-scratch-gap base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-brain-scratch-root-cleanup branch=claude/brain-scratch-root-cleanup base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-worktree-sweep-0722b branch=claude/worktree-sweep-0722b base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-brain-okf-precedent-note branch=claude/brain-okf-precedent-note base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-dead-branch-sweep branch=docs/dead-branch-sweep base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-universe-creation-landedness branch=claude/universe-creation-landedness base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-polsia-handoff-rename branch=claude/polsia-handoff-rename base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-activity-log-union-merge branch=claude/activity-log-union-merge base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-issue-1346-triage branch=claude/issue-1346-triage base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-audit-stranded-coordination-state branch=claude/audit-stranded-coordination-state base=origin/main provider=claude-code
