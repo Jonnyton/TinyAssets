@@ -115,39 +115,34 @@ it was wrong: the profile held live cookies for `*.authkit.app`, `.workos.com` a
 so the session was the authenticated host the entire time, legitimately seeing its own data. Three
 findings had to be retracted.
 
-**MANDATORY before any claim about anonymous / unauthenticated behavior:**
+**MANDATORY before any identity-dependent or first-contact claim:**
 
-1. **Check the cookie jar FIRST**, before the first prompt — not after something surprises you:
+1. Use a dedicated chatbot account and connector grant for one alias in the operator-maintained test
+   identity roster. Every alias must complete the ordinary WorkOS authorization flow. Never inject a
+   principal, token, header, test provider, or shared secret; a more-privileged test path is invalid.
+2. Make the opening connector request and read `get_status.request_identity`. It must contain only
+   `bearer_present` and `subject`. Stop if `bearer_present` is false, the subject is `anonymous`, or
+   the subject does not exactly match the selected alias's expected roster subject. Never log the
+   bearer or the private roster itself.
+3. For first contact, have the operator run the scoped reset from
+   `docs/ops/test-identities.md`: capture the read-only plan, review every row key and directory, then
+   apply that exact `plan_id`. Capture the reversible `reset_id`. Do not use the legacy global reset.
+4. Start a new incognito/temporary chat and reconnect normally. Incognito isolates chat context; the
+   status-reported subject is the identity proof. A clean browser profile, empty cookie jar, or absent
+   login screen is not identity proof because connector grants are account-level.
+5. For multi-user missions, repeat with a second dedicated chatbot account and roster alias. Record
+   the two resolved subjects separately and prove user A cannot enumerate or mutate user B's private
+   universes.
+6. Log only token-safe evidence:
+   `## [...] IDENTITY: alias=<alias>, bearer_present=true, subject=<subject>, verified_via=get_status`.
 
-   ```python
-   ck = browser.contexts[0].cookies()
-   auth = [c for c in ck if any(k in c.get("domain","")
-           for k in ("authkit", "workos", "tinyassets"))]
-   # non-empty => you are NOT anonymous. Any "anonymous" finding is invalid.
-   ```
-
-2. **A clean browser profile is NOT sufficient either.** Claude.ai connectors are **account-level**:
-   the connector list and its OAuth grant are stored server-side by Anthropic, not in the browser. A
-   brand-new `--user-data-dir` logged into the same Claude account still shows the connector already
-   attached and already authorized, with **zero** AuthKit cookies in the jar. Verified 2026-07-21:
-   fresh profile, `auth_cookies=0`, and TinyAssets still present in the connector table.
-
-   **Corollary — an empty cookie jar does NOT prove unauthenticated.** The MCP OAuth token is held by
-   Anthropic, so cookie inspection can only ever *disprove* anonymity, never establish it. Step 1
-   above is a necessary check, not a sufficient one.
-
-   To genuinely test first contact you must **REMOVE the connector from the Claude.ai account**
-   (which revokes the grant server-side) and then re-add it. That is a change to the host's account
-   settings — ask first.
-3. **Corroborate through a second channel.** An unauthenticated `curl` against the same live endpoint
-   is the cheapest check: if curl gets `401` while the chat succeeds, the chat is authenticated. That
-   contradiction is what exposed the 2026-07-21 error — treat any such mismatch as proof your premise
-   is wrong, and stop before escalating.
-4. Log the identity state you actually verified:
-   `## [...] IDENTITY: profile=<clean|host>, auth_cookies=<n>, verified_via=<cookies+curl>`.
+Cookie inspection and unauthenticated curl remain useful supporting diagnostics: a non-empty auth
+cookie jar disproves anonymity, and a curl/chat mismatch reveals a bad premise. Neither supersedes the
+request's resolved subject. Removing and re-adding a connector can retest the OAuth grant flow, but it
+does not reset TinyAssets first-contact state; use the scoped identity reset for that.
 
 **The general rule this encodes:** a claim about what an *anonymous* user can see is a claim about
-identity, and identity must be verified out-of-band before it is asserted. Inferring "I never saw a
+identity, and identity must be verified from the resolved request before it is asserted. Inferring "I never saw a
 login screen, therefore I am anonymous" is the same unfounded-inference error we log as a BUG when a
 chatbot does it.
 

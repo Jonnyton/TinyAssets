@@ -387,13 +387,30 @@ def _provider_auth_snapshot() -> dict[str, Any]:
         # never block on the codex live-probe subprocess (up to 120s).
         # Fast paths + cached verdicts only; the worker gate owns probing.
         health = subscription_auth_health(name, allow_probe=False)
-        writers[name] = {"status": health["status"], "detail": health["detail"]}
+        evidence = health.get("evidence", "unknown")
+        authenticated: bool | None = None
+        if health["status"] == "not_logged_in":
+            authenticated = False
+        elif health["status"] == "ok" and evidence == "live-probe":
+            authenticated = True
+        writers[name] = {
+            "status": health["status"],
+            "detail": health["detail"],
+            "evidence": evidence,
+            "authenticated": authenticated,
+        }
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
     all_down = bool(known_states) and all(
         s == "not_logged_in" for s in known_states
     )
-    return {"writers": writers, "all_writers_unauthenticated": all_down}
+    return {
+        "writers": writers,
+        "all_writers_unauthenticated": all_down,
+        "live_probe_performed": any(
+            writer["evidence"] == "live-probe" for writer in writers.values()
+        ),
+    }
 
 
 def _compute_supervisor_liveness(

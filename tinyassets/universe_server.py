@@ -1900,7 +1900,20 @@ def get_status(universe_id: str = "") -> str:
     Args:
         universe_id: Optional universe scope. Defaults to active universe.
     """
-    return _get_status_impl(universe_id=universe_id)
+    import json as _json
+
+    raw_status = _get_status_impl(universe_id=universe_id)
+    try:
+        payload = _json.loads(raw_status)
+    except (TypeError, ValueError):
+        return raw_status
+    if not isinstance(payload, dict):
+        return raw_status
+
+    from tinyassets.auth.middleware import request_identity_snapshot
+
+    payload["request_identity"] = request_identity_snapshot()
+    return _json.dumps(payload)
 
 
 _mcp_get_status = _register_structured_tool(

@@ -34,6 +34,10 @@ _current_identity: ContextVar[Identity | None] = ContextVar(
     "workflow_current_identity",
     default=ANONYMOUS,
 )
+_bearer_present: ContextVar[bool] = ContextVar(
+    "tinyassets_bearer_present",
+    default=False,
+)
 
 # Module-level provider (initialized once at startup)
 _provider: AuthProvider | None = None
@@ -68,6 +72,7 @@ def auth_middleware(token: str | None) -> Identity:
     The resolved identity is stored in thread-local storage
     for tools to access via `current_identity()`.
     """
+    _bearer_present.set(bool(token))
     provider = _get_provider()
 
     identity = ANONYMOUS
@@ -255,6 +260,21 @@ def current_identity() -> Identity:
     return _current_identity.get() or ANONYMOUS
 
 
+def request_identity_snapshot() -> dict[str, bool | str]:
+    """Return token-safe evidence about the current request identity.
+
+    The bearer value is deliberately reduced to presence before it enters the
+    snapshot.  An invalid or unresolved bearer remains anonymous; ambient host
+    identity variables are never consulted as a fallback.
+    """
+    identity = _current_identity.get()
+    subject = identity.user_id if identity is not None else ANONYMOUS.user_id
+    return {
+        "bearer_present": _bearer_present.get(),
+        "subject": subject or ANONYMOUS.user_id,
+    }
+
+
 class AuthContextMiddleware:
     """Resolve bearer auth into request-local identity for MCP tool calls."""
 
@@ -270,6 +290,7 @@ class AuthContextMiddleware:
             return
 
         previous: Token[Identity | None] = _current_identity.set(ANONYMOUS)
+        previous_bearer: Token[bool] = _bearer_present.set(False)
         try:
             auth_header = ""
             for key, value in scope.get("headers", []):
@@ -323,6 +344,7 @@ class AuthContextMiddleware:
                 receive = _replay_receive(messages, receive)
             await self.app(scope, receive, send)
         finally:
+            _bearer_present.reset(previous_bearer)
             _current_identity.reset(previous)
 
 

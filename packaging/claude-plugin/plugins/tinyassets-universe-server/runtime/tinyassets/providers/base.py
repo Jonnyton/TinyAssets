@@ -414,6 +414,7 @@ def _codex_refresh_viability(
     presence_ok = {
         "provider": "codex", "status": "ok",
         "detail": f"auth.json present at {codex_home}",
+        "evidence": "config-present",
     }
     if not _viability_probe_enabled():
         return presence_ok
@@ -423,6 +424,7 @@ def _codex_refresh_viability(
     )
     age = _codex_last_refresh_age_s(codex_home)
     if age is not None and 0 <= age < fresh_s:
+        presence_ok["evidence"] = "timestamp"
         presence_ok["detail"] = (
             f"auth.json present at {codex_home}; last_refresh "
             f"{age:.0f}s ago (< {fresh_s:.0f}s) — refresh-viable"
@@ -440,9 +442,12 @@ def _codex_refresh_viability(
     if cached is None:
         cached = _auth_probe_cache.get(str(codex_home))
     if cached is not None and 0 <= now - cached[0] < ttl_s:
-        return dict(cached[1])
+        cached_health = dict(cached[1])
+        cached_health["evidence"] = "cached"
+        return cached_health
 
     if not allow_probe:
+        presence_ok["evidence"] = "deferred"
         presence_ok["detail"] = (
             f"auth.json present at {codex_home}; last_refresh stale "
             f"(age {'unknown' if age is None else f'{age:.0f}s'}) — live "
@@ -456,13 +461,19 @@ def _codex_refresh_viability(
     probe = _codex_live_auth_probe(timeout_s)
     if probe["status"] == "not_logged_in":
         health = {"provider": "codex", "status": "not_logged_in",
-                  "detail": probe["detail"]}
+                  "detail": probe["detail"], "evidence": "live-probe"}
     else:
         # "ok" and "inconclusive" both read ok: only a POSITIVE dead
         # signature quarantines (false not_logged_in on a healthy worker is
         # worse; a false ok still fails at call time + trips loop_stalled).
+        evidence = (
+            "live-probe"
+            if probe["status"] == "ok"
+            else "live-probe-inconclusive"
+        )
         health = {"provider": "codex", "status": "ok",
-                  "detail": f"auth.json present at {codex_home}; {probe['detail']}"}
+                  "detail": f"auth.json present at {codex_home}; {probe['detail']}",
+                  "evidence": evidence}
     _auth_probe_cache[str(codex_home)] = (now, dict(health))
     _write_probe_cache_file(codex_home, now, health)
     return health
@@ -518,12 +529,14 @@ def subscription_auth_health(
         codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         if not (codex_home / "auth.json").is_file():
             return {"provider": name, "status": "not_logged_in",
-                    "detail": f"no auth.json at {codex_home}"}
+                    "detail": f"no auth.json at {codex_home}",
+                    "evidence": "absent"}
         return _codex_refresh_viability(codex_home, allow_probe=allow_probe)
     if name == "claude-code":
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
             return {"provider": name, "status": "ok",
-                    "detail": "CLAUDE_CODE_OAUTH_TOKEN set"}
+                    "detail": "CLAUDE_CODE_OAUTH_TOKEN set",
+                    "evidence": "environment-token"}
         config_dir = Path(
             os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")
         )
@@ -535,14 +548,18 @@ def subscription_auth_health(
         try:
             if config_dir.is_dir() and any(config_dir.iterdir()):
                 return {"provider": name, "status": "ok",
-                        "detail": f"config dir populated at {config_dir}"}
+                        "detail": f"config dir populated at {config_dir}",
+                        "evidence": "config-present"}
         except OSError as exc:
             return {"provider": name, "status": "not_logged_in",
-                    "detail": f"config dir unreadable: {exc}"}
+                    "detail": f"config dir unreadable: {exc}",
+                    "evidence": "unreadable"}
         return {"provider": name, "status": "not_logged_in",
-                "detail": f"no token and empty/absent {config_dir}"}
+                "detail": f"no token and empty/absent {config_dir}",
+                "evidence": "absent"}
     return {"provider": name, "status": "unknown",
-            "detail": "no subscription-auth probe for this provider"}
+            "detail": "no subscription-auth probe for this provider",
+            "evidence": "unsupported"}
 
 
 # bwrap failure signature emitted to stderr on Linux hosts that lack
