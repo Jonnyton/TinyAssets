@@ -21,4 +21,4 @@
 
 - [x] 4.1 Archive the reviewed change and sync its deltas into the three canonical specs.
 - [x] 4.2 Strict-validate the complete OpenSpec tree and compare archived deltas with canonical results.
-- [ ] 4.3 Run the foldback context gate, publish the branch, land the PR, and retire or promote the STATUS lane.
+- [x] 4.3 Run the foldback context gate, publish the branch, land the PR, and retire or promote the STATUS lane.
