@@ -1,0 +1,195 @@
+name: Post-merge release trigger
+
+# Why this exists
+# ---------------
+# Auto-enrolled PRs are merged by the GitHub Actions app using GITHUB_TOKEN.
+# GitHub deliberately suppresses workflow runs for events triggered by that
+# token, so the resulting push to `main` fires NOTHING — no image build, no
+# deploy. On 2026-07-21 five PRs (including a data-loss fix) merged themselves
+# and reached `main`, and production never saw any of them. The merge loop
+# worked; the release chain was silently severed.
+#
+# `workflow_dispatch` and `repository_dispatch` are the two documented
+# EXCEPTIONS to that suppression rule. So this workflow watches for a merge to
+# main and explicitly dispatches the image build, which in turn chains to
+# deploy-prod via `workflow_run`.
+#
+#   PR merged by the app  ->  (push, suppressed)
+#                         ->  THIS workflow  ->  workflow_dispatch
+#                         ->  Build and publish image  ->  workflow_run
+#                         ->  Deploy prod  ->  canary  ->  live
+#
+# Without this, "merged" and "live" are two different things and nobody finds
+# out which one they got until they check production by hand.
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+  # Required to call `gh workflow run` on build-image.yml.
+  actions: write
+
+concurrency:
+  # Serialise per-repo so a burst of merges dispatches in order rather than
+  # racing. Never cancel-in-progress: dropping a dispatch means dropping a
+  # release, which is the exact failure this file exists to prevent.
+  group: post-merge-release
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    name: Dispatch release build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+    steps:
+      # No actions/checkout: pull_request_target grants a privileged token and
+      # the PR head is untrusted. Everything below reads from the API, and the
+      # only workflow file it reads is fetched at `main` (trusted).
+      - name: Decide whether this merge is release-relevant
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # ---- the merged file list (paginated, fail EAGER on error) --------
+          # Note the asymmetry with pr-scope-guard.yml, which fails CLOSED.
+          # A guard that can't see the diff must block. A release trigger that
+          # can't see the diff must FIRE: the cost of an unnecessary build is a
+          # few CI minutes, the cost of a skipped one is a fix that never ships.
+          if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
+                            --jq '.[].filename' 2>/dev/null)"; then
+            echo "could not read the PR file list — dispatching anyway (fail eager)"
+            echo "dispatch=true" >> "$GITHUB_OUTPUT"
+            echo "reason=file list unavailable" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ---- the release paths, READ FROM build-image.yml ----------------
+          # Deliberately not copied. A duplicated path filter drifts the moment
+          # someone edits build-image.yml, and it drifts SILENTLY toward "never
+          # deploys" — reintroducing this bug in a form that is harder to see.
+          # Reading the real trigger keeps the two definitionally in sync.
+          if ! gh api "repos/${REPO}/contents/.github/workflows/build-image.yml?ref=main" \
+                 --jq '.content' 2>/dev/null | base64 -d > build-image.yml; then
+            echo "could not read build-image.yml — dispatching anyway (fail eager)"
+            echo "dispatch=true" >> "$GITHUB_OUTPUT"
+            echo "reason=trigger definition unreadable" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$CHANGED" | sed '/^$/d' > changed.txt
+          echo "files changed: $(wc -l < changed.txt)"
+
+          python3 -m pip install --quiet pyyaml || true
+          python3 - <<'PY' > decision.txt || echo "true|python failed" > decision.txt
+          import fnmatch, os, re, sys
+
+          try:
+              import yaml
+          except ImportError:
+              print("true|pyyaml unavailable")
+              raise SystemExit(0)
+
+          try:
+              with open("build-image.yml", encoding="utf-8") as fh:
+                  spec = yaml.safe_load(fh)
+              # `on:` parses as the boolean True under YAML 1.1 — hence the
+              # two-key lookup. This bites everyone exactly once.
+              trig = spec.get("on") or spec.get(True) or {}
+              patterns = list(trig["push"]["paths"])
+          except Exception as exc:
+              print(f"true|could not parse build-image triggers ({exc})")
+              raise SystemExit(0)
+
+          if not patterns or any(p.startswith("!") for p in patterns):
+              # Negated patterns need real precedence semantics; rather than
+              # approximate them, fire.
+              print("true|negated or empty path filter, not modelled")
+              raise SystemExit(0)
+
+          def to_regex(pat: str) -> str:
+              """GitHub path-filter glob -> regex. `**` spans separators, `*` does not."""
+              out, i = [], 0
+              while i < len(pat):
+                  c = pat[i]
+                  if c == "*":
+                      if pat[i : i + 2] == "**":
+                          out.append(".*")
+                          i += 2
+                          continue
+                      out.append("[^/]*")
+                  elif c == "?":
+                      out.append("[^/]")
+                  else:
+                      out.append(re.escape(c))
+                  i += 1
+              return "^" + "".join(out) + "$"
+
+          rx = [re.compile(to_regex(p)) for p in patterns]
+          with open("changed.txt", encoding="utf-8") as fh:
+              changed = [ln.strip() for ln in fh if ln.strip()]
+
+          hits = [f for f in changed if any(r.match(f) for r in rx)]
+          if hits:
+              print(f"true|{len(hits)} release-relevant file(s), e.g. {hits[0]}")
+          else:
+              print("false|no release-relevant paths touched")
+          PY
+
+          DECISION="$(cut -d'|' -f1 decision.txt)"
+          REASON="$(cut -d'|' -f2- decision.txt)"
+          echo "dispatch=${DECISION}" >> "$GITHUB_OUTPUT"
+          echo "reason=${REASON}" >> "$GITHUB_OUTPUT"
+          echo "decision: ${DECISION} (${REASON})"
+
+      - name: Dispatch the image build
+        if: steps.decide.outputs.dispatch == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run build-image.yml --repo "$REPO" --ref main
+          {
+            echo "### Release dispatched"
+            echo ""
+            echo "PR #${PR} merged to \`main\` — ${REASON}."
+            echo ""
+            echo "\`Build and publish image\` dispatched; \`Deploy prod\` chains from it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record a skip
+        if: steps.decide.outputs.dispatch != 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        shell: bash
+        run: |
+          {
+            echo "### No release needed"
+            echo ""
+            echo "PR #${PR} merged to \`main\` — ${REASON}."
+            echo ""
+            echo "Nothing this PR changed can affect the built image."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# Note on the failure mode this inverts
+# -------------------------------------
+# Every uncertain branch above dispatches rather than skips. That is a
+# deliberate inversion of the usual CI instinct. The observed failure was
+# "merged, believed shipped, actually not" — which is undetectable without
+# manually checking production. An extra image build announces itself in the
+# Actions tab and costs minutes. Prefer the loud cheap error to the silent
+# expensive one.
