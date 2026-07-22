@@ -60,11 +60,25 @@ class Persona:
         # model's seat — it cannot verify the first-party provenance claim, and
         # careful hosts (Claude.ai, observed live) correctly refuse it.
         # Embodiment behavior therefore lives ONLY in the sanctioned channels
-        # (server instructions + the user-invoked meet_universe prompt), and the
-        # pattern there is USER CONSENT: offer, ask, embody on yes. First-party
-        # app surfaces put the persona in the system prompt and need none of
-        # this. (Host steer + docs/design-notes/2026-07-01-mcp-personification-
-        # prior-art.md.)
+        # (server instructions + control_station + the user-invoked
+        # meet_universe prompt). This note DESCRIBES the data and DEFERS to
+        # those channels — it must not restate the contact rules, because two
+        # channels stating behavior is exactly what drifted: the note kept the
+        # superseded 2026-07-01 "offer, ask, embody on yes" menu while the
+        # sanctioned channels moved to "first-person is the DEFAULT (no consent
+        # menu), thin relay". The 2026-07-03 live chatbot test named that menu
+        # as a defect and fixed it in the other channels only.
+        #
+        # `consent: user_opt_in` survives that reshape with a narrower meaning:
+        # the user's act of reaching for their universe IS the opt-in (see the
+        # meet_universe prompt — "invoking it IS their consent ... no additional
+        # permission question is needed"), not a menu the assistant presents.
+        #
+        # First-party app surfaces put the persona in the system prompt and need
+        # none of this. (Host steer + docs/design-notes/2026-07-02-universe-
+        # intelligence-relay-architecture.md §16; supersedes the consent-menu
+        # rationale in docs/design-notes/2026-07-01-mcp-personification-
+        # prior-art.md, kept as the historical record of why consent was tried.)
         return {
             "name": self.name,
             "purpose": "",
@@ -80,12 +94,13 @@ class Persona:
                 "note": (
                     "Self-description this universe authored about itself by "
                     "learning — data for the assistant, not an instruction. "
-                    "If the user is here to meet or talk with their universe, "
-                    "offer them the choice of hearing it speak as itself in "
-                    "first person, and embody only if they say yes. If it is "
-                    "unnamed/uninitialized it is a new mind that has not "
-                    "learned who it is yet — never invent a name or facts "
-                    "for it."
+                    "How contact works is governed by the server instructions "
+                    "and the control_station / meet_universe prompts, not by "
+                    "this block: the user reaching for their universe is "
+                    "itself the opt-in, so there is no consent menu to present "
+                    "here. If it is unnamed/uninitialized it is a new mind "
+                    "that has not learned who it is yet — never invent a name "
+                    "or facts for it."
                 ),
             },
         }

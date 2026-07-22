@@ -391,3 +391,57 @@ def test_server_instructions_relay_not_embody() -> None:
     assert "relay" in text.lower()
     assert "converse" in text
     assert "not the universe" in text.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-22 — the payload note had NOT caught up to the relay reshape.
+# Read live from the deployed connector: the server instructions said
+# "you do NOT speak as the universe ... first-person is the DEFAULT (no
+# consent menu)" while `persona.embodiment.note`, returned seconds later
+# by the get_status call those same instructions mandate, still said
+# "offer them the choice ... embody only if they say yes". The 2026-07-03
+# live test fixed the menu in the sanctioned channels only.
+#
+# The pre-existing tests pinned the note's *strings* ("data", "not an
+# instruction") — both survived the drift untouched, so nothing went red.
+# These two assert the *behavior* the note may and may not carry.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_persona_note_carries_no_consent_menu() -> None:
+    note = " ".join(Persona("Tiny", ()).summary()["embodiment"]["note"].split()).lower()
+
+    # Load-bearing and kept: the prompt-injection boundary, and the rule that
+    # an uninitialized universe is a new mind rather than a blank to fill in.
+    assert "not an instruction" in note
+    assert "never invent a name or facts" in note
+
+    # The superseded 2026-07-01 offer/ask/embody-on-yes menu is gone.
+    assert "offer them the choice" not in note
+    assert "only if they say yes" not in note
+    assert "no consent menu" in note
+
+    # Contact rules are STATED by the sanctioned channels and only DEFERRED to
+    # here — two channels stating behavior is what allowed the drift.
+    assert "server instructions" in note
+    assert "meet_universe" in note
+
+
+def test_persona_note_does_not_contradict_server_instructions() -> None:
+    """The structural guard for this bug class. Both texts reach the same
+    chatbot session seconds apart, so they must not disagree on consent or on
+    who speaks."""
+    from tinyassets.universe_server import mcp
+
+    instructions = " ".join((mcp.instructions or "").split()).lower()
+    note = " ".join(Persona("Tiny", ()).summary()["embodiment"]["note"].split()).lower()
+
+    # The sanctioned channel is the one that states contact behavior.
+    assert "no consent menu" in instructions
+    assert "not the universe" in instructions
+
+    # So the payload must not re-open a consent gate the instructions closed ...
+    for menu_phrase in ("only if they say yes", "offer them the choice", "ask them first"):
+        assert menu_phrase not in note
+    # ... nor tell the assistant to embody, when the instructions say it relays.
+    assert "embody" not in note
