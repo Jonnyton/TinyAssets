@@ -6,11 +6,13 @@ Initial provider: Codex (`codex-gpt5-desktop-llm-loop`)
 
 Required reviewer: Claude
 
-Review gate: live workflow creation/run is blocked until the Claude verdict is `approve` or `adapt`.
+Review posture: host-authorized pre-user testing proceeds before Claude review;
+Claude reviews the accumulated current build on Friday.
 
 Scheduling note: on 2026-07-22 the host reported Claude rate-limited until
-Friday evening, 2026-07-24. The research artifact is complete; the review and
-live UI mission remain queued rather than bypassed.
+Friday evening, 2026-07-24, and explicitly authorized multiple testing
+iterations before that review because no real users are at risk yet. This is a
+lane-specific host override; the Friday review evaluates the then-current build.
 
 ## Executive judgment
 
@@ -218,7 +220,7 @@ or publish merely because the previous node completed.
 
 ## Roadmap
 
-### Slice 0 — now, review-gated
+### Slice 0 — now, host-authorized pre-review testing
 
 Create one user-owned branch through the live connector containing the goal,
 graph, gates, budgets, and market-readiness stop. Do not purchase compute. Run
@@ -248,16 +250,17 @@ quotes, reserve an F1/F2 window, stream checkpoint settlement, and mint the
 capability. This lane depends on those existing market specs; it does not fork a
 parallel market design.
 
-## Cross-provider review gate
+## Cross-provider Friday review
 
-Claude must independently re-check the primary sources and the listed TinyAssets
-specs, then leave
+Claude will independently re-check the primary sources, listed TinyAssets specs,
+and accumulated UI-test evidence on Friday, then leave
 `docs/audits/2026-07-22-build-your-own-llm-loop-claude-review.md` with one verdict:
 `approve`, `adapt`, `defer`, or `reject`.
 
-Until that verdict lands, do not create or run the live branch, push a design
-change, or claim acceptance proof. A verdict of `adapt` must enumerate the
-required edits before the UI mission proceeds.
+Host decision 2026-07-22: pre-user live workflow creation and testing may proceed
+before that verdict. Do not expose real users, move money, buy compute, publish
+private data, or claim cross-provider acceptance. A Friday `adapt` verdict must
+enumerate corrections against the current tested build.
 
 ## Pickup packet
 
