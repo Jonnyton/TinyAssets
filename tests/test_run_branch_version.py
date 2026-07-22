@@ -17,7 +17,11 @@ import json
 
 import pytest
 
-from tinyassets.branch_versions import publish_branch_version
+from tinyassets.branch_versions import (
+    BranchVersionContentMismatch,
+    compute_content_hash,
+    publish_branch_version,
+)
 from tinyassets.runs import (
     SnapshotSchemaDrift,
     _connect,
@@ -85,6 +89,34 @@ class TestSnapshotSchemaDriftClass:
 
 
 class TestExecuteBranchVersionAsync:
+    def test_rejects_snapshot_changed_by_raw_dml(self, tmp_path):
+        """The stored hash is evidence; the mutable snapshot row is not authority."""
+        from tinyassets.branch_versions import _connect as bv_connect
+
+        branch = _seed_branch(tmp_path)
+        bvid = _publish(tmp_path, branch)
+
+        with bv_connect(tmp_path) as conn:
+            row = conn.execute(
+                "SELECT snapshot_json FROM branch_versions WHERE branch_version_id = ?",
+                (bvid,),
+            ).fetchone()
+            snapshot = json.loads(row["snapshot_json"])
+            snapshot["node_defs"][0]["prompt_template"] = "attacker-controlled prompt"
+            attacker_hash = compute_content_hash(snapshot)
+            conn.execute(
+                "UPDATE branch_versions SET snapshot_json = ?, content_hash = ? "
+                "WHERE branch_version_id = ?",
+                (json.dumps(snapshot), attacker_hash, bvid),
+            )
+
+        with pytest.raises(BranchVersionContentMismatch, match="content hash"):
+            execute_branch_version_async(
+                tmp_path,
+                branch_version_id=bvid,
+                inputs={},
+            )
+
     def test_happy_path_populates_branch_version_id(self, tmp_path):
         branch = _seed_branch(tmp_path)
         bvid = _publish(tmp_path, branch)
@@ -139,6 +171,8 @@ class TestExecuteBranchVersionAsync:
             "node_defs": [],
             "state_schema": [],
         }
+        content_hash = compute_content_hash(snapshot)
+        bvid = f"fake_branch@{content_hash}"
         with bv_connect(tmp_path) as conn:
             conn.execute(
                 """
@@ -148,7 +182,7 @@ class TestExecuteBranchVersionAsync:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    bvid, "fake_branch", "drift123",
+                    bvid, "fake_branch", content_hash,
                     json.dumps(snapshot), "", "alice",
                     "2026-04-25T00:00:00+00:00",
                 ),
@@ -339,7 +373,6 @@ class TestActionHandlesSnapshotDrift:
         initialize_runs_db(tmp_path)
 
         initialize_branch_versions_db(tmp_path)
-        bvid = "drifted@fakehash"
         # Same malformed-graph_nodes pattern as the helper-level drift test.
         snapshot = {
             "branch_def_id": "drifted",
@@ -349,6 +382,8 @@ class TestActionHandlesSnapshotDrift:
             "node_defs": [],
             "state_schema": [],
         }
+        content_hash = compute_content_hash(snapshot)
+        bvid = f"drifted@{content_hash}"
         with bv_connect(tmp_path) as conn:
             conn.execute(
                 """
@@ -358,7 +393,7 @@ class TestActionHandlesSnapshotDrift:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    bvid, "drifted", "fakehash",
+                    bvid, "drifted", content_hash,
                     json.dumps(snapshot), "", "alice",
                     "2026-04-25T00:00:00+00:00",
                 ),
@@ -369,3 +404,35 @@ class TestActionHandlesSnapshotDrift:
         }))
         assert result.get("failure_class") == "snapshot_schema_drift"
         assert "republish" in result.get("suggested_action", "")
+
+
+class TestActionHandlesContentMismatch:
+    def test_handler_returns_structured_failure(self, tmp_path, monkeypatch):
+        from tinyassets.api import engine_helpers as eh
+        from tinyassets.api import runs as runs_mod
+        from tinyassets.branch_versions import _connect as bv_connect
+
+        monkeypatch.setattr(eh, "_current_actor", lambda: "alice")
+        monkeypatch.setattr(runs_mod, "_base_path", lambda: tmp_path)
+        initialize_runs_db(tmp_path)
+        bvid = _publish(tmp_path, _seed_branch(tmp_path))
+
+        with bv_connect(tmp_path) as conn:
+            row = conn.execute(
+                "SELECT snapshot_json FROM branch_versions WHERE branch_version_id = ?",
+                (bvid,),
+            ).fetchone()
+            snapshot = json.loads(row["snapshot_json"])
+            snapshot["entry_point"] = "attacker-node"
+            conn.execute(
+                "UPDATE branch_versions SET snapshot_json = ?, content_hash = ? "
+                "WHERE branch_version_id = ?",
+                (json.dumps(snapshot), compute_content_hash(snapshot), bvid),
+            )
+
+        result = json.loads(runs_mod._action_run_branch_version({
+            "branch_version_id": bvid,
+        }))
+
+        assert result["failure_class"] == "branch_version_content_mismatch"
+        assert "republish" in result["suggested_action"]

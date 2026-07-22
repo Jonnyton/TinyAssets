@@ -3151,14 +3151,18 @@ def execute_branch_version_async(
         ``suggested_action`` class attributes name the recovery path
         ("republish at current schema version").
     """
-    from tinyassets.branch_versions import get_branch_version
+    from tinyassets.branch_versions import get_verified_branch_version
 
-    bv = get_branch_version(base_path, branch_version_id=branch_version_id)
-    if bv is None:
+    verified_version = get_verified_branch_version(
+        base_path,
+        branch_version_id=branch_version_id,
+    )
+    if verified_version is None:
         raise KeyError(
             f"branch_version_id {branch_version_id!r} not found "
             "in branch_versions"
         )
+    bv = verified_version.payload
     try:
         branch = BranchDefinition.from_dict(bv.snapshot)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:

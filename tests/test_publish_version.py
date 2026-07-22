@@ -82,8 +82,24 @@ class TestPublishBranchVersion:
     def test_mints_new_branch_version_id(self, tmp_path):
         d = _make_branch_dict()
         v = publish_branch_version(tmp_path, d, publisher="alice")
-        assert v.branch_version_id.startswith("b1@")
-        assert len(v.branch_version_id) > 3
+        assert v.branch_version_id == f"b1@{v.content_hash}"
+
+    def test_republish_upgrades_legacy_truncated_content_address(self, tmp_path):
+        from tinyassets.branch_versions import _connect
+
+        d = _make_branch_dict()
+        original = publish_branch_version(tmp_path, d, publisher="alice")
+        legacy_id = f"b1@{original.content_hash[:8]}"
+        with _connect(tmp_path) as conn:
+            conn.execute(
+                "UPDATE branch_versions SET branch_version_id = ? "
+                "WHERE branch_version_id = ?",
+                (legacy_id, original.branch_version_id),
+            )
+
+        upgraded = publish_branch_version(tmp_path, d, publisher="alice")
+
+        assert upgraded.branch_version_id == f"b1@{original.content_hash}"
 
     def test_returns_branch_version_object(self, tmp_path):
         d = _make_branch_dict()

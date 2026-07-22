@@ -2,12 +2,14 @@
 
 ## ADDED Requirements
 
-### Requirement: Authority derives only from signed artifacts or re-execution
+### Requirement: Authority derives only from signatures, content addresses, or external re-confirmation
 
-Every authority decision in the execution path SHALL derive from a
-cryptographically-signed artifact or a platform re-execution. Mutable or
-INSERT-able database state SHALL only narrow, reject, or serve as audit log, and
-SHALL NEVER be the sole basis for a positive authority decision.
+Every authority decision in the execution path SHALL derive from one or more of:
+a platform-verified signature (M1), a caller-held content address re-derived at
+the decision point (M2), or fresh re-confirmation from the authoritative external
+system (M3). Mutable or INSERT-able database state SHALL only narrow, reject, or
+serve as audit log, and SHALL NEVER be the sole basis for a positive authority
+decision.
 
 #### Scenario: Forged row cannot grant a lease
 
@@ -23,6 +25,13 @@ SHALL NEVER be the sole basis for a positive authority decision.
 - **WHEN** the process restarts and replays from the signed attestation
 - **THEN** it SHALL return the identical terminal receipt, and a reset terminal
   row without a valid attestation SHALL fail closed.
+
+#### Scenario: Mutable branch-version columns cannot replace requested content
+
+- **GIVEN** a caller requests execution by a full branch snapshot content address
+- **WHEN** direct DML changes both the stored snapshot and its adjacent stored hash
+- **THEN** execution SHALL reject the row because the snapshot digest is re-derived
+  and compared with the caller-held content address at the execution decision.
 
 ### Requirement: Signed records use immutable per-domain field contracts
 
