@@ -761,3 +761,32 @@ Notes:
 - Related implications: #1560 superseded; 2.3 stays with visibility/identity; provider evidence stays with #1570
 - Idea feed refs: none
 - Ship/abandon: ship reviewed spec-only PR; implementation remains separately claimable after merge
+## 2026-07-22 13:30 - create connector-manifest-products
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/connector-manifest-product-split
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-manifest-products
+- STATUS/Issue/PR: Split connector-manifest product contracts; corrective spec-only PR
+- PLAN refs: API & MCP Interface; Distribution & Discoverability
+- Purpose: separate remote OAuth seven, local MCPB seven, and remote directory-five product/auth contracts while sharing catalog names
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-manifest-products\_PURPOSE.md
+- Memory refs: post-#1597 reciprocal review ADAPT
+- Related implications: manifest successor blocks retire-legacy-live-mcp-tools; external directory acceptance stays host-owned
+- Idea feed refs: none
+- Ship/abandon: reviewed corrective spec-only PR
+
+## 2026-07-22 - remove connector-manifest-products
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/connector-manifest-product-split
+- Lane state: Abandoned/swept
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-manifest-products
+- STATUS/Issue/PR: three-product distribution spec approved; temporary claim retired in landing diff
+- PLAN refs: API & MCP Interface; Distribution & Discoverability
+- Purpose: separate remote OAuth seven, local MCPB stdio seven-name, and remote directory-five contracts and acceptance
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-manifest-products\_PURPOSE.md
+- Memory refs: three independent Codex APPROVE verdicts, 2026-07-22
+- Related implications: local actorless `converse` blocks legacy retirement until authority/redesign and host migration proof; external directory acceptance remains host-owned
+- Idea feed refs: none
+- Ship/abandon: ship reviewed spec-only PR; implementation remains separately claimable after merge
