@@ -42,6 +42,38 @@ must be fixed, promoted, parked, or swept before the branch is considered
 durably remembered. `Idea/reference only` has no worktree state because it
 lives in `ideas/*.md` or bottom-of-lane "Idea feed refs", not in a checkout.
 
+### Independent clones under `.codex-worktrees/` (a distinct kind)
+
+Some agent sandboxes park work in `.codex-worktrees/<slug>/` as an
+**independent clone** — a real `.git` *directory* with its own object store,
+not a linked worktree. `git worktree list` cannot see these at all, so they
+are discovered by directory scan and reported in a **separate table**. Do not
+treat them as worktrees: `git worktree remove` and the sweep commands do not
+apply, and their branches may exist nowhere but that directory.
+
+`worktree_status.py` reports them with `CLONE_*` states:
+
+| State | Meaning | What to do |
+|---|---|---|
+| `CLONE_UNPUBLISHED_ABSENT` | HEAD is not even an object in the canonical repo. Unambiguous: those commits exist only on this machine. | Recover by pushing the branch. Highest priority. |
+| `CLONE_UNPUBLISHED_NO_ORIGIN_REF` | Object exists locally, but no `refs/remotes/origin/*` contains it. | **Ambiguous** — a squash-merged-then-deleted branch looks identical. Classify with `gh pr view <branch>` or `--check-prs`; never conclude from reachability alone. |
+| `CLONE_UNREADABLE` | git refuses the directory (`dubious ownership`, sandbox-owned). Publication state unknown. | Run the printed `git config --global --add safe.directory ...` yourself, then re-run. The tool will not change your git config. |
+| `CLONE_UNKNOWN` | The publication check could not be answered. | Treat as possibly-unpublished. Do not sweep. |
+| `CLONE_NO_COMMITS` / `CLONE_NOT_A_REPO` | Unborn HEAD / not a git repo. | Nothing to recover; inspect by hand before any cleanup. |
+| `CLONE_PUBLISHED` | HEAD is reachable from an origin ref. | No recovery action. |
+
+Two behaviours worth knowing before you trust the `DIRTY` column:
+
+- Only **untracked** (`??`) entries under a root-anchored sandbox scratch dir
+  (`.pytest-tmp*`, `.test-tmp`, `.codex-test-tmp`, `.workflow-test-data`) are
+  discounted, and the count is shown in `SCRATCH`. Tracked modifications,
+  deletions and renames always count as dirty even under those paths — a clone
+  with 65 *tracked* `.test-tmp/...` deletions is genuinely diverged, not clean.
+- The scan is read-only and never writes to a clone, to `origin`, or to git
+  config. It is bounded (no tree walk; git plumbing only) and costs ~1s for 26
+  clones. `--no-clones` skips it; `--clones-only` runs just this table;
+  `--check-prs` adds one batched `gh pr list` call to fill the `PR` column.
+
 Branch-selector safety rule: a non-main branch is isolated from the live
 deploy chain until merged to `main`. Merging to `main` is production-impacting
 for the live MCP/backend deploy chain and must pass the relevant gates.
