@@ -68,6 +68,9 @@ model read as current spec truth.
 - `universe-personification-and-relay`: adds the seven surviving-but-unbuilt requirements
   rescued from the retired change. No landed behavior is modified or removed — the relay
   model, `converse` sandbox, learning path, and founder-only gate all stand as specced.
+- `live-mcp-connector-surface`: adds the compatible scoped-write migration requirement shared
+  by canonical `/mcp write_page`, directory `/mcp-directory write_page`, and hidden legacy
+  `wiki(action=write|patch)`. It stays a delta until its implementation and tests land.
 
 ### Removed Capabilities
 - `universe-personification` (the *proposed* capability, never synced to `openspec/specs/`):
@@ -86,6 +89,8 @@ model read as current spec truth.
   `openspec/specs/` is as-built truth and must not carry aspirations (`openspec/config.yaml`,
   AGENTS.md § Spec-driven development). This change therefore stays **active** rather than
   being archived on merge (Codex review 2026-07-22, finding 1).
+- **`openspec/specs/live-mcp-connector-surface/spec.md`** — **not modified.** The scoped-write
+  migration likewise remains an active delta until the runtime and compatibility tests exist.
 - **Coordination update:** `STATUS.md` replaces the stale pointer to the archived change with
   the active successor change and its concrete implementation dependencies.
 - **Gates:** opposite-provider review dispatched to Codex 2026-07-22 (verdict recorded in
