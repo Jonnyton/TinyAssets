@@ -32,5 +32,5 @@
 
 ## 6. Consumer migration + cleanup
 
-- [ ] 6.1 Update the Polsia handoff doc + any connector manifests to the 5-handle surface — GATED on deploy (the "live" flip is only true post-deploy); the doc is `TINYASSETS_DESIGN_HANDOFF_FOR_POLSIA.md` at the repo root (renamed from `WORKFLOW_DESIGN_HANDOFF_FOR_POLSIA.md`, a straggler of the June 2026 TinyAssets rename)
+- [ ] 6.1 Update the Polsia handoff doc + any connector manifests to the 5-handle surface — GATED on deploy (the "live" flip is only true post-deploy); the doc is `TINYASSETS_DESIGN_HANDOFF_FOR_POLSIA.md` at the repo root — genuinely untracked when this note was written 2026-06-26, then recovered into git 2026-07-21 by #1490 under its pre-rename name and renamed since
 - [ ] 6.2 After the migration window, open a follow-up change to remove the deprecated legacy tools and retire `tinyassets/directory_server.py` — FOLLOW-UP change
