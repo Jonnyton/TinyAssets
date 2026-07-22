@@ -50,6 +50,12 @@ The scope gate correctly prevents reservation, but the current MCP entry path re
 creation/load error with `auth_scope_required=true`; it does not render an awaiting card. Canonical
 truth records that actual outcome without changing the authorization boundary.
 
+### Preserve the as-built target authorization boundary
+
+For an explicit target, `converse` admits an authenticated actor with write or admin access and rejects
+an actor without that grant. Calling the handle “founder-only” would contradict the shared ACL check,
+so the full modified MCP requirement states the permission boundary directly.
+
 ## Risks / Trade-offs
 
 - **Risk: the correction could be read as weakening first-person relay.** The relay capability still

@@ -5,6 +5,7 @@
 - [x] 1.3 Preserve create-scope, concurrency, anonymous, and pure-read scenarios unchanged.
 - [x] 1.4 Apply the same provisioning-versus-execution boundary to the live MCP surface requirement.
 - [x] 1.5 Replace the stale awaiting-card claim with the as-built insufficient-scope error.
+- [x] 1.6 Correct the live MCP target boundary to authenticated write/admin access.
 
 ## 2. Verify and Fold Back
 

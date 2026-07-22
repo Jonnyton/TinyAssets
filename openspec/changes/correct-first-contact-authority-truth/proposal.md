@@ -14,6 +14,8 @@ stop promising provider speech merely because birth succeeded.
 - Preserve all existing create-scope, concurrency, anonymous, and pure-read guarantees.
 - Correct the insufficient-create-scope outcome to the structured `auth_scope_required` creation
   failure the `converse` entry path actually returns, rather than an unimplemented awaiting card.
+- Correct the live MCP access wording to the as-built write/admin ACL boundary instead of claiming
+  all `converse` calls are founder-only.
 - Leave requester/BYOC and accepted-market execution authority as unbuilt work in the active
   `universe-creation` change; this correction does not claim that enforcement exists.
 
