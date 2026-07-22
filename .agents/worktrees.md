@@ -706,3 +706,4 @@ Notes:
 - 2026-07-21 UPDATE wf-compute-market-research scope adds Zapier-equivalent automation, concurrent-user scalability, and BYOC/BYOM-or-market-only execution isolation; research/review only.
 - 2026-07-21 UPDATE wf-compute-market-research scope adds organizational universes/company brains governed from Slack, Teams, and existing business systems; research/review only.
 - 2026-07-21 UPDATE wf-compute-market-research scope adds HIPAA and other regulated-industry standards as composable deployment policy/evidence profiles; research/review only.
+- 2026-07-22 UPDATE wf-compute-market-research published draft PR #1574; all required Claude ADAPT reviews folded; host decisions and OpenSpec prerequisites block build.
