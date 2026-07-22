@@ -127,9 +127,11 @@ def test_ledger_extractor_never_leaks_the_key():
     target, summary, payload = _extract_set_engine(
         {"inputs_json": json.dumps({"api_key": "sk-SECRET-LEDGER"})},
         {"universe_id": "u-1", "service": "anthropic",
-         "preferred_writer": "claude-code", "status": "engine_set"},
+         "preferred_writer": "claude-code",
+         "allowed_providers": ["claude-code"], "status": "engine_set"},
     )
     assert "sk-SECRET-LEDGER" not in json.dumps([target, summary, payload])
+    assert payload["allowed_providers"] == ["claude-code"]
 
 
 def test_set_engine_is_founder_admin_scoped():

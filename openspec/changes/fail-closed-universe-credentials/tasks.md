@@ -13,12 +13,12 @@
 
 ## 3. Add auditable receipts
 
-- [ ] 3.1 Carry provider, model, credential class, and owner through the provider call bridge.
-- [ ] 3.2 Return purpose-labelled reply/extraction receipts from public `converse`.
-- [ ] 3.3 Bind public graph runs to their universe context, persist per-node payer metadata, return pending enqueue status, and expose durable receipts from `get_run`.
+- [x] 3.1 Carry provider, model, credential class, and owner through the provider call bridge.
+- [x] 3.2 Return purpose-labelled reply/extraction receipts from public `converse`.
+- [x] 3.3 Bind public graph runs to their universe context, persist per-node payer metadata, return pending enqueue status, and expose durable receipts from `get_run`.
 
 ## 4. Verify and publish
 
 - [ ] 4.1 Run focused tests, mutation proof, lint/type gates, and the relevant suite.
-- [ ] 4.2 Sync delta specs into main specs and perform independent security/diff review.
+- [ ] 4.2 Sync delta specs into main specs and perform independent security/diff review. (Specs synced; review pending.)
 - [ ] 4.3 Commit, push, and open a draft PR that states what now fails; do not merge.

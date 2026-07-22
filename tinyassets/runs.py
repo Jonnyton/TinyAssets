@@ -2227,6 +2227,12 @@ def _invoke_graph(
                 "latency_ms": detail.get("provider_latency_ms"),
                 "attempts": detail.get("provider_attempts"),
                 "degraded": bool(detail.get("provider_degraded", False)),
+                "credential_class": detail.get(
+                    "provider_credential_class", "unknown",
+                ),
+                "credential_owner": detail.get(
+                    "provider_credential_owner", "unknown",
+                ),
                 "at": _now(),
             })
         record_event(base_path, RunStepEvent(
@@ -3366,6 +3372,12 @@ def _invoke_graph_resume(
                     "latency_ms": detail.get("provider_latency_ms"),
                     "attempts": detail.get("provider_attempts"),
                     "degraded": bool(detail.get("provider_degraded", False)),
+                    "credential_class": detail.get(
+                        "provider_credential_class", "unknown",
+                    ),
+                    "credential_owner": detail.get(
+                        "provider_credential_owner", "unknown",
+                    ),
                     "at": _now(),
                 })
 

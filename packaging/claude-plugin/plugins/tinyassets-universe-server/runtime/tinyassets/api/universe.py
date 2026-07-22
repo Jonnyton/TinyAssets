@@ -642,6 +642,7 @@ def _extract_set_engine(
             "engine_source": source,
             "service": str(result.get("service", "")),
             "preferred_writer": writer,
+            "allowed_providers": result.get("allowed_providers", []),
             "status": result.get("status", ""),
         },
     )
@@ -4907,9 +4908,16 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
 
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
-    _writer_by_service = {"anthropic": "claude-code", "openai": "codex"}
-    if not preferred_writer and service in _writer_by_service:
-        preferred_writer = _writer_by_service[service]
+    _writer_by_service = {
+        "anthropic": "claude-code",
+        "claude": "claude-code",
+        "claude-code": "claude-code",
+        "openai": "codex",
+        "codex": "codex",
+    }
+    expected_writer = _writer_by_service.get(service, "")
+    if not preferred_writer:
+        preferred_writer = expected_writer
 
     if not api_key:
         return json.dumps({"error": "api_key is required."})
@@ -4918,6 +4926,16 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
             "error": f"unsupported service {service!r} — the key would never "
                      "reach a provider.",
             "expected_services": sorted(supported_llm_api_key_services()),
+        })
+    if not expected_writer:
+        return json.dumps({
+            "error": f"service {service!r} has no universe-isolated writer route.",
+            "expected_services": sorted(_writer_by_service),
+        })
+    if preferred_writer != expected_writer:
+        return json.dumps({
+            "error": f"provider {preferred_writer!r} cannot consume a "
+                     f"{service!r} key; expected {expected_writer!r}.",
         })
 
     import base64
@@ -4933,7 +4951,10 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
     except ValueError as exc:
         return json.dumps({"error": f"Failed to store engine credential: {exc}"})
 
-    fields = {"engine_source": "byo_api_key"}
+    fields = {
+        "engine_source": "byo_api_key",
+        "allowed_providers": [preferred_writer],
+    }
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
     try:
@@ -4947,6 +4968,7 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
         "engine_source": "byo_api_key",
         "service": service,
         "preferred_writer": preferred_writer,
+        "allowed_providers": [preferred_writer],
         "credential_types": vault_summary.get("credential_types", []),
         "note": "Engine credential stored in the per-universe vault (never "
                 "echoed).",
@@ -4960,7 +4982,12 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
     endpoint = str(data.get("endpoint", "")).strip()
     if not endpoint:
         return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
-    fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
+    preferred_writer = preferred_writer or "ollama-local"
+    fields = {
+        "engine_source": "self_hosted_endpoint",
+        "engine_endpoint": endpoint,
+        "allowed_providers": [preferred_writer],
+    }
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
     try:
@@ -4971,6 +4998,7 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
         "status": "engine_set", "universe_id": uid,
         "engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint,
         "preferred_writer": preferred_writer,
+        "allowed_providers": [preferred_writer],
     })
 
 
@@ -4989,6 +5017,9 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
     fields = {
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
+        # No market runtime provider exists yet. An empty allowlist is the
+        # honest fail-closed state until matching binds one explicitly.
+        "allowed_providers": [],
     }
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
@@ -5000,6 +5031,7 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
         "status": "engine_set", "universe_id": uid,
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
+        "allowed_providers": [],
         "note": "Your universe will run on a market-rented daemon within the "
                 "spending cap. Market matching runs when a market host is live "
                 "(post-M1 runtime).",
@@ -5018,7 +5050,8 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
 
     provider = str(data.get("provider", "")).strip() or "claude-code"
     fields = {"engine_source": "host_daemon",
-              "preferred_writer": preferred_writer or provider}
+              "preferred_writer": preferred_writer or provider,
+              "allowed_providers": [preferred_writer or provider]}
     try:
         write_universe_config_fields(udir, **fields)
     except Exception as exc:  # noqa: BLE001
@@ -5027,6 +5060,7 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
         "status": "engine_set", "universe_id": uid,
         "engine_source": "host_daemon", "provider": provider,
         "preferred_writer": fields["preferred_writer"],
+        "allowed_providers": fields["allowed_providers"],
         "next_step": "Host a daemon for this universe via "
                      "`universe action=daemon_summon` to bind a runtime instance.",
     })

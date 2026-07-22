@@ -12,6 +12,7 @@ import concurrent.futures
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from tinyassets.exceptions import (
@@ -274,6 +275,32 @@ class ProviderRouter:
                 alive.append(provider_name)
         return alive
 
+    @staticmethod
+    def _apply_universe_credential_policy(
+        chain: list[str], universe_dir,
+    ) -> list[str]:
+        """Keep only universe-funded or explicitly credentialless routes."""
+        if universe_dir is None:
+            return chain
+        from tinyassets.credential_vault import provider_credential_class
+
+        return [
+            provider_name
+            for provider_name in chain
+            if provider_credential_class(universe_dir, provider_name) != "unresolved"
+        ]
+
+    @staticmethod
+    def _stamp_credential_class(resp: ProviderResponse, universe_dir) -> ProviderResponse:
+        from tinyassets.credential_vault import provider_credential_class
+
+        return replace(
+            resp,
+            credential_class=provider_credential_class(
+                universe_dir, resp.provider,
+            ),
+        )
+
     async def call(
         self,
         role: str,
@@ -346,6 +373,24 @@ class ProviderRouter:
                     f"not silently fall back to a disallowed provider."
                 )
             chain = filtered
+
+        credential_filtered = self._apply_universe_credential_policy(
+            chain, universe_dir,
+        )
+        if not credential_filtered:
+            raise AllProvidersExhaustedError(
+                f"All cloud providers for role={role!r} lack a resolvable "
+                "credential in this universe's vault. Ambient host credentials "
+                "are never eligible for universe-scoped calls."
+            )
+        if credential_filtered != chain:
+            logger.warning(
+                "Fail-closed universe credential gate removed providers for "
+                "role=%s: %s",
+                role,
+                [p for p in chain if p not in credential_filtered],
+            )
+            chain = credential_filtered
 
         auth_filtered = self._apply_api_key_provider_policy(chain)
         if not auth_filtered:
@@ -515,7 +560,7 @@ class ProviderRouter:
                     )
             else:
                 self._consecutive_empty.pop(provider_name, None)
-            return resp
+            return self._stamp_credential_class(resp, universe_dir)
 
         # All providers exhausted.
         if is_pinned_writer:
@@ -575,12 +620,17 @@ class ProviderRouter:
         produced this, how long did it take, after how many tries" — spec
         §11.3 model-stamp requirement.
         """
+        credential_class = getattr(resp, "credential_class", "unknown") or "unknown"
+        from tinyassets.credential_vault import credential_owner_for_class
+
         return {
             "model": getattr(resp, "model", "") or "",
             "family": getattr(resp, "family", "") or "",
             "latency_ms": getattr(resp, "latency_ms", None),
             "degraded": bool(getattr(resp, "degraded", False)),
             "attempts": attempts,
+            "credential_class": credential_class,
+            "credential_owner": credential_owner_for_class(credential_class),
         }
 
     async def call_with_policy(
@@ -671,6 +721,10 @@ class ProviderRouter:
                 )
             attempt_order = filtered_order
 
+        attempt_order = self._apply_universe_credential_policy(
+            attempt_order, universe_dir,
+        )
+
         auth_filtered_order = self._apply_api_key_provider_policy(attempt_order)
         if attempt_order and not auth_filtered_order:
             logger.warning(
@@ -714,6 +768,7 @@ class ProviderRouter:
                     prompt, system, cfg, universe_dir=universe_dir,
                 )
                 self._quota.record_success(provider_name)
+                resp = self._stamp_credential_class(resp, universe_dir)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
             except ProviderUnavailableError:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)

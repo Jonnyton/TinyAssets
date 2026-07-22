@@ -408,6 +408,10 @@ def provider_auth_env_overrides(
         api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
         if api_key:
             overrides["OPENAI_API_KEY"] = api_key
+            if "CODEX_HOME" not in overrides and universe_dir is not None:
+                overrides["CODEX_HOME"] = str(
+                    _secret_artifact_dir(Path(universe_dir), "codex")
+                )
         return overrides
     if provider == "claude-code":
         overrides = {}
@@ -420,6 +424,10 @@ def provider_auth_env_overrides(
         api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
         if api_key:
             overrides["ANTHROPIC_API_KEY"] = api_key
+            if "CLAUDE_CONFIG_DIR" not in overrides and universe_dir is not None:
+                overrides["CLAUDE_CONFIG_DIR"] = str(
+                    _secret_artifact_dir(Path(universe_dir), "claude")
+                )
         return overrides
     return {}
 

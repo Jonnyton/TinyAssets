@@ -223,29 +223,43 @@ def _call_policy_router_with_retry(
     system: str,
     policy: dict[str, Any],
     config: Any = None,
+    universe_context: Any = None,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
     # Only forward config when set AND the router's call_with_policy_sync
     # actually accepts it — protects 4-arg routers/stubs (backward-compat),
     # mirroring the injected provider_call bridge guard.
+    try:
+        import inspect as _inspect
+        _params = _inspect.signature(router.call_with_policy_sync).parameters
+    except (ValueError, TypeError):
+        _params = {}
     pass_config = config is not None
     if pass_config:
         try:
-            import inspect as _inspect
-            _params = _inspect.signature(router.call_with_policy_sync).parameters
             pass_config = ("config" in _params) or any(
                 p.kind == p.VAR_KEYWORD for p in _params.values()
             )
         except (ValueError, TypeError):
             pass_config = False
+    pass_universe_context = universe_context is not None and (
+        ("universe_context" in _params)
+        or any(p.kind == p.VAR_KEYWORD for p in _params.values())
+    )
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     for attempt_index in range(attempts):
         try:
+            kwargs = (
+                {"universe_context": universe_context}
+                if pass_universe_context else {}
+            )
             if pass_config:
                 return router.call_with_policy_sync(
-                    role, prompt, system, policy, config,
+                    role, prompt, system, policy, config, **kwargs,
                 )
-            return router.call_with_policy_sync(role, prompt, system, policy)
+            return router.call_with_policy_sync(
+                role, prompt, system, policy, **kwargs,
+            )
         except AllProvidersExhaustedError:
             if attempt_index == attempts - 1:
                 raise
@@ -995,6 +1009,7 @@ def _build_prompt_template_node(
     needs_json = _needs_json_contract(node, state_types)
     json_suffix = _json_contract_suffix(node, state_types) if needs_json else ""
     effective_policy: dict[str, Any] | None = llm_policy
+    _universe_context = getattr(provider_call, "universe_context", None)
 
     # Per-node provider config — REAL settings threaded to the subprocess, not
     # prompt hints: reasoning_effort (e.g. localize=minimal so a light task is
@@ -1195,6 +1210,7 @@ def _build_prompt_template_node(
                                 system="",
                                 policy=effective_policy,
                                 config=_node_cfg,
+                                universe_context=_universe_context,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
@@ -1218,6 +1234,7 @@ def _build_prompt_template_node(
                     logger.exception("Policy provider call failed in %s", node.node_id)
                     _emit_failed_event(event_sink, node.node_id, exc)
                     raise _wrap_provider_failure(node.node_id, exc) from exc
+
             else:
                 try:
                     response = _run_with_timeout(
@@ -1233,6 +1250,34 @@ def _build_prompt_template_node(
                     logger.exception("Provider call failed in %s", node.node_id)
                     _emit_failed_event(event_sink, node.node_id, exc)
                     raise _wrap_provider_failure(node.node_id, exc) from exc
+
+            # The plain bridge returns a string-compatible result with
+            # immutable provider metadata. Consume it before later string
+            # operations erase the attributes, avoiding global last-provider.
+            if provider_served == "unknown":
+                try:
+                    from tinyassets.providers.call import provider_receipt
+
+                    receipt = provider_receipt(response)
+                except Exception:  # pragma: no cover - optional metadata
+                    receipt = None
+                if receipt:
+                    provider_served = str(
+                        receipt.get("provider") or "unknown"
+                    )
+                    provider_meta = {
+                        "model": receipt.get("model", ""),
+                        "family": receipt.get("family", ""),
+                        "latency_ms": receipt.get("latency_ms"),
+                        "degraded": receipt.get("degraded", False),
+                        "attempts": 1,
+                        "credential_class": receipt.get(
+                            "credential_class", "unknown",
+                        ),
+                        "credential_owner": receipt.get(
+                            "credential_owner", "unknown",
+                        ),
+                    }
         finally:
             if concurrency_tracker is not None:
                 concurrency_tracker.release()
@@ -1264,6 +1309,12 @@ def _build_prompt_template_node(
                         "provider_latency_ms": provider_meta.get("latency_ms"),
                         "provider_attempts": provider_meta.get("attempts"),
                         "provider_degraded": provider_meta.get("degraded", False),
+                        "provider_credential_class": provider_meta.get(
+                            "credential_class", "unknown",
+                        ),
+                        "provider_credential_owner": provider_meta.get(
+                            "credential_owner", "unknown",
+                        ),
                     }
                 event_sink(
                     node_id=node.node_id,

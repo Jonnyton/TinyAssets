@@ -77,6 +77,45 @@ def test_converse_runs_on_assigned_engine(tmp_path, monkeypatch):
     assert "first person" in captured["system"].lower()
 
 
+def test_converse_carries_separate_reply_and_learning_provider_receipts(
+    tmp_path, monkeypatch,
+):
+    from tinyassets.providers.call import ProviderCallText
+
+    udir = _seed(tmp_path)
+
+    class _Response:
+        provider = "claude-code"
+        model = "sonnet"
+        family = "anthropic"
+        latency_ms = 1.0
+        degraded = False
+        credential_class = "founder_byo_api_key"
+
+        def __init__(self, text):
+            self.text = text
+
+    def fake_call_provider(prompt, system="", **_kwargs):
+        text = "{}" if "strict JSON" in system else "Hello, founder."
+        return ProviderCallText(_Response(text))
+
+    monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
+    monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
+    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+
+    reply = ui.converse("u-test", "hello")
+
+    assert str(reply) == "Hello, founder."
+    assert [r["purpose"] for r in reply.provider_receipts] == [
+        "reply", "learning_extraction",
+    ]
+    assert all(
+        r["credential_class"] == "founder_byo_api_key"
+        and r["credential_owner"] == "founder"
+        for r in reply.provider_receipts
+    )
+
+
 def test_converse_missing_universe_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-nope")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: tmp_path / "nope")

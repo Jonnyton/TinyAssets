@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 
 import pytest
 
 from tinyassets.config import UniverseConfig
+from tinyassets.credential_vault import write_credential_vault
 from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.providers.base import (
     BaseProvider,
@@ -82,3 +84,61 @@ def test_host_scoped_subprocess_env_preserves_subscription_auth(tmp_path, monkey
     env = subprocess_env_for_provider("claude-code", universe_dir=None)
 
     assert env.get("CLAUDE_CONFIG_DIR") == host_claude
+
+
+@pytest.mark.parametrize(
+    ("service", "provider", "key_var", "home_var"),
+    [
+        ("anthropic", "claude-code", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
+        ("openai", "codex", "OPENAI_API_KEY", "CODEX_HOME"),
+    ],
+)
+def test_byo_key_forces_isolated_provider_home(
+    tmp_path, monkeypatch, service, provider, key_var, home_var,
+):
+    universe_dir = tmp_path / "u-byo"
+    host_home = tmp_path / "host-auth-home"
+    monkeypatch.setenv(home_var, str(host_home))
+    write_credential_vault(universe_dir, [{
+        "credential_type": "llm_api_key",
+        "service": service,
+        "secret_b64": base64.b64encode(b"founder-key").decode("ascii"),
+    }])
+
+    env = subprocess_env_for_provider(provider, universe_dir=universe_dir)
+
+    assert env[key_var] == "founder-key"
+    assert env[home_var] != str(host_home)
+    assert str(universe_dir) in env[home_var]
+
+
+def test_policy_route_reports_founder_payer_class(tmp_path, monkeypatch):
+    universe_dir = tmp_path / "u-policy"
+    write_credential_vault(universe_dir, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": base64.b64encode(b"founder-key").decode("ascii"),
+    }])
+    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
+    provider = _AmbientHostProvider()
+    router = ProviderRouter(providers={provider.name: provider})
+    ctx = UniverseContext(
+        universe_dir=universe_dir,
+        config=UniverseConfig(
+            preferred_writer="claude-code",
+            allowed_providers=["claude-code"],
+        ),
+    )
+
+    text, served, meta = asyncio.run(router.call_with_policy(
+        "writer",
+        "hello",
+        "system",
+        {"preferred": {"provider": "claude-code"}},
+        universe_context=ctx,
+    ))
+
+    assert text == "host-paid success"
+    assert served == "claude-code"
+    assert meta["credential_class"] == "founder_byo_api_key"
+    assert meta["credential_owner"] == "founder"

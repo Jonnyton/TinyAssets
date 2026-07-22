@@ -642,9 +642,19 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     # Real provider — lazy import so test envs without providers work.
     provider_call: Any = None
     try:
-        from tinyassets.providers.call import (
-            call_provider as provider_call,
-        )
+        from tinyassets.providers.call import call_provider as provider_call
+
+        universe_id = str(kwargs.get("universe_id") or "").strip()
+        if universe_id:
+            from tinyassets.config import load_universe_config
+            from tinyassets.providers.base import UniverseContext
+            from tinyassets.providers.call import bind_universe_provider_call
+
+            universe_dir = _universe_dir(universe_id)
+            provider_call = bind_universe_provider_call(UniverseContext(
+                universe_dir=universe_dir,
+                config=load_universe_config(universe_dir),
+            ))
     except ImportError:
         provider_call = None
 
@@ -707,6 +717,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "status": outcome.status,
         "output": outcome.output,
         "error": outcome.error,
+        "provider_receipt_status": "pending",
+        "provider_receipts": [],
     }
     if source_run is not None:
         branch_version = int(getattr(branch, "version", 1) or 1)
@@ -825,6 +837,23 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
+    provider_receipts: list[dict[str, Any]] = []
+    for event in events:
+        if (
+            event.get("node_id") == "__system__"
+            and event.get("status") == "provider_calls"
+        ):
+            calls = event.get("detail", {}).get("calls", [])
+            if isinstance(calls, list):
+                provider_receipts = [
+                    dict(call) for call in calls if isinstance(call, dict)
+                ]
+    snapshot["provider_receipts"] = provider_receipts
+    snapshot["provider_receipt_status"] = (
+        "pending"
+        if run_record["status"] in {"queued", "running"}
+        else "complete"
+    )
     output = run_record.get("output")
     if isinstance(output, dict):
         for key in ("external_write_results", "external_write_errors"):

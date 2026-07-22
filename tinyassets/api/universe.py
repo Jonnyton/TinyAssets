@@ -642,6 +642,7 @@ def _extract_set_engine(
             "engine_source": source,
             "service": str(result.get("service", "")),
             "preferred_writer": writer,
+            "allowed_providers": result.get("allowed_providers", []),
             "status": result.get("status", ""),
         },
     )
@@ -5030,6 +5031,7 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
         "status": "engine_set", "universe_id": uid,
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
+        "allowed_providers": [],
         "note": "Your universe will run on a market-rented daemon within the "
                 "spending cap. Market matching runs when a market host is live "
                 "(post-M1 runtime).",

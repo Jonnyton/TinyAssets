@@ -86,6 +86,8 @@ class ProviderResponse:
     family: str
     latency_ms: float
     degraded: bool = False
+    credential_class: str = "unknown"
+    """Non-secret payer class for public provider receipts."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.
@@ -106,6 +108,12 @@ API_KEY_PROVIDER_ENV_VARS: tuple[str, ...] = (
     "GEMINI_API_KEY",
     "GROQ_API_KEY",
     "XAI_API_KEY",
+)
+
+HOST_SUBSCRIPTION_ENV_VARS: tuple[str, ...] = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
 )
 
 
@@ -150,7 +158,18 @@ def subprocess_env_for_provider(
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
     """
-    env = subprocess_env_without_api_keys() or os.environ.copy()
+    if universe_dir is not None:
+        # A universe is a tenant boundary. Start from the process environment
+        # for ordinary runtime settings, but remove every provider auth route
+        # before overlaying that universe's vault. This is unconditional even
+        # when the host opted into API-key providers: host auth must never pay
+        # for a tenant call by ambient inheritance.
+        env = os.environ.copy()
+        for name in (*API_KEY_PROVIDER_ENV_VARS, *HOST_SUBSCRIPTION_ENV_VARS):
+            env.pop(name, None)
+    else:
+        # Host daemon / local developer calls preserve the established policy.
+        env = subprocess_env_without_api_keys() or os.environ.copy()
     try:
         from tinyassets.credential_vault import apply_provider_auth_env
 

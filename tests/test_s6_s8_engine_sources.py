@@ -39,6 +39,8 @@ def test_self_hosted_endpoint_persists(tmp_path, monkeypatch):
     cfg = load_universe_config(udir)
     assert cfg.engine_source == "self_hosted_endpoint"
     assert cfg.engine_endpoint == "http://localhost:11434"
+    assert cfg.allowed_providers == ["ollama-local"]
+    assert out["allowed_providers"] == ["ollama-local"]
 
 
 def test_market_rented_persists_rate_and_cap(tmp_path, monkeypatch):
@@ -51,6 +53,8 @@ def test_market_rented_persists_rate_and_cap(tmp_path, monkeypatch):
     assert cfg.market_model == "glm-5.2"
     assert cfg.market_rate == 0.5
     assert cfg.spending_cap == 20.0
+    assert cfg.allowed_providers == []
+    assert out["allowed_providers"] == []
 
 
 def test_host_daemon_persists_and_points_at_summon(tmp_path, monkeypatch):
@@ -59,7 +63,10 @@ def test_host_daemon_persists_and_points_at_summon(tmp_path, monkeypatch):
         "engine_source": "host_daemon", "provider": "codex"})))
     assert out["engine_source"] == "host_daemon"
     assert "daemon_summon" in out["next_step"]
-    assert load_universe_config(udir).engine_source == "host_daemon"
+    cfg = load_universe_config(udir)
+    assert cfg.engine_source == "host_daemon"
+    assert cfg.allowed_providers == ["codex"]
+    assert out["allowed_providers"] == ["codex"]
 
 
 def test_unknown_engine_source_errors(tmp_path, monkeypatch):
