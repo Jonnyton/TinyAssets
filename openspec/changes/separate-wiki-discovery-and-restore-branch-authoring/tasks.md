@@ -5,9 +5,9 @@
 
 ## 2. Scoped wiki discovery (RED -> GREEN)
 
-- [ ] 2.1 Add failing tests for default discovery exclusion, explicit coordination/all scopes, metadata overrides, category filtering, invalid scope, and ambient/since filtering.
-- [ ] 2.2 Implement the smallest scope classifier/filter in `tinyassets/api/wiki.py` and forward `scope` through the public wrapper.
-- [ ] 2.3 Mirror wiki/runtime wrapper changes and run focused tests plus mirror parity.
+- [x] 2.1 Add failing tests for default discovery exclusion, explicit coordination/all scopes, metadata overrides, category filtering, invalid scope, and ambient/since filtering.
+- [x] 2.2 Implement the smallest scope classifier/filter in `tinyassets/api/wiki.py` and forward `scope` through the public wrapper.
+- [x] 2.3 Mirror wiki/runtime wrapper changes and run focused tests plus mirror parity.
 
 ## 3. Discoverable branch authoring (RED -> GREEN)
 

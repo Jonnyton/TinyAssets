@@ -76,6 +76,14 @@ _WIKI_SEARCH_COMPLETENESS_WARNING = (
 )
 _WIKI_READ_DEFAULT_MAX_CHARS = 128_000
 _WIKI_READ_MAX_CHARS = 256_000
+_WIKI_DISCOVERY_SCOPES = frozenset({"all", "coordination", "discovery"})
+_WIKI_COORDINATION_CATEGORIES = frozenset({
+    "bugs",
+    "design-proposals",
+    "notes",
+    "patch-requests",
+    "plans",
+})
 
 
 _logger_wiki = logging.getLogger("universe_server.wiki")
@@ -272,6 +280,44 @@ def _page_updated_at(path: Path, meta: dict[str, str]) -> datetime:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
 
 
+def _page_category(path: Path) -> str:
+    try:
+        parts = path.relative_to(_wiki_root()).parts
+    except ValueError:
+        return ""
+    if len(parts) >= 3 and parts[0] in {"pages", "drafts"}:
+        return parts[1]
+    return ""
+
+
+def _page_audience(path: Path, meta: dict[str, str]) -> str:
+    explicit = meta.get("audience", "").strip().lower()
+    if explicit in {"coordination", "discovery"}:
+        return explicit
+    if _page_category(path) in _WIKI_COORDINATION_CATEGORIES:
+        return "coordination"
+    return "discovery"
+
+
+def _page_matches_scope(path: Path, meta: dict[str, str], scope: str) -> bool:
+    return scope == "all" or _page_audience(path, meta) == scope
+
+
+def _page_matches_category(path: Path, category: str) -> bool:
+    normalized = _sanitize_slug(category) if category.strip() else ""
+    return not normalized or _page_category(path) == normalized
+
+
+def _invalid_scope(scope: str) -> str | None:
+    if scope in _WIKI_DISCOVERY_SCOPES:
+        return None
+    return json.dumps({
+        "error": "invalid_scope",
+        "scope": scope,
+        "available_scopes": sorted(_WIKI_DISCOVERY_SCOPES),
+    })
+
+
 def _wiki_read_terms(
     *,
     page: str,
@@ -336,6 +382,8 @@ def _ambient_relevance_feed(
     max_results: int,
     source_meta: dict[str, str],
     source_body: str,
+    scope: str,
+    category: str,
 ) -> dict[str, Any]:
     terms = _wiki_read_terms(
         page=page,
@@ -355,6 +403,10 @@ def _ambient_relevance_feed(
         if not raw:
             continue
         meta, body = _parse_frontmatter(raw)
+        if not _page_matches_scope(candidate, meta, scope):
+            continue
+        if not _page_matches_category(candidate, category):
+            continue
         updated_at = _page_updated_at(candidate, meta)
         if since is not None and updated_at <= since:
             continue
@@ -559,8 +611,13 @@ def _wiki_read(
     max_results: int = 10,
     offset: int = 0,
     max_chars: int = _WIKI_READ_DEFAULT_MAX_CHARS,
+    scope: str = "discovery",
+    category: str = "",
     **_kwargs: Any,
 ) -> str:
+    scope_error = _invalid_scope(scope)
+    if scope_error is not None:
+        return scope_error
     if not page:
         return json.dumps({"error": "page parameter is required."})
 
@@ -589,6 +646,8 @@ def _wiki_read(
         max_results=max_results,
         source_meta=meta,
         source_body=body,
+        scope=scope,
+        category=category,
     )
 
     read_start = _coerce_read_offset(offset)
@@ -642,7 +701,16 @@ def _draft_read_content(text: str, *, is_draft: bool) -> str:
     return "[DRAFT] " + text
 
 
-def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
+def _wiki_search(
+    query: str = "",
+    max_results: int = 10,
+    category: str = "",
+    scope: str = "discovery",
+    **_kwargs: Any,
+) -> str:
+    scope_error = _invalid_scope(scope)
+    if scope_error is not None:
+        return scope_error
     if not query:
         return json.dumps({"error": "query parameter is required."})
 
@@ -658,6 +726,10 @@ def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
             continue
         lower = raw.lower()
         meta, body = _parse_frontmatter(raw)
+        if not _page_matches_scope(p, meta, scope):
+            continue
+        if not _page_matches_category(p, category):
+            continue
         title = meta.get("title", p.stem)
         is_draft = _wiki_drafts_dir() in p.parents
 
@@ -720,8 +792,13 @@ def _wiki_result_item(path: Path, *, is_draft: bool) -> dict[str, Any]:
 def _wiki_since(
     changed_since: str = "",
     max_results: int = 10,
+    category: str = "",
+    scope: str = "discovery",
     **_kwargs: Any,
 ) -> str:
+    scope_error = _invalid_scope(scope)
+    if scope_error is not None:
+        return scope_error
     if not changed_since.strip():
         return json.dumps({
             "error": "changed_since parameter is required for action=since.",
@@ -736,11 +813,23 @@ def _wiki_since(
 
     candidates: list[dict[str, Any]] = []
     for path in _find_all_pages(_wiki_pages_dir()):
+        raw = _read_text(path)
+        meta, _ = _parse_frontmatter(raw)
+        if not _page_matches_scope(path, meta, scope):
+            continue
+        if not _page_matches_category(path, category):
+            continue
         item = _wiki_result_item(path, is_draft=False)
         updated_at = _parse_wiki_timestamp(item["updated"])
         if updated_at is not None and updated_at > since:
             candidates.append(item)
     for path in _find_all_pages(_wiki_drafts_dir()):
+        raw = _read_text(path)
+        meta, _ = _parse_frontmatter(raw)
+        if not _page_matches_scope(path, meta, scope):
+            continue
+        if not _page_matches_category(path, category):
+            continue
         item = _wiki_result_item(path, is_draft=True)
         updated_at = _parse_wiki_timestamp(item["updated"])
         if updated_at is not None and updated_at > since:
@@ -2462,6 +2551,7 @@ def wiki(
     verbose: bool = False,
     changed_since: str = "",
     universe_id: str = "",
+    scope: str = "discovery",
 ) -> str:
     """Dispatch entry for the wiki MCP tool. See universe_server.py for the
     chatbot-facing docstring; this function is the implementation invoked by
@@ -2578,6 +2668,7 @@ def wiki(
             "verbose": verbose,
             "changed_since": changed_since,
             "universe_id": target_universe_id,
+            "scope": scope,
         }
 
         return _stamp_universe_id(handler(**kwargs), target_universe_id)

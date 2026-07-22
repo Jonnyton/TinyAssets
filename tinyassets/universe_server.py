@@ -698,6 +698,16 @@ def read_page(
     ] = "",
     max_results: int = 10,
     universe_id: str = "",
+    scope: Annotated[
+        str,
+        Field(
+            description=(
+                "Read namespace: discovery (default, excludes internal agent "
+                "coordination), coordination (history only), or all. Exact "
+                "page reads remain available in every scope."
+            ),
+        ),
+    ] = "discovery",
 ) -> str:
     """Read or search the TinyAssets wiki/commons.
 
@@ -710,6 +720,9 @@ def read_page(
             this timestamp.
         max_results: Maximum result count.
         universe_id: Optional target universe page substrate.
+        scope: Read namespace. Defaults to user-facing discovery; use
+            coordination or all only when intentionally inspecting internal
+            project history.
     """
     if page:
         return _wiki_impl(
@@ -719,6 +732,7 @@ def read_page(
             changed_since=changed_since,
             max_results=max_results,
             universe_id=universe_id,
+            scope=scope,
         )
     if changed_since.strip() and not query.strip() and not category.strip():
         return _wiki_impl(
@@ -726,6 +740,7 @@ def read_page(
             changed_since=changed_since,
             max_results=max_results,
             universe_id=universe_id,
+            scope=scope,
         )
     return _wiki_impl(
         action="search",
@@ -733,6 +748,7 @@ def read_page(
         category=category,
         max_results=max_results,
         universe_id=universe_id,
+        scope=scope,
     )
 
 
@@ -1781,6 +1797,15 @@ def wiki(
         ),
     ] = "",
     universe_id: str = "",
+    scope: Annotated[
+        str,
+        Field(
+            description=(
+                "Read namespace for read/search/since: discovery (default), "
+                "coordination, or all."
+            ),
+        ),
+    ] = "discovery",
 ) -> str:
     """Read, write, and manage the cross-project knowledge wiki.
 
@@ -1815,6 +1840,7 @@ def wiki(
             from large pages. Truncated responses include `next_offset`.
         universe_id: Optional target universe page substrate. Omit to use the
             shared TinyAssets wiki.
+        scope: Read namespace for read/search/since. Defaults to discovery.
     """
     return _wiki_impl(
         action=action,
@@ -1851,6 +1877,7 @@ def wiki(
         reporter_context=reporter_context,
         changed_since=changed_since,
         universe_id=universe_id,
+        scope=scope,
     )
 
 

@@ -260,6 +260,135 @@ class TestWikiSearch:
         result = json.loads(wiki("search"))
         assert "error" in result
 
+    def test_default_discovery_excludes_legacy_coordination_categories(
+        self, wiki_dir
+    ):
+        notes = wiki_dir / "pages" / "notes"
+        notes.mkdir(parents=True)
+        (notes / "agent-log.md").write_text(
+            "---\ntitle: Test project agent log\ntype: note\n---\n"
+            "Internal test project coordination.",
+            encoding="utf-8",
+        )
+
+        result = json.loads(wiki("search", query="test project"))
+
+        assert all(item["path"] != "pages/notes/agent-log.md" for item in result["results"])
+        assert any(item["path"] == "pages/projects/test-project.md" for item in result["results"])
+
+    def test_coordination_and_all_scopes_preserve_legacy_pages(self, wiki_dir):
+        notes = wiki_dir / "pages" / "notes"
+        notes.mkdir(parents=True)
+        (notes / "agent-log.md").write_text(
+            "---\ntitle: Test project agent log\ntype: note\n---\n"
+            "Internal test project coordination.",
+            encoding="utf-8",
+        )
+
+        coordination = json.loads(
+            wiki("search", query="test project", scope="coordination")
+        )
+        unfiltered = json.loads(wiki("search", query="test project", scope="all"))
+
+        assert [item["path"] for item in coordination["results"]] == [
+            "pages/notes/agent-log.md"
+        ]
+        assert {item["path"] for item in unfiltered["results"]} >= {
+            "pages/notes/agent-log.md",
+            "pages/projects/test-project.md",
+        }
+
+    def test_explicit_audience_overrides_legacy_category_fallback(self, wiki_dir):
+        notes = wiki_dir / "pages" / "notes"
+        notes.mkdir(parents=True)
+        (notes / "public-plan.md").write_text(
+            "---\ntitle: Public tracker plan\ntype: note\n"
+            "audience: discovery\n---\nPublic tracker plan.",
+            encoding="utf-8",
+        )
+        (wiki_dir / "pages" / "concepts" / "internal-concept.md").write_text(
+            "---\ntitle: Internal tracker concept\ntype: concept\n"
+            "audience: coordination\n---\nInternal tracker concept.",
+            encoding="utf-8",
+        )
+
+        discovery = json.loads(wiki("search", query="tracker"))
+        coordination = json.loads(
+            wiki("search", query="tracker", scope="coordination")
+        )
+
+        assert {item["path"] for item in discovery["results"]} == {
+            "pages/notes/public-plan.md"
+        }
+        assert {item["path"] for item in coordination["results"]} == {
+            "pages/concepts/internal-concept.md"
+        }
+
+    def test_category_filter_is_enforced_after_scope_filter(self, wiki_dir):
+        (wiki_dir / "pages" / "concepts" / "tracker-concept.md").write_text(
+            "---\ntitle: Tracker concept\ntype: concept\n---\nTracker.",
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            wiki("search", query="tracker", category="concepts")
+        )
+
+        assert result["results"]
+        assert all(item["path"].startswith("pages/concepts/") for item in result["results"])
+
+    def test_invalid_scope_fails_closed(self, wiki_dir):
+        result = json.loads(wiki("search", query="test", scope="discover"))
+
+        assert result["error"] == "invalid_scope"
+        assert result["available_scopes"] == ["all", "coordination", "discovery"]
+        assert "results" not in result
+
+    def test_since_feed_defaults_to_discovery_scope(self, wiki_dir):
+        notes = wiki_dir / "pages" / "notes"
+        notes.mkdir(parents=True)
+        (notes / "recent-agent-log.md").write_text(
+            "---\ntitle: Recent agent log\ntype: note\nupdated: 2026-07-20\n---\n"
+            "Internal coordination.",
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            wiki("since", changed_since="2026-04-01T00:00:00Z", max_results=20)
+        )
+
+        assert all(
+            item["path"] != "pages/notes/recent-agent-log.md"
+            for item in result["results"]
+        )
+
+    def test_read_ambient_feed_honors_coordination_scope(self, wiki_dir):
+        notes = wiki_dir / "pages" / "notes"
+        notes.mkdir(parents=True)
+        (notes / "python-agent-log.md").write_text(
+            "---\ntitle: Python agent log\ntype: note\n---\n"
+            "Python workflow engine coordination.",
+            encoding="utf-8",
+        )
+
+        discovery = json.loads(
+            wiki("read", page="test-project", query="python", max_results=10)
+        )
+        coordination = json.loads(
+            wiki(
+                "read",
+                page="test-project",
+                query="python",
+                scope="coordination",
+                max_results=10,
+            )
+        )
+
+        assert discovery["ambient_relevance_feed"]["items"] == []
+        assert [
+            item["path"] for item in coordination["ambient_relevance_feed"]["items"]
+        ] == ["pages/notes/python-agent-log.md"]
+
 
 class TestWikiWrite:
     def test_write_new_draft(self, wiki_dir):
