@@ -32,8 +32,16 @@
 - [ ] 4.1 `get_status` runs with `allow_probe=False` yet reads as live verification. Either report the
       evidence class honestly (cached / timestamp / config-dir-present / deferred) or stop implying
       liveness. Claude currently reports `ok` from a non-empty config directory alone.
-  - **Premise re-verified on main 2026-07-22 — still true.** `get_status` calls
-    `subscription_auth_health(name, allow_probe=False)` at
-    `tinyassets/api/status.py:386-389`, and `allow_probe=False` short-circuits
-    before any live probe (`tinyassets/providers/base.py:445`). The task is
-    accurate as written; it is not obsolete.
+  - **Partly obsolete as written — narrow it before building.** `get_status`
+    does still call `subscription_auth_health(name, allow_probe=False)`
+    (`tinyassets/api/status.py:386-389`), but the "reports `ok` from a non-empty
+    config directory alone" premise is no longer accurate: the non-probing paths
+    already report their evidence class honestly — `refresh-viable` with the
+    measured age (`tinyassets/providers/base.py:426-430`) and, when
+    `allow_probe=False`, an explicit "live probe deferred to the worker gate"
+    (`base.py:445-450`).
+  - The **actual residual** is narrower: the disk/in-memory probe-cache hit at
+    `tinyassets/providers/base.py:442-443` returns the earlier verdict verbatim
+    (`return dict(cached[1])`) with no cached-vs-live label and no age, so a
+    stale-but-in-TTL verdict still reads as current. Scope this task to labeling
+    that one path; the general honesty work is already done.

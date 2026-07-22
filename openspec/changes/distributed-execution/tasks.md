@@ -25,10 +25,18 @@ state, not a stale plan.
 
 ## 2. Lease store + evidence ledger — ON OPEN PRs, NOT ON MAIN
 
-`#1481` is OPEN (stacked on #1479). Verified absent on main 2026-07-22: no lease
-store or attestation module exists in the tree — the only `lease`/`attestation`
-matches are the unrelated `tests/test_fantasy_daemon_branch_task_lease.py` and
-`.github/workflows/release-reconcile.yml`.
+`#1481` is OPEN (stacked on #1479). Verified absent on main 2026-07-22: the
+runtime `lease_store`, the authenticated execution transport, and the signed
+terminal-attestation system are not in the tree.
+
+Be precise about what "absent" means here — `main` *does* have lease- and
+attestation-shaped code that is **not** this system and must not be mistaken for
+it: `branch_tasks.claim_task` and the branch-task lease fields
+(`worker_owner_id` / `lease_expires_at` / heartbeat, surfaced at
+`tinyassets/api/status.py:545-581`), gate-event outcome attestations
+(`tinyassets/api/extensions.py:591`), and effector runtime attestations
+(`tinyassets/effectors/windows_desktop.py:148`). None of these carry signed
+records, a generation floor, or an append-only evidence ledger.
 
 - [ ] 2.1 Durable monotonic generation floor; restored superseded generation fails closed (B01, #1481 — OPEN)
 - [ ] 2.2 Block `INSERT OR REPLACE`/`REPLACE`/UPSERT on attestations and `lease_events` (B02/B03, #1481 — OPEN)

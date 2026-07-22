@@ -5,9 +5,12 @@
 > partial visibility substrate that this change must reconcile with rather than
 > build beside. Two findings matter most:
 >
-> 1. There are **two uncoordinated visibility mechanisms** already — a
->    per-universe public/private bit (`tinyassets/api/permissions.py:59`) and a
->    separate per-branch `visibility` field (`tinyassets/api/branches.py:380`).
+> 1. **Universe visibility exists; page visibility does not.** There is a
+>    per-universe public/private bit (`tinyassets/api/permissions.py:59`). There
+>    is also a `visibility` field on Branches (`tinyassets/api/branches.py:380`),
+>    but a Branch is an *execution graph* (`BranchDefinition` — node CRUD /
+>    compiled workflow), not a wiki page. It is a third, unrelated object class —
+>    do not read it as the per-page half of this change.
 > 2. Current code **defaults undeclared universes to public**
 >    (`permissions.py:78-80`), which is the exact inverse of task 2.3.
 
@@ -20,11 +23,15 @@
     existence/metadata/content split this task asks for does not exist — today a
     reader who can read at all can read everything.
 - [ ] 1.2 Decide per-universe vs per-page granularity and how they compose
-  - Current state on main: **both already exist and do not compose.**
-    Per-universe = the rules-row bit (`permissions.py:59`); per-branch =
-    `visibility: public|private` on branch records (`branches.py:380-381`,
-    enforced at `branches.py:445-446` against `author`). This task is now partly
-    a *reconciliation* of two shipped mechanisms, not a greenfield decision.
+  - Current state on main: **per-universe exists, per-page does not.**
+    Per-universe = the rules-row bit (`permissions.py:59`). No page-level
+    visibility mechanism was found anywhere in the tree, so the per-page half is
+    greenfield.
+  - Do not mistake Branch visibility for it: `visibility: public|private` on
+    branch records (`branches.py:380-381`, enforced at `branches.py:445-446`
+    against `author`) governs *execution graphs*, a separate object class. It is
+    worth deciding whether it should compose with universe level — today it does
+    not — but it is not the page mechanism this task asks for.
 - [ ] 1.3 Decide the default for new universes
   - Current de-facto default on main is **public**: a missing rules row is
     treated as "no decision recorded → publicly readable"
