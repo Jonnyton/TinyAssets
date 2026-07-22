@@ -761,6 +761,21 @@ Notes:
 - Related implications: #1560 superseded; 2.3 stays with visibility/identity; provider evidence stays with #1570
 - Idea feed refs: none
 - Ship/abandon: ship reviewed spec-only PR; implementation remains separately claimable after merge
+
+## 2026-07-22 13:50 - create founder-provider-allowlist
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/founder-provider-allowlist
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-founder-provider-allowlist
+- STATUS/Issue/PR: R2-1a founder BYO provider allowlist; OpenSpec + test-first runtime fix
+- PLAN refs: Module: Providers; Constraints; platform responsibility model
+- Purpose: bind a BYO API key assignment to its matching provider and fail closed instead of borrowing any fallback provider
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-founder-provider-allowlist\_PURPOSE.md
+- Memory refs: STATUS R2-1a; 92dd60c5 host-credential half
+- Related implications: universe-creation owns later request authority bundle; R2-1b provider receipt waits
+- Idea feed refs: none
+- Ship/abandon: reviewed PR after strict OpenSpec, red/green tests, and independent security review
 ## 2026-07-22 13:30 - create connector-manifest-products
 
 - Provider: codex-gpt5-desktop-2
