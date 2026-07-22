@@ -205,6 +205,19 @@ is fatal and remains unmodified. Apply re-reads under the exclusive assignment
 lock, preserves unrelated YAML and vault bytes, writes atomically, and must be
 idempotent with zero unclassified/unmigrated post-scan results.
 
+Existing explicit quarantine is sticky: `pending` plus `[]`, `ready` plus `[]`,
+and invalid explicit state/ceiling combinations never regain a singleton from
+historical credential or ledger evidence. Apply locks every validated direct
+child of `/data`, not only inventory candidates, then re-reads the complete
+inventory before its first write. The batch snapshots exact pre-migration config
+bytes and writes a durable, secret-free transaction journal containing only the
+reviewed manifest digest plus exact before/after hashes before its first config
+replace. Catchable failures restore every changed config; after process kill,
+container termination, power loss, or host crash, each config must match either
+its journaled before or after hash and the same reviewed manifest finishes the
+remaining writes. The marker commits before durable journal removal, and
+steady-state verification rejects any incomplete journal.
+
 Before applying, quiesce/mask the daemon, workers, watchdogs, and auto-heal
 paths, bring the compose stack down, and prove no process mounts production
 `/data`. Run migration from the new immutable image, then start only the new
@@ -212,6 +225,18 @@ daemon for a loopback canary before tunnel/workers. After exposure, never
 automatically roll back to a pre-fence writer; quiesce and roll forward. The
 current automatic build-to-deploy path makes this a hard merge gate, not a
 post-deploy watch item.
+
+All GitHub-managed production-host mutators share one repository-wide
+concurrency group and independently fail closed on the durable host sentinel,
+including provider-auth keepalives. The first cutover cancels and drains active
+runs created from the superseded independent concurrency groups before any
+host mutation. A retry while the sentinel survives reuses
+the original active-unit recovery list and remains in cutover mode even when the
+data marker already exists. Marker-only normal deploys first verify through the
+new immutable image with no network and a read-only data mount. Any cutover or
+release failure recreates every systemd condition, stops every known current or
+legacy writer, brings both compose projects down, and re-proves zero volume
+users before ending the failed run.
 
 Rollback is a normal code revert. It restores fallback for future assignments
 and is therefore security-regressive; already-written singleton allowlists stay
