@@ -68,7 +68,7 @@ Every advertised handle name SHALL match `^[a-zA-Z0-9_-]{1,64}$` and MUST NOT co
 
 ### Requirement: Read-Open, Write-Challenged Authentication Boundary
 
-Pure-read handles (`read_graph`, `read_page`, and the `read_graph target=status` alias) SHALL remain callable anonymously. Pure-write / costly-effect handles (`write_graph`, `run_graph`, `write_page`, `converse`) SHALL answer an anonymous `tools/call` with an HTTP 401 + `WWW-Authenticate` challenge pre-dispatch so the MCP client launches OAuth, since a tool-JSON rejection would not prompt sign-in. `get_status` is the connector's opening call: for an authenticated founder with no home universe it auto-creates and binds a home universe as a one-time onboarding side effect, so it is idempotent but not a pure read; the `read_graph target=status` alias stays read-only and never provisions. `converse` is founder-only and relays the founder's turn to the universe's own intelligence.
+Pure-read handles (`read_graph`, `read_page`, and the `read_graph target=status` alias) SHALL remain callable anonymously. Pure-write / costly-effect handles (`write_graph`, `run_graph`, `write_page`, `converse`) SHALL answer an anonymous `tools/call` with an HTTP 401 + `WWW-Authenticate` challenge pre-dispatch so the MCP client launches OAuth, since a tool-JSON rejection would not prompt sign-in. `converse` is the connector's opening call: it is founder-only, relays the founder's turn to the universe's own intelligence, and for an authenticated founder with no home universe it resolves-or-creates and binds that home as a one-time onboarding side effect. `get_status` and the `read_graph target=status` alias are both pure reads (`readOnlyHint=True`) and never provision. Per the 2026-07-22 host directive (`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`) birth moved off `get_status`, because a mutating *opening* call proved refusable in production — the assistant declined to call it, citing the side effect its own tool description advertised, which contradicted the shipped instruction to call it first.
 
 #### Scenario: Anonymous write handle triggers an OAuth challenge
 
@@ -80,16 +80,21 @@ Pure-read handles (`read_graph`, `read_page`, and the `read_graph target=status`
 - **WHEN** an unauthenticated client calls `read_graph` or `read_page`
 - **THEN** the read is served without an auth challenge
 
-#### Scenario: First-contact provisioning via get_status
+#### Scenario: First-contact provisioning via converse
 
-- **WHEN** an authenticated founder with no home universe issues their first `get_status`
-- **THEN** a home universe is created and bound, and the result carries a `first_contact: universe_created` welcome
-- **AND** a later `get_status` for the same founder returns a pure snapshot with no further side effect
+- **WHEN** an authenticated founder with no home universe issues their opening `converse` with no `graph_id`
+- **THEN** a home universe is created and bound, and the reply is the universe speaking in first person
+- **AND** a later `converse` for the same founder reaches the same home with no further creation
+
+#### Scenario: get_status never provisions
+
+- **WHEN** an authenticated founder with no home universe calls `get_status`
+- **THEN** no universe is created and the call is a pure read (`readOnlyHint=True`)
 
 #### Scenario: The read alias never provisions
 
 - **WHEN** any caller invokes `read_graph(target="status")`
-- **THEN** the underlying status handler runs with first-contact birth disabled, so no universe is created
+- **THEN** no universe is created
 
 #### Scenario: Non-founder is refused converse
 

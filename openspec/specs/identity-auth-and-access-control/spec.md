@@ -107,28 +107,41 @@ The metadata is produced in `tinyassets/auth/wellknown.py`.
 
 ### Requirement: Founder home auto-births exactly once on first authenticated contact
 
-The server SHALL, on the first authenticated `get_status` call (the dedicated connector handle that
-permits first-contact birth), ensure the founder has a home universe. It SHALL check the
-create scope BEFORE reserving any home id, so a founder lacking create scope leaves no phantom
-binding and receives the awaiting card. Reservation SHALL be atomic (an `INSERT ... ON CONFLICT DO
-NOTHING` on the founder key) so concurrent first-contact calls across worker threads yield exactly one
-home id, and materialization SHALL be serialized so a reserved id is created once, with success defined
-as the universe's `soul.md` being present. Anonymous sessions SHALL never trigger birth, and the
-pure-read alias `read_graph target=status` SHALL pass through without first-contact birth. This logic
-lives in `tinyassets/api/status.py` with the atomic claim in `tinyassets/daemon_server.py`.
+The server SHALL, on the first authenticated `converse` call with no `graph_id` (the founder's opening
+relay, and the only handle that performs first-contact birth), ensure the founder has a home universe.
+It SHALL check the create scope BEFORE reserving any home id, so a founder lacking create scope leaves
+no phantom binding and receives the awaiting card. Reservation SHALL be atomic (an `INSERT ... ON
+CONFLICT DO NOTHING` on the founder key) so concurrent first-contact calls across worker threads yield
+exactly one home id, and materialization SHALL be serialized so a reserved id is created once, with
+success defined as the universe's `soul.md` being present. Anonymous sessions SHALL never trigger
+birth. Both `get_status` and the `read_graph target=status` alias SHALL pass through as pure reads
+without first-contact birth. This logic lives in `tinyassets/api/first_contact.py` with the atomic
+claim in `tinyassets/daemon_server.py`.
 
-#### Scenario: first authenticated get_status births one home
-- **WHEN** an authenticated founder with create scope and no bound home calls `get_status`
+Per the 2026-07-22 host directive
+(`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`), birth moved off
+`get_status` and its `allow_first_contact_birth` parameter was deleted, because a mutating *opening*
+call proved refusable in production: the assistant declined to call `get_status` on the grounds that
+its own tool description advertised a side effect. The 2026-07-15 commitment this replaces — a founder
+never needs to know an incantation — is upheld, since the opening message is itself the relay.
+
+#### Scenario: first authenticated converse births one home
+- **WHEN** an authenticated founder with create scope and no bound home issues their opening `converse` with no `graph_id`
 - **THEN** exactly one home universe is reserved, materialized, and bound to the founder
-- **AND** the response reports the first-contact universe-created event
+- **AND** the reply is the universe speaking in first person, relayed verbatim
 
 #### Scenario: read-only founder leaves no phantom binding
-- **WHEN** an authenticated founder lacking create scope calls `get_status` with no home
+- **WHEN** an authenticated founder lacking create scope issues their opening `converse` with no home
 - **THEN** no home binding is created and the awaiting card is returned
 
-#### Scenario: anonymous get_status never births
-- **WHEN** an anonymous session calls `get_status`
+#### Scenario: anonymous first contact never births
+- **WHEN** an anonymous session calls `converse` or `get_status`
 - **THEN** no home universe is created
+
+#### Scenario: get_status never births
+- **WHEN** an authenticated founder with create scope and no bound home calls `get_status`
+- **THEN** no home universe is created and the call is a pure read
+- **AND** a repeated call returns the identical snapshot
 
 ### Requirement: The permission actor is the authenticated subject with no environment fallback
 
