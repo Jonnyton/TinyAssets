@@ -1,11 +1,7 @@
-"""First-contact, AUTO-BIRTH (host decision 2026-07-15, supersedes the 2026-07-02
-opt-in birth): a connected authenticated founder ALWAYS has a home universe — the
-first `get_status` auto-creates + binds it and returns a compact welcome card, so
-a user never has to know to ask for their first one. Guardrails preserved: a
-read-only founder (no create scope) still gets the awaiting card (get_status is
-not a scope bypass), anonymous callers never birth a home, and concurrent
-first-contact yields exactly one home (atomic `claim_founder_home`). Additional
-universes stay explicit (`universe action=create_universe`).
+"""Founder-home resolution and first-contact universe conversation.
+
+`get_status` is a pure read. Omitted-scope authenticated `converse` resolves or
+atomically creates the founder's home, loads its soul, and returns its own voice.
 """
 
 from __future__ import annotations
@@ -94,6 +90,144 @@ def _create_via_action(base, monkeypatch):
     return out["universe_id"]
 
 
+def _capture_universe_reply(monkeypatch, reply: str) -> dict:
+    """Stub only the external engine while keeping real persona assembly."""
+    import tinyassets.universe_intelligence as intelligence
+
+    captured: dict = {}
+
+    def fake_call_provider(prompt, system="", *, role="writer", **kwargs):
+        if "strict JSON" in system:
+            return "{}"
+        captured.update(
+            prompt=prompt,
+            system=system,
+            role=role,
+            universe_context=kwargs.get("universe_context"),
+        )
+        return reply
+
+    monkeypatch.setattr(intelligence, "call_provider", fake_call_provider)
+    return captured
+
+
+def test_get_status_without_home_is_repeatable_and_side_effect_free(data_dir):
+    from tinyassets.api.status import get_status
+    from tinyassets.daemon_server import get_founder_home
+
+    _login("founder-1")
+    first = json.loads(get_status())
+    second = json.loads(get_status())
+
+    assert first == second
+    assert first["first_contact"]["event"] == "no_universe_yet"
+    assert get_founder_home(data_dir, "founder-1") == ""
+    assert _serial_dirs(data_dir) == []
+
+
+def test_get_status_does_not_first_create_or_mutate_new_universe_soul(
+    data_dir, monkeypatch
+):
+    from tinyassets.api.status import get_status
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    udir = data_dir / uid
+    soul_paths = sorted(
+        p for p in udir.rglob("*")
+        if p.is_file() and (p.suffix == ".md" or "soul_versions" in p.parts)
+    )
+    assert soul_paths
+    assert (udir / "soul.md").is_file()  # creation, not status, seeded it
+    before = {p.relative_to(udir): p.read_bytes() for p in soul_paths}
+
+    first = json.loads(get_status(universe_id=uid))
+    second = json.loads(get_status(universe_id=uid))
+    after = {p.relative_to(udir): p.read_bytes() for p in soul_paths}
+
+    assert first["universe_id"] == uid
+    assert second["universe_id"] == uid
+    assert after == before
+
+
+def test_first_connect_new_founder_births_seed_and_returns_universe_voice(
+    data_dir, monkeypatch
+):
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    captured = _capture_universe_reply(
+        monkeypatch,
+        "I am here. I do not have a name yet—who are you?",
+    )
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out["reply"].startswith("I ")
+    uid = out["universe_id"]
+    assert is_universe_serial(uid)
+    assert get_founder_home(data_dir, "founder-1") == uid
+    assert (data_dir / uid / "soul.md").is_file()
+    assert "first person" in captured["system"].lower()
+    assert "name yet" in captured["system"].lower()
+    assert not (data_dir / ".active_universe").exists()
+
+
+def test_first_connect_existing_founder_loads_learned_home_voice(
+    data_dir, monkeypatch
+):
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.soul_edit import apply_soul_edit
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    apply_soul_edit(
+        data_dir / uid,
+        changes={"identity.md": "# Identity\n\nI am Aetheria.\n"},
+        source="founder conversation",
+        context="The founder named the universe Aetheria.",
+        name="Aetheria",
+    )
+    captured = _capture_universe_reply(monkeypatch, "I am Aetheria. Welcome back.")
+
+    out = json.loads(converse(message="Hello again"))
+
+    assert out == {"reply": "I am Aetheria. Welcome back.", "universe_id": uid}
+    assert get_founder_home(data_dir, "founder-1") == uid
+    assert len(_serial_dirs(data_dir)) == 1
+    assert "You are Aetheria." in captured["system"]
+
+
+def test_first_connect_anonymous_cannot_birth_or_reach_universe(data_dir):
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.universe_server import converse
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("auth_required") is True
+    assert "reply" not in out
+    assert get_founder_home(data_dir, "anonymous") == ""
+    assert _serial_dirs(data_dir) == []
+
+
+def test_first_connect_cannot_target_another_founders_universe(
+    data_dir, monkeypatch
+):
+    from tinyassets.universe_server import converse
+
+    _login("founder-A")
+    home_a = _create_via_action(data_dir, monkeypatch)
+    _login("founder-B")
+    _capture_universe_reply(monkeypatch, "I should never be reached.")
+
+    out = json.loads(converse(message="Hello", graph_id=home_a))
+
+    assert out.get("auth_scope_required") is True
+    assert "reply" not in out
+
+
 def test_founder_home_set_get_roundtrip(data_dir):
     from tinyassets.daemon_server import get_founder_home, set_founder_home
 
@@ -121,39 +255,26 @@ def test_claim_founder_home_serializes_single_home(data_dir):
     assert claim_founder_home(data_dir, "founder-1", "") == ""
 
 
-def test_first_contact_auto_births_home(data_dir):
-    from tinyassets.api.status import get_status
+def test_ensure_founder_home_births_complete_seed(data_dir):
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
 
     _login("founder-1")
-    out = json.loads(get_status())
+    uid = ensure_founder_home(data_dir, "founder-1")
 
-    # AUTO-BIRTH: the first read creates + binds the founder's home and returns a
-    # compact welcome card (not the awaiting "ask me" card).
-    assert out["first_contact"]["event"] == "universe_created"
-    uid = out["first_contact"]["universe_id"]
     assert is_universe_serial(uid)
-    assert "TinyAssets" in out["about"]
-    assert set(out) == {"first_contact", "about", "next_step_for_user", "schema_version"}
     assert get_founder_home(data_dir, "founder-1") == uid
     assert (data_dir / uid / "soul.md").is_file()
 
-    # The next read is the full snapshot for their home (no first_contact block).
-    after = json.loads(get_status())
-    assert "first_contact" not in after
-    assert after["universe_id"] == uid
-    assert "persona" in after
-
 
 def test_auto_birth_is_idempotent(data_dir):
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
 
     _login("founder-1")
-    first = json.loads(get_status())["first_contact"]["universe_id"]
-    # A second (and third) read must NOT mint another universe.
-    json.loads(get_status())
-    json.loads(get_status())
+    first = ensure_founder_home(data_dir, "founder-1")
+    ensure_founder_home(data_dir, "founder-1")
+    ensure_founder_home(data_dir, "founder-1")
     assert get_founder_home(data_dir, "founder-1") == first
     assert [p.name for p in _serial_dirs(data_dir)] == [first]
 
@@ -161,10 +282,10 @@ def test_auto_birth_is_idempotent(data_dir):
 def test_auto_birth_is_ledgered(data_dir):
     # The auto-birth create routes through the ledgered dispatch, same as an
     # explicit create — the new universe records a create_universe ledger entry.
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
 
     _login("founder-1")
-    uid = json.loads(get_status())["first_contact"]["universe_id"]
+    uid = ensure_founder_home(data_dir, "founder-1")
     ledger = data_dir / uid / "ledger.json"
     assert ledger.is_file()
     entries = json.loads(ledger.read_text(encoding="utf-8"))
@@ -175,7 +296,7 @@ def test_ensure_home_materializes_pending_reserved_id(data_dir):
     # A racing worker reserved the home id (atomic claim) but has not finished
     # creating the dir yet. ensure_founder_home must ADOPT the reserved id and
     # materialize it — never mint a second universe under a fresh id.
-    from tinyassets.api.status import ensure_founder_home
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import claim_founder_home
     from tinyassets.ids import new_universe_id
 
@@ -190,7 +311,7 @@ def test_ensure_home_materializes_pending_reserved_id(data_dir):
 
 
 def test_ensure_home_returns_existing_no_double_birth(data_dir):
-    from tinyassets.api.status import ensure_founder_home
+    from tinyassets.api.first_contact import ensure_founder_home
 
     _login("founder-1")
     a_home = ensure_founder_home(data_dir, "founder-1")
@@ -201,14 +322,14 @@ def test_ensure_home_returns_existing_no_double_birth(data_dir):
 
 
 def test_concurrent_first_contact_births_single_home(data_dir):
-    # Real thread race: N founders' first-contact get_status calls fire at once on
+    # Real thread race: N first-contact home resolutions fire at once on
     # a FRESH data dir. Must yield exactly one home with zero errors — this guards
     # both the atomic home claim AND the serialized schema/migration init (a naive
     # version intermittently raised `duplicate column name` / `database is locked`
     # from concurrent initialize_author_server; Codex 2026-07-15 finding).
     import threading
 
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
 
     ident = Identity(
@@ -220,18 +341,18 @@ def test_concurrent_first_contact_births_single_home(data_dir):
 
     n = 6
     barrier = threading.Barrier(n)
-    results: list[dict] = []
+    results: list[str] = []
     errors: list[str] = []
     lock = threading.Lock()
 
     def worker() -> None:
         # Each thread starts with a fresh contextvar context — authenticate it so
-        # current_identity() resolves to the founder inside get_status.
+        # current_identity() resolves to the founder inside creation.
         set_provider(provider)
         auth_middleware("ok")
         try:
             barrier.wait(timeout=15)          # release all threads together
-            out = json.loads(get_status())
+            out = ensure_founder_home(data_dir, "founder-race")
             with lock:
                 results.append(out)
         except Exception as exc:              # capture the race, don't swallow it
@@ -248,9 +369,7 @@ def test_concurrent_first_contact_births_single_home(data_dir):
     home = get_founder_home(data_dir, "founder-race")
     assert is_universe_serial(home)
     assert len(_serial_dirs(data_dir)) == 1    # exactly ONE universe, never two
-    # Every worker that saw a birth card saw the SAME (single) home id.
-    born = {r["first_contact"]["universe_id"] for r in results if "first_contact" in r}
-    assert born <= {home}
+    assert set(results) == {home}
     # Exactly ONE create_universe ledger row — materialization is serialized, so
     # racing workers never double-create under the shared reserved id.
     ledger = json.loads((data_dir / home / "ledger.json").read_text(encoding="utf-8"))
@@ -258,13 +377,10 @@ def test_concurrent_first_contact_births_single_home(data_dir):
 
 
 def test_first_contact_birth_failure_is_graceful(data_dir, monkeypatch):
-    # If creation fails AFTER mkdir (seed raises mid-bundle), get_status must NOT
-    # announce universe_created or leave a broken/usable home: the partial dir is
-    # rolled back (atomic create) and completeness is verified via soul.md, so the
-    # founder gets the awaiting card instead of a phantom universe (Codex
-    # 2026-07-15).
+    # If creation fails after mkdir, conversation entry must not return a broken
+    # home. The partial dir is rolled back and the retained binding self-heals.
     from tinyassets.api import universe as universe_api
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
 
     real_seed = universe_api.seed_okf_bundle
@@ -275,29 +391,53 @@ def test_first_contact_birth_failure_is_graceful(data_dir, monkeypatch):
     monkeypatch.setattr(universe_api, "seed_okf_bundle", _boom)
 
     _login("founder-1")
-    out = json.loads(get_status())
-    assert out["first_contact"]["event"] == "no_universe_yet"   # NOT universe_created
+    assert ensure_founder_home(data_dir, "founder-1") == ""
     assert _serial_dirs(data_dir) == []                         # partial dir rolled back
     # No COMPLETE home exists even if a home id was reserved (self-heals on retry).
     bound = get_founder_home(data_dir, "founder-1")
     if bound:
         assert not (data_dir / bound / "soul.md").is_file()
 
-    # Recovery: restore ONLY the seed (not the fixture's data-dir env) and the next
-    # get_status materializes the home under the retained base path.
+    # Recovery: restore only the seed; the next conversation entry materializes
+    # the home under the retained base path.
     monkeypatch.setattr(universe_api, "seed_okf_bundle", real_seed)
-    healed = json.loads(get_status())
-    assert healed["first_contact"]["event"] == "universe_created"
-    healed_uid = healed["first_contact"]["universe_id"]
+    healed_uid = ensure_founder_home(data_dir, "founder-1")
     assert (data_dir / healed_uid / "soul.md").is_file()
 
 
-def test_bound_incomplete_dir_repairs_on_get_status(data_dir):
+def test_forged_home_binding_cannot_escape_data_root(data_dir, tmp_path, monkeypatch):
+    import tinyassets.daemon_server as daemon_server
+    from tinyassets.api.first_contact import ensure_founder_home
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("do not delete", encoding="utf-8")
+    root_sentinel = data_dir / "keep.txt"
+    root_sentinel.write_text("do not delete", encoding="utf-8")
+
+    _login("founder-1")
+    monkeypatch.setattr(daemon_server, "get_founder_home", lambda *_: "")
+    monkeypatch.setattr(
+        daemon_server,
+        "claim_founder_home",
+        lambda *_: "../outside",
+    )
+
+    assert ensure_founder_home(data_dir, "founder-1") == ""
+    assert sentinel.read_text(encoding="utf-8") == "do not delete"
+
+    monkeypatch.setattr(daemon_server, "claim_founder_home", lambda *_: ".")
+    assert ensure_founder_home(data_dir, "founder-1") == ""
+    assert root_sentinel.read_text(encoding="utf-8") == "do not delete"
+
+
+def test_bound_incomplete_dir_repairs_on_conversation_entry(data_dir):
     # A founder bound to an EXISTING but incomplete home dir (no soul.md — a birth
-    # interrupted / not rolled back) must be REPAIRED on the next get_status, not
+    # interrupted / not rolled back) must be repaired on conversation entry, not
     # wedged in no_universe_yet forever because create refuses an existing dir
     # (Codex 2026-07-15).
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home, set_founder_home
     from tinyassets.ids import new_universe_id
 
@@ -307,9 +447,7 @@ def test_bound_incomplete_dir_repairs_on_get_status(data_dir):
     set_founder_home(data_dir, founder_sub="founder-1", universe_id=stuck)
 
     # First retry repairs it — same bound id, now materialized (not stuck).
-    out = json.loads(get_status())
-    assert out["first_contact"]["event"] == "universe_created"
-    assert out["first_contact"]["universe_id"] == stuck
+    assert ensure_founder_home(data_dir, "founder-1") == stuck
     assert get_founder_home(data_dir, "founder-1") == stuck
     assert (data_dir / stuck / "soul.md").is_file()
     assert len(_serial_dirs(data_dir)) == 1
@@ -333,13 +471,15 @@ def test_readonly_founder_gets_awaiting_not_birth(data_dir):
     # An authenticated founder whose token lacks create/costly scope must NOT
     # auto-birth a universe via get_status (get_status is not a scope bypass) —
     # they fall back to the compact awaiting card, and no home is bound.
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home
 
     _login("reader-1", caps=["read", "submit_request", "list"])
     out = json.loads(get_status())
     assert out["first_contact"]["event"] == "no_universe_yet"
-    assert "meet your universe" in out["next_step_for_user"]
+    assert "conversation" in out["next_step_for_user"]
+    assert ensure_founder_home(data_dir, "reader-1") == ""
     assert get_founder_home(data_dir, "reader-1") == ""
     assert _serial_dirs(data_dir) == []
 
@@ -347,13 +487,13 @@ def test_readonly_founder_gets_awaiting_not_birth(data_dir):
 def test_two_founders_get_distinct_homes(data_dir):
     # Each founder's first contact auto-births their OWN home; the homes and
     # their ACL/ownership are distinct.
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
 
     _login("founder-A")
-    home_a = json.loads(get_status())["first_contact"]["universe_id"]
+    home_a = ensure_founder_home(data_dir, "founder-A")
     _login("founder-B")
-    home_b = json.loads(get_status())["first_contact"]["universe_id"]
+    home_b = ensure_founder_home(data_dir, "founder-B")
 
     assert home_a != home_b
     assert get_founder_home(data_dir, "founder-A") == home_a
@@ -365,17 +505,18 @@ def test_founder_auto_birth_does_not_write_active_universe_marker(data_dir):
     # universe-creation spec "First MCP contact": a founder's home birth records
     # their `founder_home` binding but must NOT clobber the host-global
     # `.active_universe` marker (that would leak across founders).
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
 
     _login("founder-A")
-    json.loads(get_status())
+    ensure_founder_home(data_dir, "founder-A")
     assert not (data_dir / ".active_universe").exists()
 
 
 def test_read_graph_status_stays_pure_no_birth(data_dir):
     # read_graph target=status is the canonical read-only handle: an authenticated
     # founder with no home reading through it gets the awaiting card and NOTHING
-    # is created. Only the dedicated get_status handle provisions on first contact.
+    # is created. The dedicated get_status handle is equally pure; conversation
+    # entry owns provisioning.
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.universe_server import read_graph
 
@@ -384,12 +525,12 @@ def test_read_graph_status_stays_pure_no_birth(data_dir):
     assert out["first_contact"]["event"] == "no_universe_yet"   # pure: no birth
     assert get_founder_home(data_dir, "founder-1") == ""
     assert _serial_dirs(data_dir) == []
-    # The dedicated get_status handle DOES provision — proving the split is real.
+    # The dedicated get_status handle is also pure.
     from tinyassets.api.status import get_status
 
-    born = json.loads(get_status())
-    assert born["first_contact"]["event"] == "universe_created"
-    assert is_universe_serial(get_founder_home(data_dir, "founder-1"))
+    status = json.loads(get_status())
+    assert status["first_contact"]["event"] == "no_universe_yet"
+    assert get_founder_home(data_dir, "founder-1") == ""
 
 
 def test_no_card_for_anonymous_or_explicit_id(data_dir):
@@ -418,33 +559,31 @@ def test_explicit_create_is_ledgered(data_dir, monkeypatch):
 def test_additional_explicit_create_does_not_reassign_home(data_dir, monkeypatch):
     # After the auto-birthed home exists, an EXPLICIT create makes an additional
     # universe but must NOT reassign the founder's home binding.
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
 
     _login("founder-1")
-    home = json.loads(get_status())["first_contact"]["universe_id"]
+    home = ensure_founder_home(data_dir, "founder-1")
     extra = _create_via_action(data_dir, monkeypatch)
     assert extra != home
     assert get_founder_home(data_dir, "founder-1") == home    # unchanged
     assert len(_serial_dirs(data_dir)) == 2
 
 
-def test_stale_founder_home_rematerializes_same_id_on_get_status(data_dir):
-    # If the bound home dir is removed, the next get_status re-materializes a
+def test_stale_founder_home_rematerializes_same_id_on_conversation_entry(data_dir):
+    # If the bound home dir is removed, conversation entry re-materializes a
     # living home under the SAME bound id (stable home identity; race-safe — the
     # atomic claim keeps the existing binding rather than minting a competing id).
     import shutil
 
-    from tinyassets.api.status import get_status
+    from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
 
     _login("founder-1")
-    home1 = json.loads(get_status())["first_contact"]["universe_id"]
+    home1 = ensure_founder_home(data_dir, "founder-1")
     shutil.rmtree(data_dir / home1)  # binding is now stale (dir gone)
 
-    out = json.loads(get_status())
-    assert out["first_contact"]["event"] == "universe_created"
-    home2 = out["first_contact"]["universe_id"]
+    home2 = ensure_founder_home(data_dir, "founder-1")
     assert home2 == home1                       # same id, freshly re-materialized
     assert (data_dir / home2 / "soul.md").is_file()
     assert get_founder_home(data_dir, "founder-1") == home2
