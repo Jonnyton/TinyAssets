@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Engine assignment establishes a fail-closed provider eligibility ceiling
-A founder-authorized `set_engine` assignment SHALL replace the universe's `allowed_providers` with the exact persistent provider-destination set selected by that assignment. `allowed_providers` is an eligibility ceiling, not preference, credential ownership, request execution authority, auth health, or proof that execution can succeed. `preferred_writer` SHALL only order providers already inside the ceiling and SHALL NOT add a provider, rescue an empty ceiling, or authorize fallback. `allowed_providers=None` remains the legacy/unassigned state; an empty list records an engine choice whose executable destination is not yet complete or whose assignment is quarantined. Before each normal, policy, or judge provider attempt for an explicit universe, routing SHALL acquire the universe's assignment lock and re-read the non-secret on-disk assignment state. Missing/invalid/`pending` state, a non-`list[str]` ceiling, or a candidate outside the fresh ceiling SHALL fail or hold before provider/quota/auth-health access. Only `engine_assignment_state="ready"` with an explicit valid ceiling may pass this boundary. This persistent boundary is necessary but not sufficient request execution authority.
+A founder-authorized `set_engine` assignment SHALL replace the universe's `allowed_providers` with the exact persistent provider-destination set selected by that assignment. `allowed_providers` is an eligibility ceiling, not preference, credential ownership, request execution authority, auth health, or proof that execution can succeed. `preferred_writer` SHALL only order providers already inside the ceiling and SHALL NOT add a provider, rescue an empty ceiling, or authorize fallback. `allowed_providers=None` remains the legacy/unassigned state; an empty list records an engine choice whose executable destination is not yet complete or whose assignment is quarantined. Before each normal, policy, or judge provider attempt for an explicit universe, routing SHALL take a nonblocking shared/read try-lock on the universe assignment and re-read the non-secret on-disk state. Writer contention, missing/invalid/`pending` state, a non-`list[str]` ceiling, or a candidate outside the fresh ceiling SHALL fail or hold before provider/quota/auth-health access without blocking the async event loop. Concurrent validation readers SHALL coexist. Only `engine_assignment_state="ready"` with an explicit valid ceiling may pass this boundary. This persistent boundary is necessary but not sufficient request execution authority.
 
 #### Scenario: BYO assignment persists a singleton eligible provider
 - **WHEN** a founder successfully assigns an Anthropic key with no explicit preferred writer
@@ -36,7 +36,8 @@ A founder-authorized `set_engine` assignment SHALL replace the universe's `allow
 
 #### Scenario: Stale context cannot bypass an assignment in progress
 - **WHEN** a request captured a prior ready context and reassignment has since stored `engine_assignment_state="pending"` with `allowed_providers=[]`
-- **THEN** normal, policy, and judge routing re-read the fresh state under the assignment lock and invoke zero providers
+- **THEN** normal, policy, and judge routing fail closed immediately on the contended nonblocking assignment try-lock and invoke zero providers
+- **AND** a later retry re-reads only the complete committed or restored state
 - **AND** after commit or rollback, a stale context still cannot invoke a provider outside the fresh on-disk ceiling
 
 #### Scenario: Malformed or legacy non-secret assignment state fails closed

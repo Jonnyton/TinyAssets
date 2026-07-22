@@ -6,29 +6,49 @@ Dispositions: .claude/agent-memory/navigator/q63_section4_dispositions.md
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import threading
+import time
 
 import pytest
 
 from tinyassets import runtime_singletons as runtime
-from tinyassets.config import UniverseConfig
-from tinyassets.exceptions import AllProvidersExhaustedError
-from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.config import (
+    UniverseConfig,
+    load_universe_config,
+    write_universe_config_fields,
+)
+from tinyassets.exceptions import (
+    AllProvidersExhaustedError,
+    ProviderUnavailableError,
+)
+from tinyassets.providers.base import (
+    BaseProvider,
+    ModelConfig,
+    ProviderResponse,
+    UniverseContext,
+)
 from tinyassets.providers.quota import QuotaTracker
 from tinyassets.providers.router import ProviderRouter
 
 
 class _FakeProvider(BaseProvider):
-    def __init__(self, name: str, text: str = "content") -> None:
+    def __init__(
+        self, name: str, text: str = "content", *, unavailable: bool = False,
+    ) -> None:
         self.name = name
         self.family = "fake"
         self._text = text
+        self._unavailable = unavailable
         self.call_count = 0
 
     async def complete(
         self, prompt: str, system: str, config: ModelConfig, *, universe_dir=None,
     ) -> ProviderResponse:
         self.call_count += 1
+        if self._unavailable:
+            raise ProviderUnavailableError(f"{self.name} deliberately unavailable")
         return ProviderResponse(
             text=self._text,
             provider=self.name,
@@ -71,6 +91,40 @@ def _router_with_all_providers() -> tuple[
     providers = {n: _FakeProvider(n) for n in names}
     router = ProviderRouter(providers=providers, quota=QuotaTracker())
     return router, providers
+
+
+class _RecordingQuota(QuotaTracker):
+    """Quota probe whose calls prove the assignment guard ran too late."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.available_calls: list[str] = []
+
+    def available(self, provider: str) -> bool:
+        self.available_calls.append(provider)
+        return True
+
+
+def _explicit_context(
+    tmp_path,
+    *,
+    state: str | None = "ready",
+    allowed_providers=None,
+) -> UniverseContext:
+    universe = tmp_path / "explicit-universe"
+    universe.mkdir(exist_ok=True)
+    fields = {"allowed_providers": allowed_providers}
+    if state is not None:
+        fields["engine_assignment_state"] = state
+    write_universe_config_fields(universe, **fields)
+    return UniverseContext(
+        universe_dir=universe,
+        config=load_universe_config(universe),
+    )
+
+
+def _all_uncalled(providers: dict[str, _FakeProvider]) -> bool:
+    return all(provider.call_count == 0 for provider in providers.values())
 
 
 # ---------------------------------------------------------------------------
@@ -246,3 +300,338 @@ def test_pin_writer_disjoint_from_allowlist_hard_fails(
     # silently route to a different provider.
     for p in providers.values():
         assert p.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. Engine assignment is re-read from disk immediately before every attempt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("route", ["normal", "policy", "judge"])
+def test_pending_assignment_blocks_stale_context_across_every_route(
+    tmp_path,
+    isolated_universe_config,
+    route,
+):
+    """A context captured before reassignment cannot authorize from memory."""
+    universe = tmp_path / f"pending-{route}"
+    universe.mkdir()
+    write_universe_config_fields(
+        universe,
+        engine_assignment_state="ready",
+        preferred_writer="claude-code",
+        allowed_providers=[
+            "claude-code", "codex", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        ],
+    )
+    stale = UniverseContext(
+        universe_dir=universe,
+        config=load_universe_config(universe),
+    )
+    # Reassignment has started after the request captured its context.
+    write_universe_config_fields(
+        universe,
+        engine_assignment_state="pending",
+        allowed_providers=[],
+    )
+
+    quota = _RecordingQuota()
+    auth_health_calls: list[str] = []
+
+    def auth_health(provider: str) -> dict[str, str]:
+        auth_health_calls.append(provider)
+        return {"status": "ok"}
+
+    router, providers = _router_with_all_providers()
+    router._quota = quota
+    router._auth_health = auth_health
+
+    if route == "normal":
+        with pytest.raises(AllProvidersExhaustedError):
+            _run(router.call("writer", "p", "s", universe_context=stale))
+    elif route == "policy":
+        policy = {
+            "preferred": {"provider": "claude-code"},
+            "fallback_chain": [{"provider": "codex"}],
+        }
+        with pytest.raises(AllProvidersExhaustedError):
+            _run(
+                router.call_with_policy(
+                    "writer", "p", "s", policy, universe_context=stale,
+                )
+            )
+    else:
+        assert _run(
+            router.call_judge_ensemble("p", "s", universe_context=stale)
+        ) == []
+
+    assert _all_uncalled(providers)
+    assert quota.available_calls == []
+    assert auth_health_calls == []
+
+
+@pytest.mark.parametrize(
+    ("state", "allowed_providers"),
+    [
+        (None, ["claude-code"]),
+        ("invalid", ["claude-code"]),
+        ("ready", None),
+        ("ready", "claude-code"),
+        ("ready", ["claude-code", 7]),
+    ],
+    ids=[
+        "missing-state",
+        "invalid-state",
+        "none-ceiling",
+        "scalar-ceiling",
+        "mixed-entry-ceiling",
+    ],
+)
+def test_explicit_universe_rejects_invalid_fresh_assignment_state_before_gates(
+    tmp_path,
+    isolated_universe_config,
+    state,
+    allowed_providers,
+):
+    ctx = _explicit_context(
+        tmp_path,
+        state=state,
+        allowed_providers=allowed_providers,
+    )
+    quota = _RecordingQuota()
+    auth_health_calls: list[str] = []
+
+    def auth_health(provider: str) -> dict[str, str]:
+        auth_health_calls.append(provider)
+        return {"status": "ok"}
+
+    router, providers = _router_with_all_providers()
+    router._quota = quota
+    router._auth_health = auth_health
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call("writer", "p", "s", universe_context=ctx))
+
+    assert _all_uncalled(providers)
+    assert quota.available_calls == []
+    assert auth_health_calls == []
+
+
+def test_set_engine_assigned_provider_failure_never_uses_outside_ceiling(
+    tmp_path,
+    monkeypatch,
+    isolated_universe_config,
+):
+    """The real assignment write and router compose into a hard ceiling."""
+    from tinyassets.api import universe as universe_api
+
+    universe = tmp_path / "assigned"
+    universe.mkdir()
+    monkeypatch.setattr(
+        universe_api, "_request_universe", lambda universe_id="": "assigned",
+    )
+    monkeypatch.setattr(universe_api, "_universe_dir", lambda uid: universe)
+
+    result = json.loads(
+        universe_api._action_set_engine(
+            universe_id="assigned",
+            inputs_json=json.dumps(
+                {"service": "anthropic", "api_key": "sk-test-not-real"}
+            ),
+        )
+    )
+    assert result["status"] == "engine_set"
+
+    router, providers = _router_with_all_providers()
+    providers["claude-code"]._unavailable = True
+    ctx = UniverseContext(
+        universe_dir=universe,
+        config=load_universe_config(universe),
+    )
+
+    with pytest.raises(AllProvidersExhaustedError):
+        _run(router.call("writer", "p", "s", universe_context=ctx))
+
+    assert providers["claude-code"].call_count == 1
+    assert all(
+        provider.call_count == 0
+        for name, provider in providers.items()
+        if name != "claude-code"
+    )
+
+
+def test_ready_byo_assignment_ignores_host_subscription_health(
+    tmp_path,
+    monkeypatch,
+    isolated_universe_config,
+):
+    """Host subscription health cannot veto a universe-owned BYO key."""
+    from tinyassets.api import universe as universe_api
+
+    universe = tmp_path / "byo-health"
+    universe.mkdir()
+    monkeypatch.setattr(
+        universe_api, "_request_universe", lambda universe_id="": "byo-health",
+    )
+    monkeypatch.setattr(universe_api, "_universe_dir", lambda uid: universe)
+    result = json.loads(
+        universe_api._action_set_engine(
+            universe_id="byo-health",
+            inputs_json=json.dumps(
+                {"service": "openai", "api_key": "sk-test-not-real"}
+            ),
+        )
+    )
+    assert result["status"] == "engine_set"
+
+    health_calls: list[str] = []
+
+    def host_auth_health(provider: str) -> dict[str, str]:
+        health_calls.append(provider)
+        return {"status": "not_logged_in"}
+
+    router, providers = _router_with_all_providers()
+    router._auth_health = host_auth_health
+    context = UniverseContext(
+        universe_dir=universe,
+        config=load_universe_config(universe),
+    )
+
+    response = _run(
+        router.call("writer", "p", "s", universe_context=context)
+    )
+
+    assert response.provider == "codex"
+    assert providers["codex"].call_count == 1
+    assert health_calls == []
+
+
+@pytest.mark.parametrize("route", ["normal", "policy", "judge"])
+def test_assignment_lock_contention_fails_immediately_then_retry_sees_commit(
+    tmp_path,
+    monkeypatch,
+    isolated_universe_config,
+    route,
+):
+    """Every explicit route shares the writer lock without waiting on it."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.config import engine_assignment_lock
+    from tinyassets.credential_vault import write_credential_vault
+
+    universe = tmp_path / f"locked-{route}"
+    universe.mkdir()
+    monkeypatch.setattr(
+        universe_api, "_request_universe", lambda universe_id="": universe.name,
+    )
+    monkeypatch.setattr(universe_api, "_universe_dir", lambda uid: universe)
+    result = json.loads(
+        universe_api._action_set_engine(
+            universe_id=universe.name,
+            inputs_json=json.dumps(
+                {"service": "openai", "api_key": "sk-prior-not-real"}
+            ),
+        )
+    )
+    assert result["status"] == "engine_set"
+    stale = UniverseContext(
+        universe_dir=universe,
+        config=load_universe_config(universe),
+    )
+
+    lock_held = threading.Event()
+    finish_assignment = threading.Event()
+    assignment_finished = threading.Event()
+
+    def complete_assignment() -> None:
+        with engine_assignment_lock(universe):
+            # Signal while the old assignment is still ready. A router that
+            # merely re-reads without sharing this lock would invoke Codex.
+            lock_held.set()
+            if not finish_assignment.wait(timeout=5):
+                return
+            write_universe_config_fields(
+                universe,
+                engine_assignment_state="pending",
+                allowed_providers=[],
+            )
+            write_credential_vault(
+                universe,
+                [{
+                    "credential_type": "llm_api_key",
+                    "service": "openai",
+                    "api_key": "sk-new-not-real",
+                }],
+            )
+            write_universe_config_fields(
+                universe,
+                engine_assignment_state="ready",
+                preferred_writer="codex",
+                allowed_providers=["codex"],
+            )
+        assignment_finished.set()
+
+    assignment = threading.Thread(target=complete_assignment, daemon=True)
+    assignment.start()
+    assert lock_held.wait(timeout=5)
+
+    quota = _RecordingQuota()
+    health_calls: list[str] = []
+
+    def host_auth_health(provider: str) -> dict[str, str]:
+        health_calls.append(provider)
+        return {"status": "not_logged_in"}
+
+    router, providers = _router_with_all_providers()
+    router._quota = quota
+    router._auth_health = host_auth_health
+    policy = {"preferred": {"provider": "codex"}}
+
+    started = time.monotonic()
+    if route == "normal":
+        with pytest.raises(AllProvidersExhaustedError):
+            _run(router.call("writer", "p", "s", universe_context=stale))
+    elif route == "policy":
+        with pytest.raises(AllProvidersExhaustedError):
+            _run(
+                router.call_with_policy(
+                    "writer", "p", "s", policy, universe_context=stale,
+                )
+            )
+    else:
+        assert _run(
+            router.call_judge_ensemble("p", "s", universe_context=stale)
+        ) == []
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert _all_uncalled(providers)
+    assert quota.available_calls == []
+    assert health_calls == []
+
+    finish_assignment.set()
+    assert assignment_finished.wait(timeout=5)
+    assignment.join(timeout=5)
+    assert not assignment.is_alive()
+
+    if route == "normal":
+        response = _run(
+            router.call("writer", "p", "s", universe_context=stale)
+        )
+        assert response.provider == "codex"
+    elif route == "policy":
+        text, provider, _meta = _run(
+            router.call_with_policy(
+                "writer", "p", "s", policy, universe_context=stale,
+            )
+        )
+        assert text == "content"
+        assert provider == "codex"
+    else:
+        responses = _run(
+            router.call_judge_ensemble("p", "s", universe_context=stale)
+        )
+        assert [response.provider for response in responses] == ["codex"]
+
+    assert providers["codex"].call_count == 1
+    assert health_calls == []

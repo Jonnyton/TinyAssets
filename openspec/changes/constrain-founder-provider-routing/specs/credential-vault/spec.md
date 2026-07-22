@@ -2,7 +2,7 @@
 
 ### Requirement: Per-Universe Provider Auth Env Overlay Without Cross-Universe Leakage
 
-The system SHALL overlay per-universe provider auth onto a CLI-subprocess writer's environment (`apply_provider_auth_env` / `provider_auth_env_overrides`) so a universe runs on its founder's assigned engine rather than the host's. For the `codex` writer it MAY inject `CODEX_HOME` and `OPENAI_API_KEY`; for the `claude-code` writer it MAY inject `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and `ANTHROPIC_API_KEY`. An explicit-universe environment SHALL remove every process-global API-key and subscription-auth variable regardless of host API-key opt-in before applying only that universe's overlay. CLI auth materialization SHALL reacquire the same assignment lock and require fresh `engine_assignment_state="ready"` plus candidate membership before reading the vault and returning an immutable child environment; the lock SHALL be released before CLI/network execution. Any vault load, import, or credential-materialization error SHALL fail before subprocess launch and SHALL NOT return inherited auth. A bring-your-own `llm_api_key` deposit through `set_engine` SHALL be accepted only for a service with an executable per-universe provider route: `anthropic` to `claude-code` or `openai` to `codex`. `set_engine` SHALL initialize `preferred_writer` and the singleton ceiling to that provider; a contradictory explicit writer or unroutable service/alias SHALL be rejected before mutation. All `set_engine` sources SHALL serialize on the same per-universe cross-process `.engine-assignment.lock` from snapshot through commit or rollback. Before secret mutation, config SHALL store `engine_assignment_state="pending"` with `allowed_providers=[]`; only a complete commit stores `engine_assignment_state="ready"`. Successful assignment SHALL replace prior engine API-key records while preserving unrelated vault records. Ordinary failure SHALL restore the exact prior vault and config; rollback failure SHALL leave the pending empty-ceiling quarantine in place and report both failures.
+The system SHALL overlay per-universe provider auth onto a CLI-subprocess writer's environment (`apply_provider_auth_env` / `provider_auth_env_overrides`) so a universe runs on its founder's assigned engine rather than the host's. For the `codex` writer it MAY inject `CODEX_HOME` and `OPENAI_API_KEY`; for the `claude-code` writer it MAY inject `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and `ANTHROPIC_API_KEY`. An explicit-universe environment SHALL remove every process-global API-key and subscription-auth variable regardless of host API-key opt-in before applying only that universe's overlay, and SHALL always pin the selected CLI's auth home to a validated universe-owned directory so the CLI cannot fall back to the process user's default login. A ready `byo_api_key` assignment SHALL fail before spawn unless its matching universe API key materializes. CLI auth materialization SHALL take the same nonblocking shared/read assignment try-lock and require fresh `engine_assignment_state="ready"` plus candidate membership before reading the vault and returning an immutable child environment; writer contention SHALL fail closed immediately, concurrent readers SHALL coexist, and the lock SHALL be released before CLI/network execution. Any vault load, import, or credential-materialization error SHALL fail before subprocess launch and SHALL NOT return inherited auth. A bring-your-own `llm_api_key` deposit through `set_engine` SHALL be accepted only for a service with an executable per-universe provider route: `anthropic` to `claude-code` or `openai` to `codex`. `set_engine` SHALL initialize `preferred_writer` and the singleton ceiling to that provider; a contradictory explicit writer or unroutable service/alias SHALL be rejected before mutation. All `set_engine` sources SHALL serialize exclusively on the same per-universe cross-process `.engine-assignment.lock` from snapshot through commit or rollback. Before secret mutation, config SHALL store `engine_assignment_state="pending"` with `allowed_providers=[]`; only a complete commit stores `engine_assignment_state="ready"`. Successful assignment SHALL replace prior engine API-key records while preserving unrelated vault records. Vault writes SHALL use a unique private temp file in the universe directory, flush and `fsync` before atomic replace, and remove the temp on every failure. Ordinary assignment failure SHALL restore the exact prior vault and config; rollback failure SHALL leave the pending empty-ceiling quarantine in place and report both failures.
 
 #### Scenario: Env overlay resolves the universe from the environment binding
 
@@ -40,6 +40,12 @@ The system SHALL overlay per-universe provider auth onto a CLI-subprocess writer
 - **THEN** its subprocess environment contains none of the ambient provider auth values
 - **AND** the provider fails before consuming host or platform quota
 
+#### Scenario: Missing universe auth cannot fall back to user-default CLI homes
+
+- **WHEN** a ready explicit BYO Codex or Claude assignment has no matching universe API key while the process user's default CLI home is logged in
+- **THEN** materialization pins the CLI auth home to a private universe-scoped directory and raises before subprocess launch
+- **AND** neither the default user login nor any host subscription quota is reachable
+
 #### Scenario: Vault failure never returns inherited auth
 
 - **WHEN** vault load, import, or credential materialization raises an I/O or unexpected error for an explicit universe
@@ -49,7 +55,8 @@ The system SHALL overlay per-universe provider auth onto a CLI-subprocess writer
 #### Scenario: Auth materialization cannot cross a reassignment quarantine
 
 - **WHEN** routing admits a CLI provider, then reassignment stores `pending` and mutates the vault before child auth is materialized
-- **THEN** auth materialization reacquires the assignment lock, revalidates fresh state and provider membership, and returns no partial/new environment while pending
+- **THEN** auth materialization fails closed immediately on the contended nonblocking try-lock and returns no partial/new environment
+- **AND** a later retry revalidates fresh state and provider membership before returning an environment
 - **AND** no subprocess launches until a complete ready assignment or exact rollback is observed
 
 #### Scenario: Config failure restores the previous vault and ceiling
@@ -71,3 +78,9 @@ The system SHALL overlay per-universe provider auth onto a CLI-subprocess writer
 - **THEN** the cross-process assignment lock serializes their snapshot-to-rollback/commit sections
 - **AND** final vault key, preferred provider, singleton ceiling, and `engine_assignment_state="ready"` belong to one complete successful transaction
 - **AND** the failed transaction cannot restore over or mix with the later winner
+
+#### Scenario: Failed vault replacement leaves no new secret temp
+
+- **WHEN** atomic vault replacement fails after the new secret is written to its unique private temp file
+- **THEN** the temp is removed before the error returns and the prior vault bytes remain unchanged
+- **AND** no fixed-name temp, symlink target, or new secret material remains reachable

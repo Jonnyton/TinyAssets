@@ -12,6 +12,7 @@ import concurrent.futures
 import logging
 import os
 from collections.abc import Callable
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 from tinyassets.exceptions import (
@@ -203,6 +204,37 @@ class ProviderRouter:
         return [preferred] + [p for p in chain if p != preferred]
 
     @staticmethod
+    def _assignment_config_context(
+        universe_context: UniverseContext | None,
+        provider_name: str | None = None,
+    ):
+        """Yield fresh assignment config for explicit-universe routing.
+
+        Bare/global callers retain the legacy in-memory config path. Explicit
+        contexts always cross the credential-vault assignment lock and reload
+        validated non-secret state from disk; their captured config is only a
+        model-parameter hint, never an authorization source.
+        """
+        if universe_context is None:
+            return nullcontext(_resolve_universe_config(None))
+        if universe_context.universe_dir is None:
+            raise ProviderUnavailableError(
+                "Explicit UniverseContext requires a universe directory."
+            )
+        from tinyassets.credential_vault import validated_engine_assignment
+
+        return validated_engine_assignment(
+            universe_context.universe_dir,
+            provider_name=provider_name,
+        )
+
+    @staticmethod
+    def _assignment_exhausted(exc: ProviderUnavailableError) -> AllProvidersExhaustedError:
+        return AllProvidersExhaustedError(
+            f"Explicit universe engine assignment is unavailable: {exc}"
+        )
+
+    @staticmethod
     def _current_allowlist(
         resolved: "UniverseConfig | None" = None,
     ) -> list[str] | None:
@@ -293,59 +325,53 @@ class ProviderRouter:
         preference + allowlist + vault-backed auth from an EXPLICIT argument
         instead of the process globals — the multi-universe seam.
         """
-        resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
-        cfg = config or _default_config(resolved_config)
-        chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
-
-        # Hard pin: TINYASSETS_PIN_WRITER narrows the writer chain to a
-        # single provider for this call. No fallback — if the pinned
-        # provider fails, the call fails loudly (hard rule #8).
         pin_writer = os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
         is_pinned_writer = role == "writer" and bool(pin_writer)
-        if is_pinned_writer:
-            chain = [pin_writer]
-        else:
-            # Apply per-universe provider preference from the resolved config.
-            try:
-                ucfg = resolved_config
-                if ucfg is not None:
-                    if role == "writer" and ucfg.preferred_writer:
-                        chain = self._apply_preference(chain, ucfg.preferred_writer)
-                    elif role == "judge" and ucfg.preferred_judge:
-                        chain = self._apply_preference(chain, ucfg.preferred_judge)
-            except Exception:
-                pass
+        try:
+            with self._assignment_config_context(universe_context) as resolved_config:
+                cfg = config or _default_config(resolved_config)
+                chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
 
-        # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
-        # narrowed chain to [pin_writer] above; the filter then enforces
-        # pin × allowlist composition. None = no-op (backwards-compat).
-        allowlist = self._current_allowlist(resolved_config)
-        if allowlist is not None:
-            filtered = self._apply_allowlist(chain, allowlist)
-            if not filtered:
+                # Hard pin narrows the writer chain to one provider. Otherwise
+                # preference only reorders providers inside the fresh ceiling.
                 if is_pinned_writer:
-                    logger.warning(
-                        "Q6.3 allowlist empties chain: pinned writer %r is not "
-                        "in allowed_providers=%s; hard-failing.",
-                        pin_writer, allowlist,
-                    )
-                    raise AllProvidersExhaustedError(
-                        f"Pinned writer {pin_writer!r} is not in the universe's "
-                        f"allowed_providers={allowlist!r}. Either add the "
-                        f"provider to the allowlist or clear TINYASSETS_PIN_WRITER."
-                    )
-                logger.warning(
-                    "Q6.3 allowlist empties chain for role=%s: chain=%s "
-                    "filtered against allowed_providers=%s; hard-failing.",
-                    role, chain, allowlist,
-                )
-                raise AllProvidersExhaustedError(
-                    f"All providers for role={role!r} are blocked by the "
-                    f"universe's allowed_providers={allowlist!r}. Daemon will "
-                    f"not silently fall back to a disallowed provider."
-                )
-            chain = filtered
+                    chain = [pin_writer]
+                else:
+                    try:
+                        if resolved_config is not None:
+                            if role == "writer" and resolved_config.preferred_writer:
+                                chain = self._apply_preference(
+                                    chain, resolved_config.preferred_writer,
+                                )
+                            elif role == "judge" and resolved_config.preferred_judge:
+                                chain = self._apply_preference(
+                                    chain, resolved_config.preferred_judge,
+                                )
+                    except Exception:
+                        pass
+
+                allowlist = self._current_allowlist(resolved_config)
+                if allowlist is not None:
+                    filtered = self._apply_allowlist(chain, allowlist)
+                    if not filtered:
+                        if is_pinned_writer:
+                            raise AllProvidersExhaustedError(
+                                f"Pinned writer {pin_writer!r} is not in the "
+                                f"universe's allowed_providers={allowlist!r}. "
+                                "Either add the provider to the allowlist or "
+                                "clear TINYASSETS_PIN_WRITER."
+                            )
+                        raise AllProvidersExhaustedError(
+                            f"All providers for role={role!r} are blocked by the "
+                            f"universe's allowed_providers={allowlist!r}. Daemon "
+                            "will not silently fall back to a disallowed provider."
+                        )
+                    chain = filtered
+        except ProviderUnavailableError as exc:
+            if role == "judge":
+                return DEGRADED_JUDGE_RESPONSE
+            raise self._assignment_exhausted(exc) from exc
 
         auth_filtered = self._apply_api_key_provider_policy(chain)
         if not auth_filtered:
@@ -372,7 +398,11 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: a pinned writer with dead subscription login
         # must fail loud (hard rule #8), not silently route to a different
         # provider. (chain == [pin_writer] here; an empty filter means dead.)
-        if is_pinned_writer and not self._apply_auth_health_policy(chain):
+        if (
+            universe_context is None
+            and is_pinned_writer
+            and not self._apply_auth_health_policy(chain)
+        ):
             raise AllProvidersExhaustedError(
                 f"Pinned writer provider {pin_writer!r} has no subscription "
                 "login (auth probe: not_logged_in). Re-seed its credentials, "
@@ -399,27 +429,42 @@ class ProviderRouter:
             # 2026-06-25 loop-wedge: drop registered providers whose
             # subscription login is definitively dead so fallback routes
             # straight to a healthy provider. No-op without an injected probe.
-            auth_alive = self._apply_auth_health_policy(chain)
-            dead_auth = [p for p in chain if p not in auth_alive]
-            if dead_auth:
-                logger.warning(
-                    "Skipping providers with dead subscription login for "
-                    "role=%s: %s",
-                    role,
-                    dead_auth,
-                )
-                attempts.extend(
-                    ProviderAttemptDiagnostic(
-                        provider=p,
-                        status="skipped",
-                        skip_class="auth_invalid",
-                        detail="no subscription login (auth probe: not_logged_in)",
+            if universe_context is None:
+                auth_alive = self._apply_auth_health_policy(chain)
+                dead_auth = [p for p in chain if p not in auth_alive]
+                if dead_auth:
+                    logger.warning(
+                        "Skipping providers with dead subscription login for "
+                        "role=%s: %s",
+                        role,
+                        dead_auth,
                     )
-                    for p in dead_auth
-                )
-                chain = auth_alive
+                    attempts.extend(
+                        ProviderAttemptDiagnostic(
+                            provider=p,
+                            status="skipped",
+                            skip_class="auth_invalid",
+                            detail=(
+                                "no subscription login "
+                                "(auth probe: not_logged_in)"
+                            ),
+                        )
+                        for p in dead_auth
+                    )
+                    chain = auth_alive
 
         for provider_name in chain:
+            if universe_context is not None:
+                try:
+                    with self._assignment_config_context(
+                        universe_context, provider_name,
+                    ):
+                        pass
+                except ProviderUnavailableError as exc:
+                    if role == "judge":
+                        return DEGRADED_JUDGE_RESPONSE
+                    raise self._assignment_exhausted(exc) from exc
+
             provider = self._providers.get(provider_name)
             if provider is None:
                 logger.info("Provider %s not in registry, skipping", provider_name)
@@ -447,6 +492,18 @@ class ProviderRouter:
                 )
                 self._quota.record_success(provider_name)
             except ProviderUnavailableError as exc:
+                if universe_context is not None:
+                    try:
+                        with self._assignment_config_context(
+                            universe_context, provider_name,
+                        ):
+                            pass
+                    except ProviderUnavailableError as assignment_exc:
+                        if role == "judge":
+                            return DEGRADED_JUDGE_RESPONSE
+                        raise self._assignment_exhausted(
+                            assignment_exc
+                        ) from assignment_exc
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
                     "Provider %s unavailable, cooldown %ds",
@@ -615,9 +672,13 @@ class ProviderRouter:
         method extracts ``.text`` and returns (text, provider_name, meta). For
         the policy path we track the name explicitly.
         """
-        resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
-        cfg = config or _default_config(resolved_config)
+        try:
+            with self._assignment_config_context(universe_context) as resolved_config:
+                cfg = config or _default_config(resolved_config)
+                allowlist = self._current_allowlist(resolved_config)
+        except ProviderUnavailableError as exc:
+            raise self._assignment_exhausted(exc) from exc
 
         if not policy:
             resp = await self.call(
@@ -660,7 +721,6 @@ class ProviderRouter:
         # rather than attempt and leak. If everything filters out the
         # method falls through to the role-based ``call()`` below, which
         # applies the same allowlist and hard-fails.
-        allowlist = self._current_allowlist(resolved_config)
         if allowlist is not None:
             filtered_order = self._apply_allowlist(attempt_order, allowlist)
             if attempt_order and not filtered_order:
@@ -683,18 +743,28 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: drop dead-login subscription providers; if
         # that empties the policy order the method falls through to the role
         # chain below, which re-applies the gate and hard-fails as needed.
-        auth_alive_order = self._apply_auth_health_policy(attempt_order)
-        if attempt_order and not auth_alive_order:
-            logger.warning(
-                "All policy providers have dead subscription login (%s) for "
-                "role=%s; falling through to role chain.",
-                attempt_order, role,
-            )
-        attempt_order = auth_alive_order
+        if universe_context is None:
+            auth_alive_order = self._apply_auth_health_policy(attempt_order)
+            if attempt_order and not auth_alive_order:
+                logger.warning(
+                    "All policy providers have dead subscription login (%s) for "
+                    "role=%s; falling through to role chain.",
+                    attempt_order, role,
+                )
+            attempt_order = auth_alive_order
 
         # Try policy-derived providers
         tried = 0
         for provider_name in attempt_order:
+            if universe_context is not None:
+                try:
+                    with self._assignment_config_context(
+                        universe_context, provider_name,
+                    ):
+                        pass
+                except ProviderUnavailableError as exc:
+                    raise self._assignment_exhausted(exc) from exc
+
             provider = self._providers.get(provider_name)
             if provider is None:
                 logger.info(
@@ -716,6 +786,16 @@ class ProviderRouter:
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
             except ProviderUnavailableError:
+                if universe_context is not None:
+                    try:
+                        with self._assignment_config_context(
+                            universe_context, provider_name,
+                        ):
+                            pass
+                    except ProviderUnavailableError as assignment_exc:
+                        raise self._assignment_exhausted(
+                            assignment_exc
+                        ) from assignment_exc
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
                     "Policy provider %s unavailable, cooldown %ds",
@@ -865,14 +945,17 @@ class ProviderRouter:
         calls the same provider twice.  Returns 1-N responses
         depending on how many providers are healthy.
         """
-        resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
-        cfg = config or _default_config(resolved_config)
+        try:
+            with self._assignment_config_context(universe_context) as resolved_config:
+                cfg = config or _default_config(resolved_config)
+                allowlist = self._current_allowlist(resolved_config)
+        except ProviderUnavailableError:
+            return []
 
         # Q6.3 — filter judge ensemble by per-universe allowlist (privacy
         # primitive). Empty filter => empty list, matching the existing
         # "no judges available" contract at L484-486.
-        allowlist = self._current_allowlist(resolved_config)
         ensemble = self._apply_allowlist(list(_JUDGE_PROVIDERS), allowlist)
         if allowlist is not None and not ensemble:
             logger.warning(
@@ -893,18 +976,26 @@ class ProviderRouter:
         # 2026-06-25 loop-wedge: drop judge providers with dead subscription
         # login (codex is the only subscription judge; the rest probe unknown
         # and are kept). Empty ensemble returns [] per the contract below.
-        auth_alive_ensemble = self._apply_auth_health_policy(ensemble)
-        if ensemble and not auth_alive_ensemble:
-            logger.warning(
-                "All judge providers have dead subscription login (%s); no "
-                "judges available until credentials are re-seeded.",
-                ensemble,
-            )
-        ensemble = auth_alive_ensemble
+        if universe_context is None:
+            auth_alive_ensemble = self._apply_auth_health_policy(ensemble)
+            if ensemble and not auth_alive_ensemble:
+                logger.warning(
+                    "All judge providers have dead subscription login (%s); no "
+                    "judges available until credentials are re-seeded.",
+                    ensemble,
+                )
+            ensemble = auth_alive_ensemble
 
         # Find all available judge providers
         available: list[tuple[str, BaseProvider]] = []
         for name in ensemble:
+            if universe_context is not None:
+                try:
+                    with self._assignment_config_context(universe_context, name):
+                        pass
+                except ProviderUnavailableError:
+                    return []
+
             provider = self._providers.get(name)
             if provider is None:
                 continue
@@ -922,12 +1013,23 @@ class ProviderRouter:
             name: str, provider: BaseProvider,
         ) -> ProviderResponse | None:
             try:
+                if universe_context is not None:
+                    with self._assignment_config_context(universe_context, name):
+                        pass
                 resp = await provider.complete(
                     prompt, system, cfg, universe_dir=universe_dir,
                 )
                 self._quota.record_success(name)
                 return resp
             except ProviderUnavailableError:
+                if universe_context is not None:
+                    try:
+                        with self._assignment_config_context(
+                            universe_context, name,
+                        ):
+                            pass
+                    except ProviderUnavailableError:
+                        return None
                 self._quota.cooldown(name, COOLDOWN_UNAVAILABLE)
             except ProviderTimeoutError:
                 self._quota.cooldown(name, COOLDOWN_TIMEOUT)

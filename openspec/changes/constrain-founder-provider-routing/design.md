@@ -85,13 +85,15 @@ built. A key deposit, selected provider, or non-empty allowlist never replaces
 that future request decision.
 
 For the boundary this lane does own, every normal, policy, and judge provider
-attempt for an explicit universe takes the assignment lock long enough to
-re-read the non-secret on-disk config immediately before the attempt. Only a
+attempt for an explicit universe takes a nonblocking shared/read try-lock long enough to
+re-read the non-secret on-disk config immediately before the attempt. Lock
+contention fails closed immediately rather than blocking the async event loop. Only a
 fresh `engine_assignment_state="ready"`, a valid `list[str]` ceiling, and a
 candidate inside that ceiling may continue. This makes lock acquisition the
 attempt's provider-eligibility linearization point: a non-CLI call admitted
 before a later assignment may finish, while a call reaching the check after
-`pending` is written waits and observes the committed or restored state. CLI
+assignment locking or `pending` fails closed; a later retry observes the
+committed or restored state. CLI
 credential materialization performs its own second locked revalidation. No
 secret-vault query participates in the routing decision itself.
 
@@ -103,20 +105,35 @@ removing every API-key and subscription-auth variable regardless of host
 opt-in, then overlays only the selected universe's vault values. Any vault
 load/import/materialization exception propagates before subprocess launch.
 
-CLI auth materialization reacquires the same assignment lock and revalidates
+Every explicit Codex/Claude environment also pins `CODEX_HOME` or
+`CLAUDE_CONFIG_DIR` to a private directory inside that universe when the vault
+does not supply a validated universe-owned directory. Merely deleting the env
+variable was rejected because both CLIs fall back to the process user's default
+logged-in home. A ready `byo_api_key` assignment must materialize its matching
+`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; absence or malformation fails before
+spawn rather than trying the isolated home or a host default.
+
+CLI auth materialization takes the same nonblocking shared/read try-lock and revalidates
 fresh `ready` state plus candidate membership before reading the vault and
 returning the immutable child environment. Thus a router attempt admitted just
-before reassignment cannot resume during `pending` and consume a partial/new
+before reassignment cannot resume during assignment contention or `pending`
+and consume a partial/new
 credential. The lock is released after the environment snapshot is complete;
 it is not held through the CLI/network execution.
 
 The prior compare-before/after heuristic was rejected: one vault-supplied field
 could leave unrelated host fields intact, and an exception skipped cleanup.
 
+Vault replacement uses a unique `mkstemp` file in the universe directory,
+applies private permissions before secret bytes are written, flushes and
+`fsync`s, atomically replaces the vault, and unlinks the temp in `finally`.
+Fixed temp names and failed-replace leftovers were rejected because they expose
+new secret material and admit collision/symlink races.
+
 ### Quarantine before mutation and roll back without exposing partial state
 
 BYO input is fully validated first. Every `set_engine` source then takes the
-same per-universe cross-process `.engine-assignment.lock`; the lock spans
+same per-universe cross-process `.engine-assignment.lock` exclusively; the lock spans
 snapshot through complete commit or rollback, so a stale transaction cannot
 mix with or undo a newer assignment. The prior config and vault bytes/existence
 are snapshotted. Before secret mutation, an atomic config write records
@@ -125,6 +142,10 @@ entry point's fresh locked pre-invocation check holds on that state. The vault w
 the prior engine `llm_api_key` set while preserving unrelated social, VCS, and
 subscription records. A final atomic config write commits the matching
 preference, singleton ceiling, and `engine_assignment_state="ready"`.
+
+The lock is reader/writer shaped: concurrent routing and auth-materialization
+readers share it, so ordinary same-universe concurrency does not self-reject;
+the assignment writer remains exclusive against every reader and writer.
 
 On failure, restore the prior vault first and then the prior config. If exact
 rollback succeeds, the previous assignment is restored. If vault restoration
@@ -174,11 +195,31 @@ or platform compute participates.
 6. Sync both modified capabilities and archive the change when implementation
    and independent security review land.
 
+The production fence is offline and precedes merge/auto-deploy. Prepare a
+strict raw-YAML/vault/ledger inventory plus reviewed, redacted decision manifest;
+never classify through fail-soft `load_universe_config()`. A singleton requires
+an explicit BYO source, usable exact canonical key service(s) mapping to one
+provider, matching preference, and agreeing ledger evidence. Every other safe-
+to-rewrite assignment becomes `ready` plus `[]`; unreadable/unpreservable state
+is fatal and remains unmodified. Apply re-reads under the exclusive assignment
+lock, preserves unrelated YAML and vault bytes, writes atomically, and must be
+idempotent with zero unclassified/unmigrated post-scan results.
+
+Before applying, quiesce/mask the daemon, workers, watchdogs, and auto-heal
+paths, bring the compose stack down, and prove no process mounts production
+`/data`. Run migration from the new immutable image, then start only the new
+daemon for a loopback canary before tunnel/workers. After exposure, never
+automatically roll back to a pre-fence writer; quiesce and roll forward. The
+current automatic build-to-deploy path makes this a hard merge gate, not a
+post-deploy watch item.
+
 Rollback is a normal code revert. It restores fallback for future assignments
 and is therefore security-regressive; already-written singleton allowlists stay
 fail-closed unless explicitly changed by the founder/operator.
 
 ## Open Questions
 
-- Is production inventory access available to complete the required historical
-  migration? Absence of access blocks rollout; it is not evidence of absence.
+- Production inventory access is not available in this lane. The implementation
+  may be pushed as a draft, but merge/rollout remains blocked until the offline
+  fence, reviewed manifest, migration, zero-residual scan, and loopback canary
+  complete against the live named `/data` volume.

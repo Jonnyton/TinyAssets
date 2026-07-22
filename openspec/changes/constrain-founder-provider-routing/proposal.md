@@ -21,8 +21,9 @@ even though the router already has a strict allowlist primitive.
   failure leaves a durable empty-ceiling quarantine instead of unrestricted
   routing. Successful assignment preserves unrelated vault records.
 - For any explicit universe, strip ambient API-key and subscription auth before
-  overlaying only vault-provided auth; vault/import/materialization errors fail
-  closed rather than returning inherited host credentials.
+  overlaying only vault-provided auth, pin both CLI auth homes away from user
+  defaults, and require the matching universe key for a ready BYO assignment;
+  vault/import/materialization errors fail closed.
 - Block rollout until historical `set_engine` assignments are inventoried and
   explicitly migrated: confirmed BYO assignments receive the reviewed
   singleton, while ambiguous/incomplete assignments receive an empty ceiling.
@@ -54,7 +55,8 @@ None.
 - Storage: every successful assignment replaces the non-secret
   `allowed_providers` field; BYO updates use
   `engine_assignment_state="pending"` plus an empty ceiling, preserve unrelated
-  vault records, and restore prior state on ordinary failure.
+  vault records, write secrets through unique cleaned private temp files, and
+  restore prior state on ordinary failure.
 - Tests: focused assignment and router integration tests; no real provider,
   network, credential, personal Claude/OpenAI quota, or platform compute use.
 - Dependency: the active `universe-creation` change still owns request-scoped
