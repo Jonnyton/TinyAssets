@@ -3382,3 +3382,6 @@ Next coordination:
 - Durable rule landed: AGENTS.md Hard Rule 14 — verify the deployed sha, never infer it from a merge. `get_status` -> `release_state.git_sha` is the live answer.
 - Live check at time of writing: prod `git_sha` 1605349e (#1498), deployed 2026-07-22T01:11Z, canary passed — genuinely in sync, since the three later commits (#1499/#1500/#1489) touch no release path.
 2026-07-22 [lane-B] PR-SIDE ENTRY single line.
+
+2026-07-22 [lane-A] MAIN-SIDE ENTRY line one.
+- MAIN-SIDE bullet two.
