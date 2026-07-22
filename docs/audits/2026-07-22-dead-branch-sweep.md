@@ -158,6 +158,26 @@ git log --oneline --diff-filter=AD --format='%h %ad %s' --date=short \
 edits* as missing content. Before calling a branch stranded on a content mismatch, check whether a
 **later** merged PR touched the same file.
 
+### Guard: was any branch reused after it merged?
+
+"Merged as #X" is not sufficient on its own — a branch can be squash-merged and then have *new*
+commits pushed to it, which would be real stranded work hiding behind a merged-PR number. Checked
+for all 12; all clean.
+
+```bash
+pr=<merged PR number>
+ma=$(gh pr view "$pr" --json mergedAt --jq '.mergedAt')
+lc=$(TZ=UTC git log -1 --date=format-local:'%Y-%m-%dT%H:%M:%SZ' --format='%cd' origin/$b)
+[ "$lc" \> "$ma" ] && echo "REUSED-AFTER-MERGE" || echo clean
+```
+
+Every branch's last commit predates its merge by 12 s – 8 min. **Normalize to UTC first** — `gh`
+returns UTC (`Z`) while `git log %cI` returns local (`-0700` here); comparing them raw is a 7-hour
+error that can flip the result either way.
+
+*(The content comparison in Step 4 independently covers this case — post-merge commits would surface
+as a file differing from `main` — but this check names the failure mode directly.)*
+
 ---
 
 ## Category 2 — contained in the #1477 stack base (4 branches, DEAD — with a caveat)
@@ -256,6 +276,9 @@ The 46 branches with an open PR are **out of scope** and excluded from every lis
    into false "stranded" reports.
 4. **Verify content, not PR numbers**, before proposing deletion — and when content appears missing,
    check for a *later* merged PR that deleted or rewrote the file before concluding work was lost.
-5. **Re-check ahead-counts immediately before acting.** Branches move mid-sweep.
-6. **`export MSYS_NO_PATHCONV=1`** on Windows/Git Bash, or `git show origin/main:path` can silently
+5. **Check for post-merge reuse.** A merged branch can still carry new commits pushed after the
+   merge. Compare last-commit time to `mergedAt` — in UTC, since `gh` and `git log %cI` disagree on
+   timezone by default.
+6. **Re-check ahead-counts immediately before acting.** Branches move mid-sweep.
+7. **`export MSYS_NO_PATHCONV=1`** on Windows/Git Bash, or `git show origin/main:path` can silently
    return empty and fake a "content missing" result.
