@@ -13,6 +13,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from tinyassets.config import (
+    engine_assignment_lock as engine_assignment_lock,
+)
+from tinyassets.config import (
+    validated_engine_assignment as validated_engine_assignment,
+)
+
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
 VALID_CREDENTIAL_TYPES = frozenset(
@@ -36,6 +43,25 @@ _LLM_API_KEY_ENV_BY_SERVICE: dict[str, str] = {
     "grok": "XAI_API_KEY",
 }
 
+_EXECUTABLE_PROVIDER_BY_LLM_API_KEY_SERVICE: dict[str, str] = {
+    "anthropic": "claude-code",
+    "openai": "codex",
+}
+
+
+def executable_provider_for_llm_api_key_service(service: str) -> str | None:
+    """Return the executable per-universe provider for a canonical BYO service.
+
+    The broader environment-variable alias map is not evidence that a service
+    is a supported engine-assignment destination. Only the two CLI routes with
+    an implemented per-universe overlay are eligible here.
+    """
+    if not isinstance(service, str):
+        return None
+    return _EXECUTABLE_PROVIDER_BY_LLM_API_KEY_SERVICE.get(
+        service.strip().lower()
+    )
+
 
 def credential_vault_path(universe_dir: str | Path) -> Path:
     """Return the vault file path for *universe_dir*."""
@@ -54,13 +80,46 @@ def _chmod_best_effort(path: Path, mode: int) -> None:
         pass
 
 
+def _normalize_resolved_path(path: Path) -> Path:
+    """Canonicalize equivalent Win32 namespace spellings after resolution."""
+    if os.name != "nt":
+        return path
+    value = str(path)
+    lowered = value.lower()
+    if lowered.startswith("\\\\?\\unc\\"):
+        value = "\\\\" + value[8:]
+    elif lowered.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(os.path.normpath(value))
+
+
+def _comparison_path(path: Path) -> Path:
+    """Return a case-normalized Win32 path for equality/containment only."""
+    if os.name != "nt":
+        return path
+    return Path(os.path.normcase(str(path)))
+
+
+def _resolve_inside_universe(candidate: Path, universe_dir: Path) -> Path:
+    """Resolve *candidate* and reject traversal or symlink escape."""
+    universe_root = _normalize_resolved_path(universe_dir.resolve())
+    resolved = _normalize_resolved_path(candidate.resolve())
+    try:
+        _comparison_path(resolved).relative_to(_comparison_path(universe_root))
+    except ValueError as exc:
+        raise ValueError(
+            "credential auth home must resolve inside the universe path"
+        ) from exc
+    return resolved
+
+
 def _as_path(value: Any, universe_dir: Path) -> Path | None:
     if not isinstance(value, str) or not value.strip():
         return None
     candidate = Path(value.strip()).expanduser()
     if not candidate.is_absolute():
         candidate = universe_dir / candidate
-    return candidate
+    return _resolve_inside_universe(candidate, universe_dir)
 
 
 def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
@@ -68,7 +127,10 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
         ch if ch.isalnum() or ch in {"-", "_"} else "-"
         for ch in service.strip().lower()
     ) or "credential"
-    target = universe_dir / CREDENTIAL_ARTIFACT_DIR / service_part
+    target = _resolve_inside_universe(
+        universe_dir / CREDENTIAL_ARTIFACT_DIR / service_part,
+        universe_dir,
+    )
     target.mkdir(parents=True, exist_ok=True)
     _chmod_best_effort(target.parent, 0o700)
     _chmod_best_effort(target, 0o700)
@@ -135,14 +197,28 @@ def write_credential_vault(
     universe.mkdir(parents=True, exist_ok=True)
     records = _records_from_payload(credentials)
     path = credential_vault_path(universe)
-    tmp = path.with_name(f"{path.name}.tmp")
     payload = {"schema_version": 1, "credentials": records}
-    tmp.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(universe), prefix=f"{path.name}.", suffix=".tmp"
     )
-    _chmod_best_effort(tmp, 0o600)
-    tmp.replace(path)
+    tmp = Path(tmp_name)
+    try:
+        # Apply the secret-file mode before writing any credential bytes.
+        os.chmod(tmp, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        tmp.unlink(missing_ok=True)
     _chmod_best_effort(path, 0o600)
     credential_types = sorted({str(r["credential_type"]) for r in records})
     services = sorted(
@@ -403,6 +479,12 @@ def provider_auth_env_overrides(
     if provider == "codex":
         overrides: dict[str, str] = {}
         codex_home = ensure_codex_home_from_vault(universe_dir)
+        if codex_home is not None and universe_dir is not None:
+            codex_home = _resolve_inside_universe(
+                codex_home, Path(universe_dir)
+            )
+        if codex_home is None and universe_dir is not None:
+            codex_home = _secret_artifact_dir(Path(universe_dir), "codex")
         if codex_home:
             overrides["CODEX_HOME"] = str(codex_home)
         api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
@@ -412,6 +494,12 @@ def provider_auth_env_overrides(
     if provider == "claude-code":
         overrides = {}
         claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)
+        if claude_config_dir is not None and universe_dir is not None:
+            claude_config_dir = _resolve_inside_universe(
+                claude_config_dir, Path(universe_dir)
+            )
+        if claude_config_dir is None and universe_dir is not None:
+            claude_config_dir = _secret_artifact_dir(Path(universe_dir), "claude")
         if claude_config_dir:
             overrides["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
         oauth_token = resolve_claude_oauth_token(universe_dir)

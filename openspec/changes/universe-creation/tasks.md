@@ -26,7 +26,7 @@
 
 ## 3. Authority Dependencies and Security Gate
 
-- [ ] 3.1 Confirm R2-1a has landed its `allowed_providers` engine/router boundary; consume that boundary rather than implementing a second provider-selection path.
+- [ ] 3.1 Confirm R2-1a has landed its `allowed_providers` engine/router boundary and generic explicit-universe subprocess ambient-auth strip; consume those prerequisites rather than implementing a second provider-selection or generic CLI-env path.
 - [ ] 3.2 Confirm R2-1b has landed its race-safe provider result/receipt for both writer calls; extend that object rather than using `_last_provider` or a parallel receipt.
 
 ## 4. Execution-Authority Implementation
@@ -34,7 +34,7 @@
 - [ ] 4.1 Implement the requester BYOC authority resolver for compute and separately required model access. Depends: 2.0.
 - [ ] 4.2 Implement accepted-market compute/model grant resolution and bind it to the requester's accepted offer. Depends: 2.0.
 - [ ] 4.3 Construct an immutable complete authority bundle and pass only its eligible provider set into the R2-1a selection/fallback boundary. Depends: 4.1, 4.2, and STATUS R2-1a; extend its `allowed_providers` boundary, do not duplicate or replace it.
-- [ ] 4.4 Isolate provider child processes from ambient maintainer credential sources with the allowlisted environment/home/profile boundary. Depends: 2.0 and the reviewed isolation design.
+- [ ] 4.4 Extend the R2-1a generic explicit-universe subprocess strip with request-bundle overlays and isolation for cloud chains, profiles/homes, hardware, and non-subprocess providers. Depends: 2.0, 3.1, and the reviewed isolation design; R2-1a alone does not establish request authority.
 - [ ] 4.5 Return the structured `held` / `setup_required` envelope without provider invocation when the bundle is absent, partial, or loses all eligible fallbacks. Depends: 4.3 and 4.4.
 - [ ] 4.6 Thread the same bundle through universe reply generation and learning extraction; keep the chatbot as relay/renderer only. Depends: 4.3-4.5.
 - [ ] 4.7 Extend the R2-1b result object with redacted per-phase authority class and accepted-market grant linkage without recording secrets. Depends: 4.6 and STATUS R2-1b; extend the provider result object and never use `_last_provider`.

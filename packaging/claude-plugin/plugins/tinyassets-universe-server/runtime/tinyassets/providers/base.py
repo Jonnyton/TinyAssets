@@ -164,37 +164,44 @@ def subprocess_env_for_provider(
     resolve per-universe credentials for an explicitly threaded universe.
     """
     env = subprocess_env_without_api_keys() or os.environ.copy()
-    try:
-        from tinyassets.credential_vault import (
-            apply_provider_auth_env,
-            resolve_universe_from_env,
-        )
+    from tinyassets.config import validated_engine_assignment
+    from tinyassets.credential_vault import (
+        apply_provider_auth_env,
+        resolve_universe_from_env,
+    )
 
-        before = {k: env.get(k) for k in HOST_SUBSCRIPTION_ENV_VARS}
-        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
+    resolved = (
+        Path(universe_dir)
+        if universe_dir is not None
+        else resolve_universe_from_env(env)
+    )
+    if resolved is None:
+        return env
 
-        resolved = (
-            Path(universe_dir)
-            if universe_dir is not None
-            else resolve_universe_from_env(env)
+    # Host policy and reachability never authorize an explicit universe. Start
+    # from a fully sanitized child snapshot, then overlay only vault material
+    # read while the same lock that serializes assignment is held.
+    for name in (*API_KEY_PROVIDER_ENV_VARS, *HOST_SUBSCRIPTION_ENV_VARS):
+        env.pop(name, None)
+    with validated_engine_assignment(resolved, provider_name) as assignment:
+        apply_provider_auth_env(
+            env,
+            provider_name,
+            universe_dir=resolved,
         )
-        if resolved is not None and all(
-            env.get(k) == before.get(k) for k in HOST_SUBSCRIPTION_ENV_VARS
-        ):
-            # A universe is in play and the vault supplied nothing for it, so
-            # every host subscription variable is still exactly as inherited.
-            # Drop them: the provider then fails to authenticate rather than
-            # quietly billing the host. Fail closed, not open.
-            for name in HOST_SUBSCRIPTION_ENV_VARS:
-                env.pop(name, None)
-    except ValueError:
-        raise
-    except Exception:
-        # Provider calls should not crash merely because no universe/vault
-        # helper is available in a local import context. Malformed vaults still
-        # raise ValueError above and fail loudly.
-        pass
-    return env
+        if assignment.engine_source == "byo_api_key":
+            required_key = {
+                "claude-code": "ANTHROPIC_API_KEY",
+                "codex": "OPENAI_API_KEY",
+            }.get(provider_name)
+            if required_key is None or not env.get(required_key, "").strip():
+                from tinyassets.exceptions import ProviderUnavailableError
+
+                raise ProviderUnavailableError(
+                    f"explicit BYO universe has no matching credential for "
+                    f"provider {provider_name!r}"
+                )
+        return dict(env)
 
 
 # ---------------------------------------------------------------------------

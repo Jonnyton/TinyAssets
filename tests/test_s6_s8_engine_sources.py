@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tinyassets.config import load_universe_config
 
 
@@ -110,3 +112,43 @@ def test_engine_actions_are_founder_admin_scoped():
         assert action in _UNIVERSE_ADMIN_ACTIONS
         assert action in WRITE_ACTIONS
         assert action in UNIVERSE_ACTIONS
+
+
+@pytest.mark.parametrize(
+    "payload,expected_source",
+    [
+        (
+            {
+                "engine_source": "self_hosted_endpoint",
+                "endpoint": "http://localhost:11434",
+                "preferred_writer": "ollama-local",
+            },
+            "self_hosted_endpoint",
+        ),
+        (
+            {
+                "engine_source": "market_rented",
+                "market_model": "glm-5.2",
+                "market_rate": 0.5,
+                "spending_cap": 20.0,
+            },
+            "market_rented",
+        ),
+        (
+            {"engine_source": "host_daemon", "provider": "codex"},
+            "host_daemon",
+        ),
+    ],
+)
+def test_persistence_only_engine_sources_have_ready_empty_ceiling(
+    tmp_path, monkeypatch, payload, expected_source,
+):
+    uni, udir = _setup(tmp_path, monkeypatch)
+
+    out = json.loads(uni._action_set_engine(inputs_json=json.dumps(payload)))
+
+    assert out["engine_source"] == expected_source
+    config = load_universe_config(udir)
+    assert config.engine_source == expected_source
+    assert config.allowed_providers == []
+    assert config.engine_assignment_state == "ready"

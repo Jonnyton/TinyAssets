@@ -108,6 +108,13 @@ concrete runtime design remains gated on the security review and must cover
 provider-specific environment variables, cloud credential chains, home/profile
 directories, and local subscription auth.
 
+R2-1a owns the generic CLI-subprocess primitive that strips ambient API-key and
+subscription-auth environment variables for any explicit universe, then
+overlays only that universe's vault values and propagates vault errors. This is
+a prerequisite, not request authority. This change's reviewed isolation design
+must consume that primitive and extend it to request-bundle overlays, cloud
+credential chains, profiles/homes, hardware, and non-subprocess providers.
+
 ### D5 - Reply generation and learning extraction share one boundary
 
 The universe intelligence may generate the first-person reply only after the
@@ -165,8 +172,11 @@ No other requirement from the old monolithic change remains in this lane.
 The authority implementation consumes two separately tracked provider primitives:
 
 - **R2-1a** owns the engine/router rule that an assigned engine constrains
-  `allowed_providers`. This change supplies the request authority bundle's eligible set to that
-  boundary; it does not create a second provider-selection mechanism.
+  `allowed_providers`, plus the generic explicit-universe subprocess ambient-
+  auth strip. This change intersects the persistent ceiling with the request
+  authority bundle's eligible set and extends credential isolation across the
+  remaining provider-specific surfaces; it does not create a second provider-
+  selection mechanism or treat the ceiling as sufficient authority.
 - **R2-1b** owns the race-safe provider result/receipt path for both writer calls. This change extends
   that same result object with phase and authority class (and accepted-grant linkage where applicable);
   it does not use a process-global `_last_provider` or create a parallel receipt.

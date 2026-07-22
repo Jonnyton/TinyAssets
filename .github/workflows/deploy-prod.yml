@@ -5,8 +5,9 @@ name: Deploy prod
 #
 # Fires after build-image.yml succeeds on main. SSH into the DigitalOcean
 # Droplet, pull the freshly-published image tag, `docker compose up -d`,
-# run a post-deploy canary against `tinyassets.io/mcp`, and on canary
-# red, auto-rollback to the previous tag.
+# and run a post-deploy canary against `tinyassets.io/mcp`. Ordinary deploys
+# auto-rollback on red; the one-time assignment cutover stays fenced and
+# roll-forward-only after its first mutation.
 #
 # Alarm hook: deploy failures open a GitHub issue labeled `deploy-failed`
 # — distinct from the canary-triggered `p0-outage` issue shape from
@@ -17,6 +18,8 @@ name: Deploy prod
 #   DO_DROPLET_HOST  — Droplet public IP (e.g. 161.35.237.133)
 #   DO_SSH_USER      — SSH user on the Droplet (e.g. root or deploy)
 #   DO_SSH_KEY       — Private key PEM for the above user
+#   ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 — reviewed secret-free manifest
+#   ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 — exact reviewed manifest digest
 #
 # Optional subscription auth secret:
 #   TINYASSETS_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
@@ -46,10 +49,10 @@ on:
 permissions:
   contents: read
   issues: write
-  actions: read
+  actions: write
 
 concurrency:
-  group: deploy-prod
+  group: tinyassets-production-host-mutation
   cancel-in-progress: false
 
 env:
@@ -66,7 +69,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       HAS_CODEX_AUTH_BUNDLE: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 != '' }}
       # Claude provider auth on the droplet. CLAUDE_CODE_OAUTH_TOKEN is a
@@ -176,6 +179,79 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Drain legacy production host workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'set -e; volume_dir=$(sudo docker volume inspect tinyassets-data --format "{{ .Mountpoint }}"); marker=false; fence=false; sudo test ! -f "${volume_dir}/.engine-assignment-migration-v1.json" || marker=true; sudo test ! -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence || fence=true; printf "%s %s\n" "${marker}" "${fence}"')
+          read -r marker_present fence_present <<< "${state}"
+          if [ "${marker_present}" = "true" ] && [ "${fence_present}" != "true" ]; then
+            echo "Historical cutover already released; shared workflow queue is authoritative."
+            exit 0
+          fi
+
+          workflows=(
+            deploy-prod.yml p0-outage-triage.yml restart-daemon.yml
+            install-host-services.yml codex-auth-keepalive.yml
+            claude-auth-keepalive.yml
+          )
+          enumeration_file=$(mktemp)
+          trap 'rm -f "${enumeration_file}"' EXIT
+          active_runs() {
+            : > "${enumeration_file}"
+            for workflow in "${workflows[@]}"; do
+              if ! gh api \
+                  "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?per_page=100" \
+                  --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | select(.status == \"requested\" or .status == \"waiting\" or .status == \"pending\" or .status == \"queued\" or .status == \"in_progress\") | [.id, .status] | @tsv" \
+                  >> "${enumeration_file}"; then
+                return 1
+              fi
+            done
+            sort -u "${enumeration_file}"
+          }
+
+          for attempt in $(seq 1 30); do
+            echo "Legacy workflow drain poll ${attempt}/30"
+            if ! runs_output=$(active_runs); then
+              echo "::error::Could not prove legacy production-host workflows are drained."
+              exit 1
+            fi
+            runs=()
+            if [ -n "${runs_output}" ]; then
+              mapfile -t runs <<< "${runs_output}"
+            fi
+            if [ "${#runs[@]}" -eq 0 ]; then
+              echo "No legacy production-host workflow run can overlap the cutover."
+              exit 0
+            fi
+            for run in "${runs[@]}"; do
+              read -r run_id run_status <<< "${run}"
+              case "${run_status}" in
+                requested|waiting|pending|queued)
+                  echo "Canceling pre-execution legacy workflow run ${run_id} (${run_status})"
+                  if ! gh api --method POST \
+                      "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" \
+                      >/dev/null; then
+                    echo "::warning::Cancel raced for run ${run_id}; re-polling authoritative state."
+                  fi
+                  ;;
+                in_progress)
+                  echo "Waiting for in-progress legacy workflow run ${run_id}; cancellation could orphan its remote SSH process."
+                  ;;
+                *)
+                  echo "::error::Unexpected workflow state ${run_status} for run ${run_id}."
+                  exit 1
+                  ;;
+              esac
+            done
+            sleep 5
+          done
+          echo "::error::Legacy production-host workflow runs did not drain before cutover."
+          exit 1
 
       - name: Capture previous image tag (for rollback)
         id: prev
@@ -496,6 +572,682 @@ jobs:
           systemctl mask workflow-daemon.service workflow.service workflow-watchdog.timer || true
           SH
 
+      - name: Fence engine assignment writers
+        id: assignment-migration
+        env:
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 }}
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 }}
+        run: |
+          state=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=${maintenance_dir}/engine-assignment-migration-v1.fence
+          active_units=${maintenance_dir}/engine-assignment-migration-v1.active-units
+          lock=${maintenance_dir}/engine-assignment-migration-v1.lock
+          install -d -m 0700 "${maintenance_dir}"
+          exec 9>"${lock}"
+          flock -x -w 30 9
+          volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+          marker_path=${volume_dir}/.engine-assignment-migration-v1.json
+          maintenance_release=${maintenance_dir}/engine-assignment-migration-v1.release.json
+          data_release=${volume_dir}/release-state.json
+          marker=false
+          fence_present=false
+          active=false
+          test ! -f "${marker_path}" || marker=true
+          test ! -e "${fence}" || fence_present=true
+          test ! -e "${active_units}" || active=true
+          if [ "${marker}" = true ] && [ "${fence_present}" = false ] && [ "${active}" = true ]; then
+            release_phase=$(python3 - "${marker_path}" "${maintenance_release}" "${data_release}" <<'PY'
+          import hashlib
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          def strict_load(path):
+              def no_duplicate_keys(pairs):
+                  result = {}
+                  for key, value in pairs:
+                      if key in result:
+                          raise ValueError(f"duplicate JSON key: {key}")
+                      result[key] = value
+                  return result
+
+              return json.loads(
+                  path.read_text(encoding="utf-8"),
+                  object_pairs_hook=no_duplicate_keys,
+              )
+
+          marker_path, maintenance_path, data_path = map(Path, sys.argv[1:])
+          if marker_path.is_symlink() or not marker_path.is_file():
+              raise SystemExit("postcommit marker is missing or unsafe")
+          marker_sha256 = hashlib.sha256(marker_path.read_bytes()).hexdigest()
+          maintenance = strict_load(maintenance_path)
+          if set(maintenance) != {"image_ref", "marker_sha256", "rollback_target", "state"}:
+              raise SystemExit("maintenance release evidence has unexpected fields")
+          image_ref = maintenance["image_ref"]
+          if not isinstance(image_ref, str) or re.fullmatch(r".+@sha256:[0-9a-f]{64}", image_ref) is None:
+              raise SystemExit("maintenance release image is not digest-pinned")
+          if maintenance["marker_sha256"] != marker_sha256:
+              raise SystemExit("maintenance release marker digest mismatch")
+          if maintenance["rollback_target"] is not None:
+              raise SystemExit("maintenance release retains a rollback target")
+          if maintenance["state"] not in {"fence-release-committed", "restored"}:
+              raise SystemExit("maintenance release state is invalid")
+          data = strict_load(data_path)
+          if data.get("image_ref") != image_ref or data.get("rollback_target") not in {None, ""}:
+              raise SystemExit("data release receipt disagrees with roll-forward evidence")
+          status = data.get("canary_bundle_status")
+          if status not in {"pending", "passed"}:
+              raise SystemExit("data release receipt has invalid canary state")
+          if status == "pending" and data.get("cutover_state") != "fence-release-committed":
+              raise SystemExit("pending data receipt is not a committed cutover")
+          print(maintenance["state"])
+          PY
+            )
+            if [ "${release_phase}" = "restored" ]; then
+              rm -f "${active_units}"
+              sync -f "${maintenance_dir}"
+              active=false
+            fi
+          fi
+          printf '%s %s %s\n' "${marker}" "${fence_present}" "${active}"
+          SH
+          )
+          read -r marker_present fence_present active_units_present <<< "${state}"
+          echo "marker_present=${marker_present}" >> "$GITHUB_OUTPUT"
+          echo "fence_present=${fence_present}" >> "$GITHUB_OUTPUT"
+          echo "active_units_present=${active_units_present}" >> "$GITHUB_OUTPUT"
+          echo "postcommit_recovery=false" >> "$GITHUB_OUTPUT"
+          if [ "${marker_present}" = "true" ] && [ "${fence_present}" != "true" ]; then
+            if [ "${active_units_present}" = "true" ]; then
+              echo "cutover=true" >> "$GITHUB_OUTPUT"
+              echo "postcommit_recovery=true" >> "$GITHUB_OUTPUT"
+              echo "Marker-backed release was committed but writer restoration is incomplete; resume postcommit recovery."
+            else
+              echo "cutover=false" >> "$GITHUB_OUTPUT"
+              echo "Engine-assignment migration v1 is recorded and unfenced; verify before normal deploy."
+            fi
+            exit 0
+          fi
+
+          if [ -z "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" ] || \
+             [[ ! "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The reviewed migration manifest and lowercase SHA-256 are required before fencing."
+            exit 1
+          fi
+          manifest_preflight=$(mktemp)
+          trap 'rm -f "${manifest_preflight}"' EXIT
+          printf '%s' "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" \
+            | base64 --decode > "${manifest_preflight}"
+          manifest_sha256=$(sha256sum "${manifest_preflight}" | awk '{print $1}')
+          if [ "${manifest_sha256}" != "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" ]; then
+            echo "::error::The migration manifest does not match its separately reviewed digest."
+            exit 1
+          fi
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo sh -c 'command -v lsof >/dev/null 2>&1'" || {
+            echo "::error::lsof must be installed before the production writer fence begins."
+            exit 1
+          }
+          echo "cutover=true" >> "$GITHUB_OUTPUT"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          active_units=${maintenance_dir}/engine-assignment-migration-v1.active-units
+          lock=${maintenance_dir}/engine-assignment-migration-v1.lock
+          dropin=50-engine-assignment-migration-fence.conf
+          units=(
+            tinyassets-watchdog.timer tinyassets-watchdog.service
+            daemon-watchdog.timer daemon-watchdog.service
+            tinyassets-autoheal.timer tinyassets-autoheal.service
+            tinyassets-backup.timer tinyassets-backup.service
+            tinyassets-disk-watch.timer tinyassets-disk-watch.service
+            tinyassets-prune.timer tinyassets-prune.service
+            tinyassets-ship-logs.timer tinyassets-ship-logs.service
+            github-app-token-refresher.timer github-app-token-refresher.service
+            workflow-watchdog.timer workflow-watchdog.service
+            workflow-backup.timer workflow-backup.service
+            workflow-disk-watch.timer workflow-disk-watch.service
+            workflow-prune.timer workflow-prune.service
+            workflow-ship-logs.timer workflow-ship-logs.service
+            workflow-daemon.service workflow.service
+            tinyassets-daemon.service
+          )
+
+          install -d -m 0700 "${maintenance_dir}"
+          exec 9>"${lock}"
+          flock -x -w 30 9
+          volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+          marker=${volume_dir}/.engine-assignment-migration-v1.json
+          if [ -f "${marker}" ] && [ ! -e "${fence}" ]; then
+            echo "migration release committed while waiting for the host lock; refusing to recreate its fence" >&2
+            exit 1
+          fi
+          if [ -e "${fence}" ] && { [ ! -f "${fence}" ] || [ -L "${fence}" ]; }; then
+            echo "existing writer fence is unsafe" >&2
+            exit 1
+          fi
+          if [ -e "${active_units}" ]; then
+            if [ ! -f "${active_units}" ] || [ -L "${active_units}" ]; then
+              echo "active-unit recovery record is unsafe" >&2
+              exit 1
+            fi
+          elif [ -e "${fence}" ]; then
+            echo "fenced cutover is missing its original active-unit recovery record" >&2
+            exit 1
+          else
+            active_units_tmp=$(mktemp "${maintenance_dir}/.engine-assignment-active-units.XXXXXX")
+            chmod 0600 "${active_units_tmp}"
+            for unit in "${units[@]}"; do
+              if systemctl cat "${unit}" >/dev/null 2>&1 && systemctl is-active --quiet "${unit}"; then
+                printf '%s\n' "${unit}" >> "${active_units_tmp}"
+              fi
+            done
+            mv "${active_units_tmp}" "${active_units}"
+            sync -f "${active_units}"
+            sync -f "${maintenance_dir}"
+          fi
+          while IFS= read -r recorded_unit; do
+            [ -n "${recorded_unit}" ] || continue
+            known=false
+            for unit in "${units[@]}"; do
+              [ "${recorded_unit}" != "${unit}" ] || known=true
+            done
+            if [ "${known}" != "true" ]; then
+              echo "active-unit recovery record contains an unknown unit" >&2
+              exit 1
+            fi
+          done < "${active_units}"
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              install -d -m 0755 "/etc/systemd/system/${unit}.d"
+              printf '[Unit]\nConditionPathExists=!%s\n' "${fence}" \
+                > "/etc/systemd/system/${unit}.d/${dropin}"
+              sync -f "/etc/systemd/system/${unit}.d/${dropin}"
+            fi
+          done
+          systemctl daemon-reload
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              systemctl stop "${unit}"
+              if systemctl is-active --quiet "${unit}"; then
+                echo "engine-assignment fence failed to stop ${unit}" >&2
+                exit 1
+              fi
+            fi
+          done
+
+          if [ -f /opt/tinyassets/compose.yml ]; then
+            docker compose --env-file /etc/tinyassets/env \
+              -f /opt/tinyassets/compose.yml down --timeout 30
+          fi
+          for compose_file in /opt/workflow/compose.yml /opt/workflow/deploy/compose.yml; do
+            if [ -f "${compose_file}" ]; then
+              if [ -f /etc/workflow/env ]; then
+                docker compose --env-file /etc/workflow/env \
+                  -f "${compose_file}" down --timeout 30
+              else
+                docker compose -f "${compose_file}" down --timeout 30
+              fi
+            fi
+          done
+
+          prove_no_container_users() {
+            local volume_users container
+            volume_users=$(docker ps -aq --filter volume=tinyassets-data)
+            if [ -n "${volume_users}" ]; then
+              echo "containers still use tinyassets-data: ${volume_users}" >&2
+              docker inspect ${volume_users}
+              return 1
+            fi
+            for container in $(docker ps -aq); do
+              if docker inspect "${container}" --format '{{range .Mounts}}{{println .Name .Source .Destination}}{{end}}' \
+                | grep -Eq '(^| )tinyassets-data( |$)| /data$'; then
+                echo "unknown container ${container} still has a production data mount" >&2
+                docker inspect "${container}"
+                return 1
+              fi
+            done
+          }
+          prove_no_container_users
+          command -v lsof >/dev/null 2>&1 || {
+            echo "lsof is required to prove no host process has the data volume open" >&2
+            exit 1
+          }
+          prove_no_open_files() {
+            local target=$1 stdout_file stderr_file status
+            stdout_file=$(mktemp)
+            stderr_file=$(mktemp)
+            set +e
+            lsof -nP +D "${target}" >"${stdout_file}" 2>"${stderr_file}"
+            status=$?
+            set -e
+            if [ -s "${stderr_file}" ]; then
+              echo "lsof could not prove ${target} is unused" >&2
+              cat "${stderr_file}" >&2
+              rm -f "${stdout_file}" "${stderr_file}"
+              return 1
+            fi
+            case "${status}" in
+              0)
+                echo "a host process still has ${target} open" >&2
+                cat "${stdout_file}" >&2
+                rm -f "${stdout_file}" "${stderr_file}"
+                return 1
+                ;;
+              1)
+                if [ -s "${stdout_file}" ]; then
+                  echo "lsof returned output with its no-match status for ${target}" >&2
+                  cat "${stdout_file}" >&2
+                  rm -f "${stdout_file}" "${stderr_file}"
+                  return 1
+                fi
+                ;;
+              *)
+                echo "lsof exited ${status}; absence of open files is unproven for ${target}" >&2
+                rm -f "${stdout_file}" "${stderr_file}"
+                return 1
+                ;;
+            esac
+            rm -f "${stdout_file}" "${stderr_file}"
+          }
+          prove_no_open_files "${volume_dir}"
+          if [ ! -e "${fence}" ]; then
+            install -m 0600 /dev/null "${fence}"
+            sync -f "${fence}"
+            sync -f "${maintenance_dir}"
+          fi
+          # Close the stop/proof-to-fence TOCTOU window: once the durable
+          # condition exists, quiesce and prove the host a second time.
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              systemctl stop "${unit}"
+              if systemctl is-active --quiet "${unit}"; then
+                echo "engine-assignment fence failed its post-create stop for ${unit}" >&2
+                exit 1
+              fi
+            fi
+          done
+          if [ -f /opt/tinyassets/compose.yml ]; then
+            docker compose --env-file /etc/tinyassets/env \
+              -f /opt/tinyassets/compose.yml down --timeout 30
+          fi
+          for compose_file in /opt/workflow/compose.yml /opt/workflow/deploy/compose.yml; do
+            if [ -f "${compose_file}" ]; then
+              if [ -f /etc/workflow/env ]; then
+                docker compose --env-file /etc/workflow/env \
+                  -f "${compose_file}" down --timeout 30
+              else
+                docker compose -f "${compose_file}" down --timeout 30
+              fi
+            fi
+          done
+          prove_no_container_users
+          prove_no_open_files "${volume_dir}"
+          SH
+
+      - name: Apply reviewed engine assignment migration
+        if: steps.assignment-migration.outputs.cutover == 'true' && steps.assignment-migration.outputs.postcommit_recovery != 'true'
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 }}
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 }}
+        run: |
+          if [ -z "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" ]; then
+            echo "::error::ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 is required for the first writer-fence cutover."
+            exit 1
+          fi
+          if [[ ! "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 must be the reviewed manifest's lowercase SHA-256 digest."
+            exit 1
+          fi
+          printf '%s' "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" \
+            | base64 --decode > /tmp/engine-assignment-manifest.json
+          manifest_sha256=$(sha256sum /tmp/engine-assignment-manifest.json | awk '{print $1}')
+          if [ "${manifest_sha256}" != "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" ]; then
+            echo "::error::Decoded migration manifest does not match the separately reviewed digest."
+            exit 1
+          fi
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              /tmp/engine-assignment-manifest.json \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/engine-assignment-manifest.json"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "NEW_IMAGE='${NEW_IMAGE}' sudo -E bash -s" <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=${maintenance_dir}/engine-assignment-migration-v1.fence
+          lock=${maintenance_dir}/engine-assignment-migration-v1.lock
+          manifest=${maintenance_dir}/engine-assignment-migration-v1.reviewed.json
+          exec 9>"${lock}"
+          flock -x -w 30 9
+          test -f "${fence}"
+          test ! -L "${fence}"
+          install -m 0600 /tmp/engine-assignment-manifest.json "${manifest}"
+          remote_manifest_sha256=$(sha256sum "${manifest}" | awk '{print $1}')
+          if [ "${remote_manifest_sha256}" != "${EXPECTED_MANIFEST_SHA256}" ]; then
+            echo "reviewed migration manifest digest changed in transit" >&2
+            exit 1
+          fi
+          docker pull "${NEW_IMAGE}"
+
+          prove_no_container_users() {
+            local volume_users container
+            volume_users=$(docker ps -aq --filter volume=tinyassets-data)
+            if [ -n "${volume_users}" ]; then
+              echo "a container acquired tinyassets-data before migration: ${volume_users}" >&2
+              docker inspect ${volume_users}
+              return 1
+            fi
+            for container in $(docker ps -aq); do
+              if docker inspect "${container}" --format '{{range .Mounts}}{{println .Name .Source .Destination}}{{end}}' \
+                | grep -Eq '(^| )tinyassets-data( |$)| /data$'; then
+                echo "unknown container ${container} acquired a production data mount" >&2
+                docker inspect "${container}"
+                return 1
+              fi
+            done
+          }
+          prove_no_container_users
+          volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+          prove_no_open_files() {
+            local target=$1 stdout_file stderr_file status
+            stdout_file=$(mktemp)
+            stderr_file=$(mktemp)
+            set +e
+            lsof -nP +D "${target}" >"${stdout_file}" 2>"${stderr_file}"
+            status=$?
+            set -e
+            if [ -s "${stderr_file}" ]; then
+              cat "${stderr_file}" >&2
+              rm -f "${stdout_file}" "${stderr_file}"
+              return 1
+            fi
+            case "${status}" in
+              0)
+                cat "${stdout_file}" >&2
+                rm -f "${stdout_file}" "${stderr_file}"
+                return 1
+                ;;
+              1)
+                if [ -s "${stdout_file}" ]; then
+                  cat "${stdout_file}" >&2
+                  rm -f "${stdout_file}" "${stderr_file}"
+                  return 1
+                fi
+                ;;
+              *)
+                echo "lsof exited ${status}; migration safety is unproven" >&2
+                rm -f "${stdout_file}" "${stderr_file}"
+                return 1
+                ;;
+            esac
+            rm -f "${stdout_file}" "${stderr_file}"
+          }
+          prove_no_open_files "${volume_dir}"
+
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            -v "${manifest}:/run/engine-assignment-manifest.json:ro" \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py apply \
+            --data-dir /data \
+            --manifest /run/engine-assignment-manifest.json
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py verify \
+            --data-dir /data
+          # Required idempotence proof: a second apply must perform zero writes.
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            -v "${manifest}:/run/engine-assignment-manifest.json:ro" \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py apply \
+            --data-dir /data \
+            --manifest /run/engine-assignment-manifest.json
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py verify \
+            --data-dir /data
+
+          remaining=$(docker ps -aq --filter volume=tinyassets-data)
+          if [ -n "${remaining}" ]; then
+            echo "migration container did not release tinyassets-data: ${remaining}" >&2
+            exit 1
+          fi
+          SH
+          rm -f /tmp/engine-assignment-manifest.json
+
+      - name: Verify recorded engine assignment migration
+        if: steps.assignment-migration.outputs.marker_present == 'true' && steps.assignment-migration.outputs.fence_present != 'true'
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "NEW_IMAGE='${NEW_IMAGE}' sudo -E bash -s" <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          lock=${maintenance_dir}/engine-assignment-migration-v1.lock
+          exec 9>"${lock}"
+          flock -x -w 30 9
+          docker pull "${NEW_IMAGE}"
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data:ro \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py verify \
+            --data-dir /data
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          active_units=${maintenance_dir}/engine-assignment-migration-v1.active-units
+          dropin=50-engine-assignment-migration-fence.conf
+          test ! -e "${fence}"
+          if [ ! -e "${active_units}" ]; then
+            find /etc/systemd/system -type f -name "${dropin}" -delete
+            systemctl daemon-reload
+            rm -f "${maintenance_dir}/engine-assignment-migration-v1.reviewed.json"
+            sync -f "${maintenance_dir}"
+          fi
+          SH
+
+      - name: Commit engine assignment migration fence release
+        if: steps.assignment-migration.outputs.cutover == 'true' && steps.assignment-migration.outputs.postcommit_recovery != 'true'
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 }}
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "NEW_IMAGE='${NEW_IMAGE}' EXPECTED_MANIFEST_SHA256='${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}' sudo -E bash -s" <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          lock=${maintenance_dir}/engine-assignment-migration-v1.lock
+          active_units=${maintenance_dir}/engine-assignment-migration-v1.active-units
+          provisional=${maintenance_dir}/engine-assignment-migration-v1.release.json
+          volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+          marker=${volume_dir}/.engine-assignment-migration-v1.json
+          transaction=${volume_dir}/.engine-assignment-migration-transaction-v1.json
+          release_state=${volume_dir}/release-state.json
+          exec 9>"${lock}"
+          flock -x -w 30 9
+          if ! test -f "${marker}" || ! test ! -L "${marker}"; then
+            echo "migration marker is absent; refusing to release writer fence" >&2
+            exit 1
+          fi
+          if [ ! -f "${fence}" ] || [ -L "${fence}" ]; then
+            echo "writer fence is absent or unsafe before release" >&2
+            exit 1
+          fi
+          if [ ! -f "${active_units}" ] || [ -L "${active_units}" ]; then
+            echo "active-unit recovery record is absent or unsafe before release" >&2
+            exit 1
+          fi
+          if [ -e "${transaction}" ]; then
+            echo "migration transaction journal remains; refusing fence release" >&2
+            exit 1
+          fi
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data:ro \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py verify \
+            --data-dir /data
+          if [ -e "${transaction}" ]; then
+            echo "migration verifier left a transaction journal" >&2
+            exit 1
+          fi
+          marker_manifest_sha256=$(python3 - "${marker}" <<'PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              marker = json.load(handle)
+          digest = marker.get("manifest_sha256")
+          if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+              raise SystemExit("migration marker has no valid manifest_sha256")
+          print(digest)
+          PY
+          )
+          if [ "${marker_manifest_sha256}" != "${EXPECTED_MANIFEST_SHA256}" ]; then
+            echo "migration marker does not match the separately reviewed manifest digest" >&2
+            exit 1
+          fi
+          marker_sha256=$(sha256sum "${marker}" | awk '{print $1}')
+          provisional_tmp=$(mktemp "${maintenance_dir}/.engine-assignment-release.XXXXXX")
+          chmod 0600 "${provisional_tmp}"
+          printf '{"image_ref":"%s","marker_sha256":"%s","rollback_target":null,"state":"fence-release-committed"}\n' \
+            "${NEW_IMAGE}" "${marker_sha256}" > "${provisional_tmp}"
+          sync -f "${provisional_tmp}"
+          mv "${provisional_tmp}" "${provisional}"
+          sync -f "${provisional}"
+          sync -f "${maintenance_dir}"
+          release_state_tmp=$(mktemp "${volume_dir}/.release-state.XXXXXX")
+          export NEW_IMAGE marker_sha256 release_state_tmp
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt = {
+              "image_ref": os.environ["NEW_IMAGE"],
+              "image_tag": os.environ["NEW_IMAGE"],
+              "schema_migration_rev": "engine-assignment-v1",
+              "marker_sha256": os.environ["marker_sha256"],
+              "rollback_target": None,
+              "canary_bundle_status": "pending",
+              "cutover_state": "fence-release-committed",
+          }
+          Path(os.environ["release_state_tmp"]).write_text(
+              json.dumps(receipt, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          chown 1001:1001 "${release_state_tmp}"
+          chmod 0644 "${release_state_tmp}"
+          sync -f "${release_state_tmp}"
+          mv -T "${release_state_tmp}" "${release_state}"
+          sync -f "${release_state}"
+          sync -f "${volume_dir}"
+          rm -f "${fence}"
+          sync -f "${maintenance_dir}"
+          SH
+
+      - name: Start daemon-only migration canary
+        if: steps.assignment-migration.outputs.cutover == 'true'
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "printf '%s' '${NEW_IMAGE}' | sudo flock -x -w 30 /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.lock bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "NEW_IMAGE='${NEW_IMAGE}' sudo -E bash -s" <<'SH'
+          set -euo pipefail
+          exec 9>/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.lock
+          flock -x -w 30 9
+          test ! -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          validate_release_evidence() {
+            local volume_dir
+            volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+            python3 - \
+              "${volume_dir}/.engine-assignment-migration-v1.json" \
+              /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.release.json \
+              "${volume_dir}/release-state.json" "${NEW_IMAGE}" <<'PY'
+          import hashlib
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          def strict_load(path):
+              def no_duplicate_keys(pairs):
+                  result = {}
+                  for key, value in pairs:
+                      if key in result:
+                          raise ValueError(f"duplicate JSON key: {key}")
+                      result[key] = value
+                  return result
+
+              return json.loads(
+                  path.read_text(encoding="utf-8"),
+                  object_pairs_hook=no_duplicate_keys,
+              )
+
+          marker_path, maintenance_path, data_path = map(Path, sys.argv[1:4])
+          expected_image = sys.argv[4]
+          marker_sha256 = hashlib.sha256(marker_path.read_bytes()).hexdigest()
+          maintenance = strict_load(maintenance_path)
+          if set(maintenance) != {"image_ref", "marker_sha256", "rollback_target", "state"}:
+              raise SystemExit("invalid maintenance release evidence")
+          if maintenance != {
+              "image_ref": expected_image,
+              "marker_sha256": marker_sha256,
+              "rollback_target": None,
+              "state": "fence-release-committed",
+          } or re.fullmatch(r".+@sha256:[0-9a-f]{64}", expected_image) is None:
+              raise SystemExit("maintenance release evidence does not authorize this image")
+          data = strict_load(data_path)
+          if data.get("image_ref") != expected_image or data.get("rollback_target") not in {None, ""}:
+              raise SystemExit("data release receipt permits rollback or names another image")
+          if data.get("canary_bundle_status") not in {"pending", "passed"}:
+              raise SystemExit("data release receipt is not a cutover receipt")
+          PY
+          }
+          validate_release_evidence
+          docker compose --env-file /etc/tinyassets/env \
+            -f /opt/tinyassets/compose.yml up -d --no-deps daemon
+          for container in \
+            tinyassets-tunnel tinyassets-worker tinyassets-worker-codex-2 \
+            tinyassets-worker-claude-1 tinyassets-worker-claude-2; do
+            running=$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null || printf false)
+            if [ "${running}" = "true" ]; then
+              echo "${container} started before the daemon-only canary" >&2
+              exit 1
+            fi
+          done
+          for attempt in $(seq 1 30); do
+            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' tinyassets-daemon)
+            if [ "${health}" = "healthy" ]; then
+              break
+            fi
+            if [ "${attempt}" = 30 ]; then
+              echo "daemon-only container did not become healthy" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          docker exec tinyassets-daemon python /app/scripts/mcp_public_canary.py \
+            --url http://127.0.0.1:8001/mcp --timeout 10 --verbose
+          SH
+
       - name: Deploy new image
         id: deploy
         env:
@@ -676,9 +1428,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # Pull + restart via the systemd unit (which runs docker
           # compose down + up with the new env).
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
+          if [ "${{ steps.assignment-migration.outputs.cutover }}" = "true" ]; then
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo flock -x -w 30 /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.lock bash -c \"set -e; docker pull '${NEW_IMAGE}'; rm -f /etc/systemd/system/tinyassets-daemon.service.d/50-engine-assignment-migration-fence.conf; systemctl daemon-reload; test ! -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence; systemctl start tinyassets-daemon\""
+          else
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
+          fi
 
       # Independent of the helper's in-call readability assert: re-verify
       # after the systemd restart has settled. Steady-state canary that
@@ -838,6 +1596,7 @@ jobs:
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
           BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
           TINYASSETS_EVENT: ${{ github.event_name }}
+          MIGRATION_CUTOVER: ${{ steps.assignment-migration.outputs.cutover }}
         run: |
           DEPLOY_RUN_ID="${GITHUB_RUN_ID}"
           DEPLOY_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -862,8 +1621,18 @@ jobs:
             echo "::error::Could not resolve tinyassets-data Docker volume mountpoint"
             exit 1
           fi
+          migration_marker_sha256=""
+          if [ "${MIGRATION_CUTOVER}" = "true" ]; then
+            migration_marker_sha256="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo sha256sum '${release_state_host_dir}/.engine-assignment-migration-v1.json' | awk '{print \\$1}'")"
+            if [[ ! "${migration_marker_sha256}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Could not bind the final release receipt to the migration marker."
+              exit 1
+            fi
+          fi
 
-          export image_digest config_hash BUILD_RUN_URL DEPLOY_RUN_ID DEPLOY_RUN_URL
+          export image_digest config_hash BUILD_RUN_URL DEPLOY_RUN_ID DEPLOY_RUN_URL migration_marker_sha256
           python - <<'PY' > /tmp/tinyassets-release-state.json
           import json
           import os
@@ -880,10 +1649,19 @@ jobs:
               "deploy_run_url": os.environ["DEPLOY_RUN_URL"],
               "config_hash": os.environ.get("config_hash", ""),
               "config_version": "tinyassets-env-v1",
-              "schema_migration_rev": "not_applicable",
+              "schema_migration_rev": "engine-assignment-v1",
               "canary_bundle_status": "passed",
               "deployed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-              "rollback_target": os.environ["PREV_IMAGE"],
+              "rollback_target": (
+                  None if os.environ.get("MIGRATION_CUTOVER") == "true"
+                  else os.environ["PREV_IMAGE"]
+              ),
+              "marker_sha256": os.environ.get("migration_marker_sha256", ""),
+              "cutover_state": (
+                  "fence-release-committed"
+                  if os.environ.get("MIGRATION_CUTOVER") == "true"
+                  else ""
+              ),
               "actor": os.environ["GITHUB_ACTOR"],
               "repository": os.environ["GITHUB_REPOSITORY"],
               "workflow_event": os.environ["TINYASSETS_EVENT"],
@@ -904,9 +1682,22 @@ jobs:
           # outage class, root-caused 2026-07-14).
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; \
-               sudo install -d -m 0755 -o 1001 -g 1001 '${release_state_host_dir}'; \
-               sudo install -m 0644 -o 1001 -g 1001 /tmp/tinyassets-release-state.json '${release_state_host_dir}/release-state.json'"
+              "RELEASE_STATE_HOST_DIR='${release_state_host_dir}' sudo -E bash -s" <<'SH'
+          set -euo pipefail
+          exec 9>/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.lock
+          flock -x -w 30 9
+          release_state_host_dir=${RELEASE_STATE_HOST_DIR}
+          install -d -m 0755 -o 1001 -g 1001 "${release_state_host_dir}"
+          release_state_tmp=$(mktemp "${release_state_host_dir}/.release-state.XXXXXX")
+          trap 'rm -f "${release_state_tmp}"' EXIT
+          install -m 0644 -o 1001 -g 1001 \
+            /tmp/tinyassets-release-state.json "${release_state_tmp}"
+          sync -f "${release_state_tmp}"
+          mv -T "${release_state_tmp}" "${release_state_host_dir}/release-state.json"
+          sync -f "${release_state_host_dir}/release-state.json"
+          sync -f "${release_state_host_dir}"
+          trap - EXIT
+          SH
           {
             echo "### Release-state receipt"
             echo ""
@@ -918,8 +1709,294 @@ jobs:
             echo "- Digest: \`${image_digest:-unknown}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Restore writers after successful migration deploy
+        if: steps.assignment-migration.outputs.cutover == 'true'
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          active_units=${maintenance_dir}/engine-assignment-migration-v1.active-units
+          lock=${maintenance_dir}/engine-assignment-migration-v1.lock
+          dropin=50-engine-assignment-migration-fence.conf
+          units=(
+            tinyassets-watchdog.timer tinyassets-watchdog.service
+            daemon-watchdog.timer daemon-watchdog.service
+            tinyassets-autoheal.timer tinyassets-autoheal.service
+            tinyassets-backup.timer tinyassets-backup.service
+            tinyassets-disk-watch.timer tinyassets-disk-watch.service
+            tinyassets-prune.timer tinyassets-prune.service
+            tinyassets-ship-logs.timer tinyassets-ship-logs.service
+            github-app-token-refresher.timer github-app-token-refresher.service
+            workflow-watchdog.timer workflow-watchdog.service
+            workflow-backup.timer workflow-backup.service
+            workflow-disk-watch.timer workflow-disk-watch.service
+            workflow-prune.timer workflow-prune.service
+            workflow-ship-logs.timer workflow-ship-logs.service
+            workflow-daemon.service workflow.service
+            tinyassets-daemon.service
+          )
+          exec 9>"${lock}"
+          flock -x -w 30 9
+          validate_release_evidence() {
+            local volume_dir
+            volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+            python3 - \
+              "${volume_dir}/.engine-assignment-migration-v1.json" \
+              "${maintenance_dir}/engine-assignment-migration-v1.release.json" \
+              "${volume_dir}/release-state.json" <<'PY'
+          import hashlib
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          def strict_load(path):
+              def no_duplicate_keys(pairs):
+                  result = {}
+                  for key, value in pairs:
+                      if key in result:
+                          raise ValueError(f"duplicate JSON key: {key}")
+                      result[key] = value
+                  return result
+
+              return json.loads(
+                  path.read_text(encoding="utf-8"),
+                  object_pairs_hook=no_duplicate_keys,
+              )
+
+          marker_path, maintenance_path, data_path = map(Path, sys.argv[1:])
+          marker_sha256 = hashlib.sha256(marker_path.read_bytes()).hexdigest()
+          maintenance = strict_load(maintenance_path)
+          if set(maintenance) != {"image_ref", "marker_sha256", "rollback_target", "state"}:
+              raise SystemExit("invalid maintenance release evidence")
+          image_ref = maintenance.get("image_ref")
+          if (
+              re.fullmatch(r".+@sha256:[0-9a-f]{64}", image_ref or "") is None
+              or maintenance.get("marker_sha256") != marker_sha256
+              or maintenance.get("rollback_target") is not None
+              or maintenance.get("state") != "fence-release-committed"
+          ):
+              raise SystemExit("maintenance release evidence is not restorable")
+          data = strict_load(data_path)
+          if (
+              data.get("image_ref") != image_ref
+              or data.get("rollback_target") not in {None, ""}
+              or data.get("canary_bundle_status") != "passed"
+          ):
+              raise SystemExit("final data release receipt is not restorable")
+          PY
+          }
+          validate_release_evidence
+          if [ -e "${fence}" ]; then
+            echo "engine-assignment fence release was not durably committed" >&2
+            exit 1
+          fi
+          if [ ! -f "${active_units}" ] || [ -L "${active_units}" ]; then
+            echo "active-unit recovery record is missing or unsafe" >&2
+            exit 1
+          fi
+          while IFS= read -r recorded_unit; do
+            [ -n "${recorded_unit}" ] || continue
+            known=false
+            for unit in "${units[@]}"; do
+              [ "${recorded_unit}" != "${unit}" ] || known=true
+            done
+            if [ "${known}" != "true" ]; then
+              echo "active-unit recovery record contains an unknown unit" >&2
+              exit 1
+            fi
+          done < "${active_units}"
+          while IFS= read -r unit; do
+            [ -n "${unit}" ] || continue
+            rm -f "/etc/systemd/system/${unit}.d/${dropin}"
+          done < "${active_units}"
+          find /etc/systemd/system -type f -name "${dropin}" -delete
+          systemctl daemon-reload
+          while IFS= read -r unit; do
+            [ -n "${unit}" ] || continue
+            systemctl start "${unit}"
+          done < "${active_units}"
+          rm -f "${maintenance_dir}/engine-assignment-migration-v1.reviewed.json"
+          release_receipt=${maintenance_dir}/engine-assignment-migration-v1.release.json
+          release_receipt_tmp=$(mktemp "${maintenance_dir}/.engine-assignment-restored.XXXXXX")
+          export release_receipt release_receipt_tmp
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt = json.loads(Path(os.environ["release_receipt"]).read_text(encoding="utf-8"))
+          receipt["state"] = "restored"
+          Path(os.environ["release_receipt_tmp"]).write_text(
+              json.dumps(receipt, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          chmod 0600 "${release_receipt_tmp}"
+          sync -f "${release_receipt_tmp}"
+          mv -T "${release_receipt_tmp}" "${release_receipt}"
+          sync -f "${release_receipt}"
+          sync -f "${maintenance_dir}"
+          rm -f "${active_units}"
+          sync -f "${maintenance_dir}"
+          SH
+
+      - name: Quiesce after fenced deploy failure
+        if: failure() && steps.assignment-migration.outputs.cutover == 'true'
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+          'sudo bash -s' <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          lock=${maintenance_dir}/engine-assignment-migration-v1.lock
+          volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+          marker=${volume_dir}/.engine-assignment-migration-v1.json
+          released=false
+          dropin=50-engine-assignment-migration-fence.conf
+          units=(
+            tinyassets-watchdog.timer tinyassets-watchdog.service
+            daemon-watchdog.timer daemon-watchdog.service
+            tinyassets-autoheal.timer tinyassets-autoheal.service
+            tinyassets-backup.timer tinyassets-backup.service
+            tinyassets-disk-watch.timer tinyassets-disk-watch.service
+            tinyassets-prune.timer tinyassets-prune.service
+            tinyassets-ship-logs.timer tinyassets-ship-logs.service
+            github-app-token-refresher.timer github-app-token-refresher.service
+            workflow-watchdog.timer workflow-watchdog.service
+            workflow-backup.timer workflow-backup.service
+            workflow-disk-watch.timer workflow-disk-watch.service
+            workflow-prune.timer workflow-prune.service
+            workflow-ship-logs.timer workflow-ship-logs.service
+            workflow-daemon.service workflow.service
+            tinyassets-daemon.service
+          )
+          install -d -m 0700 "${maintenance_dir}"
+          exec 9>"${lock}"
+          flock -x -w 30 9
+          if [ -f "${marker}" ] && [ ! -e "${fence}" ]; then
+            released=true
+          fi
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              install -d -m 0755 "/etc/systemd/system/${unit}.d"
+              printf '[Unit]\nConditionPathExists=!%s\n' "${fence}" \
+                > "/etc/systemd/system/${unit}.d/${dropin}"
+              sync -f "/etc/systemd/system/${unit}.d/${dropin}"
+            fi
+          done
+          systemctl daemon-reload
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              systemctl stop "${unit}"
+              if systemctl is-active --quiet "${unit}"; then
+                echo "failure fence could not stop ${unit}" >&2
+                exit 1
+              fi
+            fi
+          done
+          if [ -f /opt/tinyassets/compose.yml ]; then
+            docker compose --env-file /etc/tinyassets/env \
+              -f /opt/tinyassets/compose.yml down --timeout 30
+          fi
+          for compose_file in /opt/workflow/compose.yml /opt/workflow/deploy/compose.yml; do
+            if [ -f "${compose_file}" ]; then
+              if [ -f /etc/workflow/env ]; then
+                docker compose --env-file /etc/workflow/env \
+                  -f "${compose_file}" down --timeout 30
+              else
+                docker compose -f "${compose_file}" down --timeout 30
+              fi
+            fi
+          done
+          prove_no_container_users() {
+            local volume_users container
+            volume_users=$(docker ps -aq --filter volume=tinyassets-data)
+            if [ -n "${volume_users}" ]; then
+              echo "fenced failure left a production data-volume user" >&2
+              docker inspect ${volume_users}
+              return 1
+            fi
+            for container in $(docker ps -aq); do
+              if docker inspect "${container}" --format '{{range .Mounts}}{{println .Name .Source .Destination}}{{end}}' \
+                | grep -Eq '(^| )tinyassets-data( |$)| /data$'; then
+                echo "fenced failure left unknown container ${container} on production data" >&2
+                docker inspect "${container}"
+                return 1
+              fi
+            done
+          }
+          prove_no_container_users
+          command -v lsof >/dev/null 2>&1 || {
+            echo "lsof is required to prove no host process has the data volume open" >&2
+            exit 1
+          }
+          prove_no_open_files() {
+            local target=$1 stdout_file stderr_file status
+            stdout_file=$(mktemp)
+            stderr_file=$(mktemp)
+            set +e
+            lsof -nP +D "${target}" >"${stdout_file}" 2>"${stderr_file}"
+            status=$?
+            set -e
+            if [ -s "${stderr_file}" ]; then
+              echo "lsof could not prove ${target} is unused" >&2
+              cat "${stderr_file}" >&2
+              rm -f "${stdout_file}" "${stderr_file}"
+              return 1
+            fi
+            case "${status}" in
+              0)
+                echo "a host process still has ${target} open" >&2
+                cat "${stdout_file}" >&2
+                rm -f "${stdout_file}" "${stderr_file}"
+                return 1
+                ;;
+              1)
+                if [ -s "${stdout_file}" ]; then
+                  echo "lsof returned output with its no-match status for ${target}" >&2
+                  cat "${stdout_file}" >&2
+                  rm -f "${stdout_file}" "${stderr_file}"
+                  return 1
+                fi
+                ;;
+              *)
+                echo "lsof exited ${status}; absence of open files is unproven for ${target}" >&2
+                rm -f "${stdout_file}" "${stderr_file}"
+                return 1
+                ;;
+            esac
+            rm -f "${stdout_file}" "${stderr_file}"
+          }
+          prove_no_open_files "${volume_dir}"
+          if [ "${released}" != "true" ]; then
+            install -m 0600 /dev/null "${fence}"
+            sync -f "${fence}"
+            sync -f "${maintenance_dir}"
+            for unit in "${units[@]}"; do
+              if systemctl cat "${unit}" >/dev/null 2>&1; then
+                systemctl stop "${unit}"
+                if systemctl is-active --quiet "${unit}"; then
+                  echo "failure fence could not preserve stopped ${unit}" >&2
+                  exit 1
+                fi
+              fi
+            done
+            if [ -f /opt/tinyassets/compose.yml ]; then
+              docker compose --env-file /etc/tinyassets/env \
+                -f /opt/tinyassets/compose.yml down --timeout 30
+            fi
+            prove_no_container_users
+            prove_no_open_files "${volume_dir}"
+          fi
+          SH
+
       - name: Rollback on failure
-        if: failure() && steps.deploy.outcome == 'success' && steps.prev.outputs.previous != ''
+        if: failure() && steps.deploy.outcome == 'success' && steps.prev.outputs.previous != '' && steps.assignment-migration.outputs.cutover != 'true'
         env:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
         run: |

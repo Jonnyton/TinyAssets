@@ -4897,49 +4897,134 @@ def _action_set_engine(
     })
 
 
+def _engine_file_snapshot(path: Path) -> bytes | None:
+    """Return exact file bytes, or ``None`` when the file is absent."""
+    return path.read_bytes() if path.exists() else None
+
+
+def _restore_engine_file(path: Path, snapshot: bytes | None) -> None:
+    """Restore exact bytes/existence without exposing a partial replacement."""
+    if snapshot is None:
+        path.unlink(missing_ok=True)
+        return
+
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".rollback.tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(snapshot)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _rollback_engine_assignment(
+    *,
+    config_path: Path,
+    vault_path: Path,
+    config_before: bytes | None,
+    vault_before: bytes | None,
+) -> str:
+    """Restore vault then config; never reopen routing after vault failure."""
+    try:
+        _restore_engine_file(vault_path, vault_before)
+    except Exception as exc:  # noqa: BLE001
+        return f"credential vault restore failed: {exc}"
+    try:
+        _restore_engine_file(config_path, config_before)
+    except Exception as exc:  # noqa: BLE001
+        return f"universe config restore failed: {exc}"
+    return ""
+
+
 def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
     """BYO API key → per-universe vault + preferred_writer (fully wired)."""
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.credential_vault import (
-        supported_llm_api_key_services,
-        write_credential_vault,
-    )
+    import base64
+
+    import tinyassets.config as config_module
+    import tinyassets.credential_vault as vault_module
 
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
-    _writer_by_service = {"anthropic": "claude-code", "openai": "codex"}
-    if not preferred_writer and service in _writer_by_service:
-        preferred_writer = _writer_by_service[service]
-
     if not api_key:
         return json.dumps({"error": "api_key is required."})
-    if service not in supported_llm_api_key_services():
+    provider = vault_module.executable_provider_for_llm_api_key_service(service)
+    if provider is None:
         return json.dumps({
             "error": f"unsupported service {service!r} — the key would never "
                      "reach a provider.",
-            "expected_services": sorted(supported_llm_api_key_services()),
+            "expected_services": ["anthropic", "openai"],
         })
 
-    import base64
-    try:
-        vault_summary = write_credential_vault(udir, [{
-            "credential_type": "llm_api_key",
-            "service": service,
-            # base64 at rest (the vault's existing convention; _secret_value
-            # decodes secret_b64). Envelope encryption is the deferred hardening
-            # flagged in the credential-custody research.
-            "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
-        }])
-    except ValueError as exc:
-        return json.dumps({"error": f"Failed to store engine credential: {exc}"})
+    if preferred_writer and preferred_writer != provider:
+        return json.dumps({
+            "error": f"service {service!r} requires preferred_writer "
+                     f"{provider!r}, not {preferred_writer!r}.",
+            "matching_provider": provider,
+        })
+    preferred_writer = provider
 
-    fields = {"engine_source": "byo_api_key"}
-    if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
     try:
-        write_universe_config_fields(udir, **fields)
+        with config_module.engine_assignment_lock(udir):
+            config_path = Path(udir) / "config.yaml"
+            vault_path = vault_module.credential_vault_path(udir)
+            config_before = _engine_file_snapshot(config_path)
+            vault_before = _engine_file_snapshot(vault_path)
+            try:
+                existing = vault_module.load_credential_vault(udir)
+            except Exception as exc:  # noqa: BLE001
+                return json.dumps({
+                    "error": f"Failed to read existing engine credentials: {exc}",
+                })
+
+            records = [
+                dict(record) for record in existing
+                if record.get("credential_type") != "llm_api_key"
+            ]
+            records.append({
+                "credential_type": "llm_api_key",
+                "service": service,
+                # base64 at rest (the vault's existing convention; _secret_value
+                # decodes secret_b64). Envelope encryption is deferred hardening.
+                "secret_b64": base64.b64encode(
+                    api_key.encode("utf-8")
+                ).decode("ascii"),
+            })
+
+            try:
+                config_module.write_universe_config_fields(
+                    udir,
+                    engine_assignment_state="pending",
+                    allowed_providers=[],
+                )
+                vault_summary = vault_module.write_credential_vault(udir, records)
+                config_module.write_universe_config_fields(
+                    udir,
+                    engine_source="byo_api_key",
+                    preferred_writer=preferred_writer,
+                    allowed_providers=[provider],
+                    engine_assignment_state="ready",
+                )
+            except Exception as assignment_exc:  # noqa: BLE001
+                rollback_error = _rollback_engine_assignment(
+                    config_path=config_path,
+                    vault_path=vault_path,
+                    config_before=config_before,
+                    vault_before=vault_before,
+                )
+                error = f"Failed to assign engine: {assignment_exc}"
+                if rollback_error:
+                    error += f"; rollback failed: {rollback_error}"
+                return json.dumps({"error": error})
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+        return json.dumps({"error": f"Failed to lock engine assignment: {exc}"})
 
     return json.dumps({
         "status": "engine_set",
@@ -4955,16 +5040,22 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
 
 def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
     """Self-hosted endpoint → persist the endpoint + writer choice."""
-    from tinyassets.config import write_universe_config_fields
+    import tinyassets.config as config_module
 
     endpoint = str(data.get("endpoint", "")).strip()
     if not endpoint:
         return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
-    fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
+    fields = {
+        "engine_source": "self_hosted_endpoint",
+        "engine_endpoint": endpoint,
+        "allowed_providers": [],
+        "engine_assignment_state": "ready",
+    }
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
     try:
-        write_universe_config_fields(udir, **fields)
+        with config_module.engine_assignment_lock(udir):
+            config_module.write_universe_config_fields(udir, **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
@@ -4976,7 +5067,7 @@ def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
 
 def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
     """Market-rented → persist model + rate + spending cap."""
-    from tinyassets.config import write_universe_config_fields
+    import tinyassets.config as config_module
 
     market_model = str(data.get("market_model", "")).strip()
     if not market_model:
@@ -4989,11 +5080,13 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
     fields = {
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
+        "allowed_providers": [], "engine_assignment_state": "ready",
     }
     if preferred_writer:
         fields["preferred_writer"] = preferred_writer
     try:
-        write_universe_config_fields(udir, **fields)
+        with config_module.engine_assignment_lock(udir):
+            config_module.write_universe_config_fields(udir, **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
@@ -5014,13 +5107,18 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
     worker to consume it.
     """
-    from tinyassets.config import write_universe_config_fields
+    import tinyassets.config as config_module
 
     provider = str(data.get("provider", "")).strip() or "claude-code"
-    fields = {"engine_source": "host_daemon",
-              "preferred_writer": preferred_writer or provider}
+    fields = {
+        "engine_source": "host_daemon",
+        "preferred_writer": preferred_writer or provider,
+        "allowed_providers": [],
+        "engine_assignment_state": "ready",
+    }
     try:
-        write_universe_config_fields(udir, **fields)
+        with config_module.engine_assignment_lock(udir):
+            config_module.write_universe_config_fields(udir, **fields)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"Failed to write engine config: {exc}"})
     return json.dumps({
