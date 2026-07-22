@@ -101,31 +101,30 @@ The system SHALL resolve default MCP contact through the authenticated founder,
 not through a host-global active-universe marker. When an authenticated founder
 connects without requesting a specific universe, the system SHALL enter that
 founder's home universe. If the founder has no home universe, the first
-authenticated status contact SHALL AUTO-CREATE and bind a blank seed home
-universe (host decision 2026-07-15, supersedes the 2026-07-02 opt-in birth: a
-connected founder always has a home and MUST NOT have to know to ask for their
-first one) and return a compact welcome card (platform description + a first
-step the founder can say). The auto-birth SHALL respect the create scope — a
-founder whose token lacks the create scope SHALL instead receive the compact
-awaiting-creation card (a status read is NOT a create-scope bypass), and no
-`founder_home` binding SHALL be left for a founder who could not create. The
-home-id reservation SHALL be atomic so concurrent first-contact yields exactly
-one home (no double-birth). Additional universes beyond the first remain
-explicit (`universe action=create_universe`). The system SHALL NOT use a
-root-global `.active_universe` marker to decide which universe a chatbot speaks
-as.
+authenticated conversation entry SHALL AUTO-CREATE and bind a blank seed home
+universe before loading its soul/persona and returning its own first-person
+reply. `get_status` SHALL remain a side-effect-free supporting-evidence read;
+it SHALL NOT create a universe, founder-home binding, or soul bundle. Auto-birth
+SHALL respect create scope, and no `founder_home` binding SHALL be left for a
+founder who could not create. The home-id reservation SHALL be atomic so
+concurrent first-contact yields exactly one home (no double-birth). Additional
+universes beyond the first remain explicit (`universe
+action=create_universe`). The system SHALL NOT use a root-global
+`.active_universe` marker to decide which universe a chatbot speaks as.
 
 #### Scenario: New founder first contact auto-creates and binds the home universe
-- **WHEN** an authenticated founder holding the create scope with no home universe makes first MCP contact (`get_status` without a specific universe)
+- **WHEN** an authenticated founder holding the create scope with no home universe sends the opening message through `converse` without a specific universe
 - **THEN** the system auto-creates one blank seed universe through the universe creation contract
 - **AND** binds that universe to the founder as the founder's home universe
 - **AND** grants the founder `admin` on it and records the create in the universe ledger
-- **AND** returns a compact welcome card (`first_contact.event = universe_created` with the new `universe_id`) inviting the founder to introduce themselves
+- **AND** loads the new seed soul/persona before running the turn
+- **AND** returns the universe's own first-person reply as the main experience
+- **AND** does not return platform status as the main experience
 - **AND** does NOT clobber the host-global `.active_universe` marker
 
 #### Scenario: Read-only founder first contact does not birth a universe
-- **WHEN** an authenticated founder whose token lacks the create scope makes first MCP contact with no home universe
-- **THEN** the system returns the compact awaiting-creation card (`first_contact.event = no_universe_yet`)
+- **WHEN** an authenticated founder whose token lacks the create scope sends an opening conversation message with no home universe
+- **THEN** the system rejects first-contact creation honestly
 - **AND** creates no universe and leaves no `founder_home` binding
 
 #### Scenario: Existing founder first contact enters learned persona
@@ -134,6 +133,12 @@ as.
 - **THEN** the system loads that home universe's learned soul/persona
 - **AND** the chatbot speaks in first person as that universe
 - **AND** platform status is available as supporting evidence, not the default voice
+
+#### Scenario: Status does not provision first contact
+- **WHEN** an authenticated founder with no home universe calls `get_status`
+- **THEN** the system reports that no complete home is bound
+- **AND** creates no universe, founder-home binding, or soul file
+- **AND** repeated status reads leave state unchanged
 
 #### Scenario: Explicit universe selection is not global
 - **WHEN** an authenticated founder explicitly chooses a different authorized universe
