@@ -98,7 +98,7 @@ retired requirement "One identity, modulated by interlocutor and surface").
 - **WHEN** soul or org-chart policy changes the allowed action or disclosure
 - **THEN** it governs the same learned identity rather than supplying or replacing that identity
 
-### Requirement: The anti-collision boundary is explicit target routing, not prose classification
+### Requirement: The anti-collision boundary is stated honestly — host-memory ingestion is advisory, only the commons write surface is enforceable
 The anti-collision contract SHALL distinguish two boundaries that the retired change conflated,
 and SHALL NOT claim enforcement it cannot perform:
 
@@ -109,29 +109,15 @@ and SHALL NOT claim enforcement it cannot perform:
    prevents host-side ingestion; they are different systems.
 2. **The universe's own brain is the enforceable surface**, and there the rule is *sole
    writership*, not dossier-rejection: the universe intelligence is the sole writer of its own
-   brain via the governed learning path. External page-write paths SHALL route by explicit target
-   scope and SHALL NOT classify the prose as "dossier-shaped" or "profile-shaped" — the public
-   commons deliberately permits legitimate `people` pages.
+   brain via the governed learning path.
 
-Every externally callable free-form write or patch path — canonical `/mcp` `write_page`,
-`/mcp-directory` `write_page`, and deprecated `/mcp` `wiki(action=write|patch)` while it remains
-callable — SHALL use the same selector:
-
-- `scope="commons"` writes only the shared public commons and SHALL reject a simultaneous
-  `universe_id` as contradictory;
-- `scope="universe"` resolves an explicit `universe_id` or the authenticated founder's home and
-  SHALL return the existing `relay_to_universe` envelope naming `converse`, never writing the
-  universe page substrate directly; and
-- an unknown scope SHALL fail closed with an actionable error naming both choices; omission SHALL
-  follow the compatibility mapping defined by this change's `live-mcp-connector-surface` delta
-  until the deprecated `wiki` tool is removed, after which omission SHALL also fail closed.
-
-Typed `kind=` issue filings remain commons operations without this selector. The contract SHALL
-NOT restrict the universe's own in-process governed learning path, which deliberately and
+Accordingly, a write-path restriction SHALL be scoped to the **external/commons** write surface
+and SHALL NOT restrict the universe's own governed learning path, which deliberately and
 correctly persists a description of the founder to `founder.md`
 (`universe_intelligence.py` `_GROUNDING_FILES`, `"founder.md": "<markdown: who my founder is>"`).
-This is a routing boundary, not a content-moderation primitive (provenance: retired task 2.6,
-corrected by Codex review 2026-07-22 finding 2 and the cross-surface audit in draft PR #1583).
+Any such restriction SHALL name its exact endpoint, its predicate, and its redirect destination
+before it is implemented — an unscoped "reject profile-shaped writes" rule would contradict
+landed behavior (provenance: retired task 2.6, corrected by Codex review 2026-07-22 finding 2).
 
 #### Scenario: the host-memory guard is described as advisory
 - **WHEN** the anti-collision guard is documented or surfaced
@@ -141,25 +127,10 @@ corrected by Codex review 2026-07-22 finding 2 and the cross-surface audit in dr
 - **WHEN** the governed learning path persists founder facts the founder explicitly stated
 - **THEN** the write succeeds — sole-writership governs this path, not dossier-shape rejection
 
-#### Scenario: an explicit commons write stays out of every universe brain
-- **WHEN** an authenticated external caller selects `scope="commons"` for a free-form page write
-- **THEN** the write targets only the shared public commons
-- **AND** a simultaneous `universe_id` is rejected as contradictory
-
-#### Scenario: an explicit universe write is relayed to the sole writer
-- **WHEN** an external caller selects `scope="universe"` for a free-form write or patch
-- **THEN** the result is `relay_to_universe` naming the resolved universe and `converse`
-- **AND** no external page-write path writes that universe's brain directly
-
-#### Scenario: an unknown external target fails closed
-- **WHEN** an external caller supplies an unknown scope for a free-form write
-- **THEN** no page is mutated and the error names `commons` and `universe` as the valid choices
-
-#### Scenario: an omitted scope follows the bounded compatibility mapping
-- **WHEN** an existing client omits scope during the legacy-tool migration window
-- **THEN** canonical `/mcp` `write_page` retains its historical universe-relay default
-- **AND** directory or deprecated-wiki calls without `universe_id` retain their historical commons default
-- **AND** any call carrying `universe_id` is relayed to the universe rather than writing its brain directly
+#### Scenario: an external dossier write is refused only under a defined predicate
+- **WHEN** an external caller writes person-dossier content to the commons surface
+- **THEN** it is refused only if it matches the named endpoint and predicate defined for that surface
+- **AND** the refusal names the correct destination instead of failing silently
 
 ### Requirement: Persona is a forkable default under first-party custody; the substrate enforces only the floor
 A universe's persona SHALL be a forkable `[composable]` default that the founder can tune, and
