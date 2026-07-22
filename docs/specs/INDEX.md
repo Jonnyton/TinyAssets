@@ -17,7 +17,7 @@ missing here is effectively invisible to the next session.
   missing entries rather than assuming the spec does not exist.
 - **Grouping follows the `status:` frontmatter lifecycle** defined in
   `docs/conventions.md` § "Frontmatter `status:` field" (`active`, `shipped`,
-  `superseded`, `research`, `historical`). Group counts as of 2026-07-22:
+  `superseded`, `research`, `historical`). Group counts as of 2026-07-21:
   24 `active`, 13 with no frontmatter, 7 `historical`, 6 `shipped`,
   1 `superseded`.
 - **Each line says what the spec decided and what state it is in** — not just
@@ -32,13 +32,15 @@ the **as-built requirement truth** (22 capabilities on `main`). `docs/specs/`
 holds the older feature/change specs. The two are easy to confuse, so state the
 relationship precisely:
 
-- **An OpenSpec capability generally does *not* supersede a `docs/specs/` entry.**
-  The capability specs are as-built baselines — each opens with "describes landed
-  behavior on `main` at baseline time". Most entries below are forward-looking
-  pre-drafts that explicitly say "No code yet." An as-built spec cannot supersede
-  an unbuilt design; it records what was actually built in the same domain, which
-  is frequently narrower or differently shaped than the pre-draft proposed.
-- Verified 2026-07-22: **no file under `openspec/specs/` cites any `docs/specs/`
+- **An OpenSpec capability does not automatically or wholly supersede a
+  `docs/specs/` entry.** The capability specs are as-built baselines — each opens
+  with "describes landed behavior on `main` at baseline time". Most entries below
+  are forward-looking pre-drafts that explicitly say "No code yet", and what got
+  built is frequently narrower than what the pre-draft proposed. **But landed
+  behavior can still partially obsolete or outright contradict parts of a draft.**
+  So neither doc overrides the other by default: revalidate the entry against the
+  capability baseline before building from it, and record what survived.
+- Verified 2026-07-21: **no file under `openspec/specs/` cites any `docs/specs/`
   path, and no entry below cited a capability.** The cross-references below were
   added by this index; they are domain pointers, not supersession claims.
 - **How to read the pointers.** `→ as-built: <capability>` means "if you want to
@@ -107,7 +109,7 @@ each declares `Status: proposal` in its body.
 
 ## Proposals — other
 
-- [`daemon-liveness-watchdog.md`](daemon-liveness-watchdog.md) — Substrate proposal from a BUG-050 probe: the container healthcheck is a **false positive** — it reports "container alive" when "container alive AND daemon claiming pickable work" is what matters. Documents a case where three deploys reported success while the daemon had been dead for 42 minutes. → as-built: `daemon-runtime-and-dispatch`.
+- [`daemon-liveness-watchdog.md`](daemon-liveness-watchdog.md) — Substrate proposal from a BUG-050 probe: the container healthcheck is a **false positive** — it reports "container alive" when "container alive AND daemon claiming pickable work" is what matters. Documents a case where three deploys reported success while the daemon was dead-or-wedged, with no activity for 42 minutes. → as-built: `daemon-runtime-and-dispatch`.
 - [`2026-07-15-riscv-fpga-vertical-proof.md`](2026-07-15-riscv-fpga-vertical-proof.md) — Chatbot-built physical vertical proof: RISC-V soft CPU + ML accelerator on FPGA, quantized keyword-spotting model, custom carrier PCB, open firmware — originated and steered entirely through a live connector conversation. **Paused** as first-device candidate (host proposed a conversational-cookbook pivot 2026-07-15); candidate successor `ideas/2026-07-15-conversational-cookbook-device.md`. No implementation authority; a Claude-family reviewer must re-check sources before any build or purchase. → as-built: `hardware-creation`.
 
 ## Shipped
