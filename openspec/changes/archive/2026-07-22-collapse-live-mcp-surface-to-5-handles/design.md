@@ -1,5 +1,13 @@
 ## Context
 
+> **Historical closure (2026-07-22): superseded; never sync this delta.** PR #1335 landed the base
+> handle routers, later work replaced connector-invalid dotted names with underscores and added
+> `converse`, and the as-built seven-handle contract now lives in
+> `openspec/specs/live-mcp-connector-surface/spec.md`. `tinyassets/directory_server.py` is an
+> intentional privacy-redacted directory surface and must not be retired. This change is historical
+> provenance only; its real residuals are owned by `reconcile-external-connector-manifests` and
+> `retire-legacy-live-mcp-tools`.
+
 The TinyAssets connector is served to all chatbots/apps from `tinyassets/universe_server.py` (FastMCP, Streamable HTTP) behind `https://tinyassets.io/mcp`. It currently registers 7 coarse `@mcp.tool` handlers (`universe`, `extensions`, `goals`, `gates`, `wiki`, `get_status`, plus prompts), each multiplexing dozens of `action=` values — ~175 enumerated actions in total. The substrate vocabulary was frozen on 2026-05-06 to 6 primitives + 5 MCP handles; the action→handle fold-map is documented on `pages/concepts/...-6-primitives-5-mcp-handles`. PR-047 (GitHub #617) already implemented the 5-handle surface and passed the triple-key gate, but on a parallel `tinyassets/directory_server.py` ("/mcp-directory") that the live endpoint does not serve. That file is now gone from the working tree, so the implementation must be recovered from git history (#617) or rebuilt. Filed as PR-178.
 
 ## Goals / Non-Goals

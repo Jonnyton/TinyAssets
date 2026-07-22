@@ -1,3 +1,11 @@
+> **Historical closure (2026-07-22): superseded; never sync this delta.** The implementation
+> evolved into the canonical `live-mcp-connector-surface`: live `/mcp` advertises exactly seven
+> underscore handles (the five graph/page handles plus `converse` and `get_status`), while
+> `/mcp-directory` intentionally advertises the narrower five underscore handles. The dotted-name
+> `mcp-five-handle-surface` delta is obsolete and this change must be archived with `--skip-specs`.
+> Remaining manifest and hidden-legacy cleanup work moved to
+> `reconcile-external-connector-manifests` and `retire-legacy-live-mcp-tools`.
+
 ## Why
 
 The substrate vocabulary was host-ratified on 2026-05-06: the user-facing MCP surface is exactly **5 handles** (`read.graph`, `write.graph`, `run.graph`, `read.page`, `write.page`) over the 6 primitives. That collapse was implemented and merged (PR-047 / GitHub #617, triple-key approved 2026-05-08) — but on a **separate** `tinyassets/directory_server.py` ("/mcp-directory") surface. The live public connector at `https://tinyassets.io/mcp` is served by `tinyassets/universe_server.py`, which was never cut over. As of 2026-06-23 the live endpoint still advertises the legacy fat surface — 7 tools / ~175 named actions (extensions=80, universe=46, plus goals/gates/wiki/get_status/community_change_context) — and no `*.graph` / `*.page` handle exists. A ratified design has been functionally absent from the live path for ~6 weeks. This is spec-vs-implementation drift, not a missing primitive: the design exists and was built; it just never reached production. Tracked as PR-178.

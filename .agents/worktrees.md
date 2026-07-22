@@ -702,3 +702,91 @@ Notes:
 - Ship condition: focused tests pass, branch pushed, PR opened, then deploy
   brings runtime_count to 4 while goal_pool remains a follow-on.
 - 2026-06-24 CREATE wf-branch-lifecycle-automation branch=worktree-branch-lifecycle-automation base=origin/main provider=claude-code (branch lifecycle automation — design note + L0-L4)
+
+## 2026-07-22 12:41 - create collapse-mcp-spec-reconcile
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/collapse-mcp-spec-reconcile
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile
+- STATUS/Issue/PR: Reconcile obsolete five-handle OpenSpec; PR after strict validation and independent review
+- PLAN refs: API and MCP Interface; Distribution and Discoverability
+- Purpose: retire the obsolete five-handle change without corrupting seven-handle canonical truth and preserve real residuals as successor changes
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile\_PURPOSE.md
+- Memory refs: PR #1594 audit; PR #1595 catalog repair
+- Related implications: external directory acceptance; live-mcp-connector-surface; PR #1561 legacy stdio fence is a separate runtime lane
+- Idea feed refs: none
+- Ship/abandon: merge reviewed spec-only PR, or abandon if a current overlapping lane is found
+
+## 2026-07-22 - remove collapse-mcp-spec-reconcile
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/collapse-mcp-spec-reconcile
+- Lane state: Abandoned/swept
+- Worktree: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile
+- STATUS/Issue/PR: reviewed spec-only PR; STATUS claim retired in landing diff
+- PLAN refs: API and MCP Interface; Distribution and Discoverability
+- Purpose: archive obsolete five-handle proposal without syncing and preserve residual work as two narrow successor changes
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile\_PURPOSE.md
+- Memory refs: independent Codex whole-lane APPROVE 2026-07-22
+- Related implications: external directory acceptance; PR #1522 folds into manifest successor; PRs #1561 and #1553 remain separate
+- Idea feed refs: none
+- Ship/abandon: ship after GitHub checks; local worktree may be removed after merge
+## 2026-07-22 13:00 - create test-identity-reset-spec
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/test-identity-reset-spec-reconcile
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec
+- STATUS/Issue/PR: R2-2 repeatable test identity; spec-only reconciliation before any runtime salvage
+- PLAN refs: full PLAN review; Providers, API & MCP Interface, Constraints, State & Artifacts
+- Purpose: make the active reset/identity OpenSpec truthful, narrow, and safe without reusing stale all-eleven-task work
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec\_PURPOSE.md
+- Memory refs: conformance triage from PR #1597 lane; stale PR #1560 and commit 375b0155 read-only
+- Related implications: universe-visibility and provider-status own the moved isolation/evidence concerns
+- Idea feed refs: none
+- Ship/abandon: reviewed spec-only PR; implementation remains a later separately claimed lane
+
+## 2026-07-22 - remove test-identity-reset-spec
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/test-identity-reset-spec-reconcile
+- Lane state: Abandoned/swept
+- Worktree: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec
+- STATUS/Issue/PR: R2-2 spec reconciliation approved; temporary claim retired in landing diff
+- PLAN refs: full PLAN; Daemon Platform, Providers, API & MCP Interface, State & Artifacts
+- Purpose: make test identity, operator reset, privacy, crash safety, and requester compute authority truthful before implementation
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec\_PURPOSE.md
+- Memory refs: three independent Codex APPROVE verdicts, 2026-07-22
+- Related implications: #1560 superseded; 2.3 stays with visibility/identity; provider evidence stays with #1570
+- Idea feed refs: none
+- Ship/abandon: ship reviewed spec-only PR; implementation remains separately claimable after merge
+## 2026-07-22 13:30 - create connector-manifest-products
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/connector-manifest-product-split
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-manifest-products
+- STATUS/Issue/PR: Split connector-manifest product contracts; corrective spec-only PR
+- PLAN refs: API & MCP Interface; Distribution & Discoverability
+- Purpose: separate remote OAuth seven, local MCPB seven, and remote directory-five product/auth contracts while sharing catalog names
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-manifest-products\_PURPOSE.md
+- Memory refs: post-#1597 reciprocal review ADAPT
+- Related implications: manifest successor blocks retire-legacy-live-mcp-tools; external directory acceptance stays host-owned
+- Idea feed refs: none
+- Ship/abandon: reviewed corrective spec-only PR
+
+## 2026-07-22 - remove connector-manifest-products
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/connector-manifest-product-split
+- Lane state: Abandoned/swept
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-manifest-products
+- STATUS/Issue/PR: three-product distribution spec approved; temporary claim retired in landing diff
+- PLAN refs: API & MCP Interface; Distribution & Discoverability
+- Purpose: separate remote OAuth seven, local MCPB stdio seven-name, and remote directory-five contracts and acceptance
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-manifest-products\_PURPOSE.md
+- Memory refs: three independent Codex APPROVE verdicts, 2026-07-22
+- Related implications: local actorless `converse` blocks legacy retirement until authority/redesign and host migration proof; external directory acceptance remains host-owned
+- Idea feed refs: none
+- Ship/abandon: ship reviewed spec-only PR; implementation remains separately claimable after merge

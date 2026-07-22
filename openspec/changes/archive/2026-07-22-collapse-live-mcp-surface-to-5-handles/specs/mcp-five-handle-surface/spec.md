@@ -1,5 +1,10 @@
 ## ADDED Requirements
 
+> **OBSOLETE — DO NOT SYNC.** This proposed capability was superseded by canonical
+> `live-mcp-connector-surface`, whose as-built contract is seven underscore handles on live `/mcp`
+> and a separate five-underscore-handle directory review surface. Archive this change with
+> `--skip-specs`; creating `openspec/specs/mcp-five-handle-surface/` would introduce false truth.
+
 ### Requirement: Live connector exposes exactly the five canonical handles
 The live MCP server `tinyassets/universe_server.py` (served at `https://tinyassets.io/mcp`) SHALL register exactly five user-facing tools — `read.graph`, `write.graph`, `run.graph`, `read.page`, `write.page` — as the canonical user surface. `get_status` MAY remain as a read affordance and registered MCP prompts MAY remain, but no other user-facing data/compute tool SHALL be advertised as canonical.
 
