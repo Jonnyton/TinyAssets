@@ -111,6 +111,19 @@ def test_get_status_active_host_shape(status_env):
     assert host["host_id"] == "test-host"
 
 
+def test_get_status_surfaces_provider_auth_evidence(status_env, monkeypatch):
+    codex_home = status_env.parent / "codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+
+    parsed = json.loads(get_status())
+    writers = parsed["supervisor_liveness"]["provider_auth"]["writers"]
+    assert writers["codex"]["evidence"] == "fresh_timestamp"
+    assert writers["claude-code"]["evidence"] == "presence_only"
+
+
 def test_get_status_evidence_includes_policy_hash(status_env):
     """Round-trip: the `evidence.policy_hash` field is a sha256 hex string."""
     parsed = json.loads(get_status())

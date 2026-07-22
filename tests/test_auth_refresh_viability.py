@@ -52,6 +52,7 @@ def test_fresh_last_refresh_is_ok_without_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
     health = base.subscription_auth_health("codex")
     assert health["status"] == "ok"
+    assert health["evidence"] == "fresh_timestamp"
     assert "refresh-viable" in health["detail"]
 
 
@@ -61,13 +62,16 @@ def test_missing_last_refresh_falls_back_to_fresh_mtime(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_auth(tmp_path, last_refresh_age_s=None)
     monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
-    assert base.subscription_auth_health("codex")["status"] == "ok"
+    health = base.subscription_auth_health("codex")
+    assert health["status"] == "ok"
+    assert health["evidence"] == "fresh_timestamp"
 
 
 def test_absent_auth_json_still_not_logged_in(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     health = base.subscription_auth_health("codex")
     assert health["status"] == "not_logged_in"
+    assert health["evidence"] == "presence_only"
     assert "no auth.json" in health["detail"]
 
 
@@ -89,6 +93,7 @@ def test_stale_plus_dead_probe_quarantines(tmp_path, monkeypatch):
     )
     health = base.subscription_auth_health("codex")
     assert health["status"] == "not_logged_in"
+    assert health["evidence"] == "live_probe"
     assert "probe FAILED" in health["detail"]
 
 
@@ -98,7 +103,9 @@ def test_stale_plus_alive_probe_is_ok(tmp_path, monkeypatch):
         base, "_codex_live_auth_probe",
         lambda timeout_s: {"status": "ok", "detail": "live auth probe passed"},
     )
-    assert base.subscription_auth_health("codex")["status"] == "ok"
+    health = base.subscription_auth_health("codex")
+    assert health["status"] == "ok"
+    assert health["evidence"] == "live_probe"
 
 
 def test_stale_plus_inconclusive_probe_fails_toward_ok(tmp_path, monkeypatch):
@@ -111,6 +118,7 @@ def test_stale_plus_inconclusive_probe_fails_toward_ok(tmp_path, monkeypatch):
     )
     health = base.subscription_auth_health("codex")
     assert health["status"] == "ok"
+    assert health["evidence"] == "live_probe"
     assert "timed out" in health["detail"]
 
 
@@ -118,7 +126,9 @@ def test_probe_disabled_env_reads_presence_only(tmp_path, monkeypatch):
     _make_stale(tmp_path, monkeypatch)
     monkeypatch.setenv("TINYASSETS_AUTH_VIABILITY_PROBE", "off")
     monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
-    assert base.subscription_auth_health("codex")["status"] == "ok"
+    health = base.subscription_auth_health("codex")
+    assert health["status"] == "ok"
+    assert health["evidence"] == "probe_disabled"
 
 
 # ---- allow_probe=False (get_status latency guard) -----------------------------
@@ -131,6 +141,7 @@ def test_allow_probe_false_never_spawns_probe_on_stale(tmp_path, monkeypatch):
     monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
     health = base.subscription_auth_health("codex", allow_probe=False)
     assert health["status"] == "ok"
+    assert health["evidence"] == "probe_deferred"
     assert "deferred" in health["detail"]
 
 
@@ -147,6 +158,7 @@ def test_allow_probe_false_still_serves_cached_dead_verdict(tmp_path, monkeypatc
     monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
     cached = base.subscription_auth_health("codex", allow_probe=False)
     assert cached["status"] == "not_logged_in"
+    assert cached["evidence"] == "cached"
 
 
 # ---- probe verdicts are TTL-cached -------------------------------------------
@@ -164,6 +176,8 @@ def test_probe_result_cached_within_ttl(tmp_path, monkeypatch):
     first = base.subscription_auth_health("codex")
     second = base.subscription_auth_health("codex")
     assert first["status"] == second["status"] == "not_logged_in"
+    assert first["evidence"] == "live_probe"
+    assert second["evidence"] == "cached"
     assert len(calls) == 1  # supervisor ticks must not spawn a probe each
 
 
@@ -203,7 +217,36 @@ def test_dead_verdict_visible_across_processes_via_disk(tmp_path, monkeypatch):
     monkeypatch.setattr(base, "_codex_live_auth_probe", _explode_probe)
     health = base.subscription_auth_health("codex", allow_probe=False)
     assert health["status"] == "not_logged_in"
+    assert health["evidence"] == "cached"
     assert (tmp_path / base.PROBE_CACHE_FILENAME).is_file()
+
+
+def test_non_codex_auth_health_return_paths_have_closed_evidence(
+    tmp_path, monkeypatch,
+):
+    assert base.AUTH_HEALTH_EVIDENCE == frozenset({
+        "live_probe", "cached", "fresh_timestamp", "presence_only",
+        "probe_deferred", "probe_disabled", "unsupported",
+    })
+
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    token_health = base.subscription_auth_health("claude-code", allow_probe=False)
+    assert token_health["evidence"] == "presence_only"
+
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
+    config_dir = tmp_path / "claude"
+    config_dir.mkdir()
+    (config_dir / "credentials.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    config_health = base.subscription_auth_health("claude-code", allow_probe=False)
+    assert config_health["evidence"] == "presence_only"
+
+    unsupported = base.subscription_auth_health("other", allow_probe=False)
+    assert unsupported["evidence"] == "unsupported"
+    assert {
+        token_health["evidence"], config_health["evidence"],
+        unsupported["evidence"],
+    } <= base.AUTH_HEALTH_EVIDENCE
 
 
 # ---- _codex_live_auth_probe output parsing ------------------------------------

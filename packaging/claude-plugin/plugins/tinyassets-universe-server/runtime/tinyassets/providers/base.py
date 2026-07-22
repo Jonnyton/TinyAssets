@@ -192,6 +192,16 @@ DEFAULT_CODEX_AUTH_FRESH_S = 24 * 3600.0
 DEFAULT_AUTH_PROBE_TTL_S = 1800.0
 DEFAULT_AUTH_PROBE_TIMEOUT_S = 120.0
 
+AUTH_HEALTH_EVIDENCE = frozenset({
+    "live_probe",
+    "cached",
+    "fresh_timestamp",
+    "presence_only",
+    "probe_deferred",
+    "probe_disabled",
+    "unsupported",
+})
+
 _PROBE_FALSY = {"0", "false", "off", "no"}
 
 # Live-probe verdict cache. The supervisor calls the gate every loop tick;
@@ -413,9 +423,11 @@ def _codex_refresh_viability(
 
     presence_ok = {
         "provider": "codex", "status": "ok",
+        "evidence": "presence_only",
         "detail": f"auth.json present at {codex_home}",
     }
     if not _viability_probe_enabled():
+        presence_ok["evidence"] = "probe_disabled"
         return presence_ok
 
     fresh_s = _finite_positive_env_s(
@@ -423,6 +435,7 @@ def _codex_refresh_viability(
     )
     age = _codex_last_refresh_age_s(codex_home)
     if age is not None and 0 <= age < fresh_s:
+        presence_ok["evidence"] = "fresh_timestamp"
         presence_ok["detail"] = (
             f"auth.json present at {codex_home}; last_refresh "
             f"{age:.0f}s ago (< {fresh_s:.0f}s) — refresh-viable"
@@ -440,9 +453,12 @@ def _codex_refresh_viability(
     if cached is None:
         cached = _auth_probe_cache.get(str(codex_home))
     if cached is not None and 0 <= now - cached[0] < ttl_s:
-        return dict(cached[1])
+        cached_health = dict(cached[1])
+        cached_health["evidence"] = "cached"
+        return cached_health
 
     if not allow_probe:
+        presence_ok["evidence"] = "probe_deferred"
         presence_ok["detail"] = (
             f"auth.json present at {codex_home}; last_refresh stale "
             f"(age {'unknown' if age is None else f'{age:.0f}s'}) — live "
@@ -456,12 +472,13 @@ def _codex_refresh_viability(
     probe = _codex_live_auth_probe(timeout_s)
     if probe["status"] == "not_logged_in":
         health = {"provider": "codex", "status": "not_logged_in",
-                  "detail": probe["detail"]}
+                  "evidence": "live_probe", "detail": probe["detail"]}
     else:
         # "ok" and "inconclusive" both read ok: only a POSITIVE dead
         # signature quarantines (false not_logged_in on a healthy worker is
         # worse; a false ok still fails at call time + trips loop_stalled).
         health = {"provider": "codex", "status": "ok",
+                  "evidence": "live_probe",
                   "detail": f"auth.json present at {codex_home}; {probe['detail']}"}
     _auth_probe_cache[str(codex_home)] = (now, dict(health))
     _write_probe_cache_file(codex_home, now, health)
@@ -476,7 +493,7 @@ def _codex_refresh_viability(
 # self-quarantine (cloud_worker) and get_status can surface dead writer auth
 # instead of leaving it buried in worker logs.
 #
-# Returns ``{"provider", "status", "detail"}`` where status is one of:
+# Returns ``{"provider", "status", "evidence", "detail"}`` where status is one of:
 #   "ok"            — subscription credentials are present (and, for codex,
 #                     refresh-viable per the layered probe below)
 #   "not_logged_in" — credentials are missing or proven dead (the actionable
@@ -518,11 +535,13 @@ def subscription_auth_health(
         codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         if not (codex_home / "auth.json").is_file():
             return {"provider": name, "status": "not_logged_in",
+                    "evidence": "presence_only",
                     "detail": f"no auth.json at {codex_home}"}
         return _codex_refresh_viability(codex_home, allow_probe=allow_probe)
     if name == "claude-code":
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
             return {"provider": name, "status": "ok",
+                    "evidence": "presence_only",
                     "detail": "CLAUDE_CODE_OAUTH_TOKEN set"}
         config_dir = Path(
             os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")
@@ -535,13 +554,17 @@ def subscription_auth_health(
         try:
             if config_dir.is_dir() and any(config_dir.iterdir()):
                 return {"provider": name, "status": "ok",
+                        "evidence": "presence_only",
                         "detail": f"config dir populated at {config_dir}"}
         except OSError as exc:
             return {"provider": name, "status": "not_logged_in",
+                    "evidence": "presence_only",
                     "detail": f"config dir unreadable: {exc}"}
         return {"provider": name, "status": "not_logged_in",
+                "evidence": "presence_only",
                 "detail": f"no token and empty/absent {config_dir}"}
     return {"provider": name, "status": "unknown",
+            "evidence": "unsupported",
             "detail": "no subscription-auth probe for this provider"}
 
 
