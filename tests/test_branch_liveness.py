@@ -44,6 +44,13 @@ def test_squash_merged_branch_is_merged_not_stranded(monkeypatch: pytest.MonkeyP
                 (0, "synthetic-sha\n"),
             ("cherry", "origin/main", "synthetic-sha"):
                 (0, "- synthetic-sha\n"),
+            (
+                "for-each-ref",
+                "--contains=refs/remotes/origin/fix/squashed",
+                "--format=%(refname:short)",
+                "refs/remotes/origin",
+            ):
+                (0, "origin/fix/squashed\norigin/main\n"),
         }
         returncode, stdout = answers[key]
         return subprocess.CompletedProcess(command, returncode, stdout, "")
@@ -82,7 +89,7 @@ def test_contained_branch_reports_absorbing_ref(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         bj,
         "ancestry_container",
-        lambda _remote, name, _base: (
+        lambda _remote, name, _base, **_kwargs: (
             ("origin/feature/stack", None)
             if name == "feature/child"
             else (None, None)
@@ -132,7 +139,11 @@ def test_squash_containment_is_independent_of_gh(
 ) -> None:
     child = "refs/remotes/origin/feature/child"
     stack = "refs/remotes/origin/feature/stack"
-    monkeypatch.setattr(bj, "ancestry_container", lambda _remote, _name, _base: (None, None))
+    monkeypatch.setattr(
+        bj,
+        "ancestry_container",
+        lambda _remote, _name, _base, **_kwargs: (None, None),
+    )
     monkeypatch.setattr(
         bj,
         "merge_status",
@@ -150,6 +161,39 @@ def test_squash_containment_is_independent_of_gh(
     )
 
     assert _verdict(verdicts, "feature/child").category == "CONTAINED"
+
+
+def test_merged_refs_are_not_squash_containment_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = "origin/main"
+    merged_ref = "refs/remotes/origin/feature/already-merged"
+    captured: list[list[str]] = []
+
+    def merge_status(ref: str, base_ref: str, **_kwargs):
+        return (ref == merged_ref, None) if base_ref == base else (False, None)
+
+    def squash_container(_remote, _name, _base, branches, **_kwargs):
+        captured.append(branches)
+        return None, None
+
+    monkeypatch.setattr(bj, "merge_status", merge_status)
+    monkeypatch.setattr(
+        bj,
+        "ancestry_container",
+        lambda _remote, _name, _base, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr(bj, "squash_container", squash_container)
+
+    bj.classify_liveness(
+        "origin",
+        base,
+        ["feature/candidate", "feature/already-merged", "feature/live-base"],
+        pr_index=_pr_index(),
+    )
+
+    assert captured
+    assert all("feature/already-merged" not in candidates for candidates in captured)
 
 
 def test_unreachable_branch_without_open_pr_is_stranded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,7 +235,11 @@ def test_git_failure_is_undetermined_and_never_succeeds(monkeypatch: pytest.Monk
 
 def test_missing_gh_suppresses_unsafe_stranded_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bj, "merge_status", lambda _ref, _base: (False, None))
-    monkeypatch.setattr(bj, "ancestry_container", lambda _remote, _name, _base: (None, None))
+    monkeypatch.setattr(
+        bj,
+        "ancestry_container",
+        lambda _remote, _name, _base, **_kwargs: (None, None),
+    )
 
     verdicts = bj.classify_liveness(
         "origin",
@@ -310,7 +358,11 @@ def test_main_exit_code_gates_stranded_human_report(
     monkeypatch.setattr(bj, "liveness_branches", lambda _remote: (["feature/lost"], None))
     monkeypatch.setattr(bj, "pull_request_index", lambda: (_pr_index(), None))
     monkeypatch.setattr(bj, "merge_status", lambda _ref, _base: (False, None))
-    monkeypatch.setattr(bj, "ancestry_container", lambda _remote, _name, _base: (None, None))
+    monkeypatch.setattr(
+        bj,
+        "ancestry_container",
+        lambda _remote, _name, _base, **_kwargs: (None, None),
+    )
 
     exit_code = bj.main(["--liveness", "--exit-code"])
 

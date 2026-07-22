@@ -289,6 +289,8 @@ def ancestry_container(
     remote: str,
     name: str,
     base_ref: str,
+    *,
+    candidates: set[str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Return a remote ref that contains the branch tip, using one git query."""
     ref = f"refs/remotes/{remote}/{name}"
@@ -307,7 +309,12 @@ def ancestry_container(
         return None, _command_failure("git for-each-ref --contains", proc)
     excluded = {f"{remote}/{name}", f"{remote}/HEAD", base_ref}
     container = next(
-        (line.strip() for line in proc.stdout.splitlines() if line.strip() not in excluded),
+        (
+            line.strip()
+            for line in proc.stdout.splitlines()
+            if line.strip() not in excluded
+            and (candidates is None or line.strip() in candidates)
+        ),
         None,
     )
     return container, None
@@ -318,6 +325,9 @@ def squash_container(
     name: str,
     base_ref: str,
     branches: list[str],
+    *,
+    cache: dict[tuple[str, ...], subprocess.CompletedProcess[str]] | None = None,
+    cache_lock: Lock | None = None,
 ) -> tuple[str | None, str | None]:
     """Find squash-equivalent containment using the shared merge primitive."""
     ref = f"refs/remotes/{remote}/{name}"
@@ -329,22 +339,27 @@ def squash_container(
     if not candidates:
         return None, None
 
-    cache: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
-    cache_lock = Lock()
+    command_cache = cache if cache is not None else {}
+    command_cache_lock = cache_lock or Lock()
 
     def cached_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         if command[1:3] == ["merge-base", "--is-ancestor"]:
             return subprocess.CompletedProcess(command, 1, "", "")
-        cacheable = command[1] in {"rev-parse", "commit-tree"}
+        operation = command[1]
+        cacheable = operation in {"merge-base", "rev-parse", "commit-tree"}
         if not cacheable:
             return _run(command)
-        key = tuple(command)
-        with cache_lock:
-            if key not in cache:
-                cache[key] = _run(command)
-            return cache[key]
+        key = (
+            ("git", "merge-base", *sorted(command[2:]))
+            if operation == "merge-base"
+            else tuple(command)
+        )
+        with command_cache_lock:
+            if key not in command_cache:
+                command_cache[key] = _run(command)
+            return command_cache[key]
 
-    with ThreadPoolExecutor(max_workers=min(64, len(candidates))) as executor:
+    with ThreadPoolExecutor(max_workers=min(48, len(candidates))) as executor:
         results = list(
             executor.map(
                 lambda candidate: merge_status(ref, candidate[1], run=cached_run),
@@ -369,6 +384,21 @@ def classify_liveness(
     """Classify each non-protected remote branch into one liveness bucket."""
     verdicts: list[LivenessVerdict] = []
     subjects = [name for name in branches if not is_protected(name)]
+    open_names = set(pr_index.open_by_branch) if pr_index else set()
+    base_status = {
+        name: merge_status(f"refs/remotes/{remote}/{name}", base_ref)
+        for name in subjects
+        if name not in open_names
+    }
+    live_absorbers = [
+        name
+        for name in branches
+        if f"{remote}/{name}" != base_ref
+        and (name in open_names or name not in base_status or base_status[name][0] is not True)
+    ]
+    live_absorber_refs = {f"{remote}/{name}" for name in live_absorbers}
+    containment_cache: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
+    containment_cache_lock = Lock()
     for name in subjects:
         if pr_index and name in pr_index.open_by_branch:
             verdicts.append(
@@ -381,8 +411,7 @@ def classify_liveness(
             )
             continue
 
-        ref = f"refs/remotes/{remote}/{name}"
-        merged, error = merge_status(ref, base_ref)
+        merged, error = base_status[name]
         if merged is None:
             verdicts.append(LivenessVerdict(name, "UNDETERMINED", error or "git ambiguity"))
             continue
@@ -398,10 +427,22 @@ def classify_liveness(
             )
             continue
 
-        contained_by, contain_error = ancestry_container(remote, name, base_ref)
+        contained_by, contain_error = ancestry_container(
+            remote,
+            name,
+            base_ref,
+            candidates=live_absorber_refs,
+        )
         containment_reason = "branch tip is an ancestor of another remote ref"
         if not contained_by and not contain_error:
-            contained_by, contain_error = squash_container(remote, name, base_ref, branches)
+            contained_by, contain_error = squash_container(
+                remote,
+                name,
+                base_ref,
+                live_absorbers,
+                cache=containment_cache,
+                cache_lock=containment_cache_lock,
+            )
             containment_reason = "cumulative change is present on another remote ref"
         if contained_by:
             verdicts.append(
