@@ -20,7 +20,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-07-14 verified:2026-07-14] Watch: anonymous-write gate LIVE + `ui-test` PASSED (Claude.ai rendered convo: reads rich, anonymous write rejected w/ actionable OAuth guidance, nothing persisted; log output/user_sim_session.md). Still pending: first organic authenticated-user write. Deploy-chown recurrence fixed (#1445).
 - [filed:2026-07-14] Wiki canary lost anonymous write-path coverage to the #1441 gate (by design); PROBE-003 now asserts gate-rejection + open read. Restoring authenticated write-roundtrip coverage needs a canary service credential — design + host decision.
 - **[P2 filed:2026-07-19]** Escrow authz actor rides `engine_helpers._current_actor()` env fallback (`UNIVERSE_SERVER_USER`) on authless paths, not the hardened `permissions.py` resolver; env identity == `UNIVERSE_SERVER_HOST_USER` would carry host on-behalf rights. Mitigation: `TINYASSETS_PAID_MARKET` default off. Codex spec-baseline review F1; escalates 2026-06-30 residual F5 (spec: `openspec/specs/paid-market-economy`).
-- [filed:2026-07-22] Watch: `release-reconcile.yml` cron 0 runs since 01:06Z, dispatch OK; token-merge backstop. Recheck ~02:20Z: .agents/activity.log
+- **[P1 filed:2026-07-22 verified:2026-07-22]** Release reconcile has no scheduled runs; add one external dead-man. See cron-reliability audit.
 
 ## Approved Specs
 
