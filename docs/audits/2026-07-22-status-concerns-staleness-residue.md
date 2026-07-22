@@ -66,9 +66,29 @@ work as filed Work row #21 (~1h, blockedBy #1). It was never built.
 `tinyassets/api/engine_helpers.py:91`. Unset = permissive, with a host-facing reminder at
 `engine_helpers.py:148-160`.
 
-**Verdict: resolved as written.** Delete the row. If the F3 evidence-shape addition is still
-wanted, it is a Work row with a Files cell, not a Concern — Concerns are for open risk, and this
-one has a shipped enforcement primitive and no pending host input.
+**And the public risk shape closed by a different route entirely.** F3 was motivated by the
+commons-leak path *through the chatbot*. That path is now gated, not by F3, but by the 2026-07-02
+relay reshape. `add_canon_from_path` is a member of `_BRAIN_WRITE_RELAY_ACTIONS`
+(`tinyassets/universe_server.py:1014`), and `universe()` checks that set at line 1099 — the first
+thing in its body, before any dispatch:
+
+```python
+if action.strip() in _BRAIN_WRITE_RELAY_ACTIONS:
+    return _json.dumps({"status": "relay_to_universe", ...})
+```
+
+It returns early. `_action_add_canon_from_path` is never called, so the host-filesystem read never
+happens via the external MCP surface. Note the verb is *not* unreachable by advertisement alone —
+`universe()` is described in-code as the "(hidden but still-dispatchable)" fat tool, so it is
+absent from `CANONICAL_HANDLES` yet still callable; the relay gate, not the tool catalog, is what
+closes it. (Non-relay routes into the same handler — the legacy `mcp_server.py` doors — are already
+tracked by a separate Concern that PR #1506 re-stamped `verified:2026-07-22`.)
+
+**Verdict: resolved as written.** Delete the row. The host questions are answered, the enforcement
+primitive shipped, and the public leak path is gated by the relay reshape. If the F3 evidence-shape
+addition is still wanted it is a Work row with a Files cell, not a Concern — but note F3's premise
+("the chatbot needs structured evidence to compose a per-piece approval narrative") is itself
+weakened now that the chatbot cannot perform the verb at all.
 
 ## Line 15 — Task #9 provider secrets → RESOLVED (delete)
 
