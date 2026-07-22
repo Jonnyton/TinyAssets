@@ -57,6 +57,9 @@ jobs:
               deploy/github-app-token-refresher.service \
               deploy/github-app-token-refresher.timer \
               scripts/github-app-token-refresher.py \
+              deploy/tinyassets-release-deadman.service \
+              deploy/tinyassets-release-deadman.timer \
+              scripts/release_reconcile_deadman.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
 
       - name: Install and enable host services
@@ -70,8 +73,19 @@ jobs:
           sudo install -m 0755 -o root -g root /tmp/github-app-token-refresher.py /opt/tinyassets/scripts/github-app-token-refresher.py
           sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.service /etc/systemd/system/github-app-token-refresher.service
           sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.timer /etc/systemd/system/github-app-token-refresher.timer
+          sudo install -m 0755 -o root -g root /tmp/release_reconcile_deadman.py /opt/tinyassets/scripts/release_reconcile_deadman.py
+          sudo install -m 0644 -o root -g root /tmp/tinyassets-release-deadman.service /etc/systemd/system/tinyassets-release-deadman.service
+          sudo install -m 0644 -o root -g root /tmp/tinyassets-release-deadman.timer /etc/systemd/system/tinyassets-release-deadman.timer
+          if ! sudo grep -Eq '^TINYASSETS_RELEASE_DEADMAN_HEARTBEAT_URL=.+$' /etc/tinyassets/env; then
+            echo "TINYASSETS_RELEASE_DEADMAN_HEARTBEAT_URL is missing from /etc/tinyassets/env" >&2
+            exit 1
+          fi
           sudo systemctl daemon-reload
           sudo systemctl enable --now daemon-watchdog.timer
           sudo systemctl enable --now github-app-token-refresher.timer
-          sudo systemctl list-timers --no-pager daemon-watchdog.timer github-app-token-refresher.timer || true
+          sudo systemctl enable --now tinyassets-release-deadman.timer
+          sudo systemctl list-timers --no-pager \
+            daemon-watchdog.timer \
+            github-app-token-refresher.timer \
+            tinyassets-release-deadman.timer || true
           SH

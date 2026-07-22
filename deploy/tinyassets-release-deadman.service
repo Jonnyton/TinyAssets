@@ -1,0 +1,24 @@
+[Unit]
+Description=Detect stale GitHub release reconciliation
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/docs/specs/release-reconcile-deadman.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tinyassets
+Group=tinyassets
+WorkingDirectory=/opt/tinyassets
+EnvironmentFile=/etc/tinyassets/env
+ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/release_reconcile_deadman.py
+TimeoutStartSec=60s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tinyassets-release-deadman
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6
