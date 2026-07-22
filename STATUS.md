@@ -49,7 +49,7 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 
 ## Live brain notes
 
-Provider capacity: Claude rate-limited through 2026-07-24; Codex-only until then. Brain sweep: `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; in flight PR-129/131/139; universes Meridian Ashes / Etsy Printify v2 / Markovic.
+Provider capacity: Claude unavailable until the 2026-07-24 evening PT reset; use non-Claude capacity. Brain sweep: `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; in flight PR-129/131/139; universes Meridian Ashes / Etsy Printify v2 / Markovic.
 
 ## Next
 
