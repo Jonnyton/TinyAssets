@@ -1,0 +1,11 @@
+claim_id: defcffdbc73e47be
+branch_def_id: b3c88d4853ea
+goal_id: 8a10e217209f
+rung_key: review_passed
+evidence_url: https://github.com/Jonnyton/TinyAssets/pull/970
+evidence_note: Codex round-2 approved
+conformance_pack_id: ''
+claimed_by: tester
+claimed_at: '2026-07-22T04:39:35Z'
+retracted_at: null
+retracted_reason: ''
