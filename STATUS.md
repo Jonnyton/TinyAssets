@@ -4,7 +4,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 
 ## Concerns
 
-- **[P0 filed:2026-07-22 verified:2026-07-22]** BYOC path absent; 92dd60c5 partial/error paths leak host auth. Never spend maintainer quota. #1582.
+- **[P0 filed:2026-07-22 verified:2026-07-22]** CLI fallback + SDK providers can spend host auth. Never spend maintainer quota. #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
 - [filed:2026-07-02 verified:2026-07-22] Reshape residuals: WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors.
@@ -27,11 +27,11 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 | Daemon roster + node/gate soul policy + ledger/attribution/royalty/bounty items | deferred, needs-scoping; READ path landed (#900) |
 
 ## Work
-
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
 | **Release reconcile event trigger** — retain cron backstop; also reconcile after proven-under-load `Docker build smoke` completions; stable concurrency coalesces stampedes | .github/workflows/release-reconcile.yml, openspec/changes/release-reconcile-event-trigger/ | live runs 1892, 1883 | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
-| **R2-1a execution authority** — 92dd60c5 is PARTIAL: partial overlays/helper errors leak host auth. Then constrain `allowed_providers` | tinyassets/providers/base.py, packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py, tests/test_credential_fail_closed.py, openspec/changes/close-universe-host-subscription-fallback/, openspec/specs/credential-vault/spec.md, tinyassets/providers/router.py, tinyassets/api/engine.py | - | claimed:codex-spec-handoff-1582 ACTIVE 2026-07-22 |
+| **CLI universe credential isolation** — 92dd60c5 is PARTIAL: partial/error/default-home/API-opt-in paths leak host auth | tinyassets/providers/base.py, packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py, tests/test_credential_fail_closed.py, openspec/changes/close-universe-host-subscription-fallback/, openspec/specs/credential-vault/spec.md | - | claimed:codex-spec-handoff-1582 ACTIVE 2026-07-22 |
+| **R2-1a set_engine must constrain allowed_providers** — a founder's own key can fall through the writer chain to a provider they never chose | tinyassets/providers/router.py, tinyassets/api/engine.py, tests/ | universe credential isolation | pending |
 | **R2-1b provider receipt** — no receipt exists, so 92dd60c5 is asserted but UNAUDITABLE in prod. Design decided: thread provider off the same result object, NOT the `_last_provider` global (races); report credential class; cover BOTH converse writer calls | tinyassets/providers/call.py, tinyassets/universe_intelligence.py, tests/ | R2-1a | pending |
 | **R2-2 repeatable test identity** — NARROWED per Codex review to tasks 1.1-1.4, 3.1-3.3, min 2.1-2.2 only (not all 11); reset must not be a public deletion surface. Prior commit 375b0155 exists but does all 11 on stale main — do not reuse as-is | openspec/changes/test-identity-and-reset/, tinyassets/reset.py, tests/ | - | pending |
 | **R2-4 wiki onboarding split** — read_page returns agent-coordination logs; assistant refused to build and offered to replace TinyAssets with a chat artifact (live 2026-07-21) | tinyassets/api/wiki.py, wiki/ | - | in-flight PR #1550 |
