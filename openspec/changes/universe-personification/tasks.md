@@ -1,3 +1,35 @@
+> # ⛔ STOP — §2 IS WRITTEN AGAINST A REVERSED INVARIANT. DO NOT BUILD IT AS WRITTEN.
+>
+> This change was authored when the chatbot was meant to **embody** the universe.
+> The **2026-07-02 host reshape reversed that**: the universe intelligence is the
+> single personified agent and sole action-taker, and the chatbot MCP demotes to
+> onboarding + **relay**. The live contract is now *"you are the connector, not the
+> universe"* — the chatbot renders the universe's own first-person reply verbatim
+> and never composes its voice.
+>
+> That reshape is not a proposal; it is deployed and live-verified (`converse`,
+> prod, 2026-07-22). Building §2.1–§2.3 as written would re-introduce chatbot
+> embodiment and regress it.
+>
+> **Specifically reversed — do NOT implement from this text:**
+> - `2.1` "compact first-person embodiment" in `control_station` — the chatbot does
+>   not embody; `converse` does.
+> - `2.2` "persona voice at connect" in MCP `instructions` — first contact relays
+>   through `converse`; the connector does not speak as the universe.
+> - `2.3` "In-voice `assemble(lens) → view`" — there is no chatbot voice to assemble
+>   into.
+>
+> **Still valid, and worth building:** `2.4` authorization-before-voice. Authz
+> filtering in brain assembly is orthogonal to *which* component speaks, and the
+> relay shape needs it just as much.
+>
+> Per the reversal rule, this change is **not done until it is retired or rewritten
+> against the relay shape**. Leaving it validating-but-wrong is how a reversed
+> invariant gets rebuilt by the next lane that greps for unchecked boxes. Reconcile
+> the spec before building anything in §2. See
+> `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` and
+> `docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`.
+
 ## 1. Ratified-spec amendments (`docs/specs/2026-06-10-tiny-first-principles-spec.md`) — NOT applied in this draft
 
 - [x] 1.1 §9 (voice): embody / first-person invariant, **compact trigger-language** (no role-play sprawl), TinyAssets-surface-scoped guardrail + anti-collision + honest fallback + authorization-precedes-voice

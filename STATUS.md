@@ -6,6 +6,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 
 ## Concerns
 
+- **[P0 filed:2026-07-22 verified:2026-07-22]** LIVE: a newborn universe is MUTE — first contact births it, then `converse` returns "All providers exhausted for role=writer". Cause is ours: `providers/base.py:181-189` (`92dd60c5`) correctly refuses host-credential fallback, but nothing provisions a newborn a credential. DO NOT REVERT the guard. Brief queued `r2-newborn-universe-is-mute.md`; evidence `output/user_sim_session.md` 2026-07-22. NOT BUG-038/039 (same string, different mechanism).
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
 - [filed:2026-07-02 verified:2026-07-22] Reshape residuals: WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors.
