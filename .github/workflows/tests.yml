@@ -64,7 +64,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
-          pip install pytest-xdist
 
       - name: Run the required test surface
         env:
@@ -72,34 +71,12 @@ jobs:
           # conftest already forces mock providers and sqlite_only storage; this
           # is belt-and-braces for anything that reads the env directly.
           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
-          PYTHONHASHSEED: '0'
         run: |
-          set -euo pipefail
           mkdir -p "$TINYASSETS_DATA_DIR"
-          # -m 'not slow'  : `slow` is the repo's declared opt-in stress/race marker.
-          # -n auto        : the suite is ~9k tests; serial is too slow to gate on.
-          # --dist loadfile: whole files to one worker. Tests in a file share
-          #                  fixtures/state far more often than tests across
-          #                  files, so this is the split least likely to invent
-          #                  parallelism-only failures.
-          # NO `-x`        : fail-fast hides the breadth of a regression. We want the
-          #                  full failure list in one run.
-          # NO `|| true`   : the exit code IS the gate.
-          pytest -m 'not slow' -n auto --dist loadfile \
-                 -q --no-header -rf --durations=15 \
-                 --junitxml=junit.xml \
-            | tee pytest-out.txt
-
-      - name: Summarise
-        if: always()
-        run: |
-          {
-            echo "### Required tests"
-            echo ""
-            echo '```'
-            tail -30 pytest-out.txt 2>/dev/null || echo "no pytest output — the run died before reporting"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          # The script owns the pytest invocation AND the pass/fail decision:
+          # it fails on any failure not listed in .github/known-failing-tests.txt.
+          # No `|| true`, no `continue-on-error` — its exit code IS the gate.
+          python scripts/ci_required_tests.py --junit junit.xml
 
       - name: Upload junit
         if: always()
@@ -108,3 +85,35 @@ jobs:
           name: junit-required-tests
           path: junit.xml
           if-no-files-found: warn
+
+  # NOT a required check (yet). The repo's `slow` marker guards stress/race
+  # tests, and `required-tests` deselects them to stay fast — which left the 9
+  # concurrency tests in test_activity_log_parity.py and test_node_bid_claim_stress.py
+  # with NO CI runner at all, against an AGENTS.md rule that uptime work ships
+  # with a concurrency/load proof. This job gives them one. It is reported but
+  # not required until it has a clean track record, because stress tests are the
+  # likeliest source of flake and a flaky REQUIRED check trains people to
+  # re-run until green — which is how a gate stops meaning anything.
+  slow-tests:
+    name: slow-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Run slow/stress/race tests
+        env:
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-slow
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR"
+          # Serial on purpose: these assert cross-process/locking behaviour and
+          # sharing a worker pool with them would test the pool, not the code.
+          pytest -m slow -q --no-header -rfE --durations=10
