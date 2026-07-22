@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1026">
+<title>Agent Village · TinyAssets</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="day">
+  <div id="sky">
+    <div id="celestial"></div>
+    <div id="stars"></div>
+    <div id="clouds"></div>
+    <div id="archipelago" aria-label="universes"></div>
+  </div>
+
+  <header id="hud">
+    <div id="brand">🏘️ <b>Agent Village</b><span id="brand-sub">TinyAssets live</span></div>
+    <div id="stats" role="status"></div>
+    <div id="hud-buttons">
+      <button id="btn-sound" class="hud-btn" title="sounds">🔇</button>
+      <button id="btn-replay" class="hud-btn" title="time travel">⏪</button>
+      <button id="btn-share" class="hud-btn" title="copy share link">🔗</button>
+    </div>
+  </header>
+
+  <div id="replay-bar" hidden>
+    <span>⏪ time travel</span>
+    <input type="range" id="replay-slider" min="0" max="0" value="0">
+    <span id="replay-label">live</span>
+    <button id="replay-live" class="hud-btn">back to live</button>
+  </div>
+
+  <main id="world">
+    <div id="village">
+      <div id="zones"></div>
+      <div id="notice-board" class="prop" title="claimed work">📌<span>notice board</span></div>
+      <div id="campfire" class="prop" title="resting agents">🔥<span>campfire</span></div>
+      <div id="sprites"></div>
+      <div id="fx"></div>
+    </div>
+    <div id="worldmap"></div>
+    <div id="harbor">
+      <div class="water">〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️</div>
+      <div id="islands"></div>
+    </div>
+  </main>
+
+  <aside id="feed-panel">
+    <div id="feed-handle"><span id="feed-title">📜 village crier</span><span id="feed-count"></span></div>
+    <div id="feed"></div>
+  </aside>
+
+  <div id="sheet-backdrop" hidden></div>
+  <section id="sheet" hidden>
+    <div id="sheet-head">
+      <div id="sheet-who"></div>
+      <button id="sheet-close" class="hud-btn">✕</button>
+    </div>
+    <div id="sheet-detail"></div>
+    <div id="chat-log"></div>
+    <div id="chat-hint"></div>
+    <div id="hire-box" hidden>
+      <div class="hire-title">➕ hire agents for this universe</div>
+      <select id="hire-provider"></select>
+      <input id="hire-task" type="text" placeholder="task for the hired agent(s)…" maxlength="2000">
+      <div class="hire-row">
+        <label>× <input id="hire-count" type="number" min="1" max="8" value="1"></label>
+        <button id="hire-dispatch" class="hud-btn">dispatch</button>
+        <button id="hire-preset" class="hud-btn">set as engine</button>
+      </div>
+      <div id="hire-note"></div>
+    </div>
+    <form id="chat-form">
+      <input id="chat-input" type="text" maxlength="4000" placeholder="say something…" autocomplete="off">
+      <button type="submit" id="chat-send">Send</button>
+    </form>
+  </section>
+
+  <div id="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
