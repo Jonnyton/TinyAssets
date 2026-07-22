@@ -21,6 +21,8 @@ from tinyassets.catalog import (
     SqliteCachedBackend,
     SqliteOnlyBackend,
     YamlRepoLayout,
+    get_backend,
+    invalidate_backend_cache,
 )
 
 
@@ -60,6 +62,20 @@ def _make_branch() -> BranchDefinition:
         {"name": "capture_output", "type": "str", "default": ""},
     ]
     return b
+
+
+def test_unknown_backend_choice_fails_closed_to_sqlite_only(
+    base_path, tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(
+        "tinyassets.catalog.backend.git_bridge.is_enabled", lambda _repo: True,
+    )
+    invalidate_backend_cache()
+
+    backend = get_backend(base_path, repo_root=tmp_path / "repo")
+
+    assert isinstance(backend, SqliteOnlyBackend)
 
 
 # ─────────────────────────────────────────────────────────────────────

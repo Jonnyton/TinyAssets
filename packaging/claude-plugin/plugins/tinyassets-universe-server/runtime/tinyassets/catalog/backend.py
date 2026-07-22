@@ -850,7 +850,8 @@ def get_backend(
     Selection:
 
     1. ``TINYASSETS_STORAGE_BACKEND`` env var, if set to
-       ``sqlite_only`` or ``sqlite_cached`` (other values ignored).
+       ``sqlite_only`` or ``sqlite_cached``. Unknown non-empty values fail
+       closed to ``sqlite_only`` instead of enabling git by auto-detection.
     2. Otherwise probe :func:`git_bridge.is_enabled` against
        ``repo_root`` (falls back to the process CWD). Git enabled →
        :class:`SqliteCachedBackend`; git disabled → :class:`SqliteOnlyBackend`.
@@ -873,6 +874,8 @@ def get_backend(
         backend: StorageBackend = SqliteOnlyBackend(resolved_base)
     elif choice == _BACKEND_SQLITE_CACHED:
         backend = SqliteCachedBackend(resolved_base, repo_root=resolved_repo)
+    elif choice:
+        backend = SqliteOnlyBackend(resolved_base)
     elif git_bridge.is_enabled(resolved_repo):
         backend = SqliteCachedBackend(resolved_base, repo_root=resolved_repo)
     else:
