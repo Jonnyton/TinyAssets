@@ -732,3 +732,17 @@ Notes:
 - Related implications: external directory acceptance; PR #1522 folds into manifest successor; PRs #1561 and #1553 remain separate
 - Idea feed refs: none
 - Ship/abandon: ship after GitHub checks; local worktree may be removed after merge
+## 2026-07-22 13:00 - create test-identity-reset-spec
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/test-identity-reset-spec-reconcile
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec
+- STATUS/Issue/PR: R2-2 repeatable test identity; spec-only reconciliation before any runtime salvage
+- PLAN refs: full PLAN review; Providers, API & MCP Interface, Constraints, State & Artifacts
+- Purpose: make the active reset/identity OpenSpec truthful, narrow, and safe without reusing stale all-eleven-task work
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec\_PURPOSE.md
+- Memory refs: conformance triage from PR #1597 lane; stale PR #1560 and commit 375b0155 read-only
+- Related implications: universe-visibility and provider-status own the moved isolation/evidence concerns
+- Idea feed refs: none
+- Ship/abandon: reviewed spec-only PR; implementation remains a later separately claimed lane
