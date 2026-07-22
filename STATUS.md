@@ -58,3 +58,4 @@ Enumeration + theme distribution: `.claude/agent-memory/navigator/wiki_sweep_cur
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
 4. **Spec-driven development is the standard (host 2026-07-19)** — every substantive change starts as an OpenSpec change; as-built specs in `openspec/specs/`.
+- [filed:2026-07-22] TEMPORARY row to prove the ratchet goes red in CI; this branch is never merged.
