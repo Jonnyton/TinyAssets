@@ -42,7 +42,7 @@
 > pre-implementation `sync-specs`** — task 6.11 becomes eligible only after the code and tests
 > below exist.
 
-- [ ] 6.1 Define the anti-collision write restriction concretely before implementation — exact external/commons endpoint, predicate, redirect destination — and confirm it does not restrict the governed founder-learning path (`founder.md`)
+- [x] 6.1 Define the anti-collision write restriction concretely before implementation — exact endpoints are canonical `/mcp` `write_page`, `/mcp-directory` `write_page`, and deprecated `/mcp` `wiki(action=write|patch)` while callable; predicate is explicit `scope=commons|universe`, never prose shape; universe writes redirect through `relay_to_universe` to `converse`; in-process governed founder learning (`founder.md`) is exempt; the `live-mcp-connector-surface` delta preserves historical omitted-scope defaults for one bounded migration window and requires explicit scope after legacy removal (design D5)
 - [ ] 6.2 Reconcile interlocutor tier binding with the `universe-visibility` change's anonymous-reader semantics and record the agreed authority/disclosure contract
 - [ ] 6.3 Define baseline, metric, and permitted regression for connector tool-selection accuracy, and file it against `live-mcp-connector-surface` (residual of retired task 2.9)
 - [ ] 6.4 Implement the whole-mind personification contract on speaking surfaces, including proof that direct-control tools remain neutral and never fabricate universe voice
@@ -52,4 +52,4 @@
 - [ ] 6.8 Implement forkable first-party persona custody with tests proving identity comes from learned self-model content while soul remains governance input and never supplies or replaces persona identity
 - [ ] 6.9 Implement one learned identity across speaking surfaces with tests for surface/interlocutor modulation without identity replacement
 - [ ] 6.10 Implement Tiny as the platform universe's governed personification with tests proving self-as-platform grants no authority bypass
-- [ ] 6.11 Only after 6.4–6.10 and the task 6.3 connector evidence gate: `sync-specs` into `openspec/specs/universe-personification-and-relay/spec.md`, then archive this change
+- [ ] 6.11 Only after 6.4–6.10 and the task 6.3 connector evidence gate: `sync-specs` into both `openspec/specs/universe-personification-and-relay/spec.md` and `openspec/specs/live-mcp-connector-surface/spec.md`, then archive this change

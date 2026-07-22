@@ -69,6 +69,40 @@ reversed change does not reach for the default command.
 `stale-backlog-rows-misdirect` lesson, a premise stated without verification is the failure mode
 being fixed. Every "already landed" row below names the file and the behavior.
 
+**D5 — Anti-collision is explicit target routing, never prose classification.** The external
+write boundary SHALL NOT try to decide whether content "looks like" a dossier or profile. The
+commons deliberately supports public `people` pages, and prose-shape classification would reject
+legitimate public bios while remaining bypassable. The enforceable predicate is instead the
+caller's explicit target on every externally callable free-form page-write path:
+
+- `scope="commons"` writes only the shared public commons and rejects a simultaneous
+  `universe_id` as contradictory;
+- `scope="universe"` resolves an explicit `universe_id` or the authenticated founder's home and
+  returns the existing `relay_to_universe` envelope naming `converse`; it never writes the brain;
+- an unknown scope fails closed immediately; omitted scope follows the cross-capability migration
+  mapping below until the deprecated `wiki` tool is removed, then omission also fails closed;
+- `kind=` issue filings remain typed commons operations and do not require the selector; and
+- the in-process `commit_learning` path is outside this external predicate, so grounded
+  `founder.md` learning remains legal.
+
+This single contract covers canonical `/mcp` `write_page`, `/mcp-directory` `write_page`, and
+deprecated `/mcp` `wiki(action=write|patch)` for as long as that hidden tool remains callable.
+Today those paths disagree: canonical `write_page` relays an authenticated founder-home write,
+while the other two dispatch directly to `_wiki_impl` and can write both commons and universe
+pages. The exact implementation target is therefore convergence across all three paths, not a
+new content-moderation primitive. Evidence and the prior opposite-family refutation are recorded
+in `docs/audits/2026-07-22-write-page-commons-residual.md` (draft PR #1583).
+
+The migration contract is carried as a second delta against `live-mcp-connector-surface` in this
+change. During the compatibility window, omission preserves each public surface's historical safe
+default: canonical `/mcp` `write_page` resolves to `scope="universe"`; directory and deprecated
+wiki calls with no `universe_id` resolve to `scope="commons"`; any call carrying `universe_id`
+resolves to `scope="universe"` and is relayed rather than writing the brain. Unknown values always
+fail closed. The compatibility window ends with removal of the deprecated `wiki` tool and an
+advertised directory/canonical schema that includes `scope`; after that, surviving free-form write
+and patch calls must select the scope explicitly. This preserves existing no-scope callers long
+enough to migrate without preserving the direct-universe-write bypass.
+
 ## Task-by-task reconciliation
 
 11 unchecked tasks. Verified against `origin/main`.
