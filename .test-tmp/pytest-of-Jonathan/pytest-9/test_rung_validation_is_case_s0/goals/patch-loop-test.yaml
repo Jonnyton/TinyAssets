@@ -5,4 +5,14 @@ author: tester
 tags: []
 visibility: public
 created_at: 1784693555.9419923
-updated_at: 1784693555.9419923
+updated_at: 1784693556.3136914
+gate_ladder:
+- description: Branch emitted a candidate patch.
+  name: Draft ready
+  rung_key: draft_ready
+- description: Cross-family checker approved.
+  name: Review passed
+  rung_key: review_passed
+- description: Patch landed on main.
+  name: Merged
+  rung_key: merged
