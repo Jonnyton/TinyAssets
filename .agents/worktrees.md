@@ -775,3 +775,18 @@ Notes:
 - Related implications: manifest successor blocks retire-legacy-live-mcp-tools; external directory acceptance stays host-owned
 - Idea feed refs: none
 - Ship/abandon: reviewed corrective spec-only PR
+
+## 2026-07-22 - remove connector-manifest-products
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/connector-manifest-product-split
+- Lane state: Abandoned/swept
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-manifest-products
+- STATUS/Issue/PR: three-product distribution spec approved; temporary claim retired in landing diff
+- PLAN refs: API & MCP Interface; Distribution & Discoverability
+- Purpose: separate remote OAuth seven, local MCPB stdio seven-name, and remote directory-five contracts and acceptance
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-manifest-products\_PURPOSE.md
+- Memory refs: three independent Codex APPROVE verdicts, 2026-07-22
+- Related implications: local actorless `converse` blocks legacy retirement until authority/redesign and host migration proof; external directory acceptance remains host-owned
+- Idea feed refs: none
+- Ship/abandon: ship reviewed spec-only PR; implementation remains separately claimable after merge
