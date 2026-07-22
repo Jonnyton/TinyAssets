@@ -1,5 +1,7 @@
 # Self-Host Uptime Migration — Near-Term Execution Plan
 
+> **Retired 2026-07-22: LANDED — production runs off-host via `deploy/compose.yml` + `.github/workflows/deploy-prod.yml`. Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 **Date:** 2026-04-20 (post P0 outage + host directive)
 **Author:** navigator
 **Status:** Active exec plan. Draws mechanics from `docs/specs/2026-04-19-plan-b-selfhost-migration-playbook.md`; narrows scope to "make uptime independent of the host's computer in the near term."

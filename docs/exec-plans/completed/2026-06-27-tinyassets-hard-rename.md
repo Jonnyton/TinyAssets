@@ -1,5 +1,7 @@
 # TinyAssets Hard Rename Execution Plan
 
+> **Retired 2026-07-22: LANDED — `origin` is `https://github.com/Jonnyton/TinyAssets.git`. Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 Status: active implementation lane
 Date: 2026-06-27
 Branch: `codex/tinyassets-hard-rename`

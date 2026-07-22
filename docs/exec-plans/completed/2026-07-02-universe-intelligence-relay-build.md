@@ -1,5 +1,7 @@
 # Build plan — Universe Intelligence + Relay reshape
 
+> **Retired 2026-07-22: M1 LANDED — added by `b91a6b07` (PR #1437), merged and deployed live 2026-07-15. Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 - **Status:** ACTIVE build plan. Design: `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` (host-approved via steering 2026-07-02). Codex design review ADAPT folded.
 - **Goal of this plan:** build the reshape to a **first testable milestone (M1)** the host can drive locally (clean-slate onboard → create universe → assign engine → talk to the engine-backed personified intelligence via chatbot relay).
 - **Method:** vertical slices, dependency-ordered; a developer subagent per slice + Codex/verifier review between slices; worktree `permissions-fail-closed` (branch `claude/founder-identity-allslices`); local `ui-test` after M1. NOT live — local host only until the host says otherwise.
