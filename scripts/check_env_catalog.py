@@ -112,7 +112,16 @@ _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 
 
 def _looks_like_project_env(value: str) -> bool:
-    return value.startswith(_PROJECT_ENV_PREFIXES) and bool(_ENV_NAME_RE.match(value))
+    # Reject a bare prefix or a trailing underscore: `"TINYASSETS_"` /
+    # `"FANTASY_DAEMON_"` are prefix fragments, not var names. Without this the
+    # scanner reports its own `_PROJECT_ENV_PREFIXES` tuple as undocumented vars
+    # when scripts/ is added via --extra-root.
+    if value.endswith("_") or not _ENV_NAME_RE.match(value):
+        return False
+    return any(
+        value.startswith(prefix) and len(value) > len(prefix)
+        for prefix in _PROJECT_ENV_PREFIXES
+    )
 
 
 def _is_environ(node: ast.AST) -> bool:

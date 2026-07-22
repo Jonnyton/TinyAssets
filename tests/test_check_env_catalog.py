@@ -61,7 +61,7 @@ def test_unprefixed_direct_reads_are_caught():
 
 
 # --------------------------------------------------------------------------
-# extractor — indirect binding (the pattern that hid 67 vars)
+# extractor — indirect binding (the pattern that hid 24 of the 68 vars)
 # --------------------------------------------------------------------------
 
 
@@ -215,3 +215,13 @@ def test_missing_catalog_exits_3(tmp_path):
         text=True,
     )
     assert result.returncode == 3
+
+
+def test_bare_prefix_is_not_a_var():
+    """`"TINYASSETS_"` is a prefix fragment, not a var name.
+
+    Regression: the scanner used to report its own `_PROJECT_ENV_PREFIXES`
+    tuple as undocumented env vars when scripts/ was added via --extra-root.
+    """
+    src = '_PREFIXES = ("TINYASSETS_", "FANTASY_DAEMON_")'
+    assert mod.extract_from_source(src) == set()
