@@ -19,6 +19,7 @@ build/
 .pytest-tmp/
 .codex-test-tmp/
 .workflow-test-data/
+.test-tmp/
 
 # Databases (local state)
 *.db

@@ -1,8 +1,0 @@
-id: n
-display_name: N
-phase: custom
-prompt_template: 'Input: {x}'
-timeout_seconds: 300.0
-approved: false
-enabled: true
-author: tester
