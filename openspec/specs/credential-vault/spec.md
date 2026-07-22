@@ -104,6 +104,13 @@ For every provider call carrying an explicit universe directory, the system SHAL
 - **THEN** it contains the founder key and an isolated provider home
 - **AND** contains no host token, host config directory, or host provider home
 
+#### Scenario: BYO key is exclusive with a vault subscription
+
+- **GIVEN** a universe vault contains both an API key and subscription auth for the selected provider
+- **WHEN** the provider subprocess environment is built
+- **THEN** it receives the API key and an isolated provider home
+- **AND** it does not receive the vault subscription token or home, so the payer class is deterministic
+
 #### Scenario: Host development call remains compatible
 
 - **GIVEN** a provider call with no universe context

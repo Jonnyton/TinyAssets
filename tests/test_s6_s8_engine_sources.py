@@ -65,8 +65,10 @@ def test_host_daemon_persists_and_points_at_summon(tmp_path, monkeypatch):
     assert "daemon_summon" in out["next_step"]
     cfg = load_universe_config(udir)
     assert cfg.engine_source == "host_daemon"
-    assert cfg.allowed_providers == ["codex"]
-    assert out["allowed_providers"] == ["codex"]
+    assert cfg.preferred_writer == "codex"
+    assert cfg.allowed_providers == []
+    assert out["allowed_providers"] == []
+    assert out["credential_binding_status"] == "pending"
 
 
 def test_unknown_engine_source_errors(tmp_path, monkeypatch):

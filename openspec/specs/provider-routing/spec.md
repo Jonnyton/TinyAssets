@@ -71,6 +71,14 @@ The router SHALL apply per-universe configuration resolved from an explicit `uni
 - **WHEN** `set_engine` validates the assignment
 - **THEN** it rejects the mismatch and does not modify the vault or config
 
+#### Scenario: Unbound host daemon does not authorize platform credentials
+
+- **GIVEN** a founder selects `engine_source="host_daemon"`
+- **AND** no founder-hosted runtime credential has been bound yet
+- **WHEN** `set_engine` persists the selection
+- **THEN** it records the preferred provider with `allowed_providers=[]` and a pending binding status
+- **AND** universe calls fail closed rather than use ambient platform credentials
+
 ### Requirement: Public provider and credential-payer receipts
 
 Every provider-served public `converse` or `run_graph` operation SHALL expose a non-secret receipt naming the serving provider and credential payer class/owner. `converse` SHALL label its reply and learning-extraction calls separately. Because `run_graph` is asynchronous and may make zero to many calls, enqueue SHALL report `provider_receipt_status="pending"`; the durable run snapshot SHALL expose one receipt per provider-served node after calls occur. Receipts SHALL NOT contain tokens, secret values, or credential file contents.

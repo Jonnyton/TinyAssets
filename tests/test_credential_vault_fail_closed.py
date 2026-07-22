@@ -8,7 +8,10 @@ import base64
 import pytest
 
 from tinyassets.config import UniverseConfig
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.credential_vault import (
+    provider_credential_class,
+    write_credential_vault,
+)
 from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.providers.base import (
     BaseProvider,
@@ -86,6 +89,15 @@ def test_host_scoped_subprocess_env_preserves_subscription_auth(tmp_path, monkey
     assert env.get("CLAUDE_CONFIG_DIR") == host_claude
 
 
+def test_host_api_key_opt_in_receipt_is_not_mislabeled_subscription(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "host-api-key")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    assert provider_credential_class(None, "claude-code") == "host_api_key"
+
+
 @pytest.mark.parametrize(
     ("service", "provider", "key_var", "home_var"),
     [
@@ -110,6 +122,51 @@ def test_byo_key_forces_isolated_provider_home(
     assert env[key_var] == "founder-key"
     assert env[home_var] != str(host_home)
     assert str(universe_dir) in env[home_var]
+
+
+@pytest.mark.parametrize(
+    ("service", "provider", "key_var", "home_var", "subscription_record"),
+    [
+        (
+            "anthropic", "claude-code", "ANTHROPIC_API_KEY",
+            "CLAUDE_CONFIG_DIR",
+            {
+                "credential_type": "llm_subscription",
+                "service": "claude",
+                "claude_config_dir": "shared-claude",
+                "oauth_token": "subscription-token",
+            },
+        ),
+        (
+            "openai", "codex", "OPENAI_API_KEY", "CODEX_HOME",
+            {
+                "credential_type": "llm_subscription",
+                "service": "codex",
+                "auth_json_b64": "e30=",
+            },
+        ),
+    ],
+)
+def test_byo_key_is_exclusive_with_vault_subscription_auth(
+    tmp_path, service, provider, key_var, home_var, subscription_record,
+):
+    universe_dir = tmp_path / "u-exclusive"
+    write_credential_vault(universe_dir, [
+        subscription_record,
+        {
+            "credential_type": "llm_api_key",
+            "service": service,
+            "secret_b64": base64.b64encode(b"founder-key").decode("ascii"),
+        },
+    ])
+
+    env = subprocess_env_for_provider(provider, universe_dir=universe_dir)
+
+    assert env[key_var] == "founder-key"
+    assert env[home_var] == str(universe_dir / ".credentials" / (
+        "claude" if provider == "claude-code" else "codex"
+    ))
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
 def test_policy_route_reports_founder_payer_class(tmp_path, monkeypatch):

@@ -5049,9 +5049,14 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     from tinyassets.config import write_universe_config_fields
 
     provider = str(data.get("provider", "")).strip() or "claude-code"
-    fields = {"engine_source": "host_daemon",
-              "preferred_writer": preferred_writer or provider,
-              "allowed_providers": [preferred_writer or provider]}
+    fields = {
+        "engine_source": "host_daemon",
+        "preferred_writer": preferred_writer or provider,
+        # Selecting this source does not prove that the founder's daemon has
+        # bound a credential. Until daemon_summon/runtime binding supplies one,
+        # no cloud route is eligible; ambient platform auth is never a binding.
+        "allowed_providers": [],
+    }
     try:
         write_universe_config_fields(udir, **fields)
     except Exception as exc:  # noqa: BLE001
@@ -5061,6 +5066,10 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
         "engine_source": "host_daemon", "provider": provider,
         "preferred_writer": fields["preferred_writer"],
         "allowed_providers": fields["allowed_providers"],
+        "credential_binding_status": "pending",
+        "note": "Provider calls remain fail-closed until a founder-hosted "
+                "runtime credential is explicitly bound; ambient platform "
+                "credentials are never used.",
         "next_step": "Host a daemon for this universe via "
                      "`universe action=daemon_summon` to bind a runtime instance.",
     })

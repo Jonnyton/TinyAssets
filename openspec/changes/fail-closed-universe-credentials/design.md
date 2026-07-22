@@ -20,12 +20,16 @@ The call bridge returns a string-compatible result carrying immutable provider m
 
 ### D5: Credential classes disclose payer category, never credential material
 
-Public values are `founder_byo_api_key`, `universe_subscription`, `host_api_key`, `host_subscription`, `local_no_credential`, `mock`, or `unknown`. Receipts also derive `credential_owner` (`founder`, `universe`, `host`, `none`, or `unknown`).
+Public values are `founder_byo_api_key`, `universe_subscription`, `host_api_key`, `host_subscription`, `local_no_credential`, or `unknown`. Receipts also derive `credential_owner` (`founder`, `universe`, `host`, `none`, or `unknown`).
+
+### D6: One provider call gets one credential route
+
+When a universe contains both a BYO API key and subscription auth for the same provider, the BYO key wins and the subprocess receives an isolated empty provider home rather than the subscription token/home. This makes the payer class deterministic. A `host_daemon` selection alone is not a credential binding: it persists the requested writer but keeps `allowed_providers=[]` until a founder-hosted runtime credential is explicitly bound.
 
 ## Risks and mitigations
 
 - Provider implementations that authenticate outside known env/home mechanisms could evade env sanitization: the router's resolvable-credential gate blocks unknown universe-scoped cloud providers.
-- An incorrectly broad set-engine allowlist could strand market/self-hosted sources: only a concrete selected provider is persisted; source modes with no runnable provider fail closed rather than guess.
+- An incorrectly broad set-engine allowlist could strand market/host-daemon sources: source modes with no bound runnable credential persist an empty allowlist and fail closed rather than guess.
 - String-subclass metadata could be lost when callers coerce early: graph and conversation boundaries consume it immediately and tests cover both paths.
 
 ## Rollback

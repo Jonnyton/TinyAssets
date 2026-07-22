@@ -401,19 +401,30 @@ def provider_auth_env_overrides(
     """
     provider = provider_name.strip()
     if provider == "codex":
+        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
+        if api_key:
+            # Select exactly one payer route. Combining the key with a vault
+            # subscription home would make the eventual payer unauditable.
+            return {
+                "OPENAI_API_KEY": api_key,
+                "CODEX_HOME": str(
+                    _secret_artifact_dir(Path(universe_dir), "codex")
+                ),
+            }
         overrides: dict[str, str] = {}
         codex_home = ensure_codex_home_from_vault(universe_dir)
         if codex_home:
             overrides["CODEX_HOME"] = str(codex_home)
-        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
-        if api_key:
-            overrides["OPENAI_API_KEY"] = api_key
-            if "CODEX_HOME" not in overrides and universe_dir is not None:
-                overrides["CODEX_HOME"] = str(
-                    _secret_artifact_dir(Path(universe_dir), "codex")
-                )
         return overrides
     if provider == "claude-code":
+        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+        if api_key:
+            return {
+                "ANTHROPIC_API_KEY": api_key,
+                "CLAUDE_CONFIG_DIR": str(
+                    _secret_artifact_dir(Path(universe_dir), "claude")
+                ),
+            }
         overrides = {}
         claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)
         if claude_config_dir:
@@ -421,13 +432,6 @@ def provider_auth_env_overrides(
         oauth_token = resolve_claude_oauth_token(universe_dir)
         if oauth_token:
             overrides["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
-        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
-        if api_key:
-            overrides["ANTHROPIC_API_KEY"] = api_key
-            if "CLAUDE_CONFIG_DIR" not in overrides and universe_dir is not None:
-                overrides["CLAUDE_CONFIG_DIR"] = str(
-                    _secret_artifact_dir(Path(universe_dir), "claude")
-                )
         return overrides
     return {}
 
@@ -446,7 +450,16 @@ def provider_credential_class(
     if provider == "ollama-local":
         return "local_no_credential"
     if universe_dir is None:
+        api_key_opted_in = str(
+            os.environ.get("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         if provider in {"gemini-free", "groq-free", "grok-free"}:
+            return "host_api_key"
+        host_key_var = {
+            "claude-code": "ANTHROPIC_API_KEY",
+            "codex": "OPENAI_API_KEY",
+        }.get(provider, "")
+        if api_key_opted_in and host_key_var and os.environ.get(host_key_var):
             return "host_api_key"
         if provider in {"claude-code", "codex"}:
             return "host_subscription"

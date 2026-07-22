@@ -18,6 +18,14 @@ Every successful `set_engine` action that selects a concrete provider SHALL pers
 - **WHEN** `set_engine` validates the assignment
 - **THEN** it rejects the mismatch and does not modify the vault or config.
 
+#### Scenario: Unbound host daemon does not authorize platform credentials
+
+- **GIVEN** a founder selects `engine_source="host_daemon"`
+- **AND** no founder-hosted runtime credential has been bound yet
+- **WHEN** `set_engine` persists the selection
+- **THEN** it records the preferred provider with `allowed_providers=[]` and a pending binding status
+- **AND** universe calls fail closed rather than use ambient platform credentials.
+
 ## ADDED Requirements
 
 ### Requirement: Public provider and credential-payer receipts
