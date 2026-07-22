@@ -1,0 +1,11 @@
+claim_id: d3b71a7bffbb43c3
+branch_def_id: 55b93ea7c292
+goal_id: 1e6d7d3fb3ce
+rung_key: draft_ready
+evidence_url: workflow:run:f338143c79774119
+evidence_note: Auto-claim from completed run f338143c79774119
+conformance_pack_id: ''
+claimed_by: tester
+claimed_at: '2026-07-22T04:38:42Z'
+retracted_at: null
+retracted_reason: ''
