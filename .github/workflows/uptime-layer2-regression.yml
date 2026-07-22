@@ -6,6 +6,8 @@ on:
       - ".github/workflows/uptime-layer2-regression.yml"
       - "scripts/browser_lock.py"
       - "scripts/claude_chat.py"
+      - "scripts/uptime_alarm.py"
+      - "scripts/uptime_canary.py"
       - "scripts/uptime_canary_layer2.py"
       - "tests/test_uptime_canary_layer2.py"
   workflow_dispatch:
