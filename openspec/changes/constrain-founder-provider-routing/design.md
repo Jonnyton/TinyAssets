@@ -230,13 +230,52 @@ All GitHub-managed production-host mutators share one repository-wide
 concurrency group and independently fail closed on the durable host sentinel,
 including provider-auth keepalives. The first cutover cancels and drains active
 runs created from the superseded independent concurrency groups before any
-host mutation. A retry while the sentinel survives reuses
-the original active-unit recovery list and remains in cutover mode even when the
-data marker already exists. Marker-only normal deploys first verify through the
-new immutable image with no network and a read-only data mount. Any cutover or
-release failure recreates every systemd condition, stops every known current or
-legacy writer, brings both compose projects down, and re-proves zero volume
-users before ending the failed run.
+host mutation. Only queued/pre-execution runs are cancelled; an `in_progress`
+legacy run may own an orphanable remote SSH process, so it is polled to bounded
+natural completion and timeout/API uncertainty fails before downtime. The
+sentinel is evidence of quiescence, not a request to
+quiesce. Every cutover/recovery transition takes the same host-local `flock`,
+so a cancelled workflow's orphaned SSH shell cannot overlap its retry. Install
+and sync the systemd conditions, stop every known writer and compose stack,
+prove zero container mounts, and run a fail-closed `lsof` tri-state check before
+durably creating it. Then repeat stop/down plus both zero-user proofs after the
+fence fsync to close the proof-to-create TOCTOU window. `lsof` status 1 is clean
+only when both stdout and stderr are empty; handles, diagnostics, or any other
+status fail. An existing fence must be a regular non-symlink and receives the
+same quiescence proof.
+A cancellation before that proof may leave the original active-unit recovery
+list but never a false sentinel; a retry reuses the list and repeats the full
+proof. A retry while the sentinel survives likewise reuses the list and remains
+in cutover mode even when the data marker already exists.
+
+Immediately before apply, reacquire the host lock, reassert a regular fence,
+and re-prove zero container and host users. After migration commits the exact
+data marker, require the transaction journal to be absent and verify again
+through the immutable safe image. Durably write a provisional roll-forward
+receipt with a null rollback target, then remove and directory-sync the sentinel
+before starting even the daemon-only canary. No daemon, worker, recovery unit,
+or full stack may start while the sentinel exists. A failure after this release
+point must quiesce and roll forward without recreating the sentinel:
+marker-plus-absent-sentinel is a committed state. If its original active-unit
+record remains, it is postcommit recovery, not an ordinary deploy: verify the
+immutable image, continue canary/exposure, validate every recorded unit against
+the migration-safe allowlist, restore successfully, and delete the record last.
+The release transaction atomically replaces `/data/release-state.json` before
+fence unlink with the same digest-pinned image and a null rollback target, so P0
+repair cannot consume a stale pre-cutover rollback target. Fence release also
+requires the marker's manifest digest to equal the separately reviewed digest.
+Postcommit classification, daemon start, and writer restoration validate under
+the host lock that the strict maintenance receipt matches the exact marker hash
+and that the data receipt names the same image with no rollback target. After
+all recorded units restore, the maintenance receipt is durably advanced to
+`restored`, retained as completed evidence, and only then is the active-unit
+record deleted and its directory synced.
+Marker-only normal deploys without that recovery record verify through the new
+immutable image with no network and a read-only data mount, then safely clean
+residual systemd conditions. Pre-release failures stop every known current or
+legacy writer, bring both compose projects down, re-prove zero volume users,
+and only then preserve or create the sentinel, followed by the same second
+stop/down/proof sequence.
 
 Rollback is a normal code revert. It restores fallback for future assignments
 and is therefore security-regressive; already-written singleton allowlists stay

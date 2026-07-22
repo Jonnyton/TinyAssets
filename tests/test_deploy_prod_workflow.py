@@ -514,6 +514,26 @@ def test_deploy_publishes_release_state_after_canaries_and_access_gate():
     assert "${release_state_host_dir}/release-state.json" in run_script
     assert "/tmp/tinyassets-release-state.json /data/release-state.json" not in run_script
     assert "canary_bundle_status\": \"passed\"" in run_script
+    assert '"marker_sha256"' in run_script
+    assert '"cutover_state"' in run_script
+    assert 'None if os.environ.get("MIGRATION_CUTOVER") == "true"' in run_script
+    assert "engine-assignment-migration-v1.lock" in run_script
+    temp_idx = run_script.index(
+        'release_state_tmp=$(mktemp "${release_state_host_dir}/.release-state.XXXXXX")'
+    )
+    install_idx = run_script.index("install -m 0644 -o 1001 -g 1001")
+    assert run_script.index(
+        '/tmp/tinyassets-release-state.json "${release_state_tmp}"', install_idx
+    ) < run_script.index('sync -f "${release_state_tmp}"')
+    temp_sync_idx = run_script.index('sync -f "${release_state_tmp}"')
+    replace_idx = run_script.index(
+        'mv -T "${release_state_tmp}" "${release_state_host_dir}/release-state.json"'
+    )
+    final_sync_idx = run_script.index(
+        'sync -f "${release_state_host_dir}/release-state.json"'
+    )
+    dir_sync_idx = run_script.index('sync -f "${release_state_host_dir}"')
+    assert temp_idx < install_idx < temp_sync_idx < replace_idx < final_sync_idx < dir_sync_idx
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +971,13 @@ def _step(wf: dict, name: str) -> dict:
     return step
 
 
+def _shell_function(script: str, name: str) -> str:
+    """Extract a top-level shell helper with a conventional closing brace."""
+    start = script.index(f"{name}() {{")
+    end = script.index("\n          }", start) + len("\n          }")
+    return script[start:end]
+
+
 def test_engine_assignment_migration_has_strict_staged_exposure_order():
     wf = _load()
     names = [step.get("name") for step in _steps(wf)]
@@ -958,13 +985,13 @@ def test_engine_assignment_migration_has_strict_staged_exposure_order():
     drain = names.index("Drain legacy production host workflow runs")
     fence = names.index("Fence engine assignment writers")
     migrate = names.index("Apply reviewed engine assignment migration")
+    release = names.index("Commit engine assignment migration fence release")
     loopback = names.index("Start daemon-only migration canary")
     expose = names.index("Deploy new image")
     public = names.index("Post-deploy canary — canonical URL only")
     receipt = names.index("Publish release-state receipt")
-    release = names.index("Release engine assignment migration fence")
 
-    assert drain < fence < migrate < loopback < expose < public < receipt < release
+    assert drain < fence < migrate < release < loopback < expose < public < receipt
 
 
 def test_first_cutover_drains_pre_shared_group_workflow_runs():
@@ -990,6 +1017,12 @@ def test_first_cutover_drains_pre_shared_group_workflow_runs():
     assert "set -euo pipefail" in run_script
     assert "if ! runs_output=$(active_runs)" in run_script
     assert "mapfile -t runs < <(active_runs)" not in run_script
+    assert "requested|waiting|pending|queued" in run_script
+    assert "in_progress)" in run_script
+    cancel_case = run_script[run_script.index("case \"${run_status}\"") :]
+    assert cancel_case.index("requested|waiting|pending|queued") < cancel_case.index(
+        "/cancel"
+    ) < cancel_case.index("in_progress)")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="shell proof runs on the Linux CI host")
@@ -1067,13 +1100,101 @@ def test_engine_assignment_fence_quiesces_every_writer_and_proves_zero_mount_use
     assert "down --timeout 30" in run_script
     assert "docker ps -aq --filter volume=tinyassets-data" in run_script
     assert "docker inspect" in run_script
-    assert "lsof" in run_script
-    assert "+D \"${volume_dir}\"" in run_script
-    assert run_script.index("command -v lsof") < run_script.index('echo "cutover=true"')
+    assert 'prove_no_open_files "${volume_dir}"' in run_script
+    assert run_script.index("command -v lsof") < run_script.rindex('echo "cutover=true"')
     assert "ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64" in env
     assert "ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256" in env
-    assert run_script.index("manifest_sha256=") < run_script.index('echo "cutover=true"')
+    assert run_script.index("manifest_sha256=") < run_script.rindex('echo "cutover=true"')
     assert "|| true" not in run_script
+
+
+def test_first_fence_is_created_only_after_quiescence_is_proven():
+    run_script = _step(_load(), "Fence engine assignment writers").get("run", "") or ""
+
+    stop_idx = run_script.index('systemctl stop "${unit}"')
+    compose_down_idx = run_script.index("down --timeout 30")
+    proof_idx = run_script.index('prove_no_open_files "${volume_dir}"')
+    fence_idx = run_script.index('install -m 0600 /dev/null "${fence}"')
+    fence_sync_idx = run_script.index('sync -f "${fence}"')
+
+    assert stop_idx < compose_down_idx < proof_idx < fence_idx < fence_sync_idx
+    second_stop_idx = run_script.index('systemctl stop "${unit}"', fence_sync_idx)
+    second_proof_idx = run_script.index('prove_no_open_files "${volume_dir}"', fence_sync_idx)
+    assert fence_sync_idx < second_stop_idx < second_proof_idx
+    assert 'sync -f "/etc/systemd/system/${unit}.d/${dropin}"' in run_script
+    second_container_scan_idx = run_script.index("prove_no_container_users", fence_sync_idx)
+    assert fence_sync_idx < second_container_scan_idx < second_proof_idx
+    assert "for container in $(docker ps -aq); do" in run_script
+    assert run_script.count("prove_no_container_users") >= 3
+
+
+def test_locked_fence_transition_never_recreates_committed_marker_only_state():
+    run_script = _step(_load(), "Fence engine assignment writers").get("run", "") or ""
+
+    lock_idx = run_script.index("flock -x -w 30 9")
+    marker_guard_idx = run_script.index('if [ -f "${marker}" ] && [ ! -e "${fence}" ]', lock_idx)
+    fence_create_idx = run_script.index('install -m 0600 /dev/null "${fence}"')
+    assert lock_idx < marker_guard_idx < fence_create_idx
+    assert "refusing to recreate its fence" in run_script
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shell proof runs on the Linux CI host")
+@pytest.mark.parametrize(
+    ("lsof_status", "stdout", "stderr", "expected_status"),
+    [
+        (
+            0,
+            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+            "python 1 root 3r DIR 0 0 0 /data\n",
+            "",
+            1,
+        ),
+        (1, "", "", 0),
+        (1, "", "lsof: cannot stat /data\n", 1),
+        (0, "", "", 1),
+        (1, "unexpected output\n", "", 1),
+        (2, "", "", 1),
+        (130, "", "", 1),
+        (143, "", "", 1),
+    ],
+    ids=(
+        "handles",
+        "no-handles",
+        "stderr-is-error",
+        "success-without-handles-is-error",
+        "no-match-with-stdout-is-error",
+        "unexpected-status",
+        "sigint-status",
+        "sigterm-status",
+    ),
+)
+def test_open_file_proof_is_fail_closed_tri_state(
+    tmp_path, lsof_status, stdout, stderr, expected_status
+):
+    run_script = _step(_load(), "Fence engine assignment writers").get("run", "") or ""
+    helper = _shell_function(run_script, "prove_no_open_files")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_lsof = fake_bin / "lsof"
+    fake_lsof.write_text(
+        f"#!/bin/sh\nprintf '%s' {stdout!r}\nprintf '%s' {stderr!r} >&2\nexit {lsof_status}\n",
+        encoding="utf-8",
+    )
+    fake_lsof.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{helper}\nprove_no_open_files /data"],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert (result.returncode != 0) == (expected_status != 0), result.stderr
 
 
 def test_engine_assignment_migration_uses_reviewed_manifest_and_exact_new_image():
@@ -1103,6 +1224,17 @@ def test_engine_assignment_migration_uses_reviewed_manifest_and_exact_new_image(
     assert run_script.count("/app/scripts/migrate_engine_assignments.py apply") >= 2
     assert "--manifest /run/engine-assignment-manifest.json" in run_script
     assert "echo ${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" not in run_script
+    assert run_script.index('test -f "${fence}"') < run_script.index(
+        "migrate_engine_assignments.py apply"
+    )
+    assert run_script.index('prove_no_open_files "${volume_dir}"') < run_script.index(
+        "migrate_engine_assignments.py apply"
+    )
+    definition_idx = run_script.index("prove_no_container_users()")
+    inspect_idx = run_script.index("prove_no_container_users", definition_idx + 1)
+    proof_idx = run_script.index('prove_no_open_files "${volume_dir}"')
+    assert inspect_idx < proof_idx
+    assert "tinyassets-data( |$)| /data$" in run_script
 
 
 def test_daemon_only_loopback_canary_precedes_tunnel_workers():
@@ -1145,20 +1277,79 @@ def test_first_cutover_never_arms_or_executes_prefence_rollback():
     assert "MIGRATION_CUTOVER" in receipt_run
 
 
-def test_fence_releases_only_after_receipt_and_restores_prior_active_units():
+def test_fence_release_is_durable_before_any_writer_starts():
     wf = _load()
     names = [step.get("name") for step in _steps(wf)]
-    release = _step(wf, "Release engine assignment migration fence")
+    release = _step(wf, "Commit engine assignment migration fence release")
     release_run = release.get("run", "") or ""
 
-    assert names.index("Publish release-state receipt") < names.index(
-        "Release engine assignment migration fence"
+    assert names.index("Commit engine assignment migration fence release") < names.index(
+        "Start daemon-only migration canary"
     )
     assert _ENGINE_MIGRATION_FENCE in release_run
-    assert "active-units" in release_run
-    assert "systemctl start" in release_run
-    assert "systemctl daemon-reload" in release_run
-    assert "rm" in release_run
+    assert 'rm -f "${fence}"' in release_run
+    assert 'sync -f "${maintenance_dir}"' in release_run
+    assert "systemctl start" not in release_run
+    assert 'test -f "${marker}"' in release_run
+    assert 'test ! -L "${marker}"' in release_run
+    assert ".engine-assignment-migration-transaction-v1.json" in release_run
+    assert "ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256" in (release.get("env") or {})
+    assert "manifest_sha256" in release_run
+    manifest_gate_idx = release_run.index(
+        '"${marker_manifest_sha256}" != "${EXPECTED_MANIFEST_SHA256}"'
+    )
+    verify_idx = release_run.index("migrate_engine_assignments.py verify")
+    receipt_idx = release_run.index('mv "${provisional_tmp}" "${provisional}"')
+    unlink_idx = release_run.index('rm -f "${fence}"')
+    assert verify_idx < manifest_gate_idx < receipt_idx < unlink_idx
+
+    assert 'release_state=${volume_dir}/release-state.json' in release_run
+    assert 'mktemp "${volume_dir}/.release-state.XXXXXX"' in release_run
+    assert '"image_ref": os.environ["NEW_IMAGE"]' in release_run
+    assert '"rollback_target": None' in release_run
+    assert '"canary_bundle_status": "pending"' in release_run
+    assert '"cutover_state": "fence-release-committed"' in release_run
+    assert 'chown 1001:1001 "${release_state_tmp}"' in release_run
+    assert 'chmod 0644 "${release_state_tmp}"' in release_run
+    assert 'sync -f "${release_state_tmp}"' in release_run
+    assert 'mv -T "${release_state_tmp}" "${release_state}"' in release_run
+    assert release_run.index('sync -f "${volume_dir}"') < unlink_idx
+
+    restore = _step(wf, "Restore writers after successful migration deploy")
+    restore_run = restore.get("run", "") or ""
+    assert names.index("Publish release-state receipt") < names.index(
+        "Restore writers after successful migration deploy"
+    )
+    assert "systemctl start" in restore_run
+    assert _ENGINE_MIGRATION_FENCE in restore_run
+    assert 'if [ -e "${fence}" ]' in restore_run
+    assert "active-unit recovery record contains an unknown unit" in restore_run
+    restore_start_idx = restore_run.rindex('systemctl start "${unit}"')
+    restored_receipt_idx = restore_run.index('"restored"')
+    delete_active_idx = restore_run.rindex('rm -f "${active_units}"')
+    assert restore_start_idx < restored_receipt_idx < delete_active_idx
+    assert 'rm -f "${maintenance_dir}/engine-assignment-migration-v1.release.json"' not in (
+        restore_run
+    )
+    assert restore_run.index('sync -f "${maintenance_dir}"', restored_receipt_idx) < (
+        delete_active_idx
+    )
+
+
+def test_cutover_host_transitions_take_one_host_local_lock():
+    wf = _load()
+    for name in (
+        "Fence engine assignment writers",
+        "Apply reviewed engine assignment migration",
+        "Verify recorded engine assignment migration",
+        "Commit engine assignment migration fence release",
+        "Start daemon-only migration canary",
+        "Restore writers after successful migration deploy",
+        "Quiesce after fenced deploy failure",
+    ):
+        run_script = _step(wf, name).get("run", "") or ""
+        assert "engine-assignment-migration-v1.lock" in run_script, name
+        assert "flock -x -w" in run_script, name
 
 
 @pytest.mark.parametrize(
@@ -1226,6 +1417,41 @@ def test_interrupted_cutover_resumes_without_destroying_original_active_units():
     assert run_script.index('mv "${active_units_tmp}" "${active_units}"') < run_script.index(
         'install -m 0600 /dev/null "${fence}"'
     )
+    assert "postcommit_recovery=" in run_script
+    assert "active_units_present=" in run_script
+    assert 'echo "postcommit_recovery=true"' in run_script
+    classification_idx = run_script.index('echo "postcommit_recovery=true"')
+    lock_idx = run_script.index("flock -x -w 30 9")
+    assert lock_idx < classification_idx
+    for evidence in (
+        "engine-assignment-migration-v1.release.json",
+        "release-state.json",
+        "rollback_target",
+        "marker_sha256",
+        "image_ref",
+        "fence-release-committed",
+        "restored",
+        "object_pairs_hook",
+    ):
+        assert evidence in run_script
+
+
+def test_postcommit_release_evidence_is_revalidated_before_writer_start():
+    wf = _load()
+    for name in (
+        "Start daemon-only migration canary",
+        "Restore writers after successful migration deploy",
+    ):
+        run_script = _step(wf, name).get("run", "") or ""
+        validation_idx = run_script.index("validate_release_evidence")
+        if name.startswith("Start"):
+            writer_idx = run_script.index("up -d --no-deps daemon")
+        else:
+            writer_idx = run_script.index('systemctl start "${unit}"')
+        assert validation_idx < writer_idx
+        assert "release-state.json" in run_script
+        assert "engine-assignment-migration-v1.release.json" in run_script
+        assert "object_pairs_hook" in run_script
 
 
 def test_marker_only_normal_deploy_verifies_with_immutable_offline_image():
@@ -1247,7 +1473,7 @@ def test_marker_only_normal_deploy_verifies_with_immutable_offline_image():
     assert "/app/scripts/migrate_engine_assignments.py verify" in run_script
 
 
-def test_fenced_failure_recreates_complete_fence_and_reproves_zero_users():
+def test_failure_quiescence_never_recreates_released_marker_fence():
     step = _step(_load(), "Quiesce after fenced deploy failure")
     run_script = step.get("run", "") or ""
 
@@ -1264,9 +1490,34 @@ def test_fenced_failure_recreates_complete_fence_and_reproves_zero_users():
         "workflow-daemon.service",
     ):
         assert unit in run_script
-    assert "install -m 0600 /dev/null \"${fence}\"" in run_script
+    assert "marker=" in run_script
+    assert 'if [ -f "${marker}" ] && [ ! -e "${fence}" ]' in run_script
+    assert "released=true" in run_script
     assert "ConditionPathExists=!" in run_script
     assert "systemctl stop" in run_script
     assert "docker compose" in run_script
     assert "docker ps -aq --filter volume=tinyassets-data" in run_script
-    assert "lsof" in run_script and "+D \"${volume_dir}\"" in run_script
+    assert 'prove_no_open_files "${volume_dir}"' in run_script
+    assert run_script.index('prove_no_open_files "${volume_dir}"') < run_script.index(
+        'install -m 0600 /dev/null "${fence}"'
+    )
+    assert 'if [ "${released}" != "true" ]' in run_script
+    assert "for container in $(docker ps -aq); do" in run_script
+    assert run_script.count("prove_no_container_users") >= 3
+    fence_create_idx = run_script.index('install -m 0600 /dev/null "${fence}"')
+    second_scan_idx = run_script.index("prove_no_container_users", fence_create_idx)
+    second_proof_idx = run_script.index(
+        'prove_no_open_files "${volume_dir}"', fence_create_idx
+    )
+    assert fence_create_idx < second_scan_idx < second_proof_idx
+
+
+def test_marker_only_rerun_cleans_residual_cutover_metadata_after_verification():
+    run_script = _step(_load(), "Verify recorded engine assignment migration").get("run", "") or ""
+
+    verify_idx = run_script.index("migrate_engine_assignments.py verify")
+    cleanup_idx = run_script.index("engine-assignment-migration-v1.active-units")
+    assert verify_idx < cleanup_idx
+    assert "50-engine-assignment-migration-fence.conf" in run_script
+    assert "systemctl daemon-reload" in run_script
+    assert 'test ! -e "${fence}"' in run_script
