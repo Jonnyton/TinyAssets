@@ -65,6 +65,25 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Runtime entrypoint venv import smoke
+        run: |
+          docker run --rm \
+            --entrypoint /bin/bash \
+            -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
+            tinyassets-daemon:ci -lc '
+              set -euo pipefail
+              printf "%s\n" \
+                "import sys" \
+                "import tinyassets" \
+                "expected = \"/opt/venv/bin/python\"" \
+                "if sys.executable != expected:" \
+                "    raise RuntimeError(f\"runtime entrypoint used {sys.executable}, expected {expected}\")" \
+                "print(f\"RUNTIME-VENV-IMPORT-SMOKE: ok interpreter={sys.executable}\")" \
+                > /tmp/runtime-entrypoint-smoke.py
+              exec /app/docker-entrypoint.sh \
+                python /tmp/runtime-entrypoint-smoke.py
+            '
+
       - name: Start container
         run: |
           docker run -d --rm \
