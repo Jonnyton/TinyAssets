@@ -5,9 +5,7 @@
 ## Purpose
 
 WorkOS OAuth 2.1 resource-server auth with anonymous-read/authenticated-write posture, pre-dispatch 401 write challenges, founder home auto-birth, and two-axis authorization (universe visibility plus ownership ACL).
-
 ## Requirements
-
 ### Requirement: Auth provider is selected by configuration, defaulting to no-auth
 
 The server SHALL select its auth provider at startup from the `UNIVERSE_SERVER_AUTH`
@@ -110,13 +108,18 @@ The metadata is produced in `tinyassets/auth/wellknown.py`.
 The server SHALL, on the first authenticated `converse` call with no `graph_id` (the founder's opening
 relay, and the only handle that performs first-contact birth), ensure the founder has a home universe.
 It SHALL check the create scope BEFORE reserving any home id, so a founder lacking create scope leaves
-no phantom binding and receives the awaiting card. Reservation SHALL be atomic (an `INSERT ... ON
+no phantom binding and the conversation entry returns a creation failure with
+`auth_scope_required=true`. Reservation SHALL be atomic (an `INSERT ... ON
 CONFLICT DO NOTHING` on the founder key) so concurrent first-contact calls across worker threads yield
 exactly one home id, and materialization SHALL be serialized so a reserved id is created once, with
-success defined as the universe's `soul.md` being present. Anonymous sessions SHALL never trigger
-birth. Both `get_status` and the `read_graph target=status` alias SHALL pass through as pure reads
-without first-contact birth. This logic lives in `tinyassets/api/first_contact.py` with the atomic
-claim in `tinyassets/daemon_server.py`.
+success defined as the universe's `soul.md` being present. After successful materialization and
+binding, the resolver SHALL return the bound home id to the originating `converse` entry path.
+Whether that conversation can select and invoke universe intelligence is a subsequent
+authority/execution decision outside this birth contract; successful birth SHALL NOT guarantee
+provider execution or a first-person reply. Anonymous sessions SHALL never trigger birth. Both `get_status` and the
+`read_graph target=status` alias SHALL pass through as pure reads without first-contact birth. This
+logic lives in `tinyassets/api/first_contact.py` with the atomic claim in
+`tinyassets/daemon_server.py`.
 
 Per the 2026-07-22 host directive
 (`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`), birth moved off
@@ -128,11 +131,13 @@ never needs to know an incantation — is upheld, since the opening message is i
 #### Scenario: first authenticated converse births one home
 - **WHEN** an authenticated founder with create scope and no bound home issues their opening `converse` with no `graph_id`
 - **THEN** exactly one home universe is reserved, materialized, and bound to the founder
-- **AND** the reply is the universe speaking in first person, relayed verbatim
+- **AND** the originating conversation entry continues with that bound home as its target
+- **AND** completion of birth does not by itself assert that provider execution or a first-person reply succeeded
 
 #### Scenario: read-only founder leaves no phantom binding
 - **WHEN** an authenticated founder lacking create scope issues their opening `converse` with no home
-- **THEN** no home binding is created and the awaiting card is returned
+- **THEN** no home binding is created
+- **AND** the result reports that the home could not be created or loaded with `auth_scope_required=true`
 
 #### Scenario: anonymous first contact never births
 - **WHEN** an anonymous session calls `converse` or `get_status`

@@ -9,6 +9,6 @@
 
 ## 2. Verify and Fold Back
 
-- [ ] 2.1 Strictly validate the correction change.
-- [ ] 2.2 Obtain independent review of the canonical wording and active residual boundary.
-- [ ] 2.3 Sync the modified requirement, archive the change, and strictly validate all OpenSpec artifacts.
+- [x] 2.1 Strictly validate the correction change.
+- [x] 2.2 Obtain independent review of the canonical wording and active residual boundary.
+- [x] 2.3 Sync the modified requirement, archive the change, and strictly validate all OpenSpec artifacts.
