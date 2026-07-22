@@ -1,0 +1,142 @@
+name: PR scope guard
+
+# Why this exists
+# ---------------
+# Green checks are not sufficient to auto-merge safely. PR #1491 presented as a
+# two-file auth fix and CI was happy — but its diff against main carried seven
+# workflow files plus deploy-prod.yml and Dockerfile, because the branch sat on
+# an unmerged 217-commit lineage. Nothing in CI objected; only inspecting the
+# DIFF SCOPE caught it. With auto-merge enabled, that PR would have shipped
+# changes to the production deploy workflow under the banner of an auth fix.
+#
+# So: a PR that touches release-critical infrastructure must say so explicitly,
+# via the `infra-change` label. This is a scope-declaration gate, not a security
+# control — see the honesty note at the bottom of this file.
+#
+# MUST run unconditionally (no `paths:` filter). A required status check that is
+# path-filtered never reports on PRs outside those paths, and the PR then hangs
+# forever on "Expected — waiting for status". `lint`/actionlint is path-filtered
+# for exactly this reason and must NOT be added as a required check.
+
+on:
+  # pull_request_target: this workflow is always the TRUSTED copy from the default
+  # branch. With plain `pull_request`, a PR could edit the very workflow that
+  # judges it — the guard would grade its own homework. We never check out or
+  # execute PR code here, so using _target is safe: we only read metadata.
+  pull_request_target:
+    # `labeled`/`unlabeled` matter: declaring an infra change must re-run the gate.
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-scope-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: Diff scope declared
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Deliberately NO actions/checkout: under pull_request_target a checkout of
+      # the PR head would execute untrusted code with a privileged token. The file
+      # list comes from the API instead.
+      - name: Compare the PR diff against release-critical paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Release-critical: anything that can change how the product is built,
+          # deployed, or what runs in production.
+          #
+          # packaging/ is deliberately EXCLUDED. The plugin mirror there is a
+          # GENERATED artifact that legitimately changes with most canonical
+          # tinyassets/* PRs, and it already has its own parity check. Including it
+          # flagged 4 of 5 sampled real PRs, which would have trained everyone to
+          # rubber-stamp the infra-change label and defeated the guard.
+          SENSITIVE_RE='^(\.github/workflows/|deploy/|Dockerfile$|\.dockerignore$)'
+
+          # Paginated API read. Fail CLOSED on any error or truncation — a guard
+          # that silently sees fewer files than the PR contains is worse than none.
+          if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files"                             --jq '.[].filename' 2>/dev/null)"; then
+            echo "::error::could not read the PR file list — failing closed"
+            exit 1
+          fi
+
+          TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
+          HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE" || true)"
+          HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          echo "### PR scope guard" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Files changed vs merge-base: **${TOTAL}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release-critical files touched: **${HIT_COUNT}**" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$HIT_COUNT" -eq 0 ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "No release-critical paths touched." >> "$GITHUB_STEP_SUMMARY"
+            echo "scope guard: clean (${TOTAL} files, none release-critical)"
+            exit 0
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>Release-critical files</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
+          printf '%s\n' "$HITS" | sed 's/^/- `/; s/$/`/' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+          # HARD CAPS — no label bypasses these. A label is a declaration of intent,
+          # not authorization: it can be applied by any writer, is not bound to a head
+          # SHA, and goes stale the moment someone pushes again. PR #1491 is the case
+          # that proves it — 386 changed files and 16 release-critical, which a bare
+          # label would have waved straight through into auto-merge.
+          MAX_TOTAL=150
+          MAX_SENSITIVE=8
+          if [ "$TOTAL" -gt "$MAX_TOTAL" ] || [ "$HIT_COUNT" -gt "$MAX_SENSITIVE" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Blocked — beyond the label's authority.** ${TOTAL} files changed (cap ${MAX_TOTAL}), ${HIT_COUNT} release-critical (cap ${MAX_SENSITIVE})." >> "$GITHUB_STEP_SUMMARY"
+            echo "A diff this broad usually means the branch carries an unmerged lineage." >> "$GITHUB_STEP_SUMMARY"
+            echo "Rebase onto the target branch, or split it. The label cannot clear this." >> "$GITHUB_STEP_SUMMARY"
+            echo "scope guard: BLOCKED — over cap (${TOTAL} files, ${HIT_COUNT} release-critical)"
+            exit 1
+          fi
+
+          case ",${LABELS}," in
+            *,infra-change,*)
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "Declared via the \`infra-change\` label — allowed." >> "$GITHUB_STEP_SUMMARY"
+              echo "scope guard: ${HIT_COUNT} release-critical file(s), declared by label"
+              exit 0
+              ;;
+          esac
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Blocked.** This PR changes release-critical files without declaring it." >> "$GITHUB_STEP_SUMMARY"
+          echo "If the change is intended, add the \`infra-change\` label." >> "$GITHUB_STEP_SUMMARY"
+          echo "If it is NOT intended, the branch is probably carrying an unmerged" >> "$GITHUB_STEP_SUMMARY"
+          echo "lineage — rebase onto the target branch so the diff shows only your work." >> "$GITHUB_STEP_SUMMARY"
+
+          printf '%s\n' "$HITS" | while IFS= read -r f; do
+            [ -n "$f" ] && echo "::error file=${f}::release-critical path changed without the infra-change label"
+          done
+
+          echo "scope guard: BLOCKED — ${HIT_COUNT} release-critical file(s), no infra-change label"
+          exit 1
+
+# Honesty note
+# ------------
+# A label-based exemption is only as strong as whoever applies the label, so this
+# does NOT stop a determined actor — it is not a security boundary. What it does
+# stop is the failure that actually happened: infrastructure changing SILENTLY,
+# as a side effect of a branch's history, while the PR title and CI both say
+# something narrower. It converts an invisible diff into a deliberate one.
