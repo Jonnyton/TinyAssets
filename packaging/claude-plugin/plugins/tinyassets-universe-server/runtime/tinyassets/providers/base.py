@@ -179,6 +179,7 @@ def subprocess_env_for_provider(
     env["CLAUDE_CONFIG_DIR"] = str(credential_root / "claude")
     env["CODEX_HOME"] = str(credential_root / "codex")
 
+    credential_resolution_failed = False
     try:
         from tinyassets.credential_vault import apply_provider_auth_env
 
@@ -188,12 +189,13 @@ def subprocess_env_for_provider(
     except ValueError:
         raise
     except Exception:
+        credential_resolution_failed = True
+    if credential_resolution_failed:
         from tinyassets.exceptions import ProviderUnavailableError
-
         raise ProviderUnavailableError(
             f"{provider_name} credential resolution failed for "
             "universe-scoped provider"
-        ) from None
+        )
     return env
 
 

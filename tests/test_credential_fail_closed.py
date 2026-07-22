@@ -142,6 +142,7 @@ def test_universe_credential_resolution_failure_is_explicit(
         subprocess_env_for_provider("claude-code", universe_dir=universe)
     assert "do-not-leak" not in str(exc.value)
     assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
 
 
 def test_environment_bound_universe_does_not_inherit_host_auth(
