@@ -702,3 +702,18 @@ Notes:
 - Ship condition: focused tests pass, branch pushed, PR opened, then deploy
   brings runtime_count to 4 while goal_pool remains a follow-on.
 - 2026-06-24 CREATE wf-branch-lifecycle-automation branch=worktree-branch-lifecycle-automation base=origin/main provider=claude-code (branch lifecycle automation — design note + L0-L4)
+
+## 2026-07-22 12:41 - create collapse-mcp-spec-reconcile
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/collapse-mcp-spec-reconcile
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile
+- STATUS/Issue/PR: Reconcile obsolete five-handle OpenSpec; PR after strict validation and independent review
+- PLAN refs: API and MCP Interface; Distribution and Discoverability
+- Purpose: retire the obsolete five-handle change without corrupting seven-handle canonical truth and preserve real residuals as successor changes
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile\_PURPOSE.md
+- Memory refs: PR #1594 audit; PR #1595 catalog repair
+- Related implications: external directory acceptance; live-mcp-connector-surface; PR #1561 legacy stdio fence is a separate runtime lane
+- Idea feed refs: none
+- Ship/abandon: merge reviewed spec-only PR, or abandon if a current overlapping lane is found
