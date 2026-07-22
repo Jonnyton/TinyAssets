@@ -1,0 +1,11 @@
+claim_id: d51dc8b8326843cb
+branch_def_id: cd0483e3d81c
+goal_id: ef5a37922da7
+rung_key: draft_ready
+evidence_url: https://example.com/pr/1
+evidence_note: Auto-claim from completed run 10943724abcf44c2
+conformance_pack_id: ''
+claimed_by: tester
+claimed_at: '2026-07-22T04:12:51Z'
+retracted_at: null
+retracted_reason: ''
