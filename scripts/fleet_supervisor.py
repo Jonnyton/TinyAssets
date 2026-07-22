@@ -112,6 +112,64 @@ def _parse_directive(brief: Path) -> list[str]:
 QUEUE_TARGET_DEPTH = 4
 LOW_BACKLOG = 3
 
+# 3h. Long enough for an implementation slice with mutation-proven tests; the
+# 30m default silently killed two lanes that were gating a ui-test.
+DEFAULT_LANE_TIMEOUT = 10800
+
+# What peer_agent writes into the output file when it kills a lane at the
+# deadline. Matched as a substring so the seconds value can vary.
+TIMEOUT_MARKER = "exceeded"
+
+
+def _reap_timed_out(gate_dir: Path, queue_root: Path) -> None:
+    """Notice lanes that were killed at the deadline, instead of trusting silence.
+
+    The launch-liveness gate only catches a child that dies in its first
+    seconds. A lane killed at its timeout looks identical to a lane that
+    finished: the process is gone and an output file exists. The only evidence
+    is one line INSIDE that file, which nothing read — so two lanes gating a
+    ui-test burned 30 minutes each and reported nothing, and the failure was
+    found by a human asking why.
+
+    Any output whose whole content is a timeout error is not a result. Move it
+    aside so it cannot be mistaken for one, and put the brief back in the
+    backlog so the work is retried rather than lost.
+    """
+    if not gate_dir.is_dir():
+        return
+    dispatched = queue_root / "dispatched"
+    dead = gate_dir / "_timed_out"
+    for out in gate_dir.glob("*.md"):
+        try:
+            head = out.read_text(encoding="utf-8", errors="replace")[:400]
+        except OSError:
+            continue
+        if TIMEOUT_MARKER not in head or "timeout" not in head.lower():
+            continue
+        dead.mkdir(parents=True, exist_ok=True)
+        brief = dispatched / f"{out.stem}.md"
+        requeued = False
+        if brief.is_file():
+            # Guess the lane from the brief's own directive; default to codex,
+            # which is this project's default builder.
+            lane = "claude" if "claude" in head.lower() else "codex"
+            target = queue_root / "_backlog" / lane / brief.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(str(brief), str(target))
+                requeued = True
+            except OSError:
+                pass
+        try:
+            os.replace(str(out), str(dead / out.name))
+        except OSError:
+            continue
+        _log(
+            queue_root,
+            f"LANE TIMED OUT: {out.stem} produced only a timeout error"
+            + (" — brief requeued to backlog" if requeued else " — brief NOT found to requeue"),
+        )
+
 
 def _promote_from_backlog(queue_root: Path, provider: str) -> int:
     """Top a lane's queue back up from the durable backlog.
@@ -235,6 +293,15 @@ def _dispatch(brief: Path, provider: str, gate_dir: Path, queue_root: Path) -> b
         if fallback:
             directive = [*directive, "--model", fallback]
 
+    # peer_agent's own default is 1800s, and nothing here ever overrode it. On
+    # 2026-07-22 both `universe-visibility-impl` and `test-identity-and-reset-impl`
+    # — the two lanes gating a ui-test — were killed at exactly 1800s having
+    # produced nothing, and the only trace was one line inside their output file.
+    # An implementation slice with mutation-proven tests does not fit in half an
+    # hour. Give lanes real headroom; a brief that knows better still wins.
+    if not any(token == "--timeout" for token in directive):
+        directive = [*directive, "--timeout", str(DEFAULT_LANE_TIMEOUT)]
+
     cmd = [
         sys.executable,
         str(_peer_agent()),
@@ -300,6 +367,9 @@ def reconcile(queue_root: Path, gate_dir: Path, floors: dict[str, int]) -> dict:
     """One pass: top every provider back up to its floor. Returns a summary."""
     lanes = live_lanes()
     summary = {}
+    # Reap timed-out lanes BEFORE anything else: their briefs go back to the
+    # backlog, so the refill below can pick them straight back up.
+    _reap_timed_out(gate_dir, queue_root)
     # Top every lane up from the backlog BEFORE counting, so a lane is never
     # found empty merely because nobody hand-stocked it this minute.
     for provider in PROVIDERS:
