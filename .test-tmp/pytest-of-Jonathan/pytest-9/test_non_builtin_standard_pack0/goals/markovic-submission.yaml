@@ -5,4 +5,12 @@ author: alice
 tags: []
 visibility: public
 created_at: 1784693436.7676091
-updated_at: 1784693436.7676091
+updated_at: 1784693437.7881007
+gate_ladder:
+- description: Internal draft exists.
+  name: Draft ready
+  rung_key: draft_ready
+- description: Submitted to target venue.
+  name: Submitted
+  requires_conformance_pack: research-publication-v0
+  rung_key: submitted
