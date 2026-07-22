@@ -36,6 +36,37 @@ name: Release reconcile
 # So the question is now asked of `Deploy prod` runs on main, which only reach
 # success after the post-deploy canary passes. That is the closest signal to
 # "production is actually serving this commit" available from the API.
+#
+# Why this dispatches the deploy itself
+# -------------------------------------
+# The first version dispatched `build-image.yml` and stated that `Deploy prod`
+# would chain from it. It does not. `Deploy prod` triggers on `workflow_run`, and
+# a run that was DISPATCHED by GITHUB_TOKEN cannot itself trigger further runs —
+# the same suppression rule that killed post-merge-release.yml, one level deeper.
+# So this file was reproducing the exact failure it was written to escape: it
+# dispatched a build every tick, the build went green, nothing deployed, and the
+# next tick saw the same drift and dispatched another build. A loop that cannot
+# reach its own goal state is not a loop, it is a spinner.
+#
+# Measured on 2026-07-22, a clean natural experiment:
+#   - 05:28Z build triggered by a real `push`      -> deploy fired 05:31Z
+#   - 04:33Z and 06:53Z builds dispatched by token -> no deploy, ever
+# In the gap, a credential fail-closed security fix sat on main, built, undeployed.
+#
+# `workflow_dispatch` is one of the two events GITHUB_TOKEN may still raise, so
+# convergence is done by dispatching BOTH steps explicitly rather than by trusting
+# a cascade. That makes this a two-state machine, and it settles in two ticks:
+#
+#   no image for main HEAD   -> dispatch build   (tick 1)
+#   image but no deploy      -> dispatch deploy  (tick 2)
+#   deploy contains the work -> nothing
+#
+# Deploy is dispatched on `main`, and `Deploy prod` resolves its image by the sha
+# of the ref it runs on — so the build must exist for main's CURRENT HEAD, not
+# merely for the last release-relevant commit. It refuses a mutable-tag fallback
+# when that image is missing (verified: it failed closed on exactly this, rather
+# than silently shipping a stale image), which is why the build state is checked
+# against HEAD.
 
 on:
   schedule:
@@ -132,11 +163,14 @@ jobs:
                        "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?status=success&branch=main&per_page=100" \
                        --jq '.workflow_runs[].head_sha' 2>/dev/null || true)"
 
+          # No early exit when DEPLOYED is empty. The ancestry loop below simply
+          # does not execute, and control reaches the same build-vs-deploy
+          # decision — which is the right answer for "nothing has ever deployed"
+          # too. An early exit here used to emit its own action value, and when
+          # the action vocabulary grew from one verb to two it would have become
+          # a value nothing matched: a silent no-op that looks like a healthy run.
           if [ -z "$DEPLOYED" ]; then
-            echo "no successful deploy on record — dispatching"
-            echo "action=dispatch" >> "$GITHUB_OUTPUT"
-            echo "detail=no successful deploy to main on record" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "no successful deploy to main on record"
           fi
 
           # Ancestry, not equality: a deploy of a later commit already contains
@@ -155,11 +189,31 @@ jobs:
           done
 
           echo "DRIFT: nothing deployed contains ${RELEVANT:0:8}"
-          echo "action=dispatch" >> "$GITHUB_OUTPUT"
-          echo "detail=no successful deploy contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
 
-      - name: Converge
-        if: steps.check.outputs.action == 'dispatch'
+          # Production is stale. Which of the two steps is missing?
+          #
+          # `Deploy prod` resolves its image by the sha of the ref it runs on, so
+          # the question is whether an image exists for main's CURRENT HEAD — not
+          # for RELEVANT. A docs commit landing after the last code commit still
+          # moves HEAD, and the deploy will look for HEAD's tag and fail closed if
+          # it was never built.
+          HEAD_SHA="$(git rev-parse HEAD)"
+          BUILT="$(gh api --paginate \
+                     "repos/${REPO}/actions/workflows/build-image.yml/runs?status=success&branch=main&per_page=100" \
+                     --jq '.workflow_runs[].head_sha' 2>/dev/null || true)"
+
+          if printf '%s\n' $BUILT | grep -qx "$HEAD_SHA"; then
+            echo "image exists for ${HEAD_SHA:0:8} — deploy is the missing step"
+            echo "action=deploy" >> "$GITHUB_OUTPUT"
+            echo "detail=image ${HEAD_SHA:0:8} built but no successful deploy contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+          else
+            echo "no successful build for ${HEAD_SHA:0:8} — build is the missing step"
+            echo "action=build" >> "$GITHUB_OUTPUT"
+            echo "detail=no image built for ${HEAD_SHA:0:8}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the missing image
+        if: steps.check.outputs.action == 'build'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -169,15 +223,37 @@ jobs:
           set -euo pipefail
           gh workflow run build-image.yml --repo "$REPO" --ref main
           {
-            echo "### Release drift corrected"
+            echo "### Release drift — building"
             echo ""
             echo "${DETAIL}."
             echo ""
-            echo "Dispatched \`Build and publish image\`; \`Deploy prod\` chains from it."
+            echo "Dispatched \`Build and publish image\`. This does NOT chain to a"
+            echo "deploy — a token-dispatched run cannot trigger one. The next tick"
+            echo "sees the image and dispatches \`Deploy prod\` itself."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy the built image
+        if: steps.check.outputs.action == 'deploy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run deploy-prod.yml --repo "$REPO" --ref main
+          {
+            echo "### Release drift — deploying"
+            echo ""
+            echo "${DETAIL}."
+            echo ""
+            echo "Dispatched \`Deploy prod\` directly. It reaches success only after"
+            echo "its post-deploy canary passes, so the next tick reads that result"
+            echo "as the answer to whether production actually converged."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: In sync
-        if: steps.check.outputs.action != 'dispatch'
+        if: steps.check.outputs.action == 'none'
         env:
           DETAIL: ${{ steps.check.outputs.detail }}
         shell: bash
