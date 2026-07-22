@@ -28,8 +28,9 @@ permissions:
   issues: write
 
 concurrency:
-  # One triage run per issue — prevents concurrent restarts on the same box.
-  group: p0-triage-${{ github.event.issue.number }}
+  # Serialize every GitHub-managed mutation of the production host.
+  group: tinyassets-production-host-mutation
+  queue: max
   cancel-in-progress: false
 
 env:
@@ -71,6 +72,26 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Check engine assignment migration fence
+        id: engine-migration-fence
+        run: |
+          set +e
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo sh -c 'if test -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence; then exit 10; else exit 20; fi'" \
+              >/dev/null 2>&1
+          status=$?
+          set -e
+          case "$status" in
+            10) active=true ;;
+            20) active=false ;;
+            *)
+              active=true
+              echo "::warning::Unable to verify engine assignment migration fence; treating it as active"
+              ;;
+          esac
+          echo "active=${active}" >> "$GITHUB_OUTPUT"
 
       - name: Capture pre-restart diag
         id: prediag
@@ -152,7 +173,7 @@ jobs:
       # --- Repair branch 1: ENV-UNREADABLE -----------------------------
       - name: Repair — ENV-UNREADABLE (chown + chmod)
         id: repair_env
-        if: steps.classify.outputs.class == 'env_unreadable'
+        if: steps.engine-migration-fence.outputs.active != 'true' && steps.classify.outputs.class == 'env_unreadable'
         run: |
           echo "::notice::ENV-UNREADABLE detected — applying perm repair"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -171,7 +192,7 @@ jobs:
       # docs/ops/host-independence-runbook.md — not auto-applied here).
       - name: Repair — OOM (compose restart; memory cap NOT auto-bumped)
         id: repair_oom
-        if: steps.classify.outputs.class == 'oom'
+        if: steps.engine-migration-fence.outputs.active != 'true' && steps.classify.outputs.class == 'oom'
         run: |
           echo "::notice::OOM detected — compose restart (no memory ratchet)"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -186,7 +207,7 @@ jobs:
       # emergency fire. Journalctl vacuum trims old log state too.
       - name: Repair — disk full (docker prune + journalctl vacuum)
         id: repair_disk
-        if: steps.classify.outputs.class == 'disk_full'
+        if: steps.engine-migration-fence.outputs.active != 'true' && steps.classify.outputs.class == 'disk_full'
         run: |
           echo "::notice::disk-full detected — emergency prune"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -206,7 +227,7 @@ jobs:
       # docs/audits/2026-04-25-etc-workflow-env-mode-flip.md).
       - name: Repair — image pull failure (release-state rollback target)
         id: repair_pull
-        if: steps.classify.outputs.class == 'image_pull_failure'
+        if: steps.engine-migration-fence.outputs.active != 'true' && steps.classify.outputs.class == 'image_pull_failure'
         run: |
           echo "::warning::image-pull failed — rolling back to recorded immutable release-state target"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -247,7 +268,7 @@ jobs:
       # underlying issue was transient.
       - name: Repair — watchdog hot-loop (stop + sleep 60 + start)
         id: repair_watchdog
-        if: steps.classify.outputs.class == 'watchdog_hotloop'
+        if: steps.engine-migration-fence.outputs.active != 'true' && steps.classify.outputs.class == 'watchdog_hotloop'
         run: |
           echo "::notice::watchdog hot-loop detected — stop+sleep+start"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -292,6 +313,7 @@ jobs:
       - name: Repair — provider_exhaustion (stop worker + .pause)
         id: repair_provider_exhaustion
         if: >
+          steps.engine-migration-fence.outputs.active != 'true' &&
           steps.classify.outputs.class == 'provider_exhaustion' &&
           steps.repair_provider_exhaustion_gate.outputs.auto_repair_enabled == 'true'
         run: |
@@ -391,6 +413,7 @@ jobs:
       - name: Attempt compose restart
         id: restart
         if: >
+          steps.engine-migration-fence.outputs.active != 'true' &&
           steps.classify.outputs.class != 'watchdog_hotloop' &&
           steps.classify.outputs.class != 'tunnel_token' &&
           steps.classify.outputs.class != 'provider_exhaustion'

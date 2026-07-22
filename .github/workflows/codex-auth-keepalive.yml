@@ -10,7 +10,8 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: codex-auth-keepalive
+  group: tinyassets-production-host-mutation
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -40,7 +41,25 @@ jobs:
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+      - name: Check engine assignment migration fence
+        id: engine-migration-fence
+        run: |
+          set +e
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo sh -c 'if test -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence; then exit 10; else exit 20; fi'" \
+              >/dev/null 2>&1
+          status=$?
+          set -e
+          case "$status" in
+            10) active=true ;;
+            20) active=false ;;
+            *) active=true ;;
+          esac
+          echo "active=${active}" >> "$GITHUB_OUTPUT"
+
       - name: Exercise Codex subscription auth
+        if: steps.engine-migration-fence.outputs.active != 'true'
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \

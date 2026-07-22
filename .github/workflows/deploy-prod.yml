@@ -5,8 +5,9 @@ name: Deploy prod
 #
 # Fires after build-image.yml succeeds on main. SSH into the DigitalOcean
 # Droplet, pull the freshly-published image tag, `docker compose up -d`,
-# run a post-deploy canary against `tinyassets.io/mcp`, and on canary
-# red, auto-rollback to the previous tag.
+# and run a post-deploy canary against `tinyassets.io/mcp`. Ordinary deploys
+# auto-rollback on red; the one-time assignment cutover stays fenced and
+# roll-forward-only after its first mutation.
 #
 # Alarm hook: deploy failures open a GitHub issue labeled `deploy-failed`
 # — distinct from the canary-triggered `p0-outage` issue shape from
@@ -17,6 +18,8 @@ name: Deploy prod
 #   DO_DROPLET_HOST  — Droplet public IP (e.g. 161.35.237.133)
 #   DO_SSH_USER      — SSH user on the Droplet (e.g. root or deploy)
 #   DO_SSH_KEY       — Private key PEM for the above user
+#   ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 — reviewed secret-free manifest
+#   ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 — exact reviewed manifest digest
 #
 # Optional subscription auth secret:
 #   TINYASSETS_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
@@ -46,10 +49,11 @@ on:
 permissions:
   contents: read
   issues: write
-  actions: read
+  actions: write
 
 concurrency:
-  group: deploy-prod
+  group: tinyassets-production-host-mutation
+  queue: max
   cancel-in-progress: false
 
 env:
@@ -66,7 +70,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       HAS_CODEX_AUTH_BUNDLE: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 != '' }}
       # Claude provider auth on the droplet. CLAUDE_CODE_OAUTH_TOKEN is a
@@ -176,6 +180,66 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Drain legacy production host workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'set -e; volume_dir=$(sudo docker volume inspect tinyassets-data --format "{{ .Mountpoint }}"); marker=false; fence=false; sudo test ! -f "${volume_dir}/.engine-assignment-migration-v1.json" || marker=true; sudo test ! -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence || fence=true; printf "%s %s\n" "${marker}" "${fence}"')
+          read -r marker_present fence_present <<< "${state}"
+          if [ "${marker_present}" = "true" ] && [ "${fence_present}" != "true" ]; then
+            echo "Historical cutover already released; shared workflow queue is authoritative."
+            exit 0
+          fi
+
+          workflows=(
+            deploy-prod.yml p0-outage-triage.yml restart-daemon.yml
+            install-host-services.yml codex-auth-keepalive.yml
+            claude-auth-keepalive.yml
+          )
+          enumeration_file=$(mktemp)
+          trap 'rm -f "${enumeration_file}"' EXIT
+          active_runs() {
+            : > "${enumeration_file}"
+            for workflow in "${workflows[@]}"; do
+              if ! gh api \
+                  "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?per_page=100" \
+                  --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | select(.status == \"requested\" or .status == \"waiting\" or .status == \"pending\" or .status == \"queued\" or .status == \"in_progress\") | .id" \
+                  >> "${enumeration_file}"; then
+                return 1
+              fi
+            done
+            sort -u "${enumeration_file}"
+          }
+
+          for attempt in $(seq 1 30); do
+            if ! runs_output=$(active_runs); then
+              echo "::error::Could not prove legacy production-host workflows are drained."
+              exit 1
+            fi
+            runs=()
+            if [ -n "${runs_output}" ]; then
+              mapfile -t runs <<< "${runs_output}"
+            fi
+            if [ "${#runs[@]}" -eq 0 ]; then
+              echo "No legacy production-host workflow run can overlap the cutover."
+              exit 0
+            fi
+            for run_id in "${runs[@]}"; do
+              echo "Canceling legacy production-host workflow run ${run_id}"
+              if ! gh api --method POST \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" \
+                  >/dev/null; then
+                echo "::warning::Cancel raced for run ${run_id}; re-polling authoritative state."
+              fi
+            done
+            sleep 5
+          done
+          echo "::error::Legacy production-host workflow runs did not drain before cutover."
+          exit 1
 
       - name: Capture previous image tag (for rollback)
         id: prev
@@ -496,6 +560,290 @@ jobs:
           systemctl mask workflow-daemon.service workflow.service workflow-watchdog.timer || true
           SH
 
+      - name: Fence engine assignment writers
+        id: assignment-migration
+        env:
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 }}
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 }}
+        run: |
+          state=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'set -e; volume_dir=$(sudo docker volume inspect tinyassets-data --format "{{ .Mountpoint }}"); marker=false; fence=false; sudo test ! -f "${volume_dir}/.engine-assignment-migration-v1.json" || marker=true; sudo test ! -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence || fence=true; printf "%s %s\n" "${marker}" "${fence}"')
+          read -r marker_present fence_present <<< "${state}"
+          echo "marker_present=${marker_present}" >> "$GITHUB_OUTPUT"
+          echo "fence_present=${fence_present}" >> "$GITHUB_OUTPUT"
+          if [ "${marker_present}" = "true" ] && [ "${fence_present}" != "true" ]; then
+            echo "cutover=false" >> "$GITHUB_OUTPUT"
+            echo "Engine-assignment migration v1 is recorded and unfenced; verify before normal deploy."
+            exit 0
+          fi
+
+          if [ -z "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" ] || \
+             [[ ! "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The reviewed migration manifest and lowercase SHA-256 are required before fencing."
+            exit 1
+          fi
+          manifest_preflight=$(mktemp)
+          trap 'rm -f "${manifest_preflight}"' EXIT
+          printf '%s' "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" \
+            | base64 --decode > "${manifest_preflight}"
+          manifest_sha256=$(sha256sum "${manifest_preflight}" | awk '{print $1}')
+          if [ "${manifest_sha256}" != "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" ]; then
+            echo "::error::The migration manifest does not match its separately reviewed digest."
+            exit 1
+          fi
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo sh -c 'command -v lsof >/dev/null 2>&1'" || {
+            echo "::error::lsof must be installed before the production writer fence begins."
+            exit 1
+          }
+          echo "cutover=true" >> "$GITHUB_OUTPUT"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          active_units=${maintenance_dir}/engine-assignment-migration-v1.active-units
+          dropin=50-engine-assignment-migration-fence.conf
+          units=(
+            tinyassets-watchdog.timer tinyassets-watchdog.service
+            daemon-watchdog.timer daemon-watchdog.service
+            tinyassets-autoheal.timer tinyassets-autoheal.service
+            tinyassets-backup.timer tinyassets-backup.service
+            tinyassets-disk-watch.timer tinyassets-disk-watch.service
+            tinyassets-prune.timer tinyassets-prune.service
+            tinyassets-ship-logs.timer tinyassets-ship-logs.service
+            github-app-token-refresher.timer github-app-token-refresher.service
+            workflow-watchdog.timer workflow-watchdog.service
+            workflow-backup.timer workflow-backup.service
+            workflow-disk-watch.timer workflow-disk-watch.service
+            workflow-prune.timer workflow-prune.service
+            workflow-ship-logs.timer workflow-ship-logs.service
+            workflow-daemon.service workflow.service
+            tinyassets-daemon.service
+          )
+
+          install -d -m 0700 "${maintenance_dir}"
+          if [ -e "${active_units}" ]; then
+            if [ ! -f "${active_units}" ] || [ -L "${active_units}" ]; then
+              echo "active-unit recovery record is unsafe" >&2
+              exit 1
+            fi
+          elif [ -e "${fence}" ]; then
+            echo "fenced cutover is missing its original active-unit recovery record" >&2
+            exit 1
+          else
+            active_units_tmp=$(mktemp "${maintenance_dir}/.engine-assignment-active-units.XXXXXX")
+            chmod 0600 "${active_units_tmp}"
+            for unit in "${units[@]}"; do
+              if systemctl cat "${unit}" >/dev/null 2>&1 && systemctl is-active --quiet "${unit}"; then
+                printf '%s\n' "${unit}" >> "${active_units_tmp}"
+              fi
+            done
+            mv "${active_units_tmp}" "${active_units}"
+            sync -f "${active_units}"
+            sync -f "${maintenance_dir}"
+          fi
+          while IFS= read -r recorded_unit; do
+            [ -n "${recorded_unit}" ] || continue
+            known=false
+            for unit in "${units[@]}"; do
+              [ "${recorded_unit}" != "${unit}" ] || known=true
+            done
+            if [ "${known}" != "true" ]; then
+              echo "active-unit recovery record contains an unknown unit" >&2
+              exit 1
+            fi
+          done < "${active_units}"
+          install -m 0600 /dev/null "${fence}"
+          sync -f "${fence}"
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              install -d -m 0755 "/etc/systemd/system/${unit}.d"
+              printf '[Unit]\nConditionPathExists=!%s\n' "${fence}" \
+                > "/etc/systemd/system/${unit}.d/${dropin}"
+            fi
+          done
+          systemctl daemon-reload
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              systemctl stop "${unit}"
+              if systemctl is-active --quiet "${unit}"; then
+                echo "engine-assignment fence failed to stop ${unit}" >&2
+                exit 1
+              fi
+            fi
+          done
+
+          if [ -f /opt/tinyassets/compose.yml ]; then
+            docker compose --env-file /etc/tinyassets/env \
+              -f /opt/tinyassets/compose.yml down --timeout 30
+          fi
+          for compose_file in /opt/workflow/compose.yml /opt/workflow/deploy/compose.yml; do
+            if [ -f "${compose_file}" ]; then
+              if [ -f /etc/workflow/env ]; then
+                docker compose --env-file /etc/workflow/env \
+                  -f "${compose_file}" down --timeout 30
+              else
+                docker compose -f "${compose_file}" down --timeout 30
+              fi
+            fi
+          done
+
+          volume_users=$(docker ps -aq --filter volume=tinyassets-data)
+          if [ -n "${volume_users}" ]; then
+            echo "containers still use tinyassets-data: ${volume_users}" >&2
+            docker inspect ${volume_users}
+            exit 1
+          fi
+          for container in $(docker ps -aq); do
+            if docker inspect "${container}" --format '{{range .Mounts}}{{println .Name .Source .Destination}}{{end}}' \
+              | grep -Eq '(^| )tinyassets-data( |$)| /data$'; then
+              echo "unknown container ${container} still has a production data mount" >&2
+              docker inspect "${container}"
+              exit 1
+            fi
+          done
+          volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+          command -v lsof >/dev/null 2>&1 || {
+            echo "lsof is required to prove no host process has the data volume open" >&2
+            exit 1
+          }
+          if open_handles=$(lsof -nP +D "${volume_dir}" 2>&1); then
+            echo "a host process still has ${volume_dir} open" >&2
+            printf '%s\n' "${open_handles}" >&2
+            exit 1
+          fi
+          SH
+
+      - name: Apply reviewed engine assignment migration
+        if: steps.assignment-migration.outputs.cutover == 'true'
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 }}
+          ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256: ${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 }}
+        run: |
+          if [ -z "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" ]; then
+            echo "::error::ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 is required for the first writer-fence cutover."
+            exit 1
+          fi
+          if [[ ! "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 must be the reviewed manifest's lowercase SHA-256 digest."
+            exit 1
+          fi
+          printf '%s' "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" \
+            | base64 --decode > /tmp/engine-assignment-manifest.json
+          manifest_sha256=$(sha256sum /tmp/engine-assignment-manifest.json | awk '{print $1}')
+          if [ "${manifest_sha256}" != "${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}" ]; then
+            echo "::error::Decoded migration manifest does not match the separately reviewed digest."
+            exit 1
+          fi
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              /tmp/engine-assignment-manifest.json \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/engine-assignment-manifest.json"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "NEW_IMAGE='${NEW_IMAGE}' EXPECTED_MANIFEST_SHA256='${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256}' sudo -E bash -s" <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          manifest=${maintenance_dir}/engine-assignment-migration-v1.reviewed.json
+          install -m 0600 /tmp/engine-assignment-manifest.json "${manifest}"
+          remote_manifest_sha256=$(sha256sum "${manifest}" | awk '{print $1}')
+          if [ "${remote_manifest_sha256}" != "${EXPECTED_MANIFEST_SHA256}" ]; then
+            echo "reviewed migration manifest digest changed in transit" >&2
+            exit 1
+          fi
+          docker pull "${NEW_IMAGE}"
+
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            -v "${manifest}:/run/engine-assignment-manifest.json:ro" \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py apply \
+            --data-dir /data \
+            --manifest /run/engine-assignment-manifest.json
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py verify \
+            --data-dir /data
+          # Required idempotence proof: a second apply must perform zero writes.
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            -v "${manifest}:/run/engine-assignment-manifest.json:ro" \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py apply \
+            --data-dir /data \
+            --manifest /run/engine-assignment-manifest.json
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py verify \
+            --data-dir /data
+
+          remaining=$(docker ps -aq --filter volume=tinyassets-data)
+          if [ -n "${remaining}" ]; then
+            echo "migration container did not release tinyassets-data: ${remaining}" >&2
+            exit 1
+          fi
+          SH
+          rm -f /tmp/engine-assignment-manifest.json
+
+      - name: Verify recorded engine assignment migration
+        if: steps.assignment-migration.outputs.cutover != 'true' && steps.assignment-migration.outputs.marker_present == 'true'
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "NEW_IMAGE='${NEW_IMAGE}' sudo -E bash -s" <<'SH'
+          set -euo pipefail
+          docker pull "${NEW_IMAGE}"
+          docker run --rm --network none --entrypoint python \
+            -v tinyassets-data:/data:ro \
+            "${NEW_IMAGE}" /app/scripts/migrate_engine_assignments.py verify \
+            --data-dir /data
+          SH
+
+      - name: Start daemon-only migration canary
+        if: steps.assignment-migration.outputs.cutover == 'true'
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "printf '%s' '${NEW_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+          docker compose --env-file /etc/tinyassets/env \
+            -f /opt/tinyassets/compose.yml up -d --no-deps daemon
+          for container in \
+            tinyassets-tunnel tinyassets-worker tinyassets-worker-codex-2 \
+            tinyassets-worker-claude-1 tinyassets-worker-claude-2; do
+            running=$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null || printf false)
+            if [ "${running}" = "true" ]; then
+              echo "${container} started before the daemon-only canary" >&2
+              exit 1
+            fi
+          done
+          for attempt in $(seq 1 30); do
+            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' tinyassets-daemon)
+            if [ "${health}" = "healthy" ]; then
+              break
+            fi
+            if [ "${attempt}" = 30 ]; then
+              echo "daemon-only container did not become healthy" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          docker exec tinyassets-daemon python /app/scripts/mcp_public_canary.py \
+            --url http://127.0.0.1:8001/mcp --timeout 10 --verbose
+          SH
+
       - name: Deploy new image
         id: deploy
         env:
@@ -676,9 +1024,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # Pull + restart via the systemd unit (which runs docker
           # compose down + up with the new env).
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
+          if [ "${{ steps.assignment-migration.outputs.cutover }}" = "true" ]; then
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "set -e; sudo docker pull '${NEW_IMAGE}'; sudo rm -f /etc/systemd/system/tinyassets-daemon.service.d/50-engine-assignment-migration-fence.conf; sudo systemctl daemon-reload; sudo systemctl start tinyassets-daemon"
+          else
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "set -e; sudo docker pull '${NEW_IMAGE}'; sudo systemctl restart tinyassets-daemon"
+          fi
 
       # Independent of the helper's in-call readability assert: re-verify
       # after the systemd restart has settled. Steady-state canary that
@@ -838,6 +1192,7 @@ jobs:
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
           BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
           TINYASSETS_EVENT: ${{ github.event_name }}
+          MIGRATION_CUTOVER: ${{ steps.assignment-migration.outputs.cutover }}
         run: |
           DEPLOY_RUN_ID="${GITHUB_RUN_ID}"
           DEPLOY_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -880,10 +1235,13 @@ jobs:
               "deploy_run_url": os.environ["DEPLOY_RUN_URL"],
               "config_hash": os.environ.get("config_hash", ""),
               "config_version": "tinyassets-env-v1",
-              "schema_migration_rev": "not_applicable",
+              "schema_migration_rev": "engine-assignment-v1",
               "canary_bundle_status": "passed",
               "deployed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-              "rollback_target": os.environ["PREV_IMAGE"],
+              "rollback_target": (
+                  "" if os.environ.get("MIGRATION_CUTOVER") == "true"
+                  else os.environ["PREV_IMAGE"]
+              ),
               "actor": os.environ["GITHUB_ACTOR"],
               "repository": os.environ["GITHUB_REPOSITORY"],
               "workflow_event": os.environ["TINYASSETS_EVENT"],
@@ -918,8 +1276,114 @@ jobs:
             echo "- Digest: \`${image_digest:-unknown}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Release engine assignment migration fence
+        if: steps.assignment-migration.outputs.cutover == 'true'
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          active_units=${maintenance_dir}/engine-assignment-migration-v1.active-units
+          dropin=50-engine-assignment-migration-fence.conf
+          if [ ! -f "${fence}" ]; then
+            echo "engine-assignment fence already released"
+            exit 0
+          fi
+          while IFS= read -r unit; do
+            [ -n "${unit}" ] || continue
+            rm -f "/etc/systemd/system/${unit}.d/${dropin}"
+          done < "${active_units}"
+          find /etc/systemd/system -type f -name "${dropin}" -delete
+          systemctl daemon-reload
+          while IFS= read -r unit; do
+            [ -n "${unit}" ] || continue
+            systemctl start "${unit}"
+          done < "${active_units}"
+          rm -f "${maintenance_dir}/engine-assignment-migration-v1.reviewed.json"
+          rm -f "${fence}"
+          rm -f "${active_units}"
+          SH
+
+      - name: Quiesce after fenced deploy failure
+        if: failure() && steps.assignment-migration.outputs.cutover == 'true'
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+          'sudo bash -s' <<'SH'
+          set -euo pipefail
+          maintenance_dir=/var/lib/tinyassets-maintenance
+          fence=/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence
+          dropin=50-engine-assignment-migration-fence.conf
+          units=(
+            tinyassets-watchdog.timer tinyassets-watchdog.service
+            daemon-watchdog.timer daemon-watchdog.service
+            tinyassets-autoheal.timer tinyassets-autoheal.service
+            tinyassets-backup.timer tinyassets-backup.service
+            tinyassets-disk-watch.timer tinyassets-disk-watch.service
+            tinyassets-prune.timer tinyassets-prune.service
+            tinyassets-ship-logs.timer tinyassets-ship-logs.service
+            github-app-token-refresher.timer github-app-token-refresher.service
+            workflow-watchdog.timer workflow-watchdog.service
+            workflow-backup.timer workflow-backup.service
+            workflow-disk-watch.timer workflow-disk-watch.service
+            workflow-prune.timer workflow-prune.service
+            workflow-ship-logs.timer workflow-ship-logs.service
+            workflow-daemon.service workflow.service
+            tinyassets-daemon.service
+          )
+          install -d -m 0700 "${maintenance_dir}"
+          install -m 0600 /dev/null "${fence}"
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              install -d -m 0755 "/etc/systemd/system/${unit}.d"
+              printf '[Unit]\nConditionPathExists=!%s\n' "${fence}" \
+                > "/etc/systemd/system/${unit}.d/${dropin}"
+            fi
+          done
+          systemctl daemon-reload
+          for unit in "${units[@]}"; do
+            if systemctl cat "${unit}" >/dev/null 2>&1; then
+              systemctl stop "${unit}"
+              if systemctl is-active --quiet "${unit}"; then
+                echo "failure fence could not stop ${unit}" >&2
+                exit 1
+              fi
+            fi
+          done
+          if [ -f /opt/tinyassets/compose.yml ]; then
+            docker compose --env-file /etc/tinyassets/env \
+              -f /opt/tinyassets/compose.yml down --timeout 30
+          fi
+          for compose_file in /opt/workflow/compose.yml /opt/workflow/deploy/compose.yml; do
+            if [ -f "${compose_file}" ]; then
+              if [ -f /etc/workflow/env ]; then
+                docker compose --env-file /etc/workflow/env \
+                  -f "${compose_file}" down --timeout 30
+              else
+                docker compose -f "${compose_file}" down --timeout 30
+              fi
+            fi
+          done
+          if [ -n "$(docker ps -aq --filter volume=tinyassets-data)" ]; then
+            echo "fenced failure left a production data-volume user" >&2
+            exit 1
+          fi
+          volume_dir=$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')
+          command -v lsof >/dev/null 2>&1 || {
+            echo "lsof is required to prove no host process has the data volume open" >&2
+            exit 1
+          }
+          if open_handles=$(lsof -nP +D "${volume_dir}" 2>&1); then
+            echo "fenced failure left a host process using ${volume_dir}" >&2
+            printf '%s\n' "${open_handles}" >&2
+            exit 1
+          fi
+          SH
+
       - name: Rollback on failure
-        if: failure() && steps.deploy.outcome == 'success' && steps.prev.outputs.previous != ''
+        if: failure() && steps.deploy.outcome == 'success' && steps.prev.outputs.previous != '' && steps.assignment-migration.outputs.cutover != 'true'
         env:
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
         run: |

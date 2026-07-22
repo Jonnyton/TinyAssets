@@ -423,8 +423,10 @@ now live + durable via the symlink (verified across a daemon restart).
 
 `.github/workflows/deploy-prod.yml` auto-deploys the freshly-published
 image on every successful `build-image.yml` run on `main`. SSH to the
-DigitalOcean Droplet, pin the new tag in `/etc/tinyassets/env`, `docker pull`,
-`systemctl restart`, run post-deploy canary, auto-rollback on red.
+DigitalOcean Droplet, resolve the image to an immutable digest, pin it in
+`/etc/tinyassets/env`, start the daemon, and run the public canary. Ordinary
+deployments retain automatic rollback. The one-time engine-assignment cutover
+uses the fenced, roll-forward-only sequence below.
 
 **GitHub secrets required** (Settings → Secrets and variables → Actions):
 
@@ -433,6 +435,8 @@ DigitalOcean Droplet, pin the new tag in `/etc/tinyassets/env`, `docker pull`,
 | `DO_DROPLET_HOST` | Droplet public IP (e.g. `161.35.237.133`) or DNS name. |
 | `DO_SSH_USER` | SSH user on the Droplet — typically `root` or a dedicated `deploy` user. |
 | `DO_SSH_KEY` | Private key PEM (ed25519 recommended). Paste whole contents including BEGIN/END lines. |
+| `ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64` | Separately reviewed, secret-free migration decision manifest, base64 encoded. Required only for the first assignment cutover. |
+| `ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256` | Lowercase SHA-256 of the exact reviewed manifest bytes. Stored separately and verified before and after upload. |
 
 Generate the key pair:
 ```bash
@@ -441,37 +445,30 @@ cat ~/.ssh/tinyassets_deploy.pub  # add to /root/.ssh/authorized_keys on the Dro
 cat ~/.ssh/tinyassets_deploy      # paste into DO_SSH_KEY secret
 ```
 
-Recommended: use a dedicated `deploy` user (not `root`) with limited
-sudo — passwordless for the 2 commands the pipeline runs:
-
-```bash
-# On the Droplet, as root:
-useradd -m -s /bin/bash deploy
-usermod -aG docker deploy
-mkdir -p /home/deploy/.ssh
-cp /root/.ssh/authorized_keys /home/deploy/.ssh/  # or paste deploy pubkey directly
-chown -R deploy:deploy /home/deploy/.ssh
-chmod 700 /home/deploy/.ssh
-
-# Scoped sudoers for deploy:
-cat > /etc/sudoers.d/deploy-pipeline <<EOF
-deploy ALL=(root) NOPASSWD:/usr/bin/sed -i * /etc/tinyassets/env
-deploy ALL=(root) NOPASSWD:/usr/bin/docker pull *
-deploy ALL=(root) NOPASSWD:/usr/bin/systemctl restart tinyassets-daemon
-deploy ALL=(root) NOPASSWD:/usr/bin/grep * /etc/tinyassets/env
-EOF
-chmod 0440 /etc/sudoers.d/deploy-pipeline
-visudo -c
-```
-
-Then `DO_SSH_USER=deploy` in the GH secret.
+Use `DO_SSH_USER=root` for the reviewed first cutover. The workflow now fences
+systemd units, inspects the Docker volume, and runs an immutable migration image;
+the old four-command sudoers example was incomplete and must not be reused. A
+dedicated deploy user is appropriate only after its command-complete wrapper and
+sudo policy have been reviewed against the current workflow. Every required
+`sudo` call must be non-interactive before dispatch.
 
 **Behavior:**
 - Trigger: successful `build-image.yml` run on `main`, OR `workflow_dispatch` with optional `image_tag` input.
-- Deploy pins the new image tag + restarts the daemon.
+- If the migration marker already exists, deploy pins the new image digest and restarts the daemon normally.
+- A marker-only normal deploy first runs the new immutable image's verifier with no network and a read-only `/data` mount. A surviving host fence always resumes the roll-forward cutover instead of taking the normal path.
+- On the first assignment cutover, the workflow creates the durable host fence at `/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence`, installs systemd conditions for all known daemon/watchdog writers, stops them, brings both compose projects down, and fails unless no container or host process uses `tinyassets-data`.
+- Before that first fence, the workflow cancels and drains any queued/running production-host workflow created from the older independent concurrency groups. This closes the transition race that shared concurrency cannot retroactively cover. `lsof` is installed by bootstrap and preflighted before any service is stopped.
+- The original active-unit recovery list is written once and retained across retries. A fenced retry with a missing or unsafe recovery list fails closed; it never reconstructs the list from already-stopped services.
+- The reviewed migration runs from the exact new image digest with `--network none`, an explicit Python entrypoint, and the manifest mounted read-only from outside `/data`. It applies once, verifies zero residual state, then repeats apply and verify to prove idempotence.
+- Only the daemon starts for the first loopback canary. Tunnel and worker containers must still be absent. The full stack and public canonical canary start only after that proof.
 - Waits up to 90s for cold-start; polls canary every 5s.
-- On canary green, deploy succeeds.
-- On canary red, auto-rollback to the previous `TINYASSETS_IMAGE` value, re-verify canary, and open a `deploy-failed` GitHub issue with the run URL. Distinct from `p0-outage` (Row H) — deploy-failed = we caused it; p0-outage = daemon died spontaneously.
+- The release-state receipt is published before the fence is removed. Deploy, restart, host-service install, P0 auto-repair, and both provider-auth keepalive workflows share the `tinyassets-production-host-mutation` FIFO queue. They also treat an unreadable fence check as active and skip host mutation while it exists.
+- Any failure after first-cutover fencing leaves the stack quiesced for operator review. It must roll forward with the migrated image; it never restores the pre-migration image. After a later ordinary deploy, a red public canary still auto-rolls back to the recorded previous image, re-verifies, and opens a `deploy-failed` issue.
+
+Before authorizing the first cutover, attach the reviewed manifest digest, exact
+image digest, inventory summary, and operator approval to the release record.
+Do not delete the fence manually after a failed cutover. Diagnose the failed
+stage, correct the reviewed input or image, and rerun the roll-forward path.
 
 ## Row K — Log aggregation (sidecar in compose)
 

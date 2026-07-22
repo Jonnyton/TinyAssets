@@ -17,7 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: restart-daemon
+  group: tinyassets-production-host-mutation
+  queue: max
   cancel-in-progress: false
 
 env:
@@ -56,8 +57,28 @@ jobs:
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+      - name: Check engine assignment migration fence
+        id: engine-migration-fence
+        run: |
+          set +e
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo sh -c 'if test -e /var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence; then exit 10; else exit 20; fi'" \
+              >/dev/null 2>&1
+          status=$?
+          set -e
+          case "$status" in
+            10) active=true ;;
+            20) active=false ;;
+            *)
+              active=true
+              echo "::warning::Unable to verify engine assignment migration fence; treating it as active"
+              ;;
+          esac
+          echo "active=${active}" >> "$GITHUB_OUTPUT"
+
       - name: Install daemon watchdog
-        if: inputs.install_watchdog == true
+        if: inputs.install_watchdog == true && steps.engine-migration-fence.outputs.active != 'true'
         run: |
           scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/daemon-watchdog.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/daemon-watchdog.sh"
@@ -75,6 +96,7 @@ jobs:
                sudo systemctl enable --now daemon-watchdog.timer"
 
       - name: Restart workflow daemon
+        if: steps.engine-migration-fence.outputs.active != 'true'
         run: |
           echo "Restart reason: ${{ inputs.reason }}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \

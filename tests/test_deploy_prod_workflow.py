@@ -15,6 +15,8 @@ Covers:
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -167,12 +169,16 @@ def test_post_deploy_canary_step_present():
 
 
 def test_canary_step_only_probes_canonical():
-    """Canary must NOT probe the direct URL (returns 403 after CF Access cutover)."""
+    """Public canary uses canonical URL; fenced daemon-only canary stays loopback."""
     wf = _load()
     for step in _steps(wf):
         name = step.get("name", "") or ""
         if "canary" in name.lower() and "access" not in name.lower():
             run_script = step.get("run", "") or ""
+            if name == "Start daemon-only migration canary":
+                assert "http://127.0.0.1:8001/mcp" in run_script
+                assert "CANARY_URL" not in run_script
+                continue
             assert "DIRECT_URL" not in run_script, (
                 f"Canary step '{name}' must not probe DIRECT_URL — it correctly "
                 "returns 403 after CF Access Option-1 cutover. Only canonical URL is valid."
@@ -927,3 +933,345 @@ def test_capability_delete_warning_explains_revocation():
         "operators can confirm capability was actually cleared from "
         "/etc/tinyassets/env, not just absent from GH Actions"
     )
+
+
+# ---------------------------------------------------------------------------
+# Engine-assignment migration writer fence (OpenSpec task 4.4)
+# ---------------------------------------------------------------------------
+
+
+_ENGINE_MIGRATION_FENCE = (
+    "/var/lib/tinyassets-maintenance/engine-assignment-migration-v1.fence"
+)
+
+
+def _step(wf: dict, name: str) -> dict:
+    step = next((item for item in _steps(wf) if item.get("name") == name), None)
+    assert step is not None, f"deploy workflow missing step: {name}"
+    return step
+
+
+def test_engine_assignment_migration_has_strict_staged_exposure_order():
+    wf = _load()
+    names = [step.get("name") for step in _steps(wf)]
+
+    drain = names.index("Drain legacy production host workflow runs")
+    fence = names.index("Fence engine assignment writers")
+    migrate = names.index("Apply reviewed engine assignment migration")
+    loopback = names.index("Start daemon-only migration canary")
+    expose = names.index("Deploy new image")
+    public = names.index("Post-deploy canary — canonical URL only")
+    receipt = names.index("Publish release-state receipt")
+    release = names.index("Release engine assignment migration fence")
+
+    assert drain < fence < migrate < loopback < expose < public < receipt < release
+
+
+def test_first_cutover_drains_pre_shared_group_workflow_runs():
+    step = _step(_load(), "Drain legacy production host workflow runs")
+    run_script = step.get("run", "") or ""
+
+    for workflow in (
+        "deploy-prod.yml",
+        "p0-outage-triage.yml",
+        "restart-daemon.yml",
+        "install-host-services.yml",
+        "codex-auth-keepalive.yml",
+        "claude-auth-keepalive.yml",
+    ):
+        assert workflow in run_script
+    assert "GITHUB_RUN_ID" in run_script
+    assert "actions/runs" in run_script
+    assert "/cancel" in run_script
+    assert "in_progress" in run_script
+    assert "queued" in run_script
+    assert "sleep" in run_script
+    assert "exit 1" in run_script
+    assert "set -euo pipefail" in run_script
+    assert "if ! runs_output=$(active_runs)" in run_script
+    assert "mapfile -t runs < <(active_runs)" not in run_script
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shell proof runs on the Linux CI host")
+def test_first_cutover_drain_fails_closed_when_github_enumeration_fails(tmp_path):
+    run_script = _step(_load(), "Drain legacy production host workflow runs").get("run", "")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ssh = fake_bin / "ssh"
+    ssh.write_text("#!/bin/sh\nprintf 'false false\\n'\n", encoding="utf-8")
+    ssh.chmod(0o755)
+    gh = fake_bin / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *deploy-prod.yml*) exit 42 ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "DO_SSH_USER": "fake",
+            "DO_DROPLET_HOST": "fake",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_RUN_ID": "123",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", run_script],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert "Could not prove" in result.stdout
+
+
+def test_engine_assignment_fence_quiesces_every_writer_and_proves_zero_mount_users():
+    step = _step(_load(), "Fence engine assignment writers")
+    run_script = step.get("run", "") or ""
+    env = step.get("env", {}) or {}
+
+    for unit in (
+        "tinyassets-daemon.service",
+        "tinyassets-watchdog.timer",
+        "tinyassets-watchdog.service",
+        "daemon-watchdog.timer",
+        "daemon-watchdog.service",
+        "tinyassets-autoheal.timer",
+        "tinyassets-autoheal.service",
+        "tinyassets-backup.timer",
+        "tinyassets-backup.service",
+        "tinyassets-disk-watch.timer",
+        "tinyassets-disk-watch.service",
+        "tinyassets-prune.timer",
+        "tinyassets-prune.service",
+        "tinyassets-ship-logs.timer",
+        "tinyassets-ship-logs.service",
+        "github-app-token-refresher.timer",
+        "github-app-token-refresher.service",
+    ):
+        assert unit in run_script
+    assert _ENGINE_MIGRATION_FENCE in run_script
+    assert "ConditionPathExists=!" in run_script
+    assert "systemctl stop" in run_script
+    assert "docker compose --env-file /etc/tinyassets/env" in run_script
+    assert "down --timeout 30" in run_script
+    assert "docker ps -aq --filter volume=tinyassets-data" in run_script
+    assert "docker inspect" in run_script
+    assert "lsof" in run_script
+    assert "+D \"${volume_dir}\"" in run_script
+    assert run_script.index("command -v lsof") < run_script.index('echo "cutover=true"')
+    assert "ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64" in env
+    assert "ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256" in env
+    assert run_script.index("manifest_sha256=") < run_script.index('echo "cutover=true"')
+    assert "|| true" not in run_script
+
+
+def test_host_bootstrap_installs_open_file_proof_dependency():
+    bootstrap = (_REPO / "deploy" / "hetzner-bootstrap.sh").read_text(encoding="utf-8")
+    assert "lsof" in bootstrap
+
+
+def test_engine_assignment_migration_uses_reviewed_manifest_and_exact_new_image():
+    step = _step(_load(), "Apply reviewed engine assignment migration")
+    run_script = step.get("run", "") or ""
+    env = step.get("env", {}) or {}
+
+    assert env["ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64"] == (
+        "${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64 }}"
+    )
+    assert env["ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256"] == (
+        "${{ secrets.ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_SHA256 }}"
+    )
+    assert "steps.tag.outputs.image_ref" in str(env.get("NEW_IMAGE", ""))
+    assert "sha256sum /tmp/engine-assignment-manifest.json" in run_script
+    assert "manifest_sha256" in run_script
+    assert run_script.index(
+        "sha256sum /tmp/engine-assignment-manifest.json"
+    ) < run_script.index("scp ")
+    assert "docker pull \"${NEW_IMAGE}\"" in run_script
+    assert "--network none" in run_script
+    assert "--entrypoint python" in run_script
+    assert "tinyassets-data:/data" in run_script
+    assert ":/run/engine-assignment-manifest.json:ro" in run_script
+    assert "/app/scripts/migrate_engine_assignments.py apply" in run_script
+    assert "/app/scripts/migrate_engine_assignments.py verify" in run_script
+    assert run_script.count("/app/scripts/migrate_engine_assignments.py apply") >= 2
+    assert "--manifest /run/engine-assignment-manifest.json" in run_script
+    assert "echo ${ENGINE_ASSIGNMENT_MIGRATION_MANIFEST_B64}" not in run_script
+
+
+def test_daemon_only_loopback_canary_precedes_tunnel_workers():
+    step = _step(_load(), "Start daemon-only migration canary")
+    run_script = step.get("run", "") or ""
+
+    assert "up -d --no-deps daemon" in run_script
+    assert "http://127.0.0.1:8001/mcp" in run_script
+    assert "mcp_public_canary.py" in run_script
+    for container in (
+        "tinyassets-tunnel",
+        "tinyassets-worker",
+        "tinyassets-worker-codex-2",
+        "tinyassets-worker-claude-1",
+        "tinyassets-worker-claude-2",
+    ):
+        assert container in run_script
+    assert "State.Running" in run_script
+
+
+def test_first_cutover_never_arms_or_executes_prefence_rollback():
+    wf = _load()
+    rollback = _step(wf, "Rollback on failure")
+    quiesce = _step(wf, "Quiesce after fenced deploy failure")
+    receipt = _step(wf, "Publish release-state receipt")
+
+    assert "steps.assignment-migration.outputs.cutover != 'true'" in str(
+        rollback.get("if", "")
+    )
+    assert "steps.assignment-migration.outputs.cutover == 'true'" in str(
+        quiesce.get("if", "")
+    )
+    quiesce_run = quiesce.get("run", "") or ""
+    assert "docker compose" in quiesce_run
+    assert "down --timeout 30" in quiesce_run
+    assert "PREV_IMAGE" not in quiesce_run
+    receipt_run = receipt.get("run", "") or ""
+    assert "MIGRATION_CUTOVER" in (receipt.get("env", {}) or {})
+    assert "rollback_target" in receipt_run
+    assert "MIGRATION_CUTOVER" in receipt_run
+
+
+def test_fence_releases_only_after_receipt_and_restores_prior_active_units():
+    wf = _load()
+    names = [step.get("name") for step in _steps(wf)]
+    release = _step(wf, "Release engine assignment migration fence")
+    release_run = release.get("run", "") or ""
+
+    assert names.index("Publish release-state receipt") < names.index(
+        "Release engine assignment migration fence"
+    )
+    assert _ENGINE_MIGRATION_FENCE in release_run
+    assert "active-units" in release_run
+    assert "systemctl start" in release_run
+    assert "systemctl daemon-reload" in release_run
+    assert "rm" in release_run
+
+
+@pytest.mark.parametrize(
+    "workflow_name",
+    ["p0-outage-triage.yml", "restart-daemon.yml", "install-host-services.yml"],
+)
+def test_external_recovery_workflows_honor_engine_assignment_fence(workflow_name):
+    path = _REPO / ".github" / "workflows" / workflow_name
+    text = path.read_text(encoding="utf-8")
+
+    assert _ENGINE_MIGRATION_FENCE in text
+    assert "Check engine assignment migration fence" in text
+    assert "engine-migration-fence.outputs.active != 'true'" in text
+
+
+def test_all_production_host_mutators_share_one_repo_wide_concurrency_group():
+    workflow_names = (
+        "deploy-prod.yml",
+        "p0-outage-triage.yml",
+        "restart-daemon.yml",
+        "install-host-services.yml",
+        "codex-auth-keepalive.yml",
+        "claude-auth-keepalive.yml",
+    )
+    concurrency = [
+        yaml.safe_load(
+            (_REPO / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        ).get("concurrency")
+        or {}
+        for name in workflow_names
+    ]
+    assert {item.get("group") for item in concurrency} == {
+        "tinyassets-production-host-mutation"
+    }
+    assert {item.get("queue") for item in concurrency} == {"max"}
+
+
+@pytest.mark.parametrize(
+    "workflow_name", ["codex-auth-keepalive.yml", "claude-auth-keepalive.yml"]
+)
+def test_auth_keepalive_workflows_fail_closed_on_assignment_fence(workflow_name):
+    workflow = yaml.safe_load(
+        (_REPO / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+    )
+    steps = next(iter(workflow["jobs"].values()))["steps"]
+    by_name = {step.get("name"): step for step in steps}
+
+    check = by_name["Check engine assignment migration fence"]
+    assert _ENGINE_MIGRATION_FENCE in (check.get("run") or "")
+    assert "active=true" in (check.get("run") or "")
+    exercise = next(step for step in steps if (step.get("name") or "").startswith("Exercise "))
+    assert "engine-migration-fence.outputs.active != 'true'" in (exercise.get("if") or "")
+
+
+def test_interrupted_cutover_resumes_without_destroying_original_active_units():
+    step = _step(_load(), "Fence engine assignment writers")
+    run_script = step.get("run", "") or ""
+
+    assert "marker_present=" in run_script
+    assert "fence_present=" in run_script
+    assert "cutover=true" in run_script
+    assert "marker_present=${marker_present}" in run_script
+    assert "if [ -e \"${active_units}\" ]" in run_script
+    assert ": > \"${active_units}\"" not in run_script
+    assert run_script.index('mv "${active_units_tmp}" "${active_units}"') < run_script.index(
+        'install -m 0600 /dev/null "${fence}"'
+    )
+
+
+def test_marker_only_normal_deploy_verifies_with_immutable_offline_image():
+    wf = _load()
+    names = [step.get("name") for step in _steps(wf)]
+    step = _step(wf, "Verify recorded engine assignment migration")
+    run_script = step.get("run", "") or ""
+
+    assert names.index("Fence engine assignment writers") < names.index(
+        "Verify recorded engine assignment migration"
+    ) < names.index("Deploy new image")
+    assert "steps.assignment-migration.outputs.marker_present == 'true'" in (
+        step.get("if") or ""
+    )
+    assert "steps.tag.outputs.image_ref" in str((step.get("env") or {}).get("NEW_IMAGE", ""))
+    assert "--network none" in run_script
+    assert "--entrypoint python" in run_script
+    assert "tinyassets-data:/data:ro" in run_script
+    assert "/app/scripts/migrate_engine_assignments.py verify" in run_script
+
+
+def test_fenced_failure_recreates_complete_fence_and_reproves_zero_users():
+    step = _step(_load(), "Quiesce after fenced deploy failure")
+    run_script = step.get("run", "") or ""
+
+    for unit in (
+        "tinyassets-daemon.service",
+        "tinyassets-watchdog.timer",
+        "daemon-watchdog.timer",
+        "tinyassets-autoheal.timer",
+        "tinyassets-backup.timer",
+        "tinyassets-disk-watch.timer",
+        "tinyassets-prune.timer",
+        "tinyassets-ship-logs.timer",
+        "github-app-token-refresher.timer",
+        "workflow-daemon.service",
+    ):
+        assert unit in run_script
+    assert "install -m 0600 /dev/null \"${fence}\"" in run_script
+    assert "ConditionPathExists=!" in run_script
+    assert "systemctl stop" in run_script
+    assert "docker compose" in run_script
+    assert "docker ps -aq --filter volume=tinyassets-data" in run_script
+    assert "lsof" in run_script and "+D \"${volume_dir}\"" in run_script
