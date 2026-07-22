@@ -1,0 +1,11 @@
+claim_id: fd3ba46a39134d9b
+branch_def_id: 40940dc0e9b3
+goal_id: d6e996292b56
+rung_key: draft_ready
+evidence_url: https://github.com/Jonnyton/TinyAssets/pull/970
+evidence_note: caller-supplied override
+conformance_pack_id: ''
+claimed_by: tester
+claimed_at: '2026-07-22T04:12:46Z'
+retracted_at: null
+retracted_reason: ''
