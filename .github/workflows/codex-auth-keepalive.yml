@@ -11,7 +11,6 @@ on:
 
 concurrency:
   group: tinyassets-production-host-mutation
-  queue: max
   cancel-in-progress: false
 
 jobs:

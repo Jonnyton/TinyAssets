@@ -462,7 +462,7 @@ sudo policy have been reviewed against the current workflow. Every required
 - The reviewed migration runs from the exact new image digest with `--network none`, an explicit Python entrypoint, and the manifest mounted read-only from outside `/data`. It applies once, verifies zero residual state, then repeats apply and verify to prove idempotence.
 - Only the daemon starts for the first loopback canary. Tunnel and worker containers must still be absent. The full stack and public canonical canary start only after that proof.
 - Waits up to 90s for cold-start; polls canary every 5s.
-- The release-state receipt is published before the fence is removed. Deploy, restart, host-service install, P0 auto-repair, and both provider-auth keepalive workflows share the `tinyassets-production-host-mutation` FIFO queue. They also treat an unreadable fence check as active and skip host mutation while it exists.
+- The release-state receipt is published before the fence is removed. Deploy, restart, host-service install, P0 auto-repair, and both provider-auth keepalive workflows share the `tinyassets-production-host-mutation` concurrency group, so only one can mutate the host at a time. They also treat an unreadable fence check as active and skip host mutation while it exists.
 - Any failure after first-cutover fencing leaves the stack quiesced for operator review. It must roll forward with the migrated image; it never restores the pre-migration image. After a later ordinary deploy, a red public canary still auto-rolls back to the recorded previous image, re-verifies, and opens a `deploy-failed` issue.
 
 Before authorizing the first cutover, attach the reviewed manifest digest, exact

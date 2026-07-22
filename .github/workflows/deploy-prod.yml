@@ -53,7 +53,6 @@ permissions:
 
 concurrency:
   group: tinyassets-production-host-mutation
-  queue: max
   cancel-in-progress: false
 
 env:
@@ -216,6 +215,7 @@ jobs:
           }
 
           for attempt in $(seq 1 30); do
+            echo "Legacy workflow drain poll ${attempt}/30"
             if ! runs_output=$(active_runs); then
               echo "::error::Could not prove legacy production-host workflows are drained."
               exit 1

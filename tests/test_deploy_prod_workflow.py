@@ -1198,7 +1198,7 @@ def test_all_production_host_mutators_share_one_repo_wide_concurrency_group():
     assert {item.get("group") for item in concurrency} == {
         "tinyassets-production-host-mutation"
     }
-    assert {item.get("queue") for item in concurrency} == {"max"}
+    assert {item.get("cancel-in-progress") for item in concurrency} == {False}
 
 
 @pytest.mark.parametrize(

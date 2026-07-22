@@ -230,7 +230,6 @@ def test_concurrency_group_serializes_production_host_mutations():
     concurrency = wf.get("concurrency", {})
     group = str(concurrency.get("group", ""))
     assert group == "tinyassets-production-host-mutation"
-    assert concurrency.get("queue") == "max"
 
 
 def test_concurrency_not_cancel_in_progress():

@@ -30,7 +30,6 @@ permissions:
 concurrency:
   # Serialize every GitHub-managed mutation of the production host.
   group: tinyassets-production-host-mutation
-  queue: max
   cancel-in-progress: false
 
 env:
