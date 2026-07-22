@@ -19,7 +19,7 @@
 
 - [x] 3.1 Prove the regression green and mutation-red without weakening or
       disabling existing assertions.
-- [ ] 3.2 Run the Goal test slice, scoped ruff gate, and plugin mirror build.
+- [x] 3.2 Run the Goal test slice, scoped ruff gate, and plugin mirror build.
 - [ ] 3.3 Review the security diff, commit, push, and open a draft PR that states
       exposure, private-row count evidence, red/green evidence, and proposed
       STATUS concern text without editing `STATUS.md`.
