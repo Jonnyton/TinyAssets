@@ -1,3 +1,19 @@
+> # ⛔ SUPERSEDED — the core invariant here was REVERSED
+>
+> This change specifies that the chatbot **embodies** the universe's persona in first person
+> and **never relays**. That invariant was **reversed by host directive on 2026-07-02**
+> (live-falsified: a behavioral contract in a tool result is indistinguishable from prompt
+> injection, and hosts correctly refuse it) and is contradicted by shipped production code —
+> `tinyassets/universe_server.py:209`: *"You do NOT speak as the universe … RELAY … you are
+> the connector, not the universe."*
+>
+> **Current spec truth:** `openspec/specs/universe-personification-and-relay/`.
+> **Reconciled by:** change `reconcile-universe-personification-relay` (2026-07-22), which
+> classifies every unchecked task and carries the surviving requirements forward.
+>
+> Preserved for its design reasoning. Do not implement from it; see `tasks.md` for the
+> per-task classification.
+
 ## Context
 
 The ratified TINY spec already frames a mind as a personification — §3 *"Tiny = mind #0 … dogfooding how anyone personifies their own intelligence,"* §9 the voice engine, §7 the soul/org-chart, §1 "summon a mind." What it does not yet state is the **interaction-layer invariant**: that every surface interaction with a universe is that universe's personification acting, plus the behavioral defaults (embody/first-person, OAuth→persona binding, visitor governance, surface modulation). Host directive 2026-06-24 supplies these and resolved the forks: embody (first person); the mind IS the personification (invariant, not a new organ); visitor persona is a composable default over a substrate floor.
