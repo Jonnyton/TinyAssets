@@ -64,14 +64,35 @@ jobs:
           # rubber-stamp the infra-change label and defeated the guard.
           SENSITIVE_RE='^(\.github/workflows/|deploy/|Dockerfile$|\.dockerignore$)'
 
-          # Paginated API read. Fail CLOSED on any error or truncation — a guard
-          # that silently sees fewer files than the PR contains is worse than none.
+          # Paginated API read. Fail CLOSED on error — a guard that silently
+          # sees fewer files than the PR contains is worse than none.
           if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files"                             --jq '.[].filename' 2>/dev/null)"; then
             echo "::error::could not read the PR file list — failing closed"
             exit 1
           fi
 
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          # The endpoint caps at 3000 files and says nothing when it truncates.
+          # An earlier version of this comment claimed the read above already
+          # failed closed on truncation; it did not, and a cross-family review
+          # caught the false assurance. At the cap we cannot know whether the
+          # unseen files are release-critical, so refuse rather than guess —
+          # a diff that large needs splitting regardless.
+          API_FILE_CAP=3000
+          if [ "$TOTAL" -ge "$API_FILE_CAP" ]; then
+            echo "::error::PR file list hit the ${API_FILE_CAP}-file API cap — the diff cannot be fully inspected"
+            {
+              echo "### PR scope guard"
+              echo ""
+              echo "**Blocked — diff exceeds what the API will report.** ${TOTAL} files;"
+              echo "the endpoint caps at ${API_FILE_CAP} and does not report truncation, so"
+              echo "release-critical files could be present and invisible to this check."
+              echo ""
+              echo "Split the PR, or rebase it if it is carrying an unmerged lineage."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE" || true)"
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
