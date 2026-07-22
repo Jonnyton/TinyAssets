@@ -19,9 +19,12 @@ name: PR scope guard
 # for exactly this reason and must NOT be added as a required check.
 
 on:
-  pull_request:
-    # `labeled`/`unlabeled` matter: adding the label must re-run the gate so a
-    # deliberate infra change can go green without pushing an empty commit.
+  # pull_request_target: this workflow is always the TRUSTED copy from the default
+  # branch. With plain `pull_request`, a PR could edit the very workflow that
+  # judges it — the guard would grade its own homework. We never check out or
+  # execute PR code here, so using _target is safe: we only read metadata.
+  pull_request_target:
+    # `labeled`/`unlabeled` matter: declaring an infra change must re-run the gate.
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
 
 permissions:
@@ -38,14 +41,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
+      # Deliberately NO actions/checkout: under pull_request_target a checkout of
+      # the PR head would execute untrusted code with a privileged token. The file
+      # list comes from the API instead.
       - name: Compare the PR diff against release-critical paths
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         shell: bash
         run: |
@@ -61,9 +64,12 @@ jobs:
           # rubber-stamp the infra-change label and defeated the guard.
           SENSITIVE_RE='^(\.github/workflows/|deploy/|Dockerfile$|\.dockerignore$)'
 
-          git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true
-          MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
-          CHANGED="$(git diff --name-only "$MERGE_BASE" "$HEAD_SHA")"
+          # Paginated API read. Fail CLOSED on any error or truncation — a guard
+          # that silently sees fewer files than the PR contains is worse than none.
+          if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files"                             --jq '.[].filename' 2>/dev/null)"; then
+            echo "::error::could not read the PR file list — failing closed"
+            exit 1
+          fi
 
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
           HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE" || true)"
@@ -88,6 +94,22 @@ jobs:
           printf '%s\n' "$HITS" | sed 's/^/- `/; s/$/`/' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+          # HARD CAPS — no label bypasses these. A label is a declaration of intent,
+          # not authorization: it can be applied by any writer, is not bound to a head
+          # SHA, and goes stale the moment someone pushes again. PR #1491 is the case
+          # that proves it — 386 changed files and 16 release-critical, which a bare
+          # label would have waved straight through into auto-merge.
+          MAX_TOTAL=150
+          MAX_SENSITIVE=8
+          if [ "$TOTAL" -gt "$MAX_TOTAL" ] || [ "$HIT_COUNT" -gt "$MAX_SENSITIVE" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Blocked — beyond the label's authority.** ${TOTAL} files changed (cap ${MAX_TOTAL}), ${HIT_COUNT} release-critical (cap ${MAX_SENSITIVE})." >> "$GITHUB_STEP_SUMMARY"
+            echo "A diff this broad usually means the branch carries an unmerged lineage." >> "$GITHUB_STEP_SUMMARY"
+            echo "Rebase onto the target branch, or split it. The label cannot clear this." >> "$GITHUB_STEP_SUMMARY"
+            echo "scope guard: BLOCKED — over cap (${TOTAL} files, ${HIT_COUNT} release-critical)"
+            exit 1
+          fi
 
           case ",${LABELS}," in
             *,infra-change,*)
