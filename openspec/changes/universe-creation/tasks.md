@@ -15,7 +15,7 @@
 
 ## 2. Execution-Authority Contract Tests
 
-- [ ] 2.0 Obtain an opposite-provider APPROVE/ADAPT review of provider-specific environment, cloud-chain, auth-home, local-subscription, hardware, and market-grant isolation. Tasks 2.1-4.7 MUST NOT begin while this gate is pending or BLOCKED; planning/spec work only.
+- [ ] 2.0 Obtain opposite-provider APPROVE of provider-specific environment, cloud-chain, auth-home, local-subscription, hardware, and market-grant isolation, or incorporate every required ADAPT finding and have it re-reviewed to acceptance. Tasks 2.1-4.7 MUST NOT begin until this gate is satisfied; planning/spec work only.
 - [ ] 2.1 Add a requester-owned success test proving a complete requester compute/model bundle permits the universe intelligence to generate a reply which the chatbot relays/renders verbatim.
 - [ ] 2.2 Add an accepted-market success test proving accepted compute and, when separately required, model-access grants permit execution and are recorded as market authority.
 - [ ] 2.3 Add missing and partial authority tests proving birth/binding may complete but no provider is invoked and the result is `held` / `setup_required` with `universe_id`, missing elements, and BYOC/market paths.
@@ -28,7 +28,6 @@
 
 - [ ] 3.1 Confirm R2-1a has landed its `allowed_providers` engine/router boundary; consume that boundary rather than implementing a second provider-selection path.
 - [ ] 3.2 Confirm R2-1b has landed its race-safe provider result/receipt for both writer calls; extend that object rather than using `_last_provider` or a parallel receipt.
-- [ ] 3.3 Confirm requester BYOC resolution and accepted-market compute/model grant transport can supply the authority bundle inputs.
 
 ## 4. Execution-Authority Implementation
 

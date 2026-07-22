@@ -171,9 +171,10 @@ The authority implementation consumes two separately tracked provider primitives
   that same result object with phase and authority class (and accepted-grant linkage where applicable);
   it does not use a process-global `_last_provider` or create a parallel receipt.
 
-Requester BYOC resolution and accepted-market compute/model grant transport must also exist before
-the bundle can be complete. All authority-runtime work remains blocked until those dependencies land
-and the scheduled opposite-provider security review approves the isolation boundary.
+This change owns requester BYOC resolution and accepted-market compute/model grant transport in tasks
+4.1 and 4.2; the bundle cannot be complete until those tasks land. All authority contract tests and
+runtime work remain blocked until the scheduled opposite-provider security review returns APPROVE,
+or every required ADAPT finding is incorporated and re-reviewed to acceptance.
 
 ## Risks / Trade-offs
 
@@ -198,10 +199,11 @@ and the scheduled opposite-provider security review approves the isolation bound
 ## Migration Plan
 
 1. Land the spec-truth correction without runtime changes.
-2. Obtain opposite-provider APPROVE/ADAPT of the authority isolation boundary; tests and runtime
-   implementation remain blocked while that review is pending or BLOCKED.
+2. Obtain opposite-provider APPROVE of the authority isolation boundary, or incorporate every
+   required ADAPT finding and have it re-reviewed to acceptance; tests and runtime implementation
+   remain blocked until that gate is satisfied.
 3. Land and absorb R2-1a's allowed-provider boundary and R2-1b's race-safe provider receipt.
-4. Complete requester BYOC and accepted-market compute/model authority transport.
+4. Implement this change's requester BYOC and accepted-market compute/model authority transport.
 5. Implement a default-deny requester/market authority resolver and red tests
    proving ambient maintainer resources are ineligible.
 6. Thread the immutable bundle through provider selection, fallback, reply
