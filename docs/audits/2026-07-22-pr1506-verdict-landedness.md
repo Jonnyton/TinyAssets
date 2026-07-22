@@ -150,6 +150,49 @@ So A5 is honestly disclosed but not closed. Classifying it **still-open** rather
 satisfied-by-disclosure, because the disclosure lives in `activity.log` while the budget claim the
 next reader trips over is on `STATUS.md:3`. (The log's "5,281 bytes" is also now stale by 65.)
 
+**A5 is not a janitor task — the budget is arithmetically unreachable.** `AGENTS.md` sets three
+constraints on `STATUS.md` that cannot all hold at once:
+
+| Constraint | Source |
+|---|---|
+| ≤60 lines | `AGENTS.md:55`, `:67` |
+| ~4 KB (4,096 bytes) | `AGENTS.md:55`, `:67` |
+| entries ≤150 chars | `AGENTS.md:108` |
+
+`origin/main` carries **23 live rows** (11 Concerns + 12 Work/Spec). At the documented 150-char cap
+those rows alone permit 3,450 bytes, leaving **646 bytes** for every heading, section intro, table
+header, the `Next` block, and all blank lines — against the **1,673 bytes** of scaffolding main
+actually has. The rows are not bloated; they average 146–150 bytes, i.e. *already at the cap*. The
+file is over budget because it holds 23 legitimate rows.
+
+The best trim I could construct without deleting live state — compress the two preamble lines and the
+live-brain pointer, and drop the one `Next` item that duplicates `AGENTS.md` verbatim — reaches
+**4,901 bytes / 53 lines**: −445 bytes (−8%), still **1.20×** the guidance. Full proposed text is in
+this PR's body.
+
+I first drafted a larger cut (−694, to 4,652) by dropping three `Next` items as "duplication of
+`AGENTS.md`." **That was wrong and I withdrew it.** Only item 4 (spec-driven development) is
+duplicated. Checked:
+
+```
+$ grep -ci 'no-shims\|platform responsibility\|scoping rules' AGENTS.md
+0
+```
+
+`no-shims-ever`, the platform responsibility model, and the design-question scoping rule appear
+**nowhere in `AGENTS.md`** — `STATUS.md` is their only home, so deleting them destroys standing
+rules. That is not hypothetical here: the janitor pass deleted the `#24 Arc C` Work row *because*
+no-shims-ever obviated it, and the 02:45Z thread comment warned the row is "a strong candidate to be
+re-filed by a future session." Deleting the rule that obviated it would guarantee that. Only item 2's
+public-surface-probe clause is genuinely redundant (`AGENTS.md` Hard Rule 11), so the proposal trims
+that clause and keeps the two rules.
+
+Closing the remaining ~805 bytes requires deleting live rows or changing a rule, so this is a host
+decision, not a janitor pass. Options: raise the byte guidance to ~5 KB (what 23 rows at the
+documented cap actually cost); cut the row cap to ~110 chars; cap live row count near 16; or drop the
+byte number and let the 60-line budget be the real gate. This is also the likeliest reason successive
+janitor passes keep meeting the line budget and missing the byte budget.
+
 ## Verdict B — 6 items
 
 B3/B4/B5/B6 restate A2/A1/A4/A5 and carry the same classifications: **FIXED / FIXED / FIXED /
@@ -243,7 +286,7 @@ down, and committing that verdict without this note buries it.
 
 | Item | State |
 |---|---|
-| **A5 / B6** — `STATUS.md` 5,346 bytes vs its own "Budget 4 KB" | Open. Disclosed in `activity.log` (with a now-stale 5,281 figure), not on the file. `STATUS.md` is contended (#1507) — needs a lane that owns the file. |
+| **A5 / B6** — `STATUS.md` 5,346 bytes vs its own "Budget 4 KB" | Open, and **not closable by trimming**. `AGENTS.md`'s 4 KB / 60-line / ≤150-char rules are mutually inconsistent at 23 live rows; best honest trim reaches 4,901 (1.20×). Needs a host decision on which rule gives. `STATUS.md` is contended (#1507). |
 | **A3 / B2** — `#1484` land | Open by design, at `host-review`. Correctly restated, premise inverted, guard clause present. |
 | **`test_sandbox_unavailable.py`** | Open, unowned, invisible to CI. Product code correct; 4 broken + 2 vacuous tests. |
 | **Verdict B's filename** | Open on #1516. `2026-07-22-uptime-canary-false-red-codex-review.md` reads as a review of the canary incident (that audit is a different file, on #1513). Anyone searching #1506's reviews by filename will miss it. Suggested: `2026-07-22-status-janitor-pr1506-codex-review-2.md`. |
