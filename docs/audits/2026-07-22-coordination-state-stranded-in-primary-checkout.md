@@ -16,7 +16,7 @@ anywhere** — not unpushed, never committed:
 
 | File | Added | What it holds |
 |---|---:|---|
-| `.agents/worktrees.md` | +39 | 27 `CREATE` + 12 `REMOVE` lane records, all dated 2026-07-22 |
+| `.agents/worktrees.md` | +41 | 29 `CREATE` + 12 `REMOVE` lane records, all dated 2026-07-22 |
 | `.agents/uptime.log` | +6 | 6 RED probe records, 2026-07-21T18:45→19:19 −07:00 |
 | `STATUS.md` | +2 | a **P0 security Concern** against merged PR #1489, and a `host-action` Work row |
 
@@ -37,7 +37,7 @@ Run from the primary checkout with `MSYS_NO_PATHCONV=1` set (without it,
 ```bash
 $ git diff --stat STATUS.md .agents/worktrees.md .agents/uptime.log
  .agents/uptime.log   |  6 ++++++
- .agents/worktrees.md | 39 +++++++++++++++++++++++++++++++++++++++
+ .agents/worktrees.md | 41 +++++++++++++++++++++++++++++++++++++++++
  STATUS.md            |  2 ++
 
 $ git cat-file blob origin/main:STATUS.md | grep -c "1489"                  -> 0
@@ -48,17 +48,28 @@ $ git log --all --oneline -S "wf-daemon-key-binding" -- STATUS.md           -> (
 `-S` across `--all` is the load-bearing check: it proves the string never entered *any* commit
 on *any* ref, which "unpushed" would not.
 
-**The ledger grew while this audit was being written.** The commissioning brief measured +37;
-by the time the recovery worktree existed it was **+39** — `wf-issue-1346-triage` and this
-lane's own `CREATE` record appended in the interval. Creating the worktree that fixes the
-problem *demonstrated* the problem. That record is included in this commit rather than stripped:
-it is a true event, and the honest count is 39.
+**The ledger grew four times while this audit was being written:**
+
+| Measurement point | Added lines |
+|---|---:|
+| Commissioning brief | +37 |
+| Recovery worktree created (`wf-issue-1346-triage` + this lane's own `CREATE`) | +39 |
+| First commit | +40 |
+| Refresh before push (`wf-dr-issue-backlog`, `wf-claude-md-merge-section`) | **+41** |
+
+Creating the worktree that fixes the problem *demonstrated* the problem — this lane's own `CREATE`
+record is committed rather than stripped, because it is a true event.
+
+**~1–2 records per few minutes, and every one of them strands by default.** This is the concrete
+argument for the L1 detection rung in §9: a snapshot recovery like this PR is a one-time carry
+against a file that keeps accumulating. Records appended after this commit will strand exactly as
+these did until L1/L2 land. Final counts here: **29 `CREATE` + 12 `REMOVE` = 41**.
 
 ---
 
-## 3. `.agents/worktrees.md` — 39 lane records
+## 3. `.agents/worktrees.md` — 41 lane records
 
-27 `CREATE`, 12 `REMOVE`, 39 distinct branches, all stamped 2026-07-22. All 12 `REMOVE` records
+29 `CREATE`, 12 `REMOVE`, 41 distinct branches, all stamped 2026-07-22. All 12 `REMOVE` records
 carry `merged=True`.
 
 The 12 `REMOVE` records are the ones with real forensic value: they are the only durable
@@ -187,10 +198,23 @@ against `origin/main`, never against "does a ref exist somewhere."**
 
 ## 7. Why this PR does not touch `STATUS.md`
 
-`STATUS.md` is the contended file. #1506 merged mid-flight; #1507 is `CONFLICTING`/`DIRTY`; #1510
-is open against it. Adding a third concurrent writer worsens a live conflict. This follows the
-pattern PR #1513 established and #1514 repeated: write the recommended rows into the audit, let
-the owning lane fold them in.
+**Freshness-stamped 2026-07-22, post-review.** The commissioning brief described `STATUS.md` as
+contended by #1506/#1507/#1510. That has changed and the current state is narrower:
+
+| PR | Touches `STATUS.md`? | State |
+|---|---|---|
+| #1506 | (merged as `398b3256`) | rewrote the Concerns section mid-flight |
+| #1507 | **yes — the only open writer** | `MERGEABLE` / `CLEAN` |
+| #1510, #1511, #1514 | no | `MERGEABLE` / `BEHIND` |
+
+So the file is no longer *conflicted* — but #1507 is a clean, open, single writer to it. A second
+concurrent writer is exactly what would make it dirty again, and #1523 measured that lifetime as
+short: a lane rebased #1507 to `MERGEABLE` at 02:47:22Z and #1501 merged at 02:53:43Z, conflicting
+it again — **six minutes**. Staying out remains correct; the reason is "don't collide with the one
+clean open writer," not "it is already broken."
+
+This follows the pattern PR #1513 established and #1514 repeated: write the recommended rows into
+the audit, let the owning lane fold them in.
 
 `.agents/activity.log` is the current hot conflict spot (#1506 and #1507 both conflicted there) —
 **untouched here** as well.
@@ -216,7 +240,7 @@ relied on.
 | #1490 | Documents existing only in one stale checkout | 32 documents |
 | #1517 | Fundraising material unversioned behind a gitignore gap | 22 files |
 | #1514 | Finished work stranded across ~170 checkouts | 2 lanes genuinely stranded |
-| **this** | **The coordination files themselves** | **3 files, 45 lines, 39 lane records** |
+| **this** | **The coordination files themselves** | **3 files, 47 lines, 41 lane records** |
 
 The progression matters: #1489/#1490/#1517/#1514 stranded *product and documents*. This one
 stranded *the mechanism that is supposed to make stranding visible.* A ledger that records what
@@ -234,42 +258,62 @@ edits in the primary tree.
 Per the brief and `AGENTS.md`'s auto-iterate ladder (`WebSite/HOOKS_FUSE_QUIRKS.md`), this is
 proposed and scoped separately. No hook is added and `wt.py` is unchanged in this PR.
 
-**Union-merge alone does not fix this.** PR #1523 adds `merge=union` in `.gitattributes` for
-`.agents/activity.log`, correctly, for a *different* failure: collision between lanes that each
-commit the file. `.agents/worktrees.md` is never committed by any lane at all. Union-merge makes
-concurrent commits *converge*; it cannot make an uncommitted file *reach a ref*. Applying #1523's
-fix here and calling it done would leave the stranding untouched while looking addressed.
+**Union-merge does not fix this — and PR #1523 has independently proven the stronger version of
+that claim.** *(Corrected 2026-07-22 after cross-family review; the first draft of this section
+described #1523 as adding `merge=union`, which is no longer what it does.)*
+
+#1523 originally proposed `merge=union` in `.gitattributes` for `.agents/activity.log`. It has
+since **pivoted to per-lane files** — `.agents/activity.d/<YYYY-MM-DD>-<lane-slug>.md` — and now
+*explicitly rejects* union-merge, on two empirical grounds this audit did not have:
+
+1. **GitHub reports a union-ruled append collision as `CONFLICTING` anyway** — measured with a
+   disposable probe, PR #1525 (now `CLOSED`).
+2. **A bare `git merge` does not load `.gitattributes` without `--attr-source`**, so the driver
+   silently does not apply in the common path.
+
+That is a better argument than the one this audit made, and it converges on the same shape as L2
+below. Two independent lanes reaching per-lane files for two different append-only coordination
+files is the useful signal: **the shared-append-file pattern is the defect, not its merge
+semantics.**
+
+The distinction this audit adds still stands, and is why #1523's fix cannot simply be copied
+across: union-merge (and per-lane files) address **collision between lanes that each commit the
+file**. `.agents/worktrees.md` is never committed by any lane at all. Convergence and reachability
+are different problems; only §5's structural defect explains the second.
 
 Ranked smallest-first:
 
 **L1 — detection (smallest, immediate).** Teach `scripts/worktree_status.py` to report an
 uncommitted `.agents/worktrees.md` in the primary checkout, with the carry recipe. It is already
 a mandated session-start ritual (`AGENTS.md` § Provider session-start ritual, step 2), already
-reads the primary checkout, and already prints advisory strings about this file — it just never
-checks it. Cheapest durable rung, no new machinery. Does not stop stranding; guarantees it is
-seen within one session.
+reads the primary checkout, and already prints advisory strings about this file (`:506`, `:612`) —
+it just never checks it. Cheapest durable rung, no new machinery. Does not stop stranding;
+guarantees it is seen within one session. **L1 is the part #1523 does not give us for free** — it
+is the only rung that addresses reachability rather than convergence.
 
-**L2 — structural (recommended).** Split the ledger into per-lane append-only files —
-`.agents/worktrees.d/<slug>.md` — written into **the lane's own worktree**, so the lane commits
-its own record alongside its own PR. This inverts the defect in §5: the record travels with the
-branch that caused it. Distinct files cannot collide, so it needs no merge driver. A digest
-command concatenates `.agents/worktrees.d/*` for reading. Cost: `wt.py done` for a *removal* runs
-after the lane is gone, so `REMOVE` records still need a home — likely the primary ledger, which
-keeps a reduced version of the problem and is why L1 stays useful alongside L2.
+**L2 — structural (recommended): adopt #1523's established pattern.** Split the ledger into
+per-lane files `.agents/worktrees.d/<YYYY-MM-DD>-<slug>.md`, written into **the lane's own
+worktree**, so the lane commits its own record alongside its own PR. This inverts the defect in
+§5: the record travels with the branch that caused it. This is no longer a novel proposal —
+mirror #1523's `.agents/activity.d/` layout, README conventions, and digest approach rather than
+inventing a parallel one, and land it after #1523 so there is one pattern to follow.
 
-**L3 — if it recurs after L1+L2.** `merge=union` on the residual shared ledger (composing with
-#1523 rather than duplicating it), plus a `SessionStart` check that fails loudly.
+Residual cost, unchanged: `wt.py done` for a *removal* runs after the lane is gone, so `REMOVE`
+records still need a home — likely the primary ledger, which keeps a reduced version of the
+problem. That is why L1 stays necessary alongside L2, and it is the one place worktrees.md is
+genuinely harder than activity.log.
 
-**Recommendation: L1 now, L2 scoped as its own change, L3 held in reserve.** L1 and L2 are
-independent and can land in either order. Per `AGENTS.md` § Spec-driven development, L2 is a
-behavior change to a documented workflow tool and should start as an OpenSpec change; L1 is
-arguably a bug fix to an existing diagnostic and may not need one.
+**Recommendation: L1 now, L2 scoped as its own change following #1523.** Per `AGENTS.md`
+§ Spec-driven development, L2 is a behavior change to a documented workflow tool and should start
+as an OpenSpec change; L1 is a bug fix to an existing diagnostic and may not need one. The
+previous L3 (`merge=union` in reserve) is **withdrawn** — #1525 measured it as ineffective on
+GitHub.
 
 ---
 
 ## 10. What this PR does
 
-- Commits `.agents/worktrees.md` (+39) and `.agents/uptime.log` (+6) — 2 files, 45 insertions.
+- Commits `.agents/worktrees.md` (+41) and `.agents/uptime.log` (+6) — 2 files, 47 insertions.
 - Adds this audit.
 - Touches no other file. No `git add -A`: the primary checkout has **7,769** untracked paths
   (verified), including `data-room/`, `investor-list/`, and `pitch-deck/` — private company
@@ -278,7 +322,35 @@ arguably a bug fix to an existing diagnostic and may not need one.
   `checkout --`, or `reset` was run anywhere (Hard Rule 13); the stranded content was **copied**,
   not moved, so the primary checkout remains a fallback until this lands.
 
-## 11. Open items for other lanes
+## 11. Cross-family review (Codex, gpt-5.6-sol, 2026-07-22)
+
+**Independently confirmed** against `origin/main@398b3256` on Windows: 27 `CREATE` + 12
+`merged=True` `REMOVE` records across 39 distinct branches (the count at review time; 29/41 after
+the final pre-push refresh); `git diff --check` clean; `merge-tree`
+clean; **#1491 open/unmerged and absent from `main`**; and the six uptime records matching the
+documented false-red 401 contract drift. The §6 correction of PR #1514 (C4) survived adversarial
+review.
+
+**Two required adaptations, both applied above:**
+
+1. **Stale cited facts** — #1507 is `CLEAN`, not `CONFLICTING`/`DIRTY`; #1523 no longer adds
+   `merge=union` but implements per-lane `.agents/activity.d/` files and rejects union-merge.
+   §7 and §9 rewritten and freshness-stamped.
+2. **P0 exposure wording** — the commissioning brief's "full transcripts" overstates it.
+   `command_center/collector.py:369` reads transcript **heads/tails** and returns prompt-derived
+   task/session metadata, not complete transcript bodies. The defect remains serious; whoever
+   picks up the #1489 P0 should state the exposure precisely rather than inherit the brief's
+   phrasing. (This audit never used "full transcripts" — the note is carried for the P0 lane.)
+
+**The meta-finding.** An audit written to catch stale premises shipped with two of its own, both
+introduced by PRs that moved *while it was being written*. §6 already documents the same class
+recursing one level (PR #1514's stale correction of a stale row). The pattern is not carelessness
+in any one lane — it is that **on a fleet this active, a cited fact about another open PR has a
+lifetime measured in tens of minutes.** #1523 measured a six-minute mergeable lifetime for #1507.
+The durable lesson: cite other lanes' state with a timestamp and re-verify at push time, or cite
+the immutable thing (a sha, a merge commit) instead of the mutable one (a PR's mergeable status).
+
+## 12. Open items for other lanes
 
 1. **`STATUS.md` owner (#1506/#1507 lane):** fold in Row A verbatim; fold in Row B **rewritten**
    per §6 — do not delete it.
@@ -287,4 +359,9 @@ arguably a bug fix to an existing diagnostic and may not need one.
 3. **The #1489 P0 itself is not addressed here** — a codex brief
    (`command-center-lan-failopen-p0.md`) is queued. This audit's obligation was that the concern
    is *recorded*, not that it is fixed.
-4. **L1/L2 prevention (§9)** needs an owner.
+4. **L1/L2 prevention (§9)** needs an owner. L2 should follow PR #1523's `.agents/activity.d/`
+   pattern rather than invent a parallel one; L1 is independent and can land first.
+5. **PR #1523 author:** this lane is a second, independent instance of the same defect class on
+   `.agents/worktrees.md`. Worth a cross-reference so the two fixes share one pattern — and note
+   §9's distinction, since worktrees.md additionally suffers a reachability failure that
+   `.agents/activity.d/` does not.

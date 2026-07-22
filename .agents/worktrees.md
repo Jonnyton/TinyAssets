@@ -741,3 +741,5 @@ Notes:
 - 2026-07-22 CREATE wf-activity-log-union-merge branch=claude/activity-log-union-merge base=origin/main provider=claude-code
 - 2026-07-22 CREATE wf-issue-1346-triage branch=claude/issue-1346-triage base=origin/main provider=claude-code
 - 2026-07-22 CREATE wf-audit-stranded-coordination-state branch=claude/audit-stranded-coordination-state base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-dr-issue-backlog branch=claude/dr-issue-backlog base=origin/main provider=claude-code
+- 2026-07-22 CREATE wf-claude-md-merge-section branch=claude/claude-md-merge-section base=origin/main provider=claude-code
