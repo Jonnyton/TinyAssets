@@ -1,0 +1,191 @@
+name: Release reconcile
+
+# Why this exists
+# ---------------
+# Three times in one day the release chain broke silently, and each break was
+# only found by checking production by hand:
+#
+#   1. Merges performed by the Actions app via GITHUB_TOKEN do not trigger
+#      workflow runs, so the push to main built nothing. Five PRs shipped
+#      nowhere, including a storage fix for universes that lost their database.
+#   2. `strict` required checks left every other enrolled PR `behind` after each
+#      merge, so nothing could land while main kept moving.
+#   3. post-merge-release.yml tried to fix (1) by dispatching on
+#      `pull_request_target: closed`. It never fired once — `closed` is also
+#      suppressed when the token performed the merge. It has been deleted
+#      rather than left in place looking like a safety net.
+#
+# Every link in an event chain fails silently and independently. So this does
+# not react to an event. It asks one question on a timer — IS PRODUCTION
+# RUNNING CURRENT MAIN? — and converges. `schedule` is driven by GitHub itself
+# rather than by any token, so nothing can suppress it. A broken chain stays
+# broken; a loop heals.
+#
+# What "production" means here
+# ----------------------------
+# The first version of this file asked whether a successful IMAGE BUILD existed
+# for the current commit. A cross-family review pointed out that this is not the
+# same question at all, and it can report "in sync" while production is stale:
+#
+#   - the build succeeded but the deploy or canary failed
+#   - the deploy succeeded and then AUTO-ROLLED BACK on canary red
+#   - a successful build on a FEATURE BRANCH happened to contain the commit —
+#     the build-runs query was never filtered to main, and there is in fact one
+#     such run in this repo's history, so this was live and not theoretical
+#
+# So the question is now asked of `Deploy prod` runs on main, which only reach
+# success after the post-deploy canary passes. That is the closest signal to
+# "production is actually serving this commit" available from the API.
+
+on:
+  schedule:
+    # Every 15 minutes. A check costs two API calls; not checking cost us a
+    # storage data-loss fix sitting unshipped on main.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: release-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Is prod running current main?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Needed to ask "which commit last touched a release path" and to test
+          # ancestry against what was deployed.
+          fetch-depth: 0
+
+      - name: Compare main against the last successful deploy
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Release-relevant paths are READ from build-image.yml, never copied.
+          # A duplicated filter drifts silently toward "never deploys", which is
+          # the failure this whole file exists to catch.
+          #
+          # No `pip install` here: this job holds `actions: write`, and pulling
+          # an unpinned package into a privileged job to parse a local YAML file
+          # is a supply-chain risk taken for no reason. The parse below is a
+          # small hand-rolled reader of the one block we care about.
+          PATHS="$(python3 - <<'PY'
+          import re
+
+          # Pull the `paths:` list out of build-image.yml's push trigger. The
+          # file is ours and its shape is stable; if this ever stops matching we
+          # fall through to "treat everything as release-relevant", which errs
+          # toward deploying rather than toward silence.
+          try:
+              text = open(".github/workflows/build-image.yml", encoding="utf-8").read()
+          except OSError:
+              raise SystemExit(0)
+
+          block = re.search(r"\n\s*paths:\s*\n((?:\s*-\s*.+\n)+)", text)
+          if not block:
+              raise SystemExit(0)
+          for line in block.group(1).splitlines():
+              item = line.strip().lstrip("-").strip().strip("'\"")
+              if item:
+                  print(item)
+          PY
+          )"
+
+          if [ -z "$PATHS" ]; then
+            echo "could not read build-image paths — treating HEAD as release-relevant"
+            RELEVANT="$(git rev-parse HEAD)"
+          else
+            echo "release paths:"; printf '  %s\n' $PATHS
+            # Newest commit on main touching anything the image is built from.
+            # Docs-only commits after it genuinely need no deploy.
+            # shellcheck disable=SC2086
+            RELEVANT="$(git log -1 --format=%H -- $PATHS)"
+          fi
+
+          if [ -z "$RELEVANT" ]; then
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "detail=no release-relevant history" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "main HEAD             : $(git rev-parse HEAD)"
+          echo "last release-relevant : ${RELEVANT}"
+
+          # Successful DEPLOY runs on main — not builds. A deploy only reaches
+          # success after its post-deploy canary passes, so this is the closest
+          # available proxy for "production is serving this". Filtered to main
+          # so a feature-branch run can never be mistaken for production.
+          DEPLOYED="$(gh api --paginate \
+                       "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?status=success&branch=main&per_page=100" \
+                       --jq '.workflow_runs[].head_sha' 2>/dev/null || true)"
+
+          if [ -z "$DEPLOYED" ]; then
+            echo "no successful deploy on record — dispatching"
+            echo "action=dispatch" >> "$GITHUB_OUTPUT"
+            echo "detail=no successful deploy to main on record" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Ancestry, not equality: a deploy of a later commit already contains
+          # this one, and docs commits landing in between must not make us look
+          # stale forever.
+          for sha in $DEPLOYED; do
+            # A sha from a deleted branch may no longer be reachable locally;
+            # cat-file guards merge-base against erroring on an unknown object.
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+            if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
+              echo "in sync — deploy ${sha:0:8} contains ${RELEVANT:0:8}"
+              echo "action=none" >> "$GITHUB_OUTPUT"
+              echo "detail=deploy ${sha:0:8} contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "DRIFT: nothing deployed contains ${RELEVANT:0:8}"
+          echo "action=dispatch" >> "$GITHUB_OUTPUT"
+          echo "detail=no successful deploy contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+
+      - name: Converge
+        if: steps.check.outputs.action == 'dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run build-image.yml --repo "$REPO" --ref main
+          {
+            echo "### Release drift corrected"
+            echo ""
+            echo "${DETAIL}."
+            echo ""
+            echo "Dispatched \`Build and publish image\`; \`Deploy prod\` chains from it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: In sync
+        if: steps.check.outputs.action != 'dispatch'
+        env:
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: echo "Production is current with main — ${DETAIL}." >> "$GITHUB_STEP_SUMMARY"
+
+# On the 15-minute interval
+# -------------------------
+# This is now the ONLY thing that starts a release, so the interval is the
+# expected latency rather than a worst case. Fifteen minutes was chosen because
+# "merged but not shipped" must not survive long enough to be mistaken for
+# shipped — which is exactly what happened when it survived for hours.
