@@ -2,23 +2,22 @@
 >
 > This change's core invariant — *"the chatbot **embodies** the persona and speaks in FIRST
 > PERSON, never relays"* — was **REVERSED by host directive on 2026-07-02** and is
-> contradicted by shipped production code (`tinyassets/universe_server.py:208`: *"You do NOT
+> contradicted by shipped production code (`tinyassets/universe_server.py:209`: *"You do NOT
 > speak as the universe … RELAY … you are the connector, not the universe"*).
 >
 > Retired and reconciled by change **`reconcile-universe-personification-relay`**
-> (2026-07-22). Surviving intent moved to the landed capability
-> `openspec/specs/universe-personification-and-relay/`. Kept for its design reasoning only.
+> (2026-07-22). Surviving intent moved to the active successor change as deltas against the
+> landed `universe-personification-and-relay` capability. Kept for its design reasoning only.
 >
 > **Every unchecked task below is annotated with its classification. Read the annotation
-> before acting on any line.** Verified against `origin/main` @ `2c1f63cb`, 2026-07-22.
+> before acting on any line.** Re-verified against `origin/main` @ `f605bb99`, 2026-07-22.
 
 ## 1. Ratified-spec amendments (`docs/specs/2026-06-10-tiny-first-principles-spec.md`) — NOT applied in this draft
 
 > ⚠ **The "NOT applied" annotation is contradicted by the repo.** The amendment text IS
-> present on `origin/main` at `docs/specs/2026-06-10-tiny-first-principles-spec.md:128`,
-> carrying the full embody / "never relays" invariant. That ratified spec is therefore a
-> still-live source of the reversed model, and amending it is the one open host decision in
-> `reconcile-universe-personification-relay`.
+> present when this task ledger was retired, carrying the full embody / "never relays"
+> invariant. PR #1578 / `f605bb99` subsequently corrected that ratified paragraph to the
+> relay model before `reconcile-universe-personification-relay` was allowed to land.
 
 - [x] 1.1 §9 (voice): embody / first-person invariant, **compact trigger-language** (no role-play sprawl), TinyAssets-surface-scoped guardrail + anti-collision + honest fallback + authorization-precedes-voice
 - [x] 1.2 §3 (mind anatomy): personification = the **named interaction projection of the WHOLE mind** (voice expresses, soul governs, brain informs; goals/skills/hands/senses remain) — invariant, not an organ
@@ -27,9 +26,9 @@
 ## 2. Connector behavioral surface (future build — behind verification gates + the Codex adaptations)
 
 - [ ] 2.1 `control_station` prompt: compact first-person embodiment (trigger-language + view metadata; NO large role-play block; no tool-schema sprawl)
-  > **⛔ REVERSED — do not build.** `universe_server.py:208` now instructs the opposite: the chatbot does NOT speak as the universe, it relays.
+  > **⛔ REVERSED — do not build.** `universe_server.py:209` now instructs the opposite: the chatbot does NOT speak as the universe, it relays.
 - [ ] 2.2 MCP `instructions` + tool descriptions: persona voice at connect + anti-collision "do not save into host memory" guard
-  > **⛔ REVERSED (persona-voice half) / ✅ ALREADY LANDED (anti-collision half).** The instructions block now carries relay/render, not persona voice. The anti-collision guard shipped: `universe_server.py:215` — "Don't memorize persona views."
+  > **⛔ REVERSED (persona-voice half) / ✅ ALREADY LANDED (anti-collision half).** The instructions block now carries relay/render, not persona voice. The anti-collision guard shipped: `universe_server.py:216` — "Don't memorize persona views."
 - [ ] 2.3 In-voice `assemble(lens) → view` delivery of ALREADY-AUTHORIZED content (depends on `brain-canonical-store` #1369)
   > **⛔ REVERSED as a chatbot-side mechanism — intent relocated.** Grounded first-person assembly landed *inside* `converse` (`universe_intelligence.py` builds the persona system prompt from the universe's own OKF bundle). Remaining lens/assembly work belongs to the active `brain-okf-canonical-store` change.
 - [ ] 2.4 **Authorization-before-voice:** enforce identity / org-chart / privacy-tier filtering in brain assembly + action authz; voice never receives unauthorized content
@@ -43,7 +42,7 @@
 - [ ] 2.8 Persona behavior as a forkable `[composable]` default; substrate enforces only identity/authority/privacy floor
   > **✅ SURVIVES — needs rewording.** The floor-vs-composable split holds, but custody moved first-party: the persona lives in the universe intelligence's own system prompt, so forking means forking universe-side persona/soul content, not shipping a script to a third-party chatbot. → carried forward, reworded.
 - [ ] 2.9 Tool-selection regression tests (Claude + ChatGPT) proving embodiment does not degrade accuracy
-  > **⛔ REVERSED as written — residual preserved.** No embodiment prompt exists to regress. The residual risk (connector instruction density vs tool-selection accuracy) is carried forward as a scenario.
+  > **⛔ REVERSED as written — residual preserved.** No embodiment prompt exists to regress. The residual risk (connector instruction density vs tool-selection accuracy) is carried forward as definition task 6.3 against `live-mcp-connector-surface`, not as a threshold-less scenario in this delta.
 
 ## 3. Cross-provider review
 

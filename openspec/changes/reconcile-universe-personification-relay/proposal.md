@@ -5,20 +5,19 @@ The change `universe-personification` (proposed 2026-06-24, Codex-ADAPT 2026-06-
 founder's OAuth **embodies** the persona and speaks in first person, **never relays**.
 
 **That invariant was reversed by host directive on 2026-07-02 and is contradicted by
-shipped production behavior.** Three independent sources agree, verified against
-`origin/main` on 2026-07-22:
+shipped production behavior.** Three independent sources agree, re-verified against
+`origin/main` at `f605bb99` on 2026-07-22:
 
-1. **Host directive** — `STATUS.md` `[filed:2026-07-02] RESHAPE`: universe intelligence
-   becomes the single first-party personified agent and sole action-taker; the chatbot MCP
-   demotes to onboard + relay. It names the reversal explicitly ("REVERSES
-   `universe-personification` 'chatbot embodies, never relays' (live-falsified)") and
-   instructs "Do NOT build more chatbot-embodiment."
+1. **Ratified correction** — PR #1578 / `f605bb99` amends
+   `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` to the host-directed relay model:
+   the universe intelligence is the first-party personified speaker and the chatbot forwards
+   through `converse` without impersonating it.
 2. **Design note** —
    `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` §3 documents
    *why* it was falsified: a behavioral contract delivered in a tool result is structurally
    indistinguishable from prompt injection, and careful hosts correctly refuse it. Embodiment
    moved to a first-party model (persona in the universe intelligence's own system prompt).
-3. **Shipped code** — `tinyassets/universe_server.py:208` now instructs the exact opposite:
+3. **Shipped code** — `tinyassets/universe_server.py:209` now instructs the exact opposite:
    *"You do NOT speak as the universe: … RELAY their message via `converse` and RENDER its
    own first-person reply verbatim — you are the connector, not the universe."* The landed
    as-built capability `openspec/specs/universe-personification-and-relay/spec.md` (baselined
@@ -56,10 +55,9 @@ model read as current spec truth.
   - persona as a forkable `[composable]` default, reworded for first-party custody.
 - **Record what already landed** so it is not rebuilt: the anti-collision *instructions*
   guard, honest fallback, and grounded first-person assembly all shipped inside `converse`.
-- **Leave one host decision open** — the *ratified* narrative spec
-  `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` still states the reversed
-  "never relays" invariant. It is out of this change's write-set and amending a ratified spec
-  is a host call. See `design.md` §"Host decision required".
+- **Record the resolved host decision** — PR #1578 / `f605bb99` amended the ratified narrative
+  spec to the relay model before this reconciliation lands. See `design.md` §"Host decision
+  resolved".
 
 ## Capabilities
 
@@ -84,8 +82,8 @@ model read as current spec truth.
   `openspec/specs/` is as-built truth and must not carry aspirations (`openspec/config.yaml`,
   AGENTS.md § Spec-driven development). This change therefore stays **active** rather than
   being archived on merge (Codex review 2026-07-22, finding 1).
-- **Out of write-set, flagged not applied:** `docs/specs/2026-06-10-tiny-first-principles-spec.md`
-  §9 (host decision); `STATUS.md` and `AGENTS.md` (contended by #1506/#1507/#1501).
+- **Coordination update:** `STATUS.md` replaces the stale pointer to the archived change with
+  the active successor change and its concrete implementation dependencies.
 - **Gates:** opposite-provider review dispatched to Codex 2026-07-22 (verdict recorded in
-  `design.md`). Draft PR — a spec reversal is a host-visible decision and must not merge
-  unreviewed.
+  `design.md`); ratified correction landed in #1578; current-base strict validation and diff
+  review are required before merge.

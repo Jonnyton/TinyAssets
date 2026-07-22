@@ -10,8 +10,8 @@ This design does not re-litigate that reversal. It reconciles the spec system wi
 what each of the 11 unchecked tasks means now, retire what is dead, and keep what survives
 somewhere durable.
 
-All classifications below were verified against `origin/main` at `2c1f63cb` on 2026-07-22
-(`git fetch --prune` first; the local checkout was 15 commits behind).
+All classifications below were re-verified against `origin/main` at `f605bb99` on 2026-07-22
+after the ratified relay correction landed in PR #1578.
 
 ## Goals / Non-Goals
 
@@ -24,8 +24,9 @@ All classifications below were verified against `origin/main` at `2c1f63cb` on 2
 **Non-Goals:**
 - Changing runtime code. The relay behavior shipped; this is spec reconciliation.
 - Re-deciding embody vs relay. The host decided; production shipped it; it was live-tested.
-- Amending the ratified narrative spec (out of write-set — host decision, see below).
-- Building the surviving requirements. They land as spec, then get their own change.
+- Re-amending the ratified narrative spec; PR #1578 already resolved that prerequisite.
+- Building the surviving requirements in this reconciliation PR. They remain as deltas in
+  this active change until later implementation and tests make them as-built truth.
 
 ## Decisions
 
@@ -74,15 +75,15 @@ being fixed. Every "already landed" row below names the file and the behavior.
 
 | Task | Classification | Reason (verified on `origin/main`) |
 |---|---|---|
-| **2.1** `control_station` prompt: compact first-person embodiment | **REVERSED** | `universe_server.py:208` now instructs the exact opposite — "You do NOT speak as the universe … you are the connector, not the universe." Building this re-instructs chatbot embodiment. |
-| **2.2** MCP `instructions` + tool descriptions: persona voice at connect **+** anti-collision guard | **SPLIT — REVERSED + ALREADY LANDED** | Persona-voice-at-connect half is REVERSED (same instructions block now says relay/render). Anti-collision half ALREADY LANDED: `universe_server.py:215` ships "Don't memorize persona views." |
+| **2.1** `control_station` prompt: compact first-person embodiment | **REVERSED** | `universe_server.py:209` now instructs the exact opposite — "You do NOT speak as the universe … you are the connector, not the universe." Building this re-instructs chatbot embodiment. |
+| **2.2** MCP `instructions` + tool descriptions: persona voice at connect **+** anti-collision guard | **SPLIT — REVERSED + ALREADY LANDED** | Persona-voice-at-connect half is REVERSED (same instructions block now says relay/render). Anti-collision half ALREADY LANDED: `universe_server.py:216` ships "Don't memorize persona views." |
 | **2.3** In-voice `assemble(lens) → view` delivery | **REVERSED (mechanism) — intent relocated** | Chatbot-side in-voice view delivery is gone with embodiment. The grounded-assembly intent landed *inside* `converse`: `universe_intelligence.py` assembles a first-person persona system prompt from the universe's own OKF bundle. Lens/assembly work continues in the active `brain-okf-canonical-store` change. |
 | **2.4** Authorization-before-voice | **SURVIVES — partially landed** | Still exactly right under relay, and arguably load-bearing. Landed: the `converse` handle is founder-only + fail-closed (as-built spec, "The MCP converse handle is founder-only and fail-closed"). Unbuilt: general pre-assembly filtering by interlocutor — no visitor path exists yet to filter for. |
 | **2.5** Visitor actor binding + T0/T1/T2 tier gating | **SURVIVES — unbuilt** | No `identity_tier` / T0-T1-T2 machinery in `tinyassets/*.py`. As-built spec defers public "talk to a stranger's universe" to a later, separately-gated slice. Under relay, the binding attaches to the `converse` caller rather than to a chatbot embodiment session. Adjacent to the active `universe-visibility` change — see Dependencies. |
 | **2.6** Anti-collision write path: reject profile-shaped / persona-dossier writes | **SURVIVES — unbuilt** | No dossier/profile-shaped write rejection found anywhere in `tinyassets/`. Note the *instructions*-side guard (2.2) landed but the *enforcement*-side did not — exactly the prompt-vs-boundary gap Codex flagged in the original review. Under relay this matters more, not less: relay renders persona text straight into host chat context. |
 | **2.7** Honest fallback / degraded mode | **ALREADY LANDED** | `universe_intelligence.py:428` raises on a missing universe; `:164` "you are newly born and still learning" for an unnamed universe; `:208` never-infer/never-invent/never-carry-over rules. Three as-built scenarios cover it. |
 | **2.8** Persona as a forkable `[composable]` default | **SURVIVES — needs rewording** | The floor-vs-composable split still holds, but custody moved: the persona now lives first-party in the universe intelligence's own system prompt, so "forkable default" means a forkable universe-side persona/soul, not a chatbot-side script. Reworded in the delta spec. |
-| **2.9** Tool-selection regression tests: embodiment does not degrade accuracy | **REVERSED as written — residual preserved** | There is no embodiment prompt left to regress. The underlying risk survives in changed form (connector instruction density vs tool-selection accuracy) and is recorded in the delta spec rather than carried as an embodiment test. |
+| **2.9** Tool-selection regression tests: embodiment does not degrade accuracy | **REVERSED as written — residual preserved** | There is no embodiment prompt left to regress. The underlying risk survives in changed form (connector instruction density vs tool-selection accuracy), but no threshold-less scenario belongs in this delta; task 6.3 requires a separately defined baseline, metric, and permitted regression against `live-mcp-connector-surface`. |
 | **4.1** `sync-specs` → `openspec/specs/universe-personification/spec.md` | **REVERSED — MUST NOT RUN** | Executing this would write the embodiment model into `openspec/specs/`, where it would read as current spec truth beside the as-built relay capability. The most dangerous row in the file. |
 | **4.3** Archive after merge | **SURVIVES — actionable now** | PR #1372 merged 2026-06-25. This change performs the archive (with classification attached). |
 
@@ -91,12 +92,10 @@ landed (2.2) · **5 survive** (2.4, 2.5, 2.6, 2.8, and 4.3 which is discharged b
 **1 already landed** (2.7). *(Corrected per Codex review 2026-07-22 finding 5 — an earlier
 rollup said "4 survive · 2 already landed", double-counting 4.3.)*
 
-Also noted for the record: tasks **1.1–1.3** are checked `[x]` and annotated "NOT applied in
-this draft", but the amendment text *is* present in the ratified spec on `origin/main`
-(`docs/specs/2026-06-10-tiny-first-principles-spec.md:128`, carrying the full embody /
-"never relays" invariant plus all 7 Codex adaptations). The task annotation and the repo
-disagree. This makes the ratified spec a **fourth** source still asserting the reversed model —
-and the reason for the host decision below.
+At retirement time, tasks **1.1–1.3** were checked `[x]` and annotated "NOT applied in this
+draft", while the ratified paragraph still carried the full embody / "never relays" invariant.
+That disagreement made it a fourth stale source. PR #1578 / `f605bb99` subsequently corrected
+the paragraph to the relay model before this reconciliation was allowed to land.
 
 ## Dependencies
 
@@ -110,13 +109,11 @@ and the reason for the host decision below.
 
 ## Risks / Trade-offs
 
-- **Archiving hides the reasoning from `openspec list`** → mitigated: survivors are promoted to
-  the live capability spec before the archive, so nothing actionable lives only in the archive.
-- **The ratified narrative spec still asserts embodiment** → not fixable in this write-set;
-  raised as the single host decision. Until answered, `docs/specs/2026-06-10-...` remains a
-  live misdirection source and this change does not claim to have closed it.
-- **Four surviving requirements land as spec with no implementation** → intended. They are
-  specced so the intent is durable, then get their own change; this change ships no code.
+- **Archiving hides the reasoning from `openspec list`** — mitigated: survivors are promoted to
+  the active successor delta spec, so nothing actionable lives only in the archive.
+- **Four surviving requirements remain unimplemented** — intentional and explicit. They remain
+  only in this active change; canonical `openspec/specs/` stays as-built truth until code and
+  tests land.
 
 ## Cross-provider review
 
@@ -142,24 +139,17 @@ Findings 1 and 2 were re-verified against the repo before folding rather than ac
 report. Both were real: the first draft of this change would have written aspirational
 requirements into as-built truth, and would have specced a rule contradicting shipped code.
 
-## Host decision required
+## Host decision resolved
 
-**One question:**
-
-> The *ratified* spec `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` still states
-> the reversed invariant — the chatbot "speaks AS the personification in the first person …
-> never relays ('Tiny says…')". **Which correction do you want: (a) amend that paragraph to the
-> relay model, or (b) leave the text and mark it explicitly superseded with a pointer to
-> `openspec/specs/universe-personification-and-relay/`?**
-
-Either is acceptable; **doing neither is not.** The paragraph reads as normative design text, so
-leaving it untouched as "historical ratification" would keep the original misdirection alive
-after this change lands — the one thing this change exists to prevent. *(Reframed per Codex
-review 2026-07-22 finding 3, which correctly refused the passive option offered in the first
-draft.)* Out of this change's write-set; amending a ratified spec is a host call.
+PR #1578 landed at `f605bb99` on 2026-07-22 and amended the ratified paragraph to the relay
+model. Its review also made the anti-collision boundary truthful: host-memory guidance is
+advisory, while any future profile/dossier rejection must be narrowly defined on an
+external/commons endpoint and must exempt governed founder learning. This closes the only
+host-visible prerequisite without syncing any unbuilt delta into canonical as-built specs.
 
 ## Migration Plan
 
-Spec-only; no runtime change, so no rollback is required. Sequence: banner + classify the old
-change's artifacts → archive it → (after host approval) `sync-specs` the four ADDED
-requirements into `universe-personification-and-relay` → archive this change.
+Spec-only; no runtime change, so no rollback is required. This PR banners, classifies, and
+archives the reversed change, then leaves this successor change active. Later implementation
+must complete tasks 6.1–6.4 with tests; only then may task 6.5 sync the four ADDED requirements
+into `openspec/specs/universe-personification-and-relay/spec.md` and archive this change.

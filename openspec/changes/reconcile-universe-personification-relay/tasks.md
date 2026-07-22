@@ -1,11 +1,11 @@
 ## 1. Verify the contradiction (done in this change)
 
-- [x] 1.1 `git fetch --prune`; classify against `origin/main` at `2c1f63cb`, not the stale local checkout
-- [x] 1.2 Confirm source 1 — host directive: `STATUS.md` `[filed:2026-07-02] RESHAPE`, "Do NOT build more chatbot-embodiment"
+- [x] 1.1 `git fetch --prune`; classify against `origin/main`, then re-verify at `f605bb99` after PR #1578
+- [x] 1.2 Confirm source 1 — ratified correction: PR #1578 / `f605bb99` replaces chatbot embodiment with the relay model
 - [x] 1.3 Confirm source 2 — `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` §3 (why embodiment was live-falsified)
-- [x] 1.4 Confirm source 3 — shipped code: `tinyassets/universe_server.py:208` ("You do NOT speak as the universe … RELAY … RENDER")
+- [x] 1.4 Confirm source 3 — shipped code: `tinyassets/universe_server.py:209` ("You do NOT speak as the universe … RELAY … RENDER")
 - [x] 1.5 Confirm the landed as-built capability `openspec/specs/universe-personification-and-relay/spec.md` codifies relay
-- [x] 1.6 Find the **fourth** stale source: ratified `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` still says "never relays" despite task 1.1 claiming amendments unapplied
+- [x] 1.6 Find the **fourth** stale source, then verify PR #1578 / `f605bb99` corrected it before this reconciliation lands
 
 ## 2. Classify the 11 unchecked tasks (done — `design.md` §"Task-by-task reconciliation")
 
@@ -23,7 +23,7 @@
 ## 4. Carry surviving intent forward
 
 - [x] 4.1 Four ADDED requirements on `universe-personification-and-relay` (authorization-before-voice; interlocutor tier binding; anti-collision write path; forkable persona under first-party custody)
-- [x] 4.2 Record the 2.9 residual (connector instruction density vs tool-selection accuracy) as a scenario rather than an embodiment test
+- [x] 4.2 Remove the threshold-less 2.9 scenario from this delta; carry connector instruction-density vs tool-selection accuracy as definition task 6.3 against `live-mcp-connector-surface`
 - [x] 4.3 Cross-reference `universe-visibility` (anonymous-reader semantics) and `brain-okf-canonical-store` (assembled-view content) instead of duplicating them
 
 ## 5. Gates
@@ -31,8 +31,9 @@
 - [x] 5.1 Opposite-provider review dispatched to Codex (background `scripts/codex_review.py`)
 - [x] 5.2 Codex verdict **ADAPT** recorded in `design.md` §"Cross-provider review"; all 5 findings folded (classification upheld — the findings were against this change's own design)
 - [x] 5.3 Re-verify Codex findings 1 + 2 against the repo before folding, rather than accepting on report
-- [ ] 5.4 **Host decision** — amend ratified `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` to the relay model, **or** mark it explicitly superseded with a pointer? (`design.md` §"Host decision required"; doing neither is not an option)
-- [x] 5.5 Draft PR opened — #1515; **do NOT merge** — a spec reversal is host-visible
+- [x] 5.4 **Host decision resolved** — PR #1578 / `f605bb99` amended the ratified paragraph to the relay model (`design.md` §"Host decision resolved")
+- [x] 5.5 Draft PR opened — #1515; auto-merge disabled while the prerequisite and current-base repairs were incomplete
+- [ ] 5.6 Re-run strict all-spec validation, task-annotation checks, diff checks, and independent final review on current `origin/main`
 
 ## 6. Implementation (this change stays ACTIVE until these land)
 
@@ -40,8 +41,8 @@
 > (`openspec/config.yaml`: "do not spec aspirations"). There is deliberately **no `sync-specs`
 > task here** — the sync happens only after the code and tests below exist.
 
-- [ ] 6.1 Build the surviving requirements (authorization-before-voice generalization; interlocutor tier binding; scoped commons-side anti-collision write path; forkable persona under first-party custody), each with tests
-- [ ] 6.2 Define the anti-collision write restriction concretely before implementing it — exact endpoint, predicate, redirect destination — and confirm it does not restrict the governed founder-learning path (`founder.md`)
+- [ ] 6.1 Define the anti-collision write restriction concretely before implementation — exact external/commons endpoint, predicate, redirect destination — and confirm it does not restrict the governed founder-learning path (`founder.md`)
+- [ ] 6.2 Reconcile interlocutor tier binding with the `universe-visibility` change's anonymous-reader semantics and record the agreed authority/disclosure contract
 - [ ] 6.3 Define baseline, metric, and permitted regression for connector tool-selection accuracy, and file it against `live-mcp-connector-surface` (residual of retired task 2.9)
-- [ ] 6.4 Reconcile interlocutor tier binding with the `universe-visibility` change's anonymous-reader semantics
+- [ ] 6.4 Only after 6.1–6.3: build the surviving requirements (authorization-before-voice generalization; interlocutor tier binding; scoped commons-side anti-collision write path; forkable persona under first-party custody), each with tests
 - [ ] 6.5 Only then: `sync-specs` into `openspec/specs/universe-personification-and-relay/spec.md`, then archive this change

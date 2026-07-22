@@ -4,7 +4,7 @@
 > and **never relays**. That invariant was **reversed by host directive on 2026-07-02**
 > (live-falsified: a behavioral contract in a tool result is indistinguishable from prompt
 > injection, and hosts correctly refuse it) and is contradicted by shipped production code —
-> `tinyassets/universe_server.py:208`: *"You do NOT speak as the universe … RELAY … you are
+> `tinyassets/universe_server.py:209`: *"You do NOT speak as the universe … RELAY … you are
 > the connector, not the universe."*
 >
 > **Current spec truth:** `openspec/specs/universe-personification-and-relay/`.
