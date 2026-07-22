@@ -172,7 +172,5 @@ host-visible prerequisite without syncing any unbuilt delta into canonical as-bu
 Spec-only; no runtime change, so no rollback is required. This PR banners, classifies, and
 archives the reversed change, then leaves this successor change active. Definition and
 cross-capability tasks 6.1–6.3 gate independently landable implementation tasks 6.4–6.10; only
-then may task 6.11 sync the seven persona requirements plus the scoped-write migration
-requirement into their respective canonical specs,
-`openspec/specs/universe-personification-and-relay/spec.md` and
-`openspec/specs/live-mcp-connector-surface/spec.md`, and archive this change.
+then may task 6.11 sync the seven ADDED requirements into
+`openspec/specs/universe-personification-and-relay/spec.md` and archive this change.
