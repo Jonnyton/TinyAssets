@@ -103,6 +103,7 @@ code-review-and-quality`.
 |-------|-------|------------------|
 | Orient | improve-codebase-architecture | Map an area, then audit module boundaries and coupling |
 | Orient | external-research-implications | Turn outside repos/papers into TinyAssets implications |
+| Orient | peer-agents | Dispatch work to the Claude or Codex CLI on that subscription's budget |
 | Define | idea-refine | Refine an idea into an approved design before building |
 | Define | domain-model | Stress-test concepts/invariants and harden terminology |
 | Define | spec-driven-development | Write requirements and acceptance criteria before code |

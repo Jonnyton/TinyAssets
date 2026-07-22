@@ -1,0 +1,173 @@
+name: Announce patch
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Commit SHA to announce. Defaults to the checked-out SHA.
+        required: false
+        default: ""
+      actors:
+        description: Comma-separated Workflow actor IDs to credit.
+        required: false
+        default: ""
+      patch_title:
+        description: Optional public announcement title.
+        required: false
+        default: ""
+      source_url:
+        description: Optional issue, PR, or loop URL.
+        required: false
+        default: ""
+      dry_run:
+        description: Keep true until X credentials and copy are verified.
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+  workflow_run:
+    workflows: ["deploy-site"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: announce-patch-${{ github.event.workflow_run.head_sha || github.event.inputs.commit_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  announce:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.commit_sha || github.sha }}
+
+      - name: Resolve inputs
+        id: vars
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_COMMIT_SHA: ${{ github.event.inputs.commit_sha }}
+          INPUT_ACTORS: ${{ github.event.inputs.actors }}
+          INPUT_PATCH_TITLE: ${{ github.event.inputs.patch_title }}
+          INPUT_SOURCE_URL: ${{ github.event.inputs.source_url }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          commit_sha="${INPUT_COMMIT_SHA:-${WORKFLOW_RUN_SHA:-$(git rev-parse HEAD)}}"
+          dry_run="${INPUT_DRY_RUN:-true}"
+          {
+            echo "commit_sha=$commit_sha"
+            echo "actors=${INPUT_ACTORS:-}"
+            echo "patch_title=${INPUT_PATCH_TITLE:-}"
+            echo "source_url=${INPUT_SOURCE_URL:-}"
+            echo "dry_run=$dry_run"
+          } >> "$GITHUB_OUTPUT"
+          mkdir -p .announcement-cache output
+
+      - name: Restore duplicate guard
+        id: dupe
+        uses: actions/cache/restore@v4
+        with:
+          path: .announcement-cache
+          key: patch-announcement-${{ steps.vars.outputs.commit_sha }}
+
+      - name: Compose announcement
+        if: steps.dupe.outputs.cache-hit != 'true'
+        shell: bash
+        run: >
+          python scripts/social/patch_announcement.py compose
+          --repo .
+          --commit "${{ steps.vars.outputs.commit_sha }}"
+          --actors "${{ steps.vars.outputs.actors }}"
+          --patch-title "${{ steps.vars.outputs.patch_title }}"
+          --source-url "${{ steps.vars.outputs.source_url }}"
+          --require-patch-marker
+          --require-github-credit
+          --output output/patch-announcement.json
+
+      - name: Post to X
+        id: post
+        if: steps.dupe.outputs.cache-hit != 'true'
+        env:
+          SOCIAL_POST_DRY_RUN: ${{ steps.vars.outputs.dry_run }}
+          X_USER_ACCESS_TOKEN: ${{ secrets.X_USER_ACCESS_TOKEN }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+        run: >
+          python scripts/social/post_x_update.py
+          --input output/patch-announcement.json
+          --output output/x-post-result.json
+          --dry-run "${{ steps.vars.outputs.dry_run }}"
+
+      - name: Read post result
+        id: post_result
+        if: steps.dupe.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          path = Path("output/x-post-result.json")
+          if not path.exists():
+              print("posted=false")
+              raise SystemExit
+          result = json.loads(path.read_text(encoding="utf-8"))
+          print(f"posted={str(not result.get('dry_run') and not result.get('skipped')).lower()}")
+          PY
+
+      - name: Save duplicate guard
+        if: steps.post_result.outputs.posted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '{"commit":"%s"}\n' "${{ steps.vars.outputs.commit_sha }}" \
+            > ".announcement-cache/${{ steps.vars.outputs.commit_sha }}.json"
+
+      - name: Persist duplicate guard
+        if: steps.post_result.outputs.posted == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .announcement-cache
+          key: patch-announcement-${{ steps.vars.outputs.commit_sha }}
+
+      - name: Upload announcement artifact
+        if: always() && steps.dupe.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-announcement-${{ steps.vars.outputs.commit_sha }}
+          path: output/
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Patch announcement"
+            echo ""
+            echo "- Commit: \`${{ steps.vars.outputs.commit_sha }}\`"
+            echo "- Dry run: \`${{ steps.vars.outputs.dry_run }}\`"
+            echo "- Duplicate guard hit: \`${{ steps.dupe.outputs.cache-hit || 'false' }}\`"
+            if [ -f output/patch-announcement.json ]; then
+              echo ""
+              echo '```json'
+              cat output/patch-announcement.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
