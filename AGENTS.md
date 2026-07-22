@@ -165,6 +165,7 @@ scoped reader at `python scripts/docview.py`.
 - Project engineering skills live canonically in `.agents/skills/` and are mirrored into `.claude/skills/` for Claude Code's harness discovery.
 - Codex and project-visible agents read from `.agents/skills/` directly — there is no separate Codex mirror.
 - Claude Code reads from `.claude/skills/`.
+- A stray untracked `.codex/skills/` may exist on a developer machine from an abandoned mirroring attempt. It is gitignored, unmaintained, and stale — never read it, and never re-add a Codex mirror to `scripts/sync-skills.ps1`, which deliberately targets only the Claude Code mirror.
 - When the right workflow skill is not obvious, start with `using-agent-skills` and then read the matching skill.
 - After editing shared skills, run `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` to refresh the Claude Code mirror.
 - When the user points at an outside project, repo, paper, benchmark, article, or codebase and asks what TinyAssets should learn or integrate, use `external-research-implications`. That process must canonicalize the source, research current context, compare module-by-module against TinyAssets, write durable implications, and self-update the skill when the process itself improves.
@@ -184,7 +185,8 @@ loop: `idea-refine` (design-approval gate) -> `planning-and-task-breakdown` ->
 `git-workflow-and-versioning` -> `shipping-and-launch`;
 `subagent-driven-development` runs it via fresh per-task subagents.
 `code-simplification` carries the write-the-least-code ladder. All skills mirror
-into `.claude/skills/` and `.codex/skills/`.
+into `.claude/skills/` only; Codex and project-visible agents read
+`.agents/skills/` directly (§ Project Skills).
 
 ### Spec-driven development — OpenSpec is the standard [all providers]
 
