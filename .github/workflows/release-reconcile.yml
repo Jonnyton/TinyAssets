@@ -1,0 +1,163 @@
+name: Release reconcile
+
+# Why this exists
+# ---------------
+# Three times in one day the release chain broke in the same place, and each
+# time the fix was another link in an event chain:
+#
+#   1. Merges performed by the Actions app via GITHUB_TOKEN do not trigger
+#      workflow runs, so the push to main built nothing. Five PRs shipped
+#      nowhere.
+#   2. `strict` required checks meant every merge left the other enrolled PRs
+#      `behind`, so nothing could land while main kept moving.
+#   3. post-merge-release.yml was supposed to fix (1) by dispatching the build
+#      on `pull_request_target: closed`. It never fired: that event is ALSO
+#      triggered by the token that performed the merge, so it is suppressed by
+#      the same rule. The fix had the defect it was fixing.
+#
+# The lesson is not "find the one event that survives". Every link in an event
+# chain fails silently and independently, and you only discover it by checking
+# production by hand. So this file does not react to an event at all.
+#
+# It asks one question on a timer: IS PRODUCTION RUNNING CURRENT MAIN? If not,
+# it converges. `schedule` is driven by GitHub itself, not by any token, so
+# nothing can suppress it. If some future event chain also silently dies, this
+# notices within the interval and repairs it. That is the difference between a
+# chain and a loop: a broken chain stays broken, a loop heals.
+
+on:
+  schedule:
+    # Every 15 minutes. The cost of a check is one API call; the cost of not
+    # checking was a storage data-loss fix sitting unshipped on main overnight.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: release-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Is prod running current main?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Need history to ask "which commit last touched a release path" and
+          # to test ancestry against what was built.
+          fetch-depth: 0
+
+      - name: Compare main against the last successful build
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # The release-relevant paths are READ from build-image.yml, never
+          # copied. A duplicated filter drifts silently toward "never deploys",
+          # which is the failure this whole file exists to catch.
+          python3 -m pip install --quiet pyyaml || true
+          PATHS="$(python3 - <<'PY'
+          try:
+              import yaml
+              with open(".github/workflows/build-image.yml", encoding="utf-8") as fh:
+                  spec = yaml.safe_load(fh)
+              # `on:` parses as boolean True under YAML 1.1 — hence both keys.
+              trig = spec.get("on") or spec.get(True) or {}
+              print("\n".join(trig["push"]["paths"]))
+          except Exception:
+              pass
+          PY
+          )"
+
+          if [ -z "$PATHS" ]; then
+            echo "could not read build-image paths — treating every commit as release-relevant"
+            RELEVANT="$(git rev-parse HEAD)"
+          else
+            # Newest commit on main that touched anything the image is built from.
+            # If prod is at or past this commit, prod is current — later docs-only
+            # commits genuinely do not need a deploy.
+            # shellcheck disable=SC2086
+            RELEVANT="$(git log -1 --format=%H -- $PATHS)"
+          fi
+
+          if [ -z "$RELEVANT" ]; then
+            echo "no release-relevant commit in history — nothing to reconcile"
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "detail=no release-relevant history" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "main HEAD                : $(git rev-parse HEAD)"
+          echo "last release-relevant    : ${RELEVANT}"
+
+          # Every build-image run that succeeded, newest first.
+          BUILT="$(gh api --paginate \
+                     "repos/${REPO}/actions/workflows/build-image.yml/runs?status=success&per_page=100" \
+                     --jq '.workflow_runs[].head_sha' 2>/dev/null || true)"
+
+          if [ -z "$BUILT" ]; then
+            echo "no successful build found at all — dispatching"
+            echo "action=dispatch" >> "$GITHUB_OUTPUT"
+            echo "detail=no successful image build on record" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # In sync if ANY successful build sits at or after the last
+          # release-relevant commit. Ancestry, not equality: a build of a later
+          # commit already contains this one, and docs commits in between must
+          # not make us look stale forever.
+          for sha in $BUILT; do
+            if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
+              echo "in sync — build ${sha:0:8} contains ${RELEVANT:0:8}"
+              echo "action=none" >> "$GITHUB_OUTPUT"
+              echo "detail=build ${sha:0:8} already contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "DRIFT: nothing built contains ${RELEVANT:0:8}"
+          echo "action=dispatch" >> "$GITHUB_OUTPUT"
+          echo "detail=no successful build contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+
+      - name: Converge
+        if: steps.check.outputs.action == 'dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run build-image.yml --repo "$REPO" --ref main
+          {
+            echo "### Release drift corrected"
+            echo ""
+            echo "${DETAIL}."
+            echo ""
+            echo "Dispatched \`Build and publish image\`; \`Deploy prod\` chains from it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: In sync
+        if: steps.check.outputs.action != 'dispatch'
+        env:
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: echo "Production is current with main — ${DETAIL}." >> "$GITHUB_STEP_SUMMARY"
+
+# On the 15-minute interval
+# -------------------------
+# post-merge-release.yml still exists and still tries to dispatch immediately;
+# when it works, releases are prompt and this loop finds nothing to do. The
+# interval is the WORST case, not the expected one. It is deliberately short
+# enough that "merged but not shipped" cannot survive unnoticed for long, and
+# the check itself is a couple of API calls.
