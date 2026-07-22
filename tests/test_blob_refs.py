@@ -288,7 +288,7 @@ def test_mark_referenced_rejects_raw_blob_reference(tmp_path: Path) -> None:
 
     with pytest.raises(BlobProofError, match="verified blob proof"):
         blob_store.mark_referenced(
-            reference.ref,
+            reference.blob_ref,
             owner_user_id="user:owner-1",
             job_id=JOB_ID,
             lease_id=LEASE_ID,
@@ -716,7 +716,11 @@ def test_two_live_blob_stores_do_not_lose_each_others_committed_bindings(
 
 
 def test_stale_instance_cannot_resurrect_collected_binding(tmp_path: Path) -> None:
-    from tinyassets.runtime.blob_refs import BlobBindingError, BlobStore
+    from tinyassets.runtime.blob_refs import (
+        BlobBindingError,
+        BlobStore,
+        OwnerCASConfirmation,
+    )
 
     root = tmp_path / "blob-store"
     producer = BlobStore(root, unreferenced_ttl_seconds=60)
@@ -729,8 +733,26 @@ def test_stale_instance_cannot_resurrect_collected_binding(tmp_path: Path) -> No
         possession_proof=b"proof",
         verify_possession=lambda *_: True,
     )
-    stale = BlobStore(root, unreferenced_ttl_seconds=60)
+    stale = BlobStore(
+        root,
+        unreferenced_ttl_seconds=60,
+        owner_cas_verifier=lambda _owner, locator, sha256, size_bytes: (
+            OwnerCASConfirmation(locator, sha256, size_bytes)
+        ),
+    )
     collector = BlobStore(root, unreferenced_ttl_seconds=60)
+    validation = {
+        "owner_user_id": "user:owner-1",
+        "job_id": JOB_ID,
+        "lease_id": LEASE_ID,
+        "fence": 17,
+    }
+    stale_proof = stale.validate_reference(
+        ref.ref,
+        expected_sha256=ref.sha256,
+        expected_size_bytes=ref.size_bytes,
+        **validation,
+    )
     failed_at = datetime(2026, 7, 21, tzinfo=UTC)
     collector.mark_job_failed(
         owner_user_id="user:owner-1",
@@ -741,14 +763,8 @@ def test_stale_instance_cannot_resurrect_collected_binding(tmp_path: Path) -> No
         now=failed_at + timedelta(seconds=61)
     ) == (ref.ref,)
 
-    validation = {
-        "owner_user_id": "user:owner-1",
-        "job_id": JOB_ID,
-        "lease_id": LEASE_ID,
-        "fence": 17,
-    }
     with pytest.raises(BlobBindingError):
-        stale.mark_referenced(ref.ref, **validation)
+        stale.mark_referenced(stale_proof, **validation)
     with pytest.raises(BlobBindingError):
         stale.validate_reference(
             ref.ref,
