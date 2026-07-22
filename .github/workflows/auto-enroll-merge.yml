@@ -24,6 +24,11 @@ on:
   # branch and has a token that can enrol. We never check out or execute PR code.
   pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+  # Auto-merge does not update an enrolled PR after main advances. Reconcile
+  # those branches independently of PR events so strict protection can rerun.
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -43,6 +48,7 @@ jobs:
     # draft means "not finished" — marking ready fires `ready_for_review` and
     # enrols it then.
     if: >-
+      github.event_name == 'pull_request_target' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.ref == 'main'
@@ -88,6 +94,60 @@ jobs:
               cat err.txt || true
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  update-enrolled-branches:
+    name: Update enrolled branches behind main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Reconcile enrolled branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Query current state instead of reacting to `synchronize`: advancing
+          # main does not change another PR's head, so that PR emits no event.
+          # Exclude forks even if someone enrolled one manually; this workflow
+          # only automates same-repository branches.
+          CANDIDATES="$(gh pr list --repo "$REPO" --state open --base main \
+            --limit 1000 \
+            --json number,isDraft,isCrossRepository,autoMergeRequest,mergeStateStatus \
+            --jq '.[]
+              | select(.isDraft == false)
+              | select(.isCrossRepository == false)
+              | select(.autoMergeRequest != null)
+              | select(.mergeStateStatus == "BEHIND")
+              | .number')"
+
+          if [ -z "$CANDIDATES" ]; then
+            echo "No enrolled branches are behind main."
+            echo "No enrolled branches are behind \`main\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          failures=0
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            if gh pr update-branch "$pr" --repo "$REPO"; then
+              echo "Updated PR #${pr}."
+              echo "- Updated PR #${pr}" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Failed to update PR #${pr}." >&2
+              echo "- FAILED to update PR #${pr}" >> "$GITHUB_STEP_SUMMARY"
+              failures=$((failures + 1))
+            fi
+          done <<< "$CANDIDATES"
+
+          if [ "$failures" -ne 0 ]; then
+            echo "${failures} enrolled branch update(s) failed." >&2
+            exit 1
           fi
 
 # Note on blast radius
