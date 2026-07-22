@@ -22,8 +22,10 @@ aspirational PLAN text easy to mistake for landed behavior.
   canary/test process; use `OpenProcess` plus `GetExitCodeProcess` instead and add a regression.
 - Replace the Layer-2 timeout regression's real 600-second sleeper subprocess with a
   deterministic injected timeout so the focused suite cannot strand a process after failure.
-- Make no workflow, deployment, or production-state change beyond the browser-lock liveness
-  repair.
+- Add a path-filtered Windows GitHub Actions regression job so the prohibited Layer-2 file is
+  executed outside the Codex Windows host on every relevant pull request.
+- Make no deployment, production workflow, or production-state change beyond the browser-lock
+  liveness repair.
 
 ## Capabilities
 
@@ -38,8 +40,9 @@ None.
 
 ## Impact
 
-OpenSpec artifacts, `STATUS.md` coordination state, `scripts/browser_lock.py`, and its Layer-2
-regression file change. The capability is grounded in existing files under
-`.github/workflows/`, `deploy/`, `scripts/`, `tests/`, and `docs/ops/`; all other production
-sources remain untouched. The separately claimed `release-reconcile-event-trigger` change and
-`.github/workflows/release-reconcile.yml` are explicitly outside this change.
+OpenSpec artifacts, `STATUS.md` coordination state, `scripts/browser_lock.py`, its Layer-2
+regression file, and one focused Windows CI workflow change. The capability is grounded in
+existing files under `.github/workflows/`, `deploy/`, `scripts/`, `tests/`, and `docs/ops/`;
+all other production sources remain untouched. The separately claimed
+`release-reconcile-event-trigger` change and `.github/workflows/release-reconcile.yml` are
+explicitly outside this change.

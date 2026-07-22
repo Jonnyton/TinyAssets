@@ -1,0 +1,36 @@
+name: Layer-2 canary regression
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/uptime-layer2-regression.yml"
+      - "scripts/browser_lock.py"
+      - "scripts/claude_chat.py"
+      - "scripts/uptime_canary_layer2.py"
+      - "tests/test_uptime_canary_layer2.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layer2-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-layer2:
+    name: Windows Layer-2 tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+      - name: Run Layer-2 regression file
+        run: python -m pytest -q tests/test_uptime_canary_layer2.py

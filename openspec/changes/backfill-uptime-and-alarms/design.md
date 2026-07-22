@@ -19,7 +19,7 @@ automated DR, or complete public-surface coverage into requirements.
 **Non-goals**
 
 - No production workflow, service, deployment, secret, schedule, or live-system mutation; the
-  only runtime change is the browser-lock PID liveness repair.
+  only runtime change is the browser-lock PID liveness repair, plus a path-filtered CI job.
 - No ownership of MCP handle semantics, daemon work scheduling, or patch-loop policy.
 - No claim that the full Forever Rule or PLAN target is already satisfied.
 
@@ -79,9 +79,9 @@ query rights and checks for `STILL_ACTIVE`; POSIX retains `os.kill(pid, 0)` and 
 The same test file previously exercised `subprocess.run(..., timeout=...)` by launching a
 Python child that slept for 600 seconds. The regression only needs to prove that
 `subprocess.TimeoutExpired` maps to `_BrowserLoadError`, so it now injects that exception at
-the subprocess boundary. Production timeout behavior remains unchanged. Per the recovery
-directive, the full Layer-2 file must be executed externally or in CI, not through Codex on
-Windows.
+the subprocess boundary. Production timeout behavior remains unchanged. A dedicated
+`windows-latest` pull-request job runs the full file when the lock, canary, test, or workflow
+changes. Per the recovery directive, Codex on Windows never executes that file directly.
 
 ## Evidence Map
 
