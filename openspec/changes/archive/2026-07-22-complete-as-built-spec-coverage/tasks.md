@@ -28,5 +28,5 @@
 ## 5. Publish and continue the program
 
 - [x] 5.1 Archive the completed change with its audit and verification record intact.
-- [ ] 5.2 Run the foldback context gate, publish the branch, and land the reviewed PR.
-- [ ] 5.3 Re-audit Batch B collisions and promote the next file-bounded reconciliation lane; do not declare full-spec completion while Batch B or C remains open.
+- [x] 5.2 Run the foldback context gate, publish the branch, and land the reviewed PR.
+- [x] 5.3 Re-audit Batch B collisions and promote the next file-bounded reconciliation lane; do not declare full-spec completion while Batch B or C remains open.
