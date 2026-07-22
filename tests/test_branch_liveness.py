@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -77,15 +78,16 @@ def test_ancestor_success_without_stdout_is_not_undetermined(
 
 
 def test_contained_branch_reports_absorbing_ref(monkeypatch: pytest.MonkeyPatch) -> None:
-    child = "refs/remotes/origin/feature/child"
-    stack = "refs/remotes/origin/feature/stack"
-
-    def merge_status(ref: str, base_ref: str):
-        if (ref, base_ref) == (child, stack):
-            return True, None
-        return False, None
-
-    monkeypatch.setattr(bj, "merge_status", merge_status)
+    monkeypatch.setattr(bj, "merge_status", lambda _ref, _base, **_kwargs: (False, None))
+    monkeypatch.setattr(
+        bj,
+        "ancestry_container",
+        lambda _remote, name, _base: (
+            ("origin/feature/stack", None)
+            if name == "feature/child"
+            else (None, None)
+        ),
+    )
 
     verdicts = bj.classify_liveness(
         "origin",
@@ -121,6 +123,33 @@ def test_ancestry_container_finds_live_stack_ref(monkeypatch: pytest.MonkeyPatch
 
     assert contained_by == "origin/feature/stack"
     assert error is None
+
+
+@pytest.mark.parametrize("pr_index", [None, _pr_index()])
+def test_squash_containment_is_independent_of_gh(
+    monkeypatch: pytest.MonkeyPatch,
+    pr_index,
+) -> None:
+    child = "refs/remotes/origin/feature/child"
+    stack = "refs/remotes/origin/feature/stack"
+    monkeypatch.setattr(bj, "ancestry_container", lambda _remote, _name, _base: (None, None))
+    monkeypatch.setattr(
+        bj,
+        "merge_status",
+        lambda ref, base, **_kwargs: (
+            (True, None) if (ref, base) == (child, stack) else (False, None)
+        ),
+    )
+
+    verdicts = bj.classify_liveness(
+        "origin",
+        "origin/main",
+        ["feature/child", "feature/stack"],
+        pr_index=pr_index,
+        pr_error="gh unavailable" if pr_index is None else None,
+    )
+
+    assert _verdict(verdicts, "feature/child").category == "CONTAINED"
 
 
 def test_unreachable_branch_without_open_pr_is_stranded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,6 +221,40 @@ def test_missing_gh_executable_is_reported_not_raised(monkeypatch: pytest.Monkey
     assert error == "gh pr list failed: gh not found"
 
 
+def test_history_lookup_failure_keeps_open_pr_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]):
+        state = command[command.index("--state") + 1]
+        if state == "open":
+            stdout = json.dumps(
+                [{"headRefName": "feature/live", "number": 42, "state": "OPEN"}]
+            )
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+        return subprocess.CompletedProcess(command, 1, "", "history unavailable")
+
+    monkeypatch.setattr(bj, "_run", fake_run)
+
+    pr_index, error = bj.pull_request_index()
+
+    assert error is None
+    assert pr_index is not None
+    assert pr_index.open_by_branch == {"feature/live": 42}
+    assert pr_index.history_error == "gh pr list failed (exit 1): history unavailable"
+
+
+def test_open_query_with_non_open_row_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = [{"headRefName": "feature/missing", "number": 9, "state": "CLOSED"}]
+    monkeypatch.setattr(
+        bj,
+        "_run",
+        lambda command: subprocess.CompletedProcess(command, 0, json.dumps(row), ""),
+    )
+
+    pr_index, error = bj.pull_request_index()
+
+    assert pr_index is None
+    assert error == "gh pr list --state open returned a non-open row"
+
+
 def test_open_pr_bucket_has_priority(monkeypatch: pytest.MonkeyPatch) -> None:
     def unexpected_merge(_ref: str, _base: str):
         raise AssertionError("OPEN-PR should not need git merge classification")
@@ -208,3 +271,55 @@ def test_open_pr_bucket_has_priority(monkeypatch: pytest.MonkeyPatch) -> None:
     verdict = _verdict(verdicts, "feature/live")
     assert verdict.category == "OPEN-PR"
     assert verdict.pr_number == 1482
+
+
+def test_main_json_reports_fetch_failure_and_never_mutates(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        bj,
+        "_run",
+        lambda command: subprocess.CompletedProcess(command, 1, "", "offline"),
+    )
+    monkeypatch.setattr(bj, "liveness_branches", lambda _remote: ([], None))
+    monkeypatch.setattr(bj, "pull_request_index", lambda: (_pr_index(), None))
+    monkeypatch.setattr(
+        bj,
+        "delete_branch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mutation reached")),
+    )
+    monkeypatch.setattr(
+        bj,
+        "upsert_issue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mutation reached")),
+    )
+
+    exit_code = bj.main(["--liveness", "--json", "--fetch"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload["branches"] == []
+    assert "git fetch --prune failed" in payload["errors"][0]
+
+
+def test_main_exit_code_gates_stranded_human_report(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(bj, "liveness_branches", lambda _remote: (["feature/lost"], None))
+    monkeypatch.setattr(bj, "pull_request_index", lambda: (_pr_index(), None))
+    monkeypatch.setattr(bj, "merge_status", lambda _ref, _base: (False, None))
+    monkeypatch.setattr(bj, "ancestry_container", lambda _remote, _name, _base: (None, None))
+
+    exit_code = bj.main(["--liveness", "--exit-code"])
+
+    assert exit_code == 1
+    assert "| `feature/lost` | STRANDED |" in capsys.readouterr().out
+
+
+def test_main_rejects_liveness_apply_combination() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        bj.main(["--liveness", "--apply"])
+
+    assert excinfo.value.code == 2

@@ -37,8 +37,10 @@ import json
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import Lock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from git_squash_merge import is_merged_into  # noqa: E402  (sibling-script import)
@@ -97,6 +99,7 @@ class BranchVerdict:
 class PullRequestIndex:
     open_by_branch: dict[str, int]
     all_by_branch: dict[str, int]
+    history_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,14 +145,13 @@ def open_pr_branches() -> set[str] | None:
     return {row.get("headRefName", "") for row in data if row.get("headRefName")}
 
 
-def pull_request_index() -> tuple[PullRequestIndex | None, str | None]:
-    """Return open/all PR numbers by head branch, or an explicit failure."""
+def _pull_request_rows(state: str) -> tuple[list[dict] | None, str | None]:
     command = [
         "gh",
         "pr",
         "list",
         "--state",
-        "all",
+        state,
         "--limit",
         "1000",
         "--json",
@@ -168,26 +170,44 @@ def pull_request_index() -> tuple[PullRequestIndex | None, str | None]:
     if not isinstance(rows, list):
         return None, "gh pr list returned a non-list JSON value"
     if len(rows) >= 1000:
-        return None, "gh pr list reached its 1000-row limit; completeness is unknown"
-
-    open_by_branch: dict[str, int] = {}
-    all_by_branch: dict[str, int] = {}
+        return None, f"gh pr list --state {state} reached 1000 rows; completeness is unknown"
     for row in rows:
         if not isinstance(row, dict):
             return None, "gh pr list returned a non-object row"
         branch = row.get("headRefName")
         number = row.get("number")
-        state = row.get("state")
+        row_state = row.get("state")
         if not isinstance(branch, str) or not branch:
             return None, "gh pr list returned a row without headRefName"
         if not isinstance(number, int) or isinstance(number, bool):
             return None, "gh pr list returned a row with an invalid PR number"
-        if state not in {"OPEN", "CLOSED", "MERGED"}:
+        if row_state not in {"OPEN", "CLOSED", "MERGED"}:
             return None, "gh pr list returned a row with an invalid PR state"
-        all_by_branch.setdefault(branch, number)
-        if state == "OPEN":
-            open_by_branch.setdefault(branch, number)
-    return PullRequestIndex(open_by_branch, all_by_branch), None
+    return rows, None
+
+
+def pull_request_index() -> tuple[PullRequestIndex | None, str | None]:
+    """Return complete open-PR coverage plus best-effort merged PR numbers."""
+    open_rows, open_error = _pull_request_rows("open")
+    if open_error:
+        return None, open_error
+    if any(row["state"] != "OPEN" for row in open_rows or []):
+        return None, "gh pr list --state open returned a non-open row"
+    open_by_branch = {
+        row["headRefName"]: row["number"]
+        for row in open_rows or []
+        if row["state"] == "OPEN"
+    }
+    all_by_branch = dict(open_by_branch)
+
+    merged_rows, history_error = _pull_request_rows("merged")
+    if not history_error and any(row["state"] != "MERGED" for row in merged_rows or []):
+        history_error = "gh pr list --state merged returned a non-merged row"
+    if not history_error:
+        for row in merged_rows or []:
+            if row["state"] == "MERGED":
+                all_by_branch.setdefault(row["headRefName"], row["number"])
+    return PullRequestIndex(open_by_branch, all_by_branch, history_error), None
 
 
 def is_protected(name: str) -> bool:
@@ -223,7 +243,12 @@ def _command_failure(command: str, proc: subprocess.CompletedProcess[str]) -> st
     return f"{command} failed (exit {proc.returncode}): {detail}"
 
 
-def merge_status(ref: str, base_ref: str) -> tuple[bool | None, str | None]:
+def merge_status(
+    ref: str,
+    base_ref: str,
+    *,
+    run=None,
+) -> tuple[bool | None, str | None]:
     """Tri-state wrapper around ``is_merged_into`` for reporting.
 
     The shared primitive intentionally maps git errors to ``False`` for safe
@@ -231,11 +256,12 @@ def merge_status(ref: str, base_ref: str) -> tuple[bool | None, str | None]:
     records ambiguity without duplicating the primitive's squash algorithm.
     """
     issue: str | None = None
+    command_runner = run or _run
 
     def diagnostic_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         nonlocal issue
         try:
-            proc = _run(command)
+            proc = command_runner(command)
         except OSError as exc:
             proc = subprocess.CompletedProcess(command, 127, "", str(exc))
         operation = command[1] if len(command) > 1 else "git"
@@ -287,6 +313,51 @@ def ancestry_container(
     return container, None
 
 
+def squash_container(
+    remote: str,
+    name: str,
+    base_ref: str,
+    branches: list[str],
+) -> tuple[str | None, str | None]:
+    """Find squash-equivalent containment using the shared merge primitive."""
+    ref = f"refs/remotes/{remote}/{name}"
+    candidates = [
+        (f"{remote}/{absorber}", f"refs/remotes/{remote}/{absorber}")
+        for absorber in branches
+        if absorber != name and f"{remote}/{absorber}" != base_ref
+    ]
+    if not candidates:
+        return None, None
+
+    cache: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
+    cache_lock = Lock()
+
+    def cached_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[1:3] == ["merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(command, 1, "", "")
+        cacheable = command[1] in {"rev-parse", "commit-tree"}
+        if not cacheable:
+            return _run(command)
+        key = tuple(command)
+        with cache_lock:
+            if key not in cache:
+                cache[key] = _run(command)
+            return cache[key]
+
+    with ThreadPoolExecutor(max_workers=min(64, len(candidates))) as executor:
+        results = list(
+            executor.map(
+                lambda candidate: merge_status(ref, candidate[1], run=cached_run),
+                candidates,
+            )
+        )
+    for (short_ref, _), (contained, _) in zip(candidates, results, strict=True):
+        if contained:
+            return short_ref, None
+    error = next((error for contained, error in results if contained is None), None)
+    return None, error
+
+
 def classify_liveness(
     remote: str,
     base_ref: str,
@@ -327,59 +398,33 @@ def classify_liveness(
             )
             continue
 
-        if pr_index is None:
-            contained_by, contain_error = ancestry_container(remote, name, base_ref)
-            if contained_by:
-                verdicts.append(
-                    LivenessVerdict(
-                        name,
-                        "CONTAINED",
-                        "branch tip is an ancestor of another remote ref",
-                        contained_by=contained_by,
-                    )
-                )
-            elif contain_error:
-                verdicts.append(LivenessVerdict(name, "UNDETERMINED", contain_error))
-            else:
-                detail = pr_error or "unknown gh failure"
-                verdicts.append(
-                    LivenessVerdict(
-                        name,
-                        "UNDETERMINED",
-                        f"PR attribution unavailable: {detail}",
-                    )
-                )
-            continue
-
-        containment_errors: list[str] = []
-        contained_by = None
-        for absorber in branches:
-            absorber_short_ref = f"{remote}/{absorber}"
-            if absorber == name or absorber_short_ref == base_ref:
-                continue
-            contained, contain_error = merge_status(
-                ref, f"refs/remotes/{remote}/{absorber}"
-            )
-            if contained:
-                contained_by = absorber_short_ref
-                break
-            if contained is None:
-                containment_errors.append(
-                    contain_error or f"could not inspect {absorber_short_ref}"
-                )
+        contained_by, contain_error = ancestry_container(remote, name, base_ref)
+        containment_reason = "branch tip is an ancestor of another remote ref"
+        if not contained_by and not contain_error:
+            contained_by, contain_error = squash_container(remote, name, base_ref, branches)
+            containment_reason = "cumulative change is present on another remote ref"
         if contained_by:
             verdicts.append(
                 LivenessVerdict(
                     name,
                     "CONTAINED",
-                    "cumulative change is present on another remote ref",
+                    containment_reason,
                     pr_number=pr_number,
                     contained_by=contained_by,
                 )
             )
-        elif containment_errors:
+        elif contain_error:
             verdicts.append(
-                LivenessVerdict(name, "UNDETERMINED", containment_errors[0], pr_number=pr_number)
+                LivenessVerdict(name, "UNDETERMINED", contain_error, pr_number=pr_number)
+            )
+        elif pr_index is None:
+            detail = pr_error or "unknown gh failure"
+            verdicts.append(
+                LivenessVerdict(
+                    name,
+                    "UNDETERMINED",
+                    f"PR attribution unavailable: {detail}",
+                )
             )
         else:
             verdicts.append(
@@ -398,6 +443,7 @@ def render_liveness_report(
     verdicts: list[LivenessVerdict],
     *,
     pr_error: str | None = None,
+    pr_history_error: str | None = None,
     report_errors: list[str] | None = None,
 ) -> str:
     counts = {category: 0 for category in LIVENESS_CATEGORIES}
@@ -415,6 +461,8 @@ def render_liveness_report(
     if pr_error:
         lines.append("Git-derived MERGED/CONTAINED results remain authoritative; "
                      "unsafe STRANDED claims are suppressed.")
+    elif pr_history_error:
+        lines.append(f"Merged-PR number enrichment unavailable — {pr_history_error}")
     for error in report_errors or []:
         lines.append(f"UNDETERMINED: {error}")
     lines += [
@@ -425,21 +473,34 @@ def render_liveness_report(
     for verdict in verdicts:
         pr = f"#{verdict.pr_number}" if verdict.pr_number else "—"
         contained_by = verdict.contained_by or "—"
-        reason = verdict.reason.replace("|", "\\|")
         lines.append(
-            f"| `{verdict.name}` | {verdict.category} | {pr} | `{contained_by}` | {reason} |"
+            f"| {_table_code(verdict.name)} | {verdict.category} | {pr} | "
+            f"{_table_code(contained_by)} | {_table_text(verdict.reason)} |"
         )
     return "\n".join(lines)
+
+
+def _table_code(value: str) -> str:
+    return f"`{_table_text(value).replace('`', '&#96;')}`"
+
+
+def _table_text(value: str) -> str:
+    return value.replace("|", "&#124;")
 
 
 def liveness_payload(
     verdicts: list[LivenessVerdict],
     *,
     pr_error: str | None,
+    pr_history_error: str | None,
     report_errors: list[str],
 ) -> dict[str, object]:
     return {
-        "pr_attribution": {"available": pr_error is None, "error": pr_error},
+        "pr_attribution": {
+            "available": pr_error is None,
+            "error": pr_error,
+            "history_error": pr_history_error,
+        },
         "errors": report_errors,
         "branches": [asdict(verdict) for verdict in verdicts],
     }
@@ -616,6 +677,7 @@ def main(argv: list[str]) -> int:
             report_errors.append(branch_error)
             branches = []
         prs, pr_error = pull_request_index()
+        pr_history_error = prs.history_error if prs else None
         verdicts = classify_liveness(
             args.remote,
             args.base_ref,
@@ -629,6 +691,7 @@ def main(argv: list[str]) -> int:
                     liveness_payload(
                         verdicts,
                         pr_error=pr_error,
+                        pr_history_error=pr_history_error,
                         report_errors=report_errors,
                     ),
                     indent=2,
@@ -639,6 +702,7 @@ def main(argv: list[str]) -> int:
                 render_liveness_report(
                     verdicts,
                     pr_error=pr_error,
+                    pr_history_error=pr_history_error,
                     report_errors=report_errors,
                 )
             )
