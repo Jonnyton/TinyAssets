@@ -1,9 +1,9 @@
-# Workflow — Design & Backend-Wiring Handoff
+# TinyAssets — Design & Backend-Wiring Handoff
 
-**For:** the app-building AI (Polsia) constructing a front-end / app on top of Workflow
+**For:** the app-building AI (Polsia) constructing a front-end / app on top of TinyAssets
 **From:** Jonathan Farnsworth (project owner)
 **Date:** 2026-06-23
-**Purpose:** Give you (1) the full project design picture — what exists, what is half-built, and where the end-state is going — and (2) a precise spec for wiring an app to the **live Workflow MCP connector as its backend**, running live.
+**Purpose:** Give you (1) the full project design picture — what exists, what is half-built, and where the end-state is going — and (2) a precise spec for wiring an app to the **live TinyAssets MCP connector as its backend**, running live.
 
 > Read this as structured prose, not a rigid machine spec. The wiring block in Part C is the part to treat as a hard contract; everything else is context so your app aligns with where the design is heading rather than just today's surface.
 
@@ -11,12 +11,12 @@
 
 ---
 
-## PART A — What Workflow Is (the design picture)
+## PART A — What TinyAssets Is (the design picture)
 
 ### A.1 One-sentence positioning
-Workflow is a **goal-completion engine**: a user puts *any input* into a chat (text and/or files), their chatbot understands the goal and reaches for the Workflow connector, and the user gets *any desired output* back — even if the platform has to evolve in real time to make it possible. Time horizons range from instant (a recipe card) to **months-long, real-world coordinated efforts** (e.g. a research paper that actually gets published, with every interim deliverable and tracking metric along the way).
+TinyAssets is a **goal-completion engine**: a user puts *any input* into a chat (text and/or files), their chatbot understands the goal and reaches for the TinyAssets connector, and the user gets *any desired output* back — even if the platform has to evolve in real time to make it possible. Time horizons range from instant (a recipe card) to **months-long, real-world coordinated efforts** (e.g. a research paper that actually gets published, with every interim deliverable and tracking metric along the way).
 
-The chatbot is the **interpreter**; Workflow is the durable **substrate** it reaches for. Short-horizon work can be chatbot-mediated; long-horizon work cannot — a chatbot session can't be the durable layer for a goal that spans months. That forcing function drives the whole architecture.
+The chatbot is the **interpreter**; TinyAssets is the durable **substrate** it reaches for. Short-horizon work can be chatbot-mediated; long-horizon work cannot — a chatbot session can't be the durable layer for a goal that spans months. That forcing function drives the whole architecture.
 
 It is **domain-agnostic**: live universes today include fantasy-novel authoring, an Earth-transition model (`earthos`), a research-paper publication goal, a grandma's bread recipe, a team standup tracker, and the platform's own self-development loop (`patch-loop-live`). Fantasy authoring was deliberately chosen as the *first benchmark domain* (hard to measure = good proving ground), never the trunk.
 
@@ -132,7 +132,7 @@ Tip: to discover any action-based tool's full catalog live, send a bogus `action
 `build_branch` (or `create_branch` + `add_node` + `connect_nodes` + `set_entry_point` + `add_state_field`) → `validate_branch` → `run_branch(inputs_json=...)` → `wait_for_run` / `stream_run` → `get_run_output` → optionally `judge_run` → `publish_version` + `goals bind`.
 
 ### C.5 Behavioral rules your app must honor
-1. **Side effects are gated.** A universe with `effect_authority:[]` and `autonomous_spend_allowed:false` runs **dry-run**. Real external writes require `extensions grant_effector_consent` **and** a non-empty effect authority. `gates` actions need `GATES_ENABLED=1`; paid-market actions need `WORKFLOW_PAID_MARKET=on`.
+1. **Side effects are gated.** A universe with `effect_authority:[]` and `autonomous_spend_allowed:false` runs **dry-run**. Real external writes require `extensions grant_effector_consent` **and** a non-empty effect authority. `gates` actions need `GATES_ENABLED=1`; paid-market actions need `TINYASSETS_PAID_MARKET=on`.
 2. **Large responses can blow token caps.** Always pass `limit` / `scope` / `max_chars` / `offset`; prefer `search` / `since` for the wiki and `describe_branch` over dumping whole graphs.
 3. **The control station is for steering, not creating.** A chat surface that writes the *creative output itself* signals a missing daemon path — the daemon/branch does the work; the app inspects, steers, and runs.
 4. **Don't add curated server features.** Anything a user could compose from the 6 primitives should be a branch or a brain convention, not a request for a new platform tool. Keep your app's "configuration" as user-authored branches/conventions, not hardcoded taxonomies.
@@ -142,13 +142,13 @@ Tip: to discover any action-based tool's full catalog live, send a bogus `action
 - Polsia agents are **Claude-Code CLI subprocesses that already use MCP integrations for live data**, so a remote MCP server is a native fit. The realistic wiring path is (a) register `https://tinyassets.io/mcp` as an MCP integration the agents call, or (b) have Polsia's codegen agent write a thin client against the remote MCP (Streamable HTTP/SSE) with OAuth/token auth.
 - **Unverified:** whether Polsia's UI lets an end user paste an arbitrary third-party MCP URL today. "MCP integrations" is a confirmed platform capability; self-serve external registration is not confirmed. Support both paths.
 - Polsia ingests **structured natural-language**, not a rigid schema file — which is exactly the form of this doc. Hand it this document plus the explicit wiring block (URL, transport, auth, tool/action list, example payloads) and clear **permissions / constraints / budget**, which Polsia treats as first-class inputs.
-- Polsia's stack (Next.js + FastAPI + Postgres on Render/Neon) and its `SANDBOX_MODE` gating align well with Workflow's dry-run/effect-authority model — test wiring in no-effect mode first.
+- Polsia's stack (Next.js + FastAPI + Postgres on Render/Neon) and its `SANDBOX_MODE` gating align well with TinyAssets' dry-run/effect-authority model — test wiring in no-effect mode first.
 
 ---
 
 ## PART D — Source Pointers (for deeper reading)
 
-**Project repo:** `https://github.com/Jonnyton/Workflow` (MIT platform / CC0 catalog).
+**Project repo:** `https://github.com/Jonnyton/TinyAssets` (MIT platform / CC0 catalog).
 
 **Canonical design docs (in the repo):**
 - `PLAN.md` — design truth (thesis, scoping rules, ~30 design decisions, MCP interface contract). *Edits require host approval.*
@@ -161,7 +161,7 @@ Tip: to discover any action-based tool's full catalog live, send a bogus `action
 - `OUTREACH_CONTENT_ENGINE.md` — worked example of a capability composed as a forkable branch.
 - `BRAIN_*.txt` (repo root) — the 4-part brain deep-dive (42 modules / 6 subsystems).
 
-**Engine code (where the backend lives):** `workflow/universe_server.py` (the remote MCP), `workflow/api/*.py` (tool implementations), `workflow/branches.py` + `workflow/graph_compiler.py` + `workflow/runs.py` + `workflow/scheduler.py` (the loop/graph engine), `workflow/memory|knowledge|retrieval|learning|ingestion|storage/` (the brain), `workflow/api/wiki.py` (the wiki).
+**Engine code (where the backend lives):** `tinyassets/universe_server.py` (the remote MCP), `tinyassets/api/*.py` (tool implementations), `tinyassets/branches.py` + `tinyassets/graph_compiler.py` + `tinyassets/runs.py` + `tinyassets/scheduler.py` (the loop/graph engine), `tinyassets/memory|knowledge|retrieval|learning|ingestion|storage/` (the brain), `tinyassets/api/wiki.py` (the wiki).
 
 **Key wiki pages (read via `wiki action=read path=...`):**
 - `pages/concepts/...-6-primitives-5-mcp-handles` — the locked substrate vocabulary.
