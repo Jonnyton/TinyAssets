@@ -44,6 +44,8 @@ This project uses Agent Teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, set in 
 
 Team-mode caveat from the Claude docs: teammates do not inherit lead chat history, and they start with the lead's permission settings. Subagent role files reliably contribute tools, model, and prompt body; do not assume role `permissionMode`, `skills`, or `mcpServers` frontmatter will enforce team behavior. Put critical constraints in the spawn/task prompt, tool allowlists, and hooks.
 
+**Retiring a role means moving the file OUT of `.claude/agents/` — the directory is discovered recursively, so a `retired/` subdirectory retires nothing.** Five roles sat in `.claude/agents/retired/` from 2026-04-16 to 2026-07-22 and stayed live spawnable agent types the whole time, two of them colliding with the roles that replaced them. Retire to `docs/historical/agents/` (see its README) or delete; git history is the record.
+
 ### Verification Implementation [Claude Code only]
 
 AGENTS.md defines the project-wide verification invariants. In Claude Code,
