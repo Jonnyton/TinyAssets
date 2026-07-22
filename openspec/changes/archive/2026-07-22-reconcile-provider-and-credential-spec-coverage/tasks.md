@@ -21,4 +21,4 @@
 
 - [x] 4.1 Re-fetch main and recheck R2-1a before syncing the reviewed deltas.
 - [x] 4.2 Archive the change, sync the two canonical specs, and compare archived delta results with canonical content.
-- [ ] 4.3 Strict-validate the complete OpenSpec tree, publish and land the PR, then retire or promote the STATUS lane.
+- [x] 4.3 Strict-validate the complete OpenSpec tree, publish and land the PR, then retire or promote the STATUS lane.
