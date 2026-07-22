@@ -58,6 +58,11 @@ PROVIDERS = ("codex", "claude")
 CLAUDE_ALIASES = {"claude", "fable"}
 DIRECTIVE_RE = re.compile(r"<!--\s*peer:\s*(.+?)\s*-->")
 # Flags a brief may set for itself. --out is derived, never taken from the brief.
+# A lane that dies inside this window never really started (rate-limited model,
+# missing binary, bad import). Long enough to catch fast-fail, short enough that
+# a healthy dispatch is not delayed meaningfully.
+DISPATCH_VERIFY_SECONDS = 30
+
 ALLOWED_FLAGS = {"--write", "--cwd", "--timeout", "--model"}
 
 
@@ -154,7 +159,7 @@ def _dispatch(brief: Path, provider: str, gate_dir: Path, queue_root: Path) -> b
         *directive,
     ]
     try:
-        subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+        proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             cmd,
             cwd=str(_peer_agent().parent.parent),
             stdout=subprocess.DEVNULL,
@@ -166,6 +171,38 @@ def _dispatch(brief: Path, provider: str, gate_dir: Path, queue_root: Path) -> b
         except OSError:
             pass
         _log(queue_root, f"ERROR dispatching {brief.name}: {exc}")
+        return False
+
+    # LIVENESS GATE. Popen succeeding proves only that a process started, not
+    # that the lane works — and a dead lane is indistinguishable from a working
+    # one from the outside. Every fleet failure on 2026-07-21 wore this exact
+    # disguise: a rate-limited model exiting 1 with empty stderr after ~25s, a
+    # deleted peer_agent.py, and an import of a package removed a month earlier.
+    # In all three the log cheerfully said "dispatched" while nothing ran, and
+    # the loss was only noticed by chance, hours later.
+    #
+    # So: watch the child briefly. If it exits during the window it never got
+    # going — requeue the brief and shout, rather than reporting success.
+    deadline = time.monotonic() + DISPATCH_VERIFY_SECONDS
+    while time.monotonic() < deadline:
+        rc = proc.poll()
+        if rc is None:
+            time.sleep(1.0)
+            continue
+        detail = ""
+        try:  # peer_agent writes its own error header into the out file
+            detail = out_path.read_text(encoding="utf-8", errors="replace")[:200].strip()
+        except OSError:
+            pass
+        try:
+            os.replace(str(launch_path), str(brief))  # put it back in the queue
+        except OSError:
+            pass
+        _log(
+            queue_root,
+            f"LANE DIED {provider:<6} {brief.name} exited rc={rc} in under "
+            f"{DISPATCH_VERIFY_SECONDS}s — requeued. {detail}",
+        )
         return False
 
     _log(queue_root, f"dispatched {provider:<6} {brief.name} -> {out_path.name}")
