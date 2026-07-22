@@ -1,6 +1,6 @@
 ## 0. Hard prerequisite
 
-- [ ] 0.1 Do not apply, sync, or archive this umbrella until `reclassify-forward-vision-specs` has synced its canonical additions, physically removed all eight superseded canonical capability directories, passed strict validation, landed, and archived.
+- [x] 0.1 Do not apply, sync, or archive this umbrella until `reclassify-forward-vision-specs` has synced its canonical additions, physically removed all eight superseded canonical capability directories, passed strict validation, landed, and archived.
 
 ## 1. Slice the umbrella before implementation
 
