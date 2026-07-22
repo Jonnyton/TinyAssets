@@ -2,7 +2,7 @@
 
 **Status:** audit complete. `.gitignore` gap closed in the landing PR; the 22 files were **not** committed and **not** moved. Durable storage is a host decision (§6).
 **Auditor:** claude-code, primary checkout `C:/Users/Jonathan/Projects/TinyAssets`, 2026-07-22.
-**Scope note:** this document lists **paths and file metadata only — never contents**. That is deliberate: someone must be able to learn these files exist, and that they are unbacked-up, without this audit itself becoming the leak. The repository is public.
+**Scope note — deliberately reduced:** this repository is **public**, so this document publishes **only what the `.gitignore` change itself already discloses**: the three top-level directory names, file counts, and aggregate sizes. Individual filenames, per-file sizes and dates, and the absolute host path are **withheld**, and no file's contents were ever opened. An earlier draft of this audit carried a full per-file table; that was reduced after cross-family review (§8). The bar for a public audit of private material is "enough that the problem cannot be forgotten," not "enough to enumerate the assets."
 
 ## 1. Ground facts
 
@@ -19,37 +19,25 @@
 - **The primary checkout is 15 commits behind `origin/main` and dirty.** It is
   nonetheless the only place these files exist, so it must not be cleaned.
 
-## 2. Inventory (paths + metadata only)
+## 2. Inventory (aggregate only)
 
-| Path | Bytes | mtime |
+| Directory | Files | Bytes |
 |---|---|---|
-| `data-room/00-START-HERE.md` | 1,425 | 2026-06-18 |
-| `data-room/01-Pitch-Materials/Tiny-One-Pager.md` | 2,585 | 2026-06-18 |
-| `data-room/01-Pitch-Materials/_README.md` | 143 | 2026-06-18 |
-| `data-room/02-Company-and-Legal/_README.md` | 154 | 2026-06-18 |
-| `data-room/03-Cap-Table/Cap-Table-Template.md` | 691 | 2026-06-18 |
-| `data-room/04-Financials/_README.md` | 148 | 2026-06-18 |
-| `data-room/05-Product-and-Tech/_README.md` | 213 | 2026-06-18 |
-| `data-room/06-Team/_README.md` | 134 | 2026-06-18 |
-| `data-room/07-Market-and-Traction/_README.md` | 138 | 2026-06-18 |
-| `data-room/08-Customers-and-Contracts/_README.md` | 185 | 2026-06-18 |
-| `data-room/CHECKLIST.md` | 2,509 | 2026-06-18 |
-| `investor-list/00-README.md` | 645 | 2026-06-18 |
-| `investor-list/Tiny-Investor-Pipeline.xlsx` | 15,236 | 2026-06-18 |
-| `pitch-deck/00-deck-design-playbook.md` | 16,854 | 2026-06-17 |
-| `pitch-deck/01-deck-outline.md` | 8,244 | 2026-06-17 |
-| `pitch-deck/02-narrative-spine.md` | 10,876 | 2026-06-19 |
-| `pitch-deck/03-pitch-deck-review.md` | 4,071 | 2026-06-17 |
-| `pitch-deck/04-stage-deck-script.md` | 7,089 | 2026-06-18 |
-| `pitch-deck/DESIGN.md` | 6,169 | 2026-06-17 |
-| `pitch-deck/Tiny-Recruiting-Deck.pptx` | 217,911 | 2026-06-17 |
-| `pitch-deck/Tiny-Send-Deck.pptx` | 129,733 | 2026-06-17 |
-| `pitch-deck/Tiny-Stage-Deck.pptx` | 387,805 | 2026-06-19 |
+| `data-room/` | 11 | 8,325 |
+| `pitch-deck/` | 9 | 788,752 |
+| `investor-list/` | 2 | 15,881 |
+| **Total** | **22** | **812,958 (794 KB)** |
 
-Totals: `data-room/` 11 files / 8,325 B · `pitch-deck/` 9 files / 788,752 B ·
-`investor-list/` 2 files / 15,881 B — **22 files, 812,958 B (794 KB)**.
+Composition, without enumerating filenames: mostly small Markdown, plus one
+spreadsheet and three binary presentation files which account for ~91% of the
+bytes. mtimes span 2026-06-17 → 2026-06-19.
 
-The `.xlsx` and `.pptx` contents were deliberately not opened during this audit.
+These three directory names are named in `.gitignore` by necessity — an ignore
+rule cannot exist without them — so publishing them here adds nothing. The
+per-file listing is withheld per the scope note.
+
+No file's contents were opened at any point during this audit; the binary
+formats in particular were never parsed.
 
 ## 3. The mechanism that hid them
 
@@ -58,12 +46,14 @@ The `.xlsx` and `.pptx` contents were deliberately not opened during this audit.
 
 | Top-level path | Count | Ignored before this PR? |
 |---|---|---|
-| `.tmp/` | ~7,000+ | **no** |
-| `codex-tmp/` | ~1,100+ | **no** |
+| `codex-tmp/` | 4,025 | **no** |
+| `.tmp/` | 3,492 | **no** |
 | `data-room/`, `pitch-deck/`, `investor-list/` | 22 | no |
 | `docs/audits/`, `scripts/` | 7 | no (real in-flight work) |
-| `.codex-worktrees/`, `.codex-scratch-*`, `.agents/village-inbox/`, `.claude/.fleet_floor_state.json` | ~6 | no |
+| `.codex-worktrees/`, `.codex-scratch-*` (+`.zip`), `.claude/.fleet_floor_state.json` | 5 | no |
+| `.agents/` (village-inbox runtime) | 2 | no — and stays unignored, see §5 |
 
+All counts above come from **one** snapshot totalling 7,553; they sum exactly.
 **99.6% of `git status` was agent scratch.** The existing `.gitignore` covered
 `.pytest-tmp/`, `.codex-test-tmp/`, `.workflow-test-data/`, and `.codex/` — but
 two near-miss gaps let the highest-volume producers through:
@@ -105,22 +95,30 @@ instance findable. The 22 files in §2 were in the identical position while both
 recoveries were being merged.
 
 **Confirming datapoint:** once the scratch rules are applied, the untracked list
-drops to **7 files** — and all 7 are themselves real unversioned work
-(`scripts/patch_announcement.py`, `scripts/peer_agent.py`,
-`scripts/post_x_update.py`, `scripts/provider_github_bootstrap.py`, and three
-`docs/audits/2026-07-22-*.md`). Several correspond to lanes that
-`provider_context_feed.py` reports as *"wrote it, opened no PR"*. Removing the
-noise immediately surfaced a second tier of the same problem. That is the
-argument for the change in one number: **7,553 → 7**.
+drops to **9 files** — and all 9 are themselves real unversioned work: four
+`scripts/*.py`, three `docs/audits/2026-07-22-*.md`, and two
+`.agents/village-inbox/*.md` host-message files. Several correspond to lanes
+that `provider_context_feed.py` reports as *"wrote it, opened no PR"*. Removing
+the noise immediately surfaced a second tier of the same problem. That is the
+argument for the change in one number: **7,553 → 9**, where every one of the 9
+is something a person would want to see.
 
 ## 5. What the landing PR changes
 
-One committed file: `.gitignore`.
+Two committed files: `.gitignore` and this audit.
 
 - **New *Agent scratch dirs* section** — `.tmp/`, `codex-tmp/`,
-  `.codex-worktrees/`, `.codex-scratch-*`, `.claude/.fleet_floor_state.json`,
-  `.agents/village-inbox/`. Commented with the near-miss explanation so a future
-  reader does not "simplify" `.tmp/` into the existing `.tmp-*`.
+  `.codex-worktrees/`, `.codex-scratch-*`, `.claude/.fleet_floor_state.json`.
+  Commented with the near-miss explanation so a future reader does not
+  "simplify" `.tmp/` into the existing `.tmp-*`.
+- **`.agents/village-inbox/` deliberately NOT ignored.** It pattern-matches as
+  scratch and appeared in the first draft of this change. It is not scratch:
+  `command_center/collector.py` writes host→agent messages there and
+  `ideas/2026-07-19-agent-village-command-center.md` calls it *"durable, agents
+  can poll"*. Ignoring it would have hidden durable state — the precise failure
+  this section exists to prevent — in the very code PR #1489 recovered, for 2
+  files (572 B) of volume benefit. Caught by cross-family review (§8); an
+  in-file comment now records the reasoning.
 - **New *Fundraising / company material* section** under the existing
   *Personal docs (not part of the engine)* precedent — `data-room/`,
   `pitch-deck/`, `investor-list/`. This makes their exclusion from a public repo
@@ -140,8 +138,8 @@ Measured effect, single consistent snapshot:
 | Measurement | Untracked count |
 |---|---|
 | Before | 7,553 |
-| After scratch rules only | 29 (= 22 business + 7 stragglers) |
-| After both rule sets (this PR) | 7 |
+| After scratch rules only | 31 (= 22 business + 9 real-work stragglers) |
+| After both rule sets (this PR) | 9 |
 
 ## 6. What this does NOT fix — host action required
 
@@ -150,6 +148,12 @@ risk worse:** `git clean -xdff` uses `-x` to target *ignored* files specifically
 so the 22 files move from "cleaned only by `-xdff`" to "cleaned by `-xdff`, and
 now invisible in `git status` while they wait." The protection this PR adds is
 against *accidental commit to a public repo*, not against *deletion*.
+
+**Nor does it enforce "must never land."** `git add --force` stages ignored
+paths by design. An ignore rule is defense-in-depth against the accidental
+`git add .`; it is not a control against a deliberate or scripted add.
+Relocation out of a public checkout is the only real control — which is why §6
+is a host action and not a follow-up nicety.
 
 After this PR, the exposure is unchanged in substance:
 
@@ -181,4 +185,45 @@ reason), and do not delete the checkout.
 - **Structural gap remains.** Three instances in 24 hours were all caught by a
   human or an agent happening to look. Nothing detects "file on zero refs, older
   than N days" on a schedule. A periodic check would convert this class from
-  luck-dependent to routine; not proposed here to keep this PR to one file.
+  luck-dependent to routine; not proposed here to keep this PR small.
+- **Branch history carries the reduced-away detail** (§8). Host decision.
+
+## 8. Cross-family review
+
+Dispatched to Codex (`scripts/codex_review.py`, read-only, diff-based) before
+this audit was presented. **Verdict: `adapt`** — four required changes, all
+accepted, all applied above:
+
+1. **`.agents/village-inbox/` misclassified as scratch.** Confirmed against
+   `command_center/collector.py` and the design note; rule dropped, comment
+   added (§5). This was the highest-value finding — the change would have
+   re-created its own bug class.
+2. **Public audit was over-specific.** The first draft published a per-file
+   table with exact filenames, sizes, and dates, plus the absolute host path,
+   for private fundraising material in a public repo. Reduced to directory
+   aggregates (§2 scope note).
+3. **Count drift.** The §3 breakdown mixed an early snapshot into a later
+   total, and inverted the two largest producers. Re-measured from a single
+   snapshot; the figures now sum to 7,553 exactly.
+4. **`.gitignore` ≠ enforcement.** `git add --force` bypasses it; noted in §6.
+
+Codex independently validated: repository visibility is public; PRs #1489/#1490
+and their quoted premises are accurate; 22 files totalling 812,958 B exist only
+under the primary checkout across 218 local roots scanned; no business-path
+object exists on any current ref; `branches/`, `goals/`, `nodes/` remain
+visible; focused test run `79 passed`.
+
+Codex also advised shipping the scratch rules separately from the fundraising
+rules, so the latter do not land before storage is resolved. Not applied
+unilaterally — the PR is draft and blocked on §6 either way, and splitting is
+the host's call. Noted here so the option is not lost.
+
+**Disclosure — the reduced detail is already public.** The first commit on this
+branch (`39fe9509`) contained the full per-file table and was pushed to this
+public repository before the review returned. Reduction happened in a follow-up
+commit, so the detail remains reachable in this branch's history. Removing it
+would require a force-push or branch deletion — both destructive operations that
+AGENTS.md Hard Rule 13 reserves for an explicit host request, so **no cleanup
+was attempted**. `main` is unaffected: this PR is draft and unmerged. The host
+may (a) leave it, (b) authorize a force-push, or (c) delete the branch and
+re-open from a squashed commit. Contents were never published in any commit.

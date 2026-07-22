@@ -32,7 +32,11 @@ codex-tmp/
 .codex-worktrees/
 .codex-scratch-*
 .claude/.fleet_floor_state.json
-.agents/village-inbox/
+# NOT ignored, deliberately: `.agents/village-inbox/`. It looks like scratch but
+# command_center/collector.py writes host->agent messages there and the design
+# note calls it "durable, agents can poll". Ignoring it would repeat the exact
+# mistake this section exists to fix, for 2 files of volume benefit. Codex
+# cross-family review 2026-07-22 caught this; see the audit below.
 
 # Databases (local state)
 *.db
