@@ -90,6 +90,11 @@ def node_id(testcase: ET.Element) -> str:
         # least identifiable. Never silently drop a failure.
         return f"{classname}::{name}"
 
+    # A collection error records an empty classname; `file::name` keeps that
+    # entry quarantinable instead of emitting a `file::::name` double colon.
+    if not classname:
+        return f"{file_attr}::{name}"
+
     module_dotted = file_attr[:-3].replace("/", ".") if file_attr.endswith(".py") else ""
     if classname == module_dotted or not module_dotted:
         return f"{file_attr}::{name}"
@@ -183,6 +188,13 @@ def main() -> int:
         "-q",
         "--no-header",
         "--durations=15",
+        # Without this, ONE unimportable file aborts collection and the entire
+        # suite reports "1 error, nothing run" — the gate would then be blind to
+        # every real regression behind it. tests/test_tinyassets_tray.py does
+        # exactly that on a headless runner (pystray -> Xlib DisplayNameError).
+        # With it, the bad import is reported as an ordinary error against that
+        # file and everything else still runs and still gates.
+        "--continue-on-collection-errors",
         "-o",
         "junit_family=xunit1",
         f"--junitxml={junit}",

@@ -122,3 +122,9 @@ def test_repo_quarantine_file_is_wellformed():
 @pytest.mark.parametrize("attr", ["QUARANTINE", "REPO_ROOT"])
 def test_module_constants_exist(attr):
     assert getattr(gate, attr) is not None
+
+
+def test_node_id_collection_error_has_no_double_colon():
+    """A collection error records an empty classname; the id must stay clean."""
+    el = _tc(file="tests/test_x.py", classname="", name="tests.test_x")
+    assert gate.node_id(el) == "tests/test_x.py::tests.test_x"
