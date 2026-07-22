@@ -48,12 +48,16 @@ against `origin/main` — re-run the commands before relying on them.
 **Two caveats: green checks do not yet mean shipped.** Both are confirmed live as of 2026-07-22; a
 codex lane owns the fixes, so re-check before repeating them as current.
 
-- **An auto-merged commit triggers no workflows** — `AGENTS.md` Hard Rule 14 ("Merged is not
-  deployed") now applies to the *default* path, not just to hand-merges. Merge commit `398b3256`
-  modified `PLAN.md`, a `push` path trigger in `build-image.yml`, yet
+- **An auto-merged commit triggers no workflows.** This is not a new failure mode — it is exactly the
+  `GITHUB_TOKEN` event suppression behind `AGENTS.md` Hard Rule 14 ("Merged is not deployed"): a merge
+  performed by the Actions app does not raise `push`, so nothing downstream fires. What changed is the
+  *blast radius* — the bot now performs **every** merge, so this is the default path rather than an
+  occasional hand-merge. Merge commit `398b3256` modified `PLAN.md`, a `push` path trigger in
+  `build-image.yml`, yet
   `gh run list --limit 60 --json headSha --jq '.[]|select(.headSha|startswith("398b3256"))'` returns
   empty — zero runs. Live `get_status` reported `release_state.git_sha = 1605349e`, six commits behind
   `main`. So: never infer "deployed" from "merged"; confirm the sha production actually serves.
+  Related lanes: #1504 (ui-test preflight), #1508 (the reconciler's own false-green path).
 - **An enrolled PR that falls behind `main` stalls silently.** Protection is `strict: true` and
   nothing updates the branch, so a PR can be non-draft, enrolled, `MERGEABLE`, with every required
   check `SUCCESS`, and still sit at `mergeStateStatus: BEHIND` indefinitely — #1504 and #1505 both did
