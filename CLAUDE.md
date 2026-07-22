@@ -18,9 +18,9 @@ Consequence: a background session can do everything up to the merge — commit, 
 conflicts, open and update PRs, verify integrations — and then stalls. The host experienced this as
 the agent repeatedly refusing a merge they had never intended to forbid.
 
-**But you almost never need to.** Auto-merge is wired end-to-end as of 2026-07-21; the merge is no
-longer a step anyone performs. Facts below verified 2026-07-22 ~04:30 UTC against `origin/main` —
-re-run the commands before relying on them.
+**But you almost never need to.** Auto-merge has been wired end-to-end since `2026-07-22T00:38Z`
+(#1496); the merge is no longer a step anyone performs. Facts below verified `2026-07-22T04:30Z`
+against `origin/main` — re-run the commands before relying on them.
 
 - **Open a non-draft PR and stop. Enrolment is automatic.**
   `.github/workflows/auto-enroll-merge.yml` (landed `0efd2a34`, PR #1496 — check with
