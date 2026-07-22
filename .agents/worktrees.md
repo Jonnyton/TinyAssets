@@ -746,3 +746,18 @@ Notes:
 - Related implications: universe-visibility and provider-status own the moved isolation/evidence concerns
 - Idea feed refs: none
 - Ship/abandon: reviewed spec-only PR; implementation remains a later separately claimed lane
+
+## 2026-07-22 - remove test-identity-reset-spec
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/test-identity-reset-spec-reconcile
+- Lane state: Abandoned/swept
+- Worktree: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec
+- STATUS/Issue/PR: R2-2 spec reconciliation approved; temporary claim retired in landing diff
+- PLAN refs: full PLAN; Daemon Platform, Providers, API & MCP Interface, State & Artifacts
+- Purpose: make test identity, operator reset, privacy, crash safety, and requester compute authority truthful before implementation
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec\_PURPOSE.md
+- Memory refs: three independent Codex APPROVE verdicts, 2026-07-22
+- Related implications: #1560 superseded; 2.3 stays with visibility/identity; provider evidence stays with #1570
+- Idea feed refs: none
+- Ship/abandon: ship reviewed spec-only PR; implementation remains separately claimable after merge
