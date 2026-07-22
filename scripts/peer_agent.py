@@ -18,13 +18,48 @@ Modes:
             codex: --full-auto (workspace-write sandbox; weak on Windows —
             point --cwd at a worktree, not the live checkout).
 
+Publication (--write only): a sandboxed codex --write lane cannot publish its
+own work, so publication belongs to THIS process, which is unsandboxed:
+
+  --publish            after a successful --write lane, push its HEAD branch
+                       from here. Refuses main/master and a detached HEAD.
+  --no-publish-check   opt out of the post-run audit below.
+
+Why parent-side, rather than just granting the sandbox egress — measured on
+codex-cli 0.145.0, 2026-07-22, and cross-checked by a Codex review that refuted
+an earlier, stronger version of this claim:
+
+  * A `--full-auto` lane cannot create `.git/index.lock` ("Permission denied")
+    under EITHER windows.sandbox=elevated or =unelevated, and `--add-dir` on the
+    git dir does not lift it. It therefore cannot commit, let alone push.
+  * Egress itself IS grantable, contrary to what the schannel error suggests:
+    `-c sandbox_workspace_write.network_access=true` plus
+    `git -c http.sslBackend=openssl` reaches GitHub (verified twice). Plain
+    schannel fails SEC_E_NO_CREDENTIALS only because the sandbox runs as a
+    different Windows principal that cannot open the host's credential store.
+  * So the case for parent-side publication is a security boundary, not an
+    impossibility: granting egress would put push credentials beside an agent
+    with outbound network, and that principal's authenticated-push path is
+    unverified. Generation and publication stay separate.
+
+Whether or not --publish is used, a --write lane is audited afterwards: if
+--cwd still holds commits reachable from no remote, OR uncommitted changes,
+the peer's work never left the machine and this exits 3 rather than reporting
+success (AGENTS.md Hard Rule 8 — fail loudly, never silently). Both halves are
+load-bearing: on 2026-07-21 the unpushed-commit case silently stranded 36
+finished codex lanes (PR #1539), and under the sandbox above a lane cannot
+commit at all, so its work strands as an uncommitted diff instead.
+
 Output contract: on success the --out file holds the peer's final message;
 on failure it holds a `[peer_agent] ERROR ...` block and the exit code is
-non-zero (2 provider/usage error, 124 timeout, 127 CLI not launchable).
-Argparse usage errors are the only failure that cannot write --out (the path
-is not known yet). The full result is also printed to stdout, so a background
-caller sees it in the task log. A pre-existing --out file is never mistaken
-for a fresh result: the codex -o target is unlinked before dispatch.
+non-zero (2 provider/usage error, 3 work completed but unpublished, 124
+timeout, 127 CLI not launchable). Exit 3 is the one failure that PRESERVES the
+peer's report and appends its notice, because that work is recoverable and the
+report is how you recover it. Argparse usage errors are the only failure that
+cannot write --out (the path is not known yet). The full result is also printed
+to stdout, so a background caller sees it in the task log. A pre-existing --out
+file is never mistaken for a fresh result: the codex -o target is unlinked
+before dispatch.
 """
 
 from __future__ import annotations
@@ -148,6 +183,163 @@ def unsafe_cmd_argv(cmd: list[str]) -> str | None:
     return None
 
 
+def git(cwd: str, *argv: str, timeout: int = 60) -> tuple[int, str]:
+    """Run git in cwd. Returns (rc, stdout+stderr). rc -1 = git not launchable."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", cwd, *argv], capture_output=True, timeout=timeout
+        )
+    except OSError:
+        return -1, "git executable not launchable"
+    except subprocess.TimeoutExpired:
+        return 1, f"git {' '.join(argv)} exceeded {timeout}s"
+    text = (proc.stdout + proc.stderr).decode("utf-8", errors="replace").strip()
+    return proc.returncode, text
+
+
+def worktree_baseline(cwd: str) -> frozenset[str] | None:
+    """Snapshot dirty paths BEFORE dispatch, so the audit judges only this
+    lane's output. Without it the audit trips over scratch that was already
+    lying in the worktree (observed: fleet state files under .claude/), and a
+    guard that cries wolf on someone else's mess gets ignored — which is how
+    the silence it replaces got tolerated in the first place.
+    """
+    rc, porcelain = git(cwd, "status", "--porcelain")
+    if rc != 0:
+        return None
+    return frozenset(ln for ln in porcelain.splitlines() if ln.strip())
+
+
+def publication_state(
+    cwd: str, baseline: frozenset[str] | None = None
+) -> tuple[str, str, str]:
+    """Classify whether cwd holds committed work that never reached a remote.
+
+    Returns (state, branch, detail). State is one of:
+      skip     nothing to publish — not a work tree, or HEAD is already
+               reachable from a remote AND the work tree is clean.
+      blocked  real local-only work: commits reachable from no remote, and/or
+               uncommitted changes. BOTH count — a sandboxed lane that cannot
+               write .git strands its work as an uncommitted diff, which an
+               unpushed-commits-only check would wave through as success.
+      unknown  git could not answer. NEVER collapsed into `skip`: the codex
+               sandbox writes worktrees as a different Windows account, so
+               `git -C` there fails `dubious ownership` (PR #1539) — the exact
+               case where assuming "clean" would relaunch the silent failure.
+    """
+    rc, out = git(cwd, "rev-parse", "--is-inside-work-tree")
+    if rc == -1:
+        return "skip", "", "git not available"
+    if rc != 0:
+        if "not a git repository" in out.lower():
+            return "skip", "", "not a git work tree"
+        return "unknown", "", out
+
+    # --porcelain honors .gitignore, so sandbox test-temp dirs and other
+    # ignored scratch never count as unpublished work.
+    rc, porcelain = git(cwd, "status", "--porcelain")
+    if rc != 0:
+        return "unknown", "", porcelain
+    lines = [ln for ln in porcelain.splitlines() if ln.strip()]
+    if baseline is not None:
+        lines = [ln for ln in lines if ln not in baseline]
+    dirty = len(lines)
+
+    # Unborn HEAD (init, no commit): only uncommitted work can be at stake.
+    if git(cwd, "rev-parse", "--verify", "HEAD")[0] != 0:
+        if dirty:
+            return "blocked", "", f"{dirty} uncommitted change(s), no commit yet"
+        return "skip", "", "no commits on HEAD"
+
+    rc, branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc != 0:
+        return "unknown", "", branch
+
+    # Commits on HEAD reachable from NO remote-tracking ref. Counting against
+    # --remotes (not @{upstream}) is deliberate: a lane's branch is usually
+    # brand new and has no upstream configured at all.
+    rc, count = git(cwd, "rev-list", "--count", "HEAD", "--not", "--remotes")
+    if rc != 0:
+        return "unknown", branch, count
+
+    reasons = []
+    if count != "0":
+        reasons.append(f"{count} commit(s) on HEAD reachable from no remote")
+    if dirty:
+        reasons.append(f"{dirty} uncommitted change(s) in the work tree")
+    if not reasons:
+        return "skip", branch, "HEAD is reachable from a remote; work tree clean"
+    return "blocked", branch, "; ".join(reasons)
+
+
+def publish_branch(cwd: str, branch: str) -> tuple[bool, str]:
+    """Push branch to origin from THIS (unsandboxed) process."""
+    if not branch or branch == "HEAD":
+        return False, "HEAD is detached — no branch name to push"
+    if branch in ("main", "master"):
+        return False, f"refusing to push {branch!r} (AGENTS.md: never push to main)"
+    rc, out = git(cwd, "push", "-u", "origin", f"HEAD:refs/heads/{branch}", timeout=300)
+    return rc == 0, out
+
+
+def settle_publication(
+    cwd: str, publish: bool, baseline: frozenset[str] | None = None
+) -> tuple[str, int]:
+    """Publish if asked, then verify the work actually left the machine.
+
+    Returns (notice, exit_code); exit_code 3 means real work is still local-only.
+    """
+    state, branch, detail = publication_state(cwd, baseline)
+    pushed = ""
+
+    # Only a push can fix unpushed commits; --publish deliberately does NOT
+    # commit on the peer's behalf. Inventing a commit here would guess at the
+    # message and the scope, which is the kitchen-sink-diff failure mode
+    # CLAUDE.md calls out — the operator decides what a commit contains.
+    if state == "blocked" and publish and "reachable from no remote" in detail:
+        ok, out = publish_branch(cwd, branch)
+        if ok:
+            state, branch, detail = publication_state(cwd, baseline)
+            if state == "skip":
+                return f"\n[peer_agent] published {branch} -> origin\n", 0
+            pushed = f"\n  push:     OK ({branch} -> origin), but work still remains"
+        else:
+            last = out.splitlines()[-1] if out else "no output"
+            pushed = f"\n  push:     FAILED — {last}"
+
+    if state == "skip":
+        return "", 0
+
+    if state == "unknown":
+        body = (
+            f"  detail:   git could not determine publication state — {detail}\n"
+            "  This is the dubious-ownership case: a codex sandbox worktree is\n"
+            "  owned by another Windows account. Grant access, then re-check:\n"
+            f'      git config --global --add safe.directory "{cwd}"\n'
+            f'      git -C "{cwd}" log --oneline @{{u}}..HEAD'
+        )
+    else:
+        steps = []
+        if "uncommitted" in detail:
+            steps.append(f'      git -C "{cwd}" status   # then stage + commit what belongs')
+        if "no remote" in detail or "uncommitted" in detail:
+            target = branch or "<branch>"
+            steps.append(f'      git -C "{cwd}" push -u origin HEAD:refs/heads/{target}')
+        body = (
+            f"  branch:   {branch or '(unborn)'}\n"
+            f"  detail:   {detail}{pushed}\n"
+            "  A sandboxed codex --write lane can neither commit nor push its own\n"
+            "  work. Recover it from an unsandboxed shell:\n"
+            + "\n".join(steps)
+            + "\n  Re-dispatching with --publish pushes commits, but never creates them."
+        )
+
+    return (
+        "\n[peer_agent] PUBLICATION BLOCKED — the peer finished, but its work "
+        f"never left this machine.\n  worktree: {cwd}\n{body}\n"
+    ), 3
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill the whole process tree (Windows .cmd -> node grandchildren)."""
     if sys.platform == "win32":
@@ -188,6 +380,16 @@ def main() -> int:
     )
     p.add_argument(
         "--write", action="store_true", help="Grant write/exec autonomy (see docstring)."
+    )
+    p.add_argument(
+        "--publish",
+        action="store_true",
+        help="After a --write lane, push its HEAD branch from this (unsandboxed) process.",
+    )
+    p.add_argument(
+        "--no-publish-check",
+        action="store_true",
+        help="Skip the post---write audit for committed-but-unpushed work.",
     )
     p.add_argument("--model", default=None, help="Model override passed through to the CLI.")
     p.add_argument(
@@ -261,6 +463,13 @@ def main() -> int:
         f"[peer_agent] dispatching to {args.provider} ({mode}); cwd={args.cwd}",
         file=sys.stderr,
     )
+    # Must be taken BEFORE the peer runs, or its own output lands in the
+    # baseline and the audit excuses exactly what it exists to catch.
+    baseline = (
+        worktree_baseline(args.cwd)
+        if args.write and not args.no_publish_check
+        else None
+    )
     start = time.monotonic()
     try:
         proc = subprocess.Popen(
@@ -327,13 +536,32 @@ def main() -> int:
 
         if args.provider == "claude" and out_path:
             Path(out_path).write_text(text + "\n", encoding="utf-8")
+
+        # The peer succeeded, but "succeeded" is not the same as "published".
+        # Append rather than overwrite: unlike every other failure path, the
+        # work behind an exit 3 is recoverable and this report is how you
+        # recover it — clobbering it with fail() would destroy the evidence.
+        notice, code = "", 0
+        if args.write and not args.no_publish_check:
+            notice, code = settle_publication(args.cwd, args.publish, baseline)
+            if notice and out_path:
+                try:
+                    with open(out_path, "a", encoding="utf-8") as fh:
+                        fh.write(notice)
+                except OSError:
+                    pass  # stdout/stderr still carry it
+
         print(text)
+        if notice:
+            print(notice)
+            print(notice, file=sys.stderr)
         print(
-            f"[peer_agent] {args.provider} done in {elapsed:.0f}s -> "
+            f"[peer_agent] {args.provider} "
+            f"{'done' if code == 0 else 'UNPUBLISHED'} in {elapsed:.0f}s -> "
             f"{args.out or 'stdout'}",
             file=sys.stderr,
         )
-        return 0
+        return code
     finally:
         if owned_temp:
             Path(owned_temp).unlink(missing_ok=True)

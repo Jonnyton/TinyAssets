@@ -33,6 +33,8 @@ _PURPOSE.md
 .claude/settings.json
 .claude/settings.local.json
 .claude/.dev_idle.mark
+.claude/.fleet_floor_state.json
+.claude/.fleet_warn_stamp
 deploy/cloudflare-worker/.wrangler/
 .claude/worktrees/
 .claude/agent-memory/
