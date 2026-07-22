@@ -157,16 +157,29 @@ def main() -> int:
     if junit.exists():
         junit.unlink()
 
+    # SERIAL ON PURPOSE — do not "optimise" this back to pytest-xdist.
+    #
+    # Under `-n auto --dist loadfile` this suite is NOT deterministic. Some test
+    # leaks global state (a patched subprocess, most likely) and poisons every
+    # later test on the same worker: one measured run had 70 of its 149 failures
+    # on worker gw2 alone, against 5/11/6 on the other three, including a
+    # `git diff --cached` that returned another test's PR URL.
+    #
+    # Which tests land on the poisoned worker depends on the file list, so
+    # simply ADDING a test file moved ~34 tests in and out of the failure set
+    # between two runs of otherwise-identical code. A gate whose verdict depends
+    # on scheduling cannot support a committed baseline, and would fail PRs for
+    # sins they did not commit.
+    #
+    # Serial does not fix the underlying leak — it makes it deterministic, which
+    # is what a gate needs. Fixing the leak is tracked separately; when it is
+    # fixed, parallelism can come back and cut the runtime ~4x.
     cmd = [
         sys.executable,
         "-m",
         "pytest",
         "-m",
         "not slow",
-        "-n",
-        "auto",
-        "--dist",
-        "loadfile",
         "-q",
         "--no-header",
         "--durations=15",
