@@ -12,7 +12,7 @@ upgrades and pieces and plumbing to the already existing brains." Recorded at
 `.agents/activity.log:2468`.
 
 These files were written to `outputs/drafts/brain-deep-dive/` — a drafts directory, never
-a tracked location. They reached the repository **root** on 2026-07-22 via `d4d279a0`
+a tracked location. They reached the repository **root** on 2026-07-22 UTC (2026-07-21 PDT) via `d4d279a0`
 ("chore(docs): recover 32 documents that existed only in one stale checkout", PR #1490),
 which recovered files verbatim from a stale checkout whose layout no longer matched
 `main`. This directory is where they should have landed.
