@@ -42,7 +42,7 @@ Community-designed graph topologies SHALL be represented by two `@dataclass` typ
 - **THEN** `validate()` returns an empty list and `compile_branch` returns a `CompiledBranch` carrying the uncompiled `StateGraph` and the synthesized state TypedDict
 
 ### Requirement: State fields accumulate per their declared reducer
-The compiler SHALL synthesize the run's state type as a `TypedDict` (Hard Rule #5) whose per-field merge behavior follows each `state_schema` field's declared `reducer`: `append` maps to `Annotated[list, operator.add]`, `merge` maps to `Annotated[dict, <shallow merger>]`, and any other value (including unset) is last-write-wins overwrite. As-built limitation: the `merge` reducer (`_dict_merge` in `graph_compiler`) is a shallow, right-biased `dict.update` — nested keys are replaced wholesale, not deep-merged, and because the result depends on which side is applied last it is non-convergent under concurrent fan-in and is only safe for single-writer fields (tracked as the "L4 reducer law" work item).
+The compiler SHALL synthesize the run's state type as a `TypedDict` (Hard Rule #5) whose per-field merge behavior follows each `state_schema` field's declared `reducer`: `append` maps to `Annotated[list, operator.add]`, `merge` maps to `Annotated[dict, <shallow merger>]` under a single-writer contract, and any other value (including unset) is last-write-wins overwrite. For every merge-reduced field, compilation SHALL reject a graph with more than one node that declares the field through `output_keys` or `output_mapping`, and node execution SHALL fail closed if a node writes that field without declaring it. With exactly one declared writer, the merger SHALL remain a shallow, right-biased `dict.update`: right-hand top-level keys overwrite matching left-hand keys, left-only keys remain, and nested values are replaced wholesale rather than deep-merged.
 
 #### Scenario: an append field concatenates contributions
 - **WHEN** two nodes each write a list to a state field declared `reducer="append"`
@@ -52,10 +52,18 @@ The compiler SHALL synthesize the run's state type as a `TypedDict` (Hard Rule #
 - **WHEN** a field has no recognized reducer and two nodes write it
 - **THEN** the last write wins and the earlier value is discarded
 
-#### Scenario: a merge field is shallow and order-sensitive (as-built limitation)
-- **WHEN** two nodes write overlapping-key dicts to a field declared `reducer="merge"`
-- **THEN** the surviving value is a shallow right-biased union in which the later-applied dict's keys overwrite the earlier's
-- **AND** nested structures are replaced, not deep-merged, so concurrent fan-in into a merge field is not convergent
+#### Scenario: multiple declared merge writers fail compilation
+- **WHEN** more than one graph node declares the same `reducer="merge"` field in `output_keys` or `output_mapping`
+- **THEN** `compile_branch` raises `CompilerError` because a merge-reduced field requires a single writer
+
+#### Scenario: an undeclared merge write fails closed at runtime
+- **WHEN** a compiled node returns a value for a `reducer="merge"` field absent from that node's `output_keys` and `output_mapping`
+- **THEN** node execution raises `CompilerError` instead of applying the undeclared write
+
+#### Scenario: one declared merge writer shallow-merges right-biased
+- **WHEN** the sole declared writer updates a merge-reduced dict containing overlapping top-level keys, left-only keys, and a nested value
+- **THEN** the resulting dict preserves left-only keys and uses the writer's values for overlapping keys
+- **AND** the writer's nested value replaces the prior nested value wholesale rather than being deep-merged
 
 ### Requirement: Conditional edges route by path_map label, not target node id
 A conditional-edge router built by the compiler SHALL return a key into LangGraph's `path_map` (a declared condition label), not a target node id — matching the `add_conditional_edges(source, router, path_map=conditions)` contract where LangGraph resolves the target from the returned label. The router SHALL read the source node's first `output_key` from state and return that value verbatim when it is a declared label, and SHALL fall back to the first declared label (or `END` when none) when the output key is absent, empty, or not a valid label, so the graph advances rather than raising `KeyError`. This is the as-built fix for the BUG-019/021/022 routing failure where returning `conditions[value]` (a target) was always looked up as a path_map key and always raised.
