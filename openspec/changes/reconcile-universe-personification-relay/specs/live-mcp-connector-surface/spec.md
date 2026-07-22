@@ -41,3 +41,4 @@ commons operations and do not require the selector.
 
 - **WHEN** the deprecated `wiki` tool has been removed, the surviving tool schemas advertise `scope`, and a free-form write omits the selector
 - **THEN** no page is mutated and the error names `commons` and `universe` as the valid choices
+
