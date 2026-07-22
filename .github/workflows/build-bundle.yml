@@ -47,6 +47,9 @@ jobs:
             "json-repair>=0.30" \
             "tenacity>=9.0,<10.0"
 
+      - name: Verify committed MCP Registry manifest is current
+        run: python packaging/registry/generate_server_json.py --check
+
       - name: Stage MCPB bundle (with import probe)
         run: python packaging/mcpb/build_bundle.py
 
