@@ -498,3 +498,24 @@ census 1 and this review the lane count went 149 → 152, one lane changed state
 committed, a job advanced a turn, and a stranded branch was recovered and PR'd. **The sweep block
 in this document must not be pasted from this document.** Re-derive, then liveness-check, then
 remove — which is what Step 0 already requires.
+
+### Final re-census (00:15) — C1 settled on the substance
+
+A full re-census after the review returned **165 lanes** (149 → 152 → 165 in about two hours):
+
+```
+PARKED_DRAFT 64 | ORPHANED 45 | IN_FLIGHT 22 | READY_TO_REMOVE 10 | PURPOSE_INCOMPLETE 9
+NEEDS_PR_OR_STATUS 8 | NEEDS_PURPOSE 3 | IN_FLIGHT_NEEDS_PURPOSE 2 | MISSING 1 | DIRTY_CURRENT 1
+
+job-scratch lanes still registered: 49  ->  ORPHANED 45, IN_FLIGHT 3, PARKED_DRAFT 1
+```
+
+The 45 `ORPHANED` job-scratch lanes are **still registered and still flagged**, and **3 more of
+that job's worktrees are now `IN_FLIGHT`** — `IN_FLIGHT` means dirty, i.e. that job is *writing
+into its scratch worktrees right now*.
+
+Codex's C1 refutation rested on the literal `state` string reading `"done"`. On the substance —
+*is this a live session whose directories a sweep would delete?* — the answer is yes, and it is now
+demonstrated by dirty worktrees rather than inferred from a status field. The string was stale; the
+hazard was not. Accepting the `reject` on the evidence as re-run, and keeping the operational rule:
+**liveness-check each lane immediately before removing it.**
