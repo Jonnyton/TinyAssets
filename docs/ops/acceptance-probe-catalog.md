@@ -146,7 +146,44 @@ python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 python scripts/wiki_canary.py --once --format=gha
 ```
 
-Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=optional`). A dev-mode server (`UNIVERSE_SERVER_AUTH=false`) leaves anonymous writes open by design, so the gate step reds with exit 6 there — that means "server is not auth-gated", not "wiki is down".
+Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=optional`).
+
+> **⚠ `exit 6` is OVERLOADED — do not read it as a single meaning.** *(Corrected
+> 2026-07-22; the previous wording glossed exit 6 as "server is not auth-gated,
+> not wiki is down", which is only one of its three causes and the most benign
+> one.)* The write-gate step reds with exit 6 for **all** of the following, and
+> the CI log does not distinguish them:
+>
+> 1. **Transport / HTTP error** on `tools/call` — network, TLS, non-200.
+>    **This includes the HTTP 401 the production server now correctly returns**,
+>    which is what fires today. *Not* an outage. See § *Red signals*.
+> 2. **Stale-envelope mismatch** — the server refused the write, but not in the
+>    shape the probe asserts. Contract drift in the probe, *not* a service fault.
+> 3. **Anonymous `write_page` was ACCEPTED** — the #1441 write gate has
+>    regressed and the public write surface is open to anonymous writers.
+>    **This is a P0 security regression, not a configuration note.**
+>
+> Cause 3 is the one this line used to hide. Against a dev-mode server
+> (`UNIVERSE_SERVER_AUTH=false`) anonymous writes are open *by design*, so cause
+> 3 fires benignly there — but that is true **only** when you have independently
+> confirmed the target is dev-mode. Against `https://tinyassets.io/mcp` an
+> accepted anonymous write is never benign. Never assume the dev-mode reading;
+> establish which cause you have before acting.
+
+**Which handles answer 401 (verified 2026-07-22 against `origin/main`).** Commit
+`972d0cc3` (2026-07-15 20:54:19 -0700) did **not** retire the in-band
+`status=rejected` / `auth_required=true` envelope platform-wide. It applies the
+pre-dispatch 401 + `WWW-Authenticate` to the four **pure-write** handles only —
+`write_graph`, `run_graph`, `write_page`, `converse`, declared at their
+registration sites via `_register_structured_tool(anonymous_write_challenge=True)`
+(`tinyassets/universe_server.py:629,671,908,991`). **Mixed read/write dispatch
+tools (wiki, goals, gates, universe, extensions) still return the in-band
+tool-JSON rejection**, gated by `require_action_scope`, so anonymous public reads
+keep working; that envelope is a live contract, just not on this probe's path.
+The 401 branch is additionally gated on `writes_require_identity()`
+(`tinyassets/auth/middleware.py:300-321`), so it does not fire in dev mode at
+all. This probe targets `write_page` — a pure-write handle — which is why it now
+meets the 401 rather than the envelope it asserts.
 
 ### What it exercises
 
