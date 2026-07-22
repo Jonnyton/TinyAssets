@@ -40,3 +40,11 @@ scripts/git-hooks/* text eol=lf
 *.mcpb binary
 *.db   binary
 *.sqlite binary
+
+# Append-only coordination log. Every lane appends its entry to the end of the
+# same file, so concurrent lanes collide on the final hunk by construction —
+# a structural conflict, not a semantic one. `merge=union` is git's built-in
+# driver for exactly this: it concatenates both sides instead of conflicting.
+# Union is safe here ONLY because the file is append-only prose; do not extend
+# this rule to files where a line's meaning depends on it being unique.
+.agents/activity.log merge=union
