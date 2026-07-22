@@ -14,7 +14,6 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-04-18 verified:2026-04-28] `add_canon_from_path` sensitivity: 3 host-Qs REFRAMED by commons-first audit F3 (structured caveats).
 - [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated once the deploy step ships.
 - **[P1 filed:2026-04-30]** Castles II run `28479d8ddfb44488`: `provider_exhausted` at `candidate_discovery` (BUG-038/039); blocks branch-run proof.
-- [filed:2026-05-19] Wiki drifting to agent scratch space (81% of post-05-01 notes); host conversation: split coordination off the knowledge wiki?
 - [filed:2026-07-14 verified:2026-07-14] Watch: anon-write gate LIVE + `ui-test` passed; pending first organic authenticated-user write.
 - [filed:2026-07-13 verified:2026-07-15] `workflow-voice` (dormant) has 3 stale `pending` queue rows — review before ever activating it.
 
@@ -30,6 +29,7 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **P0 onboarding: separate agent coordination from wiki discovery + restore branch-authoring schema/path** | `tinyassets/api/wiki.py`, `tinyassets/universe_server.py`, plugin mirrors, `tests/test_wiki_tools.py`, `tests/test_universe_server_five_handles.py`, `pages/workflows/`, `openspec/changes/separate-wiki-discovery-and-restore-branch-authoring/`, `docs/audits/2026-07-21-wiki-discovery-contamination.md` | live proof: 40/40 onboarding-query results are coordination; post-05-01 feed=1,418 | claimed:codex-wiki-discovery ACTIVE 2026-07-21 |
 | Paid-market Track E Wave 2 transport as an OpenSpec change; renumber migrations + add schema_migrations before 006–008 go live | openspec/, tinyassets/paid_market/ | - | pending |
 | In-node enqueue flag flip — Codex ADAPT asks landed (`graph_compiler.py:1406-1560`), still dark; §14 proof passes but global-queue + per-origin lineage caps have no concurrent boundary coverage | tinyassets/graph_compiler.py, tests/test_node_enqueue_*.py | `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | External directory acceptance — canaries green 2026-05-02; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
