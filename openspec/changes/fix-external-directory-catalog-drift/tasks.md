@@ -18,6 +18,6 @@
 
 - [x] 4.1 Run focused connector-catalog tests and the direct generator `--check` command (4 focused tests passed; generator matched).
 - [x] 4.2 Run strict OpenSpec validation and `git diff --check` (strict change valid; diff clean).
-- [x] 4.3 Verify the generated versioned URL lists the current directory catalog through a read-only live MCP handshake (`mcp_public_canary.py`: OK, 2026-07-22 PT).
+- [x] 4.3 Verify the generated versioned URL lists the current directory catalog through `advertised_tool_names` (live MCP initialize + `tools/list`: `read_graph`, `read_page`, `run_graph`, `write_graph`, `write_page`; 2026-07-22 PT).
 - [ ] 4.4 Obtain independent review of the generated artifact, import bootstrap, and CI gate.
 - [ ] 4.5 Sync the requirement into the canonical `live-mcp-connector-surface` spec, archive this completed change, and re-run strict validation.
