@@ -702,4 +702,3 @@ Notes:
 - Ship condition: focused tests pass, branch pushed, PR opened, then deploy
   brings runtime_count to 4 while goal_pool remains a follow-on.
 - 2026-06-24 CREATE wf-branch-lifecycle-automation branch=worktree-branch-lifecycle-automation base=origin/main provider=claude-code (branch lifecycle automation — design note + L0-L4)
-- 2026-07-21 CREATE wf-relay-spec-alignment branch=codex/relay-spec-alignment base=origin/main@0bc841aa provider=codex-gpt5-desktop (align stale ratified voice paragraph with shipped relay architecture; companion to PR #1515)
