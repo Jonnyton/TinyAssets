@@ -40,17 +40,22 @@
 - New MCP actions and field additions are catalogued in `docs/mcp-actions/`.
 - When a chatbot encounters an unexpected response field or a new action verb,
   check `docs/mcp-actions/` before assuming a schema error.
-- Index: `docs/mcp-actions/2026-04-25-session-additions.md`
+- The directory holds dated session records, not a maintained index page. Read
+  the directory listing rather than entering through any single note.
 
 ## Frontmatter `status:` field
 
 Reverse-engineered from the in-tree convention (Task #18 audit, 2026-04-28). Documents what the codebase already does so future audits don't re-litigate the format.
 
 **Where it applies:**
-- `docs/design-notes/*.md` — REQUIRED. 80/80 notes carry it.
-- `docs/specs/*.md` — REQUIRED. 32/32 specs carry it (excludes `INDEX.md`).
+- `docs/design-notes/*.md` — REQUIRED (top-level only; `proposed/` is a separate, ungated directory).
+- `docs/specs/*.md` — REQUIRED (excludes `INDEX.md`).
 - `docs/exec-plans/active/*.md` and `docs/exec-plans/completed/*.md` — present in some, encoded by directory placement.
-- `docs/audits/*.md` — OPTIONAL, descriptive (not lifecycle). Audits are event-records; ~25% carry a bespoke `status:` describing the audit's role ("read-only discovery audit", "diagnostic record", etc.). Don't retrofit lifecycle values onto audits.
+- `docs/audits/*.md` — OPTIONAL, descriptive (not lifecycle). Audits are event-records; a minority carry a bespoke `status:` describing the audit's role ("read-only discovery audit", "diagnostic record", etc.). Don't retrofit lifecycle values onto audits.
+
+**Compliance is measured, never quoted here.** Run `python scripts/check_frontmatter_status.py` for the current counts and the full list of non-compliant files; `--check` exits 1 on any violation in a REQUIRED directory.
+
+> This section used to hardcode "80/80 notes carry it" and "32/32 specs carry it," measured once on 2026-04-28. By 2026-07-22 the real numbers were 90/124 and 38/51 — the claims had been wrong for weeks and nothing made them expire loudly. A correct-but-expired fact reads exactly like a current one. Per `AGENTS.md` § Truth And Freshness, a verification claim carries its command; here the command *is* the claim, so it cannot go stale. Do not reintroduce a hardcoded count.
 
 **Five lifecycle values** (use exactly one):
 
@@ -62,6 +67,8 @@ Reverse-engineered from the in-tree convention (Task #18 audit, 2026-04-28). Doc
 | `research` | Exploratory thinking; no implementation intent and no STATUS row claims it. |
 | `historical` | Captures past state for posterity (incident postmortem, retired-with-stamp doc, pre-rename architecture). |
 
+`check_frontmatter_status.py` rejects any other value. If a sixth lifecycle value is genuinely needed, add it to this table **and** to `LIFECYCLE_VALUES` in that script in the same commit — divergence between the two is exactly the drift this section exists to stop.
+
 **Format:** bare value, body details optional (e.g. `status: shipped` plus a `**Status:**` line in the body referencing the landing commit). Compound forms like `status: shipped: <date>` are NOT the convention — date detail goes in the body.
 
 **Tie-breakers** (applied during the 2026-04-28 audit pass):
@@ -71,7 +78,7 @@ Reverse-engineered from the in-tree convention (Task #18 audit, 2026-04-28). Doc
 - False-shipped is worse than false-active. When uncertain, classify `active`.
 
 **Companion fields:**
-- `superseded_by: <relative-path-from-repo-root>` — required when `status: superseded`. Path must resolve.
+- `superseded_by: <relative-path-from-repo-root>` — required when `status: superseded`. Path must resolve. May be a YAML list when more than one document replaces this one; every path in the list must resolve.
 - `status_detail: <free-text>` — optional. Used by some notes to add nuance under a lifecycle value.
 
 ## Gate-branch shape

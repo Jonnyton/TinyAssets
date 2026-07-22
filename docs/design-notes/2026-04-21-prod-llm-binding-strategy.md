@@ -3,6 +3,7 @@ title: Prod LLM binding strategy — minimum viable two-provider stance
 date: 2026-04-21
 author: navigator
 status: superseded
+superseded_by: PLAN.md
 status_detail: Superseded 2026-04-30 by PLAN.md subscription-first provider auth policy.
 related:
   - tinyassets/providers/router.py
