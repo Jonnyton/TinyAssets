@@ -5,4 +5,14 @@ author: tester
 tags: []
 visibility: public
 created_at: 1784695128.6078672
-updated_at: 1784695128.6078672
+updated_at: 1784695133.6022875
+gate_ladder:
+- description: Chapter complete.
+  name: First draft
+  rung_key: first_draft
+- description: Two beta readers approved.
+  name: Beta reader pass
+  rung_key: beta_reader_pass
+- description: Available to read.
+  name: Published
+  rung_key: published
