@@ -231,6 +231,7 @@ def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
         "---\n"
         "title: Search Target\n"
         "type: note\n"
+        "audience: discovery\n"
         "updated: 2026-05-06T12:00:00Z\n"
         "---\n\n"
         "This page mentions cross AI discovery gaps.\n",
@@ -240,7 +241,10 @@ def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
 
     res = json.loads(wiki(action="search", query="discovery"))
 
-    assert res["count"] == 1
+    assert any(
+        item["path"] == "pages/notes/search-target.md"
+        for item in res["results"]
+    )
     assert res["search_complete"] is False
     assert "lexical" in res["completeness_warning"]
     assert "action=since" in res["completeness_warning"]
@@ -273,7 +277,11 @@ def test_wiki_since_returns_pages_updated_after_timestamp(wiki_env):
     )
 
     res = json.loads(
-        wiki(action="since", changed_since="2026-05-05T00:00:00Z")
+        wiki(
+            action="since",
+            changed_since="2026-05-05T00:00:00Z",
+            scope="coordination",
+        )
     )
 
     assert res["changed_since"] == "2026-05-05T00:00:00Z"
@@ -308,6 +316,7 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
         "---\n"
         "title: Live Brain\n"
         "type: note\n"
+        "audience: discovery\n"
         "updated: 2026-05-01\n"
         "tags: ambient relevance\n"
         "---\n\n"
@@ -321,6 +330,7 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
         "---\n"
         "title: Fresh Related\n"
         "type: note\n"
+        "audience: discovery\n"
         "updated: 2026-05-06T12:00:00Z\n"
         "tags: relevance feed\n"
         "---\n\n"
@@ -333,6 +343,7 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
         "---\n"
         "title: Old Related\n"
         "type: note\n"
+        "audience: discovery\n"
         "updated: 2026-04-01\n"
         "tags: ambient relevance\n"
         "---\n\n"

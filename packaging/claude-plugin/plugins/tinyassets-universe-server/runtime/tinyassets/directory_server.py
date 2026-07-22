@@ -364,6 +364,16 @@ def read_page(
     ] = "",
     max_results: int = 10,
     universe_id: str = "",
+    scope: Annotated[
+        str,
+        Field(
+            description=(
+                "Read namespace: discovery (default, excludes internal agent "
+                "coordination), coordination (history only), or all. Exact "
+                "page reads remain available in every scope."
+            ),
+        ),
+    ] = "discovery",
 ) -> str:
     """Read or search TinyAssets wiki pages.
 
@@ -376,6 +386,9 @@ def read_page(
             timestamp.
         max_results: Maximum result count.
         universe_id: Optional target universe page substrate.
+        scope: Read namespace. Defaults to user-facing discovery; use
+            coordination or all only when intentionally inspecting internal
+            project history.
     """
     if page:
         return _wiki_impl(
@@ -385,6 +398,7 @@ def read_page(
             changed_since=changed_since,
             max_results=max_results,
             universe_id=universe_id,
+            scope=scope,
         )
     if changed_since.strip() and not query.strip() and not category.strip():
         return _wiki_impl(
@@ -392,6 +406,7 @@ def read_page(
             changed_since=changed_since,
             max_results=max_results,
             universe_id=universe_id,
+            scope=scope,
         )
     return _wiki_impl(
         action="search",
@@ -399,6 +414,7 @@ def read_page(
         category=category,
         max_results=max_results,
         universe_id=universe_id,
+        scope=scope,
     )
 
 

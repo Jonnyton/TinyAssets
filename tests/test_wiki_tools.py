@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -317,9 +318,9 @@ class TestWikiSearch:
             wiki("search", query="tracker", scope="coordination")
         )
 
-        assert {item["path"] for item in discovery["results"]} == {
-            "pages/notes/public-plan.md"
-        }
+        discovery_paths = {item["path"] for item in discovery["results"]}
+        assert "pages/notes/public-plan.md" in discovery_paths
+        assert "pages/concepts/internal-concept.md" not in discovery_paths
         assert {item["path"] for item in coordination["results"]} == {
             "pages/concepts/internal-concept.md"
         }
@@ -343,6 +344,27 @@ class TestWikiSearch:
         assert result["error"] == "invalid_scope"
         assert result["available_scopes"] == ["all", "coordination", "discovery"]
         assert "results" not in result
+
+    def test_concurrent_discovery_searches_are_stable_and_do_not_leak_coordination(
+        self, wiki_dir
+    ):
+        notes = wiki_dir / "pages" / "notes"
+        notes.mkdir(parents=True)
+        (notes / "agent-log.md").write_text(
+            "---\ntitle: Test project agent log\ntype: note\n---\n"
+            "Internal test project coordination.",
+            encoding="utf-8",
+        )
+
+        def search_once(_index: int) -> tuple[str, ...]:
+            result = json.loads(wiki("search", query="test project"))
+            return tuple(item["path"] for item in result["results"])
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            result_sets = list(pool.map(search_once, range(256)))
+
+        assert len(set(result_sets)) == 1
+        assert result_sets[0] == ("pages/projects/test-project.md",)
 
     def test_since_feed_defaults_to_discovery_scope(self, wiki_dir):
         notes = wiki_dir / "pages" / "notes"
@@ -849,7 +871,7 @@ class TestWikiDispatch:
 
     def test_wiki_missing_root_auto_scaffolds(self, monkeypatch, tmp_path):
         """Post-Task-#6: a nonexistent wiki root auto-scaffolds on first
-        call and returns the empty-wiki list rather than an error.
+        call and returns the seeded wiki list rather than an error.
 
         Pre-#6 contract was ``{"error": "Wiki not found at ..."}``. The
         droplet-seeding task flipped this so fresh deploys (empty
@@ -864,11 +886,13 @@ class TestWikiDispatch:
         assert "error" not in result, (
             f"wiki list errored instead of auto-scaffolding: {result!r}"
         )
-        # The new contract: list returns page-collection keys; for a
-        # freshly-scaffolded empty wiki both are empty lists.
-        assert result.get("promoted") == []
+        # Fresh installs include the canonical branch-authoring schema so a
+        # chatbot can discover how to define a workflow without host setup.
+        assert [page["path"] for page in result.get("promoted", [])] == [
+            "pages/workflows/workflow-definition-schema.md"
+        ]
         assert result.get("drafts") == []
-        assert result.get("promoted_count") == 0
+        assert result.get("promoted_count") == 1
         assert result.get("drafts_count") == 0
         # Scaffold landed on disk.
         assert root.is_dir()
@@ -877,6 +901,23 @@ class TestWikiDispatch:
         assert (root / "index.md").is_file()
         assert (root / "WIKI.md").is_file()
         assert (root / "log.md").is_file()
+        assert (
+            root / "pages" / "workflows" / "workflow-definition-schema.md"
+        ).is_file()
+
+    def test_workflow_schema_seed_never_overwrites_existing_page(
+        self, monkeypatch, tmp_path
+    ):
+        root = tmp_path / "Wiki"
+        target = root / "pages" / "workflows" / "workflow-definition-schema.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("custom schema", encoding="utf-8")
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(root))
+
+        result = json.loads(wiki("list"))
+
+        assert "error" not in result
+        assert target.read_text(encoding="utf-8") == "custom schema"
 
 
 class TestWikiFileBugDispatch:

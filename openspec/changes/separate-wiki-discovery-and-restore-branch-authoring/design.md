@@ -25,7 +25,7 @@ Restore branch creation additively on the existing `write_graph` handle:
 - `target=branch`, `branch_id=<id>`, `changes_json=<list JSON>` -> existing `patch_branch` handler.
 - Supplying create and patch payloads together returns a structured ambiguity error.
 
-The canonical schema lives at `pages/workflows/workflow-definition-schema.md`, is tagged `audience: discovery`, and is named explicitly in the `spec_json` field description so both schema inspection and wiki search lead to the same contract.
+The canonical schema is bundled at `tinyassets/wiki/workflow-definition-schema.md` and idempotently seeded into the runtime wiki at `pages/workflows/workflow-definition-schema.md`. It is tagged `audience: discovery` and named explicitly in the `spec_json` field description so fresh installs, schema inspection, and wiki search all lead to the same contract without overwriting an existing page.
 
 ## Rejected Alternatives
 

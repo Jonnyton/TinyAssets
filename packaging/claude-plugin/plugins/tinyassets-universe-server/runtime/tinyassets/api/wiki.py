@@ -84,6 +84,11 @@ _WIKI_COORDINATION_CATEGORIES = frozenset({
     "patch-requests",
     "plans",
 })
+_WORKFLOW_SCHEMA_ASSET = (
+    Path(__file__).resolve().parent.parent
+    / "wiki"
+    / "workflow-definition-schema.md"
+)
 
 
 _logger_wiki = logging.getLogger("universe_server.wiki")
@@ -151,6 +156,13 @@ def _ensure_wiki_scaffold(wiki_root: Path) -> None:
         path = wiki_root / name
         if not path.exists():
             path.write_text(body, encoding="utf-8")
+
+    workflow_schema = wiki_root / "pages" / "workflows" / _WORKFLOW_SCHEMA_ASSET.name
+    if not workflow_schema.exists():
+        workflow_schema.write_text(
+            _WORKFLOW_SCHEMA_ASSET.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, str], str]:

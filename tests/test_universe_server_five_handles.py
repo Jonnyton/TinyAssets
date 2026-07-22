@@ -182,12 +182,7 @@ def test_public_handle_schema_advertises_discovery_scope_and_branch_spec() -> No
 def test_workflow_definition_schema_is_in_default_discovery(
     monkeypatch, tmp_path
 ) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    source = repo_root / "pages" / "workflows" / "workflow-definition-schema.md"
     wiki_root = tmp_path / "Wiki"
-    target = wiki_root / "pages" / "workflows" / source.name
-    target.parent.mkdir(parents=True)
-    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
 
     payload = json.loads(
@@ -207,7 +202,10 @@ def test_documented_workflow_definition_builds_and_reads_back(
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     schema_page = (
-        repo_root / "pages" / "workflows" / "workflow-definition-schema.md"
+        repo_root
+        / "tinyassets"
+        / "wiki"
+        / "workflow-definition-schema.md"
     ).read_text(encoding="utf-8")
     documented_spec = schema_page.split("```json\n", 1)[1].split("\n```", 1)[0]
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))

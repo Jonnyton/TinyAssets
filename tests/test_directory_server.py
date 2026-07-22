@@ -191,8 +191,8 @@ def test_directory_tool_inputs_avoid_sensitive_credentials() -> None:
         )
 
 
-def test_directory_read_page_schema_advertises_changed_since() -> None:
-    """PR-088: directory wiki reads must expose the since-feed timestamp."""
+def test_directory_read_page_schema_advertises_changed_since_and_scope() -> None:
+    """Directory wiki reads expose freshness and discovery namespace controls."""
 
     tool = next(tool for tool in _list_tools() if tool.name == "read_page")
     properties = tool.parameters["properties"]
@@ -201,6 +201,10 @@ def test_directory_read_page_schema_advertises_changed_since() -> None:
     assert properties["changed_since"]["default"] == ""
     assert "changed after this" in properties["changed_since"]["description"]
     assert "changed_since" not in tool.parameters.get("required", [])
+    assert properties["scope"]["type"] == "string"
+    assert properties["scope"]["default"] == "discovery"
+    assert "coordination" in properties["scope"]["description"]
+    assert "scope" not in tool.parameters.get("required", [])
 
 
 def test_directory_status_redacts_operator_diagnostics() -> None:
@@ -410,7 +414,11 @@ def test_directory_read_page_changed_since_routes_to_since_feed(
     )
 
     result = json.loads(
-        read_page(changed_since="2026-05-01T00:00:00Z", max_results=5)
+        read_page(
+            changed_since="2026-05-01T00:00:00Z",
+            max_results=5,
+            scope="coordination",
+        )
     )
 
     assert result["changed_since"] == "2026-05-01T00:00:00Z"
