@@ -76,9 +76,99 @@ Codex is mechanically good at browser operation, but must not massage the chatbo
 - Do not coach the bot around a UX failure; log the failure.
 - Before every prompt, ask: "Would a normal chatbot user type this without knowing TinyAssets internals?" If no, rewrite it.
 
+## CRITICAL — always test in Claude.ai Incognito chat (forever rule)
+
+**Every ui-test mission runs in Claude.ai's Incognito chat** (the toggle in the top-right of the
+Claude.ai UI). Turn it on BEFORE the first prompt, every session. This is Claude.ai's own
+incognito/temporary-chat mode — not a browser incognito window.
+
+Why it is mandatory:
+
+- **It is the honest user shape.** A first-time user arrives with no memory, no prior conversation,
+  and no connector already trusted. Testing inside a long-lived chat with accumulated context and
+  already-approved tools silently tests a state no new user is ever in.
+- **It stops cross-mission contamination.** Persistent chats carry earlier missions' context, so a
+  bot can appear to "understand" because it was told last time, not because the surface works.
+- **It keeps the connector handshake in scope.** Connector install, per-tool approval, and the OAuth
+  sign-in flow are part of what we are testing; a session that already has them done skips the
+  riskiest part of the user journey.
+
+Log it: `## [...] TAB HYGIENE: 1 tab, incognito=ON, URL=...`. If a mission was run without incognito,
+say so explicitly in the MISSION SUMMARY — the result is still data, but it is not first-contact
+proof.
+
+**Connector state is part of the test.** Starting with the connector NOT connected is the correct
+shape for a full-flow run: add it during the mission and observe the real install + approval +
+sign-in behavior a new user hits. Do not pre-wire the connector and then claim the flow works.
+
+### CRITICAL — incognito chat is NOT an unauthenticated identity
+
+**Claude.ai's Incognito chat only stops chat persistence. It does NOT clear browser cookies and does
+NOT give you a fresh identity.** The browser profile keeps its AuthKit/WorkOS/session cookies, so
+adding a connector can complete OAuth *silently* against the session already in the profile — with no
+sign-in screen ever shown. Everything you then observe is done as the ALREADY-AUTHENTICATED user.
+
+This is not hypothetical. On 2026-07-21 a mission ran the whole first-contact flow in incognito,
+concluded that an *anonymous* caller could resolve to a real principal, see the host's daemon and
+provider auth state, and read the internal engineering commons — and escalated it as P0 twice. All of
+it was wrong: the profile held live cookies for `*.authkit.app`, `.workos.com` and `signin.workos.com`,
+so the session was the authenticated host the entire time, legitimately seeing its own data. Three
+findings had to be retracted.
+
+**MANDATORY before any claim about anonymous / unauthenticated behavior:**
+
+1. **Check the cookie jar FIRST**, before the first prompt — not after something surprises you:
+
+   ```python
+   ck = browser.contexts[0].cookies()
+   auth = [c for c in ck if any(k in c.get("domain","")
+           for k in ("authkit", "workos", "tinyassets"))]
+   # non-empty => you are NOT anonymous. Any "anonymous" finding is invalid.
+   ```
+
+2. **A clean browser profile is NOT sufficient either.** Claude.ai connectors are **account-level**:
+   the connector list and its OAuth grant are stored server-side by Anthropic, not in the browser. A
+   brand-new `--user-data-dir` logged into the same Claude account still shows the connector already
+   attached and already authorized, with **zero** AuthKit cookies in the jar. Verified 2026-07-21:
+   fresh profile, `auth_cookies=0`, and TinyAssets still present in the connector table.
+
+   **Corollary — an empty cookie jar does NOT prove unauthenticated.** The MCP OAuth token is held by
+   Anthropic, so cookie inspection can only ever *disprove* anonymity, never establish it. Step 1
+   above is a necessary check, not a sufficient one.
+
+   To genuinely test first contact you must **REMOVE the connector from the Claude.ai account**
+   (which revokes the grant server-side) and then re-add it. That is a change to the host's account
+   settings — ask first.
+3. **Corroborate through a second channel.** An unauthenticated `curl` against the same live endpoint
+   is the cheapest check: if curl gets `401` while the chat succeeds, the chat is authenticated. That
+   contradiction is what exposed the 2026-07-21 error — treat any such mismatch as proof your premise
+   is wrong, and stop before escalating.
+4. Log the identity state you actually verified:
+   `## [...] IDENTITY: profile=<clean|host>, auth_cookies=<n>, verified_via=<cookies+curl>`.
+
+**The general rule this encodes:** a claim about what an *anonymous* user can see is a claim about
+identity, and identity must be verified out-of-band before it is asserted. Inferring "I never saw a
+login screen, therefore I am anonymous" is the same unfounded-inference error we log as a BUG when a
+chatbot does it.
+
 ## Claude Code CDP setup
 
-Host one-time setup (Chrome launched with `--remote-debugging-port=9222` + the TinyAssets connector) — full command in `references/preflight-and-setup.md`. **Operational rule (Claude Code route): if `python scripts/claude_chat.py status` returns non-zero, the CDP-backed browser is down — SendMessage the lead and wait; do not proceed.** Not applicable to the Codex in-app browser route.
+`scripts/claude_chat.py` **launches Chrome itself** — the host does not need to start it. `ask`,
+`new-chat`, and `dismiss-dialogs` call `_connect()` with auto-launch enabled; the browser comes up on
+first use.
+
+**`status` is a reporter, not a gate.** It calls `_connect(auto_launch=False)` by design, so
+"Cannot connect to Chrome CDP" from `status` means *"not running at this instant"* — NOT *"the host
+must launch it."* Run `new-chat` (auto-launches, sends no prompt) to bring the browser up, then
+re-check. Treating a `status` failure as a host blocker stalls a mission for no reason; that mistake
+was made on 2026-07-21.
+
+The binary is auto-detected as the newest installed Playwright chromium, overridable via
+`TINYASSETS_CHROME_BIN`. It used to be pinned to `chromium-1208`, which crashes at startup on the
+host machine — auto-launch then failed with a bare "Cannot connect to CDP" and no hint that it had
+just started a broken binary. Do not re-pin a build number.
+
+Full reference: `references/preflight-and-setup.md`. Not applicable to the Codex in-app browser route.
 
 ## CRITICAL — TAB HYGIENE (forever rule, every step)
 

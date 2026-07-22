@@ -1,7 +1,10 @@
 {
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CLAUDE_CODE_TEAMMATE_MODE": "in-process"
+    "CLAUDE_CODE_TEAMMATE_MODE": "in-process",
+    "TINYASSETS_FLEET_FLOOR_CODEX": "8",
+    "TINYASSETS_FLEET_FLOOR_CLAUDE": "6",
+    "WORKFLOW_CLAUDE_MODEL": "opus"
   },
   "permissions": {
     "defaultMode": "auto",
@@ -158,6 +161,30 @@
             "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/cross_provider_drift_guard.py\"",
             "shell": "powershell",
             "timeout": 12
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/fleet_floor_guard.py\" --warn",
+            "shell": "powershell",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/fleet_floor_guard.py\"",
+            "shell": "powershell",
+            "timeout": 15
           }
         ]
       }
