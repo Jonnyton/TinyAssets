@@ -1,0 +1,11 @@
+claim_id: 5b8aeff04c6b435a
+branch_def_id: 7814cabf32cb
+goal_id: bea479091cd4
+rung_key: draft_ready
+evidence_url: https://github.com/Jonnyton/TinyAssets/pull/970
+evidence_note: Auto-claim from completed run 938da34a98cf4c7a
+conformance_pack_id: ''
+claimed_by: tester
+claimed_at: '2026-07-22T04:39:24Z'
+retracted_at: null
+retracted_reason: ''
