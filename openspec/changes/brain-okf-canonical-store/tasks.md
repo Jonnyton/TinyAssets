@@ -9,7 +9,7 @@
 
 ## 2. Companion + coordination alignment
 
-- [ ] 2.1 Add a precedent note to `docs/specs/2026-06-10-brain-v2-research-implications.md` — OpenClaw's markdown-source-of-truth + rebuildable-index IS the adopted model; canonicality is now bundle-first (no requirement change)
+- [x] 2.1 Add a precedent note to `docs/specs/2026-06-10-brain-v2-research-implications.md` — OpenClaw's markdown-source-of-truth + rebuildable-index IS the adopted model; canonicality is now bundle-first (no requirement change)
 - [ ] 2.2 STATUS.md: add a brain-canonical coordination row/note so the `defantasy` and `tiny-spec` sessions (and the next brain-builder) build toward OKF-canonical, not SQLite-canonical
 
 ## 3. Cross-provider review gate (MUST precede any build-gating)
