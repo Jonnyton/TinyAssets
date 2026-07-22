@@ -1,11 +1,26 @@
 <!--
-Provenance: carried verbatim from `output/s2-gate/status-backlog-audit.md` (lane report,
+Provenance: carried from `output/s2-gate/status-backlog-audit.md` (lane report,
 2026-07-21 13:11). The lane produced this report but never opened a PR, so it
-existed only on disk. Body below is the report unmodified; only this
-comment was added.
+existed only on disk.
+
+ORIGINALLY carried verbatim (only this comment added). SUBSEQUENTLY CORRECTED
+2026-07-22 before merge: the "LIVE — but already built on unmerged branches"
+section asserted five branches were unmerged; 3 had in fact merged (#1480, #1483,
+#1486) and 2 had open draft PRs (#1482, #1484). Its L4 finding ("defect confirmed
+live ... no test references it") was likewise false — #1480 fixed L4 at compile
+time and shipped the test. The false claims are corrected in place with a visible
+CORRECTION block rather than silently rewritten; the verbatim original remains in
+this branch's git history. Root cause + prevention: see "Method note" below.
 -->
 
 Audit complete across all 19 rows. Every verdict below rests on first-hand code/git evidence I reproduced.
+
+> **⚠ This audit shipped with a false section, corrected before merge.** Its
+> branch-status claims were wrong (see the CORRECTION block under *LIVE*) because it
+> classified branches by **commit reachability** instead of **PR state**, which squash
+> merges break. The row-by-row verdicts below were spot-checked and stand; the branch
+> claims did not. Read the [Method note](#method-note--classify-branches-by-pr-state-not-commit-reachability)
+> first — the failure mode is more reusable than the findings.
 
 # STATUS.md Work-table audit — 19 rows
 
@@ -44,12 +59,56 @@ Neither failure reproduces: **53 passed, 2 skipped**. The 2 skips are `shellchec
 
 Caveat on 38: the flag still ships dark by design (`_node_enqueue_enabled()`, `graph_compiler.py:1337`). The row's *stated prerequisites* are done; "flip the flag" is a separate host decision.
 
-## LIVE — but already built on unmerged branches
+## LIVE — already built, and 3 of 5 have since MERGED
 
-This is the second systemic failure: **five completed fix branches from today are invisible to `claim_check.py`.**
+> **CORRECTION (2026-07-22, applied to this branch before merge).** As originally
+> written, this section claimed *"five completed fix branches from today are invisible
+> to `claim_check.py`"* and that the L4 defect was *"confirmed live ... no test
+> references it"*. **Both claims were false at the time of authoring.** The original
+> wording is preserved in this branch's git history; the corrected findings follow.
+> See [Method note](#method-note--classify-branches-by-pr-state-not-commit-reachability)
+> for the root cause, which is the reusable lesson.
 
-- **L4 reducer law** (39) — defect confirmed live: `_dict_merge` still shallow right-biased at `graph_compiler.py:371-375`, plugin mirror identical at `:371`, **no test references it**. Work complete on `origin/fix/l4-reducer-law` (`fccf490b`).
-- **Card-matcher** (49) — 7 tests pass; contract genuinely ambiguous (`claude_chat.py:221,518,526,793`). `origin/fix/card-matcher-fallback` (`dcad9a73`) found a **security defect the row never mentions**: the probe could auto-grant *third-party* connectors.
+Branch status re-verified 2026-07-22 with `gh pr view <n> --json state,mergedAt,headRefName`:
+
+| Branch | Original claim | **Verified reality** |
+|---|---|---|
+| `fix/l4-reducer-law` | unmerged | **MERGED** — PR **#1480**, `2026-07-22T00:41:39Z`, merge commit `6b28cf89` |
+| `fix/card-matcher-fallback` | unmerged | **MERGED** — PR **#1483**, `2026-07-22T00:43:54Z`, merge commit `e093c069` |
+| `feat/phase6-workflow-db` | unmerged | **MERGED** — PR **#1486**, `2026-07-22T00:42:41Z`, merge commit `353972f4` |
+| `fix/test-surface-repair` | unmerged | **open draft PR #1482** — visible, not invisible |
+| `fix/repo-root-community-pool` | unmerged | **open draft PR #1484** — visible, not invisible |
+
+Zero of the five were "unmerged + invisible". This audit was last updated
+`2026-07-22T01:51:09Z`, roughly an hour *after* those merges — so this was
+stale-at-authoring, not a race.
+
+- **L4 reducer law** (39) — **FIXED and merged as #1480**; both halves of the original
+  finding were wrong.
+  - *"No test references it"* — `tests/test_graph_compiler_reducer_law.py` **is on
+    `origin/main`**, landed by that same commit
+    (`git log --oneline -3 origin/main -- tests/test_graph_compiler_reducer_law.py`
+    → `6b28cf89 fix(L4): ... (#1480)`). It holds 3 tests; **3 passed** on this branch.
+    The tests exercise `_dict_merge` *indirectly*, via
+    `_build_state_typeddict([...{"reducer": "merge"}])` — which binds it at
+    `graph_compiler.py:484` (`annotations[name] = Annotated[dict, _dict_merge]`).
+    They never import the private symbol by name, so
+    `git grep _dict_merge origin/main -- tests/` returns **no match** (exit 1). That
+    grep is almost certainly what produced the false "no test references it".
+  - *"Defect confirmed live"* — `_dict_merge` **is** still a shallow merge, but that is
+    now **by design**. #1480 fixed L4 by enforcing single-writer **at compile time**
+    rather than by changing the merge function. On `origin/main`:
+    `graph_compiler.py:372` docstring reads *"Shallow merge for compile-enforced
+    single-writer state fields."*; `:400 _validate_single_writer_merge_fields`;
+    `:420 _guard_single_writer_merge_outputs`; wired in at `:2783` and `:2867`.
+    The plugin mirror
+    (`packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/graph_compiler.py`)
+    carries the identical fix at the same line numbers — so "plugin mirror identical"
+    was true, but implied both were *unfixed* when in fact both are *fixed*.
+  - **Method error:** reading the function body without its call sites is what produced
+    "defect confirmed live". A single-writer guard enforced at compile time is invisible
+    from inside the reducer it protects.
+- **Card-matcher** (49) — **MERGED as #1483.** 7 tests pass; contract genuinely ambiguous (`claude_chat.py:221,518,526,793`). The branch found a **security defect the row never mentions**: the probe could auto-grant *third-party* connectors. That finding stands; only its "unmerged" status was wrong.
 - **Paid-market Track E** (37) — drifted. `assert_drained` (`ledger.py:103`) and `best_execution` (`match.py:61`) already exist; `market.apply_tx` doesn't exist under that name (it's `Ledger.apply`, `ledger.py:84`); Files cell is wrong — migrations 006–008 live in `prototype/full-platform-v0/migrations/`. No `schema_migrations` table exists anywhere. Adapters + renumbering are genuinely unbuilt.
 
 ## UNVERIFIABLE — need evidence before anyone builds
@@ -71,8 +130,7 @@ Delete 9 rows outright (38, 42, 43, 44, 45, 46, 47, 48, 50). Replace with:
 ```markdown
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Merge queue — 5 completed fix branches (2026-07-21) unmerged + invisible to claim_check**: fix/l4-reducer-law fccf490b; fix/test-surface-repair 54c958a7; fix/card-matcher-fallback dcad9a73 (security: probe auto-granted 3rd-party connectors); fix/repo-root-community-pool ecad62f2; feat/phase6-workflow-db a9334190 (data-loss, universes booted 05-01..06-26) | per-branch | - | host-review |
-| **P1 data-loss** — universes booted 2026-05-01..06-26 carry `.workflow.db`, invisible to the migrator; db_path() creates a fresh empty DB. Fix ready on origin/feat/phase6-workflow-db | tinyassets/storage/__init__.py + plugin mirror | merge queue | host-review |
+| **Review queue — 2 open draft PRs** (was "5 unmerged branches"; 3 of those 5 had already merged — see Correction above): **#1482** `fix/test-surface-repair` (head `54c958a7`); **#1484** `fix/repo-root-community-pool` (head `ecad62f2`) | per-PR | - | host-review |
 | Paid-market Track E Wave 2 — adapters + migration renumber + schema_migrations table. NOTE: assert_drained (ledger.py:103) + best_execution (match.py:61) EXIST; `market.apply_tx` is `Ledger.apply` (ledger.py:84); migrations are in prototype/full-platform-v0/migrations/ | prototype/full-platform-v0/migrations/, tinyassets/paid_market/ | - | pending |
 | In-node enqueue flag flip — containment LANDED 6d0e6898; ships dark by design (graph_compiler.py:1337). Enable = host call | TINYASSETS_NODE_ENQUEUE_ENABLED | - | host-decision |
 | RFC 9728 discovery non-conformant — resource https://tinyassets.io/mcp requires /.well-known/oauth-protected-resource/mcp; code mounts /mcp/.well-known/... (wellknown.py:125, middleware.py:113). Codex-reported, code confirmed, live 404 UNVERIFIED | tinyassets/auth/wellknown.py, middleware.py | - | pending |
@@ -86,7 +144,62 @@ Delete 9 rows outright (38, 42, 43, 44, 45, 46, 47, 48, 50). Replace with:
 | Host-action: re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 ```
 
-**Structural recommendation (beyond the table):** two mechanisms failed here. Rows carry a *filed* date but no *verified* date (the Concerns section requires `[filed: verified:]`; the Work table doesn't), and `claim_check.py` reads only STATUS.md, so five branches of finished work were invisible. Extending the Concern date-stamp convention to Work rows, and teaching `claim_check.py` to cross-reference unmerged branches, would have caught most of today's five.
+**Structural recommendation (beyond the table):** rows carry a *filed* date but no
+*verified* date — the Concerns section requires `[filed: verified:]`, the Work table
+doesn't. Extending that date-stamp convention to Work rows would have caught most of
+the stale rows above.
+
+*(The original text here also claimed `claim_check.py` blindness left "five branches of
+finished work invisible", and recommended teaching it to "cross-reference unmerged
+branches". Both are withdrawn: 3 of the 5 had merged and 2 had open draft PRs. A
+cross-reference keyed on **unmerged branches** would in fact have made this worse — it
+is precisely the reachability signal that generates the false positive. If
+`claim_check.py` is ever taught to cross-reference GitHub, it must key on **PR state**.)*
+
+## Method note — classify branches by PR state, not commit reachability
+
+**The reusable lesson from this correction.** All three merges above were **squash
+merges**. A squash merge replays the branch as a *new single commit* on `main`; the
+branch's original commits never become ancestors of `main`. Confirmed — each merge
+commit has exactly one parent:
+
+```
+$ git log -1 --format=%p 6b28cf89   # PR #1480
+d4d279a0                            # one parent → squashed, not a merge commit
+```
+
+So reachability keeps reporting work as outstanding **forever**:
+
+```
+$ git rev-list --count origin/main..origin/fix/l4-reducer-law
+3        # non-zero, but PR #1480 merged at 2026-07-22T00:41:39Z
+```
+
+That non-zero count is what this audit read as "unmerged". It is not evidence of
+anything except that the repo squash-merges.
+
+**Do this instead** — classify by PR state:
+
+```bash
+gh pr list --state merged --limit 60 --json number,headRefName,mergedAt \
+  --jq '.[] | "\(.number)\t\(.headRefName)\t\(.mergedAt)"'
+gh pr view <n> --json state,mergedAt,headRefName    # per-branch check
+```
+
+A branch is done when its **PR** says so. `git rev-list`, `git branch --no-merged`, and
+`git log origin/main..origin/<branch>` are all reachability queries and all produce this
+same false positive under squash merge.
+
+**Second, narrower lesson (from the L4 half):** two greps produced two false negatives —
+`git grep _dict_merge -- tests/` missed a test that drives the symbol indirectly through
+`_build_state_typeddict`, and reading the reducer body missed a guard enforced at its
+*call sites*. When a grep returns nothing, check whether the thing is reached
+indirectly before concluding it is absent.
+
+**Environment footgun:** on Git Bash/Windows, `git show origin/main:path/to/file`
+silently returns **empty** unless `MSYS_NO_PATHCONV=1` is exported — an empty result
+reads exactly like "the file does not exist on main". Export it before any
+`git show <ref>:<path>` verification.
 
 ---
 
