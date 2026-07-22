@@ -176,14 +176,25 @@ Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=option
 pre-dispatch 401 + `WWW-Authenticate` to the four **pure-write** handles only —
 `write_graph`, `run_graph`, `write_page`, `converse`, declared at their
 registration sites via `_register_structured_tool(anonymous_write_challenge=True)`
-(`tinyassets/universe_server.py:629,671,908,991`). **Mixed read/write dispatch
-tools (wiki, goals, gates, universe, extensions) still return the in-band
-tool-JSON rejection**, gated by `require_action_scope`, so anonymous public reads
-keep working; that envelope is a live contract, just not on this probe's path.
-The 401 branch is additionally gated on `writes_require_identity()`
-(`tinyassets/auth/middleware.py:300-321`), so it does not fire in dev mode at
-all. This probe targets `write_page` — a pure-write handle — which is why it now
-meets the 401 rather than the envelope it asserts.
+(`tinyassets/universe_server.py:629,671,908,991`). This probe targets
+`write_page` — a pure-write handle on `/mcp` — which is why it now meets the 401
+rather than the envelope it asserts.
+
+**The envelope is still a live contract elsewhere.** Three distinct refusal
+shapes coexist; do not assume a fix that chases one applies to the others:
+
+| Surface | Anonymous-write refusal shape | Source |
+|---|---|---|
+| `/mcp`, pure-write handle | **HTTP 401 + `WWW-Authenticate`, pre-dispatch** | `auth/middleware.py:300-321` |
+| `/mcp-directory`, same handles | **`status=rejected` / `auth_required=true` in-band** — `_auth_challenge_path` deliberately does *not* sweep in sibling surfaces (`middleware.py:88-95`), so `write_gate_rejection()` answers instead (`directory_server.py:270,477`) | `middleware.py:443-470` |
+| Mixed read/write dispatch tools (wiki, goals, universe, extensions) | **`auth_scope_required=true`**, generally *no* `status` key — a different envelope again | `require_action_scope` → e.g. `api/wiki.py:2418-2424` |
+
+So the in-band envelope was **not** retired platform-wide: it remains the
+fail-closed backstop behind the 401 (`middleware.py:312-313`) and the live
+contract on `/mcp-directory`. The 401 branch is additionally gated on
+`writes_require_identity()` (`middleware.py:305`), so it never fires in dev mode.
+*(Envelope taxonomy corrected 2026-07-22 after cross-family review flagged the
+first draft for conflating `auth_required` with `auth_scope_required`.)*
 
 ### What it exercises
 

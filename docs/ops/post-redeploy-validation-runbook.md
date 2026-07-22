@@ -148,9 +148,14 @@ side effects — nothing is written to the live wiki.
 > probe is realigned — do not escalate it as an outage.** Forensics:
 > `docs/audits/2026-07-22-uptime-canary-false-red-incident.md` (PR #1513).
 >
-> The in-band envelope is **not** retired platform-wide: mixed read/write
-> dispatch tools (wiki, goals, gates, universe, extensions) still return it via
-> `require_action_scope`. It is simply no longer what `write_page` returns.
+> The in-band envelope is **not** retired platform-wide — it is simply no longer
+> what `write_page` returns *on `/mcp`*. It remains the fail-closed backstop
+> behind the 401 (`auth/middleware.py:312-313`) and the live contract on
+> `/mcp-directory`, which `_auth_challenge_path` deliberately does not sweep in
+> (`middleware.py:88-95`). Note also that mixed read/write dispatch tools (wiki,
+> goals, universe, extensions) refuse with a **third** shape —
+> `auth_scope_required=true`, generally with no `status` key. Three shapes, three
+> surfaces; a fix targeting one does not cover the others.
 
 **Green (as the probe asserts it — not currently attainable against
 production, see above):** exit 0, verbose output shows `handshake OK`,
