@@ -156,12 +156,23 @@ the `WIKI-DOCS` and `WIKI-DESIGN` lanes.
 code-audit batch, the one lane most likely to have been fixed by subsequent work. Two structural
 reasons the rest will classify differently:
 
-- **The 49 `[WIKI-DOCS]` and 37 `[WIKI-DESIGN]` issues are mostly not code claims at all.** Spot-reading
-  titles: `SPLITROOT S3 contract — map table widget`, `RetroLab seed recipes v1`,
-  `Archon fantasy RTS/FPS v0 unit sheet`. These are wiki design documents that the sync pipeline
-  mirrored into GitHub issues. They are not verifiable as fixed-or-not; they are content that lives
-  in the wiki and was copied here. Expect most to classify **obsolete (wrong surface)** — the
-  content is not lost by closing the issue, because the wiki page is the original.
+- **The 49 `[WIKI-DOCS]` and 37 `[WIKI-DESIGN]` issues are mostly not code claims at all — verified,
+  not inferred from titles.** I read the bodies of #1030, #947, and #555. All three carry
+  `**Request kind:** docs-ops`, a `**Wiki path:** pages/…` pointer, and the footer
+  *"Auto-filed by wiki-change-sync from wiki page `<path>`"*. They are **mirrors of wiki pages**,
+  not independent claims, so there is nothing about them to verify as fixed-or-not.
+
+  **The originals survive.** Checked #555's source page against the live brain through the MCP
+  connector — `pages/concepts/chatbot-friction-as-loop-learning-telemetry.md` returns 4,822 chars
+  with `source_read_proof` `sha256 853d15b0f1675d95…`, `updated 2026-05-06T22:26:15Z`. Closing the
+  mirror issue therefore loses no content. Expect most of this class to disposition as
+  **obsolete (wrong surface)**.
+
+  *Method caveat for whoever re-checks:* the wiki root a local session resolves
+  (`wiki_path()` → `%APPDATA%\TinyAssets\wiki`) is an **empty category scaffold — 0 md files**. A
+  local `wiki_read` returns "Page not found" for pages that exist in production. Verify wiki
+  survival against the **live brain** via the MCP connector, never the local root, or you will
+  conclude the originals are gone and that closing these destroys content.
 - **The 34 `await-primitive-layer` issues are blocked on substrate that may now exist.** Each needs
   a "does the primitive exist now?" check before disposition. `scripts/check_primitive_exists.py`
   is the calibrated tool for exactly this (AGENTS.md § Orient).
