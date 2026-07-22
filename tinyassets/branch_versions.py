@@ -8,7 +8,7 @@ topology (node_defs, edges, conditional_edges, state_schema, entry_point)
 at the moment of publish. It is immutable after creation.
 
 ``publish_version`` mints a new ``branch_version_id`` of the form
-``<branch_def_id>@<sha256_prefix8>`` and stores the canonical JSON in
+``<branch_def_id>@<full_sha256>`` and stores the canonical JSON in
 the ``branch_versions`` SQLite table inside the runs database.
 
 Surgical-rollback columns (Task #22 Phase A):
@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from tinyassets.runtime.signed_records import Verified, _verified_after_mechanism_check
 
 # ── Watch-window defaults (Task #22 Phase A) ─────────────────────────────────
 
@@ -122,6 +124,14 @@ class BranchVersion:
             "rolled_back_reason": self.rolled_back_reason,
             "watch_window_seconds": self.watch_window_seconds,
         }
+
+
+class BranchVersionContentMismatch(RuntimeError):
+    """A requested content address does not match the persisted snapshot."""
+
+    failure_class = "branch_version_content_mismatch"
+    suggested_action = "republish and execute the returned full content address"
+    actionable_by = "chatbot"
 
 
 # ── Storage helpers ───────────────────────────────────────────────────────────
@@ -260,26 +270,23 @@ def publish_branch_version(
 
     snapshot = _canonical_snapshot(branch_dict)
     content_hash = compute_content_hash(snapshot)
+    branch_version_id = f"{branch_def_id}@{content_hash}"
     resolved_watch_window = _resolve_watch_window(branch_dict, watch_window_seconds)
 
     with _connect(base_path) as conn:
-        # Deterministic: same content_hash for same branch_def_id returns existing.
+        # Deterministic full-address rows are reused. A legacy truncated-ID row
+        # does not satisfy M2 authority, so republishing mints the full address.
         existing = conn.execute(
             "SELECT * FROM branch_versions "
-            "WHERE branch_def_id = ? AND content_hash = ?",
-            (branch_def_id, content_hash),
+            "WHERE branch_def_id = ? AND content_hash = ? "
+            "AND branch_version_id = ?",
+            (branch_def_id, content_hash, branch_version_id),
         ).fetchone()
         if existing is not None:
             return _row_to_version(existing)
 
-        branch_version_id = f"{branch_def_id}@{content_hash[:8]}"
-        # Handle the (rare) case where hash prefix collides with a different hash.
-        collision = conn.execute(
-            "SELECT content_hash FROM branch_versions WHERE branch_version_id = ?",
-            (branch_version_id,),
-        ).fetchone()
-        if collision and collision["content_hash"] != content_hash:
-            branch_version_id = f"{branch_def_id}@{content_hash[:16]}"
+        # The full digest is the authority-bearing M2 content address. Truncated
+        # legacy IDs remain browsable, but are not safe execution authority.
 
         if parent_version_id:
             _validate_version_exists(conn, parent_version_id)
@@ -380,6 +387,43 @@ def get_branch_version(
     return _row_to_version(row)
 
 
+def get_verified_branch_version(
+    base_path: str | Path,
+    branch_version_id: str,
+) -> Verified[BranchVersion] | None:
+    """Resolve a full M2 content address to a proof-carrying branch version.
+
+    The caller-supplied ID supplies the expected digest. Mutable columns may
+    reject the request when inconsistent, but neither ``content_hash`` nor
+    ``snapshot_json`` can create authority by being changed together.
+    """
+    version = get_branch_version(base_path, branch_version_id)
+    if version is None:
+        return None
+
+    try:
+        addressed_branch_id, expected_hash = branch_version_id.rsplit("@", 1)
+    except ValueError as exc:
+        raise BranchVersionContentMismatch(
+            "branch version content address is malformed"
+        ) from exc
+    if (
+        addressed_branch_id != version.branch_def_id
+        or len(expected_hash) != 64
+        or any(character not in "0123456789abcdef" for character in expected_hash)
+    ):
+        raise BranchVersionContentMismatch(
+            "branch version content address must contain the full SHA-256 digest"
+        )
+
+    actual_hash = compute_content_hash(version.snapshot)
+    if actual_hash != expected_hash or version.content_hash != actual_hash:
+        raise BranchVersionContentMismatch(
+            "branch version content hash does not match the requested address"
+        )
+    return _verified_after_mechanism_check(version)
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,
@@ -447,10 +491,12 @@ def _row_to_version(row: sqlite3.Row) -> BranchVersion:
 
 __all__ = [
     "BranchVersion",
+    "BranchVersionContentMismatch",
     "BRANCH_VERSIONS_SCHEMA",
     "DEFAULT_WATCH_WINDOW_SECONDS",
     "compute_content_hash",
     "get_branch_version",
+    "get_verified_branch_version",
     "initialize_branch_versions_db",
     "is_within_watch_window",
     "list_branch_versions",

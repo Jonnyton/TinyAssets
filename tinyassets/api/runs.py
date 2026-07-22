@@ -1663,6 +1663,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     the same async executor pool. Records the ``branch_version_id`` on
     the new ``runs.branch_version_id`` column for attribution.
     """
+    from tinyassets.branch_versions import BranchVersionContentMismatch
     from tinyassets.runs import (
         SnapshotSchemaDrift,
         execute_branch_version_async,
@@ -1733,6 +1734,13 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             "failure_class": SnapshotSchemaDrift.failure_class,
             "suggested_action": SnapshotSchemaDrift.suggested_action,
             "actionable_by": SnapshotSchemaDrift.actionable_by,
+        })
+    except BranchVersionContentMismatch as exc:
+        return json.dumps({
+            "error": str(exc),
+            "failure_class": BranchVersionContentMismatch.failure_class,
+            "suggested_action": BranchVersionContentMismatch.suggested_action,
+            "actionable_by": BranchVersionContentMismatch.actionable_by,
         })
     except Exception as exc:
         logger.exception("run_branch_version failed for %s", bvid)
