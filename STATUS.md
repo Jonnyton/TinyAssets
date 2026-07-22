@@ -6,6 +6,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 
 ## Concerns
 
+- **[P1 filed:2026-07-21 verified:2026-07-21]** Universe LLM routing inherits host auth when its vault is empty; no public provider/credential payer receipt.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
 - [filed:2026-07-02 verified:2026-07-22] Reshape residuals: WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
@@ -30,6 +31,7 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| Fail-close universe provider auth + constrain `set_engine` fallback + public provider/payer receipts; draft PR only | openspec/changes/fail-closed-universe-credentials/, openspec/specs/{credential-vault,provider-routing}/, tinyassets/{credential_vault.py,providers/,api/{universe.py,runs.py},universe_intelligence.py,universe_server.py,graph_compiler.py,runs.py}, tests/ | coordinate #1484 before merge (`api/universe.py`) | claimed:codex-security-vault ACTIVE 2026-07-21 |
 | Paid-market Track E Wave 2 transport as an OpenSpec change; renumber migrations + add schema_migrations before 006–008 go live | openspec/, tinyassets/paid_market/ | - | pending |
 | In-node enqueue flag flip — Codex ADAPT asks landed (`graph_compiler.py:1406-1560`), still dark; §14 proof passes but global-queue + per-origin lineage caps have no concurrent boundary coverage | tinyassets/graph_compiler.py, tests/test_node_enqueue_*.py | `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | External directory acceptance — canaries green 2026-05-02; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |

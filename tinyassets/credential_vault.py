@@ -424,6 +424,55 @@ def provider_auth_env_overrides(
     return {}
 
 
+def provider_credential_class(
+    universe_dir: str | Path | None,
+    provider_name: str,
+) -> str:
+    """Return the non-secret credential payer class for one provider route.
+
+    ``unresolved`` is a routing denial for universe-scoped cloud providers.
+    A missing universe denotes the host's own daemon/developer flow and is
+    classified without changing its existing authentication behavior.
+    """
+    provider = provider_name.strip()
+    if provider == "ollama-local":
+        return "local_no_credential"
+    if universe_dir is None:
+        if provider in {"gemini-free", "groq-free", "grok-free"}:
+            return "host_api_key"
+        if provider in {"claude-code", "codex"}:
+            return "host_subscription"
+        return "unknown"
+
+    overrides = provider_auth_env_overrides(universe_dir, provider)
+    if any(
+        overrides.get(name)
+        for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+    ):
+        return "founder_byo_api_key"
+    if provider == "claude-code" and any(
+        overrides.get(name)
+        for name in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR")
+    ):
+        return "universe_subscription"
+    if provider == "codex" and overrides.get("CODEX_HOME"):
+        return "universe_subscription"
+    return "unresolved"
+
+
+def credential_owner_for_class(credential_class: str) -> str:
+    """Map a public credential class to its non-secret payer owner."""
+    if credential_class == "founder_byo_api_key":
+        return "founder"
+    if credential_class == "universe_subscription":
+        return "universe"
+    if credential_class.startswith("host_"):
+        return "host"
+    if credential_class == "local_no_credential":
+        return "none"
+    return "unknown"
+
+
 def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     """Resolve the active universe path from env, if one is explicitly bound."""
     source = os.environ if env is None else env
