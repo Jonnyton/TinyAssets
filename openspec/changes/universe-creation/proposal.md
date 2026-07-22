@@ -1,99 +1,62 @@
 ## Why
 
-Universe creation is currently split across two user-reachable paths: MCP
-`universe action=create_universe` and HTTP `POST /v1/universes`. They create
-different filesystem shapes and encode conflicting identity semantics. This
-must become one long-term creation contract so future changes extend a single
-route instead of adding another fork.
+The original `universe-creation` change became a monolithic second source of
+truth after its core birth, serial-id, and soul-bundle slices landed and were
+backfilled into canonical specs. The remaining work must be expressed as small
+deltas to the capabilities that now own it, especially the unresolved rule that
+first contact may use only requester-authorized or accepted-market resources.
 
 ## What Changes
 
-- **BREAKING:** Remove HTTP universe creation as a user-facing
-  creation path.
-- Make `universe action=create_universe` the single creation route end to end.
-- Use WorkOS AuthKit bearer tokens as the production founder identity source;
-  token `sub` is the immutable `founder_id` used for creation, home-universe
-  binding, and first-contact persona entry.
-- Generate exactly one immutable lowercase ULID serial during creation; that
-  serial is the `universe_id`.
-- Use that serial as the universe directory name and operation key.
-- Maintain a root universe index keyed by immutable `universe_id`. It shows the
-  current learned name from each universe's own identity file when one exists.
-- Stop accepting creation-time names as universe identity. A client display
-  label, if needed later, is metadata only.
-- Define first MCP contact as entering the authenticated founder's home
-  universe persona. If the founder has no home universe yet, create the blank
-  seed universe, bind it to that founder, load its soul, and speak as that
-  newly aware universe.
-- Seed one blank learned OKF soul bundle at creation; the universe's self-name is
-  learned later through the linked soul files rooted at `soul.md`.
-- Make `soul.edit` the real soul edit policy concept. It lives as
-  `soul.edit.md`, lays out how soul changes are learned, and governs edits to
-  `soul.md`, `identity.md`, `founder.md`, `body.md`, `origin.md`, and version
-  snapshots. `orgchart.md`, `projects.md`, and `goals.md` are not governed by
-  `soul.edit`.
-- Stop creating separate `self/`, `soul/`, `notes.json`, or `activity.log`
-  baseline files for new universes. Duplicate `self/`, `soul/`, and brain
-  archive folders are removed during baseline reset, not retained as artifacts.
-  Empty `notes.json` / `activity.log` starter files are removed; non-empty
-  historical notes/logs remain runtime data until they have an explicit typed
-  runtime target.
-- Make new `soul.md` files OKF concept documents that track the latest
-  `okf/SPEC.md` on GitHub.
-- Add `projects.md` as a one-line founder-project index with pointers as needed,
-  and keep `goals.md` scoped to platform runtime goals plus the branch uses/runs
-  attached to those goals.
-- Make `body.md` the learned embodiment file: live platforms/applications are
-  body surfaces, real-world text is voice, running Branches are hands, and
-  real-world feedback is sensory input.
-- Add `orgchart.md` as the learned organization map. The oath-confirmed founder
-  is always the top anchor; roles, teams, daemons, collaborators, delegations,
-  and reporting lines below the founder are learned organically.
-- Remove host-global active-universe routing from the creation/default-entry
-  contract. Any current universe selection is per authenticated founder or
-  per client session, never one root marker shared by all users.
-- Enforce the MCP write boundary: authenticated founders write only to their own
-  bound/home universe brain. Public cross-universe interactions are proposal or
-  request surfaces, not direct writes.
-- Enforce anonymous access as public-read-only. Anonymous callers cannot write,
-  create, run, mutate ledgers/state, or perform costly/admin actions.
-- Keep owner/admin grants separate from public/private visibility. `public_read`
-  controls whether public reads are allowed, and changing it in either direction
-  requires explicit user confirmation.
-- Treat Branch runs as universe actions. A human user can ask their own universe
-  to run, adopt, or remix a Branch; users can also submit patch requests,
-  Branch edit proposals, alternative Branch proposals, and Goal proposals to the
-  commons surfaces.
-- Preserve branch commons when universe brains are cleared. Branch definitions,
-  goals, run metrics, and outcome records are outside the universe brain unless
-  the user explicitly asks to reset branch commons.
-- Prepare for future iOS/Android clients and phone-hosted or phone-synced
-  universes without adding mobile-only creation, identity, or brain formats.
+- Treat the verified first-contact birth path as an existing prerequisite:
+  opening `converse` with create scope may reserve, materialize, and bind a home
+  universe without invoking a model. Without create scope it creates no binding
+  and returns the current structured home-create/load error with
+  `auth_scope_required: true` rather than an awaiting card.
+- Add a fail-closed execution-authority contract. A provider call requires a
+  complete authorized bundle: requester-owned or accepted-market compute, plus
+  requester-owned model access or an accepted-market model grant when the
+  workload requires model access separately.
+- Keep every provider choice and fallback inside that authorized bundle.
+  Project-maintainer, project-founder, and platform-operator credentials, quota,
+  auth homes, hardware, and accounts are never eligible for another user's
+  workload.
+- Apply the same authority boundary to the universe intelligence's reply and
+  to learning extraction. On success the chatbot only relays/renders the
+  universe intelligence's reply; it never authors that reply. The two phases
+  may select different providers admitted by the same authority boundary.
+- When authority is absent or partial, allow birth/binding to complete but make
+  no provider invocation and return a structured held/setup-required result
+  with the missing elements and BYOC/market setup paths.
+- Retire public HTTP universe creation, make all public birth self-serialize
+  without caller-selected ids, project learned names into the immutable-id
+  index, and finish existing-root serial migration and cleanup.
+- Remove the obsolete proposed `universe-creation` capability. This change now
+  modifies the two existing canonical capabilities that own the residual work.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `universe-creation`: The long-term contract for creating Workflow universes,
-  including route ownership, generated ids, seeded baseline files, founder
-  binding, first-connect persona entry, linked OKF bundle shape, real
-  `soul.edit.md` policy, anonymous read-only access, explicit universe
-  visibility, mobile-client compatibility, and the boundary between technical
-  ids, display metadata, and learned soul identity.
+- None.
 
 ### Modified Capabilities
 
-- None.
+- `identity-auth-and-access-control`: Require a complete requester-owned or
+  accepted-market authority bundle before reply generation or learning
+  extraction, with fail-closed held/setup behavior otherwise.
+- `universe-lifecycle-and-soul`: Finish the remaining public creation boundary,
+  learned-name index projection, and existing-root migration/cleanup behavior.
 
 ## Impact
 
-- Affected public surface: MCP `universe action=create_universe`.
-- Removed or rejected public surface: HTTP `POST /v1/universes`.
-- Affected code: `tinyassets/auth/*`, `tinyassets/api/helpers.py`,
-  `tinyassets/api/universe.py`, `tinyassets/api/status.py`, `fantasy_daemon/api.py`,
-  `tinyassets/universe_soul.py`, `tinyassets/universe_self_model.py`, tests covering
-  auth, universe creation, first-contact persona entry, and persona/soul-model
-  initialization.
-- Related design: `docs/design-notes/2026-06-26-founder-and-universe-identity.md`.
-- External standard: `https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md`
-  tracked as latest-main for new `soul.md` shape.
+- Affected runtime areas: first-contact routing, provider selection/fallback,
+  requester BYOC resolution, accepted-market execution grants, learning
+  extraction, execution receipts, universe creation, the universe index, and
+  existing-root migration.
+- Public behavior: first contact can birth a universe without consuming compute;
+  public callers cannot choose its id; HTTP is not a creation route; execution
+  without complete authority is held with actionable setup information.
+- Security gate: runtime implementation depends on the requester BYOC and
+  accepted-market authority paths plus opposite-provider security review. No
+  authority implementation may land from this spec rewrite alone.
