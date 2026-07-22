@@ -17,7 +17,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-05-19] Wiki drifting to agent scratch space (81% of post-05-01 notes); host conversation: split coordination off the knowledge wiki?
 - [filed:2026-07-14 verified:2026-07-14] Watch: anon-write gate LIVE + `ui-test` passed; pending first organic authenticated-user write.
 - [filed:2026-07-13 verified:2026-07-15] `workflow-voice` (dormant) has 3 stale `pending` queue rows — review before ever activating it.
-- [filed:2026-07-22] Watch: `release-reconcile.yml` cron 0 runs since 01:06Z, dispatch OK; token-merge backstop. Recheck ~02:20Z: .agents/activity.log
+- **[P1 filed:2026-07-22 verified:2026-07-22]** Release reconcile has no scheduled runs; add one external dead-man. See cron-reliability audit.
 
 ## Approved Specs
 
