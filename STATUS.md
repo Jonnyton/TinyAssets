@@ -19,18 +19,16 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-07-13 verified:2026-07-15] `workflow-voice` (dormant) has 3 stale `pending` queue rows — review before ever activating it.
 
 ## Approved Specs
-
 Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. On land, delete row + H2 section together.
-
-| Spec | Status |
-|---|---|
-| Daemon roster + node/gate soul policy + ledger/attribution/royalty/bounty items | deferred, needs-scoping; READ path landed (#900) |
+- Daemon roster + node/gate soul policy + ledger/attribution/royalty/bounty items — deferred, needs-scoping; READ path landed (#900).
 
 ## Work
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
 | **Release reconcile event trigger** — retain cron backstop; also reconcile after proven-under-load `Docker build smoke` completions; stable concurrency coalesces stampedes | .github/workflows/release-reconcile.yml, openspec/changes/release-reconcile-event-trigger/ | live runs 1892, 1883 | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
+| **Own-LLM training loop research + live UI composition** — map Tinker/Karpathy to current training-market specs; compose a commons workflow, not a platform feature | docs/audits/2026-07-22-build-your-own-llm-loop-implications.md, output/mcp_test_plan.md, output/user_sim_session.md, output/claude_chat_trace.md, .agents/worktrees.md | Claude review before live create/run | claimed:codex-gpt5-desktop-llm-loop ACTIVE 2026-07-22 |
+| **Own-LLM loop opposite-provider review** — re-check sources, OpenSpec fit, safety, and whether verdict is approve/adapt/defer/reject | docs/audits/2026-07-22-build-your-own-llm-loop-claude-review.md | build-your-own-llm-loop implications | pending |
 | **R2-1a set_engine must constrain allowed_providers** — host-credential half LANDED 92dd60c5 (fail-closed + mutation proof). Still open: a founder's own key silently falls through the writer chain to a provider they never chose | tinyassets/providers/router.py, tinyassets/api/engine.py, tests/ | - | pending |
 | **R2-1b provider receipt** — no receipt exists, so 92dd60c5 is asserted but UNAUDITABLE in prod. Design decided: thread provider off the same result object, NOT the `_last_provider` global (races); report credential class; cover BOTH converse writer calls | tinyassets/providers/call.py, tinyassets/universe_intelligence.py, tests/ | R2-1a | pending |
 | **R2-2 repeatable test identity** — NARROWED per Codex review to tasks 1.1-1.4, 3.1-3.3, min 2.1-2.2 only (not all 11); reset must not be a public deletion surface. Prior commit 375b0155 exists but does all 11 on stale main — do not reuse as-is | openspec/changes/test-identity-and-reset/, tinyassets/reset.py, tests/ | - | pending |
