@@ -84,6 +84,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "<details><summary>Release-critical files</summary>" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
           printf '%s\n' "$HITS" | sed 's/^/- `/; s/$/`/' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "</details>" >> "$GITHUB_STEP_SUMMARY"
