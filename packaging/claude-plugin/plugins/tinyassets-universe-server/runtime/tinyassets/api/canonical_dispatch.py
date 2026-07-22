@@ -610,7 +610,7 @@ def _latest_published_version_id(
 def _split_version_id(version_id: str) -> tuple[str, str]:
     """Best-effort ``branch_def_id`` extraction from a version id.
 
-    Published versions are minted as ``<branch_def_id>@<sha256_prefix8>``
+    Published versions are minted as ``<branch_def_id>@<full_sha256>``
     (see ``tinyassets.branch_versions``); the def_id is the prefix before
     the ``@``. Returns ``(version_id, "")`` when the input has no ``@``
     (defensive — keeps the response shape uniform even if a caller
