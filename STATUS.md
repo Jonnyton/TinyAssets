@@ -19,7 +19,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - [filed:2026-07-24] PLAN still says one file-locked claimer; epoch-2 OpenSpec is transactional. Reconcile before claim integration/rollout.
 
 ## Work
-
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
 | **Slice A0 default-deny provider environment** — Opus5 ADAPT: land #1592 successor; isolate auth homes, fail loud, preserve canonical delta truth ACTIVE 2026-07-24 | openspec/changes/close-universe-host-subscription-fallback/; tinyassets/providers/base.py; packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1727 verdict; vault-clobber lane releases canonical credential-vault sync | claimed:codex-gpt56-slice-a0 |
