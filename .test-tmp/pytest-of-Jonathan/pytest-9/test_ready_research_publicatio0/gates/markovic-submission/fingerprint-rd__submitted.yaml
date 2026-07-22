@@ -1,0 +1,11 @@
+claim_id: e5ae13b67c024d1d
+branch_def_id: 0f4a59edfd39
+goal_id: fc68036ee225
+rung_key: submitted
+evidence_url: https://example.org/submission-receipt
+evidence_note: ''
+conformance_pack_id: 4e6d55dfb4bb4b01
+claimed_by: alice
+claimed_at: '2026-07-22T04:10:36Z'
+retracted_at: null
+retracted_reason: ''
