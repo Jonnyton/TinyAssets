@@ -2596,12 +2596,39 @@ def save_goal(
     return get_goal(base_path, goal_id=goal_id)
 
 
+def _private_goal_owner_viewer(viewer: str) -> str:
+    """Return a signed-in viewer id that may own private Goals."""
+    viewer_id = (viewer or "").strip()
+    if not viewer_id or viewer_id == "anonymous":
+        return ""
+    return viewer_id
+
+
+def _goal_visible_to_viewer(goal: dict[str, Any], viewer: str) -> bool:
+    if goal.get("visibility") != "private":
+        return True
+    owner_viewer = _private_goal_owner_viewer(viewer)
+    return bool(owner_viewer) and goal.get("author") == owner_viewer
+
+
+def _private_goal_read_clause(viewer: str) -> tuple[str, tuple[str, ...]]:
+    owner_viewer = _private_goal_owner_viewer(viewer)
+    if owner_viewer:
+        return "(visibility != 'private' OR author = ?)", (owner_viewer,)
+    return "visibility != 'private'", ()
+
+
 def get_goal(
     base_path: str | Path,
     *,
     goal_id: str,
+    viewer: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch a Goal by id. Raises KeyError if missing."""
+    """Fetch a Goal by id. Raises KeyError if missing or hidden.
+
+    ``viewer=None`` is reserved for trusted daemon-internal record loading.
+    User-facing read paths must pass the signed request viewer explicitly.
+    """
     initialize_author_server(base_path)
     with _connect(base_path) as conn:
         row = conn.execute(
@@ -2611,6 +2638,8 @@ def get_goal(
         if row is None:
             raise KeyError(goal_id)
         result = _goal_from_row(row)
+        if viewer is not None and not _goal_visible_to_viewer(result, viewer):
+            raise KeyError(goal_id)
         _apply_canonical_bindings_cutover(conn, [result])
     return result
 
@@ -2807,14 +2836,22 @@ def list_goals(
     tag: str = "",
     include_deleted: bool = False,
     limit: int = 50,
+    viewer: str = "",
 ) -> list[dict[str, Any]]:
-    """List Goals with optional filters. Soft-deleted Goals are hidden
-    unless ``include_deleted=True`` (used by admin surfaces + get)."""
+    """List Goals visible to ``viewer`` with optional filters.
+
+    Soft-deleted Goals are hidden unless ``include_deleted=True``. Private
+    Goals are visible only to their signed-in owner; empty/anonymous viewers
+    never acquire ownership.
+    """
     initialize_author_server(base_path)
     clauses: list[str] = []
     params: list[Any] = []
     if not include_deleted:
         clauses.append("visibility != 'deleted'")
+    private_clause, private_params = _private_goal_read_clause(viewer)
+    clauses.append(private_clause)
+    params.extend(private_params)
     if author:
         clauses.append("author = ?")
         params.append(author)
@@ -2857,6 +2894,7 @@ def search_goals(
     *,
     query: str,
     limit: int = 20,
+    viewer: str = "",
 ) -> list[dict[str, Any]]:
     """Token-based full-field search over name + description + tags.
 
@@ -2867,7 +2905,8 @@ def search_goals(
     tokens matched (descending), then by recency.
 
     Single-token queries behave identically to the original LIKE search.
-    Hidden Goals (visibility='deleted') are excluded.
+    Hidden Goals (visibility='deleted') and private Goals not owned by the
+    signed-in viewer are excluded.
     """
     initialize_author_server(base_path)
     tokens = _goal_search_tokens(query or "")
@@ -2875,10 +2914,13 @@ def search_goals(
         return []
 
     with _connect(base_path) as conn:
-        # Fetch all non-deleted goals then score in Python.
+        # Fetch all visible, non-deleted goals then score in Python.
         # For v1 scale this is fine; swap to FTS5 if row count grows large.
+        private_clause, private_params = _private_goal_read_clause(viewer)
         all_rows = conn.execute(
-            "SELECT * FROM goals WHERE visibility != 'deleted'",
+            "SELECT * FROM goals WHERE visibility != 'deleted' "
+            f"AND {private_clause}",
+            private_params,
         ).fetchall()
 
         scored: list[tuple[int, dict[str, Any]]] = []

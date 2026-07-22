@@ -430,10 +430,12 @@ def test_goal_get_hides_private_branch_from_non_owner(
         ),
     )
 
-    # Alice (non-owner of the private branch) hits goals.get.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    # Alice (non-owner of the private branch) hits goals.get with a resolved
+    # request identity. The daemon environment is not an authorization source.
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
+    from tinyassets.api import permissions
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "alice")
     importlib.reload(mkt)
     importlib.reload(br)
 
@@ -444,7 +446,7 @@ def test_goal_get_hides_private_branch_from_non_owner(
     )
 
     # Bob (owner of the private branch) hits goals.get — sees both.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "bob")
     importlib.reload(mkt)
     importlib.reload(br)
     result = json.loads(mkt._action_goal_get({"goal_id": goal_saved["goal_id"]}))
