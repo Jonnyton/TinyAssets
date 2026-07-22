@@ -24,3 +24,9 @@
 2026-07-14T16:38:23-07:00 GREEN layer=wiki url=https://tinyassets.io/mcp surface=wiki_gate rtt_ms=1018
 2026-07-14T16:39:14-07:00 RED   layer=wiki url=http://127.0.0.1:8001/mcp exit=2 surface=wiki_gate rtt_ms=1023 reason='network error on initialize: <urlopen error timed out>'
 2026-07-14T16:43:00-07:00 GREEN layer=wiki url=https://tinyassets.io/mcp surface=wiki_gate rtt_ms=1023
+2026-07-21T18:45:03-07:00 RED   layer=wiki url=https://tinyassets.io/mcp exit=6 surface=wiki_gate rtt_ms=510 reason='HTTP 401 on tools/call: Unauthorized'
+2026-07-21T18:45:08-07:00 RED   layer=wiki url=https://tinyassets.io/mcp exit=6 surface=wiki_gate rtt_ms=559 reason='HTTP 401 on tools/call: Unauthorized'
+2026-07-21T18:56:01-07:00 RED   layer=wiki url=https://tinyassets.io/mcp exit=6 surface=wiki_gate rtt_ms=452 reason='HTTP 401 on tools/call: Unauthorized'
+2026-07-21T18:56:07-07:00 RED   layer=wiki url=https://tinyassets.io/mcp exit=6 surface=wiki_gate rtt_ms=393 reason='HTTP 401 on tools/call: Unauthorized'
+2026-07-21T19:01:26-07:00 RED   layer=wiki url=https://tinyassets.io/mcp exit=6 surface=wiki_gate rtt_ms=446 reason='HTTP 401 on tools/call: Unauthorized'
+2026-07-21T19:19:47-07:00 RED   layer=wiki url=https://tinyassets.io/mcp exit=6 surface=wiki_gate rtt_ms=513 reason='HTTP 401 on tools/call: Unauthorized'
