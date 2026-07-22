@@ -118,12 +118,35 @@ The directory surface's own test asserts this behavior as intended —
 the shared wiki. That is the exact substrate `universe_server.write_page` refuses
 to write and relays instead.
 
-### It is live
+### The asymmetry is not an auth-scope artifact
+
+Both surfaces share the *same* downstream gates, so neither explains the split:
+
+- The **anonymous write gate** is identical — `directory_server.py:477-479` calls
+  the same `write_gate_rejection("write_page")`.
+- The **action-scope gate** (`require_action_scope("wiki", action, …)`) and the
+  **per-universe ACL** live inside `_wiki_impl` (`api/wiki.py:2491-2504`,
+  `:2535-2541`), i.e. downstream of both callers.
+
+The divergence is purely that `/mcp` returns `relay_to_universe` *before*
+reaching `_wiki_impl` and `/mcp-directory` does not. The two tests hold identity
+constant and still disagree: the relay test authenticates a founder holding
+`tinyassets.wiki.write` and gets a relay; the directory test authenticates a
+founder with `_FOUNDER_SCOPES` + `admin` on the target universe
+(`test_directory_server.py:60-69`) and gets a write.
+
+### It is live — and it is the publicly listed URL
 
 `deploy/cloudflare-worker/worker.js:210-212` explicitly proxies `/mcp-directory`
 and everything under it. `docs/ops/acceptance-probe-catalog.md:190` lists
-`https://tinyassets.io/mcp-directory` as a connector URL under test. A read-only
-`tools/list` probe on 2026-07-22 confirms the endpoint is serving MCP:
+`https://tinyassets.io/mcp-directory` as a connector URL under test. More
+pointedly, `packaging/registry/server.json:24` publishes
+`https://tinyassets.io/mcp-directory/catalog/…` as the remote URL for external
+MCP directory listings — so the surface *without* the relay guard is the one
+advertised to third-party hosts, while AGENTS.md Hard Rule 11 names
+`https://tinyassets.io/mcp` as "canonical public endpoint … only."
+
+A read-only `tools/list` probe on 2026-07-22 confirms the endpoint is serving MCP:
 
 ```console
 $ curl -s -X POST https://tinyassets.io/mcp-directory -H 'Content-Type: application/json' \
