@@ -701,6 +701,7 @@ Notes:
   homes already approved by #1330, with Codex auth refresh serialized.
 - Ship condition: focused tests pass, branch pushed, PR opened, then deploy
   brings runtime_count to 4 while goal_pool remains a follow-on.
+- 2026-07-21 CREATE wf-paid-market-wave2-spec branch=codex/paid-market-track-e-wave2-spec base=origin/main@a69dd70a provider=codex-gpt5-desktop (Track E Wave 2 transport OpenSpec proposal)
 - 2026-06-24 CREATE wf-branch-lifecycle-automation branch=worktree-branch-lifecycle-automation base=origin/main provider=claude-code (branch lifecycle automation — design note + L0-L4)
 
 ## 2026-07-22 12:41 - create collapse-mcp-spec-reconcile
