@@ -54,14 +54,13 @@ transport in the tree.
 ## 4. Blob authority (M2 substrate) — ⚠ IN REPAIR, NOT ON MAIN
 
 - [ ] 4.1 One lock order, physical root identity, no stale index, full attestation table contract (B07–B10, #1487 — OPEN)
-  - **BLOCKER (2026-07-21, still open 2026-07-22):** committed #1487 is RED on a
-    clean checkout — 3 tests
+  - **Current (verified 2026-07-22 at #1487 head `f6bee436`):** the three focused
+    regressions
     (`test_record_candidate_marks_result_blobs_referenced`,
     `test_mark_referenced_rejects_raw_blob_reference`,
-    `test_stale_instance_cannot_resurrect_collected_binding`) expect a
-    "verified blob proof" implementation that was never committed. The completing
-    code exists only as uncommitted WIP in the build worktree (the M2 tightening
-    lane). Must land the implementation or align the tests before #1487 merges.
+    `test_stale_instance_cannot_resurrect_collected_binding`) pass 3/3 and the
+    verified-proof implementation is committed. The task stays unchecked because
+    the stacked PR remains open and none of it is on `main`.
 - [ ] 4.2 M2 content-addressing tightening: every accepted content hash recomputed
   from bytes, never read from a mutable row (in flight)
 
@@ -111,8 +110,9 @@ transport in the tree.
 ## 9. Pre-deploy integration — IN PROGRESS
 
 - [~] 9.1 Integration branch merging the mergeable stack; full suite + canary.
-  Surfaced the #1487 committed-red blocker (4.1) and the #1493 rebase need (6.1).
-  Branch-only; nothing from this lane is on `main`.
+  The earlier #1487 committed-red blocker is resolved on its current open head;
+  the #1493 rebase need (6.1) remains. Branch-only; nothing from this lane is on
+  `main`.
 - [ ] 9.2 Dual-family pre-deploy gate across the integrated whole
 - [ ] 9.3 Merge + deploy (host-gated: main merge + prod deploy)
 
