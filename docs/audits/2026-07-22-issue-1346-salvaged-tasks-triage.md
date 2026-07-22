@@ -30,13 +30,41 @@ this issue is a live security hole.
 | 8 | Capability-provisioning concept doc | `1c73ac26` | **still-valid** (docs, speculative) |
 | 9 | `github_read` docstring xref | `93cf2317` | **still-valid** (docs, trivial) |
 
-**Coverage: 9 of 9 verified against `origin/main`. Zero carried over. No silent caps.**
-7 already-fixed, 2 still-valid — and **both survivors are documentation-only**. The security
-section is entirely stale.
+**Coverage: 9 of 9 items verified against `origin/main`. None deferred, sampled, or carried over to
+a later pass. No silent caps.** (That is a statement about *verification* coverage; two items
+remain genuinely open, both documentation-only, tracked in §3.) 7 already-fixed, 2 still-valid. The
+security section is entirely stale.
 
-All 10 salvage shas still resolve locally (`git cat-file -e <sha>` succeeds for every one), so
-nothing was lost while this sat. Recovery, if ever wanted: `git fetch origin <sha> && git branch
-<name> <sha>`.
+### Recovery shas — use the full sha, the short one does not work
+
+All 10 salvage commits still resolve locally, so nothing was lost while this sat. **But the
+recovery recipe in the issue body does not work as written.** The issue displays short shas, and
+`git fetch origin <short-sha>` fails against GitHub:
+
+```
+$ git fetch origin dd7a4a1b
+fatal: couldn't find remote ref dd7a4a1b
+
+$ git fetch origin dd7a4a1b2db3061b83e3db61588f85a3637b1449
+ * branch dd7a4a1b2db3061b83e3db61588f85a3637b1449 -> FETCH_HEAD   # ok
+```
+
+Full shas, and the original PR ref as a fallback (`refs/pull/<n>/head` also resolves):
+
+| # | Item | Full sha | PR ref |
+|---|------|----------|--------|
+| 1 | Node self-approval gate | `dd7a4a1b2db3061b83e3db61588f85a3637b1449` | `refs/pull/1189/head` |
+| 2 | Canon path-traversal | `a195e1ba02809ecfd8123da7bbc1835b2f2cfc09` | `refs/pull/1187/head` |
+| 3 | Outcome-evaluator self-attestation | `c3f20055ef18a43d29016fac7ae814028ce2e51b` | `refs/pull/1185/head` |
+| 4 | Escrow test | `2f08607552db374f75ebfdb688e418234106c6b7` | `refs/pull/1299/head` |
+| 5 | Money loop (slice1a) | `878a36808ba8a2a40eccb8974de63af47b551346` | `refs/pull/1301/head` |
+| 5 | Money loop (slice0, superseded) | `ed168e2dd677a968820a29c4cd8350eaf688dbf3` | `refs/pull/1300/head` |
+| 6 | `twitter_post` effector | `424461c8bc158ee0809e4752f8ef6abcf10d298a` | `refs/pull/1327/head` |
+| 7 | Secrets-vendor push-cred | `42569fa2b9d65605994bc4a3b6ce4cad9f2fe067` | `refs/pull/1286/head` |
+| 8 | Capability-provisioning doc | `1c73ac267c4e09740d7d459dc72f62743ca93fd8` | `refs/pull/1195/head` |
+| 9 | `github_read` docstring xref | `93cf23171e075f9bc492d308b08ec7bdf88d7b57` | `refs/pull/1329/head` |
+
+Working recovery: `git fetch origin <full-sha> && git branch <name> FETCH_HEAD`.
 
 ---
 
@@ -114,22 +142,33 @@ The salvage's own test file landed too: `tests/test_standalone_node_approval_gat
 `main` (`git ls-tree origin/main tests/`). The sentinel string appears in three places on `main` —
 canonical module, plugin mirror, and the test — so the guard is exercised, not decorative.
 
-The 39-line residual vs. the salvage post-image is `main`'s *additional* hardening: a whole
-`approved_source_hash` staleness regime in `tinyassets/api/branches.py:196-279` that re-validates a
-bare `approved=True` against the hash of the *current* source, plus enforcement at
-`branches.py:1689-1728`. That is strictly more defence than the salvage proposed.
+Two separate facts, which an earlier draft of this audit wrongly merged (caught by the Codex
+review, §"Review gate"):
+
+1. **The 39-line residual in `extensions.py` is NOT security hardening.** Inspecting the diff
+   directly, those lines are unrelated drift — the `workflow/` → `tinyassets/` docstring rename,
+   phase-vocabulary changes (`worldbuild` → `enrich` plus a `__post_init__` validator), and escrow
+   fields. `diff /tmp/sal.txt /tmp/main.txt | grep '^[<>]' | grep -ci "approv\|hash"` = **0**.
+2. **`main` does carry extra approval hardening, but it lives elsewhere** — an
+   `approved_source_hash` staleness regime in `tinyassets/api/branches.py:196-279` re-validating a
+   bare `approved=True` against the hash of the *current* source, enforced at `:1689-1728`. Real,
+   but not attributable to the `extensions.py` comparison above.
 
 Adversarial follow-ups, since a guard in one function body proves nothing about the other call
 sites:
 
-- **Is `_ext_manage` the only approve path?** No — but the other one is guarded too.
-  `git grep -n 'approved.*= *True' origin/main -- "tinyassets/**.py"` finds one further *write*
-  (as opposed to comment): `tinyassets/api/branches.py:516`, the branch-node `approve_source_code`
-  path, which is a different action from the standalone-node `approve` this item is about. It
-  binds identity and hash on the adjacent lines (`:517` `approved_by = actor`, `:519`
-  `approved_source_hash = source_hash`), and `tinyassets/branches.py:511` records the invariant:
-  *"…never sets `approved=True` directly, so the hash is always bound to the source"*.
-  `approve_source_code` is likewise in `_EXTENSIONS_ADMIN_ACTIONS`.
+- **Is `_ext_manage` the only approve path?** No, and the other is guarded *differently* — do not
+  read this as equivalent protection. `git grep -n 'approved.*= *True' origin/main -- "tinyassets/**.py"`
+  finds one further *write* (as opposed to comment): `tinyassets/api/branches.py:516`, the
+  branch-node `approve_source_code` path — a different action from the standalone-node `approve`
+  this item is about. It records identity and binds the hash (`:517` `approved_by = actor`, `:519`
+  `approved_source_hash = source_hash`) and requires admin scope, **but it does not enforce a
+  distinct approver.** Whether admin self-approval is intended there is out of scope for this
+  triage; flagging it rather than asserting it is fine. The separate in-process helper at
+  `tinyassets/branches.py:511` (a distinct module from `tinyassets/api/branches.py` — both exist)
+  records the invariant: *"the ONLY sanctioned in-process approval helper… must call it instead of
+  setting `approved=True` directly, so the hash is always bound to the source actually being
+  approved."*
 - **Is the admin frozenset actually enforced, or dead config?** Enforced.
   `tinyassets/auth/provider.py:441-443` is the consumer — `admin_actions` parameter, then
   `if action in admin_actions:` — reached for this surface via `:587`
@@ -277,10 +316,24 @@ Adversarial follow-up — did it land under a different name? No.
 `git grep -rln "requires_capability\|capability-provisioning\|capability_provisioning" origin/main`
 returns **zero** hits across the entire tree, in any file type. The concept is absent, not renamed.
 
-Disposition: the issue itself files this as *"Speculative `status: proposed` doc. Low priority."*
-It is a concept page with no code behind it, and the platform's direction has since been reframed
-twice (`enabling-primitives-not-prebuilt-complexity`, `platform-shape-democratized-commons`).
-**Recommend drop, not port** — re-derive from current direction if the concept is still wanted.
+Disposition: **host-decision — do not drop by default.** An earlier draft of this audit recommended
+dropping it as "superseded by the enabling-primitives reframe." The Codex review challenged that as
+an unsupported assertion, and reading the salvaged page itself shows the assertion was not just
+unsupported but **backwards**. `1c73ac26`'s frontmatter and body describe a deliberately
+runtime-neutral, user-buildable, portable capability declaration:
+
+> *"Use brain pages as the canonical exchange record for portable capability requirements and
+> declarations. Local runtime configuration remains a projection, not the semantic source of
+> truth."*
+
+with `capability_id` / `kind` fields and no automatic installation and no new MCP handles. That
+**aligns** with `enabling-primitives-not-prebuilt-complexity` (ship reduced composable primitives;
+let power users build and share the complex thing) rather than being superseded by it.
+
+So the honest classification is: still-valid, genuinely absent, and the keep-or-drop call the issue
+asked for is a real host decision — not one this triage should quietly make. The issue's own
+framing (*"Speculative `status: proposed` doc. Low priority."*) still applies to its urgency, not
+to its merit.
 
 ### [9] `github_read` docstring xref — `93cf2317` — **still-valid** (docs, trivial)
 
@@ -303,8 +356,11 @@ See also ``search_repo_files`` in ``workflow/effectors/github_search.py`` for th
 
 (needs the `workflow/` → `tinyassets/` path rewrite, and the same line in the packaging mirror).
 
-Disposition: trivial docs nicety, no urgency, no security or behaviour impact. Fold into whatever
-next touches `github_read.py` rather than spending a lane on it.
+Disposition: **track it as a `dev-ready` STATUS Work row** (row text in the PR body). Trivial docs
+nicety, no urgency, no security or behaviour impact — but "fold it into the next touch of that
+file" is a hope, not a disposition, and hoping is what produced a 27-day-old issue. Either it is
+tracked or it is dropped; this audit recommends tracked, since it is a two-line change (canonical
+module + packaging mirror) against a cross-reference target that demonstrably exists.
 
 ---
 
@@ -316,9 +372,10 @@ The issue was filed correctly and in good faith — as a *snapshot* of work-in-f
 assignee, and no STATUS row, so nothing ever forced a re-read.
 
 That is the same shape as `stale-backlog-rows-misdirect` (5 of 5 dispatched dev-ready rows wrong on
-2026-07-21) and as the `daemon-request` issue backlog triaged separately in
-`daemon-request-issues-address-a-deleted-pipeline.md` — **different issue set, same disease**: a
+2026-07-21) and as the `daemon-request` issue backlog (≥100 issues) triaged separately under the
+`daemon-request-issues-address-a-deleted-pipeline` lane — **different issue set, same disease**: a
 durable artifact asserting present-tense state, with no mechanism to notice it stopped being true.
+That lane's scope is deliberately not duplicated here.
 
 The specific trap here is that the salvaged work *did* land — mostly through ordinary development
 that never referenced the issue number, and partly under renamed symbols
@@ -332,12 +389,49 @@ issue's prose. Prose ages with the vocabulary; the post-image diff does not.
 
 ---
 
+## Review gate — Codex (opposite-provider), verdict: ADAPT
+
+Dispatched via `scripts/codex_review.py` and asked to *refute* the "all security items are stale"
+conclusion, defaulting to refuted if uncertain. Codex independently re-ran verification and
+**confirmed the seven `already-fixed` classifications** (`108 passed, 10 skipped`; escrow
+`48 passed`; adjacent approval/scope tests `8 passed`; universe-node tests `154 passed, 9 skipped`),
+finding no functional regression — hence adapt rather than reject. Five required adaptations, four
+accepted and applied above:
+
+| # | Codex finding | Outcome |
+|---|---|---|
+| 1 | `approve_source_code` records actor/hash and requires admin scope but does **not** enforce a distinct approver; don't call it "guarded too" | **Accepted** — §1 rewritten to state the difference explicitly and flag rather than assert intent |
+| 2 | The "39-line residual = extra hardening" attribution is false; those lines are unrelated phase/escrow drift | **Accepted** — verified (`grep -ci "approv\|hash"` = 0 over the diff) and split into two separate facts |
+| 3 | "Zero carried over" contradicts two still-valid verdicts; item 8's obsolescence claim is uncited; "fold into next touch" is not a disposition for item 9 | **Accepted** — coverage wording disambiguated; item 8 corrected (the salvaged doc is runtime-neutral and *aligns* with the reframe — my claim was backwards); item 9 now a tracked row |
+| 4 | The documented recovery command is not reproducible: `git fetch origin <short-sha>` fails | **Accepted** — reproduced the failure, added a full-sha + PR-ref table and a working command |
+| 5a | `tinyassets/branches.py:511` should be `tinyassets/api/branches.py` | **Rejected** — both modules exist on `main` (`git ls-tree -r origin/main --name-only \| grep -E "^tinyassets/(api/)?branches\.py$"` returns two paths) and line 511 of `tinyassets/branches.py` is the quoted invariant. Original citation was correct. |
+| 5b | Soften "P0-framed" (the issue carries no P0 label); use resolvable paths for sibling docs | **Accepted** — applied below |
+
+Finding 4 is the most useful thing this review produced: the issue's own recovery recipe, which
+everyone reading it would have trusted, does not execute.
+
+**Process note — the first dispatch silently reviewed the wrong thing.** The initial
+`codex_review.py` call returned a confident, well-formatted `VERDICT: adapt` about an entirely
+different lane (`wf-unified-authority` / selector dispatch — a task this session never asked
+about), evidently from ambient context. It was caught only because the content was recognizably
+off-topic; had it been plausibly adjacent, it would have been accepted as this audit's review gate.
+The re-dispatch added a scope lock naming the exact issue and shas. This is the
+`silent-failure-dispatch-and-tests` class: **a dispatch that returns *something* reads as success**,
+and a cross-family gate that reviews the wrong artifact is worse than no gate, because it
+manufactures unearned confidence. Worth a validation step (echo-the-scope, or assert the response
+cites the artifact under review) in `codex_review.py` itself.
+
 ## Recommended disposition
 
-Close #1346 with a summary. Nothing in it is a live security hole; the two survivors are a
-speculative concept doc (recommend drop) and a one-line docstring xref (fold into next touch) —
-neither justifies keeping a P0-framed issue open. The salvage shas remain reachable, so closing
-loses no recovery path.
+Close #1346 with a summary, **after** re-homing the two survivors so closing does not drop them.
+Nothing in the issue is a live security hole; the two survivors are a concept doc (host keep-or-drop
+decision) and a two-line docstring xref (`dev-ready` row). Neither justifies keeping open an issue
+whose headline claim is a present-tense security assertion that is no longer true — the issue
+carries no P0 label, but its closing line functions as a priority claim, and that is what makes it
+a hazard to the next reader.
+
+The salvage shas remain reachable, so closing loses no recovery path — **provided the full shas
+above are used**, since the issue's own short-sha recipe does not execute.
 
 **The `gh` command is written out in the PR body for the host to run. This audit does not run it —
 closing a host-visible issue is an outward-facing action.**
