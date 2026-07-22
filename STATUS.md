@@ -50,7 +50,7 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 
 ## Live brain notes
 
-Enumeration + theme distribution: `.claude/agent-memory/navigator/wiki_sweep_cursor.md` (refresh before relying). In flight: PR-129 (branch protocols), PR-131 (Windows effect adapter), PR-139 (souled-universe, deployed); universes Meridian Ashes / Etsy Printify v2 / Markovic.
+Provider capacity: Claude rate-limited through 2026-07-24; Codex-only until then. Brain sweep: `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; in flight PR-129/131/139; universes Meridian Ashes / Etsy Printify v2 / Markovic.
 
 ## Next
 
