@@ -30,7 +30,7 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| Universe first contact: pure `get_status`; founder home birth + learned first-person voice through `converse` (OpenSpec 1.3/1.12/1.13/2.7) | `tinyassets/api/{status,helpers,prompts}.py`; `tinyassets/universe_server.py`; plugin mirrors; focused tests; `openspec/changes/universe-creation/` | #1462 landed; PLAN Brain + API/MCP | claimed:codex-gpt5-desktop ACTIVE 2026-07-21 |
+| Universe first contact: pure `get_status`; founder home birth + learned first-person voice through `converse` (OpenSpec 1.3/1.12/1.13/2.7) | `tinyassets/api/{status,helpers,prompts}.py`; `tinyassets/universe_server.py`; plugin mirrors; focused tests; `openspec/changes/universe-creation/` | #1462 landed; PLAN Brain + API/MCP | host-action: push `feat/universe-first-contact` (implementation `87dac758`); outbound GitHub blocked 2026-07-21 |
 | Paid-market Track E Wave 2 transport as an OpenSpec change; renumber migrations + add schema_migrations before 006–008 go live | openspec/, tinyassets/paid_market/ | - | pending |
 | In-node enqueue flag flip — Codex ADAPT asks landed (`graph_compiler.py:1406-1560`), still dark; §14 proof passes but global-queue + per-origin lineage caps have no concurrent boundary coverage | tinyassets/graph_compiler.py, tests/test_node_enqueue_*.py | `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | External directory acceptance — canaries green 2026-05-02; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
