@@ -5,9 +5,7 @@
 ## Purpose
 
 The public MCP entry point: the canonical handle set served at https://tinyassets.io/mcp as thin routers over `tinyassets.api.*` handlers, MCP prompts that teach connecting chatbots, legacy fat-tool deprecation, the Cloudflare Worker front door, and the public canaries that guard the surface.
-
 ## Requirements
-
 ### Requirement: Remote Streamable-HTTP MCP Endpoint
 
 The platform SHALL expose a single remote MCP server over Streamable-HTTP transport (`tinyassets/universe_server.py`, built on FastMCP) that any MCP-compatible chatbot can connect to by URL with no local installation. The server SHALL register MCP prompts (control-station and meet-universe prompts in `tinyassets/api/prompts.py`) so a connecting chatbot receives behavioral instructions on how to act as the user's control interface.
@@ -147,3 +145,20 @@ The platform SHALL provide a stdlib-only public canary (`scripts/mcp_public_cana
 
 - **WHEN** a directory client reads status through the `/mcp-directory` surface
 - **THEN** raw activity logs and internal diagnostics are stripped and the payload carries a `directory_privacy_note`, whereas the live `/mcp` `read_graph target=status` returns the full unredacted status
+
+### Requirement: Published registry metadata follows the current versioned directory catalog
+The checked-in MCP Registry manifest SHALL advertise the versioned remote URL derived from `tinyassets.connector_catalog.directory_mcp_remote_url()`, and repository tests plus packaging CI SHALL fail when `packaging/registry/server.json` differs from the deterministic generator output. The generator SHALL run directly from a clean repository checkout. Before repaired metadata is accepted for publication, the generated versioned URL SHALL serve the current directory catalog successfully.
+
+#### Scenario: a connector catalog version change makes stale metadata fail
+- **WHEN** `DIRECTORY_TOOL_CATALOG_VERSION` changes without regenerating `packaging/registry/server.json`
+- **THEN** the focused artifact-equality test fails
+- **AND** the packaging workflow's generator `--check` step fails
+
+#### Scenario: clean checkout generation uses the current catalog source
+- **WHEN** a contributor runs `python packaging/registry/generate_server_json.py --check` from repository root
+- **THEN** the command imports the repository's real `tinyassets.connector_catalog` module
+- **AND** it compares the checked-in manifest with the document containing `directory_mcp_remote_url()`
+
+#### Scenario: repaired registry remote is reachable
+- **WHEN** the generated manifest is proposed for external-directory publication
+- **THEN** a read-only Streamable-HTTP MCP handshake to its remote URL succeeds and lists the current versioned directory catalog handles
