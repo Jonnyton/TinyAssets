@@ -35,20 +35,32 @@ def test_get_status_tool_is_registered() -> None:
 def test_get_status_tool_is_safe_to_call() -> None:
     """#88: get_status stays safe to call on any turn without consent gates.
 
-    First-contact provisioning (host decision 2026-07-15) means it is no
-    longer strictly read-only — an authenticated founder's first call
-    auto-creates their home universe — so `readOnlyHint` is now False. But it
-    stays idempotent (repeated calls converge to the same home) and
-    non-destructive, so the chatbot/gateway can still call it freely. The
-    pure read-only path is `read_graph target=status`.
+    Status is observational evidence. First-contact provisioning belongs to
+    the authenticated conversation entry path, so the MCP metadata must be
+    genuinely read-only as well as idempotent and non-destructive.
     """
     tool = next(t for t in _list_tools() if t.name == "get_status")
     # FastMCP may surface ToolAnnotations via tool.annotations.
     ann = getattr(tool, "annotations", None)
     if ann is not None:
-        assert getattr(ann, "readOnlyHint", None) is False
+        assert getattr(ann, "readOnlyHint", None) is True
         assert getattr(ann, "idempotentHint", None) is True
         assert getattr(ann, "destructiveHint", None) is False
+
+
+def test_first_contact_tool_descriptions_match_the_opening_instruction() -> None:
+    tools = {tool.name: tool for tool in _list_tools()}
+    status_description = " ".join(
+        (tools["get_status"].description or "").lower().split()
+    )
+    converse_description = " ".join(
+        (tools["converse"].description or "").lower().split()
+    )
+
+    assert "pure, idempotent read" in status_description
+    assert "never creates or repairs" in status_description
+    assert "founder's home universe" in converse_description
+    assert "creates and binds a blank seed" in converse_description
 
 
 def test_get_status_returns_required_shape() -> None:

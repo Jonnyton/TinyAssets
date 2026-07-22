@@ -131,6 +131,19 @@ def require_api_key_provider_opt_in(provider_name: str) -> None:
     )
 
 
+# Host subscription auth that must NOT serve a universe's turn. These are how
+# the platform host's own `claude -p` / `codex exec` authenticate, and prod
+# mounts shared auth homes into the container (deploy/compose.yml). Before this
+# guard, a universe with no credential of its own silently inherited them: only
+# API keys were stripped, so a stranger's `converse` ran on the host's
+# subscription and nothing recorded that it had.
+HOST_SUBSCRIPTION_ENV_VARS: tuple[str, ...] = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+)
+
+
 def subprocess_env_without_api_keys() -> dict[str, str] | None:
     """Return a subprocess env that ignores API-key auth unless opted in."""
     if api_key_providers_enabled():
@@ -152,9 +165,28 @@ def subprocess_env_for_provider(
     """
     env = subprocess_env_without_api_keys() or os.environ.copy()
     try:
-        from tinyassets.credential_vault import apply_provider_auth_env
+        from tinyassets.credential_vault import (
+            apply_provider_auth_env,
+            resolve_universe_from_env,
+        )
 
+        before = {k: env.get(k) for k in HOST_SUBSCRIPTION_ENV_VARS}
         apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
+
+        resolved = (
+            Path(universe_dir)
+            if universe_dir is not None
+            else resolve_universe_from_env(env)
+        )
+        if resolved is not None and all(
+            env.get(k) == before.get(k) for k in HOST_SUBSCRIPTION_ENV_VARS
+        ):
+            # A universe is in play and the vault supplied nothing for it, so
+            # every host subscription variable is still exactly as inherited.
+            # Drop them: the provider then fails to authenticate rather than
+            # quietly billing the host. Fail closed, not open.
+            for name in HOST_SUBSCRIPTION_ENV_VARS:
+                env.pop(name, None)
     except ValueError:
         raise
     except Exception:
