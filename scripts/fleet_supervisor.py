@@ -32,6 +32,7 @@ create `supervisor.stop` to request a clean shutdown.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -106,8 +107,94 @@ def _parse_directive(brief: Path) -> list[str]:
     return args
 
 
+# How deep to keep each lane's ready queue, and how thin the backlog may get
+# before we start shouting. LOW_BACKLOG is per provider.
+QUEUE_TARGET_DEPTH = 4
+LOW_BACKLOG = 3
+
+
+def _promote_from_backlog(queue_root: Path, provider: str) -> int:
+    """Top a lane's queue back up from the durable backlog.
+
+    The queue used to be hand-stocked, so it drained to empty and STAYED there:
+    the supervisor logged `QUEUE EMPTY` once a minute and refilled nothing,
+    which meant the fleet sat idle until a human happened to read the log. A
+    detector that cannot act is not a fix.
+
+    So the queue is now a buffer, not the store. Briefs live in
+    `<queue-root>/_backlog/<provider>/` and are promoted into the lane on
+    demand. While the backlog holds anything at all, an empty queue is not
+    reachable.
+    """
+    lane_dir = queue_root / provider
+    backlog = queue_root / "_backlog" / provider
+    if not backlog.is_dir():
+        return 0
+    lane_dir.mkdir(parents=True, exist_ok=True)
+
+    have = len(list(lane_dir.glob("*.md")))
+    promoted = 0
+    for brief in sorted(backlog.glob("*.md"), key=lambda p: p.stat().st_mtime):
+        if have + promoted >= QUEUE_TARGET_DEPTH:
+            break
+        try:
+            os.replace(str(brief), str(lane_dir / brief.name))
+        except OSError as exc:
+            _log(queue_root, f"ERROR promoting {brief.name} from backlog: {exc}")
+            continue
+        promoted += 1
+    if promoted:
+        _log(queue_root, f"promoted {promoted} brief(s) from backlog -> {provider}")
+    return promoted
+
+
+def _backlog_depth(queue_root: Path, provider: str) -> int:
+    backlog = queue_root / "_backlog" / provider
+    return len(list(backlog.glob("*.md"))) if backlog.is_dir() else 0
+
+
+def _raise_backlog_alarm(queue_root: Path, depths: dict[str, int]) -> None:
+    """Surface a thin backlog to the agent, rather than to a log nobody reads.
+
+    Promotion only moves the problem: once the backlog empties the fleet goes
+    idle again. Nothing here can invent genuine work — inventing it is how you
+    get busywork that looks like progress — so the loop has to close through
+    the agent, which can. This writes the state file that
+    `.claude/hooks/fleet_floor_guard.py` reads, so a thin backlog interrupts
+    the next turn instead of waiting to be noticed.
+    """
+    low = {p: n for p, n in depths.items() if n < LOW_BACKLOG}
+    # Written where the hook looks, next to .fleet_floor_state.json — an alarm
+    # filed somewhere the reader does not check is the same as no alarm.
+    state = Path(__file__).resolve().parent.parent / ".claude" / ".fleet_backlog_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        state.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "depths": depths,
+                    "low": low,
+                    "threshold": LOW_BACKLOG,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    for provider, n in low.items():
+        _log(
+            queue_root,
+            f"BACKLOG LOW for {provider}: {n} brief(s) left (< {LOW_BACKLOG}) — "
+            f"stock {queue_root / '_backlog' / provider}",
+        )
+
+
 def _next_brief(queue_root: Path, provider: str) -> Path | None:
     lane_dir = queue_root / provider
+    if not lane_dir.is_dir() or not any(lane_dir.glob("*.md")):
+        _promote_from_backlog(queue_root, provider)
     if not lane_dir.is_dir():
         return None
     briefs = sorted(lane_dir.glob("*.md"), key=lambda p: p.stat().st_mtime)
@@ -213,6 +300,13 @@ def reconcile(queue_root: Path, gate_dir: Path, floors: dict[str, int]) -> dict:
     """One pass: top every provider back up to its floor. Returns a summary."""
     lanes = live_lanes()
     summary = {}
+    # Top every lane up from the backlog BEFORE counting, so a lane is never
+    # found empty merely because nobody hand-stocked it this minute.
+    for provider in PROVIDERS:
+        _promote_from_backlog(queue_root, provider)
+    _raise_backlog_alarm(
+        queue_root, {p: _backlog_depth(queue_root, p) for p in PROVIDERS}
+    )
     for provider in PROVIDERS:
         have = _count(lanes, provider)
         want = floors[provider]
@@ -222,8 +316,12 @@ def reconcile(queue_root: Path, gate_dir: Path, floors: dict[str, int]) -> dict:
             if brief is None:
                 _log(
                     queue_root,
-                    f"QUEUE EMPTY for {provider}: {have + launched}/{want} live — "
-                    f"add briefs to {queue_root / provider}",
+                    # Promotion already ran this pass, so an empty queue now
+                    # means the BACKLOG is empty too — say that, rather than
+                    # pointing at a lane dir that refilling would not help.
+                    f"QUEUE AND BACKLOG EMPTY for {provider}: "
+                    f"{have + launched}/{want} live — "
+                    f"stock {queue_root / '_backlog' / provider}",
                 )
                 break
             if not _dispatch(brief, provider, gate_dir, queue_root):

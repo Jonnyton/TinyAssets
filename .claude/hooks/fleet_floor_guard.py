@@ -89,6 +89,34 @@ def _warn_throttled() -> bool:
     return True
 
 
+BACKLOG_STATE_PATH = PROJECT_DIR / ".claude" / ".fleet_backlog_state.json"
+
+
+def _warn_thin_backlog() -> None:
+    """Advisory only: tell the agent the reserve is running out.
+
+    Never blocks and never exits. A thin backlog is not a reason to refuse to
+    stop working — it is a reason to queue more real work, and only the agent
+    can decide what that is.
+    """
+    try:
+        state = json.loads(BACKLOG_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError):
+        return
+    low = state.get("low") or {}
+    if not low:
+        return
+    detail = ", ".join(f"{p} {n}" for p, n in sorted(low.items()))
+    print(
+        f"[fleet] BACKLOG THIN — {detail} brief(s) left "
+        f"(threshold {state.get('threshold')}, checked {state.get('checked_at')}).\n"
+        f"        The supervisor promotes briefs automatically but cannot write "
+        f"them. Stock output/s2-gate/_queue/_backlog/<provider>/ with real work "
+        f"before the lanes drain.",
+        file=sys.stderr,
+    )
+
+
 def main() -> None:
     if OFF_SWITCH.exists():
         _allow()
@@ -106,6 +134,15 @@ def main() -> None:
 
     codex = sum(1 for lane in lanes if lane["provider"] in CODEX_PROVIDERS)
     claude = sum(1 for lane in lanes if lane["provider"] in CLAUDE_PROVIDERS)
+
+    # Backlog check runs BEFORE the at-floor early return, deliberately. Being
+    # at floor with a thin backlog is exactly the moment to restock — waiting
+    # until the lanes have already drained means the fleet sits idle for however
+    # long it takes someone to notice. The supervisor can promote briefs but it
+    # cannot invent them, so this is the point where the loop hands back to the
+    # only participant who can.
+    _warn_thin_backlog()
+
     if codex >= FLOOR_CODEX and claude >= FLOOR_CLAUDE:
         _allow()
 
