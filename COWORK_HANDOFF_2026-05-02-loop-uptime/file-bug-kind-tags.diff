@@ -1,0 +1,62 @@
+# BUG-040 / BUG-042 — file_bug schema: thread `kind` + `tags` end-to-end.
+#
+# State on origin/main as of 2026-05-02 ff66420:
+#   - workflow/api/wiki.py:_wiki_file_bug accepts `kind` (default "bug")
+#     and `tags` (default "") as params — handler is ready.
+#   - workflow/api/wiki.py:wiki() dispatcher does NOT list them and does
+#     NOT thread them into the kwargs dict passed to the handler.
+#   - workflow/universe_server.py:wiki() @mcp.tool wrapper does NOT list
+#     them and does NOT pass them to _wiki_impl.
+#
+# Result: chatbots cannot pass kind="feature" or kind="design" or any
+# tags via the MCP surface — they fall back to defaults inside the
+# handler, but cannot be set per-call. This blocks the loop's ability
+# to differentiate bugs / features / design proposals at intake, and
+# blocks tag-based filtering for triage.
+#
+# Fix: add `kind` and `tags` params at both surfaces and thread.
+# Plugin mirror at
+# packaging/claude-plugin/plugins/workflow-universe-server/runtime/...
+# is auto-rebuilt by `python packaging/claude-plugin/build_plugin.py`
+# (see AGENTS.md §Testing).
+
+--- a/workflow/api/wiki.py
++++ b/workflow/api/wiki.py
+@@ -1402,6 +1402,8 @@ def wiki(
+     observed: str = "",
+     expected: str = "",
+     workaround: str = "",
++    kind: str = "bug",
++    tags: str = "",
+     force_new: bool = False,
+     bug_id: str = "",
+     reporter_context: str = "",
+@@ -1488,6 +1490,8 @@ def wiki(
+         "observed": observed,
+         "expected": expected,
+         "workaround": workaround,
++        "kind": kind,
++        "tags": tags,
+         "force_new": force_new,
+         "bug_id": bug_id,
+         "reporter_context": reporter_context,
+--- a/workflow/universe_server.py
++++ b/workflow/universe_server.py
+@@ -837,6 +837,8 @@ def wiki(
+     observed: str = "",
+     expected: str = "",
+     workaround: str = "",
++    kind: str = "bug",
++    tags: str = "",
+     force_new: bool = False,
+     bug_id: str = "",
+     reporter_context: str = "",
+@@ -873,6 +875,8 @@ def wiki(
+         observed=observed,
+         expected=expected,
+         workaround=workaround,
++        kind=kind,
++        tags=tags,
+         force_new=force_new,
+         bug_id=bug_id,
+         reporter_context=reporter_context,

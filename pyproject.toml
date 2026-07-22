@@ -39,6 +39,12 @@ dependencies = [
     # Retry with backoff for provider calls
     "tenacity>=9.0,<10.0",
 
+    # Imported directly by constraints/, knowledge/ and planning/ modules. It has
+    # only ever resolved transitively (via langgraph/pydantic), so a minimal install
+    # — the CI vault smoke, and any tier-3 `git clone` + `pip install -e .` — fails
+    # with ModuleNotFoundError. Declare what we actually import.
+    "typing-extensions>=4.0",
+
     # MCP/server entry points and Tier-3 structural smoke imports
     "fastmcp>=3.0",
     "uvicorn[standard]>=0.30",
