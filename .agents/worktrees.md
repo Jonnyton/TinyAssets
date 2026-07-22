@@ -766,7 +766,7 @@ Notes:
 
 - Provider: codex-gpt5-desktop-2
 - Branch: codex/founder-provider-allowlist
-- Lane state: Host-action — implementation approved; live fenced cutover required
+- Lane state: Active lane — repairing cancellation-safe cutover after final audit
 - Worktree: C:\Users\Jonathan\Projects\wf-founder-provider-allowlist
 - STATUS/Issue/PR: R2-1a founder BYO provider allowlist; draft PR #1606 DO NOT MERGE
 - PLAN refs: Module: Providers; Constraints; platform responsibility model
