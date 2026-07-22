@@ -6,7 +6,7 @@ founder's OAuth **embodies** the persona and speaks in first person, **never rel
 
 **That invariant was reversed by host directive on 2026-07-02 and is contradicted by
 shipped production behavior.** Three independent sources agree, re-verified against
-`origin/main` at `19bf2534` on 2026-07-22:
+`origin/main` at `7a118dca` on 2026-07-22:
 
 1. **Ratified correction** — PR #1578 / `f605bb99` amends
    `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` to the host-directed relay model:

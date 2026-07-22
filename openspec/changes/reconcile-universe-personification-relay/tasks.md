@@ -1,6 +1,6 @@
 ## 1. Verify the contradiction (done in this change)
 
-- [x] 1.1 `git fetch --prune`; classify against `origin/main`, then re-verify at `19bf2534` after PR #1578
+- [x] 1.1 `git fetch --prune`; classify against `origin/main`, then re-verify at `7a118dca` after PR #1578
 - [x] 1.2 Confirm source 1 — ratified correction: PR #1578 / `f605bb99` replaces chatbot embodiment with the relay model
 - [x] 1.3 Confirm source 2 — `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` §3 (why embodiment was live-falsified)
 - [x] 1.4 Confirm source 3 — shipped code: `tinyassets/universe_server.py:209` ("You do NOT speak as the universe … RELAY … RENDER")
@@ -33,7 +33,7 @@
 - [x] 5.3 Re-verify Codex findings 1 + 2 against the repo before folding, rather than accepting on report
 - [x] 5.4 **Host decision resolved** — PR #1578 / `f605bb99` amended the ratified paragraph to the relay model (`design.md` §"Host decision resolved")
 - [x] 5.5 Draft PR opened — #1515; auto-merge disabled while the prerequisite and current-base repairs were incomplete
-- [ ] 5.6 Re-run strict all-spec validation, task-annotation checks, diff checks, and independent final review on current `origin/main`
+- [x] 5.6 Re-run current-base gates at `7a118dca`: strict all-spec validation 29/29, archive annotations 11/11, successor requirements/scenarios 7/17, focused tests 75 passed + 1 skipped, diff checks clean, independent final review APPROVE
 
 ## 6. Implementation (this change stays ACTIVE until these land)
 

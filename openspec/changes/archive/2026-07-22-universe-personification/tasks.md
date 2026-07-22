@@ -10,7 +10,7 @@
 > landed `universe-personification-and-relay` capability. Kept for its design reasoning only.
 >
 > **Every unchecked task below is annotated with its classification. Read the annotation
-> before acting on any line.** Re-verified against `origin/main` @ `19bf2534`, 2026-07-22.
+> before acting on any line.** Re-verified against `origin/main` @ `7a118dca`, 2026-07-22.
 
 ## 1. Ratified-spec amendments (`docs/specs/2026-06-10-tiny-first-principles-spec.md`) — NOT applied in this draft
 

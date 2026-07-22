@@ -10,7 +10,7 @@ This design does not re-litigate that reversal. It reconciles the spec system wi
 what each of the 11 unchecked tasks means now, retire what is dead, and keep what survives
 somewhere durable.
 
-All classifications below were re-verified against `origin/main` at `19bf2534` on 2026-07-22
+All classifications below were re-verified against `origin/main` at `7a118dca` on 2026-07-22
 after the ratified relay correction landed in PR #1578.
 
 ## Goals / Non-Goals
