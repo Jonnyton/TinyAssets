@@ -40,7 +40,7 @@ Format for future entries:
 
 - Provider: codex-gpt5
 - Branch: patch-loop/wiki-bug-sync-structured-first
-- Lane state: Active lane
+- Lane state: Host-action — implementation approved; live fenced cutover required
 - Worktree: /app
 - STATUS/Issue/PR: request to update `scripts/wiki_bug_sync.py` structuredContent parsing
 - PLAN refs: community loop intake sync; MCP structured payload parsing
@@ -768,14 +768,14 @@ Notes:
 - Branch: codex/founder-provider-allowlist
 - Lane state: Active lane
 - Worktree: C:\Users\Jonathan\Projects\wf-founder-provider-allowlist
-- STATUS/Issue/PR: R2-1a founder BYO provider allowlist; OpenSpec + test-first runtime fix
+- STATUS/Issue/PR: R2-1a founder BYO provider allowlist; draft PR #1606 DO NOT MERGE
 - PLAN refs: Module: Providers; Constraints; platform responsibility model
 - Purpose: bind a BYO API key assignment to its matching provider and fail closed instead of borrowing any fallback provider
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-founder-provider-allowlist\_PURPOSE.md
 - Memory refs: STATUS R2-1a; 92dd60c5 host-credential half
 - Related implications: universe-creation owns later request authority bundle; R2-1b provider receipt waits
 - Idea feed refs: none
-- Ship/abandon: reviewed PR after strict OpenSpec, red/green tests, and independent security review
+- Ship/abandon: ship only after reviewed live `/data` manifest, zero-residual migration, daemon-only canary, and receipt
 ## 2026-07-22 13:30 - create connector-manifest-products
 
 - Provider: codex-gpt5-desktop-2
