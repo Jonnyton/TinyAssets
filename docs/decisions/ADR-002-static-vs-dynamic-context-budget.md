@@ -47,6 +47,27 @@ guardrail noticing. Basis:
    same stance as `concerns-staleness`. Soft overages WARN only. Numbers are
    tunable in the script's `CONFIG`.
 
+   **Amended 2026-07-22 — the gate.** The above was reporting, not enforcement:
+   nothing in the repo passed `--strict` and no CI workflow ran the script, so
+   on 2026-07-22 STATUS.md sat at 7485 bytes against its declared 4096 ceiling
+   with the checker printing `OVER-HARD` and exiting 0. The gate is now
+   `.github/workflows/context-budget.yml`, running on every PR:
+
+   - a **report** job publishes the absolute table and warns on a HARD breach;
+   - a **ratchet** job (`--strict --baseline <merge-base>`) FAILS the PR when a
+     change pushes a file over its ceiling, grows a file already over it (bytes
+     and lines ratcheted independently — no offsetting), or relaxes the budget
+     definition itself (raising `max_bytes`/`max_lines`, downgrading a HARD
+     entry to SOFT, or dropping an entry from `CONFIG`).
+
+   The ratchet, not absolute `--strict`, is the enforced mode **while main is
+   non-compliant** — an absolute gate would have gone red on every open PR for
+   debt none of them created, and a permanently-red check is one people route
+   around. Green means "not made worse", never "within budget", and the tool
+   says so explicitly. Once main is compliant the ratchet and absolute `--strict`
+   converge, and the enforced mode should be switched to absolute. Trimming the
+   always-loaded files to get there remains the separate lean/layer work below.
+
 4. **The lever when a soft budget is exceeded:** move reference-only content out
    of the always-loaded files into pointer-loaded docs or on-demand skills
    (e.g. the AGENTS.md env-var table, the worktree-discipline procedure), rather

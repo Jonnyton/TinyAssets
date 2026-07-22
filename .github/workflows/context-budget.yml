@@ -1,0 +1,190 @@
+name: Context budget
+
+# Why this exists
+# ---------------
+# `scripts/check_context_budget.py` guards the always-loaded instruction set
+# (CLAUDE.md imports @AGENTS.md + @STATUS.md, so all three load on every turn of
+# every provider). On 2026-07-22 it correctly reported STATUS.md at 7485 bytes
+# against its own declared 4096-byte ceiling, printed OVER-HARD — and exited 0.
+# Nothing passed `--strict`, and `git grep check_context_budget -- .github/`
+# returned nothing. A guard written specifically to stop context drift had never
+# been able to fail anything since the day it was written.
+#
+# This workflow is the enforcement point. Two jobs, deliberately split:
+#
+#   report  — always runs the ABSOLUTE check and publishes the table. Never
+#             fails. This is what keeps the standing 7485-vs-4096 breach visible
+#             on every PR instead of letting a green ratchet imply compliance.
+#   ratchet — the GATE. Fails when *this change* makes the always-loaded set
+#             worse, or relaxes the budget definition itself.
+#
+# Why a ratchet and not a plain `--strict`
+# ----------------------------------------
+# STATUS.md is already over budget and 16 open PRs touch it. An absolute gate
+# would go red on every PR in the repo on day one, for debt none of them created.
+# A check that is red no matter what you do is a check people route around —
+# which is exactly how this guard ended up unwired. The ratchet is red the moment
+# your change makes things worse and green otherwise, and the only way to earn
+# the right to grow one of these files is to first bring it under its ceiling.
+# The 4096 ceiling is never relaxed to make a run pass; `config_integrity()`
+# fails the build if a PR tries.
+#
+# NOT path-filtered, on purpose. Per the note in pr-scope-guard.yml: a required
+# status check that is path-filtered never reports on PRs outside those paths,
+# and the PR then hangs forever on "Expected — waiting for status". This runs on
+# every PR so it is safe to promote to a required check.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: context-budget-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Context budget (report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Measure the always-loaded set
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo "### Always-loaded context budget"
+            echo ""
+            echo '```'
+            python scripts/check_context_budget.py || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Absolute status is reported, never enforced here — see the ratchet job.
+          python scripts/check_context_budget.py --strict >/dev/null 2>&1 || \
+            echo "::warning::always-loaded set is over a HARD budget (pre-existing debt is waived by the ratchet job, but it is still over)"
+
+  ratchet:
+    name: Context budget not made worse
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build the baseline from the merge base
+        id: baseline
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          BASE_SHA="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Baseline = ${BASE_SHA} (merge base with ${BASE_REF})"
+
+          BASE_TREE="${RUNNER_TEMP}/base"
+          mkdir -p "$BASE_TREE"
+
+          # The baseline is produced by the BASE ref's OWN copy of the script, so
+          # the ceilings recorded in it are the ones that stood before this PR.
+          # Generating it with the head script would let a PR raise a ceiling and
+          # have the "before" picture agree with itself.
+          BASE_SCRIPT="${RUNNER_TEMP}/base_check_context_budget.py"
+          if ! git show "${BASE_SHA}:scripts/check_context_budget.py" > "$BASE_SCRIPT"; then
+            echo "::error::cannot read the budget script at the merge base — failing closed"
+            exit 1
+          fi
+
+          # Budgeted paths come from the HEAD config so a newly-budgeted file is
+          # still measured at base (it reads as absent => 0 bytes => compliant,
+          # which makes adding an over-budget file a regression, not a free pass).
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            mkdir -p "$(dirname "${BASE_TREE}/${f}")"
+            # Probe first, then write: a failed `git show >file` would leave a
+            # 0-byte file behind, which measures as "exists and compliant".
+            if git cat-file -e "${BASE_SHA}:${f}" 2>/dev/null; then
+              git show "${BASE_SHA}:${f}" > "${BASE_TREE}/${f}"
+            else
+              echo "note: ${f} does not exist at the merge base (treated as new)"
+            fi
+          done < <(python scripts/check_context_budget.py --list-paths | tr -d '\r')
+
+          python "$BASE_SCRIPT" --json --root "$BASE_TREE" > "${RUNNER_TEMP}/baseline.json"
+
+      - name: Gate — this change must not make the budget worse
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.baseline.outputs.base_sha }}
+        run: |
+          set -uo pipefail
+          OUT="${RUNNER_TEMP}/ratchet.txt"
+          python scripts/check_context_budget.py \
+            --strict --baseline "${RUNNER_TEMP}/baseline.json" | tee "$OUT"
+          RC="${PIPESTATUS[0]}"
+
+          {
+            echo "### Context budget ratchet"
+            echo ""
+            echo "Baseline: \`${BASE_SHA}\` (merge base)"
+            echo ""
+            echo '```'
+            cat "$OUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::this PR grows an always-loaded instruction file that is over its budget, or relaxes the budget definition. See the job summary."
+            exit 1
+          fi
+          echo "ratchet: clean — always-loaded set is no worse than ${BASE_SHA}"
+
+  unit:
+    name: Context budget guard unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      # These pin BOTH exit semantics, including every "should fail" path. The
+      # bug being fixed is a guard that could not go red, so the red paths are
+      # the load-bearing assertions here.
+      - name: pytest
+        run: python -m pytest tests/test_check_context_budget_gate.py -q
+
+# Honesty note
+# ------------
+# This runs on `pull_request`, so it executes the PR's own copy of
+# check_context_budget.py. A PR that edits that script can therefore neuter its
+# own gate. That is deliberate and bounded:
+#   * the baseline — including every ceiling it is compared against — comes from
+#     the BASE ref's copy, so ceilings cannot be raised by the PR being judged;
+#   * any edit to the script or this workflow is visible in the diff, and
+#     .github/** changes additionally trip the `infra-change` scope guard.
+# Closing it fully needs `pull_request_target`, which would mean checking out and
+# executing untrusted PR code with a privileged token — a strictly worse trade
+# for a drift guard. Like pr-scope-guard.yml, this converts an invisible drift
+# into a deliberate, reviewable one; it is not a security boundary.
