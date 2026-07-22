@@ -159,7 +159,7 @@ Tip: to discover any action-based tool's full catalog live, send a bogus `action
 - `WebSite/DEPLOY.md`, `WebSite/PREVIEW.md` — site is a SvelteKit static build → GitHub Pages at `tinyassets.io`; dev preview at `http://localhost:5173/`.
 - `BYOK_CREDENTIAL_VAULT_DESIGN.md` — per-universe encrypted BYOK credential vault (relevant to external effectors).
 - `OUTREACH_CONTENT_ENGINE.md` — worked example of a capability composed as a forkable branch.
-- `docs/audits/2026-05-03-brain-subsystems-deep-dive/` — the 4-part brain deep-dive (42 modules / 6 subsystems). Historical snapshot; its paths and line numbers are stale — see the folder README.
+- `BRAIN_*.txt` (repo root) — the 4-part brain deep-dive (42 modules / 6 subsystems).
 
 **Engine code (where the backend lives):** `workflow/universe_server.py` (the remote MCP), `workflow/api/*.py` (tool implementations), `workflow/branches.py` + `workflow/graph_compiler.py` + `workflow/runs.py` + `workflow/scheduler.py` (the loop/graph engine), `workflow/memory|knowledge|retrieval|learning|ingestion|storage/` (the brain), `workflow/api/wiki.py` (the wiki).
 

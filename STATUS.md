@@ -6,6 +6,7 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 
 ## Concerns
 
+- **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
 - [filed:2026-07-02 verified:2026-07-22] Reshape residuals: WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
@@ -30,6 +31,11 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **R2-1 credential fail-closed + provider receipt** — vault fails OPEN: missing cred inherits host CLAUDE_CODE_OAUTH_TOKEN/CODEX_HOME; set_engine sets no allowed_providers. GATES next ui-test round | tinyassets/providers/base.py, tinyassets/credential_vault.py, tinyassets/providers/router.py, deploy/compose.yml | - | claimed:claude-code-fleet ACTIVE 2026-07-21 |
+| **R2-2 repeatable test identity** — NARROWED per Codex review to tasks 1.1-1.4, 3.1-3.3, min 2.1-2.2 only (not all 11); reset must not be a public deletion surface | openspec/changes/test-identity-and-reset/, tinyassets/reset.py, tests/ | R2-1 | claimed:claude-code-fleet ACTIVE 2026-07-21 |
+| **R2-3 first contact speaks as the universe** — universe-creation 1.3/1.12/1.13/2.7; get_status side-effect defeats the shipped call-it-first instruction | openspec/changes/universe-creation/, tinyassets/universe_server.py, tinyassets/api/universe.py | R2-1 | claimed:claude-code-fleet ACTIVE 2026-07-21 |
+| **R2-4 wiki onboarding split** — read_page returns agent-coordination logs; assistant refused to build and offered to replace TinyAssets with a chat artifact (live 2026-07-21) | tinyassets/api/wiki.py, wiki/ | - | claimed:claude-code-fleet ACTIVE 2026-07-21 |
+| **universe-personification remaining tasks: DO NOT BUILD AS WRITTEN** — they specify chatbot embodiment, which the 2026-07-02 relay reshape reversed. Reconcile spec first | openspec/changes/universe-personification/tasks.md | - | pending |
 | Paid-market Track E Wave 2 transport as an OpenSpec change; renumber migrations + add schema_migrations before 006–008 go live | openspec/, tinyassets/paid_market/ | - | pending |
 | In-node enqueue flag flip — Codex ADAPT asks landed (`graph_compiler.py:1406-1560`), still dark; §14 proof passes but global-queue + per-origin lineage caps have no concurrent boundary coverage | tinyassets/graph_compiler.py, tests/test_node_enqueue_*.py | `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | External directory acceptance — canaries green 2026-05-02; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
