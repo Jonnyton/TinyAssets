@@ -578,7 +578,7 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 
   **Sequencing constraints that are design, not schedule.** The platform trust root / key composition root is the load-bearing prerequisite and is built first — without a real key anchor every signature is theater. Unwired substrate may be rebuilt directly; surfaces that are live and deployed (identity/WorkOS, and market and GitHub review where live) cut over behind a bounded dual-verify window with per-surface host go/no-go, never a dark cut, per the Forever Rule. WorkOS's own verification path is left untouched.
 
-  Designs: `output/s2-gate/design-authority-fable.md` (approved shape) and `output/s2-gate/design-authority-codex.md` (total-unification alternative, rejected). Reference implementation of the M1 pattern: the S2 lease-store completion fix ("fix-9").
+  Designs: `docs/design-notes/2026-07-20-unified-authority-derivation-approved.md` (the adopted shape) and `docs/design-notes/2026-07-20-unified-authority-derivation-alternative-rejected.md` (the total-unification alternative, with the surface inventory that argues for the split). Reference implementation of the M1 pattern: the S2 lease-store completion fix ("fix-9"). As of 2026-07-21 the implementation lives on feature branches, not `main`.
 
 ---
 
