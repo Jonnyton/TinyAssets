@@ -12,4 +12,4 @@
 
 ## 3. Publication
 
-- [ ] 3.1 Publish the documentation-only lane through its GitHub PR and required checks.
+- [x] 3.1 Publish the documentation-only lane through GitHub PR #1611 with all required checks passing.
