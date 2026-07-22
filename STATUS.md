@@ -1,5 +1,4 @@
 # Status
-
 Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; substantive work lives in the MCP brain (`PR-###`/`BUG-###` + dispatcher + auto-change loop), while coordination without a wiki home stays here; check both.
 
 ## Concerns
@@ -35,6 +34,7 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 | **R2-2 repeatable test identity** — NARROWED per Codex review to tasks 1.1-1.4, 3.1-3.3, min 2.1-2.2 only (not all 11); reset must not be a public deletion surface. Prior commit 375b0155 exists but does all 11 on stale main — do not reuse as-is | openspec/changes/test-identity-and-reset/, tinyassets/reset.py, tests/ | - | pending |
 | **R2-4 wiki onboarding split** — read_page returns agent-coordination logs; assistant refused to build and offered to replace TinyAssets with a chat artifact (live 2026-07-21) | tinyassets/api/wiki.py, wiki/ | - | in-flight PR #1550 |
 | **Universe-personification relay survivors** — #1515 retires the reversed change; successor stays active/unbuilt. Page-write boundary awaits host decision + complete mutation inventory | openspec/changes/reconcile-universe-personification-relay/ | #1583 host decision, universe-visibility, brain-okf-canonical-store, live-mcp-connector-surface | pending |
+| **Backfill uptime + alarms as-built OpenSpec** — specify host-independent probes/page/triage, host watchdogs, deploy rollback receipt, backup + manual DR; record gaps without aspirations | openspec/changes/backfill-uptime-and-alarms/, openspec/specs/uptime-and-alarms/spec.md | exclude release-reconcile-event-trigger ownership; read-only live-MCP, daemon-runtime, community-patch specs | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
 | Paid-market Track E Wave 2 transport as an OpenSpec change; renumber migrations + add schema_migrations before 006–008 go live | openspec/, tinyassets/paid_market/ | - | pending |
 | In-node enqueue flag flip — Codex ADAPT asks landed (`graph_compiler.py:1406-1560`), still dark; §14 proof passes but global-queue + per-origin lineage caps have no concurrent boundary coverage | tinyassets/graph_compiler.py, tests/test_node_enqueue_*.py | `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | External directory acceptance — registry metadata repaired; needs clean ChatGPT/Claude proof + first-user evidence | docs/ops/mcp-* | - | host-action |
