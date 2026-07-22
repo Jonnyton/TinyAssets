@@ -40,7 +40,7 @@ Format for future entries:
 
 - Provider: codex-gpt5
 - Branch: patch-loop/wiki-bug-sync-structured-first
-- Lane state: Host-action — implementation approved; live fenced cutover required
+- Lane state: Active lane
 - Worktree: /app
 - STATUS/Issue/PR: request to update `scripts/wiki_bug_sync.py` structuredContent parsing
 - PLAN refs: community loop intake sync; MCP structured payload parsing
@@ -766,7 +766,7 @@ Notes:
 
 - Provider: codex-gpt5-desktop-2
 - Branch: codex/founder-provider-allowlist
-- Lane state: Active lane
+- Lane state: Host-action — implementation approved; live fenced cutover required
 - Worktree: C:\Users\Jonathan\Projects\wf-founder-provider-allowlist
 - STATUS/Issue/PR: R2-1a founder BYO provider allowlist; draft PR #1606 DO NOT MERGE
 - PLAN refs: Module: Providers; Constraints; platform responsibility model
