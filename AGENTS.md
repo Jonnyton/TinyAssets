@@ -77,7 +77,7 @@ If it's about what's happening right now → STATUS.md.
    - **Minimal check** when: routine test fixes, documentation, skill edits,
      or non-architectural code changes. Use headings/search to confirm no
      relevant design module applies, then proceed.
-3. If the idea inbox is non-empty, scan `ideas/PIPELINE.md` and `ideas/INBOX.md`.
+3. Scan `ideas/INDEX.md` — it maps `INBOX.md`, `PIPELINE.md`, `SHIPPED.md`, and every dated idea document with its current state.
 4. If your approach conflicts with a PLAN.md principle, do NOT implement it. Add the conflict to STATUS.md Concerns. PLAN.md changes require user approval.
 5. **Cohit-prevention check before drafting:** before drafting a design note that proposes a new MCP action, citing an unfixed `BUG-NNN`, or pinning a sha in frontmatter / memory, run `python scripts/check_primitive_exists.py {action <verb>|bug <BUG-NNN>|sha <sha>}` from origin/main. Exits 0 (clean), 1 (warning — may be false positive), 2 (collision — investigate before drafting). Catches the "primitive already exists / already-landed work" class — see `.claude/agent-memory/dev-2/2026-05-02-check-primitive-exists-script.md` for the four 2026-05-02 cohit incidents this script is calibrated against.
 
