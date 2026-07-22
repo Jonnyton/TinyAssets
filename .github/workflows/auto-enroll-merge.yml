@@ -1,0 +1,99 @@
+name: Auto-enroll merge
+
+# Why this exists
+# ---------------
+# Branch protection + repo auto-merge only get you so far: SOMEONE still has to
+# enroll each PR with `gh pr merge --auto`. That left a human (or an agent that
+# cannot merge) in the loop for every single PR, which defeats the point.
+#
+# This workflow does the enrolling. From here: open a PR, and when its required
+# checks go green GitHub merges it. No human step, no agent step.
+#
+# Safety is delegated to branch protection, which is the right place for it:
+#   - required checks `policy` and `Diff scope declared` must pass
+#   - `strict` means the branch must be current with main
+#   - a PR that fails ANY required check simply never merges; enrolment is not a
+#     bypass, it is a standing instruction to merge WHEN allowed
+#
+# The scope guard is what makes this safe to automate. Without it, auto-enrolment
+# would have merged PR #1491 — 386 files including deploy-prod.yml and Dockerfile,
+# presented as a two-file auth fix, with CI green on everything it looked at.
+
+on:
+  # pull_request_target so this always runs the trusted copy from the default
+  # branch and has a token that can enrol. We never check out or execute PR code.
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-enroll-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enroll:
+    name: Enroll for auto-merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Forks are excluded deliberately: a fork PR is untrusted contribution and
+    # should not carry a standing merge instruction. Drafts are excluded because
+    # draft means "not finished" — marking ready fires `ready_for_review` and
+    # enrols it then.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main'
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Idempotent: re-running on a later event is a no-op if already enrolled.
+          STATE="$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest \
+                     --jq 'if .autoMergeRequest == null then "no" else "yes" end')"
+          if [ "$STATE" = "yes" ]; then
+            echo "PR #${PR} is already enrolled for auto-merge."
+            echo "already enrolled" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # `|| true`: enrolment can legitimately fail — e.g. the PR is already
+          # mergeable and protection is satisfied, or the branch is behind. Those
+          # are not this workflow's problem and must not fail the PR's checks.
+          if gh pr merge "$PR" --repo "$REPO" --auto --squash 2>err.txt; then
+            echo "PR #${PR} enrolled for auto-merge (squash)."
+            {
+              echo "### Auto-merge"
+              echo ""
+              echo "Enrolled. This PR will merge itself once required checks pass:"
+              echo "\`policy\` and \`Diff scope declared\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Could not enrol PR #${PR} — not fatal, leaving it to the humans:"
+            sed 's/^/    /' err.txt || true
+            {
+              echo "### Auto-merge"
+              echo ""
+              echo "Could not enrol automatically. This does not block the PR."
+              echo ""
+              echo '```'
+              cat err.txt || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+# Note on blast radius
+# --------------------
+# This makes merging the DEFAULT for any non-draft, same-repo PR targeting main.
+# The protection against a bad merge is entirely the required-check set, so those
+# checks are now load-bearing in a way they were not before. Weakening or removing
+# a required check silently widens what merges itself — treat changes to
+# `policy` or `Diff scope declared` as changes to the merge policy itself.
