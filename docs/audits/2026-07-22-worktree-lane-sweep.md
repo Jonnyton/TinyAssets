@@ -127,11 +127,20 @@ it classified `READY_TO_REMOVE` → `dead`, and **my own sweep list would have i
 
 This is the finding worth more than the sweep.
 
-`.codex-worktrees/` and `codex-tmp/` contain **52 separate clones** (each with its own `.git`
-directory and its own `origin` remote), of which **11 have modified tracked files right now**.
-Because they are clones and not registered worktrees, `git worktree list` never reports them, and
-the mandated cold-start tool is structurally blind to all 52. `worktree_status.py` contains no
-path-origin awareness of any kind.
+`.codex-worktrees/` and `codex-tmp/` contain **53 checkouts invisible to the main repo**, of which
+**11 have modified tracked files right now**:
+
+- **46 separate clones** — `.git` is a directory, each with its own `origin` remote pointing back at
+  `github.com/Jonnyton/TinyAssets`.
+- **7 worktrees of those clones** — `.git` is a file whose `gitdir:` resolves *into another nested
+  clone*, e.g. `codex-tmp/pr1487-clean-41c0e67c` → `codex-tmp/pr1487-source-41c0e67c/.git/worktrees/…`.
+  A second tier of nesting, equally invisible.
+
+`git worktree list` on the main repo reports **0** of these 53 (verified). A clone is a separate
+object store, so the main repo's worktree registry cannot know about it, and the second-tier
+worktrees are registered in *their parent clone's* registry, not this one. The mandated cold-start
+tool is therefore structurally blind to all 53 — `worktree_status.py` contains no path-origin
+awareness of any kind and no clone discovery.
 
 That blind spot has a live cost. At the time of writing, job `aaaa5b09` is blocked asking the host:
 
@@ -157,7 +166,7 @@ That is R2-1, the row gating the next live test round — and a session was abou
 scratch because the mandated discovery tool cannot see the directory it is sitting in.
 
 So: the dispatching worry ("work is stranded where nobody can find it") was **correct**. It was
-aimed at the 45 lanes, where nothing is stranded, instead of at the 52 invisible clones, where the
+aimed at the 45 lanes, where nothing is stranded, instead of at the 53 invisible checkouts, where the
 project's current gating work was about to be rebuilt from zero.
 
 ### F7 — The sanctioned reaper could never have cleaned these
@@ -213,7 +222,7 @@ Different sets. #1521 audits **origin branches**; this lane audits **local workt
 - **8 of 10 are new here.**
 
 The two audits are complementary: #1521 removes dead *remote refs*, this one removes dead *local
-checkouts*. Neither subsumes the other, and neither covers the 52 unregistered clones in F6 — that
+checkouts*. Neither subsumes the other, and neither covers the 53 unregistered checkouts in F6 — that
 set is currently audited by nobody.
 
 #1521's traps that I reused: `gh pr list` truncates at its default limit (I passed `--limit 2000`
@@ -370,7 +379,7 @@ python scripts/wt.py done wf-worktree-sweep-0722b  --force
 | 45 × `~/.claude/jobs/aaaa5b09/tmp/wt-*` | Working directories of a **live** job (F3). Not project lanes (F1). Nothing stranded in them (F2), so there is no reason to hurry. |
 | `wf-persona-note-relay-reshape` | Uncommitted tracked edits, no PR (F5). |
 | `wf-probe-catalog-probe003-truth` | Committed after the census; active, no PR yet (F5). |
-| 52 × `.codex-worktrees/*`, `codex-tmp/*` | Not registered worktrees — `git worktree remove` does not apply. 11 are dirty. Holds R2-1 (F6). **Needs its own audit.** |
+| 53 × `.codex-worktrees/*`, `codex-tmp/*` | 46 clones + 7 worktrees-of-clones. Not registered here — `git worktree remove` does not apply. 11 are dirty. Holds R2-1 (F6). **Needs its own audit.** |
 
 ### What `--sweep-orphaned` emits, for comparison
 
@@ -399,7 +408,7 @@ they were never `wt.py`'s to tear down.** `wt.py sweep` agrees, structurally: it
 
 The real bypasses, in order of cost:
 
-1. **Separate clones (F6).** 52 of them, 11 dirty, holding the current gating work — and invisible
+1. **Separate clones (F6).** 53 checkouts (46 clones + 7 nested worktrees), 11 dirty, holding the current gating work — and invisible
    to the mandated tool. This is where work actually gets lost, and it is the one class with a
    demonstrated live cost (a session about to redo R2-1 from scratch).
 2. **Teardown is manual (F7).** 47 `CREATE` vs 12 `REMOVE`. Creation is scripted into the fleet;
