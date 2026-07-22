@@ -61,9 +61,11 @@ Reject any "ready to ship" claim that lacks both-client verification:
 If both probes can't be run (e.g., Codex driver is the only one available), STOP and SendMessage the lead — do not declare cross-client readiness from a single-family probe.
 
 
-## Preflight (route-specific)
+## Preflight
 
-Before the first prompt, run your route's preflight checklist and log the result — full checklists in `references/preflight-and-setup.md` (Codex Claude.ai in-app · ChatGPT live · Claude Code CDP). **If a preflight item is unavailable, stop the mission and name the exact blocker** (Codex route: the harness/connector blocker — not `claude_chat.py`/CDP; ChatGPT route: ask the host to fix the exact item). Never test through a fresh profile or a direct MCP call.
+**Merged is not deployed — verify the build under test first.** Before the first prompt, confirm the code under test is actually *running* in prod: the deployed image digest changed **and** the deploy run that produced it succeeded. A PR that says "Merged" is not evidence — app-performed merges via `GITHUB_TOKEN` do not trigger workflow runs (2026-07-21: five PRs merged, none reached prod, and "merged" read as "shipped" for hours). Live receipt: `get_status` → `release_state.git_sha` / `image_digest` / `deploy_run_url`; `receipt_available: false` means unknown, not fine. **If prod is behind `main`, say so and stop.** Findings against stale code are already-fixed noise — worse than no test, because it burns trust. Drift usually self-heals within ~15min (`release-reconcile.yml` redeploys on a timer), so re-check the sha before escalating — but never test through the gap.
+
+**Route preflight.** Run your route's checklist and log the result — full checklists in `references/preflight-and-setup.md` (Codex Claude.ai in-app · ChatGPT live · Claude Code CDP). **If a preflight item is unavailable, stop the mission and name the exact blocker** (Codex route: the harness/connector blocker — not `claude_chat.py`/CDP; ChatGPT route: ask the host to fix the exact item). Never test through a fresh profile or a direct MCP call.
 
 After `ui-test` passes, also look for post-fix clean-use evidence from actual users when the affected feature is public or high-risk. Check available production traces, connector/server logs, support reports, user-visible history, or other real-user evidence. Record the timestamp, environment, and evidence source. If no real-user use is visible yet, say so plainly and leave a short watch item in `STATUS.md` rather than implying the feature has been proven clean for users.
 
@@ -223,6 +225,7 @@ python scripts/claude_chat.py dismiss-dialogs           # click any pending Allo
 `output/user_sim_session.md` is the durable transcript between you and the lead. Protocol:
 
 - Read the tail (~100 lines) before acting. Look for `LEAD DIRECTION` or `LEAD STOP`.
+- Open every mission with `## [...] USER NOTE build <deployed sha> (deploy run <url>)`. Every finding below that line is against that build; a bug report against an unknown build is not actionable.
 - After each ask, append:
 
   ```
@@ -467,6 +470,7 @@ Every `ask` burns host's claude.ai quota. Every log entry is lead's context. Be 
 These are the only triggers that stop the mission outright. Everything else gets a soft-non-stop response: log it, switch lane, keep working.
 
 - Lead writes `LEAD STOP` or sends a stop message -> stop immediately. No "relaxed pace."
+- The deployed build is not the code under test (prod behind `main`, or no release receipt) -> stop and report the deployed sha vs the expected one.
 - Claude Code route only: `claude_chat.py status` starts failing -> stop, SendMessage. (CDP is route-specific; does not apply to Codex.)
 - Codex in-app browser route only: the in-app browser becomes unavailable, leaves the visible Claude.ai mission tab, or cannot show the TinyAssets connector -> stop and log the exact harness blocker.
 - Anthropic / Cowork ChatGPT route only: ChatGPT browser context lost or TinyAssets connector becomes invisible in the Developer Mode composer -> stop and log the harness blocker.
