@@ -982,7 +982,15 @@ def converse(message: str = "", graph_id: str = "") -> str:
         return json.dumps({
             "error": f"Your universe couldn't be reached right now: {exc}",
         })
-    return json.dumps({"reply": reply, "universe_id": uid})
+    receipts = getattr(reply, "provider_receipts", [])
+    return json.dumps({
+        "reply": str(reply),
+        "universe_id": uid,
+        "provider_receipts": receipts,
+        "provider_receipt_status": (
+            "complete" if len(receipts) == 2 else "partial"
+        ),
+    })
 
 
 _mcp_converse = _register_structured_tool(

@@ -197,6 +197,135 @@ def test_action_run_branch_returns_str():
     assert isinstance(out, str)
 
 
+def test_universe_run_binds_provider_context_and_returns_pending_receipt(
+    tmp_path, monkeypatch,
+):
+    from unittest.mock import MagicMock
+
+    from tinyassets.runs import RUN_STATUS_QUEUED, RunOutcome
+
+    universe_dir = tmp_path / "u-1"
+    universe_dir.mkdir()
+    (universe_dir / "config.yaml").write_text(
+        "preferred_writer: claude-code\nallowed_providers:\n- claude-code\n",
+        encoding="utf-8",
+    )
+    branch = MagicMock()
+    branch.validate.return_value = []
+    branch.version = 1
+    captured = {}
+
+    monkeypatch.setattr(
+        "tinyassets.api.branches._resolve_branch_id",
+        lambda branch_def_id, _base_path: branch_def_id,
+    )
+    monkeypatch.setattr(
+        "tinyassets.daemon_server.get_branch_definition",
+        lambda *_a, **_k: {"branch_def_id": "b1"},
+    )
+    monkeypatch.setattr(
+        "tinyassets.branches.BranchDefinition.from_dict",
+        lambda _source: branch,
+    )
+    monkeypatch.setattr(runs_mod, "_universe_dir", lambda _uid: universe_dir)
+    monkeypatch.setattr(
+        "tinyassets.api.permissions.branch_run_actor",
+        lambda _uid: "universe:u-1",
+    )
+
+    def _fake_execute(*_args, **kwargs):
+        captured.update(kwargs)
+        return RunOutcome(
+            run_id="run-1", status=RUN_STATUS_QUEUED, output={}, error="",
+        )
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_async", _fake_execute)
+
+    out = json.loads(_action_run_branch({
+        "branch_def_id": "b1",
+        "universe_id": "u-1",
+    }))
+
+    bound_call = captured["provider_call"]
+    assert bound_call.universe_context.universe_dir == universe_dir
+    assert bound_call.universe_context.config.allowed_providers == ["claude-code"]
+    assert out["provider_receipt_status"] == "pending"
+    assert out["provider_receipts"] == []
+
+
+def test_universe_version_run_binds_provider_context(tmp_path, monkeypatch):
+    from tinyassets.runs import RUN_STATUS_QUEUED, RunOutcome
+
+    universe_dir = tmp_path / "u-version"
+    universe_dir.mkdir()
+    (universe_dir / "config.yaml").write_text(
+        "preferred_writer: codex\nallowed_providers:\n- codex\n",
+        encoding="utf-8",
+    )
+    captured = {}
+    monkeypatch.setattr(runs_mod, "_ensure_runs_recovery", lambda: None)
+    monkeypatch.setattr(runs_mod, "_universe_dir", lambda _uid: universe_dir)
+
+    def _fake_execute(*_args, **kwargs):
+        captured.update(kwargs)
+        return RunOutcome(
+            run_id="run-v", status=RUN_STATUS_QUEUED, output={}, error="",
+        )
+
+    monkeypatch.setattr(
+        "tinyassets.runs.execute_branch_version_async", _fake_execute,
+    )
+
+    out = json.loads(runs_mod._action_run_branch_version({
+        "branch_version_id": "b@v1",
+        "universe_id": "u-version",
+    }))
+
+    assert out["run_id"] == "run-v"
+    assert captured["provider_call"].universe_context.universe_dir == universe_dir
+
+
+def test_universe_resume_rebinds_context_from_durable_run_actor(
+    tmp_path, monkeypatch,
+):
+    from tinyassets.runs import RUN_STATUS_RESUMED, RunOutcome
+
+    universe_dir = tmp_path / "u-resume"
+    universe_dir.mkdir()
+    (universe_dir / "config.yaml").write_text(
+        "preferred_writer: claude-code\nallowed_providers:\n- claude-code\n",
+        encoding="utf-8",
+    )
+    record = {
+        "run_id": "run-r",
+        "actor": "universe:u-resume",
+        "status": "interrupted",
+        "branch_def_id": "b1",
+    }
+    captured = {}
+    monkeypatch.setattr(runs_mod, "_ensure_runs_recovery", lambda: None)
+    monkeypatch.setattr(runs_mod, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(runs_mod, "_universe_dir", lambda _uid: universe_dir)
+    monkeypatch.setattr(runs_mod, "_run_write_allowed", lambda _record: True)
+    monkeypatch.setattr("tinyassets.runs.get_run", lambda *_a: record)
+    monkeypatch.setattr(
+        "tinyassets.api.engine_helpers._current_actor", lambda: "founder",
+    )
+
+    def _fake_resume(*_args, **kwargs):
+        captured.update(kwargs)
+        return RunOutcome(
+            run_id="run-r", status=RUN_STATUS_RESUMED, output={}, error="",
+        )
+
+    monkeypatch.setattr("tinyassets.runs.resume_run", _fake_resume)
+
+    out = json.loads(runs_mod._action_resume_run({"run_id": "run-r"}))
+
+    assert out["status"] == RUN_STATUS_RESUMED
+    assert captured["provider_call"].universe_context.universe_dir == universe_dir
+
+
 # Arc A re-export shims removed in Task #18 retarget sweep — the
 # `test_universe_server_reexports_run_actions` + parametrized identity tests
 # are gone alongside the shim block.
@@ -418,3 +547,99 @@ def test_failed_run_snapshot_surfaces_provider_chain_from_error_suffix(monkeypat
     )
 
     assert snapshot["error_detail"]["provider_chain"] == provider_chain
+
+
+def test_completed_run_snapshot_exposes_durable_provider_payer_receipts(monkeypatch):
+    def _missing_branch(*_args, **_kwargs):
+        raise KeyError("b1")
+
+    monkeypatch.setattr(
+        "tinyassets.daemon_server.get_branch_definition",
+        _missing_branch,
+    )
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda _branch_def_id, _node_statuses: "```mermaid\nflowchart LR\n```",
+    )
+
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-1",
+            "branch_def_id": "b1",
+            "status": "completed",
+            "actor": "universe:u-1",
+            "last_node_id": "step1",
+            "error": "",
+        },
+        [{
+            "node_id": "__system__",
+            "status": "provider_calls",
+            "detail": {
+                "calls": [{
+                    "node_id": "step1",
+                    "provider": "claude-code",
+                    "model": "sonnet",
+                    "credential_class": "founder_byo_api_key",
+                    "credential_owner": "founder",
+                }],
+            },
+        }],
+    )
+
+    assert snapshot["provider_receipt_status"] == "complete"
+    assert snapshot["provider_receipts"] == [{
+        "node_id": "step1",
+        "provider": "claude-code",
+        "model": "sonnet",
+        "credential_class": "founder_byo_api_key",
+        "credential_owner": "founder",
+    }]
+
+
+def test_failed_run_snapshot_keeps_receipt_from_prior_successful_node(monkeypatch):
+    monkeypatch.setattr(
+        "tinyassets.daemon_server.get_branch_definition",
+        lambda *_a, **_k: (_ for _ in ()).throw(KeyError("b1")),
+    )
+    monkeypatch.setattr(
+        runs_mod,
+        "_run_mermaid_from_events",
+        lambda *_a: "```mermaid\nflowchart LR\n```",
+    )
+
+    snapshot = _compose_run_snapshot(
+        {
+            "run_id": "run-failed",
+            "branch_def_id": "b1",
+            "status": "failed",
+            "actor": "universe:u-1",
+            "last_node_id": "step2",
+            "error": "step2 failed",
+        },
+        [{
+            "node_id": "step1",
+            "status": "ran",
+            "detail": {
+                "provider_served": "claude-code",
+                "provider_model": "sonnet",
+                "provider_latency_ms": 4.0,
+                "provider_attempts": 1,
+                "provider_degraded": False,
+                "provider_credential_class": "founder_byo_api_key",
+                "provider_credential_owner": "founder",
+            },
+        }],
+    )
+
+    assert snapshot["provider_receipt_status"] == "complete"
+    assert snapshot["provider_receipts"] == [{
+        "node_id": "step1",
+        "provider": "claude-code",
+        "model": "sonnet",
+        "latency_ms": 4.0,
+        "attempts": 1,
+        "degraded": False,
+        "credential_class": "founder_byo_api_key",
+        "credential_owner": "founder",
+    }]

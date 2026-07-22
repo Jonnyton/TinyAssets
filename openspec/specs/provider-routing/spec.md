@@ -47,7 +47,7 @@ When `TINYASSETS_PIN_WRITER` is set, the `writer` chain SHALL be narrowed to tha
 - **AND** does not fall through to the default chain
 
 ### Requirement: Per-universe engine preference and privacy allowlist
-The router SHALL apply per-universe configuration resolved from an explicit `universe_context` when supplied, otherwise from the process-global universe config. `preferred_writer` / `preferred_judge` SHALL reorder the chain so the preferred provider is tried first (a no-op if absent from the chain). The `allowed_providers` allowlist SHALL filter the chain down to permitted providers; `None` is a no-op preserving the full chain. When the allowlist filters the chain to empty, the router SHALL raise `AllProvidersExhaustedError` rather than leak to a disallowed provider.
+The router SHALL apply per-universe configuration resolved from an explicit `universe_context` when supplied, otherwise from the process-global universe config. Every successful `set_engine` action that selects a concrete, credential-bound provider SHALL persist `allowed_providers` containing only that provider in addition to `preferred_writer`. A BYO key/provider mismatch SHALL be rejected. Universe-scoped routing SHALL filter out every cloud provider whose credential is not resolvable from the universe vault across normal chains, policy attempt orders, judge ensembles, version runs, and resumed runs, and SHALL fail closed rather than fall back to ambient host credentials. `preferred_writer` / `preferred_judge` SHALL reorder the eligible chain, while the allowlist SHALL filter it; `None` preserves the otherwise eligible chain.
 
 #### Scenario: allowlist blocks third-party providers
 - **WHEN** a universe sets `allowed_providers=["ollama-local"]`
@@ -59,10 +59,54 @@ The router SHALL apply per-universe configuration resolved from an explicit `uni
 - **THEN** the router raises `AllProvidersExhaustedError` referencing `allowed_providers`
 - **AND** no provider is called
 
-#### Scenario: preference reorders without dropping fallback
-- **WHEN** a universe sets `preferred_writer` to a provider already in the chain
-- **THEN** that provider is attempted first
-- **AND** the remaining chain stays available as fallback
+#### Scenario: Selected founder engine cannot fall through to host credentials
+
+- **GIVEN** a founder sets a Claude engine with their Anthropic key
+- **WHEN** Claude fails
+- **THEN** the router does not attempt Codex or any other provider outside `allowed_providers=["claude-code"]`
+
+#### Scenario: BYO key cannot select an incompatible provider
+
+- **GIVEN** an Anthropic key and `preferred_writer="codex"`
+- **WHEN** `set_engine` validates the assignment
+- **THEN** it rejects the mismatch and does not modify the vault or config
+
+#### Scenario: Unbound host daemon does not authorize platform credentials
+
+- **GIVEN** a founder selects `engine_source="host_daemon"`
+- **AND** no founder-hosted runtime credential has been bound yet
+- **WHEN** `set_engine` persists the selection
+- **THEN** it records the preferred provider with `allowed_providers=[]` and a pending binding status
+- **AND** universe calls fail closed rather than use ambient platform credentials
+
+#### Scenario: Vaultless judge ensemble cannot spend host API keys
+
+- **GIVEN** host API-key judge providers are enabled
+- **AND** a universe has no resolvable judge credential
+- **WHEN** the universe requests a judge ensemble
+- **THEN** no host-key provider is invoked and the ensemble returns no results
+
+### Requirement: Public provider and credential-payer receipts
+
+Every provider-served public `converse` or `run_graph` operation SHALL expose a non-secret receipt naming the serving provider and credential payer class/owner. `converse` SHALL label its reply and learning-extraction calls separately. Because `run_graph` is asynchronous and may make zero to many calls, enqueue SHALL report `provider_receipt_status="pending"`; the durable run snapshot SHALL expose one receipt per provider-served node after calls occur. Receipts SHALL NOT contain tokens, secret values, or credential file contents.
+
+#### Scenario: Converse reports both paid calls
+
+- **WHEN** a founder conversation produces a reply and runs learning extraction
+- **THEN** the response contains two purpose-labelled receipts with provider, credential class, and owner
+
+#### Scenario: Async graph reports pending then durable per-node receipts
+
+- **WHEN** `run_graph` enqueues a run
+- **THEN** its immediate response reports pending receipt state without claiming an unserved provider
+- **AND WHEN** `get_run` is called after provider-served nodes execute
+- **THEN** it returns their durable provider/payer receipts
+
+#### Scenario: Terminal failure preserves prior paid-call receipts
+
+- **GIVEN** one graph node completes a provider call and a later node fails or is cancelled
+- **WHEN** `get_run` returns the terminal snapshot
+- **THEN** it includes the completed node's provider/payer receipt rather than an empty complete receipt set
 
 ### Requirement: Auth-health quarantine of dead-login subscription providers
 When an auth-health probe is injected into the router, a provider whose subscription login is definitively `not_logged_in` SHALL be dropped from fallback chains, policy attempt orders, and the judge ensemble, so routing goes straight to a healthy provider instead of burning a failed attempt and a misleading cooldown. The gate SHALL be conservative: only a definitive `not_logged_in` drops a provider — `unknown` and `ok` statuses are kept, and a probe that raises is treated as "keep". A pinned writer with dead login SHALL fail loud rather than route elsewhere. As-built limitation: with no probe injected (the default for script/test routers), the gate is a no-op and no provider is quarantined.

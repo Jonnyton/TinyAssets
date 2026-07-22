@@ -152,6 +152,43 @@ def test_compiler_emits_starting_then_ran_per_node():
     assert phases_per_node["tag"] == ["starting", "ran"]
 
 
+def test_compiler_emits_provider_credential_receipt_metadata():
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from tinyassets.graph_compiler import compile_branch
+    from tinyassets.providers.call import ProviderCallText
+
+    class _Response:
+        text = "ok"
+        provider = "claude-code"
+        model = "sonnet"
+        family = "anthropic"
+        latency_ms = 2.0
+        degraded = False
+        credential_class = "founder_byo_api_key"
+
+    events = []
+    compiled = compile_branch(
+        _make_recipe_branch(),
+        provider_call=lambda *_a, **_k: ProviderCallText(_Response()),
+        event_sink=lambda **event: events.append(event),
+    )
+    runnable = compiled.graph.compile(checkpointer=InMemorySaver())
+    runnable.invoke(
+        {"raw": "x"},
+        config={"configurable": {"thread_id": "receipt-test"}},
+    )
+
+    ran = [event for event in events if event["phase"] == "ran"]
+    assert ran
+    assert all(event["provider_served"] == "claude-code" for event in ran)
+    assert all(
+        event["provider_credential_class"] == "founder_byo_api_key"
+        and event["provider_credential_owner"] == "founder"
+        for event in ran
+    )
+
+
 def test_compiler_starting_event_includes_prompt_preview():
     """Starting events carry a prompt preview so clients can surface
     'working on: ...' context without waiting for the response."""

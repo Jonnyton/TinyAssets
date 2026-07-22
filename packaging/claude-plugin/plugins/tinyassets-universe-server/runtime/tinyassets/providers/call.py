@@ -54,6 +54,67 @@ _real_router: "Optional[ProviderRouter]" = None
 _last_provider: str = ""
 
 
+class ProviderCallText(str):
+    """String-compatible provider output carrying immutable audit metadata."""
+
+    def __new__(cls, response: Any):
+        obj = super().__new__(cls, str(getattr(response, "text", "")))
+        credential_class = (
+            getattr(response, "credential_class", "unknown") or "unknown"
+        )
+        from tinyassets.credential_vault import credential_owner_for_class
+
+        obj.provider_receipt = {
+            "provider": getattr(response, "provider", "") or "unknown",
+            "model": getattr(response, "model", "") or "",
+            "family": getattr(response, "family", "") or "",
+            "latency_ms": getattr(response, "latency_ms", None),
+            "degraded": bool(getattr(response, "degraded", False)),
+            "credential_class": credential_class,
+            "credential_owner": credential_owner_for_class(credential_class),
+        }
+        return obj
+
+
+def provider_receipt(value: Any, *, purpose: str = "") -> dict[str, Any] | None:
+    """Return a defensive copy of non-secret call metadata, if present."""
+    receipt = getattr(value, "provider_receipt", None)
+    if not isinstance(receipt, dict):
+        return None
+    result = dict(receipt)
+    if purpose:
+        result["purpose"] = purpose
+    return result
+
+
+class BoundUniverseProviderCall:
+    """Callable bridge that keeps explicit universe context across workers."""
+
+    def __init__(self, universe_context: Any) -> None:
+        self.universe_context = universe_context
+
+    def __call__(
+        self,
+        prompt: str,
+        system: str = "",
+        *,
+        role: str = "writer",
+        config: Any = None,
+    ) -> str:
+        return call_provider(
+            prompt,
+            system,
+            role=role,
+            config=config,
+            universe_context=self.universe_context,
+        )
+
+
+def bind_universe_provider_call(universe_context: Any) -> BoundUniverseProviderCall:
+    """Bind the general provider bridge to one universe's routing context."""
+    return BoundUniverseProviderCall(universe_context)
+
+
 def set_force_mock(value: bool) -> None:
     """Enable/disable the mock path (tests)."""
     global _force_mock
@@ -177,7 +238,7 @@ def _call_router_with_retry(
     system: str,
     config: Any = None,
     universe_context: Any = None,
-) -> str:
+) -> Any:
     """Call the installed router with tenacity retry on transient exhaustion.
 
     Retries up to 3 times with exponential backoff (2s, 4s, 8s) when all
@@ -192,7 +253,7 @@ def _call_router_with_retry(
         wait=wait_exponential(multiplier=1, min=2, max=8),
         reraise=True,
     )
-    def _attempt() -> str:
+    def _attempt() -> Any:
         global _last_provider
         # Only forward config / universe_context when set, so existing
         # routers/stubs with the 3-arg call_sync signature keep working
@@ -205,7 +266,7 @@ def _call_router_with_retry(
         else:
             result = _real_router.call_sync(role, prompt, system, **kwargs)
         _last_provider = result.provider
-        return result.text
+        return result
 
     return _attempt()
 
@@ -254,9 +315,9 @@ def call_provider(
 
     if _real_router is not None:
         try:
-            return _call_router_with_retry(
+            return ProviderCallText(_call_router_with_retry(
                 role, prompt, system, config, universe_context,
-            )
+            ))
         except Exception as e:
             provider_error = e
             logger.error(

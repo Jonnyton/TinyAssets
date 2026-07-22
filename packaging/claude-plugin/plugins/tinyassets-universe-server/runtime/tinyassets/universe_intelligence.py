@@ -22,7 +22,7 @@ from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
 from tinyassets.persona import resolve_persona
 from tinyassets.providers.base import ModelConfig, UniverseContext
-from tinyassets.providers.call import call_provider
+from tinyassets.providers.call import call_provider, provider_receipt
 from tinyassets.soul_edit import (
     SoulEditError,
     apply_soul_edit,
@@ -33,6 +33,21 @@ from tinyassets.universe_self_model import read_self_model
 from tinyassets.universe_soul import read_pinned_universe_soul, read_universe_soul
 
 logger = logging.getLogger(__name__)
+
+
+class LearningResult(dict):
+    """Parsed learning payload carrying the extractor call receipt."""
+
+    provider_receipt: dict | None = None
+
+
+class UniverseReply(str):
+    """Backward-compatible reply text with purpose-labelled call receipts."""
+
+    def __new__(cls, text: str, receipts: list[dict]):
+        obj = super().__new__(cls, text)
+        obj.provider_receipts = list(receipts)
+        return obj
 
 # OKF bundle files that ground a first-person turn in who the founder is and what
 # the universe is. Kept small for M1 turn-scope (heavier memory is deferred).
@@ -272,7 +287,11 @@ def extract_learning(
         universe_context=ctx,
         config=_sandboxed_config(ctx),
     )
-    return _parse_learning_json(raw)
+    result = LearningResult(_parse_learning_json(raw))
+    result.provider_receipt = provider_receipt(
+        raw, purpose="learning_extraction",
+    )
+    return result
 
 
 _LEARN_CONTEXT = "learned from the founder during a conversation turn"
@@ -429,16 +448,24 @@ def converse(
 
     ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
     system = _build_persona_system_prompt(udir)
-    reply = call_provider(
+    raw_reply = call_provider(
         founder_message,
         system=system,
         role="writer",
         universe_context=ctx,
         config=_sandboxed_config(ctx),
     )
+    reply = str(raw_reply)
+    receipts: list[dict] = []
+    reply_receipt = provider_receipt(raw_reply, purpose="reply")
+    if reply_receipt:
+        receipts.append(reply_receipt)
     try:
         proposed = extract_learning(founder_message, reply, ctx)
+        learning_receipt = getattr(proposed, "provider_receipt", None)
+        if isinstance(learning_receipt, dict):
+            receipts.append(dict(learning_receipt))
         commit_learning(udir, proposed, universe_id=uid, actor_id=actor_id)
     except Exception:  # persistence must never break the conversation turn
         logger.exception("converse: learning persistence failed for %s", uid)
-    return reply
+    return UniverseReply(reply, receipts)

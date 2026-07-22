@@ -77,7 +77,7 @@ The system SHALL materialize per-universe subscription auth homes for the CLI-su
 
 ### Requirement: Per-Universe Provider Auth Env Overlay Without Cross-Universe Leakage
 
-The system SHALL overlay per-universe provider auth onto a CLI-subprocess writer's environment (`apply_provider_auth_env` / `provider_auth_env_overrides`) so a universe runs on its founder's assigned engine rather than the host's. For the `codex` writer it MAY inject `CODEX_HOME` and `OPENAI_API_KEY`; for the `claude-code` writer it MAY inject `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and `ANTHROPIC_API_KEY`. The overlay SHALL be applied only after the process-global API keys have been stripped from the subprocess environment, so a per-universe key never leaks across universes and the platform default is never exposed to a bring-your-own-key universe. A bring-your-own `llm_api_key` deposit SHALL be accepted only for a service that maps to a supported provider env var, and an unsupported service SHALL be rejected at deposit time so a key that could never reach a provider is not silently stored.
+For every provider call carrying an explicit universe directory, the system SHALL construct the subprocess environment by removing all ambient provider API-key variables and host subscription selectors, including `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, and `CODEX_HOME`, before applying only credentials resolved from that universe's vault. A universe-scoped cloud provider with no resolvable vault credential SHALL NOT be invoked. Calls with no universe context SHALL preserve host daemon and local-development authentication behavior. A bring-your-own `llm_api_key` deposit SHALL be accepted only for a service that maps to a supported provider env var, and an unsupported service SHALL be rejected at deposit time.
 
 #### Scenario: Env overlay resolves the universe from the environment binding
 
@@ -88,3 +88,31 @@ The system SHALL overlay per-universe provider auth onto a CLI-subprocess writer
 
 - **WHEN** a founder attempts to deposit an `llm_api_key` for a service that does not map to any supported provider env var
 - **THEN** the deposit is rejected with an error naming the supported services and no unusable key is written to the vault
+
+#### Scenario: Vaultless universe cannot inherit host subscription auth
+
+- **GIVEN** the daemon environment contains valid Claude and Codex host subscription variables
+- **AND** a universe has no credential vault
+- **WHEN** that universe routes a writer call
+- **THEN** neither cloud provider is invoked using the host subscription
+- **AND** routing fails with provider exhaustion unless an explicitly eligible credentialless local provider serves it
+
+#### Scenario: Founder BYO key replaces rather than composes with host auth
+
+- **GIVEN** a universe vault contains a founder-provided API key for its selected writer
+- **WHEN** the provider subprocess environment is built
+- **THEN** it contains the founder key and an isolated provider home
+- **AND** contains no host token, host config directory, or host provider home
+
+#### Scenario: BYO key is exclusive with a vault subscription
+
+- **GIVEN** a universe vault contains both an API key and subscription auth for the selected provider
+- **WHEN** the provider subprocess environment is built
+- **THEN** it receives the API key and an isolated provider home
+- **AND** it does not receive the vault subscription token or home, so the payer class is deterministic
+
+#### Scenario: Host development call remains compatible
+
+- **GIVEN** a provider call with no universe context
+- **WHEN** its subprocess environment is built
+- **THEN** the existing host daemon/developer authentication behavior is preserved

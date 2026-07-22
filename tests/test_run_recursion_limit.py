@@ -166,6 +166,87 @@ class TestRecursionLimitAppliedEvent:
         assert ev.detail.get("recursion_limit") == 42
 
 
+def test_mid_call_cancellation_persists_paid_provider_event(
+    monkeypatch, tmp_path,
+):
+    """A successful billed call stays auditable when cancel arrives mid-call."""
+    recorded_events = []
+    sink_holder = {}
+
+    class _FakeApp:
+        def invoke(self, state, config):
+            sink_holder["sink"](
+                node_id="paid-node",
+                phase="ran",
+                provider_served="claude-code",
+                provider_model="sonnet",
+                provider_credential_class="founder_byo_api_key",
+                provider_credential_owner="founder",
+            )
+            return state
+
+    class _FakeCompiledGraph:
+        def compile(self, checkpointer):
+            return _FakeApp()
+
+    class _FakeCompiled:
+        graph = _FakeCompiledGraph()
+        concurrency_tracker = None
+
+    def _fake_compile(*_args, **kwargs):
+        sink_holder["sink"] = kwargs["event_sink"]
+        return _FakeCompiled()
+
+    class _FakeSaver:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        @staticmethod
+        def from_conn_string(_path):
+            return _FakeSaver()
+
+    class _StubBranch:
+        branch_def_id = "x"
+        node_defs = []
+        graph_nodes = []
+
+    cancel_checks = iter([False, True])
+    monkeypatch.setattr(runs, "compile_branch", _fake_compile)
+    monkeypatch.setattr(runs, "record_event", lambda _base, ev: recorded_events.append(ev))
+    monkeypatch.setattr(runs, "update_run_status", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runs, "is_cancel_requested", lambda *_a, **_k: next(cancel_checks),
+    )
+    import langgraph.checkpoint.sqlite as saver_mod
+    monkeypatch.setattr(saver_mod, "SqliteSaver", _FakeSaver)
+
+    run_id = runs.create_run(
+        tmp_path,
+        branch_def_id="x",
+        thread_id="cancel-during-call",
+        inputs={},
+    )
+
+    outcome = runs._invoke_graph(
+        tmp_path,
+        run_id=run_id,
+        branch=_StubBranch(),
+        inputs={},
+        provider_call=lambda *_a, **_k: "unused",
+    )
+
+    paid_events = [
+        event for event in recorded_events
+        if event.node_id == "paid-node" and event.status == runs.NODE_STATUS_RAN
+    ]
+    assert outcome.status == runs.RUN_STATUS_CANCELLED
+    assert len(paid_events) == 1
+    assert paid_events[0].detail["provider_credential_owner"] == "founder"
+
+
 class TestMcpRecursionLimitOverride:
     """_action_run_branch MCP handler validates recursion_limit_override."""
 

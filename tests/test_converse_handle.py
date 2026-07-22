@@ -54,6 +54,44 @@ def test_converse_founder_relays_intelligence_reply(monkeypatch):
     assert out["universe_id"] == "u-x"
 
 
+def test_converse_reports_provider_and_credential_payer_for_both_calls(monkeypatch):
+    import tinyassets.universe_intelligence as ui
+
+    class _Reply(str):
+        provider_receipts = [
+            {
+                "purpose": "reply",
+                "provider": "claude-code",
+                "credential_class": "founder_byo_api_key",
+                "credential_owner": "founder",
+            },
+            {
+                "purpose": "learning_extraction",
+                "provider": "claude-code",
+                "credential_class": "founder_byo_api_key",
+                "credential_owner": "founder",
+            },
+        ]
+
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(helpers, "_request_universe", lambda gid="": "u-x")
+    monkeypatch.setattr(
+        permissions, "universe_access_allows", lambda uid, write=False: True,
+    )
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "founder-1")
+    monkeypatch.setattr(ui, "converse", lambda *_a, **_k: _Reply("hello"))
+
+    out = json.loads(us.converse(message="hi", graph_id="u-x"))
+
+    assert out["reply"] == "hello"
+    assert [r["purpose"] for r in out["provider_receipts"]] == [
+        "reply", "learning_extraction",
+    ]
+    assert {r["credential_owner"] for r in out["provider_receipts"]} == {
+        "founder",
+    }
+
+
 def test_converse_surfaces_engine_failure_honestly(monkeypatch):
     import tinyassets.universe_intelligence as ui
 

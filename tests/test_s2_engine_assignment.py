@@ -73,8 +73,33 @@ def test_set_engine_action_writes_vault_and_config(tmp_path, monkeypatch):
     # The key is NEVER echoed in the response.
     assert "sk-secret-KEY" not in json.dumps(out)
     # config.yaml + vault were written and resolve end-to-end.
-    assert load_universe_config(udir).preferred_writer == "claude-code"
+    config = load_universe_config(udir)
+    assert config.preferred_writer == "claude-code"
+    assert config.allowed_providers == ["claude-code"]
     assert resolve_llm_api_key(udir, "ANTHROPIC_API_KEY") == "sk-secret-KEY"
+
+
+def test_set_engine_rejects_key_provider_mismatch_without_writing(tmp_path, monkeypatch):
+    from tinyassets.api import universe as uni
+
+    udir = tmp_path / "u-mismatch"
+    udir.mkdir()
+    monkeypatch.setattr(uni, "_request_universe", lambda universe_id="": "u-mismatch")
+    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+
+    out = json.loads(uni._action_set_engine(
+        universe_id="u-mismatch",
+        inputs_json=json.dumps({
+            "service": "anthropic",
+            "api_key": "sk-secret",
+            "preferred_writer": "codex",
+        }),
+    ))
+
+    assert "error" in out
+    assert "codex" in out["error"]
+    assert not (udir / ".credential-vault.json").exists()
+    assert not (udir / "config.yaml").exists()
 
 
 def test_set_engine_requires_key_and_known_service(tmp_path, monkeypatch):
@@ -102,9 +127,11 @@ def test_ledger_extractor_never_leaks_the_key():
     target, summary, payload = _extract_set_engine(
         {"inputs_json": json.dumps({"api_key": "sk-SECRET-LEDGER"})},
         {"universe_id": "u-1", "service": "anthropic",
-         "preferred_writer": "claude-code", "status": "engine_set"},
+         "preferred_writer": "claude-code",
+         "allowed_providers": ["claude-code"], "status": "engine_set"},
     )
     assert "sk-SECRET-LEDGER" not in json.dumps([target, summary, payload])
+    assert payload["allowed_providers"] == ["claude-code"]
 
 
 def test_set_engine_is_founder_admin_scoped():

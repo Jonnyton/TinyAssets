@@ -73,6 +73,25 @@ def _run_actor_for_kwargs(kwargs: dict[str, Any]) -> str:
     return branch_run_actor(str(kwargs.get("universe_id") or ""))
 
 
+def _provider_call_for_universe(universe_id: str = "") -> Any:
+    """Return the host bridge or an explicitly universe-bound bridge."""
+    from tinyassets.providers.call import call_provider
+
+    uid = str(universe_id or "").strip()
+    if not uid:
+        return call_provider
+
+    from tinyassets.config import load_universe_config
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.call import bind_universe_provider_call
+
+    universe_dir = _universe_dir(uid)
+    return bind_universe_provider_call(UniverseContext(
+        universe_dir=universe_dir,
+        config=load_universe_config(universe_dir),
+    ))
+
+
 def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
     if action not in {"run_branch", "run_branch_version"}:
         return None
@@ -642,8 +661,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     # Real provider — lazy import so test envs without providers work.
     provider_call: Any = None
     try:
-        from tinyassets.providers.call import (
-            call_provider as provider_call,
+        provider_call = _provider_call_for_universe(
+            str(kwargs.get("universe_id") or ""),
         )
     except ImportError:
         provider_call = None
@@ -707,6 +726,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "status": outcome.status,
         "output": outcome.output,
         "error": outcome.error,
+        "provider_receipt_status": "pending",
+        "provider_receipts": [],
     }
     if source_run is not None:
         branch_version = int(getattr(branch, "version", 1) or 1)
@@ -825,6 +846,46 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
+    provider_receipts: list[dict[str, Any]] = []
+    for event in events:
+        if (
+            event.get("node_id") == "__system__"
+            and event.get("status") == "provider_calls"
+        ):
+            calls = event.get("detail", {}).get("calls", [])
+            if isinstance(calls, list):
+                provider_receipts = [
+                    dict(call) for call in calls if isinstance(call, dict)
+                ]
+    if not provider_receipts:
+        # The aggregate system event is written on successful completion.
+        # Failed/cancelled/interrupted runs may still have paid calls before
+        # the terminal edge, so recover receipts from their durable ran events.
+        for event in events:
+            detail = event.get("detail", {})
+            served = detail.get("provider_served") if isinstance(detail, dict) else None
+            if event.get("status") != "ran" or not served or served == "unknown":
+                continue
+            provider_receipts.append({
+                "node_id": event.get("node_id", ""),
+                "provider": str(served),
+                "model": str(detail.get("provider_model") or ""),
+                "latency_ms": detail.get("provider_latency_ms"),
+                "attempts": detail.get("provider_attempts"),
+                "degraded": bool(detail.get("provider_degraded", False)),
+                "credential_class": detail.get(
+                    "provider_credential_class", "unknown",
+                ),
+                "credential_owner": detail.get(
+                    "provider_credential_owner", "unknown",
+                ),
+            })
+    snapshot["provider_receipts"] = provider_receipts
+    snapshot["provider_receipt_status"] = (
+        "pending"
+        if run_record["status"] in {"queued", "running"}
+        else "complete"
+    )
     output = run_record.get("output")
     if isinstance(output, dict):
         for key in ("external_write_results", "external_write_errors"):
@@ -1234,8 +1295,8 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
 
     provider_call: Any = None
     try:
-        from tinyassets.providers.call import (
-            call_provider as provider_call,
+        provider_call = _provider_call_for_universe(
+            _run_universe_id(_resume_record or {}),
         )
     except ImportError:
         provider_call = None
@@ -1692,8 +1753,8 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     # Real provider — lazy import so test envs without providers work.
     provider_call: Any = None
     try:
-        from tinyassets.providers.call import (
-            call_provider as provider_call,
+        provider_call = _provider_call_for_universe(
+            str(kwargs.get("universe_id") or ""),
         )
     except ImportError:
         provider_call = None

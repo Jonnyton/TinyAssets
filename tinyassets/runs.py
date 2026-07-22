@@ -2212,8 +2212,6 @@ def _invoke_graph(
             ))
             return
 
-        if is_cancel_requested(base_path, run_id):
-            raise RunCancelledError(f"Run {run_id} cancelled between nodes.")
         served = detail.get("provider_served")
         if served:
             provider_tracker["last"] = str(served)
@@ -2227,6 +2225,12 @@ def _invoke_graph(
                 "latency_ms": detail.get("provider_latency_ms"),
                 "attempts": detail.get("provider_attempts"),
                 "degraded": bool(detail.get("provider_degraded", False)),
+                "credential_class": detail.get(
+                    "provider_credential_class", "unknown",
+                ),
+                "credential_owner": detail.get(
+                    "provider_credential_owner", "unknown",
+                ),
                 "at": _now(),
             })
         record_event(base_path, RunStepEvent(
@@ -2239,6 +2243,12 @@ def _invoke_graph(
             detail=detail,
         ))
         _emit_node_status(node_id, NODE_STATUS_RAN)
+
+        # A cancellation may arrive while the provider call is in flight.
+        # Persist the completed/billed call before honoring the between-node
+        # cancellation edge, otherwise its payer receipt disappears.
+        if is_cancel_requested(base_path, run_id):
+            raise RunCancelledError(f"Run {run_id} cancelled between nodes.")
 
         # Phase 2 design_used emit (Task #75) — credit the NodeDefinition's
         # author for a successful step execution. Fires only at "ran" phase
@@ -3366,6 +3376,12 @@ def _invoke_graph_resume(
                     "latency_ms": detail.get("provider_latency_ms"),
                     "attempts": detail.get("provider_attempts"),
                     "degraded": bool(detail.get("provider_degraded", False)),
+                    "credential_class": detail.get(
+                        "provider_credential_class", "unknown",
+                    ),
+                    "credential_owner": detail.get(
+                        "provider_credential_owner", "unknown",
+                    ),
                     "at": _now(),
                 })
 
@@ -3392,8 +3408,6 @@ def _invoke_graph_resume(
             ))
             return
 
-        if is_cancel_requested(base_path, run_id):
-            raise RunCancelledError(f"Run {run_id} cancelled during resume.")
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
@@ -3403,6 +3417,8 @@ def _invoke_graph_resume(
             finished_at=_now(),
             detail=detail,
         ))
+        if is_cancel_requested(base_path, run_id):
+            raise RunCancelledError(f"Run {run_id} cancelled during resume.")
 
     try:
         compiled = compile_branch(
