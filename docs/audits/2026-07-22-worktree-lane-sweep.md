@@ -4,6 +4,13 @@
 **Scope:** local worktree *registrations* (`git worktree list`). Audit-only — nothing was removed.
 **Adjacent, non-overlapping:** PR #1521 audits *origin branches*. See "Reconciliation" below.
 
+> **Read the freshness stamps.** Measurements are from 2026-07-21 22:30–23:05 PDT. A cross-family
+> re-check at 00:05 returned **`VERDICT: reject`** because two time-sensitive claims had already
+> expired — correctly. The structural findings (F1, F2, F6-structure, F7, F8) hold; the live-job
+> quote in F3 and the missing-commit example in F6 are historical. See
+> [Cross-family review](#cross-family-review--verdict-reject-and-it-was-right). **Do not paste the
+> sweep block from this document — re-derive it.**
+
 ---
 
 ## Summary
@@ -416,7 +423,15 @@ The real bypasses, in order of cost:
    agents run out of context or get despawned.
 3. **A false-positive-heavy census trains people to ignore it.** 45 of 55 flagged lanes are
    non-actionable. A cold-start tool that reports 55 things to clean, 45 of which must not be
-   touched, gets skimmed — which is presumably why nobody has run this sweep.
+   touched, gets skimmed.
+4. **The tool has become too slow to run at session start.** `worktree_status.py` shells out
+   several times per worktree (status, log, upstream, for-each-ref). At 149 lanes the first census
+   in this audit completed in roughly a minute; a re-run 90 minutes later had **not finished after
+   8 minutes** and had to be backgrounded, because the fleet had grown and one job's scratch
+   directory now holds 1,028 entries. `AGENTS.md` mandates this at *every* session start for
+   *every* provider. A mandated step that costs minutes and returns mostly non-actionable rows is
+   a step that gets skipped — which is the most likely reason nobody has run this sweep, ahead of
+   any of the above.
 
 ### Suggested follow-ups (not done in this lane)
 
@@ -431,9 +446,55 @@ The real bypasses, in order of cost:
 
 ---
 
-## Cross-family review
+## Cross-family review — `VERDICT: reject`, and it was right
 
-Dispatched to Codex (`scripts/codex_review.py`, read-only sandbox) with the seven load-bearing
-claims written as refutation targets. Verdict recorded below.
+Three dispatches. Two background `codex exec` runs (7 claims, then a narrowed 3-claim
+command-driven prompt) both **timed out at 1800s** and the wrapper wrote `VERDICT: error` with
+"Do NOT treat this as approve" — correct fail-closed behaviour, recorded here rather than quietly
+retried. The third, an inline `mcp__codex__codex` read-only gate, returned:
 
-@@CODEX@@
+> C1: Not fair on current evidence. Output 1 is `0`; output 2 says `"state": "done"`, not blocked
+> or in-flight.
+> C2: Adapt. Output 3 is `50`, confirming that HEAD is referenced, but the outputs do not establish
+> a current concurrency risk.
+> C3: Reject. Output 4 is `0`, but output 5 is `commit` in both repositories. The alleged missing
+> commit and blocked live session are contradicted.
+> **VERDICT: reject**
+
+**Codex is right about the present tense, and I re-verified its outputs rather than taking either
+side on faith.** Between my measurements (~22:30–23:05) and its (~00:05) the system moved:
+
+| Claim | When measured | At re-check (00:05–00:10) |
+|---|---|---|
+| Job `aaaa5b09` state | `"blocked"`, mtime 22:41 | `"state": "done"`, mtime 00:05 — **but** `"tempo": "active"` with 1 task in flight, and `detail: "i compacted your context"` |
+| `58430f7c` in main repo | absent | **present** — `refs/remotes/origin/fix/credential-vault-fail-closed` |
+| `for-each-ref --contains` on a job HEAD | 31 refs | 50 refs |
+| Nested clones in `git worktree list` | 0 | **0 — unchanged** |
+
+So the corrections are:
+
+- **F3 is expired, not wrong.** `blocked` was accurate at 22:41. The job has since taken another
+  turn. Note it is *still not finished*: `tempo: active`, 1 task in flight. Codex read the literal
+  `state` string and concluded "not live"; the adjacent fields say otherwise. The operational
+  conclusion — **liveness-check before sweeping, do not trust a pasted list** — survives, and is
+  now demonstrated rather than argued.
+- **F6's live-cost example is resolved, and the resolution confirms the diagnosis.** `58430f7c` /
+  `a727b574` are no longer missing: the lane was recovered into
+  `refs/stranded/wf-credential-vault-fail-closed/*` and **PR #1549** is now open —
+  *"fail closed on universe provider credentials + payer receipts (**stranded lane**, DO NOT
+  MERGE)"*. Someone had to go hunting under a `refs/stranded/` namespace to retrieve it. That is
+  what recovering work the mandated tool cannot see costs.
+- **F6's structural claim is untouched.** `git worktree list` still reports **0** of the 53 nested
+  checkouts. Codex confirmed output 4 = 0 and did not dispute the mechanism; its `reject` rests on
+  the expired example, not the structure.
+- **C2 stands** — Codex confirmed the refs and agreed nothing is stranded in the 45.
+
+**The verdict is retained as `reject`, not argued down.** Every time-sensitive claim in this audit
+should be read as of its stamp. This is the `stale-backlog-rows-misdirect` class turned on its
+author: *a "not present" note may be correct-but-expired* — mine was, within ninety minutes.
+
+That is also the strongest possible confirmation of **F8**: the census is a moving target. Between
+census 1 and this review the lane count went 149 → 152, one lane changed state twice, another
+committed, a job advanced a turn, and a stranded branch was recovered and PR'd. **The sweep block
+in this document must not be pasted from this document.** Re-derive, then liveness-check, then
+remove — which is what Step 0 already requires.
