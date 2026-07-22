@@ -702,3 +702,33 @@ Notes:
 - Ship condition: focused tests pass, branch pushed, PR opened, then deploy
   brings runtime_count to 4 while goal_pool remains a follow-on.
 - 2026-06-24 CREATE wf-branch-lifecycle-automation branch=worktree-branch-lifecycle-automation base=origin/main provider=claude-code (branch lifecycle automation — design note + L0-L4)
+
+## 2026-07-22 12:41 - create collapse-mcp-spec-reconcile
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/collapse-mcp-spec-reconcile
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile
+- STATUS/Issue/PR: Reconcile obsolete five-handle OpenSpec; PR after strict validation and independent review
+- PLAN refs: API and MCP Interface; Distribution and Discoverability
+- Purpose: retire the obsolete five-handle change without corrupting seven-handle canonical truth and preserve real residuals as successor changes
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile\_PURPOSE.md
+- Memory refs: PR #1594 audit; PR #1595 catalog repair
+- Related implications: external directory acceptance; live-mcp-connector-surface; PR #1561 legacy stdio fence is a separate runtime lane
+- Idea feed refs: none
+- Ship/abandon: merge reviewed spec-only PR, or abandon if a current overlapping lane is found
+
+## 2026-07-22 - remove collapse-mcp-spec-reconcile
+
+- Provider: codex-gpt5-desktop-2
+- Branch: codex/collapse-mcp-spec-reconcile
+- Lane state: Abandoned/swept
+- Worktree: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile
+- STATUS/Issue/PR: reviewed spec-only PR; STATUS claim retired in landing diff
+- PLAN refs: API and MCP Interface; Distribution and Discoverability
+- Purpose: archive obsolete five-handle proposal without syncing and preserve residual work as two narrow successor changes
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-collapse-mcp-spec-reconcile\_PURPOSE.md
+- Memory refs: independent Codex whole-lane APPROVE 2026-07-22
+- Related implications: external directory acceptance; PR #1522 folds into manifest successor; PRs #1561 and #1553 remain separate
+- Idea feed refs: none
+- Ship/abandon: ship after GitHub checks; local worktree may be removed after merge
