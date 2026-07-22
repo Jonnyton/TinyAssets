@@ -3381,3 +3381,58 @@ Next coordination:
 - Codex review found two real defects: the first loop asked about image BUILDS not DEPLOYS (a build can succeed while deploy/canary fails or auto-rolls-back, and the runs query was never filtered to main), and `pr-scope-guard.yml`'s "fail closed on truncation" comment was false — the files API caps at 3000 and reports nothing when it truncates. Both fixed in #1500.
 - Durable rule landed: AGENTS.md Hard Rule 14 — verify the deployed sha, never infer it from a merge. `get_status` -> `release_state.git_sha` is the live answer.
 - Live check at time of writing: prod `git_sha` 1605349e (#1498), deployed 2026-07-22T01:11Z, canary passed — genuinely in sync, since the three later commits (#1499/#1500/#1489) touch no release path.
+
+## 2026-07-22 claude-code — session end (rate limit). Codex continues.
+
+DEPLOYED TODAY: prod moved 0bc841aa -> 92dd60c5 -> 519fb2ea. Deploy 29898999431
+success, canary passed. Two user-visible changes are live:
+  - 92dd60c5 credential fail-closed (a universe with no credential no longer
+    inherits the host's subscription)
+  - 519fb2ea first-contact birth moved from get_status to converse
+
+READ FIRST IF YOU TOUCH FIRST CONTACT OR PROVIDERS:
+  - docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md
+    (host-approved 2026-07-22; supersedes the 2026-07-15 auto-birth directive)
+  - output/user_sim_session.md, entries dated 2026-07-22
+
+*** OPEN P0 — a newborn universe is MUTE. ***
+First contact births the home (works), then converse returns "All providers
+exhausted for role=writer". Cause is ours and is traced, not guessed:
+providers/base.py:181-189 (from 92dd60c5) correctly refuses host-credential
+fallback, but nothing provisions a newborn universe a credential, so every
+provider in the writer chain fails auth.
+  - DO NOT REVERT 92dd60c5. It closes a real identity leak. Fix the missing half.
+  - NOT BUG-038/039. Identical error string, different mechanism (those are
+    candidate_discovery on established universes). Do not merge the two items.
+  - Brief queued: output/s2-gate/_queue/_backlog/codex/r2-newborn-universe-is-mute.md
+  - The test gap that let it ship: 97 first-contact tests assert the universe is
+    BORN, none assert it can SPEAK. openspec universe-creation task 1.14 now
+    demands that test and requires it to go red against 519fb2ea first.
+
+OPEN PRs I left (all non-draft, all enrolled):
+  #1558 reconcile loop dispatched builds that could never deploy
+  #1581 openspec corrections (universe-creation 2.7 re-opened; personification
+        §2 stop-banner) + the mute-universe P0 in STATUS
+  #1560 R2-2 test identity   #1550 R2-4 wiki split   #1549 credential openspec
+MERGED: #1552 (first contact), #1546 (credential guard), #1559 (STATUS), #1568
+        (design note + spec reconciliation)
+
+CI GOTCHA worth knowing: a workflow run DISPATCHED by GITHUB_TOKEN cannot
+trigger another workflow. deploy-prod triggers on workflow_run of the build, so
+a token-dispatched build never deploys. Measured: 05:28Z push-triggered build
+deployed in 3 min; 04:33Z and 06:53Z token-dispatched builds deployed nothing.
+#1558 fixes it by dispatching build AND deploy explicitly. Until that merges,
+converging prod by hand needs BOTH `gh workflow run build-image.yml --ref main`
+and then `gh workflow run deploy-prod.yml --ref main` — the deploy resolves its
+image by the sha of the ref it runs on and fails closed if that image is absent.
+
+DO NOT BUILD AS WRITTEN: openspec/changes/universe-personification §2.1-2.3.
+They specify chatbot embodiment, reversed by the 2026-07-02 relay reshape.
+§2.4 (authorization-before-voice) is still valid. Banner is in the tasks file.
+
+FLEET: 8 codex / 4 claude live, 3 queued, 3 in backlog. Briefs are grounded in
+verified evidence, not guesses. Backlog drains fast — restock it.
+
+ui-test browser: C:\Users\Jonathan\.claude-ai-profile is CORRUPT (starts, never
+binds CDP). Working profile migrated to .claude-ai-profile2. claude_chat.py and
+the ui-test skill still point at the bad path; brief queued to fix + self-heal.
