@@ -67,6 +67,13 @@ Result — differing lines vs. the salvage post-image:
 gone *further* than the salvage (extra containment primitive, extra hardening), not the fix being
 absent — detailed per item below.
 
+**Independent adversarial pass.** For each fix I claim landed, I additionally looked for the
+bypass rather than the guard: other write sites for the same field, whether the admin-action
+frozenset is actually read by an enforcement path, whether the removed substring test survives
+anywhere, and — for the two `still-valid` verdicts — whether the work landed under a renamed
+symbol. Those checks are recorded inline per item. Item 7 is the proof this mattered: it *is* a
+rename, and the issue's own vocabulary greps clean on `main`.
+
 **Test evidence** (`origin/main` baseline, 2026-07-22, Windows/py3.11):
 
 ```
@@ -112,6 +119,22 @@ The 39-line residual vs. the salvage post-image is `main`'s *additional* hardeni
 bare `approved=True` against the hash of the *current* source, plus enforcement at
 `branches.py:1689-1728`. That is strictly more defence than the salvage proposed.
 
+Adversarial follow-ups, since a guard in one function body proves nothing about the other call
+sites:
+
+- **Is `_ext_manage` the only approve path?** No — but the other one is guarded too.
+  `git grep -n 'approved.*= *True' origin/main -- "tinyassets/**.py"` finds one further *write*
+  (as opposed to comment): `tinyassets/api/branches.py:516`, the branch-node `approve_source_code`
+  path, which is a different action from the standalone-node `approve` this item is about. It
+  binds identity and hash on the adjacent lines (`:517` `approved_by = actor`, `:519`
+  `approved_source_hash = source_hash`), and `tinyassets/branches.py:511` records the invariant:
+  *"…never sets `approved=True` directly, so the hash is always bound to the source"*.
+  `approve_source_code` is likewise in `_EXTENSIONS_ADMIN_ACTIONS`.
+- **Is the admin frozenset actually enforced, or dead config?** Enforced.
+  `tinyassets/auth/provider.py:441-443` is the consumer — `admin_actions` parameter, then
+  `if action in admin_actions:` — reached for this surface via `:587`
+  `admin_actions=_EXTENSIONS_ADMIN_ACTIONS`. It is not a frozenset nothing reads.
+
 **Command of record:** `git grep -n "node_approval_requires_distinct_actor" origin/main`
 
 ### [2] Canon filename path-traversal — `a195e1ba` — **already-fixed** (superset)
@@ -146,6 +169,9 @@ It is stale too. `tinyassets/outcomes/evaluators.py` differs from the salvage po
 **2 lines** (module-docstring wording only).
 
 All three sub-fixes are present:
+
+Adversarial follow-up: the substring bug is gone repo-wide, not just relocated —
+`git grep -n '"accept" in\|in decision' origin/main -- "tinyassets/**.py"` returns **zero** hits.
 
 | Salvage requirement | On `main` |
 |---|---|
@@ -247,6 +273,10 @@ The salvage's companion edit is also absent: it added a `requires_capability` fr
 `git show origin/main:pages/concepts/skill-sync-via-brain-pages.md | grep capability` returns
 nothing.
 
+Adversarial follow-up — did it land under a different name? No.
+`git grep -rln "requires_capability\|capability-provisioning\|capability_provisioning" origin/main`
+returns **zero** hits across the entire tree, in any file type. The concept is absent, not renamed.
+
 Disposition: the issue itself files this as *"Speculative `status: proposed` doc. Low priority."*
 It is a concept page with no code behind it, and the platform's direction has since been reframed
 twice (`enabling-primitives-not-prebuilt-complexity`, `platform-shape-democratized-commons`).
@@ -261,6 +291,9 @@ dangling cross-reference rather than a stale pointer to deleted code.
 - Plugin mirror: same check → **0**.
 - Target exists: `tinyassets/effectors/github_search.py`, `tests/test_github_search_repo_files.py`,
   design note `docs/design-notes/2026-05-29-repo-search-primitive.md`.
+- Adversarial follow-up — did an equivalent xref land under different wording? No. Grepping the
+  module for `counterpart` / `see also` returns only line 3, *"The read counterpart to the
+  github_pull_request **write** effector"* — the write xref, not the search one.
 
 The salvage's exact one-line addition:
 
