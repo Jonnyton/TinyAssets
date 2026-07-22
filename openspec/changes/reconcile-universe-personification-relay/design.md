@@ -10,7 +10,7 @@ This design does not re-litigate that reversal. It reconciles the spec system wi
 what each of the 11 unchecked tasks means now, retire what is dead, and keep what survives
 somewhere durable.
 
-All classifications below were re-verified against `origin/main` at `f605bb99` on 2026-07-22
+All classifications below were re-verified against `origin/main` at `19bf2534` on 2026-07-22
 after the ratified relay correction landed in PR #1578.
 
 ## Goals / Non-Goals
@@ -80,12 +80,29 @@ being fixed. Every "already landed" row below names the file and the behavior.
 | **2.3** In-voice `assemble(lens) → view` delivery | **REVERSED (mechanism) — intent relocated** | Chatbot-side in-voice view delivery is gone with embodiment. The grounded-assembly intent landed *inside* `converse`: `universe_intelligence.py` assembles a first-person persona system prompt from the universe's own OKF bundle. Lens/assembly work continues in the active `brain-okf-canonical-store` change. |
 | **2.4** Authorization-before-voice | **SURVIVES — partially landed** | Still exactly right under relay, and arguably load-bearing. Landed: the `converse` handle is founder-only + fail-closed (as-built spec, "The MCP converse handle is founder-only and fail-closed"). Unbuilt: general pre-assembly filtering by interlocutor — no visitor path exists yet to filter for. |
 | **2.5** Visitor actor binding + T0/T1/T2 tier gating | **SURVIVES — unbuilt** | No `identity_tier` / T0-T1-T2 machinery in `tinyassets/*.py`. As-built spec defers public "talk to a stranger's universe" to a later, separately-gated slice. Under relay, the binding attaches to the `converse` caller rather than to a chatbot embodiment session. Adjacent to the active `universe-visibility` change — see Dependencies. |
-| **2.6** Anti-collision write path: reject profile-shaped / persona-dossier writes | **SURVIVES — unbuilt** | No dossier/profile-shaped write rejection found anywhere in `tinyassets/`. Note the *instructions*-side guard (2.2) landed but the *enforcement*-side did not — exactly the prompt-vs-boundary gap Codex flagged in the original review. Under relay this matters more, not less: relay renders persona text straight into host chat context. |
+| **2.6** Anti-collision write path: reject profile-shaped / persona-dossier writes | **SURVIVES — NARROWED/ADAPTED, unbuilt** | The unscoped rule contradicts governed founder learning. The successor limits any future rejection to a defined external/commons endpoint, predicate, and redirect while exempting the universe's own learning path. |
 | **2.7** Honest fallback / degraded mode | **ALREADY LANDED** | `universe_intelligence.py:428` raises on a missing universe; `:164` "you are newly born and still learning" for an unnamed universe; `:208` never-infer/never-invent/never-carry-over rules. Three as-built scenarios cover it. |
-| **2.8** Persona as a forkable `[composable]` default | **SURVIVES — needs rewording** | The floor-vs-composable split still holds, but custody moved: the persona now lives first-party in the universe intelligence's own system prompt, so "forkable default" means a forkable universe-side persona/soul, not a chatbot-side script. Reworded in the delta spec. |
+| **2.8** Persona as a forkable `[composable]` default | **SURVIVES — ADAPTED** | Custody moved first-party. Forking changes universe-side learned self-model/voice content; the operational soul governs the floor but never supplies persona identity, and no script is handed to the chatbot. |
 | **2.9** Tool-selection regression tests: embodiment does not degrade accuracy | **REVERSED as written — residual preserved** | There is no embodiment prompt left to regress. The underlying risk survives in changed form (connector instruction density vs tool-selection accuracy), but no threshold-less scenario belongs in this delta; task 6.3 requires a separately defined baseline, metric, and permitted regression against `live-mcp-connector-surface`. |
 | **4.1** `sync-specs` → `openspec/specs/universe-personification/spec.md` | **REVERSED — MUST NOT RUN** | Executing this would write the embodiment model into `openspec/specs/`, where it would read as current spec truth beside the as-built relay capability. The most dangerous row in the file. |
 | **4.3** Archive after merge | **SURVIVES — actionable now** | PR #1372 merged 2026-06-25. This change performs the archive (with classification attached). |
+
+### Requirement-by-requirement reconciliation
+
+The retired delta contains nine behavioral requirements in addition to its task ledger. Every
+one is classified here so archiving cannot silently discard intent:
+
+| Retired requirement | Classification | Disposition |
+|---|---|---|
+| Every universe interaction is the named projection of the whole mind | **SURVIVES — ADAPTED** | Carried into the successor for conversational/outbound speaking surfaces; the old ban on neutral tool-only surfaces is narrowed because PR #1578 explicitly preserves direct-control action tools. |
+| Authorization precedes voice | **SURVIVES — partially landed** | Carried into the successor; founder-only `converse` is the current narrow floor, general pre-assembly filtering remains unbuilt. |
+| The founder's chatbot embodies the persona | **REVERSED** | Retired. The universe intelligence speaks; the chatbot relays and never impersonates it. |
+| Persona views never enter host chatbot memory | **SPLIT — advisory landed / enforcement ADAPTED and unbuilt** | Host-memory guidance is advisory; any enforceable rejection is limited to a separately defined external/commons write boundary and exempts governed founder learning. |
+| OAuth binds the user, embodied persona, and identity tier | **SURVIVES — ADAPTED and unbuilt** | Ownership/founder gating remains; embodiment-session language is removed and tier binding attaches to the authenticated `converse` caller. |
+| Visitors interact with the persona behind the pre-rendering floor | **SURVIVES — unbuilt** | Carried across the authorization and interlocutor-tier successor requirements; disclosure semantics must reconcile with `universe-visibility` before implementation. |
+| One identity, modulated by interlocutor and surface | **SURVIVES — unbuilt** | Carried into the successor with identity sourced only from the learned self-model; soul governs but never supplies identity. |
+| Honest fallback — no invented persona state | **ALREADY LANDED** | Preserved in the canonical as-built relay spec and current runtime; do not rebuild. |
+| Tiny is the platform universe's personification | **SURVIVES — unbuilt** | Carried into the successor as a governed self-as-platform requirement with no special authority bypass. |
 
 **Rollup (11 tasks):** **4 reversed** (2.1, 2.3, 2.9, 4.1) · **1 split** — reversed + already
 landed (2.2) · **5 survive** (2.4, 2.5, 2.6, 2.8, and 4.3 which is discharged by this change) ·
@@ -106,12 +123,15 @@ the paragraph to the relay model before this reconciliation was allowed to land.
   not duplicated here.
 - **`brain-okf-canonical-store`** (active, 9/16) owns the assembled-view content that 2.3's
   intent relocated into. No requirement of it changes here.
+- **`live-mcp-connector-surface`** owns connector vocabulary and tool-selection evidence.
+  Task 6.3 must define its baseline, metric, and permitted regression there before any
+  connector-density claim becomes a requirement.
 
 ## Risks / Trade-offs
 
 - **Archiving hides the reasoning from `openspec list`** — mitigated: survivors are promoted to
   the active successor delta spec, so nothing actionable lives only in the archive.
-- **Four surviving requirements remain unimplemented** — intentional and explicit. They remain
+- **Seven surviving requirements remain unimplemented** — intentional and explicit. They remain
   only in this active change; canonical `openspec/specs/` stays as-built truth until code and
   tests land.
 
@@ -150,6 +170,7 @@ host-visible prerequisite without syncing any unbuilt delta into canonical as-bu
 ## Migration Plan
 
 Spec-only; no runtime change, so no rollback is required. This PR banners, classifies, and
-archives the reversed change, then leaves this successor change active. Later implementation
-must complete tasks 6.1–6.4 with tests; only then may task 6.5 sync the four ADDED requirements
-into `openspec/specs/universe-personification-and-relay/spec.md` and archive this change.
+archives the reversed change, then leaves this successor change active. Definition and
+cross-capability tasks 6.1–6.3 gate independently landable implementation tasks 6.4–6.10; only
+then may task 6.11 sync the seven ADDED requirements into
+`openspec/specs/universe-personification-and-relay/spec.md` and archive this change.

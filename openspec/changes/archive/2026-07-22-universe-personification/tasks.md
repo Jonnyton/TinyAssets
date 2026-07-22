@@ -10,7 +10,7 @@
 > landed `universe-personification-and-relay` capability. Kept for its design reasoning only.
 >
 > **Every unchecked task below is annotated with its classification. Read the annotation
-> before acting on any line.** Re-verified against `origin/main` @ `f605bb99`, 2026-07-22.
+> before acting on any line.** Re-verified against `origin/main` @ `19bf2534`, 2026-07-22.
 
 ## 1. Ratified-spec amendments (`docs/specs/2026-06-10-tiny-first-principles-spec.md`) — NOT applied in this draft
 
@@ -36,11 +36,11 @@
 - [ ] 2.5 Visitor actor binding + tier gating (no TinyAssets OAuth → T0; durable subject → T1; owner OAuth → T2)
   > **✅ SURVIVES — unbuilt.** No `identity_tier` machinery in `tinyassets/*.py`; public access is a deferred slice. Under relay the tier binds to the `converse` caller, not to an embodiment session. → carried forward; must agree with the active `universe-visibility` change.
 - [ ] 2.6 Anti-collision write-path: reject profile-shaped / persona-dossier writes
-  > **✅ SURVIVES — unbuilt.** No dossier-write rejection exists in `tinyassets/`. The instructions half landed (2.2) but the enforcement half did not — the prompt-vs-boundary gap the original Codex review flagged. → carried forward.
+  > **✅ SURVIVES — NARROWED/ADAPTED, unbuilt.** The unscoped dossier rule contradicts governed founder learning. The successor limits any future rejection to a defined external/commons endpoint, predicate, and redirect and exempts the universe's own learning path.
 - [ ] 2.7 Honest fallback / degraded mode: no invented persona state; no embodiment-from-memory when no active universe/persona
   > **✅ ALREADY LANDED — do not rebuild.** `universe_intelligence.py:428` raises on a missing universe; `:164` "newly born and still learning"; `:208` never-infer/never-invent rules. Covered by three as-built scenarios.
 - [ ] 2.8 Persona behavior as a forkable `[composable]` default; substrate enforces only identity/authority/privacy floor
-  > **✅ SURVIVES — needs rewording.** The floor-vs-composable split holds, but custody moved first-party: the persona lives in the universe intelligence's own system prompt, so forking means forking universe-side persona/soul content, not shipping a script to a third-party chatbot. → carried forward, reworded.
+  > **✅ SURVIVES — ADAPTED.** Custody moved first-party. Forking changes universe-side learned self-model/voice content; operational soul remains governance input and never supplies or replaces persona identity, and no script is handed to the chatbot.
 - [ ] 2.9 Tool-selection regression tests (Claude + ChatGPT) proving embodiment does not degrade accuracy
   > **⛔ REVERSED as written — residual preserved.** No embodiment prompt exists to regress. The residual risk (connector instruction density vs tool-selection accuracy) is carried forward as definition task 6.3 against `live-mcp-connector-surface`, not as a threshold-less scenario in this delta.
 

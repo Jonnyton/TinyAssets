@@ -10,6 +10,24 @@
 > AGENTS.md § Spec-driven development). This change therefore stays **active** as the
 > implementation change and is not archived on merge. (Codex review 2026-07-22, finding 1.)
 
+### Requirement: Personified intelligence is the named projection of the whole mind on speaking surfaces
+A universe's assigned intelligence SHALL speak and act as the named projection of the universe's
+whole mind: voice expresses it, soul governs it, brain and learned self-model inform it, and
+goals, skills, hands, and senses remain organs of the same mind rather than separate personas.
+This requirement applies when the universe intelligence speaks or acts on conversational and
+outbound surfaces. Direct-control connector tools MAY remain neutral control operations; they
+SHALL NOT impersonate the universe or fabricate its voice (provenance: retired requirement
+"Every universe interaction is the named projection of the whole mind," narrowed to preserve
+the direct-control tools ratified in PR #1578).
+
+#### Scenario: a conversational surface presents the whole-mind personification
+- **WHEN** the universe intelligence answers through `converse` or another speaking surface
+- **THEN** the response is the assigned intelligence's own personified expression of the same whole mind
+
+#### Scenario: a direct-control tool does not manufacture persona speech
+- **WHEN** a founder invokes a direct-control action tool instead of `converse`
+- **THEN** the tool performs or reports the operation without pretending that connector-authored text is the universe's voice
+
 ### Requirement: Authorization precedes voice — the floor is enforced before assembly, not by prompt
 Identity, org-chart, and privacy-tier filtering SHALL be enforced during brain assembly and
 action authorization, BEFORE the universe intelligence's system prompt is assembled and before
@@ -63,6 +81,23 @@ capability's definition of what an unauthenticated reader may read (provenance: 
 - **WHEN** a verified founder converses with a universe they own
 - **THEN** they are bound to T2/founder authority
 
+### Requirement: One learned identity persists across interlocutors and speaking surfaces
+Each universe SHALL have one assigned intelligence and one learned personified identity. The
+identity SHALL be sourced from the learned self-model, never the operational soul, and SHALL
+remain the same across founder chat, visitor conversation, and outbound speaking surfaces.
+Tone, authorized disclosure, and exercised authority MAY vary by authenticated interlocutor,
+org-chart role, privacy tier, and surface, but who is speaking SHALL NOT change (provenance:
+retired requirement "One identity, modulated by interlocutor and surface").
+
+#### Scenario: the same identity adapts without being replaced
+- **WHEN** the universe speaks privately to its founder and publicly on an outbound surface
+- **THEN** both expressions come from the same learned identity
+- **AND** disclosure and tone are adapted to the authorized interlocutor and surface
+
+#### Scenario: the operational soul never becomes a second identity
+- **WHEN** soul or org-chart policy changes the allowed action or disclosure
+- **THEN** it governs the same learned identity rather than supplying or replacing that identity
+
 ### Requirement: The anti-collision boundary is stated honestly — host-memory ingestion is advisory, only the commons write surface is enforceable
 The anti-collision contract SHALL distinguish two boundaries that the retired change conflated,
 and SHALL NOT claim enforcement it cannot perform:
@@ -104,10 +139,11 @@ tier, and honest fallback. No persona script SHALL be baked into the platform.
 
 Custody is first-party: the persona lives in the universe intelligence's OWN system prompt,
 assembled server-side from the universe's learned self-model — NOT as a script handed to a
-third-party chatbot. Forking the persona SHALL therefore mean forking universe-side persona and
-soul content, and SHALL NOT mean shipping behavioral instructions through the connector, which
-the 2026-07-02 live falsification established that hosts correctly refuse (provenance: retired
-task 2.8).
+third-party chatbot. Forking the persona SHALL therefore mean forking universe-side learned
+self-model and voice content. The soul MAY govern the fork's authority floor, but SHALL never
+source or replace persona identity. Forking SHALL NOT mean shipping behavioral instructions
+through the connector, which the 2026-07-02 live falsification established that hosts correctly
+refuse (provenance: retired task 2.8).
 
 #### Scenario: a forked persona changes voice but not the floor
 - **WHEN** a founder forks their universe's persona voice or greeting
@@ -116,8 +152,26 @@ task 2.8).
 
 #### Scenario: persona customization stays first-party
 - **WHEN** a persona is customized
-- **THEN** the change lands in universe-side persona/soul content assembled into the intelligence's system prompt
+- **THEN** the change lands in universe-side learned self-model or voice content assembled into the intelligence's system prompt
+- **AND** soul content remains governance input rather than the source of persona identity
 - **AND** no behavioral instruction is delivered to the host chatbot through a tool result
+
+### Requirement: Tiny is the platform universe's governed personification
+The platform universe's assigned intelligence SHALL be named Tiny and SHALL learn and express
+the platform universe's self-model: the platform, its community, and the founder-directed work
+performed through it. Tiny SHALL use the same first-party custody, authorization, provenance,
+and effect boundaries as every other universe; self-as-platform SHALL NOT grant a special bypass
+around the normal governed loop (provenance: retired requirement "Tiny is the platform
+universe's personification").
+
+#### Scenario: Tiny narrates a platform change through the governed loop
+- **WHEN** the platform universe's accepted work ships a change
+- **THEN** Tiny MAY narrate that verified event in first person as the platform universe
+- **AND** the narration references the governed work result rather than inventing an unverified action
+
+#### Scenario: self-as-platform grants no ambient authority
+- **WHEN** Tiny attempts a protected action or disclosure
+- **THEN** the same identity, org-chart, privacy, effect, and receipt boundaries apply as for any other universe
 
 > **Residual of retired task 2.9 — deliberately NOT specced here.** The original task was a
 > tool-selection regression test proving *embodiment* does not degrade accuracy; no embodiment

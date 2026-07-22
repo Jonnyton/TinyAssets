@@ -6,7 +6,7 @@ founder's OAuth **embodies** the persona and speaks in first person, **never rel
 
 **That invariant was reversed by host directive on 2026-07-02 and is contradicted by
 shipped production behavior.** Three independent sources agree, re-verified against
-`origin/main` at `f605bb99` on 2026-07-22:
+`origin/main` at `19bf2534` on 2026-07-22:
 
 1. **Ratified correction** — PR #1578 / `f605bb99` amends
    `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` to the host-directed relay model:
@@ -52,7 +52,10 @@ model read as current spec truth.
   - the anti-collision boundary, **restated honestly** — host-memory ingestion is advisory and
     not platform-enforceable, and any write restriction is scoped to the commons surface and
     must not restrict the universe's governed founder-learning path;
-  - persona as a forkable `[composable]` default, reworded for first-party custody.
+  - persona as a forkable `[composable]` default, reworded for first-party custody;
+  - whole-mind personification on speaking surfaces, with direct-control tools kept honest;
+  - one learned identity modulated across interlocutors/surfaces, never sourced from soul;
+  - Tiny as the platform universe's governed personification, with no authority bypass.
 - **Record what already landed** so it is not rebuilt: the anti-collision *instructions*
   guard, honest fallback, and grounded first-person assembly all shipped inside `converse`.
 - **Record the resolved host decision** — PR #1578 / `f605bb99` amended the ratified narrative
@@ -62,14 +65,15 @@ model read as current spec truth.
 ## Capabilities
 
 ### Modified Capabilities
-- `universe-personification-and-relay`: adds the four surviving-but-unbuilt requirements
+- `universe-personification-and-relay`: adds the seven surviving-but-unbuilt requirements
   rescued from the retired change. No landed behavior is modified or removed — the relay
   model, `converse` sandbox, learning path, and founder-only gate all stand as specced.
 
 ### Removed Capabilities
 - `universe-personification` (the *proposed* capability, never synced to `openspec/specs/`):
-  retired. Its correct content already lives in the as-built
-  `universe-personification-and-relay` capability; its reversed content must not ship.
+  retired. Its shipped relay-compatible content lives in the canonical as-built capability;
+  seven valid but unbuilt requirements remain only in this active successor change, while its
+  reversed chatbot-embodiment content must not ship.
 
 ## Impact
 

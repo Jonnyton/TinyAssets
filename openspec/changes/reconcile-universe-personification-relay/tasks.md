@@ -1,6 +1,6 @@
 ## 1. Verify the contradiction (done in this change)
 
-- [x] 1.1 `git fetch --prune`; classify against `origin/main`, then re-verify at `f605bb99` after PR #1578
+- [x] 1.1 `git fetch --prune`; classify against `origin/main`, then re-verify at `19bf2534` after PR #1578
 - [x] 1.2 Confirm source 1 — ratified correction: PR #1578 / `f605bb99` replaces chatbot embodiment with the relay model
 - [x] 1.3 Confirm source 2 — `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` §3 (why embodiment was live-falsified)
 - [x] 1.4 Confirm source 3 — shipped code: `tinyassets/universe_server.py:209` ("You do NOT speak as the universe … RELAY … RENDER")
@@ -22,7 +22,7 @@
 
 ## 4. Carry surviving intent forward
 
-- [x] 4.1 Four ADDED requirements on `universe-personification-and-relay` (authorization-before-voice; interlocutor tier binding; anti-collision write path; forkable persona under first-party custody)
+- [x] 4.1 Seven ADDED requirements on `universe-personification-and-relay`, covering every surviving retired requirement (whole-mind speaking surfaces; authorization-before-voice; interlocutor tier binding; narrowed anti-collision boundary; forkable first-party persona; one learned identity across surfaces; Tiny as governed platform personification)
 - [x] 4.2 Remove the threshold-less 2.9 scenario from this delta; carry connector instruction-density vs tool-selection accuracy as definition task 6.3 against `live-mcp-connector-surface`
 - [x] 4.3 Cross-reference `universe-visibility` (anonymous-reader semantics) and `brain-okf-canonical-store` (assembled-view content) instead of duplicating them
 
@@ -38,11 +38,18 @@
 ## 6. Implementation (this change stays ACTIVE until these land)
 
 > Codex finding 1: the survivors are unbuilt, and `openspec/specs/` is as-built truth
-> (`openspec/config.yaml`: "do not spec aspirations"). There is deliberately **no `sync-specs`
-> task here** — the sync happens only after the code and tests below exist.
+> (`openspec/config.yaml`: "do not spec aspirations"). There is deliberately **no
+> pre-implementation `sync-specs`** — task 6.11 becomes eligible only after the code and tests
+> below exist.
 
 - [ ] 6.1 Define the anti-collision write restriction concretely before implementation — exact external/commons endpoint, predicate, redirect destination — and confirm it does not restrict the governed founder-learning path (`founder.md`)
 - [ ] 6.2 Reconcile interlocutor tier binding with the `universe-visibility` change's anonymous-reader semantics and record the agreed authority/disclosure contract
 - [ ] 6.3 Define baseline, metric, and permitted regression for connector tool-selection accuracy, and file it against `live-mcp-connector-surface` (residual of retired task 2.9)
-- [ ] 6.4 Only after 6.1–6.3: build the surviving requirements (authorization-before-voice generalization; interlocutor tier binding; scoped commons-side anti-collision write path; forkable persona under first-party custody), each with tests
-- [ ] 6.5 Only then: `sync-specs` into `openspec/specs/universe-personification-and-relay/spec.md`, then archive this change
+- [ ] 6.4 Implement the whole-mind personification contract on speaking surfaces, including proof that direct-control tools remain neutral and never fabricate universe voice
+- [ ] 6.5 After 6.2: implement authorization-before-voice generalization with tests proving unauthorized content never enters persona assembly
+- [ ] 6.6 After 6.2: implement authenticated interlocutor tier binding with cross-principal and `universe-visibility` disclosure tests
+- [ ] 6.7 After 6.1: implement the scoped external/commons anti-collision boundary with predicate, redirect, governed-learning exemption, and adversarial tests
+- [ ] 6.8 Implement forkable first-party persona custody with tests proving identity comes from learned self-model content while soul remains governance input and never supplies or replaces persona identity
+- [ ] 6.9 Implement one learned identity across speaking surfaces with tests for surface/interlocutor modulation without identity replacement
+- [ ] 6.10 Implement Tiny as the platform universe's governed personification with tests proving self-as-platform grants no authority bypass
+- [ ] 6.11 Only after 6.4–6.10 and the task 6.3 connector evidence gate: `sync-specs` into `openspec/specs/universe-personification-and-relay/spec.md`, then archive this change
