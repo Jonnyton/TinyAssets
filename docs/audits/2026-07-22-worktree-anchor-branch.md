@@ -78,6 +78,19 @@ commit (e.g. `wt-s1-base-r27` and `wt-s1-review-r26` are both `14920488`;
 | `origin/docs/patch-loop-reference-design` | `7f01d2c9` ✓ matches local tracking | **1** (`wt-patch-loop-design`) |
 | *(none — genuinely local-only)* | — | **1** (`wt-auto-birth`) |
 
+**Retention depth.** Coverage is not one thin thread. Codex measured, per detached tip, how many
+post-fetch refs contain it:
+
+```
+DETACHED_ROWS=47
+REMOTE_CONTAINERS_MIN=8      REMOTE_CONTAINERS_MAX=14
+LOCAL_BRANCH_CONTAINERS_MIN=11
+```
+
+The *least*-covered detached tip is contained by **8 different `origin/*` refs**; the best-covered by
+14. Deleting any one covering branch — including `feat/blob-locks-v2` — would not expose a single
+history. That is the quantitative reason the "single point of failure" framing fails.
+
 The anchor branch tip `41c0e67c` is itself an ancestor of `origin/feat/blob-locks-v2` @ `f6bee436`
 (local tracking ref verified equal to `ls-remote`, so not a stale-tracking artifact):
 
@@ -146,7 +159,9 @@ One further point, from Codex: a checked-out worktree HEAD is its **own GC root*
 `worktrees/<id>/HEAD` pseudo-ref (verified: `git rev-parse worktrees/wt-bundle-sweep/HEAD` resolves,
 and `git reflog exists` returns 0 for it). So even absent every branch ref, `git gc` would not
 collect these commits while their worktrees remain registered. That is a *third*, independent layer
-of protection the original report did not account for.
+of protection the original report did not account for — **but it is the weakest of the three**: it
+lasts only while the worktree stays registered, and any residual reflog protection expires. It is a
+reason not to panic, not a reason to keep 49 worktrees forever.
 
 ---
 
@@ -255,25 +270,40 @@ already recorded in memory — a count that *looks* like work but measures topol
 ## 7. Why the backup push was not performed
 
 The authorized action was `git push origin chore/distexec-ci-authority-probes`, justified as
-"removes the single-point-of-failure and costs nothing."
+"removes the single-point-of-failure and costs nothing." **Both halves are false**, so it was not
+exercised.
 
-The first half is now false: there is no single point of failure to remove. Codex verified the
-second half precisely — the push would transfer **zero objects**:
+**Half one — there is no single point of failure to remove.** Every tip has 8–14 remote retention
+refs (§2).
 
-```
-ANCHOR_COMMITS_NOT_IN_BLOB_LOCKS=0
-ANCHOR_OBJECT_LINES_NOT_IN_BLOB_LOCKS=0
-DRY_RUN_PUSH: * refs/heads/chore/distexec-ci-authority-probes:... [new branch]
-```
+**Half two — it does not cost nothing.** Two distinct costs:
 
-So the push would create a **ref alias** for commits GitHub already stores — adding one more branch
-for `branch_janitor.py` (#1567) and `check_stranded_lanes.py` (#1566) to classify, while protecting
-nothing that is not already protected three ways over (§3).
+1. *Git objects: zero.* Codex confirmed
+   `ANCHOR_OBJECT_LINES_NOT_IN_BLOB_LOCKS=0` and a `--dry-run` push reporting `[new branch]`.
+   Codex also sharpened the wording: **"zero new Git objects" is correct; "zero bytes transferred"
+   is not** — protocol traffic and one new remote ref still happen.
+2. *CI: a full Docker build-and-smoke run.* This is the cost neither the report nor I anticipated.
+   `.github/workflows/docker-build.yml` is the **only** workflow in the repo whose `push:` trigger
+   has **no `branches:` filter** — it fires on a push to *any* branch, gated only on paths
+   (`Dockerfile`, `pyproject.toml`, `tinyassets/**`, `domains/**`, `deploy/**`, `.dockerignore`).
+   The anchor branch touches **117** files matching those filters, so the push fires a
+   15-minute-timeout job that builds the image and runs a container smoke test.
 
-The authorization was granted for a remediation whose premise the evidence removed, so it was not
-exercised. **This is a host decision, not an agent one** — see §8. If the host still wants the named
-anchor preserved against a future deletion of `origin/feat/blob-locks-v2`, the command is above and
-is safe to run.
+   The report reasoned *"a branch with no PR is not enrolled in any auto-merge automation, so this is
+   safe."* That is true **for auto-merge** and does not generalize: `pull_request`-triggered
+   automation is indeed skipped, but an unfiltered `push:` trigger does not care whether a PR exists.
+   Verified non-destructive — `docker-build.yml` has no registry login, no `push: true`, and no
+   deploy step, so nothing outward-facing happens — but "costs nothing" is wrong.
+
+**Codex's verdict was `adapt`, not `approve`,** and it argued the push is still worthwhile *as an
+explicit retention marker*: the covering branch names (`feat/blob-locks-v2`,
+`chore/mutation-probe-coverage`) are semantically unrelated to "preserve the review-round history,"
+which makes accidental deletion by a future janitor more plausible than the ref count alone suggests.
+Its own framing, though, is the deciding one: **"preventive hygiene, not emergency object rescue."**
+
+Preventive hygiene with a real CI cost, on data protected 8–14 ways, whose authorization rested on a
+premise the evidence removed, is a **host decision** (§8) — not something an agent should do on a
+falsified rationale. The command is above and is safe to run if the host wants the named anchor.
 
 ---
 
@@ -294,6 +324,10 @@ host's call:
 - **`/tmp/pr1435`** — a locked registration whose directory is gone. Unlocking + pruning is the only
   way to clear it, and both are outside this audit's mandate.
 - **`C:/c/Users/...` litter** — a stray directory from a path-conversion bug.
+- **Push the anchor branch as a named retention marker?** Costs one Docker build-smoke CI run (§7)
+  and buys insurance against a future janitor deleting all 8–14 covering refs. Codex says worthwhile
+  as hygiene; the audit declines to decide it. One command:
+  `git push origin chore/distexec-ci-authority-probes`.
 
 No agent should act on any of these without an explicit host instruction: Hard Rule 13 forbids the
 destructive half, and the non-destructive half (pushing 10+ branches) is an outward-facing
@@ -331,15 +365,35 @@ Two findings to feed back to that lane rather than re-implement:
 
 ## 10. Cross-family review (Codex, read-only)
 
-Codex independently re-derived the enumeration with its own PowerShell implementation and reproduced
-every count exactly: `MUTATION_COVERED=47`, `PATCH_COVERED=1`, `NEITHER=1`, `UNIQUE_HEADS=43`. It
-also contributed three checks this audit did not originally have:
+**Verdict: `adapt`.** Codex independently re-derived the enumeration with its own PowerShell
+implementation and reproduced every count exactly: `MUTATION_COVERED=47`, `PATCH_COVERED=1`,
+`NEITHER=1`, `UNIQUE_HEADS=43`, `DETACHED_ROWS=47`. It confirmed the falsification —
+*"one missing remote branch name is plainly not the realized single point of failure alleged by the
+report"* — and contributed four things this audit did not originally have:
 
 - surfaced that the repo is **shallow** (`SHALLOW=true`, 1 boundary) — a genuine attack on the
   reachability argument, resolved in §3;
 - confirmed `GRAFTS_ABSENT`, `REPLACE_REFS=0`;
-- established the **worktree-HEAD-as-GC-root** protection layer (§3) and the **zero-object push**
-  measurement (§7).
+- established the **worktree-HEAD-as-GC-root** layer and its expiry caveat (§3);
+- measured **retention depth** at 8–14 remote refs per tip (§2), and corrected "zero objects" to
+  "zero *new Git objects*, not zero bytes" (§7).
+
+Its qualifications, all adopted above:
+
+- all covering refs live in **one GitHub repository** — multiple retention refs, not multiple
+  independent storage providers;
+- a sufficiently broad janitor sweep could delete every covering ref at once;
+- the covering branch names are **semantically unrelated** to the retention purpose, so accidental
+  deletion is more plausible than the raw count implies;
+- `wt-auto-birth` remains genuinely local-only.
+
+Codex's recommended restatement, which this audit adopts: **48 of 49 worktree tips are published; all
+47 detached tips have multiple verified remote retention refs; one branch-attached auto-birth history
+of five commits is local-only.**
+
+Dispatch note: sent via `codex exec -` reading the ask on **stdin**. The documented Windows footgun
+(`cmd.exe` truncates `--prompt` at the first newline, so only the preamble reaches Codex) makes the
+`--prompt` path unusable for a multi-paragraph ask; stdin worked first try.
 
 ---
 
