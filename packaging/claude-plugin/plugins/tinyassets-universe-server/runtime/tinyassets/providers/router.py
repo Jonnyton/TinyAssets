@@ -935,6 +935,16 @@ class ProviderRouter:
                 "intersected with %s yields no judges.",
                 allowlist, _JUDGE_PROVIDERS,
             )
+        credential_ensemble = self._apply_universe_credential_policy(
+            ensemble, universe_dir,
+        )
+        if ensemble and not credential_ensemble:
+            logger.warning(
+                "Universe credential gate removes all judge providers; no "
+                "vault-funded judges are available."
+            )
+        ensemble = credential_ensemble
+
         auth_ensemble = self._apply_api_key_provider_policy(ensemble)
         if ensemble and not auth_ensemble:
             logger.warning(
@@ -981,7 +991,7 @@ class ProviderRouter:
                     prompt, system, cfg, universe_dir=universe_dir,
                 )
                 self._quota.record_success(name)
-                return resp
+                return self._stamp_credential_class(resp, universe_dir)
             except ProviderUnavailableError:
                 self._quota.cooldown(name, COOLDOWN_UNAVAILABLE)
             except ProviderTimeoutError:

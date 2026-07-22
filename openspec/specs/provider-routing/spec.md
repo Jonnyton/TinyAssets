@@ -47,7 +47,7 @@ When `TINYASSETS_PIN_WRITER` is set, the `writer` chain SHALL be narrowed to tha
 - **AND** does not fall through to the default chain
 
 ### Requirement: Per-universe engine preference and privacy allowlist
-The router SHALL apply per-universe configuration resolved from an explicit `universe_context` when supplied, otherwise from the process-global universe config. Every successful `set_engine` action that selects a concrete provider SHALL persist `allowed_providers` containing only that provider in addition to `preferred_writer`. A BYO key/provider mismatch SHALL be rejected. Universe-scoped routing SHALL filter out every cloud provider whose credential is not resolvable from the universe vault, including per-node policy attempt orders, and SHALL fail closed rather than fall back to ambient host credentials. `preferred_writer` / `preferred_judge` SHALL reorder the eligible chain, while the allowlist SHALL filter it; `None` preserves the otherwise eligible chain.
+The router SHALL apply per-universe configuration resolved from an explicit `universe_context` when supplied, otherwise from the process-global universe config. Every successful `set_engine` action that selects a concrete, credential-bound provider SHALL persist `allowed_providers` containing only that provider in addition to `preferred_writer`. A BYO key/provider mismatch SHALL be rejected. Universe-scoped routing SHALL filter out every cloud provider whose credential is not resolvable from the universe vault across normal chains, policy attempt orders, judge ensembles, version runs, and resumed runs, and SHALL fail closed rather than fall back to ambient host credentials. `preferred_writer` / `preferred_judge` SHALL reorder the eligible chain, while the allowlist SHALL filter it; `None` preserves the otherwise eligible chain.
 
 #### Scenario: allowlist blocks third-party providers
 - **WHEN** a universe sets `allowed_providers=["ollama-local"]`
@@ -79,6 +79,13 @@ The router SHALL apply per-universe configuration resolved from an explicit `uni
 - **THEN** it records the preferred provider with `allowed_providers=[]` and a pending binding status
 - **AND** universe calls fail closed rather than use ambient platform credentials
 
+#### Scenario: Vaultless judge ensemble cannot spend host API keys
+
+- **GIVEN** host API-key judge providers are enabled
+- **AND** a universe has no resolvable judge credential
+- **WHEN** the universe requests a judge ensemble
+- **THEN** no host-key provider is invoked and the ensemble returns no results
+
 ### Requirement: Public provider and credential-payer receipts
 
 Every provider-served public `converse` or `run_graph` operation SHALL expose a non-secret receipt naming the serving provider and credential payer class/owner. `converse` SHALL label its reply and learning-extraction calls separately. Because `run_graph` is asynchronous and may make zero to many calls, enqueue SHALL report `provider_receipt_status="pending"`; the durable run snapshot SHALL expose one receipt per provider-served node after calls occur. Receipts SHALL NOT contain tokens, secret values, or credential file contents.
@@ -94,6 +101,12 @@ Every provider-served public `converse` or `run_graph` operation SHALL expose a 
 - **THEN** its immediate response reports pending receipt state without claiming an unserved provider
 - **AND WHEN** `get_run` is called after provider-served nodes execute
 - **THEN** it returns their durable provider/payer receipts
+
+#### Scenario: Terminal failure preserves prior paid-call receipts
+
+- **GIVEN** one graph node completes a provider call and a later node fails or is cancelled
+- **WHEN** `get_run` returns the terminal snapshot
+- **THEN** it includes the completed node's provider/payer receipt rather than an empty complete receipt set
 
 ### Requirement: Auth-health quarantine of dead-login subscription providers
 When an auth-health probe is injected into the router, a provider whose subscription login is definitively `not_logged_in` SHALL be dropped from fallback chains, policy attempt orders, and the judge ensemble, so routing goes straight to a healthy provider instead of burning a failed attempt and a misleading cooldown. The gate SHALL be conservative: only a definitive `not_logged_in` drops a provider — `unknown` and `ok` statuses are kept, and a probe that raises is treated as "keep". A pinned writer with dead login SHALL fail loud rather than route elsewhere. As-built limitation: with no probe injected (the default for script/test routers), the gate is a no-op and no provider is quarantined.

@@ -408,7 +408,7 @@ def provider_auth_env_overrides(
             return {
                 "OPENAI_API_KEY": api_key,
                 "CODEX_HOME": str(
-                    _secret_artifact_dir(Path(universe_dir), "codex")
+                    _secret_artifact_dir(Path(universe_dir), "byo-codex")
                 ),
             }
         overrides: dict[str, str] = {}
@@ -422,7 +422,7 @@ def provider_auth_env_overrides(
             return {
                 "ANTHROPIC_API_KEY": api_key,
                 "CLAUDE_CONFIG_DIR": str(
-                    _secret_artifact_dir(Path(universe_dir), "claude")
+                    _secret_artifact_dir(Path(universe_dir), "byo-claude")
                 ),
             }
         overrides = {}
@@ -460,7 +460,10 @@ def provider_credential_class(
             "codex": "OPENAI_API_KEY",
         }.get(provider, "")
         if api_key_opted_in and host_key_var and os.environ.get(host_key_var):
-            return "host_api_key"
+            # Host/dev flows intentionally preserve the ambient CLI home.
+            # A key plus an implicit/default subscription login gives us no
+            # trustworthy way to infer which route the CLI billed.
+            return "host_auth_ambiguous"
         if provider in {"claude-code", "codex"}:
             return "host_subscription"
         return "unknown"

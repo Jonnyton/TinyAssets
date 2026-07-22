@@ -7,11 +7,11 @@ Universe-scoped provider subprocesses inherit a copy of the daemon environment. 
 ## What Changes
 
 - Sanitize every universe-scoped provider environment of ambient API-key and host-subscription auth before overlaying vault-owned auth. Host-scoped daemon and local-development calls with no universe context retain their current environment behavior.
-- Filter universe-scoped routing to providers with a resolvable universe credential, except explicitly credentialless local providers. Missing/unresolvable vault auth fails closed before a cloud provider subprocess is invoked.
+- Filter every universe-scoped routing path (normal, policy, judge ensemble, version run, and resume) to providers with a resolvable universe credential, except explicitly credentialless local providers. Missing/unresolvable vault auth fails closed before a cloud or in-process API-key provider is invoked.
 - Make every `set_engine` source write `allowed_providers` alongside `preferred_writer` whenever a provider is selected; BYO keys may select only the provider route that consumes that key.
 - Make BYO API-key auth mutually exclusive with subscription auth for the same call, and keep unbound market/host-daemon selections non-runnable rather than treating ambient platform auth as a binding.
 - Stamp successful provider responses with a non-secret credential class and owner, and expose purpose-labelled receipts for both `converse` calls.
-- For async `run_graph`, return `provider_receipt_status=pending` on enqueue, persist per-node provider/payer receipts, and expose them through `get_run` after calls occur.
+- For async `run_graph`, return `provider_receipt_status=pending` on enqueue, persist per-node provider/payer receipts, and expose them through `get_run` after calls occur, including calls before failure/cancellation/interruption.
 
 ## Impact
 

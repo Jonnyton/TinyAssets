@@ -89,13 +89,13 @@ def test_host_scoped_subprocess_env_preserves_subscription_auth(tmp_path, monkey
     assert env.get("CLAUDE_CONFIG_DIR") == host_claude
 
 
-def test_host_api_key_opt_in_receipt_is_not_mislabeled_subscription(monkeypatch):
+def test_host_cli_api_key_receipt_admits_ambient_auth_ambiguity(monkeypatch):
     monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "host-api-key")
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
-    assert provider_credential_class(None, "claude-code") == "host_api_key"
+    assert provider_credential_class(None, "claude-code") == "host_auth_ambiguous"
 
 
 @pytest.mark.parametrize(
@@ -164,9 +164,63 @@ def test_byo_key_is_exclusive_with_vault_subscription_auth(
 
     assert env[key_var] == "founder-key"
     assert env[home_var] == str(universe_dir / ".credentials" / (
-        "claude" if provider == "claude-code" else "codex"
+        "byo-claude" if provider == "claude-code" else "byo-codex"
     ))
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_byo_codex_home_cannot_reuse_materialized_subscription_auth(tmp_path):
+    universe_dir = tmp_path / "u-stale-subscription"
+    subscription = {
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "auth_json_b64": "e30=",
+    }
+    write_credential_vault(universe_dir, [subscription])
+    subscription_env = subprocess_env_for_provider(
+        "codex", universe_dir=universe_dir,
+    )
+    assert (universe_dir / ".credentials" / "codex" / "auth.json").is_file()
+
+    write_credential_vault(universe_dir, [
+        subscription,
+        {
+            "credential_type": "llm_api_key",
+            "service": "openai",
+            "secret_b64": base64.b64encode(b"founder-key").decode("ascii"),
+        },
+    ])
+    byo_env = subprocess_env_for_provider("codex", universe_dir=universe_dir)
+
+    assert byo_env["CODEX_HOME"] != subscription_env["CODEX_HOME"]
+    assert byo_env["CODEX_HOME"].endswith("byo-codex")
+    assert not (universe_dir / ".credentials" / "byo-codex" / "auth.json").exists()
+
+
+class _AmbientJudgeProvider(_AmbientHostProvider):
+    name = "gemini-free"
+    family = "google"
+
+
+def test_vaultless_universe_judge_ensemble_never_spends_host_api_key(
+    tmp_path, monkeypatch,
+):
+    """Mutation proof: removing the ensemble credential gate makes this RED."""
+    monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
+    monkeypatch.setenv("GEMINI_API_KEY", "host-key-must-not-pay")
+    provider = _AmbientJudgeProvider()
+    router = ProviderRouter(providers={provider.name: provider})
+    ctx = UniverseContext(
+        universe_dir=tmp_path / "newborn",
+        config=UniverseConfig(),
+    )
+
+    results = asyncio.run(router.call_judge_ensemble(
+        "judge", "system", universe_context=ctx,
+    ))
+
+    assert results == []
+    assert provider.call_count == 0
 
 
 def test_policy_route_reports_founder_payer_class(tmp_path, monkeypatch):

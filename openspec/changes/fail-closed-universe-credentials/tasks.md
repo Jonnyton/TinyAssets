@@ -19,6 +19,6 @@
 
 ## 4. Verify and publish
 
-- [ ] 4.1 Run focused tests, mutation proof, lint/type gates, and the relevant suite.
-- [ ] 4.2 Sync delta specs into main specs and perform independent security/diff review. (Specs synced; review pending.)
+- [x] 4.1 Run focused tests, mutation proof, lint/type gates, and the relevant suite.
+- [x] 4.2 Sync delta specs into main specs and perform independent security/diff review.
 - [ ] 4.3 Commit, push, and open a draft PR that states what now fails; do not merge.

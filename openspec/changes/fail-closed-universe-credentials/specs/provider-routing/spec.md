@@ -4,7 +4,7 @@
 
 ### Requirement: Per-universe engine preference and privacy allowlist
 
-Every successful `set_engine` action that selects a concrete provider SHALL persist `allowed_providers` containing only that provider in addition to `preferred_writer`. A BYO key/provider mismatch SHALL be rejected. Universe-scoped routing SHALL filter out every cloud provider whose credential is not resolvable from the universe vault, including per-node policy attempt orders, and SHALL fail closed rather than fall back to ambient host credentials.
+Every successful `set_engine` action that selects a concrete, credential-bound provider SHALL persist `allowed_providers` containing only that provider in addition to `preferred_writer`. A BYO key/provider mismatch SHALL be rejected. Universe-scoped routing SHALL filter out every cloud provider whose credential is not resolvable from the universe vault across normal chains, policy attempt orders, judge ensembles, version runs, and resumed runs, and SHALL fail closed rather than fall back to ambient host credentials.
 
 #### Scenario: Selected founder engine cannot fall through to host credentials
 
@@ -26,6 +26,13 @@ Every successful `set_engine` action that selects a concrete provider SHALL pers
 - **THEN** it records the preferred provider with `allowed_providers=[]` and a pending binding status
 - **AND** universe calls fail closed rather than use ambient platform credentials.
 
+#### Scenario: Vaultless judge ensemble cannot spend host API keys
+
+- **GIVEN** host API-key judge providers are enabled
+- **AND** a universe has no resolvable judge credential
+- **WHEN** the universe requests a judge ensemble
+- **THEN** no host-key provider is invoked and the ensemble returns no results.
+
 ## ADDED Requirements
 
 ### Requirement: Public provider and credential-payer receipts
@@ -43,3 +50,9 @@ Every provider-served public `converse` or `run_graph` operation SHALL expose a 
 - **THEN** its immediate response reports pending receipt state without claiming an unserved provider
 - **AND WHEN** `get_run` is called after provider-served nodes execute
 - **THEN** it returns their durable provider/payer receipts.
+
+#### Scenario: Terminal failure preserves prior paid-call receipts
+
+- **GIVEN** one graph node completes a provider call and a later node fails or is cancelled
+- **WHEN** `get_run` returns the terminal snapshot
+- **THEN** it includes the completed node's provider/payer receipt rather than an empty complete receipt set.

@@ -4,7 +4,7 @@
 
 ### D1: Enforce at both environment and router boundaries
 
-Universe-scoped subprocess environments always remove API-key and subscription-auth variables before the vault overlay. The router separately removes cloud providers whose credential class is unresolved. The environment boundary prevents accidental variable inheritance; the router boundary prevents CLI default-home discovery from bypassing an unset variable.
+Universe-scoped subprocess environments always remove API-key and subscription-auth variables before the vault overlay. The router separately removes cloud providers whose credential class is unresolved from normal chains, policy routes, and judge ensembles. The environment boundary prevents accidental variable inheritance; the router boundary prevents CLI default-home discovery and in-process API-key judge providers from bypassing it.
 
 ### D2: Preserve host flows by making universe context the boundary
 
@@ -16,15 +16,15 @@ The call bridge returns a string-compatible result carrying immutable provider m
 
 ### D4: Async run acknowledgement cannot claim a provider before one serves
 
-`run_graph` returns an explicit pending receipt state and an empty receipt list at enqueue. `get_run` reads the durable provider-call event and returns the completed per-node receipts. This is honest under zero-node and multi-node runs and remains auditable after the worker finishes.
+`run_graph` returns an explicit pending receipt state and an empty receipt list at enqueue. `get_run` reads the aggregate provider-call event after success and falls back to durable per-node `ran` events after failure, cancellation, interruption, or resume. This is honest under zero-node and multi-node runs and remains auditable after every terminal edge.
 
 ### D5: Credential classes disclose payer category, never credential material
 
-Public values are `founder_byo_api_key`, `universe_subscription`, `host_api_key`, `host_subscription`, `local_no_credential`, or `unknown`. Receipts also derive `credential_owner` (`founder`, `universe`, `host`, `none`, or `unknown`).
+Public values are `founder_byo_api_key`, `universe_subscription`, `host_api_key`, `host_subscription`, `host_auth_ambiguous`, `local_no_credential`, or `unknown`. Receipts also derive `credential_owner` (`founder`, `universe`, `host`, `none`, or `unknown`).
 
 ### D6: One provider call gets one credential route
 
-When a universe contains both a BYO API key and subscription auth for the same provider, the BYO key wins and the subprocess receives an isolated empty provider home rather than the subscription token/home. This makes the payer class deterministic. A `host_daemon` selection alone is not a credential binding: it persists the requested writer but keeps `allowed_providers=[]` until a founder-hosted runtime credential is explicitly bound.
+When a universe contains both a BYO API key and subscription auth for the same provider, the BYO key wins and the subprocess receives a distinct BYO-only provider home rather than the subscription token/home. This remains isolated even if subscription auth was materialized earlier. Host CLI calls that preserve both ambient routes report `host_auth_ambiguous`, not a guessed payer. A `host_daemon` selection alone is not a credential binding: it persists the requested writer but keeps `allowed_providers=[]` until a founder-hosted runtime credential is explicitly bound.
 
 ## Risks and mitigations
 

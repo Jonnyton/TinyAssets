@@ -702,4 +702,3 @@ Notes:
 - Ship condition: focused tests pass, branch pushed, PR opened, then deploy
   brings runtime_count to 4 while goal_pool remains a follow-on.
 - 2026-06-24 CREATE wf-branch-lifecycle-automation branch=worktree-branch-lifecycle-automation base=origin/main provider=claude-code (branch lifecycle automation — design note + L0-L4)
-- 2026-07-21 CREATE `.codex-worktrees/wf-credential-vault-fail-closed` branch=`fix/credential-vault-fail-closed` base=`origin/main@a69dd70a` provider=`codex-security-vault`; fail-close universe provider auth and add provider/payer receipts; draft PR only.
