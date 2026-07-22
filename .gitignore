@@ -92,7 +92,3 @@ BettaFish_Deep_Dive_Research.docx
 Community_Branches_Plan.docx
 .hetzner-credentials
 .cowork-bootstrap/
-
-# Scratch dumps at the repo root (see docs/audits/2026-05-03-brain-subsystems-deep-dive/).
-# Root-anchored: nested .txt (e.g. scripts/secrets_keys.txt) is unaffected.
-/*.txt
