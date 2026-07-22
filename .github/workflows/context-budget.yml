@@ -93,6 +93,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2153  # BASE_REF comes from the step's env: block
           git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
           BASE_SHA="$(git merge-base "origin/${BASE_REF}" HEAD)"
           echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
@@ -172,8 +173,17 @@ jobs:
       # These pin BOTH exit semantics, including every "should fail" path. The
       # bug being fixed is a guard that could not go red, so the red paths are
       # the load-bearing assertions here.
+      #
+      # --noconftest: tests/conftest.py imports langgraph and the rest of the
+      # runtime stack. The guard under test is pure stdlib, and this file uses
+      # only built-in fixtures (tmp_path / capsys / monkeypatch), so pulling in
+      # the whole dependency tree would buy nothing but minutes and flakiness.
+      # PYTHONPATH is then explicit because conftest is what normally puts the
+      # repo root on sys.path for `from scripts import ...`.
       - name: pytest
-        run: python -m pytest tests/test_check_context_budget_gate.py -q
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/test_check_context_budget_gate.py -q --noconftest
 
 # Honesty note
 # ------------
