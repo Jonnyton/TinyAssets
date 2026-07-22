@@ -1,9 +1,14 @@
 ## ADDED Requirements
 
-> These four requirements are the surviving intent rescued from the retired
-> `universe-personification` change, restated for the shipped relay model. None is built yet;
-> each lands as spec first so the intent is durable, then gets its own change. See
+> These requirements are the surviving intent rescued from the retired
+> `universe-personification` change, restated for the shipped relay model. See
 > `../../design.md` §"Task-by-task reconciliation" for the per-task provenance.
+>
+> **⚠ None of them is built. They MUST NOT be synced into
+> `openspec/specs/universe-personification-and-relay/` until code and tests exist** —
+> `openspec/specs/` is as-built truth (`openspec/config.yaml`: *"do not spec aspirations"*;
+> AGENTS.md § Spec-driven development). This change therefore stays **active** as the
+> implementation change and is not archived on merge. (Codex review 2026-07-22, finding 1.)
 
 ### Requirement: Authorization precedes voice — the floor is enforced before assembly, not by prompt
 Identity, org-chart, and privacy-tier filtering SHALL be enforced during brain assembly and
@@ -58,26 +63,39 @@ capability's definition of what an unauthenticated reader may read (provenance: 
 - **WHEN** a verified founder converses with a universe they own
 - **THEN** they are bound to T2/founder authority
 
-### Requirement: The anti-collision contract is enforced on the write path, not only stated in instructions
-Persona and work views SHALL be kept out of host chatbot memory by enforcement as well as by
-instruction. Write paths SHALL reject profile-shaped and persona-dossier writes — entries whose
-shape is a standing description of a person rather than universe work — and SHALL return an
-explicit redirect naming the correct destination rather than failing silently.
+### Requirement: The anti-collision boundary is stated honestly — host-memory ingestion is advisory, only the commons write surface is enforceable
+The anti-collision contract SHALL distinguish two boundaries that the retired change conflated,
+and SHALL NOT claim enforcement it cannot perform:
 
-The instructions-side half of this contract already shipped (`universe_server.py` server
-instructions carry "Don't memorize persona views."); the enforcement-side half did not. Under
-the relay model the exposure is larger, not smaller: the relay renders the universe's
-first-person text directly into host chat context, which is exactly the content a host memory
-system would absorb as a standing preference (provenance: retired task 2.6).
+1. **Host chatbot memory ingestion is NOT enforceable by this platform.** Whether Claude or
+   ChatGPT absorbs relayed persona text into its own memory is decided host-side. The shipped
+   guard — the server `instructions` line "Don't memorize persona views." — is **advisory**, and
+   SHALL be described as advisory. No requirement SHALL assert that rejecting a TinyAssets write
+   prevents host-side ingestion; they are different systems.
+2. **The universe's own brain is the enforceable surface**, and there the rule is *sole
+   writership*, not dossier-rejection: the universe intelligence is the sole writer of its own
+   brain via the governed learning path.
 
-#### Scenario: a profile-shaped write is rejected with a redirect
-- **WHEN** a write path receives a profile-shaped / persona-dossier entry
-- **THEN** the write is rejected
-- **AND** the response names where that content belongs instead
+Accordingly, a write-path restriction SHALL be scoped to the **external/commons** write surface
+and SHALL NOT restrict the universe's own governed learning path, which deliberately and
+correctly persists a description of the founder to `founder.md`
+(`universe_intelligence.py` `_GROUNDING_FILES`, `"founder.md": "<markdown: who my founder is>"`).
+Any such restriction SHALL name its exact endpoint, its predicate, and its redirect destination
+before it is implemented — an unscoped "reject profile-shaped writes" rule would contradict
+landed behavior (provenance: retired task 2.6, corrected by Codex review 2026-07-22 finding 2).
 
-#### Scenario: universe work is unaffected
-- **WHEN** a write records universe work, canon, or state
-- **THEN** it is accepted normally — the rejection targets person-dossier shape, not first-person voice
+#### Scenario: the host-memory guard is described as advisory
+- **WHEN** the anti-collision guard is documented or surfaced
+- **THEN** it is stated as guidance to the host assistant, not as a platform-enforced boundary
+
+#### Scenario: the universe's own founder-learning is never blocked
+- **WHEN** the governed learning path persists founder facts the founder explicitly stated
+- **THEN** the write succeeds — sole-writership governs this path, not dossier-shape rejection
+
+#### Scenario: an external dossier write is refused only under a defined predicate
+- **WHEN** an external caller writes person-dossier content to the commons surface
+- **THEN** it is refused only if it matches the named endpoint and predicate defined for that surface
+- **AND** the refusal names the correct destination instead of failing silently
 
 ### Requirement: Persona is a forkable default under first-party custody; the substrate enforces only the floor
 A universe's persona SHALL be a forkable `[composable]` default that the founder can tune, and
@@ -101,7 +119,9 @@ task 2.8).
 - **THEN** the change lands in universe-side persona/soul content assembled into the intelligence's system prompt
 - **AND** no behavioral instruction is delivered to the host chatbot through a tool result
 
-#### Scenario: connector instruction density does not degrade tool selection
-- **WHEN** connector-facing instructions or tool descriptions change
-- **THEN** MCP tool-selection accuracy on Claude and ChatGPT stays within the regression threshold
-- **AND** the guard is on instruction density generally, since no embodiment prompt exists to regress (residual of retired task 2.9)
+> **Residual of retired task 2.9 — deliberately NOT specced here.** The original task was a
+> tool-selection regression test proving *embodiment* does not degrade accuracy; no embodiment
+> prompt exists to regress. The surviving risk — connector instruction density vs tool-selection
+> accuracy — belongs to the `live-mcp-connector-surface` capability, not to persona forkability,
+> and cannot be specced until its baseline, metric, and permitted regression are defined. It is
+> carried as task 6.3, not as a threshold-less scenario. (Codex review 2026-07-22, finding 4.)

@@ -29,12 +29,19 @@
 ## 5. Gates
 
 - [x] 5.1 Opposite-provider review dispatched to Codex (background `scripts/codex_review.py`)
-- [ ] 5.2 Record the Codex verdict (approve / adapt / reject) in `design.md` §"Cross-provider review" and fold any adaptations
-- [ ] 5.3 **Host decision** — amend ratified `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` to the relay model, or let it stand as historical ratification? (`design.md` §"Host decision required")
-- [ ] 5.4 Draft PR opened; **do NOT merge** — a spec reversal is host-visible
+- [x] 5.2 Codex verdict **ADAPT** recorded in `design.md` §"Cross-provider review"; all 5 findings folded (classification upheld — the findings were against this change's own design)
+- [x] 5.3 Re-verify Codex findings 1 + 2 against the repo before folding, rather than accepting on report
+- [ ] 5.4 **Host decision** — amend ratified `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` to the relay model, **or** mark it explicitly superseded with a pointer? (`design.md` §"Host decision required"; doing neither is not an option)
+- [x] 5.5 Draft PR opened — #1515; **do NOT merge** — a spec reversal is host-visible
 
-## 6. Fold-back (after host approval — NOT in this draft)
+## 6. Implementation (this change stays ACTIVE until these land)
 
-- [ ] 6.1 `sync-specs` the four ADDED requirements into `openspec/specs/universe-personification-and-relay/spec.md`
-- [ ] 6.2 Open a follow-up change to BUILD the surviving requirements (this change ships spec only, no code)
-- [ ] 6.3 Archive this change
+> Codex finding 1: the survivors are unbuilt, and `openspec/specs/` is as-built truth
+> (`openspec/config.yaml`: "do not spec aspirations"). There is deliberately **no `sync-specs`
+> task here** — the sync happens only after the code and tests below exist.
+
+- [ ] 6.1 Build the surviving requirements (authorization-before-voice generalization; interlocutor tier binding; scoped commons-side anti-collision write path; forkable persona under first-party custody), each with tests
+- [ ] 6.2 Define the anti-collision write restriction concretely before implementing it — exact endpoint, predicate, redirect destination — and confirm it does not restrict the governed founder-learning path (`founder.md`)
+- [ ] 6.3 Define baseline, metric, and permitted regression for connector tool-selection accuracy, and file it against `live-mcp-connector-surface` (residual of retired task 2.9)
+- [ ] 6.4 Reconcile interlocutor tier binding with the `universe-visibility` change's anonymous-reader semantics
+- [ ] 6.5 Only then: `sync-specs` into `openspec/specs/universe-personification-and-relay/spec.md`, then archive this change

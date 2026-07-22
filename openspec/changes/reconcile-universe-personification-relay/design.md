@@ -31,21 +31,38 @@ All classifications below were verified against `origin/main` at `2c1f63cb` on 2
 
 **D1 — Retire by archive, not delete.** The change's design thinking (authorization-precedes-
 voice, the anti-collision contract, tier binding) is real and partly still correct. Archiving to
-`openspec/changes/archive/2026-07-22-universe-personification/` preserves every artifact
-verbatim while removing it from `openspec list`, which is the surface an agent actually reads
-for claimable work. Deleting would destroy the reasoning; leaving it active would keep the
-misdirection live.
+`openspec/changes/archive/2026-07-22-universe-personification/` preserves all four artifacts —
+their original content intact, with a `SUPERSEDED` banner prepended and `tasks.md` annotated
+per-task (not "verbatim": the classification is written into the file, which is the point) —
+while removing it from `openspec list`, the surface an agent actually reads for claimable work.
+Deleting would destroy the reasoning; leaving it active would keep the misdirection live.
 *Alternative:* rewrite it in place as a relay-shaped change — rejected: it would rewrite the
 history of a merged PR (#1372) and misrepresent what was reviewed and approved.
 
-**D2 — Survivors move to the capability that exists, not to a rewritten change.** The four
-surviving items are requirements about the *landed* relay surface, so they belong as ADDED
-requirements on `universe-personification-and-relay`. This also means a future agent finds them
-via the spec they'd already be reading, not via an archived change.
+**D2 — Survivors become deltas against the capability that exists — and STAY in the change until
+built.** The surviving items are requirements about the *landed* relay surface, so they are
+authored as ADDED requirements on `universe-personification-and-relay`. But they are **not
+synced into `openspec/specs/`**: that directory is as-built truth (`openspec/config.yaml`:
+*"do not spec aspirations"*; AGENTS.md § Spec-driven development), and every survivor is
+explicitly unbuilt. Syncing them would put aspirations into the file that other agents read as
+a description of what the platform *does* — reintroducing, in the opposite direction, exactly
+the spec-vs-reality gap this change exists to close.
+Therefore: **this change stays active** and is the implementation change for the survivors; the
+sync happens only when code and tests exist. *(Codex review 2026-07-22 finding 1 — the first
+draft had a `sync-specs` task and would have committed this error.)*
+*Alternative:* archive this change on merge and sync immediately — rejected for the above.
 
 **D3 — Task 4.1 is marked MUST-NOT-RUN, explicitly and in the file.** A generic "superseded"
 banner is not enough for a task whose execution would write the reversed model into
 `openspec/specs/`. It gets its own inline warning naming the damage.
+
+The same hazard applies to the retirement itself: `openspec archive` is documented as
+"Archive a completed change **and update main specs**" (verified via `openspec archive --help`,
+CLI 1.4.1), so running it on this change would have synced the reversed embodiment deltas into
+`openspec/specs/universe-personification/` — task 4.1 by another route. `--skip-specs` exists
+and would have been safe; this change used the `git mv` procedure the `openspec` skill
+documents, which avoids the flag-dependency entirely. Recorded so the next agent retiring a
+reversed change does not reach for the default command.
 
 **D4 — "Already landed" claims are code-cited, not asserted.** Per the 2026-07-21
 `stale-backlog-rows-misdirect` lesson, a premise stated without verification is the failure mode
@@ -69,8 +86,10 @@ being fixed. Every "already landed" row below names the file and the behavior.
 | **4.1** `sync-specs` → `openspec/specs/universe-personification/spec.md` | **REVERSED — MUST NOT RUN** | Executing this would write the embodiment model into `openspec/specs/`, where it would read as current spec truth beside the as-built relay capability. The most dangerous row in the file. |
 | **4.3** Archive after merge | **SURVIVES — actionable now** | PR #1372 merged 2026-06-25. This change performs the archive (with classification attached). |
 
-**Rollup:** 4 reversed · 1 split (reversed + landed) · 4 survive · 2 already landed
-(counting 4.3 as a survivor discharged here).
+**Rollup (11 tasks):** **4 reversed** (2.1, 2.3, 2.9, 4.1) · **1 split** — reversed + already
+landed (2.2) · **5 survive** (2.4, 2.5, 2.6, 2.8, and 4.3 which is discharged by this change) ·
+**1 already landed** (2.7). *(Corrected per Codex review 2026-07-22 finding 5 — an earlier
+rollup said "4 survive · 2 already landed", double-counting 4.3.)*
 
 Also noted for the record: tasks **1.1–1.3** are checked `[x]` and annotated "NOT applied in
 this draft", but the amendment text *is* present in the ratified spec on `origin/main`
@@ -105,8 +124,23 @@ Opposite-provider gate dispatched to Codex 2026-07-22 (`scripts/codex_review.py`
 offload) covering: (a) is any classification wrong against `origin/main`, (b) is surviving
 intent lost by archiving, (c) is archive-plus-new-change the right OpenSpec move.
 
-> **Verdict: _pending at draft time_ — recorded in the PR before merge.** A spec reversal is
-> host-visible; this change is a DRAFT PR and must not merge on a self-review.
+> ### Verdict: **ADAPT** (Codex, 2026-07-22) — all 5 findings folded.
+
+Codex independently confirmed the relay behavior in code, ran 55 focused tests (passed), and
+validated all 29 OpenSpec items (strict, passed). It **upheld the 11-task classification** — no
+row was wrong — and instead found defects in the *reconciliation's own design*:
+
+| # | Severity | Finding | Fold |
+|---|---|---|---|
+| 1 | Critical | Syncing the explicitly-unbuilt survivors into `openspec/specs/` violates as-built-truth (`config.yaml` "do not spec aspirations"). | **D2 rewritten**; `sync-specs` task removed; this change stays active as the implementation change. Verified in `openspec/config.yaml:36` + AGENTS.md. |
+| 2 | Critical | The anti-collision requirement conflated host-memory ingestion (not enforceable) with TinyAssets writes, and contradicted landed behavior that deliberately persists founder facts to `founder.md`. | Requirement **rewritten** to state the advisory boundary honestly, exempt the governed learning path, and demand endpoint/predicate/redirect be named before implementation. Verified at `universe_intelligence.py:39,219`. |
+| 3 | Required | The host question's "let it stand as historical ratification" option would leave normative-looking text alive. | Question **reframed** to two active options (amend / mark superseded); "do neither" explicitly ruled out. |
+| 4 | Required | Tool-selection regression scenario was misplaced under persona forkability with no threshold. | **Removed from the spec**; carried as task 6.3 against `live-mcp-connector-surface` with baseline/metric/threshold required. |
+| 5 | Nit | Rollup miscounted (4 survive / 2 landed vs actual 5 / 1); "preserves every artifact verbatim" was inaccurate. | Rollup **corrected**; D1 wording fixed. |
+
+Findings 1 and 2 were re-verified against the repo before folding rather than accepted on
+report. Both were real: the first draft of this change would have written aspirational
+requirements into as-built truth, and would have specced a rule contradicting shipped code.
 
 ## Host decision required
 
@@ -114,12 +148,15 @@ intent lost by archiving, (c) is archive-plus-new-change the right OpenSpec move
 
 > The *ratified* spec `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` still states
 > the reversed invariant — the chatbot "speaks AS the personification in the first person …
-> never relays ('Tiny says…')". Should it be amended to the shipped relay model, or does it
-> stand as a historical ratification with the reversal recorded only in
-> `openspec/specs/universe-personification-and-relay/`?
+> never relays ('Tiny says…')". **Which correction do you want: (a) amend that paragraph to the
+> relay model, or (b) leave the text and mark it explicitly superseded with a pointer to
+> `openspec/specs/universe-personification-and-relay/`?**
 
-Out of this change's write-set; amending a ratified spec is a host call. Until it is answered
-that line remains the last document telling an agent to build chatbot embodiment.
+Either is acceptable; **doing neither is not.** The paragraph reads as normative design text, so
+leaving it untouched as "historical ratification" would keep the original misdirection alive
+after this change lands — the one thing this change exists to prevent. *(Reframed per Codex
+review 2026-07-22 finding 3, which correctly refused the passive option offered in the first
+draft.)* Out of this change's write-set; amending a ratified spec is a host call.
 
 ## Migration Plan
 

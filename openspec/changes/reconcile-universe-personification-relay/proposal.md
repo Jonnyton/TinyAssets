@@ -45,12 +45,14 @@ model read as current spec truth.
   artifact and a per-task classification written into its `tasks.md`, so the design thinking
   is preserved and readable but no longer appears in `openspec list` as claimable work.
   Nothing is deleted.
-- **Carry the surviving intent forward** as ADDED requirements on the landed
-  `universe-personification-and-relay` capability — the four items that are still correct
-  under relay and are **not** yet built:
+- **Carry the surviving intent forward** as ADDED requirement *deltas* against the landed
+  `universe-personification-and-relay` capability — the items still correct under relay and
+  **not** yet built (they stay in this change until implemented, see Impact):
   - authorization-before-voice, generalized past the current founder-only `converse` gate;
   - visitor actor binding + identity-tier gating (T0/T1/T2);
-  - the anti-collision write path (reject profile-shaped / persona-dossier writes);
+  - the anti-collision boundary, **restated honestly** — host-memory ingestion is advisory and
+    not platform-enforceable, and any write restriction is scoped to the commons surface and
+    must not restrict the universe's governed founder-learning path;
   - persona as a forkable `[composable]` default, reworded for first-party custody.
 - **Record what already landed** so it is not rebuilt: the anti-collision *instructions*
   guard, honest fallback, and grounded first-person assembly all shipped inside `converse`.
@@ -77,8 +79,11 @@ model read as current spec truth.
   touched here.
 - **`openspec/changes/universe-personification/**`** → archived to
   `openspec/changes/archive/2026-07-22-universe-personification/` with banners + classification.
-- **`openspec/specs/universe-personification-and-relay/spec.md`** — gains four requirements
-  on `sync-specs`, after host approval. Not synced in this draft.
+- **`openspec/specs/universe-personification-and-relay/spec.md`** — **not modified.** The
+  surviving requirements stay as deltas inside this change until they are built with tests;
+  `openspec/specs/` is as-built truth and must not carry aspirations (`openspec/config.yaml`,
+  AGENTS.md § Spec-driven development). This change therefore stays **active** rather than
+  being archived on merge (Codex review 2026-07-22, finding 1).
 - **Out of write-set, flagged not applied:** `docs/specs/2026-06-10-tiny-first-principles-spec.md`
   §9 (host decision); `STATUS.md` and `AGENTS.md` (contended by #1506/#1507/#1501).
 - **Gates:** opposite-provider review dispatched to Codex 2026-07-22 (verdict recorded in
