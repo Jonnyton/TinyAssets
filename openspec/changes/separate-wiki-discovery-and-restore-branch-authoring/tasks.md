@@ -11,10 +11,10 @@
 
 ## 3. Discoverable branch authoring (RED -> GREEN)
 
-- [ ] 3.1 Add failing live-handle tests for branch create routing, patch compatibility, and mixed-payload rejection.
-- [ ] 3.2 Add additive `spec_json` routing to the existing `build_branch` handler.
-- [ ] 3.3 Publish the discovery-classified workflow-definition schema page and assert it is found by the canonical query.
-- [ ] 3.4 Mirror the live server and run focused tests plus mirror parity.
+- [x] 3.1 Add failing live-handle tests for branch create routing, patch compatibility, and mixed-payload rejection.
+- [x] 3.2 Add additive `spec_json` routing to the existing `build_branch` handler.
+- [x] 3.3 Publish the discovery-classified workflow-definition schema page and assert it is found by the canonical query.
+- [x] 3.4 Mirror the live server and run focused tests plus mirror parity.
 
 ## 4. Verification and publication
 

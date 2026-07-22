@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 
+import tinyassets.universe_server as universe_server
 from tinyassets.universe_server import (
     _DEPRECATED_TOOL_NAMES,
     mcp,
     read_graph,
+    read_page,
     write_graph,
 )
 
@@ -87,6 +90,143 @@ def test_unknown_target_is_reported() -> None:
     payload = json.loads(read_graph(target="bogus"))
     assert payload["error"] == "unknown_target"
     assert payload["handle"] == "read_graph"
+
+
+def test_write_graph_branch_without_id_routes_to_existing_build_handler(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def fake_extensions_impl(**kwargs):
+        calls.append(kwargs)
+        return json.dumps({"status": "built"})
+
+    monkeypatch.setattr(universe_server, "_extensions_impl", fake_extensions_impl)
+
+    payload = json.loads(
+        write_graph(target="branch", spec_json='{"name":"Research tracker"}')
+    )
+
+    assert payload == {"status": "built"}
+    assert calls == [
+        {
+            "action": "build_branch",
+            "spec_json": '{"name":"Research tracker"}',
+        }
+    ]
+
+
+def test_write_graph_branch_with_id_keeps_patch_handler(monkeypatch) -> None:
+    calls = []
+
+    def fake_extensions_impl(**kwargs):
+        calls.append(kwargs)
+        return json.dumps({"status": "patched"})
+
+    monkeypatch.setattr(universe_server, "_extensions_impl", fake_extensions_impl)
+
+    payload = json.loads(
+        write_graph(
+            target="branch",
+            branch_id="branch-123",
+            changes_json='[{"op":"set_description","description":"Updated"}]',
+        )
+    )
+
+    assert payload == {"status": "patched"}
+    assert calls == [
+        {
+            "action": "patch_branch",
+            "branch_def_id": "branch-123",
+            "changes_json": '[{"op":"set_description","description":"Updated"}]',
+        }
+    ]
+
+
+def test_write_graph_rejects_mixed_branch_create_and_patch_payloads(
+    monkeypatch,
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        universe_server,
+        "_extensions_impl",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    payload = json.loads(
+        write_graph(
+            target="branch",
+            branch_id="branch-123",
+            spec_json='{"name":"Ambiguous"}',
+        )
+    )
+
+    assert payload["error"] == "ambiguous_branch_write"
+    assert calls == []
+
+
+def test_public_handle_schema_advertises_discovery_scope_and_branch_spec() -> None:
+    tools = {tool.name: tool for tool in _advertised_tools()}
+
+    read_properties = tools["read_page"].parameters["properties"]
+    assert read_properties["scope"]["default"] == "discovery"
+    assert "coordination" in read_properties["scope"]["description"]
+
+    write_properties = tools["write_graph"].parameters["properties"]
+    assert write_properties["spec_json"]["default"] == ""
+    assert "workflow definition schema" in write_properties["spec_json"][
+        "description"
+    ].lower()
+
+
+def test_workflow_definition_schema_is_in_default_discovery(
+    monkeypatch, tmp_path
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    source = repo_root / "pages" / "workflows" / "workflow-definition-schema.md"
+    wiki_root = tmp_path / "Wiki"
+    target = wiki_root / "pages" / "workflows" / source.name
+    target.parent.mkdir(parents=True)
+    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+
+    payload = json.loads(
+        read_page(query="workflow definition schema", max_results=10)
+    )
+
+    match = next(
+        item
+        for item in payload["results"]
+        if item["path"] == "pages/workflows/workflow-definition-schema.md"
+    )
+    assert match["title"] == "Workflow Definition Schema"
+
+
+def test_documented_workflow_definition_builds_and_reads_back(
+    monkeypatch, tmp_path
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    schema_page = (
+        repo_root / "pages" / "workflows" / "workflow-definition-schema.md"
+    ).read_text(encoding="utf-8")
+    documented_spec = schema_page.split("```json\n", 1)[1].split("\n```", 1)[0]
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "workflow-schema-test")
+
+    from tinyassets.catalog import invalidate_backend_cache
+
+    invalidate_backend_cache()
+    try:
+        built = json.loads(write_graph(target="branch", spec_json=documented_spec))
+        assert built["status"] == "built", built
+
+        read_back = json.loads(
+            read_graph(target="branch", branch_id=built["branch_def_id"])
+        )
+        assert read_back["name"] == "Research claims tracker"
+        assert read_back["entry_point"] == "collect"
+    finally:
+        invalidate_backend_cache()
 
 
 def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:

@@ -524,6 +524,16 @@ def write_graph(
     request_type: str = "general",
     branch_id: str = "",
     changes_json: str = "",
+    spec_json: Annotated[
+        str,
+        Field(
+            description=(
+                "With target=branch and no branch_id, the complete workflow "
+                "definition JSON used to create a branch. Find the canonical "
+                "contract with read_page(query='workflow definition schema')."
+            ),
+        ),
+    ] = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
 
@@ -544,6 +554,8 @@ def write_graph(
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
             only the branch's author can edit it.
+        spec_json: With target=branch and no branch_id, the complete workflow
+            definition JSON used by the existing validated build path.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -612,13 +624,25 @@ def write_graph(
             branch_id=branch_id,
         )
     if normalized == "branch":
-        # PR-180 EDIT half: a founder patches their own branch graph via the
-        # existing transactional patch_branch handler (author-gated: BUG-081).
-        return _extensions_impl(
-            action="patch_branch",
-            branch_def_id=branch_id,
-            changes_json=changes_json,
-        )
+        if branch_id:
+            if spec_json.strip():
+                import json as _json
+
+                return _json.dumps({
+                    "error": "ambiguous_branch_write",
+                    "message": (
+                        "Use branch_id + changes_json to patch, or omit "
+                        "branch_id and pass spec_json to create."
+                    ),
+                })
+            # PR-180 EDIT half: a founder patches their own branch graph via
+            # the existing transactional handler (author-gated: BUG-081).
+            return _extensions_impl(
+                action="patch_branch",
+                branch_def_id=branch_id,
+                changes_json=changes_json,
+            )
+        return _extensions_impl(action="build_branch", spec_json=spec_json)
     return _unknown_target(
         "write_graph", target, ("goal", "request", "branch", "universe")
     )
