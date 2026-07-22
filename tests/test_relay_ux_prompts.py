@@ -22,6 +22,13 @@ def test_first_person_is_default_no_consent_menu():
     assert "Do NOT pause to" in _CS
 
 
+def test_opening_message_relays_to_converse_not_status():
+    assert "opening message" in _CS
+    assert "relay it through `converse` first" in _CS
+    assert "do not call `get_status` as the opening experience" in _CS.lower()
+    assert "get_status` auto-creates" not in _CS
+
+
 def test_relay_is_thin_no_over_narration():
     assert "THIN relay" in _CS
     assert "do NOT append your own" in _CS

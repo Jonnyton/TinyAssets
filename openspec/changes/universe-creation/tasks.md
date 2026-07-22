@@ -21,7 +21,7 @@
 - [ ] 1.0e Add Branch-run tests proving Branches are run only by universes, every run is attached to that universe's runtime Goal, multiple universes can use the same Branch as separate instances, and a universe can remix a Branch into its own variant.
 - [~] 1.1 Add MCP creation tests proving blank create generates exactly one opaque lowercase-ULID `universe_id` and does not accept a creation-time persona name. (ULID format/uniqueness covered by `test_ids`; create takes no name. A create-route "generates when absent" assertion is still to add.)
 - [x] 1.2 Add baseline tests proving creation writes `index.md`, `log.md`, `soul.md`, `soul.edit.md`, `identity.md`, `founder.md`, `orgchart.md`, `projects.md`, `goals.md`, `body.md`, `origin.md`, `soul_versions/index.md`, and `soul_versions/0001.md`, and does not create `self/`, `soul/`, `notes.json`, or `activity.log`. (`test_universe_bundle`, `test_universe_soul`.)
-- [ ] 1.3 Add tests proving `get_status` is idempotent for a newly created universe and does not first-create the soul bundle.
+- [x] 1.3 Add tests proving `get_status` is idempotent for a newly created universe and does not first-create the soul bundle.
 - [ ] 1.4 Add tests proving existing descriptive-id universes are reset to
   serial-id roots and write/run/status operations use the serial `universe_id`.
 - [ ] 1.4a Add universe-index tests proving creation inserts one row keyed by
@@ -33,8 +33,8 @@
 - [x] 1.9 Add projects/goals boundary tests proving `projects.md` is a one-line founder-project index with pointers as needed, and `goals.md` is runtime goals plus goal-attached Branch uses/runs. (`test_universe_bundle`.)
 - [x] 1.10 Add body contract tests proving `body.md` starts not-learned, describes body as learned embodiment/personification, and does not claim live platforms, applications, voice, hands, or senses before those are built or observed. (`test_universe_bundle`.)
 - [x] 1.11 Add orgchart contract tests proving `soul.md` links `orgchart.md` with the open questions, `orgchart.md` starts not-learned, states that the oath-confirmed founder is always the top anchor, and does not invent roles, teams, daemons, collaborators, delegations, or reporting lines. (`test_universe_bundle`.)
-- [ ] 1.12 Add first-connect tests proving an authenticated founder with no home universe gets a blank seed universe created and bound, the chatbot loads that seed soul/persona, and the first response speaks in first person as the universe rather than returning platform status as the main experience.
-- [ ] 1.13 Add first-connect tests proving an authenticated founder with an existing home universe loads that learned universe soul/persona and speaks as that universe.
+- [x] 1.12 Add first-connect tests proving an authenticated founder with no home universe gets a blank seed universe created and bound, the chatbot loads that seed soul/persona, and the first response speaks in first person as the universe rather than returning platform status as the main experience.
+- [x] 1.13 Add first-connect tests proving an authenticated founder with an existing home universe loads that learned universe soul/persona and speaks as that universe.
 - [x] 1.14 Add scope tests proving omitted universe scope resolves through authenticated founder home-universe context and never through root `.active_universe`. (`test_first_contact::test_founder_create_does_not_write_active_universe_marker`, `test_readonly_founder_omitted_scope_does_not_leak_other_home`.)
 - [ ] 1.15 Add existing-universe reset tests proving universe roots are serial-id folders, data/canon files remain under the serial directory, and write/run/status operations use the serial `universe_id`.
 - [ ] 1.16 Add universe-clearing tests proving serial universe directories and founder home bindings can be cleared while branch definitions, goals, run metrics, and outcome records remain intact unless branch commons are explicitly reset.
@@ -56,7 +56,7 @@
 - [x] 2.4 Ensure the MCP create route writes the full baseline files required by the spec.
 - [x] 2.5 Remove creation-time persona name handling; treat any display label as metadata only if still needed by a live reader. (Create takes no `name`; persona name is learned via `identity.md`.)
 - [ ] 2.6 Implement `soul.edit.md` as the real soul edit policy file and make the execution path read/follow it, with versioning and log updates.
-- [ ] 2.7 Implement founder home-universe resolution for MCP first contact: authenticated founder -> existing home universe or new blank seed universe -> loaded soul/persona -> first-person universe voice.
+- [x] 2.7 Implement founder home-universe resolution for MCP first contact: authenticated founder -> existing home universe or new blank seed universe -> loaded soul/persona -> first-person universe voice.
 - [ ] 2.8 Remove root `.active_universe` from MCP default routing. Explicit universe choices are request/client/session scope, not shared host state.
 - [~] 2.9 Remove duplicate `self/`/`soul/` directories, brain archive folders, and empty `notes.json` / `activity.log` starter files from active universe roots, and stop creating `self/`, `soul/`, `notes.json`, or `activity.log` for new universes. (NEW-universe half done: create no longer seeds notes.json/activity.log/self//soul/. The EXISTING-universe removal is the held live-data migration.)
 - [ ] 2.10 Bring universe roots to generated serial-id folders matching `universe_id`.
