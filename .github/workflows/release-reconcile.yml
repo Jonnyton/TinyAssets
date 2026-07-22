@@ -139,7 +139,7 @@ jobs:
             echo "could not read build-image paths — treating HEAD as release-relevant"
             RELEVANT="$(git rev-parse HEAD)"
           else
-            echo "release paths:"; printf '  %s\n' $PATHS
+            echo "release paths:"; printf '%s\n' "$PATHS" | sed 's/^/  /'
             # Newest commit on main touching anything the image is built from.
             # Docs-only commits after it genuinely need no deploy.
             # shellcheck disable=SC2086
@@ -202,7 +202,7 @@ jobs:
                      "repos/${REPO}/actions/workflows/build-image.yml/runs?status=success&branch=main&per_page=100" \
                      --jq '.workflow_runs[].head_sha' 2>/dev/null || true)"
 
-          if printf '%s\n' $BUILT | grep -qx "$HEAD_SHA"; then
+          if printf '%s\n' "$BUILT" | grep -qx "$HEAD_SHA"; then
             echo "image exists for ${HEAD_SHA:0:8} — deploy is the missing step"
             echo "action=deploy" >> "$GITHUB_OUTPUT"
             echo "detail=image ${HEAD_SHA:0:8} built but no successful deploy contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
