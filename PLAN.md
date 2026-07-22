@@ -362,6 +362,23 @@ _Last audited: 2026-05-19_
 **Out of scope:** What a provider is asked to do (the requesting module); evaluation of provider output (Evolution & Evaluation).
 
 **Principles:**
+- *The platform never supplies user execution compute or model quota.* Every
+  execution on behalf of a user--interactive, scheduled, event-triggered,
+  autonomous, retried, resumed, child, or autoresearch--carries an explicit
+  authority bundle. Compute authority is requester-owned compute (BYOC) or an
+  accepted market compute offer. When the chosen workload also requires gated
+  model access, model authority is requester-owned model/API access (BYOM) or
+  an accepted market offer that explicitly includes it; open-weight models need
+  no separate model grant but still need compute authority. TinyAssets is the
+  control, discovery, routing, evidence, and settlement plane; ordinary
+  control-plane work is platform-operated, but it is not a hidden shared model
+  inference, training, tuning, or task-execution provider. Maintainer/founder
+  Claude, OpenAI, local hardware, API keys, subscriptions, rate limits, and
+  billing are owner-scoped resources and MUST NOT be used as a default,
+  fallback, subsidy, or emergency route for another user's work. The authority
+  bundle follows every task, run, attempt, lease, effect, and receipt. With any
+  required authority dimension missing, revoked, or exhausted, work stays
+  pending/held and says why.
 - *Error loudly when the remaining provider can't produce acceptable work.* Fake success is worse than failure. (Hard Rule #8.)
 - *Fallback chain correctness is a first-class invariant.* Every provider named in a fallback chain must be either registered AND reachable at startup, or explicitly excluded with a logged reason. Phantom chain entries are a bug. A chain that reads `[claude-code, codex, gemini-free, ...]` but whose first entry's CLI binary is absent silently degrades the whole chain; operators reading config see one chain, the runtime iterates a different one. Register-and-probe at startup; emit structured evidence of the effective chain via `get_status`; refuse to advertise unreachable providers. (Corroborated by BUG-025 + 2026-04-21 prod-LLM-binding incident + 2026-04-23 revert-loop P0.)
 - *Required files must be probed at startup and fail loud if missing.* When code declares a required on-disk artifact (ASP rule files, schema definitions, seeded fixtures, vendored configs), startup must probe for it and refuse to start if absent — not log a WARNING and continue with an empty fallback. Silent substrate-degradation from missing artifacts produces runs that report success while behaving as no-ops; that violates Hard Rule #8 at an earlier lifecycle phase. (Corroborated by BUG-026: `data/world_rules.lp` absent silently reduced the ASP constraint engine to a no-op.)

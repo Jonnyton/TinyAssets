@@ -1,7 +1,6 @@
 # Status
 
 Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online.
-
 **Scope (2026-05-19):** for project-folder-access AIs (Claude Code, Codex CLI, Cursor). The live MCP brain is primary for substantive work — wiki `PR-###`/`BUG-###` + dispatcher + auto-change loop. Keep only coordination state with no wiki home here; check both.
 
 ## Concerns
@@ -13,7 +12,6 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - [filed:2026-07-02 verified:2026-07-22] Dogfood open: persona payload rework + OKF reserved-file frontmatter. Founder-seed-at-create closed by #1462.
 - [filed:2026-04-17 verified:2026-07-22] Privacy Q6.3 still platform: gemini/groq/grok remain in the fallback chains (`providers/router.py:89`).
 - [filed:2026-04-18 verified:2026-04-28] `add_canon_from_path` sensitivity: 3 host-Qs REFRAMED by commons-first audit F3 (structured caveats).
-- [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated once the deploy step ships.
 - **[P1 filed:2026-04-30]** Castles II run `28479d8ddfb44488`: `provider_exhausted` at `candidate_discovery` (BUG-038/039); blocks branch-run proof.
 - [filed:2026-05-19] Wiki drifting to agent scratch space (81% of post-05-01 notes); host conversation: split coordination off the knowledge wiki?
 - [filed:2026-07-14 verified:2026-07-14] Watch: anon-write gate LIVE + `ui-test` passed; pending first organic authenticated-user write.
@@ -37,7 +35,8 @@ Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. O
 | **R2-2 repeatable test identity** — NARROWED per Codex review to tasks 1.1-1.4, 3.1-3.3, min 2.1-2.2 only (not all 11); reset must not be a public deletion surface. Prior commit 375b0155 exists but does all 11 on stale main — do not reuse as-is | openspec/changes/test-identity-and-reset/, tinyassets/reset.py, tests/ | - | pending |
 | **R2-4 wiki onboarding split** — read_page returns agent-coordination logs; assistant refused to build and offered to replace TinyAssets with a chat artifact (live 2026-07-21) | tinyassets/api/wiki.py, wiki/ | - | in-flight PR #1550 |
 | **universe-personification remaining tasks: DO NOT BUILD AS WRITTEN** — they specify chatbot embodiment, which the 2026-07-02 relay reshape reversed. Reconcile spec first | openspec/changes/universe-personification/tasks.md | - | pending |
-| Paid-market Track E Wave 2 transport as an OpenSpec change; renumber migrations + add schema_migrations before 006–008 go live | openspec/, tinyassets/paid_market/ | - | pending |
+| Frontier market/automation/scale/org/compliance research; Claude ADAPT reviews folded; private-data truth conflict + live consent-path bug found; no build authority | PLAN.md, docs/audits/2026-07-21-compute-llm-market-architecture-implications*.md, docs/audits/2026-07-21-zapier-automation-platform-implications*.md, docs/audits/2026-07-21-user-growth-concurrency-scalability-implications*.md, docs/audits/2026-07-21-organizational-universe*.md, docs/audits/2026-07-21-regulated-industry-compliance-architecture-implications*.md, ideas/PIPELINE.md, STATUS.md, .agents/worktrees.md | R2-1a/R2-1b + PLAN commons/private host decision + consent bug triage + OpenSpec alignment before build | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
+| Paid-market Track E Wave 2 transport as an OpenSpec change; renumber migrations + add schema_migrations before 006–008 go live. Frontier-research ADAPT verdict is in; PR #1542 still needs its own task-1.1 opposite-provider review before implementation | openspec/, tinyassets/paid_market/ | PR #1542 task 1.1 review | pending |
 | In-node enqueue flag flip — Codex ADAPT asks landed (`graph_compiler.py:1406-1560`), still dark; §14 proof passes but global-queue + per-origin lineage caps have no concurrent boundary coverage | tinyassets/graph_compiler.py, tests/test_node_enqueue_*.py | `docs/audits/2026-05-30-in-node-enqueue-codex-review.md` | dev-ready |
 | External directory acceptance — canaries green 2026-05-02; needs clean ChatGPT/Claude proof + first-user evidence | packaging/registry/server.json, docs/ops/mcp-* | - | host-action |
 | OpenAI app submission hardening — `chatgpt-app-submission.json` on disk; submission docs/proof pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT proof | dev-ready |
