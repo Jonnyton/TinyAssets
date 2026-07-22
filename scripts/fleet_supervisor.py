@@ -249,6 +249,44 @@ def _raise_backlog_alarm(queue_root: Path, depths: dict[str, int]) -> None:
         )
 
 
+def _reap_orphans(gate_dir: Path, queue_root: Path) -> int:
+    """Requeue briefs whose lane vanished without leaving any output.
+
+    STARTUP ONLY. There are three ways a lane can fail, and until now only two
+    were handled: dying at launch (the liveness gate) and being killed at its
+    deadline (the timeout reaper, which needs a timeout-marked output file to
+    recognise). The third is the process simply disappearing — a reboot, an OOM
+    kill, a manual taskkill. That leaves the brief sitting in `dispatched/` with
+    NO output file at all, so nothing notices and the work is silently dropped.
+    A 2026-07-22 reboot stranded briefs exactly this way.
+
+    A brief in `dispatched/` with no corresponding output is therefore work that
+    never produced anything. Put it back. Safe only at startup: a brief
+    dispatched seconds ago legitimately has no output yet, so running this each
+    pass would yank live lanes out from under themselves.
+    """
+    dispatched = queue_root / "dispatched"
+    if not dispatched.is_dir():
+        return 0
+    requeued = 0
+    for brief in sorted(dispatched.glob("*.md")):
+        if (gate_dir / f"{brief.stem}.md").exists():
+            continue  # produced something — completed, or timeout-reaper's job
+        lane = "claude" if "claude" in brief.stem else "codex"
+        target = queue_root / "_backlog" / lane / brief.name
+        if target.exists():
+            continue  # already waiting; don't duplicate
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(str(brief), str(target))
+        except OSError:
+            continue
+        requeued += 1
+    if requeued:
+        _log(queue_root, f"ORPHAN SWEEP: requeued {requeued} brief(s) whose lane left no output")
+    return requeued
+
+
 def _next_brief(queue_root: Path, provider: str) -> Path | None:
     lane_dir = queue_root / provider
     if not lane_dir.is_dir() or not any(lane_dir.glob("*.md")):
@@ -454,6 +492,10 @@ def main() -> int:
 
     stop_file = queue_root / "supervisor.stop"
     _log(queue_root, f"supervisor start floors={floors} interval={args.interval}s")
+    # Before dispatching anything, recover work whose lane died without a trace
+    # (reboot / OOM / kill). Startup is the only safe moment: nothing is live
+    # yet, so an output-less brief is unambiguously abandoned.
+    _reap_orphans(gate_dir, queue_root)
     while not stop_file.exists():
         try:
             reconcile(queue_root, gate_dir, floors)
