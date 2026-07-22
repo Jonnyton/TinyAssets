@@ -3,10 +3,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import urllib.request
 from pathlib import Path
 
-from tinyassets.connector_catalog import directory_mcp_remote_url
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from tinyassets.connector_catalog import directory_mcp_remote_url  # noqa: E402
 
 SCHEMA_URL = (
     "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
@@ -21,7 +25,6 @@ WEBSITE_URL = "https://tinyassets.io/connect"
 REMOTE_URL = directory_mcp_remote_url()
 ICON_URL = "https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/assets/icon.png"
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 MCPB_MANIFEST_PATH = REPO_ROOT / "packaging" / "mcpb" / "manifest.json"
 BUNDLE_PATH = REPO_ROOT / "packaging" / "dist" / "tinyassets-universe-server.mcpb"
 OUTPUT_PATH = REPO_ROOT / "packaging" / "registry" / "server.json"

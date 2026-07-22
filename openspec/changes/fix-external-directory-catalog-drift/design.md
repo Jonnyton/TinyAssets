@@ -23,7 +23,7 @@
 1. **Generate; do not duplicate the URL.** The manifest continues to consume `directory_mcp_remote_url()`. Tests compare the committed JSON with the generator's complete deterministic document rather than hard-coding a second version string.
 2. **Run the existing drift mode in packaging CI.** `build-bundle.yml` already runs when `tinyassets/**` or `packaging/**` changes. A direct `generate_server_json.py --check` step makes drift a blocking packaging failure.
 3. **Bootstrap only the repository import root.** The generator resolves its own repository root before importing `tinyassets.connector_catalog`, so the same direct command works in a clean clone on Windows and Linux. It does not install dependencies, mutate environment variables, or add a package shim.
-4. **Keep live reachability out of CI.** The repair records a fresh read-only GET as acceptance evidence, while CI remains deterministic and offline. External availability is monitored by the existing public-surface probes.
+4. **Keep live reachability out of CI.** The remote is a Streamable-HTTP MCP endpoint, so the repair records a fresh read-only MCP handshake as acceptance evidence rather than treating a bare GET as the protocol. CI remains deterministic and offline; external availability is monitored by the existing public-surface probes.
 
 ## Risks / Trade-offs
 

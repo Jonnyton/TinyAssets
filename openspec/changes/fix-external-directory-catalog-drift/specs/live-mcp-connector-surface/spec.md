@@ -15,4 +15,4 @@ The checked-in MCP Registry manifest SHALL advertise the versioned remote URL de
 
 #### Scenario: repaired registry remote is reachable
 - **WHEN** the generated manifest is proposed for external-directory publication
-- **THEN** a read-only request to its remote URL succeeds and returns the current versioned directory catalog
+- **THEN** a read-only Streamable-HTTP MCP handshake to its remote URL succeeds and lists the current versioned directory catalog handles
