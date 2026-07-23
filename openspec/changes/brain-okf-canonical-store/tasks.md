@@ -26,7 +26,7 @@
 ## 4. OpenSpec fold-back
 
 - [ ] 4.1 `sync-specs`: merge the `brain-canonical-store` delta into `openspec/specs/brain-canonical-store/spec.md` (after host merge key)
-- [x] 4.2 Draft PR opened — #1369 (merge to `main` still host-key gated; production-impacting)
+- [x] 4.2 PR #1369 merged 2026-06-25; the change remains unarchived because PLAN foldback and canonical sync are still gated
 - [ ] 4.3 Archive the change after merge
 
 ## 5. Future build (gated — NOT in this change; behind the Codex 6 pre-build gates)

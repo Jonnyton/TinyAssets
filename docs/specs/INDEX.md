@@ -18,10 +18,10 @@ again only through a new OpenSpec change.
 
 | Disposition | Count | Meaning |
 |---|---:|---|
-| CANONICAL | 16 | Surviving shipped substance has a canonical OpenSpec owner. |
+| CANONICAL | 12 | Surviving shipped substance has a canonical OpenSpec owner. |
 | ACTIVE | 0 | No legacy file itself is the owner of an active OpenSpec target. |
-| CLAIMED | 20 | Residue is assigned to a live STATUS backfill, host-decision, or target lane. |
-| HISTORY | 16 | Superseded, research, fixture, exemplar, fragment, or parked input. |
+| CLAIMED | 27 | Residue has a live STATUS owner or exact staged successor in the audit. |
+| HISTORY | 13 | Superseded, research, fixture, exemplar, fragment, or parked input. |
 | **Total** | **52** | Includes this index. |
 
 Use the disposition audit—not this directory's old frontmatter—to decide
