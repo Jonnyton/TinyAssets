@@ -16,17 +16,17 @@
 
 ## 3. Workflow Observation And Terminal Publication
 
-- [ ] 3.1 Complete read-only pre-host-write capture with strict base64 prior-receipt transport and independent configured/running daemon identity observation; capture a previous rollback ref only on canonical agreement.
-- [ ] 3.2 Emit `production_mutation_started=true` immediately before the first production-host write and `image_mutation_started=true` immediately before the atomic `TINYASSETS_IMAGE` helper call; make each output survive failure of its following command.
-- [ ] 3.3 Rewrite rollback handling under `if: always()` so it keys eligibility only to the image marker, emits defaults/final outputs before fallible exit, and implements every exact zero/nonzero exit-table row, including zero for valid `not_needed` and nonzero for required unavailable/unproven rollback.
-- [ ] 3.4 Replace the success-only writer with a post-rollback `if: always()` terminal step keyed only to the production marker: emit `not_applicable` without host contact before that boundary; otherwise emit `failed` before fallible work, expose terminal classification outputs, invoke the pure builder, atomically install with numeric `1001:1001` mode `0644`, and emit `published` only afterward.
-- [ ] 3.5 Make the deploy-failed issue and job summary implement the full rollback, terminal-receipt, and active-identity wording matrices; permit "proven healthy" only for terminal `deployed` + active `agreed` + applicable canary `passed`, and treat every incomplete/inconsistent tuple as unproven.
-- [ ] 3.6 Preserve a red job for forward, rollback, identity-proof, classifier, transfer, and writer failures; receipt publication is evidence and MUST NOT mask failure.
+- [x] 3.1 Complete read-only pre-host-write capture with strict base64 prior-receipt transport and independent configured/running daemon identity observation; capture a previous rollback ref only on canonical agreement.
+- [x] 3.2 Emit `production_mutation_started=true` immediately before the first production-host write and `image_mutation_started=true` immediately before the atomic `TINYASSETS_IMAGE` helper call; make each output survive failure of its following command.
+- [x] 3.3 Rewrite rollback handling under `if: always()` so it keys eligibility only to the image marker, emits defaults/final outputs before fallible exit, and implements every exact zero/nonzero exit-table row, including zero for valid `not_needed` and nonzero for required unavailable/unproven rollback.
+- [x] 3.4 Replace the success-only writer with a post-rollback `if: always()` terminal step keyed only to the production marker: emit `not_applicable` without host contact before that boundary; otherwise emit `failed` before fallible work, expose terminal classification outputs, invoke the pure builder, atomically install with numeric `1001:1001` mode `0644`, and emit `published` only afterward.
+- [x] 3.5 Make the deploy-failed issue and job summary implement the full rollback, terminal-receipt, and active-identity wording matrices; permit "proven healthy" only for terminal `deployed` + active `agreed` + applicable canary `passed`, and treat every incomplete/inconsistent tuple as unproven.
+- [x] 3.6 Preserve a red job for forward, rollback, identity-proof, classifier, transfer, and writer failures; receipt publication is evidence and MUST NOT mask failure.
 
 ## 4. Verification and Spec Foldback
 
-- [ ] 4.1 Run all classifier/exit/issue matrix tests and the complete `tests/test_deploy_prod_workflow.py` regression file, including both mutation boundaries, pre-host and pre-image paths, v1/v2 trust separation, failed-step output visibility, terminal ordering/always conditions, legacy compatibility, and safe rollback targets.
-- [ ] 4.2 Run actionlint, YAML parsing, secret-pattern/diff checks, targeted uptime workflow tests, full strict OpenSpec validation, and `git diff --check`.
-- [ ] 4.3 Obtain independent workflow-correctness, rollback/security, spec, and simplicity review; resolve all Critical/Important findings and rerun affected checks.
+- [x] 4.1 Run all classifier/exit/issue matrix tests and the complete `tests/test_deploy_prod_workflow.py` regression file, including both mutation boundaries, pre-host and pre-image paths, v1/v2 trust separation, failed-step output visibility, terminal ordering/always conditions, legacy compatibility, and safe rollback targets.
+- [x] 4.2 Run actionlint, YAML parsing, secret-pattern/diff checks, targeted uptime workflow tests, full strict OpenSpec validation, and `git diff --check`.
+- [x] 4.3 Obtain independent workflow-correctness, rollback/security, spec, and simplicity review; resolve all Critical/Important findings and rerun affected checks.
 - [ ] 4.4 Rebase after the disk-remediation lane releases `openspec/specs/uptime-and-alarms/spec.md`, intelligently sync the full modified requirement, validate idempotently, archive the completed change, and remove the STATUS work row.
 - [ ] 4.5 After merge, require isolated or production-safe failures both after production mutation/before image mutation and after image mutation; observe terminal publication on both, rollback only on the latter, writer outputs, issue text, red job, and installed receipt before claiming operational proof. Until observed, retain a freshness-stamped STATUS watch rather than claiming live terminal receipts.
