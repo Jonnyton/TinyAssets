@@ -16,4 +16,4 @@
 - [x] 3.1 Sync the four approved deltas into canonical specs, preserve every untouched pre-existing requirement block, and modify only the two intended host-pool owners
 - [x] 3.2 Update the full-coverage audit, legacy disposition, and spec index for the reconciled groups
 - [x] 3.3 Strictly validate the full OpenSpec tree and run the cross-provider drift self-test
-- [ ] 3.4 Archive the completed change, land it through a reviewed PR, and remove its STATUS claim
+- [x] 3.4 Archive the completed change, land it through a reviewed PR, and remove its STATUS claim

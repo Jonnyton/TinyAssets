@@ -1,7 +1,7 @@
 # Legacy specification disposition
 
 - **Date:** 2026-07-22
-- **Baseline:** PR #1622 merge on `origin/main` at `35817a3e`, plus archived
+- **Baseline:** PR #1624 merge on `origin/main` at `dff6795e`, plus archived
   changes `2026-07-23-backfill-independent-shipped-contracts` and
   `2026-07-23-backfill-runtime-memory-shipped-contracts`
 - **Scope:** all 52 Markdown files under `docs/specs/`, including the index
