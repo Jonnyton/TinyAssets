@@ -971,3 +971,18 @@ Notes:
 - Related implications: `paid-market-live-price-discovery`; R2-1a/R2-1b; target-spec PLAN host decision
 - Idea feed refs: compute/model/task/fabrication markets; Zapier-equivalent automation; concurrency/scale; organizational universes; regulated-industry profiles
 - Ship/abandon: local commit only until parent review; land docs, refreshed pointers, and task reflection, never #1574 PLAN/runtime/OpenSpec/stale coordination edits
+
+## 2026-07-23 - create supersede-pr1574-references
+
+- Provider: codex-gpt5-desktop
+- Branch: docs/supersede-pr1574-references
+- Lane state: Active reference-freshness cleanup
+- Worktree: C:\Users\Jonathan\Projects\wf-supersede-pr1574-references
+- STATUS/Issue/PR: supersede stale #1574 references after archival successor #1648
+- PLAN refs: Providers; paid-market target remains host-PLAN gated
+- Purpose: point active paid-market context at durable archived research, remove #1574 as a live dependency, and preserve the source review as dated evidence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-supersede-pr1574-references\_PURPOSE.md
+- Memory refs: PRs #1574/#1648; paid-market source-context review
+- Related implications: `paid-market-live-price-discovery`; `paid-market-track-e-wave-2-transport`; target-spec PLAN conflict
+- Idea feed refs: archived compute/model/task/fabrication market research
+- Ship/abandon: land reference-only edits, then close #1574 as superseded
