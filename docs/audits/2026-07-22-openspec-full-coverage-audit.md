@@ -10,15 +10,19 @@
   reconciles the independently reviewed sandbox availability, status,
   fail-loud, diagnostic, advisory, and post-deploy gate contracts; PR #1633
   reconciles the shipped generic hyperparameter evaluator without importing
-  its incompatible future science-domain target
-- **Code/spec baseline:** `origin/main` at `95c342ec` plus reviewed PR #1633,
-  including
+  its incompatible future science-domain target; the
+  `codex/backfill-graph-run-coordination` branch then corrects the missed
+  run-evidence-receipt and teammate-mailbox contracts
+- **Code/spec baseline:** `origin/main` at `a8b907e5` plus the reviewed
+  `codex/backfill-graph-run-coordination` changes, including
   archived changes `2026-07-23-backfill-independent-shipped-contracts` and
   `2026-07-23-backfill-runtime-memory-shipped-contracts`,
   `2026-07-23-backfill-per-job-sandbox-runner-seam`, and PR #1626's
   `2026-07-23-backfill-direct-owner-shipped-contracts`, plus
   `2026-07-23-backfill-sandbox-availability-contracts` and
-  `2026-07-23-backfill-hyperparameter-importance-shipped-contracts`
+  `2026-07-23-backfill-hyperparameter-importance-shipped-contracts`, and the
+  reviewed archive
+  `2026-07-23-backfill-graph-run-coordination-contracts`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -32,7 +36,7 @@ The original baseline verdict below is now historical. The repository has
 since landed eight Batch A canonical spec files, enriched the core runtime,
 provider/credential, and knowledge/memory owners, reclassified the eight
 forward-vision files, classified all 52 legacy specification documents,
-archived ten independent shipped-contract backfills, and reconciled four
+archived eleven independent shipped-contract backfills, and reconciled four
 runtime/memory groups. It also folds the shipped per-job `runner/v1` seam into
 the canonical distributed-execution base and reconciles five sandbox-related
 owners without claiming OS confinement. The generic hyperparameter evaluator
@@ -47,9 +51,13 @@ direct-owner groups are now canonical; their credential remainder stays active
 behind PR #1606.
 
 This progress does **not** yet prove full coverage. The canonical grounding
-pass identified seven inaccurate requirements; that correction plus the
-independently reviewed backfills now make all 266 canonical requirements true
-as written. The credential-vault shipped group, three PLAN-gated
+pass identified seven inaccurate requirements. A fresh 2026-07-23 semantic
+audit then found that this audit had also missed the shipped run-evidence
+receipt and teammate-mailbox contracts. The independently reviewed
+`backfill-graph-run-coordination-contracts` change now owns those behaviors in
+`graph-execution-substrate`, with their current authorization and compiler
+limitations preserved, making all 269 canonical requirements true as written.
+The credential-vault shipped group, three PLAN-gated
 full-platform target groups, and two promoted-domain target groups remain. The
 accurate answer is: current canonical OpenSpec describes built behavior, but
 not everything built or targeted is fully specified yet.
@@ -74,9 +82,9 @@ require host approval, so this audit records rather than repairs that drift.
 
 ### Current OpenSpec inventory
 
-Fresh strict validation after the hyperparameter-evaluator foldback passes all
-39 current items. Canonical OpenSpec contains 26 capabilities, 266
-requirements, and 771 scenarios. The thirteen active changes contain 172 proposed
+Fresh strict validation after the graph-run coordination foldback passes all
+39 current items. Canonical OpenSpec contains 26 capabilities, 269
+requirements, and 794 scenarios. The thirteen active changes contain 172 proposed
 requirements and 302 top-level tasks, 51 currently checked (nested checklist
 evidence is excluded from these task counts):
 
@@ -175,8 +183,14 @@ validation.
   propagated ordinary failures. Focused tests passed 5 with 3 expected
   optional-dependency skips; injected backends covered the otherwise-hidden
   edge semantics.
+- **Graph-run coordination backfill (1 capability):** 3 requirements and 23
+  scenarios are BUILT as bounded. Three independent reviews preserved the
+  exact typed run-receipt normalization, persistence, listing, and resource
+  filtering semantics; the installation-shared teammate mailbox's
+  send/receive/ack behavior; and the fact that the graph compiler does not yet
+  wire message specifications into compiled nodes or branches.
 
-Overall, **all 266 canonical requirements and all 771 scenarios are BUILT as
+Overall, **all 269 canonical requirements and all 794 scenarios are BUILT as
 written**. This is a grounding result, not a claim of full coverage:
 the credential-vault group of shipped behavior still lacks canonical
 ownership, and five target-owner groups are not yet active.
@@ -269,9 +283,12 @@ uptime canary was not run.
 ### Shipped behavior still missing canonical ownership
 
 The dependency-cleared prompt/status, universe-switch, uptime, per-job runner,
-sandbox-availability, and hyperparameter-evaluator groups are now canonical.
-One reverse-direction gap remains; it is a backfill obligation, not permission
-to redesign behavior:
+sandbox-availability, hyperparameter-evaluator, run-evidence-receipt, and
+teammate-mailbox groups are now canonical. The 2026-07-22 audit originally
+reported one reverse-direction gap, but that was incomplete: the 2026-07-23
+semantic pass found the receipt and mailbox omissions and reconciled them in
+`graph-execution-substrate`. One reverse-direction gap now remains; it is a
+backfill obligation, not permission to redesign behavior:
 
 A post-audit residual check found a fifth omission: PR #1485's shipped
 per-job `runner/v1` seam. PR #1629 reconciles its four source-reviewed
@@ -551,13 +568,14 @@ must carry the executable SHALL/scenario contracts and tasks.
 6. Public and uptime-sensitive surfaces retain their required rendered,
    concurrency/load, CI, and post-fix evidence gates when behavior changes.
 
-**Current verdict: NOT COMPLETE.** Criterion 1 fails only on the
+**Current verdict: NOT COMPLETE.** After correcting the audit's missed
+run-evidence-receipt and teammate-mailbox surfaces, criterion 1 fails only on the
 credential-vault remainder above. Criterion 3 fails on five
 target-owner groups: three PLAN-gated groups plus the promoted runtime-fiction
 memory graph and future hyperparameter science node/fixtures. PRs #1627 and
 #1542 durably own the other five full-platform groups as active, unsynced
-changes. Criterion 5 now passes: all 266
-requirements and 771 scenarios are independently grounded and strict-valid.
+changes. Criterion 5 now passes: all 269
+requirements and 794 scenarios are independently grounded and strict-valid.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
 owns the backfill, runtime-hardening, legacy-disposition, PLAN-decision, and
