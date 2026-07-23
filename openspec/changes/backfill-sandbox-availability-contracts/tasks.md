@@ -7,7 +7,7 @@
 ## 2. Validate As-Built Requirements
 
 - [x] 2.1 Strictly validate the isolated change and all OpenSpec items (40/40 strict-valid, 2026-07-23)
-- [x] 2.2 Run focused provider probe, CLI selection, graph propagation, branch disclosure, status, and diagnostic tests (94 passed plus direct scope-eligible list probe; four stale default-published-scope fixtures excluded)
+- [x] 2.2 Run focused provider probe, CLI selection, graph propagation, branch disclosure, status, and diagnostic tests (143 passed plus direct scope-eligible list and early-status probes; four stale default-published-scope fixtures excluded)
 - [x] 2.3 Verify runtime/plugin parity and repository documentation gates (255 mirror files matched; cross-provider drift and `git diff --check` clean)
 - [ ] 2.4 Obtain independent requirement-to-source and whole-diff review and resolve every finding
 
