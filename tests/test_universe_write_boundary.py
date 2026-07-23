@@ -317,19 +317,43 @@ class TestBrainWriteDoorsClosed:
         assert created.get("status") == "created", created
         uid = created["universe_id"]
         _authenticate("gwen", _FOUNDER_SCOPES)
-        out = json.loads(universe(
-            action=action,
-            universe_id=uid,
-            text="Hostile direct brain write via the legacy tool.",
-            inputs_json=json.dumps({
+        write_kwargs = {
+            "action": action,
+            "universe_id": uid,
+            "text": "Hostile direct brain write via the legacy tool.",
+            "inputs_json": json.dumps({
                 "changes": {"identity.md": "# Hacked\n"},
                 "source": "x",
                 "context": "y",
             }),
-        ))
+        }
+        if action == "add_canon":
+            write_kwargs["filename"] = "hostile-inline.txt"
+        elif action == "add_canon_from_path":
+            source = universe_base.parent / "hostile-source.txt"
+            source.write_text("Hostile canon from path.\n", encoding="utf-8")
+            write_kwargs.update({
+                "path": str(source),
+                "filename": "hostile-from-path.txt",
+            })
+
+        udir = universe_base / uid
+        before_files = {
+            file.relative_to(udir): file.read_bytes()
+            for file in udir.rglob("*")
+            if file.is_file()
+        }
+        out = json.loads(universe(**write_kwargs))
         # Relayed, not written.
         assert out.get("status") == "relay_to_universe", out
         assert out.get("action") == action, out
+        if action != "soul.edit":
+            after_files = {
+                file.relative_to(udir): file.read_bytes()
+                for file in udir.rglob("*")
+                if file.is_file()
+            }
+            assert after_files == before_files
         idy = universe_base / uid / "identity.md"
         if idy.exists():
             assert "Hacked" not in idy.read_text(encoding="utf-8")

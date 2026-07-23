@@ -1039,6 +1039,7 @@ class TestLauncherReload(TestLauncherApp):
             # Should have attempted to reload some modules
             # (exact count depends on what's imported)
             assert mock_reload.call_count >= 0
+            assert mock_reload.call_count > 0
 
     def test_reimport_modules_handles_failure(self):
         app = self._make_app()
