@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -155,7 +156,13 @@ def kill_tree(proc: subprocess.Popen) -> None:
             ["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True
         )
     else:
-        proc.kill()
+        try:
+            os.killpg(
+                os.getpgid(proc.pid),
+                getattr(signal, "SIGKILL", signal.SIGTERM),
+            )
+        except ProcessLookupError:
+            pass
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
@@ -246,6 +253,9 @@ def main() -> int:
             Path(out_path).unlink(missing_ok=True)
         cmd = build_codex_cmd(args, out_path)
 
+    env.pop("TINYASSETS_VILLAGE_TOKEN", None)
+    env.pop("WORKFLOW_MCP_TOKEN", None)
+
     bad_arg = unsafe_cmd_argv(cmd)
     if bad_arg is not None:
         return fail(
@@ -263,6 +273,13 @@ def main() -> int:
     )
     start = time.monotonic()
     try:
+        process_group: dict[str, object]
+        if sys.platform == "win32":
+            process_group = {
+                "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            }
+        else:
+            process_group = {"start_new_session": True}
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -270,6 +287,7 @@ def main() -> int:
             stderr=subprocess.PIPE,
             env=env,
             cwd=args.cwd,
+            **process_group,
         )
         try:
             stdout_b, stderr_b = proc.communicate(

@@ -159,7 +159,10 @@ def test_posix_cleanup_targets_the_process_group_and_reaps(
 
     assert group_kills
     assert group_kills[0][0] == proc.pid
-    assert group_kills[0][1] in {signal.SIGTERM, signal.SIGKILL}
+    assert group_kills[0][1] in {
+        signal.SIGTERM,
+        getattr(signal, "SIGKILL", signal.SIGTERM),
+    }
     assert any(event[0] == "wait" for event in proc.events)
 
 

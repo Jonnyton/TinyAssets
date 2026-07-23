@@ -1,16 +1,17 @@
 # Agent Village — the command center
 
 Watch every AI agent working on your project as a sprite walking a living
-village — from your phone, your laptop, or anything with a browser.
+village in a browser on the same machine.
 
 ```
 python -m command_center
-# → http://localhost:8787
-# → on your phone (same network): http://<this-machine's-LAN-IP>:8787
+# → http://127.0.0.1:8787/#token=<generated-per-launch-token>
 ```
 
 Zero config, stdlib only, no build step. Run it in any repo; it watches the
-folder it runs in.
+folder it runs in. The listener is deliberately limited to literal loopback.
+Phone, LAN, proxy, and internet access remain unavailable until a separately
+specified authenticated HTTPS or tunnel transport lands.
 
 ## What you see
 
@@ -39,7 +40,7 @@ folder it runs in.
 - **Tap a universe** → chat with its daemon. Local universes get a
   `notes.json` entry in the engine's own schema (read at the next scene
   boundary) or a pinned note if asleep. Live universes use the platform's
-  `converse` tool (needs sign-in — see `--mcp-token`).
+  `converse` tool (needs sign-in through `WORKFLOW_MCP_TOKEN`).
 
 ## Hire agents for a universe
 
@@ -47,7 +48,9 @@ On any universe sheet: pick an engine, a task, and a count.
 
 - **Dispatch** spawns real peer CLI sessions (`scripts/peer_agent.py`
   contract) on the provider's own budget — they walk into the village as new
-  sprites and report into the universe's chat thread.
+  sprites and report into the universe's chat thread. Talk and hire share an
+  eight-process-tree limit, and command-center bearer credentials are removed
+  from peer environments.
 - **Set as engine** rewrites the universe's `config.yaml` `preferred_writer`
   preset.
 - **Hosted / market capacity** shows disabled with an honest "coming" note —
@@ -57,21 +60,27 @@ On any universe sheet: pick an engine, a task, and a count.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--host` | `0.0.0.0` | bind address (LAN = phone can reach it) |
+| `--host` | `127.0.0.1` | literal loopback only: `127.0.0.1` or `::1` |
 | `--port` | `8787` | bind port |
-| `--token` | — | require `?token=` on every request; share URL prints at startup |
 | `--dispatch` | off | also send agent talk to provider CLIs (spends their budget) |
 | `--interval` | `3` | seconds between state polls |
 | `--directory-url` | `https://tinyassets.io` | platform base for the world view (`''` = offline) |
 | `--mcp-url` | — | override the full MCP endpoint |
-| `--mcp-token` | `$WORKFLOW_MCP_TOKEN` | Bearer token for platform writes (converse etc.) |
+
+Every launch requires a Village bearer. Set a stable URL-safe value of 20–128
+characters through `TINYASSETS_VILLAGE_TOKEN`, or omit it to generate a fresh
+cryptographically random token. The printed share URL carries it in the URL
+fragment; the browser moves it to current-tab session storage and sends it only
+in `X-Village-Token`. The platform MCP bearer is read only from
+`WORKFLOW_MCP_TOKEN`. Secret-valued CLI flags are intentionally unsupported
+because command arguments leak through shell history and process listings.
 
 ## Sharing tips
 
 - `?present=1` — chrome-free view for screenshots/streams.
 - `?zoom=world` — open straight into the world view.
 - `?universe=<id>` — deep-link a universe's chat sheet.
-- PWA manifest included: "Add to Home Screen" on your phone.
+- PWA manifest included for browser installation on the local machine.
 
 ## Where the signals come from
 

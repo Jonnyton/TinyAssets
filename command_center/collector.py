@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
+import signal
 import subprocess
 import threading
 import time
@@ -66,12 +68,38 @@ GENRE_EMOJI: list[tuple[re.Pattern[str], str]] = [
 ACTIVE_S = 5 * 60  # <5 min → actively working
 RECENT_S = 30 * 60  # <30 min → recently seen
 TRANSCRIPT_WINDOW_S = 2 * 3600  # transcripts older than this are ignored
+_VILLAGE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})
+_COMMAND_CENTER_BEARERS = ("TINYASSETS_VILLAGE_TOKEN", "WORKFLOW_MCP_TOKEN")
+
+
+class _DispatchCapacity:
+    """Atomic process-wide reservation pool for paid peer process trees."""
+
+    def __init__(self, limit: int = 8) -> None:
+        self.limit = limit
+        self._in_flight = 0
+        self._lock = threading.Lock()
+
+    def reserve(self, count: int) -> bool:
+        with self._lock:
+            if self._in_flight + count > self.limit:
+                return False
+            self._in_flight += count
+            return True
+
+    def release(self, count: int = 1) -> None:
+        with self._lock:
+            self._in_flight = max(0, self._in_flight - count)
+
+
+_DISPATCH_CAPACITY = _DispatchCapacity()
 
 
 @dataclass
 class Config:
     root: Path
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8787
     token: str | None = None
     dispatch: bool = False
@@ -86,6 +114,28 @@ class Config:
     data_dirs: list[Path] = field(default_factory=list)
     now: object = time.time  # injectable clock for tests
 
+    def __post_init__(self) -> None:
+        if self.host not in _LOOPBACK_HOSTS:
+            raise ValueError("host must be literal 127.0.0.1 or ::1")
+        if (
+            isinstance(self.port, bool)
+            or not isinstance(self.port, int)
+            or not 0 <= self.port <= 65535
+        ):
+            raise ValueError("port must be an integer from 0 through 65535")
+
+        token = self.token
+        if token is None:
+            if "TINYASSETS_VILLAGE_TOKEN" in os.environ:
+                token = os.environ["TINYASSETS_VILLAGE_TOKEN"]
+            else:
+                token = secrets.token_urlsafe(32)
+        if not isinstance(token, str) or _VILLAGE_TOKEN_RE.fullmatch(token) is None:
+            raise ValueError(
+                "TINYASSETS_VILLAGE_TOKEN must contain 20-128 URL-safe characters"
+            )
+        self.token = token
+
     @classmethod
     def from_args(cls, args: object) -> "Config":
         root = Path.cwd()
@@ -93,12 +143,11 @@ class Config:
             root=root,
             host=args.host,
             port=args.port,
-            token=args.token,
             dispatch=args.dispatch,
             interval=args.interval,
             mcp_url=args.mcp_url,
             directory_url=getattr(args, "directory_url", "https://tinyassets.io"),
-            mcp_token=getattr(args, "mcp_token", None),
+            mcp_token=os.environ.get("WORKFLOW_MCP_TOKEN"),
         )
         cfg.inbox_dir = root / ".agents" / "village-inbox"
         cfg.data_dirs = default_data_dirs(root)
@@ -142,6 +191,69 @@ def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 20) -> str:
         )
         return proc.stdout or ""
     except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _peer_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    for name in _COMMAND_CENTER_BEARERS:
+        env.pop(name, None)
+    return env
+
+
+def _kill_peer_tree(proc: subprocess.Popen[bytes]) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def _run_peer(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    env: dict[str, str],
+) -> str:
+    """Run the peer wrapper and reap its process tree before returning."""
+
+    kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            **kwargs,
+        )
+        try:
+            stdout, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_peer_tree(proc)
+            proc.communicate()
+            return ""
+        return stdout.decode("utf-8", errors="replace")
+    except OSError:
         return ""
 
 
@@ -1166,18 +1278,41 @@ def _talk_to_agent(cfg: Config, agent_id: str, message: str) -> dict:
     name = agent["name"] if agent else agent_id
     _append_inbox(inbox, "host", message)
     mode = "inbox"
+    note: str | None = None
     if cfg.dispatch and agent and agent.get("provider") in ("claude", "codex"):
-        mode = "inbox+dispatch"
-        threading.Thread(
-            target=_dispatch_peer,
-            args=(cfg, agent, message, inbox),
-            name=f"village-dispatch-{agent_id}",
-            daemon=True,
-        ).start()
-    return {"ok": True, "mode": mode, "to": name}
+        if _DISPATCH_CAPACITY.reserve(1):
+            mode = "inbox+dispatch"
+            threading.Thread(
+                target=_dispatch_peer_reserved,
+                args=(cfg, agent, message, inbox),
+                name=f"village-dispatch-{agent_id}",
+                daemon=True,
+            ).start()
+        else:
+            note = "message saved to inbox; provider dispatch capacity is full"
+    result = {"ok": True, "mode": mode, "to": name}
+    if note:
+        result["note"] = note
+    return result
+
+
+def _dispatch_peer_reserved(
+    cfg: Config,
+    agent: dict,
+    message: str,
+    inbox: Path,
+) -> None:
+    try:
+        _dispatch_peer(cfg, agent, message, inbox)
+    except Exception as exc:
+        _append_inbox(inbox, "village", f"(dispatch failed: {exc})")
+    finally:
+        _DISPATCH_CAPACITY.release()
 
 
 def _dispatch_peer(cfg: Config, agent: dict, message: str, inbox: Path) -> None:
+    if not cfg.dispatch:
+        return
     """Fire a headless peer session on that provider's own budget; reply → inbox."""
     script = cfg.root / "scripts" / "peer_agent.py"
     provider = agent["provider"]
@@ -1190,8 +1325,22 @@ def _dispatch_peer(cfg: Config, agent: dict, message: str, inbox: Path) -> None:
         f"Your current task: {agent.get('action')}. The host says:\n\n{message}\n\n"
         "Reply briefly as yourself."
     )
-    _run(["python", str(script), provider, "--out", str(out_file), "--prompt", prompt],
-         cwd=cfg.root, timeout=600)
+    _run_peer(
+        [
+            "python",
+            str(script),
+            provider,
+            "--out",
+            str(out_file),
+            "--prompt",
+            prompt,
+            "--timeout",
+            "540",
+        ],
+        cwd=cfg.root,
+        timeout=600,
+        env=_peer_environment(),
+    )
     try:
         reply = out_file.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
@@ -1384,6 +1533,16 @@ def discover_providers(cfg: Config) -> list[dict]:
     return providers
 
 
+def _safe_dispatch_text(value: object, *, field_name: str, max_length: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    if len(value) > max_length:
+        raise ValueError(f"{field_name} is too long")
+    if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise ValueError(f"{field_name} contains an unsafe character")
+    return value
+
+
 def hire(cfg: Config, payload: dict) -> dict:
     """Create agent(s) for a universe, or set its engine preset.
 
@@ -1391,16 +1550,31 @@ def hire(cfg: Config, payload: dict) -> dict:
     Dispatch = a real peer CLI session on that provider's own budget; the
     reply lands in the universe's village chat thread.
     """
-    universe_id = str(payload.get("universe_id") or "")
-    provider = str(payload.get("provider") or "")
-    task = str(payload.get("task") or "").strip()[:2000]
-    preset = bool(payload.get("preset"))
     try:
-        count = max(1, min(8, int(payload.get("count") or 1)))
-    except (TypeError, ValueError):
-        count = 1
+        unknown = set(payload) - {"universe_id", "provider", "count", "task", "preset"}
+        if unknown:
+            raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+        universe_id = _safe_dispatch_text(
+            payload.get("universe_id"), field_name="universe_id", max_length=200
+        )
+        provider = _safe_dispatch_text(
+            payload.get("provider"), field_name="provider", max_length=100
+        )
+        task = _safe_dispatch_text(
+            payload.get("task", ""), field_name="task", max_length=2000
+        ).strip()
+        preset = payload.get("preset", False)
+        if not isinstance(preset, bool):
+            raise ValueError("preset must be a boolean")
+        count = payload.get("count", 1)
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 8:
+            raise ValueError("count must be an integer from 1 through 8")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     if not universe_id or not provider:
         return {"ok": False, "error": "universe_id and provider required"}
+    if not preset and not cfg.dispatch:
+        return {"ok": False, "error": "provider dispatch is disabled"}
     now = time.time()
     universe = next((u for u in discover_universes(cfg, now) if u["id"] == universe_id), None)
     if not universe:
@@ -1444,12 +1618,16 @@ def _hire_preset(cfg: Config, universe: dict, provider: str) -> dict:
 
 def _hire_dispatch(cfg: Config, universe: dict, engine: dict, task: str, count: int) -> dict:
     """Spawn real peer CLI sessions on the provider's own budget."""
+    if not cfg.dispatch:
+        return {"ok": False, "error": "provider dispatch is disabled"}
     if not engine["dispatchable"]:
         return {"ok": False, "error": f"{engine['label']} can't be dispatched from the village "
                 "yet — set it as the daemon preset instead"}
     script = cfg.root / "scripts" / "peer_agent.py"
     if not script.is_file():
         return {"ok": False, "error": "scripts/peer_agent.py not found"}
+    if not _DISPATCH_CAPACITY.reserve(count):
+        return {"ok": False, "error": "provider dispatch capacity is full"}
     chat_path = _universe_chat_path(cfg, universe)
     brief = task or (
         f"Say hello to the universe '{universe['name']}' and propose one concrete "
@@ -1468,8 +1646,22 @@ def _hire_dispatch(cfg: Config, universe: dict, engine: dict, task: str, count: 
             f"{universe.get('premise') or 'unknown'}. Task: {brief}\n\n"
             "Answer as the hired agent: what did you do or what do you recommend?"
         )
-        _run(["python", str(script), engine["id"], "--out",
-              str(out_file), "--prompt", prompt], cwd=cfg.root, timeout=600)
+        _run_peer(
+            [
+                "python",
+                str(script),
+                engine["id"],
+                "--out",
+                str(out_file),
+                "--prompt",
+                prompt,
+                "--timeout",
+                "540",
+            ],
+            cwd=cfg.root,
+            timeout=600,
+            env=_peer_environment(),
+        )
         try:
             reply = out_file.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
@@ -1481,9 +1673,18 @@ def _hire_dispatch(cfg: Config, universe: dict, engine: dict, task: str, count: 
         except OSError:
             pass
 
+    def run_reserved(slot: int) -> None:
+        try:
+            run_one(slot)
+        finally:
+            _DISPATCH_CAPACITY.release()
+
     for slot in range(1, count + 1):
         threading.Thread(
-            target=run_one, args=(slot,), name=f"village-hire-{slot}", daemon=True
+            target=run_reserved,
+            args=(slot,),
+            name=f"village-hire-{slot}",
+            daemon=True,
         ).start()
     return {
         "ok": True,
