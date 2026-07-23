@@ -1,7 +1,7 @@
 ## RENAMED Requirements
 
-- FROM: `The provider call bridge retries only transient full-chain exhaustion`
-- TO: `The provider call bridge retries every full-chain exhaustion by exception type`
+- FROM: `### Requirement: The provider call bridge retries only transient full-chain exhaustion`
+- TO: `### Requirement: The provider call bridge retries every full-chain exhaustion by exception type`
 
 ## MODIFIED Requirements
 
