@@ -1,10 +1,10 @@
 # OpenSpec Full-Coverage Audit
 
-- **Freshness:** 2026-07-22; canonical re-audit completed through PR #1616,
-  followed by independently reviewed as-built correction of all seven grounding
-  findings
-- **Code/spec baseline:** PR #1616 merge on `origin/main` at
-  `2190f65d6742c7199e1d705bd92e3685f23a31b1`, plus this correction foldback
+- **Freshness:** 2026-07-23 UTC; canonical re-audit completed through PR #1619,
+  legacy authority classified through PR #1620, and nine independent shipped
+  contract groups source-reviewed, synced, and archived
+- **Code/spec baseline:** PR #1620 merge on `origin/main` at `8cab31d8`, plus
+  archived change `2026-07-23-backfill-independent-shipped-contracts`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -16,19 +16,22 @@
 
 The original baseline verdict below is now historical. The repository has
 since landed eight Batch A canonical spec files, enriched the core runtime,
-provider/credential, and knowledge/memory owners, and reclassified the eight
-forward-vision files. The strict-valid tree now contains **24 canonical
-capabilities** and **9 active changes**. The eight forward-vision capability
-directories no longer exist under `openspec/specs/`; their shipped pure-core
-subsets are canonical and their unbuilt outcomes are preserved by the active
+provider/credential, and knowledge/memory owners, reclassified the eight
+forward-vision files, classified all 52 legacy specification documents, and
+archived nine independent shipped-contract backfills. The strict-valid tree
+now contains **25 canonical capabilities** and **9 active changes**. The eight
+forward-vision capability directories no longer exist under
+`openspec/specs/`; their shipped pure-core subsets are canonical and their
+unbuilt outcomes are preserved by the active
 `build-forward-platform-capabilities` change.
 
 This progress does **not** yet prove full coverage. The canonical grounding
-pass identified seven inaccurate requirements; the correction foldback below
-now makes all 204 canonical requirements true as written. Shipped behavior
-without canonical owners and full-platform targets without complete active
-owners remain. The accurate answer is: current canonical OpenSpec describes
-built behavior, but not everything built or targeted is fully specified yet.
+pass identified seven inaccurate requirements; that correction plus the
+independently reviewed backfill now makes all 231 canonical requirements true
+as written. Eight dependency-bound shipped groups and eight full-platform
+target groups remain. The accurate answer is: current canonical OpenSpec
+describes built behavior, but not everything built or targeted is fully
+specified yet.
 
 ### Design-truth conflicts that block blind target-spec transcription
 
@@ -50,8 +53,8 @@ require host approval, so this audit records rather than repairs that drift.
 
 ### Current OpenSpec inventory
 
-Fresh strict validation after the correction sync passes for the whole tree.
-Canonical OpenSpec contains 24 capabilities, 204 requirements, and 557
+Fresh strict validation after the independent backfill sync passes for the
+whole tree. Canonical OpenSpec contains 25 capabilities, 231 requirements, and 642
 scenarios. The nine active
 changes contain 104 proposed requirements and 196 top-level tasks, 39
 currently checked (nested checklist evidence is excluded from these task
@@ -69,36 +72,31 @@ counts):
 | `universe-creation` | 8 | 6/33 | residual creation and compute-authority behavior |
 | `universe-visibility` | 4 | 0/10 | proposed visibility model |
 
-No runtime code changed between the original audit baseline `babce413` and
-this baseline; the intervening work is spec reconciliation and coordination.
+No product-runtime behavior changed between the original audit baseline
+`babce413` and this baseline; the intervening work is spec reconciliation,
+focused-test maintenance, and a Windows-stable coordination-script newline.
 Therefore the original shipped-surface inventory remains useful evidence, but
 its counts and forward/canonical classification were stale and are superseded
 by this section.
 
 ### Legacy specification inventory is not OpenSpec completion
 
-`docs/specs/` still contains 52 Markdown files. Thirteen April full-platform
-execution specs describe themselves as active pre-drafts with no code yet
-(schema/RLS, web catalog, gateway, host tray, market settlement, moderation,
-export sync, load testing, remix/convergence, connector integration, handoffs,
-node authoring/sandbox, and Plan-B hosting). Later files mix shipped contracts,
-historical records, superseded proposals, research-derived designs, paused
-verticals, and additional unbuilt work. `docs/specs/INDEX.md` still calls that
-directory the home of current specs even though the 2026-07-19 project rule
-makes `openspec/` canonical.
+`docs/specs/` contains 52 Markdown files, all classified filename by filename
+in `2026-07-22-legacy-spec-disposition.md`: 16 CANONICAL provenance files, no
+ACTIVE owner, 20 CLAIMED inputs assigned to live successor lanes, and 16
+HISTORY files. `docs/specs/INDEX.md` now points to OpenSpec rather than claiming
+current authority for the legacy directory.
 
-Those files are design/provenance inputs, not proof that their behavior is
-built. Full reconciliation requires a filename-by-filename disposition:
-canonical OpenSpec owner, active OpenSpec owner, explicitly superseded/history,
-or a newly claimed target-spec lane. The same rule applies to
-`docs/vetted-specs.md`; it remains a scoping artifact, not canonical behavioral
-truth.
+Those files remain design/provenance inputs, not proof that behavior is built.
+The same rule applies to `docs/vetted-specs.md`; it is a scoping artifact, not
+canonical behavioral truth.
 
 ### Fresh canonical grounding results
 
-The re-audit splits the 24 canonical capabilities into three independently
-reviewed batches. Results are requirement/scenario classifications against
-current source and focused tests, not an inference from strict syntax
+The original re-audit split 24 canonical capabilities into three independently
+reviewed batches. The independent shipped-contract archive adds a fourth
+source-grounded batch. Results are requirement/scenario classifications
+against current source and focused tests, not an inference from strict syntax
 validation.
 
 - **Batch A (8 capabilities):** all 54 requirements and 142 scenarios are
@@ -116,10 +114,16 @@ validation.
   and legacy-bid boundary, sequential settlement race, configured Goal auth and
   best-effort attribution, fallible founder rollback, tolerant learning
   filters, and mutable/fail-open receipt behavior.
+- **Independent backfill (9 capabilities):** all 27 added requirements and 85
+  scenarios are BUILT as bounded. The review corrected optional receipt use,
+  transitional soul-authority fallthrough, API-delegated merge enforcement,
+  partial remote writes and best-effort receipt finalization, narrow Windows
+  redaction, seed-based wiki consolidation, stored-output reuse, provider error
+  propagation, exact authority-resolver outcomes, and ScenePacket emission.
 
-Overall, **all 204 canonical requirements and all 557 scenarios are BUILT as
-written**. This is a grounding result, not a claim of full coverage: 17 groups
-of shipped behavior still lack canonical ownership, and eight full-platform
+Overall, **all 231 canonical requirements and all 642 scenarios are BUILT as
+written**. This is a grounding result, not a claim of full coverage: eight
+dependency-bound groups of shipped behavior still lack canonical ownership, and eight full-platform
 target groups still lack complete active owners.
 
 The requirement-by-requirement classifications, source/test anchors, and
@@ -161,6 +165,14 @@ tests/test_universe_intelligence.py tests/test_wiki_trigger_receipts.py`: 217
 passed with 7 warnings in 29.37 seconds. The Windows layer-2 uptime canary was
 not run.
 
+On 2026-07-22 PT / 2026-07-23 UTC, Windows, Python 3.14, the independent
+backfill's 27-file focused suite passed **694 tests** with 8 third-party
+deprecation warnings in 35.04 seconds; the cross-provider drift self-test was
+clean. Full-tree strict validation passed all **34** current items, and the
+sync proof preserved all eight prior canonical files as exact text prefixes
+while each of the 27 added requirement headings occurred exactly once. The
+Windows layer-2 uptime canary was not run.
+
 ### Shipped behavior still missing canonical ownership
 
 The reverse-direction audit also found behavior that exists in source but is
@@ -169,23 +181,14 @@ obligations, not permission to redesign the behavior:
 
 | Recommended canonical owner | Missing shipped contract | Coordination edge |
 |---|---|---|
-| `community-patch-loop` | Exact VCS token resolution, open-PR reuse/stale-head rejection, `auto_ship_health`, nested Patch Packet extraction, and completed-run reuse. | Preserve current GitHub-effect boundaries. |
-| `constraint-evaluation` | Multi-shot `validate_incremental` grounding behavior. | None active. |
 | `credential-vault` | Claude OAuth/BYO-key mapping and injection, plus the current temp-and-replace write boundary. | Do not overlap the active fail-closed provider-overlay lane; do not claim cross-process locking that is absent. |
 | `daemon-identity-and-host-pool` | Daemon-wiki soul scaffolding, explicitly flagged latest-soul selection, capped/versioned behavior proposals, deregistration, pricing/concurrency fields, and callback-error isolation. | Coordinate `distributed-execution` and `universe-creation`. |
 | `daemon-runtime-and-dispatch` | Lease heartbeat ownership, cooperative cancellation, terminal queue GC, and the still-callable-but-no-longer-startup-wired `recover_claimed_tasks`. | Coordinate `distributed-execution`. |
-| `desktop-host-runtime` | Canonical `tinyassets` GUI entrypoint and tunnel-default-off behavior. | Add focused tests while retiring the stale `workflow` expectation. |
-| `development-coordination-runtime` | Missing-artifact and skill-mirror drift checks; stable machine-readable coordination outputs where already shipped. | Keep provider-specific implementation details out of behavioral guarantees. |
-| `domain-plugin-runtime` | Domain-owned branch-slug registry and episodic-coordinate shapes. | None active. |
-| `external-effect-adapters` (new) | Shipped GitHub PR/merge, Twitter, wiki-writeback, and Windows sinks; trusted run-snapshot `external_write_results` and forged-evidence quarantine. | Depend on `external-effect-receipts`; do not import future deterministic-key/cap/whole-batch guarantees from the boundary-layer change. |
 | `graph-execution-substrate` | Child-Branch invocation, mappings, depth/wait modes, terminal propagation, receipt wait, and validated/idempotent existing-child attachment. | Read-coordinate `distributed-execution`; current local receipts are not future signed owner-daemon authority. |
 | `knowledge-retrieval-and-memory` | Curated read-only OKF export and its exclusions. | Coordinate `brain-okf-canonical-store`; export does not make OKF the current write-through canonical store. |
 | `live-mcp-connector-surface` for metadata; `identity-auth-and-access-control` for status identity | Four-prompt catalog, tool title/tag/annotation invariants, and exact early/config-error/full status variants, including that early responses currently omit `session_boundary`. | Coordinate connector-manifest, legacy-tool-retirement, and identity/reset changes. |
-| `provider-routing` | Three-attempt exponential bridge retry and fallback-response semantics. | None active. |
-| `shared-goals-and-convergence` | ChatGPT compatibility Goal aliases. | Preserve canonical action semantics. |
 | `universe-lifecycle-and-soul` | Authenticated request-scoped versus anonymous host-global `switch_universe`. | Coordinate `universe-creation` and `test-identity-and-reset`. |
 | `uptime-and-alarms` | DNS incident canary, LLM-binding canary, release reconciler, and disk-pressure alert/rotation/auto-prune controller. | Every uptime owner retains its concurrency/load evidence obligation. |
-| `wiki-commons` | Cosign, protected/hash-guarded delete, consolidation, lint, and project-sync semantics. | Preserve action-catalog boundaries. |
 
 ### Full-platform targets with no complete active owner
 
@@ -446,10 +449,11 @@ must carry the executable SHALL/scenario contracts and tasks.
 6. Public and uptime-sensitive surfaces retain their required rendered,
    concurrency/load, CI, and post-fix evidence gates when behavior changes.
 
-**Current verdict: NOT COMPLETE.** Criterion 1 fails on the 17 shipped
-backfill groups above; criterion 3 fails on the eight full-platform target
-groups without complete active owners. Criterion 5 now passes: all 204
-requirements and 557 scenarios are independently grounded and strict-valid.
+**Current verdict: NOT COMPLETE.** Criterion 1 fails on the eight
+dependency-bound shipped backfill groups above; criterion 3 fails on the eight
+full-platform target groups without complete active owners. Criterion 5 now
+passes: all 231 requirements and 642 scenarios are independently grounded and
+strict-valid.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
 owns the backfill, runtime-hardening, legacy-disposition, PLAN-decision, and

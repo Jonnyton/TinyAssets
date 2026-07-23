@@ -82,6 +82,7 @@ def _force_utf8_stdio() -> None:
                         buffer,
                         encoding="utf-8",
                         errors="replace",
+                        newline="\n",
                         line_buffering=True,
                     ),
                 )

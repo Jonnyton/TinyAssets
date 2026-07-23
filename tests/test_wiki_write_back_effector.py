@@ -142,7 +142,7 @@ def test_wiki_write_back_appends_section_and_records_receipt(tmp_path):
     text = target.read_text(encoding="utf-8")
     assert "## Loop result packet" in text
     assert "Decision: KEEP" in text
-    assert "workflow-wiki-write-back:pr-166-loop-result-run-1" in text
+    assert "tinyassets-wiki-write-back:pr-166-loop-result-run-1" in text
 
     receipt = lookup_receipt(
         tmp_path,
