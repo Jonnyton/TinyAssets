@@ -4,7 +4,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
-- **[P1 filed:2026-07-23 verified:2026-07-23]** Deploy rollback/receipt integrity and DR red-evidence branches remain out of spec.
+- **[P1 filed:2026-07-23 verified:2026-07-23]** Deploy rollback/receipt + DR archive-input/state-proof/red-evidence remain out of spec.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P0 filed:2026-07-22 verified:2026-07-23]** Fresh hosts omit disk-watch and do not converge watchdog/backup/prune timers.
 - **[P1 filed:2026-07-22]** Priority-authorized submit emits unknown `operator_request`; dispatcher only enables `host_request`, stranding work.

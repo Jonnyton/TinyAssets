@@ -35,3 +35,17 @@ What surprised me: the router already carries provider/model/family evidence, so
 Pattern worth capturing: an audit envelope needs two orthogonal terminal fields when fallback exists — how output completed (`outcome`) and why routing stopped (`route_condition`). Combining them makes missing-router fallback and exhausted-chain fallback ambiguous.
 
 One thing I would do differently: model synthetic fallback and missing-router behavior before drafting the first enum list, because that boundary exposed the only internal contradiction found by the consistency pass.
+
+## 2026-07-23 — rollback-safe full-volume restore
+
+What surprised me: extracting with `--strip-components=1` into a `mktemp`
+directory preserves file contents but silently replaces the Docker volume
+root's access mode with `0700` unless ownership and mode are copied explicitly.
+
+Pattern worth capturing: recovery tooling must fail closed at every discovery
+boundary—archive metadata, Docker mountpoint resolution, and consumer
+enumeration—before the first live rename.
+
+One thing I would do differently: model the directory metadata and Docker
+enumeration failure paths in the first test batch, alongside corrupt archives
+and rename rollback.

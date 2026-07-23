@@ -1,6 +1,6 @@
 ---
 title: Backup and restore runbook
-date: 2026-04-21
+date: 2026-07-23
 row: J — self-host migration
 ---
 
@@ -15,7 +15,9 @@ State backup for the DO Droplet's `/data` volume. Row J per
 
 - **Script:** `deploy/backup.sh` — two archives per run (see "Two-tier design"), uploaded to any
   rclone-compatible remote.
-- **Restore:** `deploy/backup-restore.sh` — pulls a snapshot and restores it in-place.
+- **Restore:** `deploy/backup-restore.sh` — validates and stages a full snapshot,
+  stops every running container mounting the selected volume, then swaps directories.
+  It does not start services.
 - **Schedule:** `deploy/tinyassets-backup.timer` (systemd) — fires nightly at **03:00 UTC**.
 - **Offsite options:** DO Spaces (`s3://`), Hetzner Storage Box (`sftp://`), AWS S3, etc. — any
   rclone remote works. `BACKUP_DEST` is the single config variable.
@@ -30,7 +32,7 @@ pre-2026-06-10 script treated that as fatal — every nightly run from
 
 | Tier | Archive | Contents | Consistency | Failure policy |
 |------|---------|----------|-------------|----------------|
-| **Brain** | `workflow-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
+| **Brain** | `tinyassets-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
 | **Full** | `tinyassets-data-<ts>.tar.gz` (GBs) | whole volume incl. rebuildable per-universe `lancedb/` indexes + universe canon/output | Best-effort — tarred live; tar rc=1 tolerated, rc≥2 fatal | Upload failure fatal (exit 3) |
 
 The brain tier is the irreplaceable knowledge state and must always land.
@@ -178,7 +180,7 @@ state over an existing volume:
 
 ```bash
 systemctl stop tinyassets-daemon   # or: docker compose -f /opt/tinyassets/deploy/compose.yml stop daemon
-tar -xzf /tmp/workflow-brain-<ts>.tar.gz -C /var/lib/docker/volumes/tinyassets-data/_data
+tar -xzf /tmp/tinyassets-brain-<ts>.tar.gz -C /var/lib/docker/volumes/tinyassets-data/_data
 systemctl start tinyassets-daemon
 ```
 
@@ -197,8 +199,29 @@ sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
 sudo -E bash /opt/tinyassets/deploy/backup-restore.sh --timestamp=2026-04-20T02-00-00Z
 ```
 
-The script stops `tinyassets-daemon`, extracts the archive into the Docker volume, then restarts the
-daemon. Downtime is ~30–90 seconds for a typical volume.
+The script first rejects corrupt archives, paths outside `_data`, links, and
+special files; it then extracts into a unique sibling directory. Only after
+staging succeeds does it stop every running container mounting `tinyassets-data` and
+swap the staged directory into place. It deliberately does **not** start any
+service. The pre-restore directory is retained at the path printed by the
+script.
+
+Start only the intended service, prove it healthy, and then remove the retained
+directory:
+
+```bash
+sudo systemctl start tinyassets-daemon
+python3 /opt/tinyassets/scripts/mcp_public_canary.py \
+  --url http://127.0.0.1:8001/mcp
+
+```
+
+Only after the canary is green, use the guarded `OLD_DIR` cleanup procedure in
+`deploy/RESTORE.md` with the exact retained path printed by the restore.
+
+If the canary is red, stop the service and swap the retained directory back
+before further diagnosis. Never delete the retained directory before the
+post-restore canary passes.
 
 ---
 
@@ -220,14 +243,17 @@ Use this when the original Droplet is gone or unrecoverable.
    source /etc/tinyassets/env
    sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
    ```
-5. Bring up the full stack:
+5. Start only the daemon:
    ```bash
-   docker compose -f /opt/tinyassets/deploy/compose.yml up -d
+   docker compose -f /opt/tinyassets/deploy/compose.yml up -d daemon
    ```
 6. Verify:
    ```bash
    python scripts/mcp_public_canary.py --url http://127.0.0.1:8001/mcp
    ```
+7. After the canary is green, remove the exact retained pre-restore directory
+   printed by `backup-restore.sh`. If it is red, keep that directory and the
+   failed host as recovery evidence.
 
 ---
 
@@ -254,9 +280,10 @@ Expected healthy output ends with `backup complete.`
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `BACKUP_DEST is not set` | Env file missing the variable | Add `BACKUP_DEST=...` to `/etc/tinyassets/env` |
-| `volume tinyassets-data not found` | Docker volume not yet created | Run `docker compose up -d` first |
+| `restore already in progress` | Another restore holds this volume's lock | Wait for it to finish; restores of other volume directories remain independent |
+| `archive member validation failed` | Corrupt or unsafe archive (wrong root, traversal, link, or special file) | Leave the live volume untouched and select another full archive |
 | `rclone upload failed` | Network/auth error | Check rclone config: `rclone lsd $BACKUP_DEST` |
-| `tar failed` | Volume data corrupted | Check `docker logs tinyassets-daemon`; may need full restore |
+| `failed to install staged volume` | The second same-parent rename failed | The script attempts automatic rollback; confirm the old live data is back before retrying |
 | Timer never fires | Unit not enabled | `systemctl enable --now backup.timer` |
 
 ---
@@ -277,8 +304,9 @@ gh release list --repo Jonnyton/tinyassets-backups
 # Download a specific release asset.
 gh release download <tag> --repo Jonnyton/tinyassets-backups --dir /tmp
 
-# Restore (same as rclone path — feed the tarball to backup-restore.sh).
-BACKUP_FILE=/tmp/tinyassets-data-<tag>.tar.gz sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+# Restore from an absolute caller-owned path; this bypasses rclone.
+sudo -E env BACKUP_FILE=/tmp/tinyassets-data-<timestamp>.tar.gz \
+  bash /opt/tinyassets/deploy/backup-restore.sh
 ```
 
 Or via raw API (no gh CLI):
@@ -296,4 +324,3 @@ on each successful upload.
 **Setup:** create `Jonnyton/tinyassets-backups` as a private repo once (or let
 `backup_ship_gh.py` create it automatically on first run).  Add `GH_TOKEN` to
 `/etc/tinyassets/env` with `repo` scope.
-
