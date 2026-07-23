@@ -1,3 +1,5 @@
+> **HISTORICAL — superseded.** This was a Claude Code agent definition, retired 2026-04-16 and superseded by `verifier`. It is no longer a live role: it lives here, outside `.claude/agents/`, precisely so it is not discoverable as a spawnable agent type. Kept for git/decision history. Do not edit, do not extend, do not cite as live. See [README.md](README.md).
+
 ---
 name: reviewer
 description: Permanent code reviewer. Read-only. Auto-reviews every completed task for correctness, consistency, and quality. Use proactively after code changes.

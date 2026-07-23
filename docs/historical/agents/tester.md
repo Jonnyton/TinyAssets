@@ -1,3 +1,5 @@
+> **HISTORICAL — superseded.** This was a Claude Code agent definition, retired 2026-04-16 and superseded by `verifier`. It is no longer a live role: it lives here, outside `.claude/agents/`, precisely so it is not discoverable as a spawnable agent type. Kept for git/decision history. Do not edit, do not extend, do not cite as live. See [README.md](README.md).
+
 ---
 name: tester
 description: Quality gate. Runs tests PROACTIVELY after every dev change — never waits to be asked. Also playtests the UI when user isn't using it.

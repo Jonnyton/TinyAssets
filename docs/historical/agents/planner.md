@@ -1,3 +1,5 @@
+> **HISTORICAL — superseded.** This was a Claude Code agent definition, retired 2026-04-16 and superseded by `navigator`. It is no longer a live role: it lives here, outside `.claude/agents/`, precisely so it is not discoverable as a spawnable agent type. Kept for git/decision history. Do not edit, do not extend, do not cite as live. See [README.md](README.md).
+
 ---
 name: planner
 description: Strategic thinker for the TinyAssets daemon. Use when you need to figure out WHAT to build, WHERE the project should go, or WHETHER a component is still earning its complexity. Not for implementation details — the developer is smart enough to figure those out.
