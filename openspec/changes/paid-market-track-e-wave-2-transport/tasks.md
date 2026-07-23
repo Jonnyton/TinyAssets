@@ -1,6 +1,6 @@
 ## 1. Review Gate and Baseline
 
-- [ ] 1.1 Obtain opposite-provider review of `proposal.md`, `design.md`, both delta specs, and this task list; record an approve/adapt verdict in `docs/audits/` and resolve every blocking finding before implementation.
+- [ ] 1.1 Obtain opposite-provider review of `proposal.md`, `design.md`, the `paid-market-economy` delta, and this task list; record an approve/adapt verdict in `docs/audits/` and resolve every blocking finding before implementation.
 - [ ] 1.2 Run and record the pre-change baselines: `python -m pytest tests/test_paid_market_core.py tests/test_match_scale.py -q --noconftest`, `openspec validate --specs --strict`, and `openspec validate paid-market-track-e-wave-2-transport --strict`.
 
 ## 2. Fixture Replay and Production Baseline Gate
@@ -10,6 +10,7 @@
 - [ ] 2.3 Renumber and dependency-correct the v0 files in place as `001_core_tables`, `002_flags`, `003_rls`, `004_indexes`, `005_seed`, `006_discover_nodes`, `007_token_normalization`, `008_forwards`, `009_market_ledger`; ensure discovery establishes/checks pgvector and forwards adds a monotonic offer `version`. Do not copy this SQL into a production migration home.
 - [ ] 2.4 Update the prototype compose, tests, and README to use only its fixture runner; prove fresh install and fixture upgrade use the same path and the gateway does not start before migration success.
 - [ ] 2.5 Produce a read-only inventory of the actual deployed Supabase schemas, extensions, auth, policies, functions, roles, vector dimensions/indexes, migration history, and deployment mechanism. Stop for host approval of the production baseline and migration home before authoring separately reviewed production-native SQL.
+- [ ] 2.6 After approval, author production-native migrations from the recorded baseline; add exact dry-run, role/policy, populated-upgrade, rollback/forward-fix, checksum/history, and prior-app compatibility tests; obtain independent migration/security review while keeping live application explicitly unapproved.
 
 ## 3. Pure Spot Adapter and Ledger SQL Boundary
 
@@ -19,10 +20,11 @@
 - [ ] 3.4 Harden fixture `009_market_ledger.sql`: store `request_sha256`, explicitly revoke function/table/sequence privileges from public/user-facing roles, grant only a dedicated internal settlement role, fix the trusted search path, validate Wave 2 bounds, reject `external:*`/`pool:*` and caller-supplied treasury accounts, and make raw apply/drain helpers internal. Repeat only in later production-native SQL authored from the approved live baseline.
 - [ ] 3.5 Add one internal settlement wrapper that atomically performs business-state/version CAS, actor/account authorization, adapter postings, `market.apply_tx`, every required drain assertion, and audit-state commit; prove any failure rolls back all effects.
 - [ ] 3.6 Differential-test randomized persistent transactions against pure `Ledger`, including overdrafts, repeated accounts, reverse-order first-touch accounts, residual escrows, identical replays, and changed-body conflicts.
+- [ ] 3.7 Add adversarial tests for verified-request tenant derivation, mixed-tenant rejection, signed/bounded/revoked on-behalf grants, server-recomputed canonical hashes, hash mismatch, composite tenant keys, duplicate-account coalescing, and the global cross-family lock order.
 
 ## 4. Dark Transport and Atomic Claim
 
-- [ ] 4.1 Write failing tests in `tests/test_paid_market_transport.py` proving `permissions.current_actor_id()` is required, environment identities grant no authority, an explicit host on-behalf grant records both identities, the default-off feature flag blocks mutation, pure entries are serialized unchanged, v1 YAML/`public.ledger` stay byte-stable, and transport exposes no direct balance/table writer.
+- [ ] 4.1 Write failing tests in `tests/test_paid_market_transport.py` proving verified subject+tenant authority is required, environment/caller-selected tenants grant no authority, a signed target/action/account/amount/time-bounded host grant records grant+host+target identities, the default-off feature flag blocks mutation, pure entries are serialized unchanged, v1 YAML/`public.ledger` stay byte-stable, and transport exposes no direct balance/table writer.
 - [ ] 4.2 Define injected `MarketLedgerRpc`, immutable settlement/claim command values, and typed applied/replayed/conflict/contention results in `tinyassets/payments/market_transport.py`; add no psycopg dependency to application core, keep API modules delegation-only, and do not register a live route.
 - [ ] 4.3 Implement a psycopg adapter only in prototype/integration-test scope with explicit transaction, result, and error mapping; defer the production client until the Supabase baseline is approved.
 - [ ] 4.4 Write failing integration tests for single-request narrow claim and multi-offer matching: use `best_execution`, lock selected IDs in canonical order, compare monotonic versions, reject stale selections atomically, retry at most three times with jitter, and return honest insufficient-supply/contention results.
@@ -44,4 +46,4 @@
 - [ ] 6.2 Run focused tests, the full relevant PostgreSQL integration suite, `python -m ruff check` on changed Python, both strict OpenSpec validations, and the pre-change 180-test pure-core/matcher suite; attach dated environment and raw latency/failure evidence.
 - [ ] 6.3 Obtain independent implementation review across correctness, security, migration safety, concurrency, non-custodial boundaries, and diff simplicity; resolve every Critical/Important finding and re-run affected evidence.
 - [ ] 6.4 Keep migrations unapplied, transport unregistered, on-chain effects absent, and `TINYASSETS_PAID_MARKET` off; record explicit dependencies on distributed-execution S14/B36 plus host decisions for migration, cutover, enablement, and Base deployment.
-- [ ] 6.5 After implementation lands, sync both delta specs into `openspec/specs/`, validate idempotently, archive this change in the same lane, and remove the STATUS row in the landing commit.
+- [ ] 6.5 After implementation lands, sync the delta into `openspec/specs/`, validate idempotently, archive this change in the same lane, and remove the STATUS row in the landing commit.

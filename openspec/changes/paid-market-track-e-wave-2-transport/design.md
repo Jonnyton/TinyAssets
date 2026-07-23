@@ -29,7 +29,7 @@ The transport crosses security, money, migration, distributed-execution, and upt
 
 ### 1. Pure core plus one effect adapter
 
-I/O remains outside `tinyassets/paid_market`. A future `tinyassets/payments/market_transport.py` consumes pure settlement results, ledger posting adapters, and `BookOffer`/`best_execution`; it exposes no balance-write method. Its database dependency is an injected `MarketLedgerRpc` protocol, not a new psycopg import in application core. The protocol accepts immutable `SettlementCommand` and `ClaimCommand` values carrying actor, tenant, body hash, business reference/state version, postings, and drain accounts, and returns typed `applied`, `replayed`, `conflict`, or contention results. A psycopg implementation exists only in fixture/integration-test scope until the production Supabase boundary is audited. `tinyassets/paid_market/ledger.py` gains only the missing pure spot-settlement posting adapter. API wrappers delegate to the transport and contain no posting construction.
+I/O remains outside `tinyassets/paid_market`. A future `tinyassets/payments/market_transport.py` consumes pure settlement results, ledger posting adapters, and `BookOffer`/`best_execution`; it exposes no balance-write method. Its database dependency is an injected `MarketLedgerRpc` protocol, not a new psycopg import in application core. The protocol accepts immutable `SettlementCommand` and `ClaimCommand` values carrying verified request-authority identity, business reference/state version, postings, and drain accounts, and returns typed `applied`, `replayed`, `conflict`, or contention results. Tenant and actor are derived from the verified authority rather than trusted as caller-selected strings; any advisory body hash is ignored and recomputed inside the trusted wrapper. A psycopg implementation exists only in fixture/integration-test scope until the production Supabase boundary is audited. `tinyassets/paid_market/ledger.py` gains only the missing pure spot-settlement posting adapter. API wrappers delegate to the transport and contain no posting construction.
 
 Alternative considered: put PostgreSQL calls in `tinyassets.paid_market`. Rejected because it destroys the pure oracle and makes differential verification circular.
 
@@ -43,20 +43,20 @@ Alternative considered: `ORDER BY unit_price LIMIT ...` or greedy matching in SQ
 
 One internal stored procedure owns the boundary:
 
-1. verify the current business-state/version and, after S14 exists, lease fence plus accepted-result identity;
-2. verify the actor/account binding and canonical request hash;
+1. derive authenticated subject plus tenant/universe from verified request authority and verify every tenant-scoped business-state/version and, after S14 exists, lease fence plus accepted-result identity;
+2. verify the actor/account binding, any bounded signed on-behalf grant, and the server-recomputed versioned/domain-separated canonical request hash;
 3. derive/receive only the unchanged posting list produced by the named pure adapter;
-4. invoke internal `market.apply_tx` once;
+4. coalesce duplicate accounts and lock tenant-scoped business, escrow/collateral, idempotency, and balance rows in the single global order before invoking internal `market.apply_tx` once;
 5. invoke internal drain checks for every temporary escrow/collateral account; and
 6. commit business state, transaction, postings, balances, and drain success together.
 
-Any error rolls back every step. `market.apply_tx` is not a public PostgREST surface. Its transaction row stores `request_sha256`; same key plus same canonical body returns the original transaction, while same key plus any different body conflicts.
+Any error rolls back every step. `market.apply_tx` is not a public PostgREST surface. Its transaction row stores the server-recomputed `request_sha256` plus encoding/domain version; same tenant-scoped key plus same canonical body returns the original transaction, while a caller-hash mismatch or changed body conflicts.
 
 Alternative considered: call `apply_tx`, then `assert_drained` through two client RPCs. Rejected because a committed residual cannot be rolled back.
 
 ### 4. The SQL privilege boundary is deny-by-default
 
-Ledger functions use a non-login owner and fixed `search_path` containing only trusted schemas. The migration explicitly revokes function execution and table/sequence DML from `PUBLIC`, anonymous, authenticated, and ordinary application roles, then grants only the settlement wrapper to a dedicated internal service role. Raw `market.apply_tx` and drain helpers remain callable only inside the trusted boundary. The wrapper derives buyer, seller, escrow, and collateral accounts from locked business rows, and accepts the treasury account only from fixed server configuration. Caller-supplied treasury accounts and every `external:*` or `pool:*` account are rejected in Wave 2. A future external-funding entry needs a separately reviewed, receipt-verified ingress. `UNIVERSE_SERVER_USER` or `UNIVERSE_SERVER_HOST_USER` environment values confer no money authority.
+Ledger functions use a non-login owner and fixed `search_path` containing only trusted schemas. The migration explicitly revokes function execution and table/sequence DML from `PUBLIC`, anonymous, authenticated, and ordinary application roles, then grants only the settlement wrapper to a dedicated internal service role. Raw `market.apply_tx` and drain helpers remain callable only inside the trusted boundary. The wrapper independently compares verified request authority with tenant-scoped locked rows, derives buyer, seller, escrow, and collateral accounts from those rows, and accepts the treasury account only from fixed server configuration. Caller-supplied tenants, treasury accounts, and every `external:*` or `pool:*` account are rejected in Wave 2. Host on-behalf action requires an immutable signed grant bounded by target, tenant, action, account, amount, expiry, and revocation generation and records both principals plus grant id. A future external-funding entry needs a separately reviewed, receipt-verified ingress. `UNIVERSE_SERVER_USER` or `UNIVERSE_SERVER_HOST_USER` environment values confer no money authority.
 
 Wave 2 payloads are bounded: at most 16 postings, 128 UTF-8 bytes for an idempotency key, 512 bytes for a memo, 256 bytes per account name, and 16 KiB for canonical posting JSON. Larger future settlement families need a separately reviewed bulk contract.
 

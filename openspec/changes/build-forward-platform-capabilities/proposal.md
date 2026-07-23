@@ -9,7 +9,7 @@ The full-platform architecture still calls for outbound connectivity, data and d
 - Build first-class dataset assets, provenance, licensing enforcement, quality gates, contribution accounting, and Dataset Forge workflows.
 - Build standing-goal demand, onboarding outcomes, and goal-bounty market composition before introducing direct universe services.
 - Build the verified design-to-fabrication hardware ladder on top of commons artifacts, gates, and paid-market primitives.
-- Replace direct money side paths with a versioned transaction transport, then add live price/forward quote surfaces, order lifecycle, caps, collateral, and privacy controls.
+- Replace direct money side paths with a versioned transaction transport; delegate live price/forward quote surfaces, order lifecycle, caps, collateral, and privacy controls to the narrow `paid-market-live-price-discovery` successor.
 - Build F1/F2 training instruments, attestation, checkpoint release, gates, mint/license enforcement, and buyer-data provenance; keep F3 research-gated.
 - Build persisted pooled-training ownership and revenue lifecycles without secondary transfers in v1.
 - Introduce any public TINY/stablecoin architecture only behind legal, security, and launch gates, preserving the separation from settlement until those gates pass.
@@ -22,7 +22,6 @@ The full-platform architecture still calls for outbound connectivity, data and d
 - `data-commons`: Dataset assets, provenance, pricing, quality gates, contribution settlement, and Dataset Forge.
 - `demand-side`: Standing goals, binding onboarding outcomes, goal bounties, and the measured gate for later universe services.
 - `hardware-creation`: Verified design-to-silicon and physical-fabrication product workflows.
-- `paid-market-price-index-and-forwards`: Normalized settlement evidence, price publication, capacity-forward lifecycle, and market safety controls consuming the shared transaction transport.
 - `paid-market-training`: Training instruments, verification, checkpoint payment, gate integration, capability minting, and input provenance.
 - `pooled-training-ownership`: Persisted funding, frozen lineage ownership, refunds, and revenue distribution.
 - `token-architecture`: Counsel-gated public token, valuation, liquidity, and mint/redemption behavior.
@@ -33,4 +32,4 @@ The full-platform architecture still calls for outbound connectivity, data and d
 
 ## Impact
 
-This is an active, unimplemented cross-platform change and is blocked on the completed canonical reclassification. It will affect MCP/HTTP surfaces, identity and credential boundaries, SQLite migrations, paid-market transports, commons workflows, gates, provenance, deployment flags, legal review, and the complete-system concurrency/load proof. It depends on authenticated distributed execution for execution evidence and rollout authority but owns market behavior separately.
+This is an active, unimplemented cross-platform change and is blocked on the completed canonical reclassification. It will affect MCP/HTTP surfaces, identity and credential boundaries, SQLite migrations, paid-market transports, commons workflows, gates, provenance, deployment flags, legal review, and the complete-system concurrency/load proof. It depends on authenticated distributed execution for execution evidence and rollout authority but owns market behavior separately. `paid-market-live-price-discovery` is the sole successor owner for the removed price-index/forward delta and must preserve the umbrella invariants before it can sync or archive.

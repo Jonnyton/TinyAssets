@@ -22,11 +22,10 @@ PR #1440 landed a pure, conservation-checked paid-market core, but no live adapt
 
 ### Modified Capabilities
 
-- `paid-market-economy`: Replace the as-built “pure core only” limitation with the required claim/settle transport boundary, hardened actor authority, idempotent persistence, and fail-closed enablement behavior.
-- `paid-market-price-index-and-forwards`: Extend the single-transport HARD RULE with matcher use, escrow-drain atomicity, and the migration preconditions for token normalization, forwards, and the market ledger.
+- `paid-market-economy`: Replace the as-built “pure core only” limitation with the required claim/settle transport boundary, hardened actor authority, idempotent persistence, production-native migration prerequisites, and fail-closed enablement behavior.
 
 ## Impact
 
-- Future implementation: paid-market transport/adapters, an injected RPC boundary, PostgreSQL RPC/grants, a v0 fixture runner, a production schema audit and host-approved production-native migration lane, focused unit/integration/concurrency/load tests, and the packaged runtime mirror where production code is mirrored.
+- Future implementation: paid-market transport/adapters, an injected RPC boundary, PostgreSQL RPC/grants, a v0 fixture runner, a production schema audit and host-approved production-native migration lane, focused unit/integration/concurrency/load tests, and the packaged runtime mirror where production code is mirrored. Live price discovery remains owned by the dependent `paid-market-live-price-discovery` successor.
 - Operational: no live migration, claim/settle activation, on-chain payout, or feature-flag enablement occurs in this proposal; a later apply lane depends on distributed-execution S14/B36 and host-approved dual-verify/cutover, with reviewed migration, rollback, canary, and load evidence before rollout.
 - Compatibility: `public.ledger` remains byte-for-byte historical; callers gain no alternate money writer or compatibility shim.
