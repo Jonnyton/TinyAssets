@@ -438,37 +438,21 @@ jobs:
             const now = new Date().toISOString();
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
 
-            // Ensure label exists.
-            try {
-              await github.rest.issues.getLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: label,
-              });
-            } catch (e) {
-              if (e.status === 404) {
-                await github.rest.issues.createLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  name: label,
-                  color: 'd73a4a',
-                  description: 'Auto-opened by uptime canary on public MCP outage.',
-                });
-                console.log(`created label ${label}`);
-              } else {
-                throw e;
-              }
+            // Set no-page defaults and classify before any REST call. A failed
+            // deploy completion skips the probe, so its empty result is unknown
+            // rather than evidence of recovery or another red observation.
+            core.setOutput('page_eligible', 'false');
+            core.setOutput('issue_number', '');
+            core.setOutput('is_first_alarm', 'false');
+            if (overall !== 'red' && overall !== 'green') {
+              const unknownResult = overall || '(empty)';
+              const warning = `uptime alarm sink received unknown overall=${JSON.stringify(unknownResult)}; no issue mutation or page`;
+              core.warning(warning);
+              await core.summary
+                .addRaw(`### Uptime canary alarm sink\n\n- **overall**: \`${unknownResult}\`\n- **alarm action**: unknown result; no issue mutation or page\n`)
+                .write();
+              return;
             }
-
-            // Find open p0-outage issue (expect 0 or 1).
-            const openIssues = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: label,
-              per_page: 5,
-            });
-            const openIssue = openIssues.data[0] || null;
 
             // Consecutive-red detection: prior run conclusion=failure means red.
             async function previousRunWasRed() {
@@ -512,6 +496,38 @@ jobs:
             core.setOutput('is_first_alarm', 'false');
 
             if (overall === 'red') {
+              // Only red creates the label. Green recovery must not create a
+              // missing label, and unknown results returned before any REST call.
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label,
+                });
+              } catch (e) {
+                if (e.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label,
+                    color: 'd73a4a',
+                    description: 'Auto-opened by uptime canary on public MCP outage.',
+                  });
+                  console.log(`created label ${label}`);
+                } else {
+                  throw e;
+                }
+              }
+
+              const openIssues = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: label,
+                per_page: 5,
+              });
+              const openIssue = openIssues.data[0] || null;
+
               if (openIssue) {
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
@@ -553,24 +569,35 @@ jobs:
               return;
             }
 
-            // GREEN path.
-            if (openIssue) {
-              await github.rest.issues.createComment({
+            // Literal green is the only recovery path. It can inspect an
+            // existing incident but never creates a missing p0-outage label.
+            if (overall === 'green') {
+              const openIssues = await github.rest.issues.listForRepo({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: openIssue.number,
-                body: formatBody('GREEN — RECOVERED'),
+                state: 'open',
+                labels: label,
+                per_page: 5,
               });
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: openIssue.number,
-                state: 'closed',
-                state_reason: 'completed',
-              });
-              console.log(`closed #${openIssue.number} as RECOVERED`);
-            } else {
-              console.log('steady green — no action');
+              const openIssue = openIssues.data[0] || null;
+              if (openIssue) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: openIssue.number,
+                  body: formatBody('GREEN — RECOVERED'),
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: openIssue.number,
+                  state: 'closed',
+                  state_reason: 'completed',
+                });
+                console.log(`closed #${openIssue.number} as RECOVERED`);
+              } else {
+                console.log('steady green — no action');
+              }
             }
 
       # Pushover paging — navigator 2026-04-22 §c P0 fix.
