@@ -3,8 +3,8 @@
 - **Freshness:** 2026-07-23 UTC; canonical re-audit completed through PR #1619,
   legacy authority classified through PR #1620, nine independent shipped
   groups landed through PR #1622, and four runtime/memory groups independently
-  source-reviewed, synced, and archived in this lane
-- **Code/spec baseline:** PR #1622 merge on `origin/main` at `35817a3e`, plus
+  source-reviewed, synced, and archived through PR #1624
+- **Code/spec baseline:** PR #1624 merge on `origin/main` at `dff6795e`, plus
   archived changes `2026-07-23-backfill-independent-shipped-contracts` and
   `2026-07-23-backfill-runtime-memory-shipped-contracts`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
