@@ -1379,6 +1379,7 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
         _ensure_workflow_db,
         _split_csv,
     )
+    from tinyassets.api.permissions import current_actor_id
     from tinyassets.daemon_server import list_goals
 
     _ensure_workflow_db()
@@ -1390,6 +1391,7 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
         author=kwargs.get("author", ""),
         tag=(_split_csv(kwargs.get("tags", ""))[:1] or [""])[0],
         limit=fetch_limit,
+        viewer=current_actor_id(),
     )
     unfiltered_count = len(rows)
     if production_only:
@@ -1418,10 +1420,8 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
 
 def _action_goal_get(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.branches import _ensure_workflow_db
-    from tinyassets.api.engine_helpers import (
-        _current_actor,
-    )
     from tinyassets.api.market import _gates_enabled
+    from tinyassets.api.permissions import current_actor_id
     from tinyassets.daemon_server import (
         branches_for_goal,
         get_goal,
@@ -1435,8 +1435,9 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
             "error": "goal_id is required.",
         })
     _ensure_workflow_db()
+    viewer = current_actor_id()
     try:
-        goal = get_goal(_base_path(), goal_id=gid)
+        goal = get_goal(_base_path(), goal_id=gid, viewer=viewer)
     except KeyError:
         return json.dumps({
             "status": "rejected",
@@ -1446,7 +1447,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     # Phase 6.2.2 — viewer-aware. Private Branches owned by other
     # actors are excluded from this Goal's published Branch list.
     branches = branches_for_goal(
-        _base_path(), goal_id=gid, viewer=_current_actor(),
+        _base_path(), goal_id=gid, viewer=viewer,
     )
     is_deleted = goal.get("visibility") == "deleted"
 
@@ -1665,6 +1666,7 @@ def _action_goal_get_protocol(kwargs: dict[str, Any]) -> str:
 
 def _action_goal_search(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.branches import _ensure_workflow_db
+    from tinyassets.api.permissions import current_actor_id
     from tinyassets.daemon_server import search_goals
 
     query = (kwargs.get("query") or "").strip()
@@ -1677,6 +1679,7 @@ def _action_goal_search(kwargs: dict[str, Any]) -> str:
     rows = search_goals(
         _base_path(), query=query,
         limit=int(kwargs.get("limit", 20) or 20),
+        viewer=current_actor_id(),
     )
     if rows:
         lines = [f"**{len(rows)} match(es) for `{query}`:**", ""]

@@ -110,7 +110,9 @@ def test_list_can_filter_to_production_goals(p5_env):
 
     assert result["count"] == 1
     assert result["production_only"] is True
-    assert result["excluded_count"] == 4
+    # The private Goal is inaccessible before production filtering and must
+    # not contribute even to aggregate counts (an existence side channel).
+    assert result["excluded_count"] == 3
     assert [g["name"] for g in result["goals"]] == ["Real workflow goal"]
     assert "production" in result["text"].lower()
 
