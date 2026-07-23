@@ -1,7 +1,7 @@
 # Shipped behavior OpenSpec backfill map — Wave 1
 
 - **Freshness:** 2026-07-22 PT
-- **Baseline:** `origin/main` at `2190f65d6742c7199e1d705bd92e3685f23a31b1`
+- **Baseline:** `origin/main` at `2b6188bff0e6c680731e778f085af383a9468f71` (PR #1619 landed)
 - **Source:** PR #1616 full-coverage audit, reverse-direction findings
 - **Scope:** four coordination-edge-free shipped contracts; requirements only, no runtime or canonical-spec edits
 
@@ -21,6 +21,28 @@ Wave 1 can close four of the seventeen reverse-direction coverage groups without
 ## Explicit exclusions retained for Wave 2
 
 The following thirteen groups are not silently covered here: community patch-loop GitHub behavior, credential mapping/storage boundary, daemon identity metadata, daemon runtime lease/cancellation/GC, external-effect adapters, child-Branch execution, OKF export, live MCP metadata and status identity, provider retry semantics, Goal aliases, universe switching, uptime controllers, and wiki mutation semantics. Their active credential, distributed-execution, OKF, connector, universe, Goal, uptime, wiki, or effect dependencies remain authoritative.
+
+## Residual decomposition after fresh re-grounding
+
+Freshness: 2026-07-22 PT against `origin/main` `2b6188bf`. Each disposition below is either an independent successor lane or an explicit absorption/correction in an existing owner. “Proposal-safe” permits an as-built proposal, not implementation of future behavior or canonical sync across an active owner.
+
+| Reverse-coverage group | Exact successor disposition | Readiness and hard boundary |
+|---|---|---|
+| Community patch loop / GitHub behavior | Split into `backfill-community-patch-loop-run-reuse` and `backfill-community-patch-loop-github-effects`. | Run reuse is proposal-safe. GitHub effects waits for credential, distributed-execution, external-receipt, and boundary-layer authority review. |
+| Credential mapping/storage boundary | `backfill-legacy-credential-materialization`, or fold into the accepted credential migration. | Blocked: current materialization is plaintext or base64, fixed-temp, non-transactional, whole-vault replacement and does not make every accepted provider mapping reachable. It cannot establish BYOC isolation. |
+| Daemon identity metadata | `backfill-daemon-host-pool-contracts`. | Proposal-only after distributed-execution and universe owners settle identity and host-pool authority. |
+| Daemon runtime lease/cancellation/GC | `backfill-local-daemon-lease-queue-contracts`. | Proposal-only after the host-pool contract; local receipts are not signed leases or proof of owner-daemon authority. |
+| External-effect adapters | `backfill-external-effect-adapters`, layered under canonical `external-effect-receipts`. | Proposal-safe now; clean verification and canonical sync wait for repair of one stale `workflow-wiki-write-back:*` assertion and review against `build-forward-platform-capabilities`. Exclude future deterministic keys, caps/holds, reconciliation, proxy trust, and batch atomicity. |
+| Child-Branch execution | `backfill-graph-child-run-contracts`. | Proposal-safe with read coordination against distributed execution; current child-run receipts are local execution evidence, not marketplace or remote-host authority. |
+| OKF export | `backfill-okf-export-projection`. | Planning/proposal-safe; canonical sync waits for the brain OKF owner. Export is a path-filtered projection, not ACL enforcement or a canonical/write-through store. |
+| Live MCP metadata and status identity | Split into `backfill-live-mcp-catalog-metadata` and `backfill-status-response-variants`. | Catalog waits for connector-manifest and legacy-tool retirement. Status variants wait for identity/reset because current early, configured, and full responses differ. |
+| Provider retry semantics | Absorb into R2-1b as `reconcile-provider-call-retry-and-receipts`. | Same `tinyassets/providers/call.py` write edge. Current behavior retries only `AllProvidersExhaustedError`, at most three router calls; it does not prove BYOC or maintainer-quota isolation. |
+| Goal aliases | `reconcile-goal-compatibility-aliases`. | Wait for `retire-legacy-live-mcp-tools`; aliases currently route through the legacy Python `goals` wrapper and must not be advertised as public canonical tools. |
+| Universe switching | `backfill-universe-switch-scope`. | Planning/proposal-safe; sync waits for universe creation, identity/reset, and PR #1484. Authenticated switch is currently an acknowledgment, not session persistence. |
+| Uptime controllers | `backfill-uptime-edge-canaries` for DNS + LLM binding; absorb release behavior into `release-reconcile-event-trigger`; correct disk behavior in `fix-disk-pressure-controller-sequencing` before backfill. | DNS/LLM proposal is safe and must preserve stable concurrency groups, `cancel-in-progress: false`, and bounded timeouts. The disk service currently stops before rotation/autoprune when pressure makes `disk_watch.py` exit 1; comments/tests must not be canonized as working sequencing. When promoted, the corrective Files claim must include its change directory, `deploy/tinyassets-disk-watch.service`, and focused sequencing tests, plus timer/scripts only if edited. |
+| Wiki mutation semantics | `backfill-wiki-mutation-and-maintenance-contracts` for delete, consolidate, lint, project sync, and cosign. | Wait for PR #1550, then re-ground sequentially with `harden-canonical-absolute-guarantees` as a `wiki-commons` sync-order dependency. Current operations include best-effort/non-atomic I/O and heuristic validation; cosign is not CAS, locking, or reputation proof. |
+
+Focused research evidence: provider retry/Goal aliases 46 passed; DNS/LLM/disk workflow and unit suite 103 passed; wiki 169 passed; effect adapters 89 passed with one stale rename assertion. None of these residual contracts establishes a compute exchange, price oracle, training procurement, model-host bidding, settlement/escrow, BYOC ownership, maintainer-quota isolation, organization authority, regulated-industry compliance, Zapier parity, or DEX/AMM economics.
 
 ## Completion evidence required
 
