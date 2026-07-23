@@ -1046,3 +1046,13 @@ Notes:
 - Related implications: release reconcile; `get_status.release_state`; P0 image-pull recovery; DR evidence
 - Idea feed refs: none
 - Ship/abandon: land one reviewed OpenSpec/TDD repair; do not claim live rollout until workflow evidence exists
+
+## 2026-07-23 - ready deploy-rollback-receipt-truth
+
+- Provider: codex-gpt5-desktop-rollback
+- Branch: fix/deploy-rollback-receipt-truth
+- Lane state: OpenSpec archived; repository implementation independently approved; PR-ready
+- Worktree: C:\Users\Jonathan\Projects\wf-deploy-rollback-receipt
+- STATUS/Issue/PR: implementation row retired; P1 live-failure-exercise watch retained; PR pending
+- Verification: 240 focused checks; pinned actionlint 1.7.7; strict OpenSpec 42/42; three independent approvals
+- Ship/abandon: merge through PR; do not claim operational proof until both production-safe failure exercises pass

@@ -57,3 +57,11 @@ What surprised me: the four-commit branch collapsed to one substantive OpenSpec 
 Pattern worth capturing: a planning-only PR should carry durable contract artifacts but no live spec-claim row. Runtime truth stays as a dated concern until a separate implementation lane produces evidence.
 
 One thing I would do differently: compare the branch against current canonical capability owners before replaying coordination commits, because that makes it obvious which conflicts should resolve entirely to current main.
+
+## 2026-07-23 — terminal deploy/rollback truth
+
+What surprised me: structural workflow tests and actionlint both passed while an old rollback tail still mutated the image after terminal publication. Independent semantic review then found several cross-layer tuples that were individually valid-looking but jointly contradictory.
+
+Pattern worth capturing: deployment truth needs one final-state invariant across shell outputs, the pure classifier, durable receipts, job exit status, and incident wording. Every dangerous path needs an executable cross-layer regression, not only syntax or token-order assertions.
+
+One thing I would do differently: read the entire rendered step body immediately after the first green structural run, then derive tests from each post-publication mutation and each boundary-crossing tuple before asking for review.

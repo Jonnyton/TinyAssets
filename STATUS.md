@@ -4,7 +4,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
-- **[P1 filed:2026-07-23 verified:2026-07-23]** Deploy rollback/receipt integrity remains out of spec.
+- **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P0 filed:2026-07-22 verified:2026-07-23]** Fresh hosts omit disk-watch and do not converge watchdog/backup/prune timers.
 - **[P1 filed:2026-07-22 verified:2026-07-23]** Runtime rejects authorized `operator_request`; dispatcher enables only `host_request`. #1628 is spec-only.
@@ -23,7 +23,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Publish terminal deploy/rollback truth** — every post-mutation terminal path records attempted/active digest and honest rollback outcome; failure issue text is conditional | .github/workflows/deploy-prod.yml; scripts/deploy_terminal_receipt.py; tests/test_deploy_terminal_receipt.py; tests/test_deploy_prod_workflow.py; openspec/changes/publish-terminal-deploy-rollback-receipt/; openspec/specs/uptime-and-alarms/spec.md; STATUS.md; .agents/worktrees.md; REFLECTION.md | #1652 landed; DR-drill canonical-spec lane waits; prospective file check clear 2026-07-23 | claimed:codex-gpt5-desktop-rollback ACTIVE 2026-07-23 |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Backfill remaining credential-vault shipped contracts** — canonical owner landed via #1607; alias/first-record selection remains; re-check fixed-temp truth after #1606 disposition | openspec/changes/backfill-credential-vault-shipped-contracts/ | fail-closed provider overlay releases `openspec/specs/credential-vault/spec.md`; #1606 or declared successor settles replacement semantics/disposition | pending |
