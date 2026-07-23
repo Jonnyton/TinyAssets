@@ -11,8 +11,8 @@
   fail-loud, diagnostic, advisory, and post-deploy gate contracts; PR #1633
   reconciles the shipped generic hyperparameter evaluator without importing
   its incompatible future science-domain target; the
-  `codex/backfill-graph-run-coordination` branch then corrects the missed
-  run-evidence-receipt and teammate-mailbox contracts
+  `codex/backfill-graph-run-coordination` branch (PR #1634) then corrects the
+  missed run-evidence-receipt and teammate-mailbox contracts
 - **Code/spec baseline:** `origin/main` at `a8b907e5` plus the reviewed
   `codex/backfill-graph-run-coordination` changes, including
   archived changes `2026-07-23-backfill-independent-shipped-contracts` and
