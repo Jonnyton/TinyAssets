@@ -104,6 +104,9 @@ proof that platform secrets are no longer co-resident with executed work.
 3. Obtain independent requirement-to-source and whole-diff review.
 4. Sync only this delta into the new canonical `distributed-execution` base,
    update the coverage audit, validate the full tree, and archive the change.
+5. Record that the active distributed-execution owner must reclassify its
+   proposal from introducing a new spec to extending the canonical base; do not
+   edit its collision-owned files in this backfill lane.
 
 There is no runtime rollout or rollback. Reverting the documentation commit is
 the rollback if a clause is later shown to misdescribe current behavior.

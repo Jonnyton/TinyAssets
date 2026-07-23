@@ -805,3 +805,18 @@ Notes:
 - Related implications: PR #1485 landed code; PR #1475 and active distributed-execution remain read-only future owners
 - Idea feed refs: none
 - Ship/abandon: sync/archive after strict validation, focused tests, and independent review
+
+## 2026-07-22 - retire sandbox-runner-spec-backfill
+
+- Provider: codex-gpt56-spec
+- Branch: codex/sandbox-runner-spec-backfill
+- Lane state: Review-ready; claim retired in landing diff
+- Worktree: C:\Users\Jonathan\Projects\wf-sandbox-runner-spec-backfill
+- STATUS/Issue/PR: PR #1629; temporary backfill claim removed after canonical sync/archive
+- PLAN refs: Daemon Platform; distributed-execution active change
+- Purpose: canonicalize the landed fail-closed `runner/v1` seam without claiming a backend or production confinement
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-sandbox-runner-spec-backfill\_PURPOSE.md
+- Memory refs: `openspec/changes/archive/2026-07-23-backfill-per-job-sandbox-runner-seam/reviews/2026-07-23-independent-review.md`
+- Related implications: active distributed-execution owner must reclassify its proposal as extending the new canonical base
+- Idea feed refs: none
+- Ship/abandon: reviewed and archived; retain worktree until PR #1629 lands

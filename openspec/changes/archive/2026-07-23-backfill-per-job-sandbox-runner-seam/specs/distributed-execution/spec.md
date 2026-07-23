@@ -17,9 +17,11 @@ The supported capability/action pairs SHALL be:
 `source_exec` → `source_exec`; `repo_read` → `list, read`; `repo_exec` →
 `list, read, exec`; and `coding` → `list, read, write, exec`. The result status
 vocabulary SHALL be exactly `succeeded`, `failed`, and `cancelled`.
-The non-payload request fields are carried through without runtime type,
+The `job_id`, `idempotency_key`, `owner_scope`, `workspace_ref`, and
+`credential_grant_ref` fields are carried through without runtime type,
 nonempty, or JSON validation; their dataclass annotations are not an
-authentication or shape check.
+authentication or shape check. The capability is instead dereferenced through
+the enum and immutable action mapping.
 
 #### Scenario: Capability determines the wire action list
 
@@ -92,9 +94,10 @@ rather than rejected or retained.
 The built-in `UnavailableSandboxBackend` SHALL report no supported capability,
 `ready=false`, `isolation_enforced=false`,
 `platform_secrets_absent=false`, and `self_test_passed=false`, and SHALL refuse
-dispatch. As built, the repository supplies no real isolation backend and no
-production execution path invokes `SandboxRunner`. The seam therefore SHALL
-NOT be represented as current OS confinement or as removal of platform-secret
+dispatch. As built, the repository supplies no OS-isolating implementation of
+the `SandboxBackend` protocol that is usable by `SandboxRunner`, and no
+production execution path invokes the runner. The seam therefore SHALL NOT be
+represented as current OS confinement or as removal of platform-secret
 co-residency.
 
 The seam also does not authenticate or resolve its opaque references, enforce
