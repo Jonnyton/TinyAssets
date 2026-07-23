@@ -2,7 +2,7 @@
 
 The full-coverage audit landed by PR #1616 proved the forward direction of these four canonical capabilities, but its reverse-direction pass found shipped behavior that no canonical OpenSpec requirement materially owns. Strict validation can therefore pass while contributors still redesign or remove live contracts unknowingly.
 
-This first backfill wave takes the coordination-edge-free subset. It records current behavior only and leaves the thirteen contracts that overlap active credential, distributed-execution, OKF, connector, universe, Goal, wiki, uptime, or external-effect work to a dependent wave.
+This first backfill wave takes the coordination-edge-free subset. It records current behavior only and decomposes the thirteen contracts that overlap active credential, distributed-execution, OKF, connector, universe, Goal, wiki, uptime, or external-effect work into the exact staged successors in the audit map.
 
 ## What Changes
 
@@ -28,7 +28,7 @@ None.
 
 ## Impact
 
-- **Behavior:** No runtime behavior changes. These deltas describe the code at `origin/main` `2190f65d`.
+- **Behavior:** No runtime behavior changes. These deltas describe the code at `origin/main` `8cab31d8`.
 - **Canonical specs:** No direct edit in this proposal. Approved deltas sync into four existing capabilities when the change lands.
-- **Verification debt:** `tests/test_desktop.py::TestPyprojectEntryPoints::test_has_gui_scripts` still expects the retired `workflow` GUI command; the source, current naming boundary, and package metadata use `tinyassets`. This lane records the stale test but does not touch the broadly claimed `tests/` tree.
+- **Verification debt:** `tests/test_desktop.py::TestPyprojectEntryPoints::test_has_gui_scripts` still expects the retired `workflow` GUI command; the source, current naming boundary, and package metadata use `tinyassets`. This proposal lane does not touch the broadly claimed `tests/` tree, but canonical sync is blocked until the exact test-only repair lands and passes.
 - **Excluded work:** No packaged one-click installer, alternate ASP solver, persistent domain registry, provider/credential change, external-effect guarantee, or future platform target is introduced.

@@ -30,7 +30,7 @@ The repository rule is as-built canonical OpenSpec. This change therefore record
 
 ### 1. Backfill in dependency waves
 
-Wave 1 owns only the four coordination-edge-free capabilities. The remaining thirteen groups stay in `backfill-shipped-behavior-coverage-wave2` and retain their active-change dependencies. This avoids a nominally documentation-only proposal racing the semantics of changes that are still being built.
+Wave 1 owns only the four coordination-edge-free capabilities. The remaining thirteen groups retain their active-change dependencies and are decomposed into the exact named successors in the audit map; only `backfill-uptime-edge-canaries` and `backfill-community-patch-loop-run-reuse` are promoted as literal STATUS successors now. This avoids a nominally documentation-only proposal racing the semantics of changes that are still being built or inventing a monolithic Wave 2 owner.
 
 ### 2. Add requirements instead of rewriting already-grounded ones
 
@@ -47,7 +47,7 @@ The forward audit classified every existing requirement in these four capabiliti
 
 ### 4. Treat a stale test as verification debt, not behavioral truth
 
-`pyproject.toml` and PLAN's naming boundary establish `tinyassets` as the current GUI command. A stale test still requires `workflow`. The delta follows source and design truth, records that contradiction, and defers the test-only repair because another provider currently claims `tests/` broadly.
+`pyproject.toml` and PLAN's naming boundary establish `tinyassets` as the current GUI command. A stale test still requires `workflow`. The delta follows source and design truth and records that contradiction. The exact test-only repair is a blocking landing prerequisite: it must gain a literal claim after the broader `tests/` boundary clears, land, and pass before canonical sync.
 
 ### 5. Sync only after independent review
 
@@ -61,7 +61,7 @@ The proposal validates as an isolated delta first. Canonical specs remain untouc
 
 ## Migration Plan
 
-No data or runtime migration exists. After approval, sync the four additive deltas into `openspec/specs/`, run strict validation, archive the change, and delete the landed STATUS row in the same lane.
+No data or runtime migration exists. After approval and the passing GUI test-only repair, sync the four additive deltas into `openspec/specs/`, run strict validation, archive the change, and delete the landed STATUS row in the same lane.
 
 ## Open Questions
 

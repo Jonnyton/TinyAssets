@@ -2,7 +2,7 @@
 
 - [x] 1.1 Confirm the four gaps against the PR #1616 full-coverage audit and current canonical headings.
 - [x] 1.2 Inspect the owning source and focused tests; record contradictions and current limitations.
-- [x] 1.3 Split the remaining thirteen groups into a dependent STATUS successor rather than broadening this claim.
+- [x] 1.3 Decompose the remaining thirteen groups into exact staged successors; promote only the two proposal-safe literal STATUS rows.
 
 ## 2. Draft additive deltas
 
@@ -27,6 +27,7 @@
 
 ## 5. Landing lifecycle
 
-- [ ] 5.1 After approval, sync all four deltas into canonical specs and strict-validate the synced tree.
-- [ ] 5.2 Archive the change and retire the Wave 1 STATUS row in the same landing lane.
-- [ ] 5.3 Re-run the full-coverage audit and promote the next safe subset of the remaining thirteen groups.
+- [ ] 5.1 After the broader `tests/` claim clears, promote and land the exact test-only `tests/test_desktop.py` GUI-entrypoint repair; require the focused assertion to pass.
+- [ ] 5.2 After approval and 5.1, sync all four deltas into canonical specs and strict-validate the synced tree.
+- [ ] 5.3 Archive the change and retire the Wave 1 STATUS row in the same landing lane.
+- [ ] 5.4 Re-run the full-coverage audit and promote the next safe staged successor.

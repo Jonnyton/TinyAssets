@@ -62,5 +62,5 @@ Freshness: 2026-07-22 PT, Windows, Python 3.14.3, worktree `wf-openspec-backfill
 - `python -m pytest -q tests/test_worktree_status.py tests/test_provider_context_feed.py`: 38 passed, 1 failed. The failure is the already-audited Windows CRLF assertion at `tests/test_worktree_status.py:356`; actual UTF-8 output is correct and differs only by `\r\n` versus the test's `\n` expectation.
 - Direct assertions passed for the exact `tinyassets` GUI entry, cumulative/empty incremental ASP results, Branch-slug sorting/deduplication, episodic-coordinate tuple normalization/replacement, and absent-domain resolution.
 - JSON parse/shape smokes passed for claim checking, worktree status, provider context, and cross-provider drift. Human versus JSON selection semantics were also covered by the focused coordination tests above.
-- `git diff --check`: passed; `STATUS.md` is 58 lines.
+- `git diff --check`: passed; `STATUS.md` is 59 lines.
 - The Windows-forbidden layer-2 uptime canary was not run. No public or runtime behavior changed, so rendered chatbot and production-use proofs do not apply to this proposal-only lane.

@@ -25,6 +25,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | **Backfill shipped contracts Wave 1 (draft PR #1618)** — constraint evaluation, desktop host, coordination diagnostics, domain plugins; current behavior only | openspec/changes/backfill-shipped-behavior-coverage/; docs/audits/2026-07-22-shipped-behavior-backfill-map.md | #1616 (landed) | host-review |
 | **Backfill uptime edge canaries** — DNS and LLM-binding controllers only | openspec/changes/backfill-uptime-edge-canaries/ | Wave 1 | pending |
 | **Backfill community patch-loop run reuse** — auto-ship health, packet extraction, completed-run reuse | openspec/changes/backfill-community-patch-loop-run-reuse/ | Wave 1 | pending |
+| **Repair stale desktop GUI entrypoint assertion** — require `tinyassets`, not retired `workflow` | tests/test_desktop.py | Wave 1 approval; broader tests claims clear | pending |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote hyperparameter-importance evaluator into OpenSpec** | openspec/changes/hyperparameter-importance-evaluator/ | science-domain lane | pending |
 | **Resolve target-spec PLAN conflicts** — store, private data, primitives, privacy guidance | PLAN.md | full-coverage audit; host selects coherent positions | host-decision |
