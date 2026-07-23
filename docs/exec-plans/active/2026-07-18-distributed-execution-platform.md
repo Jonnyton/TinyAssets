@@ -1,5 +1,7 @@
 # TinyAssets Distributed Patch-Loop Execution Platform
 
+> **Liveness verified:2026-07-22 — ACTIVE: `openspec/changes/distributed-execution` has 9 unchecked tasks; PRs #1505 and #1493 both OPEN. Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 **Status:** Design specification / pre-implementation execution plan
 **Review gate:** Fable-5 opposite-family review, then lead approval
 **Target sequence:** B2 BYO daemon live test first; B3 market selection second

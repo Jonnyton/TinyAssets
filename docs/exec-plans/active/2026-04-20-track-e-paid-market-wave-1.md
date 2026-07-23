@@ -1,5 +1,7 @@
 # Track E Wave 1 — Paid-Market Flow (First-Draft Economy Primitive)
 
+> **Liveness verified:2026-07-22 — ACTIVE: `request_inbox` is implemented in no `.py` file; STATUS carries an in-flight Wave 2 row. Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 **Date:** 2026-04-20
 **Author:** navigator
 **Status:** Dispatch-ready exec plan. Consumes Track A schema (commit `98055aa`) and pairs with Track D Wave 1 host_pool client (commit `72e86a2`).

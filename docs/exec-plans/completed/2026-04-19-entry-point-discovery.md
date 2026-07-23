@@ -1,5 +1,7 @@
 # Domain Discovery via `importlib.metadata` Entry Points — Execution Plan
 
+> **Retired 2026-07-22: LANDED — `tinyassets/discovery.py:55` uses `importlib.metadata.entry_points`; R8 alias gate satisfied (`_rename_compat` deleted). Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 **Date:** 2026-04-19
 **Author:** navigator
 **Status:** Pre-staged plan — not implementation. Sequenced as R10 in `docs/exec-plans/completed/2026-04-19-refactor-dispatch-sequence.md`. Closes the residual exec-plan ask from codex's `docs/design-notes/2026-04-19-modularity-audit.md` §4 #2 and the navigator's spaghetti-audit hotspot #6.

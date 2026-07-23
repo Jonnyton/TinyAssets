@@ -11,6 +11,8 @@ target_task: STATUS Work table #24 — Arc C (env-var deprecation alias deletion
 gates_on: Arc B satisfied by 0cbdea9/c967272/1ae48ef/b049f0d; code/test execution remains sequenced behind #18 per STATUS.md.
 ---
 
+> **Retired 2026-07-22: LANDED — no bare `UNIVERSE_SERVER_BASE`/`WIKI_PATH` reader survives repo-wide (deletion, not a prefix rename); STATUS row #24 already removed. Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 # Arc C (env-var deprecation alias deletion) — pre-flight scope
 
 Read-only scope for deleting two legacy env-var aliases in `tinyassets/storage/__init__.py`:

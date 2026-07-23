@@ -1,5 +1,7 @@
 # Author → Daemon Rename — End-State Spec
 
+> **Retired 2026-07-22: LANDED — `_rename_compat.py`, `domains/fantasy_author/`, `fantasy_author/` all absent; completed by `2026-06-27-tinyassets-hard-rename.md`. Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 **Date:** 2026-04-19 (refined post host's Foundation-vs-Feature clarification)
 **Author:** navigator
 **Status:** Re-scope of `docs/exec-plans/completed/2026-04-19-author-to-daemon-rename-status.md` §5 (A1-D2 sequence) per host's **"Foundation End-State vs Feature Iteration"** standing rule (CLAUDE_LEAD_OPS.md, `557b051` refined).

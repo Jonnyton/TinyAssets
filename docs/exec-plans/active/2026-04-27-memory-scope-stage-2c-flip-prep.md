@@ -13,6 +13,8 @@ relates-to:
 audience: dev (executor), navigator (observer), lead (gate)
 ---
 
+> **Liveness verified:2026-07-22 — ACTIVE: STATUS.md still carries the `Memory-scope Stage 2c flag` row (`monitoring`). Triage: `docs/audits/2026-07-22-exec-plan-liveness-triage.md`.**
+
 # Memory-scope Stage 2c flip-readiness checklist
 
 ## 0. Status + 30d watch math
