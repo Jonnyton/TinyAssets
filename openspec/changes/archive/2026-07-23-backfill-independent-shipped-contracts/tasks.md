@@ -16,4 +16,4 @@
 
 ## 4. Publication
 
-- [ ] 4.1 Remove the completed STATUS claim, publish through a GitHub PR, and confirm merge checks pass
+- [x] 4.1 Remove the completed STATUS claim, publish through a GitHub PR, and confirm merge checks pass
