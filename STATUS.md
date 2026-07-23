@@ -44,6 +44,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
+| STATUS.md contention: 14 writers not 23 (substring artifact); only #1550 blocked by it. Pick A do-nothing or B status_claim.py helper | docs/audits/2026-07-22-status-md-write-contention.md | #1523 | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
