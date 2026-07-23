@@ -36,10 +36,10 @@ owned and no material target residue remains.
 
 | Disposition | Files |
 |---|---:|
-| CANONICAL | 11 |
+| CANONICAL | 12 |
 | ACTIVE | 0 |
-| CLAIMED | 29 |
-| HISTORY | 12 |
+| CLAIMED | 27 |
+| HISTORY | 13 |
 | **Total** | **52** |
 
 ## File-by-file matrix
@@ -116,9 +116,10 @@ provider promotes one literal directory after collision and review checks.
 | `backfill-local-daemon-lease-queue-contracts` | Terminal queue GC and still-callable legacy recovery alongside local lease/cancellation behavior. | Host-pool and distributed-execution authority review; local receipts are not signed remote leases. |
 | `reconcile-primitive-contract-targets` | CLAIM/SEAL, joins, cancellation/suspension, terminal events, completion tokens, and forever-tests. | Host PLAN decision; explicitly adopt, map to existing primitives, or retire each target before creating behavior. |
 
-No legacy file itself is an ACTIVE owner. The 13 HISTORY files are explicitly
-not current targets; their ideas may be revived only through the normal
-OpenSpec proposal gate.
+No file's surviving material is exclusively owned by active OpenSpec changes,
+so the ACTIVE count is zero. The 13 HISTORY files are explicitly not current
+targets; their ideas may be revived only through the normal OpenSpec proposal
+gate.
 
 ## Verification
 
