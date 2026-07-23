@@ -1,8 +1,8 @@
 # Legacy specification disposition
 
 - **Date:** 2026-07-22
-- **Baseline:** PR #1619 merge on `origin/main` at
-  `2b6188bff0e6c680731e778f085af383a9468f71`
+- **Baseline:** PR #1620 merge on `origin/main` at `8cab31d8`, plus archived
+  change `2026-07-23-backfill-independent-shipped-contracts`
 - **Scope:** all 52 Markdown files under `docs/specs/`, including the index
 - **Authority rule:** `openspec/specs/` is as-built behavioral truth,
   `openspec/changes/` is in-flight target truth, and PLAN.md owns architecture.
@@ -27,10 +27,10 @@
 
 | Disposition | Files |
 |---|---:|
-| CANONICAL | 14 |
+| CANONICAL | 16 |
 | ACTIVE | 0 |
-| CLAIMED | 23 |
-| HISTORY | 15 |
+| CLAIMED | 20 |
+| HISTORY | 16 |
 | **Total** | **52** |
 
 ## File-by-file matrix
@@ -38,7 +38,7 @@
 | Legacy file | Disposition | Current owner or reason |
 |---|---|---|
 | [`2026-04-10-investigation-findings.md`](../specs/2026-04-10-investigation-findings.md) | HISTORY | Explicit historical incident/evaluator findings; source/test history, not a live contract. |
-| [`2026-04-18-daemon-host-tray-changes.md`](../specs/2026-04-18-daemon-host-tray-changes.md) | CLAIMED | Shipped source-tray subset belongs to `desktop-host-runtime`; exact entrypoint/tunnel behavior is in the 17-group backfill lane and one-click cross-OS packaging is in the full-platform target lane. |
+| [`2026-04-18-daemon-host-tray-changes.md`](../specs/2026-04-18-daemon-host-tray-changes.md) | CLAIMED | Shipped entrypoint/tunnel behavior is now canonical in `desktop-host-runtime`; the surviving one-click cross-OS packaging target remains in the full-platform target lane. |
 | [`2026-04-18-export-sync-cross-repo.md`](../specs/2026-04-18-export-sync-cross-repo.md) | CLAIMED | Export/portability target is incomplete and canonical-store direction is a recorded PLAN host decision; owned by the full-platform target lane after that decision. |
 | [`2026-04-18-full-platform-schema-sketch.md`](../specs/2026-04-18-full-platform-schema-sketch.md) | CLAIMED | Postgres/RLS/private-data prescriptions conflict with current PLAN tensions; collaborative control-plane target stays in the host-decision plus full-platform target lanes. |
 | [`2026-04-18-load-test-harness-plan.md`](../specs/2026-04-18-load-test-harness-plan.md) | CLAIMED | This is target proof infrastructure, not shipped behavior; the full-platform target lane must preserve the Forever Rule concurrency/load gate. |
@@ -62,12 +62,12 @@
 | [`2026-05-02-session-trace-minimal-schema.md`](../specs/2026-05-02-session-trace-minimal-schema.md) | CANONICAL | `knowledge-retrieval-and-memory` owns the `session_trace_summary` kind, generic lifecycle, visibility tags, retrieval, and limitations; its detailed metadata shape remains guidance. |
 | [`2026-05-03-dual-key-auto-ship-acceptance.md`](../specs/2026-05-03-dual-key-auto-ship-acceptance.md) | HISTORY | Superseded governance proposal; current dry-run/PR-open boundaries are canonical in `community-patch-loop`, and no dual-key contract is current. |
 | [`2026-05-04-loop-autonomy-roadmap.md`](../specs/2026-05-04-loop-autonomy-roadmap.md) | HISTORY | Superseded roadmap for the retired cheat-loop direction; current as-built loop boundaries are in `community-patch-loop`. |
-| [`2026-05-27-authority-resolver-contract-v1.md`](../specs/2026-05-27-authority-resolver-contract-v1.md) | CLAIMED | Shipped machine-readable resolution contract fits the `development-coordination-runtime` portion of the 17-group backfill lane; no canonical requirement currently owns its exact taxonomy/payload. |
+| [`2026-05-27-authority-resolver-contract-v1.md`](../specs/2026-05-27-authority-resolver-contract-v1.md) | CANONICAL | `development-coordination-runtime` now owns the shipped schema, taxonomy, validation, evidence, and deterministic resolution outcomes. |
 | [`2026-06-10-brain-v2-research-implications.md`](../specs/2026-06-10-brain-v2-research-implications.md) | HISTORY | Research provenance. Current shipped memory is canonical and `brain-okf-canonical-store` owns the unbuilt OKF migration. |
 | [`2026-06-10-primitive-basis-audit.md`](../specs/2026-06-10-primitive-basis-audit.md) | HISTORY | Design/audit evidence; PLAN owns the architectural vocabulary and OpenSpec owns behavior. |
 | [`2026-06-10-tiny-first-principles-spec.md`](../specs/2026-06-10-tiny-first-principles-spec.md) | CLAIMED | Cross-cutting source mixes shipped, active, conflicted, and uncovered targets. Surviving pieces are split across canonical specs, active Brain/forward changes, the PLAN host-decision lane, and the full-platform target lane. |
 | [`2026-07-15-riscv-fpga-vertical-proof.md`](../specs/2026-07-15-riscv-fpga-vertical-proof.md) | HISTORY | Explicitly paused first-device candidate with no implementation authority; general hardware outcomes remain active in `build-forward-platform-capabilities`, but this exact RISC-V proof is not current. |
-| [`auto-ship-rollback-v0.md`](../specs/auto-ship-rollback-v0.md) | CLAIMED | Shipped `auto_ship_health`/rollback-recommendation behavior is explicitly assigned to the 17-group canonical backfill lane. |
+| [`auto-ship-rollback-v0.md`](../specs/auto-ship-rollback-v0.md) | HISTORY | The proposed rollback primitive never shipped and the cheat loop was retired 2026-06-25; surviving read-only `auto_ship_health`/recommendation behavior is canonical in `community-patch-loop`. |
 | [`community_branches_phase2.md`](../specs/community_branches_phase2.md) | CANONICAL | Surviving graph/state substrate is in `graph-execution-substrate`; obsolete fat-tool names are bounded by `live-mcp-connector-surface`. |
 | [`community_branches_phase3.md`](../specs/community_branches_phase3.md) | CANONICAL | Shipped graph runner, validation, state, checkpoints, and terminal outcomes are in `graph-execution-substrate`. |
 | [`community_branches_phase4.md`](../specs/community_branches_phase4.md) | CANONICAL | Shipped iteration/evaluation substance is split across `graph-execution-substrate`, `evaluation-runtime-and-scenarios`, and `evaluation-outcomes-and-attribution`. |
@@ -85,7 +85,7 @@
 | [`phase_h_preflight.md`](../specs/phase_h_preflight.md) | HISTORY | Explicit historical/superseded preflight; current tray/status behavior is canonical. |
 | [`phase7_github_as_catalog.md`](../specs/phase7_github_as_catalog.md) | CLAIMED | Historical implementation plan still represents one side of the unresolved Postgres-versus-GitHub canonical-store decision; the existing PLAN host-decision lane owns its disposition. |
 | [`runtime-fiction-memory-graph.md`](../specs/runtime-fiction-memory-graph.md) | CLAIMED | Promoted fiction-domain target with active planning evidence but no OpenSpec owner; a new STATUS successor now owns conversion to an active change. |
-| [`scene-packet.md`](../specs/scene-packet.md) | CLAIMED | The file's phase text is stale (current fantasy code emits packets); exact emitted episodic-coordinate shape belongs in the `domain-plugin-runtime` portion of the 17-group shipped backfill lane. |
+| [`scene-packet.md`](../specs/scene-packet.md) | CANONICAL | `domain-plugin-runtime` now owns the exact fantasy episodic-coordinate registration, ScenePacket shape, normalization, aliases, and emission path. |
 | [`taskproducer_phase_c.md`](../specs/taskproducer_phase_c.md) | CANONICAL | Producer protocols, domain registration, dispatch scoring, and generic work targets are in `daemon-runtime-and-dispatch` and `domain-plugin-runtime`. |
 | [`tier-1-routing-closure-draft.md`](../specs/tier-1-routing-closure-draft.md) | HISTORY | Draft narrative fragment, not a requirement set or active target owner. |
 | [`tool_return_shapes.md`](../specs/tool_return_shapes.md) | CANONICAL | The normative structured/text envelope is in `live-mcp-connector-surface`; remaining presentation advice is non-normative guidance. |
@@ -93,11 +93,10 @@
 ## Successor impact
 
 This disposition creates two bounded successors for promoted domain targets.
-The twenty-three CLAIMED files fold into live STATUS work:
+The twenty CLAIMED files fold into live STATUS work:
 
-- the 17-group shipped-contract backfill (`daemon-host-tray-changes`,
-  `auto-ship-rollback-v0`, `authority-resolver-contract-v1`, the
-  `resume_from` fixture pack, and `scene-packet` contribute concrete evidence);
+- the eight-group dependency-bound shipped-contract backfill (the two
+  `resume_from` documents contribute concrete graph-execution evidence);
 - the PLAN-conflict host decision (schema/store/private-data/public-surface
   portions of the April/June cross-cutting specs plus the Phase-7 store plan);
 - the eight-group full-platform target change (catalog/collaboration,
@@ -106,7 +105,7 @@ The twenty-three CLAIMED files fold into live STATUS work:
 - the two promoted-domain successors (runtime-fiction memory graph and
   hyperparameter-importance evaluator/fixtures).
 
-No legacy file itself is an ACTIVE owner. The 15 HISTORY files are explicitly
+No legacy file itself is an ACTIVE owner. The 16 HISTORY files are explicitly
 not current targets; their ideas may be revived only through the normal
 OpenSpec proposal gate.
 
