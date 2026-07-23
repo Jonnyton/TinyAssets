@@ -1,51 +1,46 @@
 #!/usr/bin/env bash
-# backup-restore.sh — restore tinyassets-data from a remote snapshot.
+# backup-restore.sh — stage and restore tinyassets-data from a full snapshot.
 #
-# Self-host migration Row J per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
-#
-# Pulls a named (or latest) archive from the rclone remote and restores
-# it into the tinyassets-data Docker named volume. Stops the daemon before
-# restore and restarts it after.
+# The script restores data only. It stops containers that mount the selected
+# volume, but it never starts services; the caller owns startup and health
+# verification after inspecting the retained pre-restore directory.
 #
 # Usage:
-#   sudo bash deploy/backup-restore.sh                     # latest archive
+#   sudo bash deploy/backup-restore.sh
 #   sudo bash deploy/backup-restore.sh --timestamp=2026-04-20T02-00-00Z
-#   sudo bash deploy/backup-restore.sh --list              # list available
-#   DRY_RUN=1 sudo bash deploy/backup-restore.sh           # show plan only
+#   sudo bash deploy/backup-restore.sh --list
+#   BACKUP_FILE=/tmp/tinyassets-data-....tar.gz sudo bash deploy/backup-restore.sh
+#   DRY_RUN=1 sudo bash deploy/backup-restore.sh
 #
-# Required env (same as backup.sh — from /etc/tinyassets/env):
-#   BACKUP_DEST   rclone destination URL (same value used by backup.sh)
+# Required for remote mode:
+#   BACKUP_DEST      rclone destination used by backup.sh
 #
-# Optional env:
+# Optional:
+#   BACKUP_FILE      absolute, readable non-symlink local full archive; bypasses rclone
 #   BACKUP_VOLUME    Docker volume name (default: tinyassets-data)
 #   DRY_RUN          "1" to skip all mutations
-#   BACKUP_LOG       log file path (default: /var/log/tinyassets-backup.log)
+#   BACKUP_LOG       log file (default: /var/log/tinyassets-backup.log)
 #
 # Exit codes:
-#   0  restore complete (or DRY_RUN=1). Data is extracted; caller is
-#      responsible for starting the daemon (normally `docker compose up
-#      -d daemon` or `systemctl restart tinyassets-daemon`). The restore
-#      script intentionally does NOT start services — the DR drill
-#      workflow's dedicated "Start compose on drill Droplet" step owns
-#      that with full retry + probe logic, and coupling them here caused
-#      the drill to abort early in the 2026-04-22 rehearsal.
-#   1  config missing or bad arguments.
-#   2  archive not found on remote.
-#   3  rclone download failed.
-#   4  tar extract failed.
-#   5  RESERVED — legacy code emitted this when the in-script daemon
-#      restart failed. No longer used; kept in the exit-code doc so
-#      older callers checking for 5 don't regress silently.
+#   0  restore complete (or DRY_RUN=1); caller starts services
+#   1  configuration, argument, path, or lock failure
+#   2  archive not found
+#   3  remote download failed
+#   4  archive validation, extraction, stop, or swap failed
+#   5  reserved legacy restart failure; never emitted
 
 set -euo pipefail
 
 BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
+BACKUP_FILE="${BACKUP_FILE:-}"
 DRY_RUN="${DRY_RUN:-0}"
 BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 
 TIMESTAMP_ARG=""
 LIST_MODE=0
+DOWNLOAD_DIR=""
+STAGE_DIR=""
+VOLUME_PARENT=""
 
 for arg in "$@"; do
     case "${arg}" in
@@ -61,44 +56,112 @@ log() {
     echo "${msg}" >> "${BACKUP_LOG}" 2>/dev/null || true
 }
 
-# ----- 1. validate env --------------------------------------------------
+cleanup() {
+    if [[ -n "${STAGE_DIR}" && -d "${STAGE_DIR}" ]]; then
+        case "${STAGE_DIR}" in
+            "${VOLUME_PARENT}"/.tinyassets-restore-stage.*)
+                rm -rf -- "${STAGE_DIR}"
+                ;;
+            *)
+                log "ERROR: refusing to clean unexpected stage path ${STAGE_DIR}"
+                ;;
+        esac
+    fi
+    if [[ -n "${DOWNLOAD_DIR}" && -d "${DOWNLOAD_DIR}" ]]; then
+        case "${DOWNLOAD_DIR}" in
+            "${TMPDIR:-/tmp}"/.tinyassets-restore-download.*)
+                rm -rf -- "${DOWNLOAD_DIR}"
+                ;;
+            *)
+                log "ERROR: refusing to clean unexpected download path ${DOWNLOAD_DIR}"
+                ;;
+        esac
+    fi
+}
+trap cleanup EXIT
 
-if [[ -z "${BACKUP_DEST:-}" ]]; then
-    log "ERROR: BACKUP_DEST is not set"
-    log "Set it in /etc/tinyassets/env, e.g.: BACKUP_DEST=s3://my-bucket/tinyassets-backups"
+if [[ ! "${BACKUP_VOLUME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    log "ERROR: invalid Docker volume name ${BACKUP_VOLUME}"
     exit 1
 fi
 
-# ----- 2. list mode -----------------------------------------------------
+is_full_archive_name() {
+    [[ "$1" =~ ^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$ ]]
+}
 
-if [[ "${LIST_MODE}" -eq 1 ]]; then
-    log "available archives at ${BACKUP_DEST}:"
-    rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
-        | sort -r \
-        | awk -F';' '{print "  " $2}'
-    exit 0
-fi
+# ----- 1. select local or remote source --------------------------------
 
-# ----- 3. resolve archive -----------------------------------------------
-
-if [[ -n "${TIMESTAMP_ARG}" ]]; then
-    TAR_NAME="tinyassets-data-${TIMESTAMP_ARG}.tar.gz"
-else
-    TAR_NAME="$(rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
-        | sort -r \
-        | awk -F';' 'NR==1 {print $2}')"
-    if [[ -z "${TAR_NAME}" ]]; then
-        log "ERROR: no archives found at ${BACKUP_DEST}/"
+if [[ -n "${BACKUP_FILE}" ]]; then
+    if [[ "${LIST_MODE}" -eq 1 || -n "${TIMESTAMP_ARG}" ]]; then
+        log "ERROR: BACKUP_FILE cannot be combined with --list or --timestamp"
+        exit 1
+    fi
+    if [[ "${BACKUP_FILE}" != /* || -L "${BACKUP_FILE}" \
+            || ! -f "${BACKUP_FILE}" || ! -r "${BACKUP_FILE}" ]]; then
+        log "ERROR: BACKUP_FILE must be an absolute readable non-symlink regular file"
         exit 2
     fi
-fi
+    TAR_PATH="${BACKUP_FILE}"
+    TAR_NAME="$(basename "${BACKUP_FILE}")"
+    log "target local archive: ${TAR_PATH}"
+else
+    if [[ -z "${BACKUP_DEST:-}" ]]; then
+        log "ERROR: BACKUP_DEST is not set"
+        log "Set it in /etc/tinyassets/env or set absolute BACKUP_FILE."
+        exit 1
+    fi
 
-log "target archive: ${TAR_NAME}"
+    if [[ "${LIST_MODE}" -eq 1 ]]; then
+        log "available full archives at ${BACKUP_DEST}:"
+        rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
+            | awk -F';' '$2 ~ /^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$/ {print "  " $2}' \
+            | sort -r
+        exit 0
+    fi
 
-# Verify it exists on remote.
-if ! rclone ls "${BACKUP_DEST}/${TAR_NAME}" > /dev/null 2>&1; then
-    log "ERROR: archive not found: ${BACKUP_DEST}/${TAR_NAME}"
-    exit 2
+    if [[ -n "${TIMESTAMP_ARG}" ]]; then
+        if [[ ! "${TIMESTAMP_ARG}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z$ ]]; then
+            log "ERROR: invalid UTC backup timestamp ${TIMESTAMP_ARG}"
+            exit 1
+        fi
+        TAR_NAME="tinyassets-data-${TIMESTAMP_ARG}.tar.gz"
+    else
+        TAR_NAME="$(
+            rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
+                | awk -F';' '$2 ~ /^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$/ {print $2}' \
+                | sort -r \
+                | awk 'NR==1 {print}'
+        )"
+        if [[ -z "${TAR_NAME}" ]]; then
+            log "ERROR: no full-volume archives found at ${BACKUP_DEST}/"
+            exit 2
+        fi
+    fi
+    if ! is_full_archive_name "${TAR_NAME}"; then
+        log "ERROR: unsafe or non-full archive name ${TAR_NAME}"
+        exit 2
+    fi
+
+    log "target remote archive: ${TAR_NAME}"
+    if ! rclone ls "${BACKUP_DEST}/${TAR_NAME}" > /dev/null 2>&1; then
+        log "ERROR: archive not found: ${BACKUP_DEST}/${TAR_NAME}"
+        exit 2
+    fi
+
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "DRY_RUN=1 — would restore ${TAR_NAME} into volume ${BACKUP_VOLUME}. No mutations."
+        exit 0
+    fi
+
+    DOWNLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/.tinyassets-restore-download.XXXXXX")"
+    TAR_PATH="${DOWNLOAD_DIR}/${TAR_NAME}"
+    log "downloading ${TAR_NAME}..."
+    if ! rclone copyto --contimeout 60s --timeout 900s \
+            "${BACKUP_DEST}/${TAR_NAME}" "${TAR_PATH}"; then
+        log "ERROR: rclone download failed"
+        exit 3
+    fi
+    log "  download OK ($(stat -c %s "${TAR_PATH}" 2>/dev/null || echo '?') bytes)"
 fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -106,62 +169,147 @@ if [[ "${DRY_RUN}" == "1" ]]; then
     exit 0
 fi
 
-# ----- 4. stop daemon ---------------------------------------------------
+# ----- 2. resolve and guard the Docker volume --------------------------
 
-log "stopping tinyassets-daemon..."
-docker stop tinyassets-daemon 2>/dev/null || log "  daemon was not running"
-
-# ----- 5. download archive ----------------------------------------------
-
-TAR_PATH="/tmp/${TAR_NAME}"
-log "downloading ${TAR_NAME}..."
-if ! rclone copyto --contimeout 60s --timeout 900s \
-        "${BACKUP_DEST}/${TAR_NAME}" "${TAR_PATH}"; then
-    log "ERROR: rclone download failed"
-    exit 3
+VOLUME_DIR="$(
+    docker volume inspect --format '{{ .Mountpoint }}' "${BACKUP_VOLUME}" \
+        2>/dev/null || true
+)"
+if [[ -z "${VOLUME_DIR}" ]]; then
+    log "  volume ${BACKUP_VOLUME} not found; creating..."
+    docker volume create "${BACKUP_VOLUME}" >/dev/null
+    VOLUME_DIR="$(
+        docker volume inspect --format '{{ .Mountpoint }}' "${BACKUP_VOLUME}"
+    )"
 fi
-log "  download OK ($(stat -c %s "${TAR_PATH}" 2>/dev/null || echo '?') bytes)"
-
-# ----- 6. locate / create volume ----------------------------------------
-
-VOLUME_DIR="/var/lib/docker/volumes/${BACKUP_VOLUME}/_data"
 if [[ ! -d "${VOLUME_DIR}" ]]; then
-    VOLUME_DIR="$(docker volume inspect --format '{{ .Mountpoint }}' "${BACKUP_VOLUME}" 2>/dev/null || echo '')"
-    if [[ -z "${VOLUME_DIR}" ]]; then
-        log "  volume ${BACKUP_VOLUME} not found; creating..."
-        docker volume create "${BACKUP_VOLUME}" >/dev/null
-        VOLUME_DIR="$(docker volume inspect --format '{{ .Mountpoint }}' "${BACKUP_VOLUME}")"
-    fi
+    log "ERROR: resolved volume directory does not exist: ${VOLUME_DIR}"
+    exit 1
+fi
+VOLUME_DIR="$(cd "${VOLUME_DIR}" && pwd -P)"
+VOLUME_PARENT="$(dirname "${VOLUME_DIR}")"
+if [[ "${VOLUME_DIR}" != /* || "$(basename "${VOLUME_DIR}")" != "_data" || "${VOLUME_PARENT}" == "/" ]]; then
+    log "ERROR: refusing unsafe volume path ${VOLUME_DIR}"
+    exit 1
 fi
 
-log "restoring into ${VOLUME_DIR}..."
+# The lock lives in the per-volume parent, so different Docker volumes do not
+# block each other while a second restore of this volume fails before mutation.
+exec 9> "${VOLUME_PARENT}/.tinyassets-restore.lock"
+if ! flock -n 9; then
+    log "ERROR: restore already in progress for ${VOLUME_DIR}"
+    exit 1
+fi
 
-# ----- 7. extract -------------------------------------------------------
+# ----- 3. validate and stage before stopping any container -------------
 
-rm -rf "${VOLUME_DIR:?}/"*
+if ! python3 - "${TAR_PATH}" <<'PY'
+import pathlib
+import sys
+import tarfile
 
-if ! tar -xzf "${TAR_PATH}" -C "$(dirname "${VOLUME_DIR}")" \
-        --strip-components=1 "$(basename "${VOLUME_DIR}")"; then
-    log "ERROR: tar extract failed"
-    rm -f "${TAR_PATH}"
+archive = sys.argv[1]
+try:
+    with tarfile.open(archive, "r:gz") as tf:
+        members = tf.getmembers()
+except (OSError, tarfile.TarError) as exc:
+    print(f"archive unreadable: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+if not members:
+    print("archive is empty", file=sys.stderr)
+    raise SystemExit(1)
+
+for member in members:
+    path = pathlib.PurePosixPath(member.name)
+    parts = path.parts
+    if path.is_absolute() or not parts or parts[0] != "_data":
+        print(f"unsafe archive root: {member.name!r}", file=sys.stderr)
+        raise SystemExit(1)
+    if any(part in ("", ".", "..") for part in parts):
+        print(f"unsafe archive path: {member.name!r}", file=sys.stderr)
+        raise SystemExit(1)
+    if len(parts) == 1 and not member.isdir():
+        print(f"archive root is not a directory: {member.name!r}", file=sys.stderr)
+        raise SystemExit(1)
+    # Stripping the `_data` root changes link coordinates, so reject links
+    # entirely rather than trying to prove their post-strip target safe.
+    if member.issym() or member.islnk():
+        print(f"archive links are not restorable safely: {member.name!r}", file=sys.stderr)
+        raise SystemExit(1)
+    if not (member.isfile() or member.isdir()):
+        print(f"unsupported archive member type: {member.name!r}", file=sys.stderr)
+        raise SystemExit(1)
+PY
+then
+    log "ERROR: archive member validation failed"
+    exit 4
+fi
+if ! tar -tzf "${TAR_PATH}" > /dev/null; then
+    log "ERROR: archive integrity check failed"
     exit 4
 fi
 
-rm -f "${TAR_PATH}"
-log "  extract OK"
+STAGE_DIR="$(mktemp -d "${VOLUME_PARENT}/.tinyassets-restore-stage.XXXXXX")"
+if ! tar -xzf "${TAR_PATH}" -C "${STAGE_DIR}" --strip-components=1; then
+    log "ERROR: archive staging extract failed"
+    exit 4
+fi
+if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
+        || ! chmod --reference="${VOLUME_DIR}" "${STAGE_DIR}"; then
+    log "ERROR: failed to preserve volume-root ownership or mode on staging"
+    exit 4
+fi
+log "  archive validated and staged at ${STAGE_DIR}"
 
-# ----- 8. done — caller starts the daemon -------------------------------
-#
-# Restore's job is to put the data in the right place. Starting the
-# daemon is the caller's responsibility. This separation is load-bearing
-# for the DR drill: the drill's dedicated "Start compose on drill
-# Droplet" step owns start + retry + probe. Coupling them caused the
-# 2026-04-22 drill to abort at step 13 because cloudflared couldn't
-# initialize without a real CLOUDFLARE_TUNNEL_TOKEN — the daemon itself
-# was perfectly capable of starting.
+# ----- 4. stop every consumer, then swap with automatic rollback -------
 
-log "restore complete. Data extracted into ${VOLUME_DIR}."
-log "NEXT — start the daemon via one of:"
-log "  docker compose -f /opt/tinyassets/deploy/compose.yml up -d daemon"
-log "  systemctl restart tinyassets-daemon"
+if ! CONTAINER_OUTPUT="$(
+    docker ps -q --filter "volume=${BACKUP_VOLUME}"
+)"; then
+    log "ERROR: failed to enumerate running volume consumers"
+    exit 4
+fi
+containers=()
+if [[ -n "${CONTAINER_OUTPUT}" ]]; then
+    mapfile -t containers <<< "${CONTAINER_OUTPUT}"
+fi
+if [[ "${#containers[@]}" -gt 0 ]]; then
+    log "stopping ${#containers[@]} container(s) mounting ${BACKUP_VOLUME}..."
+    if ! docker stop "${containers[@]}"; then
+        log "ERROR: failed to stop all running volume consumers"
+        exit 4
+    fi
+fi
+if ! CONTAINER_OUTPUT="$(
+    docker ps -q --filter "volume=${BACKUP_VOLUME}"
+)"; then
+    log "ERROR: failed to verify stopped volume consumers"
+    exit 4
+fi
+if [[ -n "${CONTAINER_OUTPUT}" ]]; then
+    log "ERROR: running volume consumers remain after stop"
+    exit 4
+fi
+
+OLD_DIR="$(mktemp -d "${VOLUME_PARENT}/.tinyassets-restore-old.XXXXXX")"
+rmdir -- "${OLD_DIR}"
+if ! mv -- "${VOLUME_DIR}" "${OLD_DIR}"; then
+    log "ERROR: failed to retain current volume at ${OLD_DIR}"
+    exit 4
+fi
+if ! mv -- "${STAGE_DIR}" "${VOLUME_DIR}"; then
+    log "ERROR: failed to install staged volume; rolling original back"
+    if ! mv -- "${OLD_DIR}" "${VOLUME_DIR}"; then
+        log "CRITICAL: failed to restore original volume from ${OLD_DIR}"
+    fi
+    exit 4
+fi
+STAGE_DIR=""
+
+# ----- 5. done — caller verifies, starts, and later removes old data ----
+
+log "restore complete. Data installed at ${VOLUME_DIR}."
+log "pre-restore volume retained at ${OLD_DIR} until caller health verification."
+log "NEXT — start only the intended service, probe it, then remove ${OLD_DIR}."
 exit 0

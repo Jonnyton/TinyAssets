@@ -4,9 +4,9 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
-- **[P1 filed:2026-07-23]** Uptime review residuals: rollback scope, DR evidence, and installer convergence drift.
+- **[P1 filed:2026-07-23 verified:2026-07-23]** Deploy rollback/receipt + DR archive-input/state-proof/red-evidence remain out of spec.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
-- **[P1 filed:2026-07-22]** Disk-watch exits 1 on pressure; systemd can stop before rotation/auto-prune despite “independent” claim.
+- **[P0 filed:2026-07-22 verified:2026-07-23]** Fresh hosts omit disk-watch and do not converge watchdog/backup/prune timers.
 - **[P1 filed:2026-07-22]** Priority-authorized submit emits unknown `operator_request`; dispatcher only enables `host_request`, stranding work.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
@@ -23,6 +23,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **Harden full-volume disaster restore** — extract into `_data`, validate before mutation, preserve prior volume on corrupt archives, and prove concurrent isolation | deploy/backup-restore.sh; tests/test_backup_script.py; tests/test_backup_restore_drill_invariants.py; docs/ops/backup-restore-runbook.md; deploy/RESTORE.md; openspec/changes/harden-volume-restore/; openspec/specs/uptime-and-alarms/spec.md | fresh 2026-07-23 DR audit; Fire DR drill #3 only after merge | claimed:codex-gpt56-sol ACTIVE 2026-07-23 |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Backfill remaining credential-vault shipped contracts** — canonical owner landed via #1607; alias/first-record selection remains; re-check fixed-temp truth after #1606 disposition | openspec/changes/backfill-credential-vault-shipped-contracts/ | fail-closed provider overlay releases `openspec/specs/credential-vault/spec.md`; #1606 or declared successor settles replacement semantics/disposition | pending |
