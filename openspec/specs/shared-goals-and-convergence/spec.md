@@ -94,16 +94,40 @@ The system SHALL use a user-buildable selector Branch, rather than a fixed platf
 - **WHEN** a caller requests a `goals action=leaderboard` metric, the outcome-gate leaderboard, or archive consultation
 - **THEN** the system uses that surface's deterministic or fixed server-side ranking and does not dispatch the Goal's selector Branch
 
-### Requirement: Goal writes are authorization-scoped and appended to the global contribution ledger
-Every `goals` invocation SHALL pass through the `require_action_scope("goals", action)` gate before dispatch. Write actions (`propose`, `update`, `bind`, `set_canonical`, `define_protocol`, `set_selector`) SHALL require an authenticated goals scope, while read actions SHALL remain available to anonymous callers; a rejected write SHALL return a structured error flagged `auth_scope_required`. On a successful write action, the surface SHALL append a `goals.<action>` entry to the global contribution ledger for public attribution.
+### Requirement: Recognized Goal actions use the configured authorization mode and contribution attribution is best-effort
+Before dispatching any recognized `goals` action, the surface SHALL call
+`require_action_scope("goals", canonical_action)`. Unknown actions SHALL return
+the available-action error before authorization or handler dispatch. When
+neither `is_auth_required()` nor `resolve_always_writes()` is true (dev/no-auth
+mode), the gate SHALL perform no scope enforcement. In resolve-always mode,
+including the optional and WorkOS providers, anonymous read-effect actions
+SHALL pass, while write actions SHALL require an authenticated identity holding
+the fine-grained OAuth scope or coarse effect grant. In legacy full-auth mode every recognized action
+SHALL require an authenticated identity and the exact named scope. After a
+successful write result, the surface SHALL attempt to append a
+`goals.<action>` contribution entry. If that append raises, the surface SHALL
+log a warning and return the original successful Goal result rather than
+rolling back or failing the mutation.
 
-#### Scenario: Anonymous write is rejected with an auth flag
-- **WHEN** an unauthenticated caller invokes a goals write action such as `propose`
-- **THEN** the call is rejected with a structured error carrying `auth_scope_required: true`
+#### Scenario: unknown action returns before authorization
+- **WHEN** a caller supplies an unrecognized Goal action
+- **THEN** the surface returns the available-action error without authorization or handler dispatch
 
-#### Scenario: Successful write records a contribution-ledger entry
-- **WHEN** an authorized caller completes a goals write action (for example `propose` or `bind`)
-- **THEN** a `goals.<action>` entry is appended to the global contribution ledger identifying the target
+#### Scenario: recognized action follows the configured auth mode
+- **WHEN** a recognized Goal action reaches `require_action_scope`
+- **THEN** dev/no-auth mode performs no scope enforcement
+- **AND** resolve-always mode, including the optional and WorkOS providers, admits anonymous reads but requires an authenticated fine-grained scope or coarse effect grant for writes
+- **AND** legacy full-auth mode requires authentication and the exact named scope for reads and writes
+- **AND** an authorization rejection returns a structured error with `auth_scope_required: true`
+
+#### Scenario: successful write attempts contribution attribution
+- **WHEN** an authorized caller completes a Goal write action
+- **THEN** the surface attempts to append a `goals.<action>` contribution entry identifying the target
+
+#### Scenario: attribution failure does not fail the Goal mutation
+- **WHEN** the Goal handler succeeds but the contribution-ledger append raises
+- **THEN** a warning is logged
+- **AND** the original successful Goal result is returned without rollback
 
 ### Requirement: Per-universe participation in shared Goals is opt-in via subscriptions
 A universe SHALL participate in a Goal's cross-universe work pool only by explicitly subscribing to that Goal slug; participation SHALL NOT be implicit. A fresh-install universe with no subscriptions file SHALL behave as subscribed to exactly `["maintenance"]`. The goal-pool producer SHALL be flag-gated (`TINYASSETS_GOAL_POOL`); when enabled it SHALL read `goal_pool/<goal_slug>/*.yaml` only for the universe's subscribed goals, turning each pool YAML into a Branch task whose `inputs` are constrained to a flat dictionary of primitive values so per-universe state cannot cross the isolation boundary.

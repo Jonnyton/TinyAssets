@@ -12,12 +12,15 @@ This matrix grounds every requirement independently. Source references identify 
 
 | Classification | Requirements | Scenarios |
 |---|---:|---:|
-| BUILT | 53 | 141 |
-| PARTIAL | 1 | 1 |
+| BUILT | 54 | 142 |
+| PARTIAL | 0 | 0 |
 | CONTRADICTED | 0 | 0 |
 | **Total** | **54** | **142** |
 
-The sole mismatch is in `daemon-runtime-and-dispatch`: delayed two-step discard is built, but the requirement and its first scenario claim a closed lifecycle set while the generic record boundary deliberately persists arbitrary lifecycle strings. The later requirement “Generic work targets persist records and expose guarded helper transitions” states that permissiveness correctly.
+The work-target lifecycle correction now distinguishes the seven conventional
+helper values from the deliberately permissive generic record boundary while
+retaining delayed discard, archival-copy, and recoverability behavior. All
+Batch A requirements and scenarios are built as bounded.
 
 ## `community-patch-loop` — 6 requirements, 15 scenarios
 
@@ -75,13 +78,16 @@ The last credential requirement is `BUILT` only because its unsafe partial-overl
 | The container healthcheck asserts liveness, not mere process existence | BUILT | 3 BUILT | `tinyassets/cloud_worker_healthcheck.py:57`, `tinyassets/cloud_worker_healthcheck.py:115` | `tests/test_loop_telemetry.py:199`, `tests/test_loop_telemetry.py:205`, `tests/test_loop_telemetry.py:231`, `tests/test_loop_telemetry.py:247` |
 | Host-singleton and fleet idle-cycle coordination fail safe | BUILT | 4 BUILT | `tinyassets/singleton_lock.py:133`, `tinyassets/idle_cycle.py:217` | `tests/test_singleton_lock.py:48`, `tests/test_singleton_lock.py:114`, `tests/test_idle_cycle_single_flight.py:66`, `tests/test_idle_cycle_single_flight.py:175` |
 | Scheduled and event-triggered invocation is persisted and restart-recoverable | BUILT | 3 BUILT | `tinyassets/scheduler.py:217`, `tinyassets/scheduler.py:407`, `tinyassets/scheduler.py:489` | `tests/test_scheduler.py:126`, `tests/test_scheduler.py:160`, `tests/test_scheduler.py:270`, `tests/test_scheduler.py:392` |
-| The work-target registry has an explicit lifecycle | PARTIAL | 2 total: 1 BUILT, 1 PARTIAL | arbitrary-string round-trip/creation at `tinyassets/work_targets.py:145-184,513-531`; delayed discard at `:627-675` | `tests/test_work_targets.py:98-118`; direct construction/inspection confirms `WorkTarget.from_dict` and `create_target` accept arbitrary lifecycle strings |
+| The work-target registry has an explicit lifecycle | BUILT | 2 BUILT | arbitrary-string round-trip/creation at `tinyassets/work_targets.py:42-48,145-184`; delayed discard/archive/recoverability at `:506-542,627-675` | `tests/test_work_targets.py:98-118`; direct construction/inspection confirms `WorkTarget.from_dict` and `create_target` accept arbitrary lifecycle strings |
 | Soul guidance is a bounded advisory input to deterministic dispatch | BUILT | 5 BUILT | `tinyassets/dispatcher.py:215`, `tinyassets/dispatcher.py:363` | `tests/test_dispatcher_queue.py:229`, `tests/test_dispatcher_queue.py:261`, `tests/test_dispatcher_queue.py:307` |
 | Generic work targets persist records and expose guarded helper transitions | BUILT | 6 BUILT | `tinyassets/work_targets.py:145`, `tinyassets/work_targets.py:294`, `tinyassets/work_targets.py:506`, `tinyassets/work_targets.py:983` | `tests/test_work_targets.py:51`, `tests/test_work_targets.py:72`, `tests/test_work_targets.py:98`, `tests/test_work_targets.py:223` |
 | Fantasy foundation review gates authorial work on current hard priorities | BUILT | 5 BUILT | `domains/fantasy_daemon/phases/foundation_priority_review.py:18` | `tests/test_work_targets.py:120` |
 | Fantasy authorial review ranks producer candidates and hands one target to execution | BUILT | 8 BUILT | `domains/fantasy_daemon/phases/authorial_priority_review.py:19`, `domains/fantasy_daemon/phases/dispatch_execution.py:19`, `domains/fantasy_daemon/producers.py:101` | `tests/test_task_producers.py:90`, `tests/test_task_producers.py:156`, `tests/test_task_producers.py:184`, `tests/test_work_targets.py:144`, `tests/test_work_targets.py:176` |
 
-The lifecycle mismatch is wording, not missing delayed-discard behavior. The correction should say that built-in helpers use conventional lifecycle values while the generic persistence boundary intentionally does not validate a closed enum, and should retain the delayed mark/finalize/recoverability scenario.
+The lifecycle limitation is now explicit: built-in helpers use conventional
+values while the generic persistence boundary intentionally does not validate a
+closed enum. The delayed mark/finalize/archive/recoverability contract remains
+canonical.
 
 ## `desktop-host-runtime` — 6 requirements, 14 scenarios
 

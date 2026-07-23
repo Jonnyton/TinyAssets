@@ -3,7 +3,7 @@
 - **Baseline:** `origin/main` at `7c23c881502460f65cfd5ee81c27042d87743f24` (`coord: fold back forward spec reconciliation (#1615)`)
 - **Date:** 2026-07-22
 - **Environment:** Codex desktop, Windows PowerShell, repository worktree `wf-openspec-knowledge-memory-reconcile`
-- **Method:** static, read-only comparison of canonical specs against implementation and checked-in tests. No tests were executed in this pass.
+- **Method:** static, read-only comparison of canonical specs against implementation and checked-in tests, followed by an independently reviewed exact as-built correction. The correction lane's focused existing-behavior suite passed 217 tests with 7 warnings.
 - **Evidence granularity:** non-BUILT rows use decisive line ranges; BUILT rows cite representative exact `file:line` or range anchors for owning implementation boundaries. These pointers do not pretend one range exhaustively proves a distributed contract.
 - **Windows safety:** `tests/test_uptime_canary_layer2.py` was not run, per the explicit Windows prohibition.
 - **Classification:** `BUILT` means the complete canonical requirement and every listed scenario are represented by shipped code; `PARTIAL` means the named guarantee has a material unimplemented failure/race path; `CONTRADICTED` means shipped behavior directly opposes the canonical statement.
@@ -12,15 +12,15 @@
 
 | Capability | Requirements | Scenarios | Classification |
 |---|---:|---:|---|
-| `paid-market-economy` | 17 | 36 | 15 BUILT, 1 PARTIAL, 1 CONTRADICTED; scenarios 35 BUILT, 1 CONTRADICTED |
+| `paid-market-economy` | 17 | 38 | 17 BUILT; scenarios 38 BUILT |
 | `provider-routing` | 11 | 39 | 11 BUILT; scenarios 39 BUILT |
 | `public-website-surface` | 6 | 12 | 6 BUILT; scenarios 12 BUILT |
-| `shared-goals-and-convergence` | 15 | 60 | 14 BUILT, 1 PARTIAL; scenarios 59 BUILT, 1 PARTIAL |
-| `universe-lifecycle-and-soul` | 7 | 20 | 6 BUILT, 1 PARTIAL; scenarios 19 BUILT, 1 PARTIAL |
-| `universe-personification-and-relay` | 7 | 18 | 6 BUILT, 1 PARTIAL; scenarios 16 BUILT, 2 PARTIAL |
+| `shared-goals-and-convergence` | 15 | 62 | 15 BUILT; scenarios 62 BUILT |
+| `universe-lifecycle-and-soul` | 7 | 22 | 7 BUILT; scenarios 22 BUILT |
+| `universe-personification-and-relay` | 7 | 20 | 7 BUILT; scenarios 20 BUILT |
 | `uptime-and-alarms` | 6 | 18 | 6 BUILT; scenarios 18 BUILT |
-| `wiki-commons` | 8 | 24 | 7 BUILT, 1 CONTRADICTED; scenarios 23 BUILT, 1 CONTRADICTED |
-| **Total** | **77** | **227** | **71 BUILT, 4 PARTIAL, 2 CONTRADICTED; scenarios 221 BUILT, 4 PARTIAL, 2 CONTRADICTED** |
+| `wiki-commons` | 8 | 25 | 8 BUILT; scenarios 25 BUILT |
+| **Total** | **77** | **236** | **77 BUILT; scenarios 236 BUILT** |
 
 ## Requirement-by-requirement matrix
 
@@ -32,10 +32,10 @@ Scenario classifications are listed in canonical order.
 |---|---|---|---|---|
 | The money path is flag-gated off and pre-launch | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/api/market.py:454-462`; `tinyassets/producers/node_bid.py:39-40`; `tinyassets/dispatcher.py:110-111` | `tests/test_payments_escrow_mcp.py:63`; `tests/test_node_bid.py:604,679` |
 | Money actions operate only on the authenticated actor | BUILT | 2: BUILT / BUILT | `tinyassets/api/market.py:416-449` | `tests/test_payments_escrow_mcp.py:411-520` |
-| All money amounts are integer MicroTokens, never floats | **CONTRADICTED** | 2: BUILT / **CONTRADICTED** | `tinyassets/payments/identifiers.py:27-30`; `tinyassets/api/market.py:474,597,688`; conflicting float paths at `tinyassets/bid/node_bid.py:46` and `tinyassets/bid/settlements.py:120` | Negative coverage: `tests/test_payments_escrow_mcp.py:81`; contradictory float assertions: `tests/test_node_bid.py:830,862`; no JSON-float rejection test |
+| Payment-core conversions produce integers while legacy bids permit non-integer scalars | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/payments/identifiers.py:27-30`; transport conversion at `tinyassets/api/market.py:474,597,688`; scalar-preserving bids at `tinyassets/bid/node_bid.py:46`; float settlement serialization at `tinyassets/bid/settlements.py:120` | `tests/test_payments_escrow_mcp.py:81`; fractional bid assertions at `tests/test_node_bid.py:830,862`; focused correction suite passed |
 | Paid-market computation library is pure and I/O-free | BUILT | 2: BUILT / BUILT | representative pure boundaries at `tinyassets/paid_market/index.py:223-290`, `tinyassets/paid_market/forwards.py:167-252`, and `tinyassets/paid_market/ledger.py:60-108` | Conservation/property coverage across `tests/test_paid_market_core.py:66-1498` |
 | Node bids are file-backed with atomic single-claim | BUILT | 2: BUILT / BUILT | `tinyassets/bid/node_bid.py:42-52,256` | `tests/test_node_bid.py:187,225,964`; process-race coverage `tests/test_node_bid_claim_stress.py:122-331` |
-| Settlement records are immutable and write-once | **PARTIAL** | 2: BUILT / BUILT | Sequential guard at `tinyassets/bid/settlements.py:101-106`, followed by non-exclusive `Path.write_text` at `:126-129`; concurrent writers can both pass the check | Sequential overwrite and invalid-status tests only: `tests/test_node_bid.py:883,908`; no concurrent settlement-writer test |
+| Settlement recording rejects pre-existing paths sequentially but is not race-atomic | BUILT | 3: BUILT / BUILT / BUILT | Sequential guard at `tinyassets/bid/settlements.py:101-106`, followed by non-exclusive `Path.write_text` at `:126-129`; concurrent writers can both pass the check | Sequential overwrite and invalid-status tests at `tests/test_node_bid.py:883,908`; race limitation is source-grounded, with no concurrent settlement-writer test |
 | Treasury take is conserved basis-point math with a read-only status surface | BUILT | 2: BUILT / BUILT | `tinyassets/treasury/distribution.py:89-104`; read-only connection and status assembly at `tinyassets/treasury/status.py:12-16,43-120` | `tests/test_treasury_distribution.py:177-205`; `tests/test_treasury_status.py:19,90` |
 | The pure spot oracle uses settled-trade windows and pair-capped weights | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/paid_market/index.py:223` | `tests/test_paid_market_core.py:107,195-240` |
 | Bucket and hosted-price helpers fail loud without performing transport | BUILT | 2: BUILT / BUILT | `tinyassets/paid_market/buckets.py:68-135`; deterministic conversion and payload parsing at `tinyassets/paid_market/ceiling.py:62-147` | `tests/test_paid_market_core.py:249-292,591-649` |
@@ -86,7 +86,7 @@ The website has no focused checked-in unit/acceptance suite for these six requir
 | A canonical branch version records the Goal's best-known version, author/host-only | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/api/market.py:2153-2247`; persistent canonical/history operations at `tinyassets/daemon_server.py:2683-2801` | `tests/test_goals_run_canonical.py:218-314` |
 | run_canonical executes against the canonical binding with optional leaderboard refresh | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/api/market.py:2339-2344,2360-2363` | `tests/test_goals_run_canonical.py:225-423` |
 | The Goal leaderboard is synthesized by a user-bound selector branch | BUILT | 5: BUILT / BUILT / BUILT / BUILT / BUILT | selector handler/table at `tinyassets/api/market.py:2364-2368` | `tests/test_goals_set_selector.py:77-315,464-515` |
-| Goal writes are authorization-scoped and appended to the global contribution ledger | **PARTIAL** | 2: BUILT / **PARTIAL** | successful write calls the ledger at `tinyassets/api/market.py:2424-2443`, but any ledger failure is swallowed and the write remains successful at `:2444-2446` | Happy-path/rejection only: `tests/test_goals_surface.py:639-675`; no forced-ledger-failure test |
+| Recognized Goal actions use the configured authorization mode and contribution attribution is best-effort | BUILT | 4: BUILT / BUILT / BUILT / BUILT | unknown-action boundary and dispatch at `tinyassets/api/market.py:2380-2446,2581-2604`; provider modes at `tinyassets/auth/provider.py:1112-1151`; authorization branches at `tinyassets/auth/middleware.py:368-413` | `tests/test_predeploy_auth_hardening.py:58-62`; happy-path/rejection at `tests/test_goals_surface.py:639-675`; append-failure behavior is source-grounded |
 | Per-universe participation in shared Goals is opt-in via subscriptions | BUILT | 2: BUILT / BUILT | fresh-install default and subscription operations at `tinyassets/subscriptions.py:34,88-95,122-158`; subscribed-only producer path at `tinyassets/producers/goal_pool.py:236-272,451-460` | `tests/test_goal_pool.py:657-736,978` |
 | Goal Branch protocols are ordered metadata, not an executor | BUILT | 5: BUILT / BUILT / BUILT / BUILT / BUILT | protocol handlers in `tinyassets/api/market.py:2358-2359` | `tests/test_goals_ladder_shape.py:140-214` |
 | Common-node discovery compares exact node identifiers | BUILT | 4: BUILT / BUILT / BUILT / BUILT | common-node handler at `tinyassets/api/market.py:2355` | `tests/test_goals_surface.py:475-521` |
@@ -104,7 +104,7 @@ The website has no focused checked-in unit/acceptance suite for these six requir
 | Universe identity is an opaque, time-sortable serial | BUILT | 2: BUILT / BUILT | `tinyassets/ids.py:20-33,44-62` | `tests/test_ids.py:18-39` |
 | Universe creation is atomic and self-serializing | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/api/universe.py:4697-4717,4808-4825` | generated-id coverage `tests/test_first_contact.py:247-254,623-633`; rollback is source-inspected, with no focused failure-injection test |
 | Creation seeds a blank, linked OKF soul bundle | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/api/universe.py:4720-4726`; `tinyassets/universe_bundle.py:364-407` | `tests/test_universe_bundle.py:45-199` |
-| Authenticated creation grants founder ownership and binds a home | **PARTIAL** | 3: **PARTIAL** / BUILT / BUILT | index registration is warning-only at `tinyassets/api/universe.py:4771-4779`; grant/home writes follow at `:4781-4803`; rollback removes only the directory at `:4808-4824` | Happy-path ownership at `tests/test_universe_write_boundary.py:148-169`; marker/home behavior at `tests/test_first_contact.py:504-633`; no registry-failure or post-grant rollback test |
+| Authenticated creation grants founder ownership and binds a home | BUILT | 5: BUILT / BUILT / BUILT / BUILT / BUILT | best-effort registration, founder writes, marker split, and fallible uncompensated rollback at `tinyassets/api/universe.py:4697-4825` | Happy-path ownership at `tests/test_universe_write_boundary.py:148-169`; marker/home behavior at `tests/test_first_contact.py:504-633`; failure limitations are source-grounded |
 | Governed soul edits are the sole learning-write path | BUILT | 4: BUILT / BUILT / BUILT / BUILT | `tinyassets/soul_edit.py:176-218` | `tests/test_soul_edit.py:42-192,363-394` |
 | Soul edits are serialized and compare-and-swap guarded | BUILT | 2: BUILT / BUILT | `tinyassets/soul_edit.py:153-218` | `tests/test_soul_edit.py:225-278` |
 | Clean-slate reset is the only lifecycle-end | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/reset.py:75-123` | `tests/test_reset_universes.py:54-117` |
@@ -118,7 +118,7 @@ The website has no focused checked-in unit/acceptance suite for these six requir
 | The chatbot is a thin relay; first-person contact is the default and the chatbot never speaks as the universe | BUILT | 2: BUILT / BUILT | `tinyassets/api/prompts.py:469-474`; `tinyassets/universe_server.py:926-927` | `tests/test_relay_ux_prompts.py:25`; `tests/test_persona.py:344-392` |
 | converse runs one first-person turn on the universe's assigned engine, grounded in its own bundle | BUILT | 4: BUILT / BUILT / BUILT / BUILT | `tinyassets/universe_intelligence.py:408-438`; sandbox-incapable provider refusal in provider implementation | `tests/test_universe_intelligence.py:33-87`; `tests/test_converse_handle.py:39-57` |
 | The engine turn is confined by a fail-closed sandbox | BUILT | 2: BUILT / BUILT | `tinyassets/universe_intelligence.py:96-109,432-437` | `tests/test_universe_intelligence.py:262-295` |
-| Learning is a separate fail-closed step over explicitly-taught facts, and persistence never breaks the reply | **PARTIAL** | 3: **PARTIAL** / **PARTIAL** / BUILT | grounding is an LLM prompt at `tinyassets/universe_intelligence.py:203-233`; returned JSON is trusted at `:258-275`; commit accepts non-empty proposed bodies/canon without checking them against the founder message at `:300-405`; only generic identity boilerplate is deterministically filtered at `:295-297,359-368`; reply preservation is built at `:439-444` | Existing tests provide pre-grounded proposals or boilerplate: `tests/test_universe_intelligence.py:102-137,300-327`; persistence-failure coverage at `:184`; no adversarial invented non-generic claim test |
+| Learning is a separate tolerant model-extracted step with field-specific filtering, and reply delivery survives failures | BUILT | 5: BUILT / BUILT / BUILT / BUILT / BUILT | tolerant parse at `tinyassets/universe_intelligence.py:237-275`; field filters, identity-only regex, governed-read narrowing, and per-item handling at `:295-405`; reply preservation at `:439-444` | `tests/test_universe_intelligence.py:102-184,300-327`; unsupported-output and governed-read limitations are source-grounded |
 | The MCP converse handle is founder-only and fail-closed | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/universe_server.py:916-960` | `tests/test_converse_handle.py:15-57` |
 
 ### `uptime-and-alarms`
@@ -143,16 +143,16 @@ The website has no focused checked-in unit/acceptance suite for these six requir
 | Compare-and-swap patch and supersede lifecycle | BUILT | 3: BUILT / BUILT / BUILT | `tinyassets/api/wiki.py:889-1005,1228-1326` | patch/supersede coverage in `tests/test_wiki_tools.py:351-417,638-680` |
 | Action surface, universe ACL, and scope gating | BUILT | 3: BUILT / BUILT / BUILT | action tables at `tinyassets/api/wiki.py:2319-2348`; universe root routing at `:2352` | `tests/test_wiki_tools.py:716-721,915-948`; ACL coverage in `tests/test_api_wiki.py` |
 | First-party canon writes bypass the MCP ACL gate; in-node access is read-only | BUILT | 3: BUILT / BUILT / BUILT | first-party canon writer at `tinyassets/api/wiki.py:2362-2430`; in-node read-only mapping at `tinyassets/graph_compiler.py:1387-1388`; publication effector at `tinyassets/effectors/wiki_write_back.py:274-481` | `tests/test_wiki_write_back_effector.py:54-187`; canon integration in `tests/test_universe_intelligence.py:206-251` |
-| Trigger receipts are append-only and recorded before enqueue | **CONTRADICTED** | 3: BUILT / **CONTRADICTED** / BUILT | one mutable row is declared at `tinyassets/wiki/trigger_receipts.py:115-130`; pending insert is correct at `:189-232`; terminal helpers perform unrestricted `UPDATE` operations with no `status='pending'` guard or affected-row check at `:235-330`; orphan detection exists at `:384-408` | Normal transitions/orphans only: `tests/test_wiki_trigger_receipts.py:62-127,212-239`; no terminal-to-terminal or concurrent-transition rejection test |
+| Trigger receipts use one mutable per-attempt row attempted before enqueue | BUILT | 4: BUILT / BUILT / BUILT / BUILT | fail-open pending insert/enqueue at `tinyassets/api/wiki.py:2154-2290`; mutable row and unrestricted updates at `tinyassets/wiki/trigger_receipts.py:115-330`; orphan detection at `:382-410` | Normal transitions/orphans at `tests/test_wiki_trigger_receipts.py:62-127,212-239`; receipt-failure/terminal-overwrite limitations are source-grounded |
 
-## Non-BUILT corrections
+## Reconciled limitations and hardening successors
 
-1. **Integer money — runtime fix or canonical narrowing required.** Add one strict transport parser that rejects JSON floats and booleans, migrate `NodeBid.bid` and settlement `bid_amount` to integer micros, and test `1.5` end to end. If legacy float bids are intentionally outside the integer money subsystem, narrow the canonical requirement to say so. The active `build-forward-platform-capabilities` transaction-transport change is the natural owner only if its scope is expanded explicitly.
-2. **Settlement write-once — runtime fix required.** Replace check-then-write with exclusive atomic file creation and add a two-writer race test. Canonical weakening would misdescribe the intended immutable audit record.
-3. **Goal contribution ledger — choose atomicity or canonicalize best effort.** Prefer failing/rolling back the Goal write when the contribution append fails. If availability-over-attribution is intentional, amend the requirement and add the exact warning-only failure scenario.
-4. **Founder creation registry — runtime fix required.** Make index registration mandatory and transact or compensate index, ACL, home, marker, and directory mutations. Use a new corrective lifecycle delta: the active `universe-creation` design explicitly excludes already-canonical birth/ACL behavior. Add registry-failure and post-grant/pre-home failure tests.
-5. **Learning grounding — runtime evidence check or canonical narrowing required.** Bind each extracted fact to founder-message evidence and reject unsupported claims before commit. Otherwise describe grounding as prompt-enforced/best-effort, not fail-closed. Add an adversarial extractor-output test containing plausible non-generic invented facts.
-6. **Wiki trigger receipts — runtime fix required.** For a single-terminal contract, update with `WHERE trigger_attempt_id=? AND status='pending'` and reject a zero row count. For literal append-only history, introduce event rows. Test terminal-to-terminal and simultaneous terminal transitions.
+The six former Batch C mismatches now state current behavior exactly and are
+BUILT as bounded. They are not the desired endpoint. The separate
+`harden-canonical-absolute-guarantees` lane owns strict integer parsing and bid
+migration, exclusive settlement creation, durable Goal attribution,
+transactional founder creation, source-grounded learning, and guarded
+single-terminal receipts, with the named adversarial/concurrency tests.
 
 ## Active-change overlap
 

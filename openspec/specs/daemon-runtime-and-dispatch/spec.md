@@ -123,15 +123,27 @@ Scheduled and event-triggered branch invocation (`tinyassets.scheduler`) SHALL p
 - **THEN** the registration is rejected for exceeding the limit and the removal is refused for lacking ownership
 
 ### Requirement: The work-target registry has an explicit lifecycle
-The durable work-target registry (`tinyassets.work_targets`) SHALL model each target with an explicit lifecycle state drawn from a fixed set — `active`, `paused`, `dormant`, `complete`, `superseded`, `marked_for_discard`, `discarded` — persisted in inspectable JSON in the universe directory, so the daemon schedules over durable targets rather than a transient task queue. Discard SHALL be a reversible two-step transition: `mark_target_for_discard` moves a target to `marked_for_discard` and records the review cycle, and `discard_target` moves it to `discarded` only after the configured review delay has elapsed, rather than an immediate deletion.
+Every durable `WorkTarget` record SHALL carry a `lifecycle` field.
+`WorkTarget.from_dict` SHALL coerce that field to a string; `create_target`
+SHALL accept the caller-supplied lifecycle without closed-enum validation. For
+string inputs, arbitrary values SHALL round-trip. The module publishes the
+conventional values `active`, `paused`, `dormant`, `complete`, `superseded`,
+`marked_for_discard`, and `discarded`; transition helpers use the values
+applicable to their operation. `mark_target_for_discard` SHALL set
+`marked_for_discard` and record the review cycle. `discard_target` SHALL leave
+the target marked until the configured review delay has elapsed, then set
+`discarded`, retain the registry row, write the archival JSON copy, and record
+the recoverability deadline.
 
 #### Scenario: a target carries an explicit lifecycle state
-- **WHEN** a work target is created and later paused, completed, or superseded
-- **THEN** its lifecycle field reflects the corresponding state from the fixed lifecycle set and is persisted to JSON
+- **WHEN** a target is created with the default lifecycle, a transition helper changes it, or generic construction/deserialization receives another string
+- **THEN** the supplied lifecycle string is persisted and round-trips
+- **AND** transition helpers use conventional named values, but the generic boundary does not enforce a closed enum
 
 #### Scenario: discard is a delayed two-step, not immediate deletion
 - **WHEN** a target is marked for discard and `discard_target` is called before the review delay has elapsed
-- **THEN** the target stays `marked_for_discard` and is only moved to `discarded` once the review delay has passed
+- **THEN** the target stays `marked_for_discard`
+- **AND** only after the delay does finalization set `discarded`, write the archival copy, and retain a recoverability deadline
 
 ### Requirement: Soul guidance is a bounded advisory input to deterministic dispatch
 The dispatcher SHALL apply soul guidance only after the ordinary pending-status, enabled-tier, required-LLM-type, and preferred-request-type filters, and SHALL use it only to reject work explicitly directed to another bound daemon or to add a non-negative capped affinity term to the existing deterministic queue score. `soul_guided_dispatch_read` MUST remain read-only: it derives affinity from token overlap with the active daemon's domain claims and soul plus the importance of at most three open mini-brain hints, but it neither claims nor mutates a task. This shipped path does not ask a model to choose among souls or candidates and does not persist a soul-choice receipt.
