@@ -206,4 +206,8 @@ for _rel in "${_required_data_files[@]}"; do
     fi
 done
 
+# A login shell can replace the image PATH before invoking this entrypoint.
+# Reassert the copied runtime venv so startup resolves the dependencies
+# installed under /opt/venv.
+export PATH="/opt/venv/bin:${PATH}"
 exec "$@"
