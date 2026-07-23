@@ -1,7 +1,8 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: The live server publishes four behavioral prompts with exact metadata
-The system SHALL register exactly the following prompt catalog on the live server:
+### Requirement: Remote Streamable-HTTP MCP Endpoint
+
+The platform SHALL expose a single remote MCP server over Streamable-HTTP transport (`tinyassets/universe_server.py`, built on FastMCP) that any MCP-compatible chatbot can connect to by URL with no local installation. The server SHALL register exactly the following prompt catalog so a connecting chatbot receives behavioral instructions on how to act as the user's control interface:
 
 | Prompt name | Title | Tags |
 |---|---|---|
@@ -12,6 +13,12 @@ The system SHALL register exactly the following prompt catalog on the live serve
 
 Each prompt SHALL return its registered behavioral guide and SHALL expose its function docstring as discoverability text.
 
+#### Scenario: Chatbot completes an MCP handshake and lists tools
+
+- **WHEN** an MCP client sends `initialize`, then `notifications/initialized`, then `tools/list` to the server
+- **THEN** the server responds with a valid MCP `serverInfo` + `protocolVersion` and returns a non-empty advertised tool list
+- **AND** the response is delivered as either JSON or an SSE `event: message` frame, both of which are valid Streamable-HTTP responses
+
 #### Scenario: Prompt listing returns the exact catalog
 - **WHEN** an MCP client lists prompts on the live server
 - **THEN** the response contains the four names, titles, and tag sets above with no additional registered prompt
@@ -19,6 +26,8 @@ Each prompt SHALL return its registered behavioral guide and SHALL expose its fu
 #### Scenario: Prompt invocation returns the owned guide
 - **WHEN** an MCP client invokes any catalogued prompt
 - **THEN** the server returns that prompt's registered control, first-contact, extension-authoring, or branch-design guide
+
+## ADDED Requirements
 
 ### Requirement: Registered tools publish exact discoverability and behavior metadata
 The system SHALL attach the following title, tag set, and four MCP behavior hints to every currently registered tool. In the hint columns, `T` means true and `F` means false, ordered as read-only, destructive, idempotent, and open-world:
@@ -48,4 +57,3 @@ These hints SHALL remain descriptive MCP metadata rather than authorization enfo
 #### Scenario: Behavior hints do not grant authority
 - **WHEN** a tool's metadata marks it non-destructive or open-world
 - **THEN** that metadata alone does not bypass the tool's write gate, authentication, ownership, or action-specific validation
-

@@ -7,12 +7,13 @@ the active credential, connector, identity/universe, or release changes.
 
 ## What Changes
 
-- Specify the current Claude OAuth/BYO-key projection and credential-file
-  replacement boundary.
+- Specify the current credential alias/secret-selection quirks and fixed
+  temporary-file replacement boundary.
 - Specify the shipped prompt catalog and metadata plus the exact
   early/config-error/full status response variants.
-- Specify authenticated request-scoped and anonymous host-global universe
-  switching.
+- Specify public universe-switch authorization, authenticated request scope,
+  and the directly invoked helper's otherwise-unreachable anonymous host
+  scope.
 - Specify the shipped DNS and LLM-binding canaries, release reconciler, and
   disk-pressure alert/rotation/auto-prune controller.
 - Preserve every observed limitation explicitly, including absent
@@ -29,14 +30,14 @@ None.
 
 ### Modified Capabilities
 
-- `credential-vault`: Add the current Claude credential projection and
-  temp-file replacement contract.
+- `credential-vault`: Add exact alias/first-record secret selection and the
+  fixed-temp-file replacement limitation not already owned canonically.
 - `live-mcp-connector-surface`: Add the shipped prompt catalog and
   tool/prompt metadata invariants.
 - `identity-auth-and-access-control`: Add the exact identity-bearing status
   response variants.
-- `universe-lifecycle-and-soul`: Add current authenticated versus anonymous
-  universe-switch scope.
+- `universe-lifecycle-and-soul`: Add the public switch gates and distinguish
+  reachable authenticated selection from the helper-only anonymous branch.
 - `uptime-and-alarms`: Add shipped DNS, LLM-binding, release reconciliation,
   and disk-pressure behavior.
 

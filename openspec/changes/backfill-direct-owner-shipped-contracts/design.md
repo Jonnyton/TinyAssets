@@ -9,7 +9,11 @@ those owners clear.
 The source review also found one important divergence between comment-level
 intent and executable behavior: the disk-watch unit calls its three steps
 “independent,” but `disk_watch.py` exits 1 on the pressure path and systemd is
-not configured to ignore that status. The as-built spec retains that stop seam.
+not configured to ignore that status. It also found that the DNS and
+LLM-binding alarm sinks test the prior workflow conclusion even though probe
+failures are tolerated with `continue-on-error`, so consecutive red outputs are
+not guaranteed to cross the issue threshold. The as-built spec retains both
+seams.
 
 ## Goals / Non-Goals
 
@@ -33,22 +37,28 @@ not configured to ignore that status. The as-built spec retains that stop seam.
 
 ## Decisions
 
-### Use separate ADDED requirements rather than editing active owners
+### Modify an existing owner or add only absent clauses
 
-Every heading in this change is unique relative to canonical and active
-changes. This avoids silently replacing an active MODIFIED block. Before sync,
-the change must be rebased and duplicate clauses consolidated if a dependency
-lands equivalent ownership.
+The prompt catalog modifies the complete existing Remote Streamable-HTTP MCP
+Endpoint requirement because that block already owns prompt availability. The
+credential delta adds only the exact alias-selection, first-record extraction,
+fixed-temporary-path, and missing-concurrency semantics absent from the active
+provider-overlay and canonical vault owners. Other headings remain unique.
+Before sync, the change must be rebased and duplicate clauses consolidated if a
+dependency lands equivalent ownership.
 
 Alternative considered: modify the current provider-auth, advertised-handle,
-status-identity, lifecycle, and uptime requirements immediately. Rejected
-because active changes already own several of those blocks.
+status-identity, lifecycle, and uptime requirements immediately. Rejected for
+the blocks with active owners because those changes already own their full
+replacement text.
 
 ### Treat code and workflow control flow as authority over comments
 
 Requirements follow executable branches, return codes, and workflow
 conditions. The disk-pressure requirement therefore states the stop-on-error
-seam even though the service comment says later steps are independent.
+seam even though the service comment says later steps are independent. The
+universe-switch requirement distinguishes the public authorization path from
+the low-level anonymous helper branch that public calls cannot reach.
 
 Alternative considered: spec the comments as intended behavior. Rejected
 because canonical specs are as-built truth.
@@ -62,7 +72,9 @@ hints are not treated as permission grants. Runtime gates remain authoritative.
 
 Each canonical owner must be re-read after its dependency lands. The uptime
 foldback task also requires explicit concurrency/load evidence or an explicit
-bounded limitation before archive, consistent with the Forever Rule.
+bounded limitation before archive, consistent with the Forever Rule. GitHub's
+same-group pending-run replacement remains an explicit limitation, and task
+3.4 stays unsatisfied until the required proof exists.
 
 ## Risks / Trade-offs
 
@@ -72,8 +84,9 @@ bounded limitation before archive, consistent with the Forever Rule.
   metadata changes must update their canonical owner through OpenSpec.
 - **Source-only workflow claims can exceed tests** → Keep scenarios bounded,
   run all focused structural/unit tests, and retain source anchors in review.
-- **The disk stop seam is an uptime defect** → Track it as a P1 STATUS concern;
-  do not hide it inside documentation.
+- **The disk stop seam and consecutive-red conclusion mismatch are uptime
+  defects** → Track both as P1 STATUS concerns; do not hide them inside
+  documentation.
 
 ## Migration Plan
 

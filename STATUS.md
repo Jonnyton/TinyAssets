@@ -4,6 +4,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
+- **[P1 filed:2026-07-22]** DNS/LLM two-red sinks read prior run conclusion, but probe failures are `continue-on-error`; threshold may never open.
 - **[P1 filed:2026-07-22]** Disk-watch exits 1 on pressure; systemd can stop before rotation/auto-prune despite “independent” claim.
 - **[P1 filed:2026-07-22]** Priority-authorized submit emits unknown `operator_request`; dispatcher only enables `host_request`, stranding work.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.

@@ -1,14 +1,14 @@
 ## 1. Draft As-Built Contracts
 
-- [x] 1.1 Draft unique requirement headings for credential projection/write replacement, live prompt/tool metadata, status identity variants, universe switching, and four uptime controllers
+- [x] 1.1 Draft requirement deltas for credential selection/write replacement, a full `MODIFIED` live-endpoint prompt owner plus tool metadata, status identity variants, universe switching, and four uptime controllers
 - [x] 1.2 Strictly validate the complete draft change without modifying canonical specs or runtime code
 
 ## 2. Verify Current Evidence
 
-- [x] 2.1 Run focused credential-vault, engine-assignment, and provider-env tests covering exact mapping, injection, replacement, and limitations — 20 passed
-- [x] 2.2 Run focused prompt/tool metadata, status-shape, and universe-switch tests covering every public/interface scenario — 97 passed; three stale assertions exposed the retired `workflow` tag and early-response `session_boundary` mismatch
+- [x] 2.1 Run focused credential-vault, engine-assignment, and provider-env tests for representative Anthropic/OpenAI injection and replacement paths; source-review the remaining exact aliases, `provider` fallback, base64, and empty-first-record edges — 20 passed
+- [x] 2.2 Run focused metadata, status-shape, and universe-switch tests for representative public/interface paths; source-review the exact four-prompt catalog, thirteen-tool table, config-error shape, early omission, and substring false-positive edges — 97 passed; three stale assertions exposed the retired `workflow` tag and early-response `session_boundary` mismatch
 - [x] 2.3 Run focused DNS, LLM-binding, release-reconcile, disk-watch, transcript-rotation, and auto-prune evidence without running `tests/test_uptime_canary_layer2.py` through Codex on Windows — 118 passed plus release structural proof; forbidden file not run
-- [ ] 2.4 Obtain independent requirement-to-source review and resolve every overclaim, omission, and active-delta collision
+- [x] 2.4 Obtain independent requirement-to-source review and resolve every overclaim, omission, and active-delta collision — both focused reviews approved after corrections
 
 ## 3. Clear Active Owners
 
