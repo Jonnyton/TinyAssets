@@ -278,7 +278,7 @@ _Last audited: 2026-05-19_
 - Soul-guided dispatch *read path* — what work is a daemon eligible to claim?
 - Treasury status *read path* — bounded budget + spend visibility.
 - Bounded autonomous spend guardrails — per-Goal / per-daemon / per-cycle caps.
-- Authority-condition policy (per `docs/design-notes/proposed/2026-05-19-external-write-authority-and-rewards.md`) — Brain conditions every external-write authority decision on past-decision memory.
+- Authority-condition policy (per `docs/design-notes/2026-05-19-external-write-authority-and-rewards.md`) — Brain conditions every external-write authority decision on past-decision memory.
 - Attribution graph snapshot at the moment a reward releases — authoritative for payout.
 
 **Out of scope:** Treasury *write path* (future Treasury Module); goal/gate ladder definitions (Goals & Gates); provider routing (Providers); evaluation logic (Evolution & Evaluation); MCP surface (API & MCP Interface).
