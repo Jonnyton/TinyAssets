@@ -748,6 +748,21 @@ Notes:
 - Idea feed refs: none
 - Ship/abandon: reviewed spec-only PR; implementation remains a later separately claimed lane
 
+## 2026-07-23 - create backfill-graph-run-coordination-contracts
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/backfill-graph-run-coordination
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination
+- STATUS/Issue/PR: Backfill graph-run coordination contracts
+- PLAN refs: Engine & Domains; API & MCP Interface; State & Artifacts
+- Purpose: backfill shipped run evidence receipts and installation/data-root-local teammate mailbox behavior missed by the full-coverage audit
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination\_PURPOSE.md
+- Memory refs: 2026-07-22 full-coverage audit and grounding batches; three focused Codex semantic reviews
+- Related implications: active distributed-execution remains read-only; full-coverage audit must stop claiming these two stores were canonical
+- Idea feed refs: none
+- Ship/abandon: ship reviewed spec-only backfill; runtime remains unchanged
+
 ## 2026-07-22 - remove test-identity-reset-spec
 
 - Provider: codex-gpt5-desktop-2
