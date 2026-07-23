@@ -82,7 +82,7 @@ The production host SHALL combine service restart policy with two installed watc
 
 ### Requirement: Class-Specific P0 Triage And Re-Probe
 
-When a `p0-outage` issue is opened, the P0 triage workflow SHALL collect a pre-restart diagnostic bundle, classify it with the priority-ordered `env_unreadable`, `tunnel_token`, `provider_exhaustion`, `disk_full`, `oom`, `image_pull_failure`, `watchdog_hotloop`, or `unknown` class, execute the class-specific bounded response, wait for startup where applicable, and re-probe the canonical MCP URL. Green SHALL close the outage as auto-recovered; persistent red SHALL add `needs-human` with diagnostics. Tunnel-token repair SHALL remain manual, and provider-exhaustion worker pause SHALL remain gated by `TINYASSETS_REVERT_AUTO_REPAIR` while paging regardless of that gate.
+When a `p0-outage` issue is opened, the P0 triage workflow SHALL collect a pre-restart diagnostic bundle, classify it with the priority-ordered `env_unreadable`, `tunnel_token`, `provider_exhaustion`, `disk_full`, `oom`, `image_pull_failure`, `watchdog_hotloop`, or `unknown` class, execute the class-specific bounded response, wait for startup where applicable, and re-probe the canonical MCP URL. A bounded class-specific repair, generic restart, or provider-exhaustion page failure SHALL remain visible but SHALL NOT prevent the canonical re-probe. Green SHALL close the outage only when that re-probe is green; persistent red SHALL add `needs-human` with diagnostics and fail the triage run visibly. Tunnel-token repair SHALL remain manual, and provider-exhaustion worker pause SHALL remain gated by `TINYASSETS_REVERT_AUTO_REPAIR` while the existing `scripts/pushover_page.py` CLI pages regardless of that gate. The workflow SHALL preserve issue-scoped concurrency with in-progress runs not cancelled.
 
 #### Scenario: Environment permission regression is repaired before restart
 
@@ -101,6 +101,18 @@ When a `p0-outage` issue is opened, the P0 triage workflow SHALL collect a pre-r
 - **THEN** automation opens distinct rotation work and pages rather than claiming an automatic token repair
 - **WHEN** diagnostics classify as `provider_exhaustion` while its auto-repair variable is not enabled
 - **THEN** automation pages in warn-only mode and does not stop the worker or create pause sentinels
+
+#### Scenario: Failed bounded repair still reaches the canonical decision
+
+- **WHEN** a class-specific repair or generic restart exits non-zero
+- **THEN** its failure remains visible and the workflow continues to canonical re-probe
+- **AND** only a green re-probe closes the issue while a red re-probe adds `needs-human` and fails the run visibly
+
+#### Scenario: Provider page failure stays visible but does not replace probe truth
+
+- **WHEN** the provider-exhaustion page command exits non-zero
+- **THEN** the page step is visibly failed while canonical re-probe still runs
+- **AND** only that re-probe determines auto-recovery or persistent-red escalation
 
 ### Requirement: Digest-Pinned Deploy Admission Rollback And Receipt
 
@@ -267,3 +279,13 @@ confinement.
 
 - **WHEN** production deployment reaches post-canary verification with or without a configured Codex auth bundle
 - **THEN** the selected branch invokes the verifier with timeout 20, required sandbox readiness, 12 total attempts, and a 10-second retry delay
+
+### Requirement: Executable Uptime Alarm Concurrency Proof
+
+The uptime control path SHALL preserve the global `uptime-canary` concurrency group with `cancel-in-progress: false` and SHALL have an executable proof that runs the exact alarm-sink GitHub-script against shared incident state. The proof SHALL model one running plus one replaceable pending run, execute serialized and coalesced schedules, and prove a single incident across red, unknown, later red, and green observations. It SHALL prove unknown makes no incident mutation, later red appends to the same incident, green closes it, and the actual paging decision sees the shared PAGED marker and produces no duplicate immediate page. The proof artifact SHALL state the command, environment, date, scheduler-model limitation, and result.
+
+#### Scenario: Coalesced uptime ticks preserve one incident and one immediate page
+
+- **WHEN** a red observation opens an incident and overlapping ticks are serialized or coalesced under the global concurrency group
+- **THEN** unknown performs no mutation, a later red appends to that same incident, and green closes it
+- **AND** the real paging decision treats the shared immediate-page marker as ineligible for another immediate page
