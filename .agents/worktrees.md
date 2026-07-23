@@ -881,3 +881,18 @@ Notes:
 - Related implications: credential-vault is the only remaining shipped-coverage residual; five target-owner groups remain
 - Idea feed refs: none
 - Ship/abandon: remove the physical worktree only after PR #1633 lands
+
+## 2026-07-23 - create plan-target-decisions
+
+- Provider: codex-gpt56-spec-4
+- Branch: codex/plan-target-decisions
+- Lane state: Active design-only lane
+- Worktree: C:\Users\Jonathan\Projects\wf-plan-target-decisions
+- STATUS/Issue/PR: prepare host decision packet for the PLAN conflicts blocking three full-platform target groups
+- PLAN refs: System Shape; Commons-first; Scoping Rule; Privacy; Open Tensions
+- Purpose: reconcile canonical store, private/org data placement, public tool shape, and platform-versus-community privacy/compliance ownership
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-plan-target-decisions\_PURPOSE.md
+- Memory refs: `docs/audits/2026-07-22-openspec-full-coverage-audit.md`
+- Related implications: `complete-independent-full-platform-targets`; `build-forward-platform-capabilities`; `universe-visibility`; `brain-okf-canonical-store`
+- Idea feed refs: user compute-market, Zapier-parity, organization-brain, regulated-industry, and concurrency direction
+- Ship/abandon: coordination claim may publish; research packet remains local until host approval and Claude opposite-provider review
