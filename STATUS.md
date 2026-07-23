@@ -4,6 +4,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
+- **[P1 filed:2026-07-23]** Uptime review: paging CLI, repair escalation, rollback scope, DR evidence, and installer convergence drift.
 - **[P1 filed:2026-07-22]** Disk-watch exits 1 on pressure; systemd can stop before rotation/auto-prune despite “independent” claim.
 - **[P1 filed:2026-07-22]** Priority-authorized submit emits unknown `operator_request`; dispatcher only enables `host_request`, stranding work.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
@@ -22,6 +23,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **Fail closed uptime alarm recovery on skipped probes** — failed deploy completion must not turn empty probe output into a false GREEN recovery | .github/workflows/uptime-canary.yml; tests/test_uptime_canary_workflow.py; openspec/changes/fix-uptime-alarm-unknown-state/; openspec/specs/uptime-and-alarms/spec.md | PR #1599; Fix DNS/LLM consecutive-red alarm threshold | pending |
 | **Fix DNS/LLM consecutive-red alarm threshold** — probe red must make the job/run fail after publishing outputs so the next tick can observe prior failure and open the durable issue | .github/workflows/dns-canary.yml; .github/workflows/llm-binding-canary.yml; tests/test_dns_canary_workflow.py; tests/test_llm_binding_canary_workflow.py; openspec/changes/fix-canary-consecutive-red-threshold/; openspec/specs/uptime-and-alarms/spec.md | current as-built limitation in uptime-and-alarms spec | claimed:codex-gpt5-desktop ACTIVE 2026-07-23 |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
@@ -45,7 +47,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
-| Memory-scope Stage 2c flag | - | 30d clean | monitoring |
 
 ## Live brain notes
 
