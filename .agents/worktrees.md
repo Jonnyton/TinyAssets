@@ -743,6 +743,16 @@ Notes:
 - PLAN refs: full PLAN review; Providers, API & MCP Interface, Constraints, State & Artifacts
 - Purpose: make the active reset/identity OpenSpec truthful, narrow, and safe without reusing stale all-eleven-task work
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-test-identity-reset-spec\_PURPOSE.md
+## 2026-07-23 - create backfill-graph-run-coordination-contracts
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/backfill-graph-run-coordination
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination
+- STATUS/Issue/PR: Backfill graph-run coordination contracts
+- PLAN refs: Engine & Domains; API & MCP Interface; State & Artifacts
+- Purpose: backfill shipped run evidence receipts and universe-local teammate mailbox behavior missed by the full-coverage audit
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination\_PURPOSE.md
 - Memory refs: conformance triage from PR #1597 lane; stale PR #1560 and commit 375b0155 read-only
 - Related implications: universe-visibility and provider-status own the moved isolation/evidence concerns
 - Idea feed refs: none
