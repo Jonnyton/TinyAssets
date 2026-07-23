@@ -37,7 +37,10 @@ Findings corrected before approval:
 - Removed the false claim that PR #1626 owned sandbox-status wording.
 - Narrowed the design goal from every shipped sandbox surface to the surfaces
   reconciled by this change.
-- Removed an unrelated hyperparameter STATUS edit from the PR.
+- Removed an unrelated hyperparameter STATUS edit during proposal review; the
+  final coverage foldback then made that residual part of the audit scope, so
+  STATUS was corrected with the reviewed canonical owner while retaining the
+  future science-domain pre-spec as target-only.
 - Confirmed the detached `tinyassets.sandbox` API belongs under
   `distributed-execution` because active task 7.1 groups it with the shipped
   runner seam.
@@ -65,6 +68,23 @@ Final conclusions:
 
 Final verdict: APPROVE at `1d6fd717`; verifier wording was subsequently
 narrowed without changing coverage.
+
+## Post-Sync Review
+
+All three reviewers independently approved the archived foldback:
+
+- Each of the seven approved delta bodies appears exactly once in its
+  canonical owner, with 26 scenarios total.
+- The only pre-existing canonical prose edit is the planned
+  `distributed-execution` Purpose expansion for the detached diagnostic API.
+- The final inventory is 26 capabilities, 263 requirements, 759 scenarios,
+  and 13 active changes; active work remains 172 proposed requirements and
+  302 tasks with 51 checked.
+- The full-coverage audit and STATUS consistently retain credential-vault and
+  hyperparameter importance as the two shipped residuals.
+- Final strict validation passed 39/39, mirror parity matched 255 files,
+  cross-provider drift and diff checks were clean, and no collision with the
+  future distributed-execution or engine-sandbox owners remains.
 
 ## Evidence
 

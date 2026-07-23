@@ -836,3 +836,18 @@ Notes:
 - Related implications: PR #1573 and active distributed-execution remain future/read-only; PR #1626 did not canonicalize sandbox-status wording
 - Idea feed refs: none
 - Ship/abandon: sync/archive after strict validation, focused evidence, and independent review
+
+## 2026-07-23 - retire sandbox-availability-spec-backfill
+
+- Provider: codex-gpt56-spec-2
+- Branch: codex/sandbox-availability-spec-backfill
+- Lane state: Reviewed and archived; retirement staged in PR #1632
+- Worktree: C:\Users\Jonathan\Projects\wf-sandbox-availability-spec-backfill
+- STATUS/Issue/PR: PR #1632; landing diff removes the active claim
+- PLAN refs: Providers; Graph Execution; Uptime and Alarms
+- Purpose: fold seven shipped sandbox contracts into five canonical owners
+- _PURPOSE.md: retained locally until the PR merges
+- Memory refs: three independent APPROVE verdicts in the archived review record
+- Related implications: credential-vault and hyperparameter importance remain shipped-coverage residuals
+- Idea feed refs: none
+- Ship/abandon: remove the physical worktree only after PR #1632 lands

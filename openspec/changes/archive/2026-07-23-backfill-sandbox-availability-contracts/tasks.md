@@ -13,7 +13,7 @@
 
 ## 3. Fold Back Canonical Truth
 
-- [ ] 3.1 Sync the approved deltas into all five canonical capability specs and expand the distributed-execution purpose to include the detached diagnostic seam
-- [ ] 3.2 Update the full-coverage audit counts, grounding result, residual inventory, and verification evidence
-- [ ] 3.3 Rebase on current main, strict-validate the final archived tree, and confirm untouched requirements remain intact
-- [ ] 3.4 Archive the completed change, merge the reviewed PR, and retire its STATUS/worktree lane
+- [x] 3.1 Sync the approved deltas into all five canonical capability specs and expand the distributed-execution purpose to include the detached diagnostic seam
+- [x] 3.2 Update the full-coverage audit counts, grounding result, residual inventory, and verification evidence
+- [x] 3.3 Rebase on current main, strict-validate the final archived tree, and confirm untouched requirements remain intact (39/39 strict-valid; 143 tests plus direct probes passed; all seven headings occur exactly once)
+- [x] 3.4 Archive the completed change, publish the reviewed PR, and stage its STATUS/worktree retirement in the landing diff
