@@ -10,29 +10,66 @@ Everything about how to work lives in `AGENTS.md`. This file is only for things 
 **Background-job sessions cannot merge to `main` or deploy.** The background-job harness injects a
 fixed instruction — "Never push to main/master, force-push, or merge" — into that session type. It is
 NOT in this repo, NOT in `.claude/settings.json`, NOT a documented Claude Code setting, and NOT
-something the host configured. Verified 2026-07-21: `permissions.allow` already contains `Bash(*)`,
-so permissions were never the blocker; the constraint is behavioural and cannot be lifted from inside
-a background job.
+something the host configured. Re-verified 2026-07-22 — `.claude/settings.json` `permissions.allow`
+still contains `Bash(*)` — so permissions were never the blocker; the constraint is behavioural and
+cannot be lifted from inside a background job.
 
 Consequence: a background session can do everything up to the merge — commit, push branches, resolve
 conflicts, open and update PRs, verify integrations — and then stalls. The host experienced this as
 the agent repeatedly refusing a merge they had never intended to forbid.
 
-**How to actually get merges done:**
+**But you almost never need to.** Auto-merge has been wired end-to-end since `2026-07-22T00:38Z`
+(#1496); the merge is no longer a step anyone performs. Facts below verified `2026-07-22T04:30Z`
+against `origin/main` — re-run the commands before relying on them.
 
-- **Run merge/deploy work in an interactive (foreground) session.** That session type carries no such
-  instruction, and `Bash(*)` is already allowed, so `gh pr merge` runs without a prompt. This is the
-  simplest fix and the one to reach for.
-- **Or use GitHub-side auto-merge**, which works regardless of session type: branch protection with
-  required status checks plus `gh pr merge --auto`. The PR merges itself when CI goes green. As of
-  2026-07-21 `main` is NOT protected, so this needs setting up before it can be relied on.
-- Do NOT try to work around the constraint from inside a background job. Say plainly that the session
-  cannot merge, and hand over the exact command sequence.
+- **Open a non-draft PR and stop. Enrolment is automatic.**
+  `.github/workflows/auto-enroll-merge.yml` (landed `0efd2a34`, PR #1496 — check with
+  `git log origin/main --oneline -1 -- .github/workflows/auto-enroll-merge.yml`) fires on
+  `pull_request_target` and runs `gh pr merge --auto --squash` for every non-draft, same-repo PR
+  targeting `main`. It is idempotent, and it deliberately skips **drafts** and **forks** — so a draft
+  is a real "not yet", and flipping it to ready fires `ready_for_review` and enrols it then. Evidence:
+  PR #1506 was merged by `github-actions[bot]` at 2026-07-22T03:53:42Z with no human involved. A
+  background session that opens or un-drafts a PR has done the whole job; do not hand a human a
+  `gh pr merge` command it does not need to run.
+- **`main` IS protected — the required checks are the safety net, not the enrolment.** Check with
+  `gh api repos/:owner/:repo/branches/main/protection`: required contexts are `policy` and
+  `Diff scope declared`, with `strict: true`, `allow_force_pushes: false`, `allow_deletions: false`,
+  `enforce_admins: false`. Enrolment is not a bypass — it is a standing instruction to merge *when
+  protection allows*, so a PR failing a required check simply never merges. Corollary: weakening
+  either required check silently widens what merges itself. Treat edits to them as changes to the
+  merge policy.
+- **Interactive (foreground) session** remains the escape hatch when something must merge *now* —
+  that session type carries no such instruction and `Bash(*)` is already allowed, so `gh pr merge`
+  runs without a prompt.
+- Do NOT try to work around the constraint from inside a background job. If a merge genuinely cannot
+  proceed through auto-merge, say plainly that the session cannot merge, and hand over the exact
+  command sequence.
 
-**If auto-merge is wired, add a diff-scope guard.** Green checks alone are not sufficient: PR #1491
-presented as a two-file auth fix but its diff-vs-main carried seven workflow files plus
+**Two caveats: green checks do not yet mean shipped.** Both are confirmed live as of 2026-07-22; a
+codex lane owns the fixes, so re-check before repeating them as current.
+
+- **An auto-merged commit triggers no workflows.** This is not a new failure mode — it is exactly the
+  `GITHUB_TOKEN` event suppression behind `AGENTS.md` Hard Rule 14 ("Merged is not deployed"): a merge
+  performed by the Actions app does not raise `push`, so nothing downstream fires. What changed is the
+  *blast radius* — the bot now performs **every** merge, so this is the default path rather than an
+  occasional hand-merge. Merge commit `398b3256` modified `PLAN.md`, a `push` path trigger in
+  `build-image.yml`, yet
+  `gh run list --limit 60 --json headSha --jq '.[]|select(.headSha|startswith("398b3256"))'` returns
+  empty — zero runs. Live `get_status` reported `release_state.git_sha = 1605349e`, six commits behind
+  `main`. So: never infer "deployed" from "merged"; confirm the sha production actually serves.
+  Related lanes: #1504 (ui-test preflight), #1508 (the reconciler's own false-green path).
+- **An enrolled PR that falls behind `main` stalls silently.** Protection is `strict: true` and
+  nothing updates the branch, so a PR can be non-draft, enrolled, `MERGEABLE`, with every required
+  check `SUCCESS`, and still sit at `mergeStateStatus: BEHIND` indefinitely — #1504 and #1505 both did
+  for over an hour. If a PR looks green but has not merged, check `mergeStateStatus` before assuming
+  the automation is working; `gh pr update-branch <n>` unsticks it.
+
+**The diff-scope guard is why this is safe to automate.** Green checks alone are not sufficient: PR
+#1491 presented as a two-file auth fix but its diff-vs-main carried seven workflow files plus
 `deploy-prod.yml` and `Dockerfile`, because the branch sat on an unmerged 217-commit lineage. Checks
-passed on the parts CI looked at; only inspecting the diff scope caught it.
+passed on the parts CI looked at; only inspecting the diff scope caught it. That check is now
+required on `main` as `Diff scope declared` — which is exactly what stands between auto-enrolment and
+a repeat of #1491.
 
 ### Session Start
 
