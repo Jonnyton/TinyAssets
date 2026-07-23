@@ -9,7 +9,7 @@ The full-platform architecture still calls for outbound connectivity, data and d
 - Build first-class dataset assets, provenance, licensing enforcement, quality gates, contribution accounting, and Dataset Forge workflows.
 - Build standing-goal demand, onboarding outcomes, and goal-bounty market composition before introducing direct universe services.
 - Build the verified design-to-fabrication hardware ladder on top of commons artifacts, gates, and paid-market primitives.
-- Replace direct money side paths with a versioned transaction transport; delegate live price/forward quote surfaces, order lifecycle, caps, collateral, and privacy controls to the narrow `paid-market-live-price-discovery` successor.
+- Delegate replacement of direct accounting side paths, schema history, and the single versioned logical-accounting transaction transport to `paid-market-track-e-wave-2-transport`; preserve its single-path guarantee without treating database accounting as proof of wallet funding or chain settlement. Delegate live price/forward quote surfaces, order lifecycle, caps, collateral, and privacy controls to `paid-market-live-price-discovery`.
 - Build F1/F2 training instruments, attestation, checkpoint release, gates, mint/license enforcement, and buyer-data provenance; keep F3 research-gated.
 - Build persisted pooled-training ownership and revenue lifecycles without secondary transfers in v1.
 - Introduce any public TINY/stablecoin architecture only behind legal, security, and launch gates, preserving the separation from settlement until those gates pass.
@@ -28,8 +28,8 @@ The full-platform architecture still calls for outbound connectivity, data and d
 
 ### Modified Capabilities
 
-- `paid-market-economy`: Own the single authenticated transaction transport and require all future transports to consume or differential-test against its exact pure oracles.
+- None in this umbrella. `paid-market-track-e-wave-2-transport` is the sole successor owner of the released `paid-market-economy` transaction delta.
 
 ## Impact
 
-This is an active, unimplemented cross-platform change and is blocked on the completed canonical reclassification. It will affect MCP/HTTP surfaces, identity and credential boundaries, SQLite migrations, paid-market transports, commons workflows, gates, provenance, deployment flags, legal review, and the complete-system concurrency/load proof. It depends on authenticated distributed execution for execution evidence and rollout authority but owns market behavior separately. `paid-market-live-price-discovery` is the sole successor owner for the removed price-index/forward delta and must preserve the umbrella invariants before it can sync or archive.
+This is an active, unimplemented cross-platform change and is blocked on the completed canonical reclassification. It will affect MCP/HTTP surfaces, identity and credential boundaries, SQLite migrations, paid-market transports, commons workflows, gates, provenance, deployment flags, legal review, and the complete-system concurrency/load proof. It depends on authenticated distributed execution for execution evidence and rollout authority but owns market behavior separately. `paid-market-track-e-wave-2-transport` is the sole successor owner for the released logical-accounting transaction delta, and `paid-market-live-price-discovery` is the sole successor owner for the removed price-index/forward delta; each must preserve its delegated umbrella invariants before it can sync or archive. Real-fund wallet and chain effects remain owned by the required separately reviewed §18.6 successor.

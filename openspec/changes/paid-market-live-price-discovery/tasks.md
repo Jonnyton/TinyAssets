@@ -2,7 +2,7 @@
 
 - [x] 1.1 Release `paid-market-price-index-and-forwards` from the Wave 2 transaction/migration change and record this change as the build-forward umbrella’s narrow live-price successor.
 - [ ] 1.2 Obtain opposite-provider review of the proposal, design, full delta, PR #1574 sources, and TinyAssets context; resolve every blocking finding before implementation.
-- [ ] 1.3 Confirm the Wave 2 transaction owner, outbound boundary authority/receipts successor, tenant identity/isolation, R2-1 provider authority/credential-class receipts, distributed execution, and each domain capacity/evidence owner have landed before their dependent adapter, public, executable, or settlement tasks; otherwise keep those tasks blocked and dark.
+- [ ] 1.3 Confirm the Wave 2 logical-accounting transaction owner, required §18.6 wallet/chain-effect successor, outbound boundary authority/receipts successor, tenant identity/isolation, R2-1 provider authority/credential-class receipts, distributed execution, and each domain capacity/evidence owner have landed before their dependent adapter, public, executable, settlement, or paid-observation tasks; otherwise keep those tasks blocked and dark.
 - [x] 1.4 Run `openspec validate paid-market-live-price-discovery --strict`, full strict validation, requirement/scenario counts, and `git diff --check` after every contract amendment.
 
 ## 2. Pure descriptors, quotes, and evaluation
@@ -19,7 +19,7 @@
 - [ ] 3.2 Implement the pure field-fresh aggregation oracle and differential-test it against canonical paid-market settlement/index primitives.
 - [ ] 3.3 Define the read-only credential-blind reference-adapter boundary and add contract tests proving it cannot execute, reserve, claim, settle, access secrets, or return an executable route.
 - [ ] 3.4 Add at least two fake external reference adapters and fault tests for timeout, malformed units/currency, incompatible terms, omitted tax/egress/region/minimum/discount components, partial staleness, independent failure, and partial-reference labeling; use no live credential, quota, or paid API.
-- [ ] 3.5 Add economic-principal-root manipulation tests for split offers, counterparties, workforce/OAuth/seller accounts, reversed pair direction, unknown linkage, exact two-sided 1% self-deal fees, concentration caps, raw-native-price immutability, composite-only ceiling clamp behavior, and low-confidence thin markets.
+- [ ] 3.5 Add economic-principal-root manipulation tests for split offers, counterparties, workforce/OAuth/seller accounts, reversed pair direction, unknown linkage, transaction-owned exact same-owner `self_hosted_zero_fee` ingestion/exclusion, recorded ordinary fees for non-exempt linked-party paid trades, concentration caps, raw-native-price immutability, composite-only ceiling clamp behavior, and low-confidence thin markets.
 
 ## 4. Deterministic economic routing
 
@@ -31,7 +31,7 @@
 ## 5. Native firm capacity and forwards
 
 - [ ] 5.1 After prerequisites land, add failing integration tests for signed short-lived native firm quotes, domain-created tenant/demand/quote/descriptor/quantity/expiry/fence capacity grants, one atomic consumption winner, partial-consumption conservation, offer-version CAS, expiry/cancellation, and no double-sell under response loss.
-- [ ] 5.2 Implement native firm-quote publication and the default-off selection handoff only: the domain owner creates/fences capacity and `paid-market-economy` locks budget/value; discovery evaluates and revalidates but creates neither authority. Add no external-provider execution.
+- [ ] 5.2 Implement native firm-quote publication and the default-off selection handoff only: the domain owner creates/fences capacity, `paid-market-economy` records logical budget reservation/accounting intent, and the required §18.6 successor owns wallet/chain effects; discovery evaluates and revalidates but creates none of those authorities. Require the matching verified §18.6 receipt before a paid settlement becomes a price observation. Add no external-provider execution.
 - [ ] 5.3 Add failing forward tests for exact 8-hour/day/week buckets, ≤28-day horizon, 1M/10M/100M sizes, batch-only initial class, immutable id, authenticated monotone lifecycle, collateral-before-executable, spot collateral-free, deterministic best ask, exact pro-rata demand-relative settlement, threshold-only slashing, buyer compensation, and no-show behavior.
 - [ ] 5.4 Implement only physically delivered native spot/forward instruments; reject cash settlement, secondary transfer, leverage/netting, proprietary-model resale, and F3 swarm execution.
 

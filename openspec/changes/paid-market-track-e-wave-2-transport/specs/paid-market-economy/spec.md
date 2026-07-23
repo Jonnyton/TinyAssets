@@ -49,15 +49,15 @@ The `tinyassets/paid_market/` package (spot index, buckets, forwards, ceiling, t
 - **THEN** the transport calls `match.best_execution` with the eligible snapshot
 - **AND** it does not substitute greedy, partial, or hand-written SQL matching
 
-### Requirement: Settlement records are immutable and write-once
-Legacy repo-file node-bid settlement SHALL remain a repo-root-level record at `settlements/<bid_id>__<daemon_id>.yaml` with `schema_version: "1"`, the requester/owner/daemon identities, bid amount, evidence URL, completion timestamp, an `outcome_status` of exactly `succeeded` or `failed`, and `settled: false`. Recording SHALL remain write-once: a second record for the same `(bid_id, daemon_id)` pair SHALL raise `SettlementExistsError` rather than overwrite, and an invalid `outcome_status` SHALL raise. v1 YAML and `public.ledger` SHALL remain byte-for-byte historical and SHALL receive no new Wave 2 money writes. New dark-path accounting SHALL write only through the double-entry `market.*` transport, with no shim or dual-write path.
+### Requirement: Settlement recording rejects pre-existing paths sequentially but is not race-atomic
+Legacy repo-file node-bid settlement SHALL remain a repo-root-level record at `settlements/<bid_id>__<daemon_id>.yaml` with `schema_version: "1"`, the requester/owner/daemon identities, bid amount, evidence URL, completion timestamp, an `outcome_status` of exactly `succeeded` or `failed`, and `settled: false`. `record_settlement_event` SHALL continue to validate `outcome_status`, derive that v1 path, reject a path that already exists, and then write with ordinary `Path.write_text`; this protects sequential calls but SHALL NOT claim a race-atomic single winner for concurrent legacy writers. v1 YAML and `public.ledger` SHALL remain byte-for-byte historical and SHALL receive no new Wave 2 money writes. New dark-path accounting SHALL write only through the separate double-entry `market.*` transaction transport, with no shim or dual-write path.
 
 #### Scenario: v1 settlement history stays frozen
 - **WHEN** Wave 2 transport artifacts are installed or exercised in dark mode
 - **THEN** existing settlement YAML and `public.ledger` rows remain unchanged
 - **AND** no new `public.ledger` row is written by the Wave 2 path
 
-#### Scenario: double-settle is refused
+#### Scenario: sequential double-settle is refused
 - **WHEN** a v1 settlement already exists for a `(bid_id, daemon_id)` pair and recording is attempted again
 - **THEN** `SettlementExistsError` is raised
 - **AND** the existing record is left unchanged
@@ -65,6 +65,11 @@ Legacy repo-file node-bid settlement SHALL remain a repo-root-level record at `s
 #### Scenario: invalid outcome status is rejected
 - **WHEN** a v1 settlement is recorded with an `outcome_status` other than `succeeded` or `failed`
 - **THEN** a `ValueError` is raised and no file is written
+
+#### Scenario: concurrent legacy creation retains its known limitation
+- **WHEN** two legacy writers both pass the path-existence check before either ordinary write completes
+- **THEN** the v1 recorder does not guarantee a single winner
+- **AND** Wave 2 does not misrepresent or reuse that path as its atomic settlement transport
 
 ## ADDED Requirements
 
@@ -86,26 +91,41 @@ The Postgres paid-request claim transport SHALL claim only eligible offered work
 - **THEN** the transport records no claim
 - **AND** it does not silently accept a partial fill
 
-### Requirement: Wave 2 settlement is atomic, non-custodial, and dark by default
-Every market value movement SHALL use the named pure adapter and the single internal `market.apply_tx` transport; application code SHALL NOT compute and write balances or ledger rows directly. Wave 2 transport SHALL combine tenant-scoped business-state compare-and-set, actor/account authority, body-bound idempotency, adapter-derived postings, `market.apply_tx`, and every required escrow/collateral drain assertion in one server-side database transaction. The trusted wrapper SHALL ignore any caller-computed hash, recompute SHA-256 over a versioned domain-separated canonical encoding of the complete command, and bind the deterministic tenant-scoped idempotency key to that digest; an identical replay returns the original result, while a supplied-hash mismatch or changed canonical body conflicts. It SHALL coalesce duplicate accounts and acquire every touched row in one reviewed global order: tenant-scoped business rows by type/id, escrow/collateral rows by type/id, idempotency transaction row, then balance accounts lexicographically; postings/audit rows are inserted only after required locks. Any authorization, oracle, overdraft, residual, state, deadlock-order, or transport failure SHALL roll back the entire transaction, and persistent results SHALL be differential-tested against the pure `Ledger` oracle. A completion-dependent settlement SHALL NOT move value until the domain owner validates every normalized delivery field required for that completion; missing or implausible required evidence SHALL reject the completion or enter its domain dispute path before transport invocation. The platform SHALL remain non-custodial: real escrow and payout authority stay in Base contracts, PostgreSQL stores only bounded accounting/intent and observed receipt state, and the platform stores no user signing keys. The transport SHALL remain unreachable from live claim/settle paths while `TINYASSETS_PAID_MARKET` is off and until distributed-execution S14/B36, independent review, and host-approved cutover are complete.
+### Requirement: One authenticated transaction transport owns all logical market accounting transitions
+Every market-accounting debit, credit, logical reservation transition, fee entry, refund entry, and collateral-account transition SHALL use the named pure adapter and the single internal versioned `market.apply_tx` transaction boundary owned by `paid-market-economy`; application, API, SQL, HTTP, MCP, and workflow code SHALL NOT compute and write balances or ledger rows through an alternate path. In Wave 2, account names beginning `escrow:*` denote logical reservation accounting only, never proof of custody or real-fund reservation. Wave 2 transport SHALL combine tenant-scoped business-state compare-and-set, actor/account authority, body-bound idempotency, adapter-derived postings, `market.apply_tx`, and every required logical reservation/collateral drain assertion in one server-side database transaction. The trusted wrapper SHALL ignore any caller-computed hash, recompute SHA-256 over a versioned domain-separated canonical encoding of the complete command, and bind the deterministic tenant-scoped idempotency key to that digest; an identical replay returns the original result, while a supplied-hash mismatch or changed canonical body conflicts. It SHALL coalesce duplicate accounts and acquire every touched row in one reviewed global order: tenant-scoped business rows by type/id, logical reservation/collateral rows by type/id, idempotency transaction row, then balance accounts lexicographically; postings/audit rows are inserted only after required locks. Any authorization, oracle, overdraft, residual, state, deadlock-order, or transport failure SHALL roll back the entire transaction, and persistent results SHALL be differential-tested against the canonical pure `Ledger` and settlement oracles. A completion-dependent settlement SHALL NOT create a releasable accounting result until the domain owner validates every normalized delivery field required for that completion; missing or implausible required evidence SHALL reject the completion or enter its domain dispute path before transport invocation. Direct SQLite accounting side paths SHALL be removed before launch, and schema history SHALL precede prototype migrations 006–008. `market.apply_tx` success SHALL neither prove nor authorize wallet funding, real-fund reservation, payout, refund, or chain settlement. User-owned wallets remain the source of real-fund authority; PostgreSQL stores only bounded logical reservation/accounting intent and independently verified receipt state, and Wave 2 adds no user signing-key storage, signer, payout dispatcher, or smart-contract escrow. The transport SHALL remain unreachable from live claim/settle paths while `TINYASSETS_PAID_MARKET` is off and until distributed-execution S14/B36, the required §18.6 chain-settlement successor, independent review, and host-approved cutover are complete.
 
 #### Scenario: successful dark settlement conserves and drains
 - **WHEN** an authorized dark-path settlement uses a pure adapter and valid current business state
 - **THEN** integer-micro postings commit exactly once and sum to zero
-- **AND** every temporary escrow/collateral account is zero in the same committed transaction
+- **AND** every temporary logical reservation/collateral account is zero in the same committed transaction
 
 #### Scenario: inference completion without normalized counts moves no value
 - **WHEN** an inference completion omits required normalized input, output, or applicable cached-token evidence
 - **THEN** the inference domain rejects completion or opens its dispute path before invoking the transaction transport
 - **AND** no completion-dependent funds movement or null-count settlement observation is recorded
 
-#### Scenario: residual escrow aborts everything
-- **WHEN** a settlement posting set would leave any required escrow or collateral account non-zero
+#### Scenario: self-hosted work is zero-fee and not a paid-market self-deal
+- **WHEN** locked tenant-scoped request and winning-offer rows prove exact immutable equality of `request.requester_user_id` and `winning_offer.host_owner_user_id`
+- **THEN** the trusted wrapper invokes the canonical pure self-host settlement adapter and records `self_hosted_zero_fee` with no treasury fee and no on-chain transfer
+- **AND** that work is excluded from paid-market volume and price formation
+
+#### Scenario: broader linkage does not widen the self-host exemption
+- **WHEN** requester and host are common operators, organization members, on-behalf principals, payout-root linked, or otherwise economically linked but their locked immutable user ids are not identical
+- **THEN** the canonical pure paid-market settlement applies the ordinary fee
+- **AND** no caller field, grant, or economic-principal inference can select `self_hosted_zero_fee`
+
+#### Scenario: logical reservation is not real-fund authority
+- **WHEN** a logical reservation or balanced `market.apply_tx` transaction exists without a separately verified wallet or chain-authority receipt required by the §18.6 successor
+- **THEN** the request remains unfunded and non-executable for real-value work
+- **AND** no work release, payout, refund, or chain effect is authorized from the database row alone
+
+#### Scenario: residual logical reservation aborts everything
+- **WHEN** a settlement posting set would leave any required logical reservation or collateral account non-zero
 - **THEN** the drain assertion fails loud
 - **AND** no business-state change, transaction, posting, or balance update commits
 
 #### Scenario: live payout remains unavailable before authority cutover
-- **WHEN** distributed-execution S14/B36 or host-approved cutover is incomplete
+- **WHEN** distributed-execution S14/B36, the required §18.6 chain-settlement successor, or host-approved cutover is incomplete
 - **THEN** no public/API path can activate a market claim, settlement, or on-chain payout
 - **AND** read-only market state remains available only with an explicit dark/unavailable status
 
@@ -130,7 +150,7 @@ Every market value movement SHALL use the named pure adapter and the single inte
 - **AND** stores neither the caller digest nor a transaction result
 
 #### Scenario: global lock order avoids cross-family deadlock
-- **WHEN** concurrent commands touch overlapping business, escrow, collateral, idempotency, and account rows in different input orders
+- **WHEN** concurrent commands touch overlapping business, logical reservation, collateral, idempotency, and account rows in different input orders
 - **THEN** the wrapper coalesces and locks them in the single canonical order
 - **AND** commits or returns clean contention without a deadlock or partial effect
 
@@ -138,6 +158,13 @@ Every market value movement SHALL use the named pure adapter and the single inte
 - **WHEN** randomized adapter transactions run through both the persistent transport and pure `Ledger`
 - **THEN** balances, conservation, overdraft decisions, and drain outcomes match
 - **AND** any divergence rolls back and fails loud
+
+### Requirement: Future market transports remain differential-tested against canonical pure oracles
+Every transport introduced by this or a dependent market change SHALL consume the canonical `tinyassets.paid_market` input/output contracts or prove behavioral equivalence through generated differential tests covering valid inputs, rejection boundaries, rounding, state transitions, fees including the exact self-host exemption, refunds, collateral, and conservation. A transport SHALL NOT silently fork a formula into SQL, HTTP, MCP, API, or workflow code; any intentional rule change MUST first modify the canonical oracle requirement and tests through its own OpenSpec change.
+
+#### Scenario: transport and oracle cannot drift silently
+- **WHEN** a transport implementation changes a price, settlement, apportionment, fee, self-host exemption, refund, collateral, or NAV result for the same inputs
+- **THEN** the differential gate fails until an explicit reviewed behavior change updates both canonical contract and implementation
 
 ### Requirement: The ledger boundary is least-privilege and bounded
 Ledger tables, sequences, raw apply functions, and drain helpers SHALL deny access to `PUBLIC`, anonymous, authenticated, and ordinary application roles. A fixed-search-path `SECURITY DEFINER` wrapper owned by a non-login role SHALL be callable only by a dedicated internal settlement role after actor/account binding. The wrapper SHALL derive business accounts from locked rows, use only the configured treasury account, and reject `external:*` and `pool:*` accounts. Wave 2 SHALL reject more than 16 postings, idempotency keys over 128 UTF-8 bytes, memos over 512 bytes, account names over 256 bytes, or canonical posting payloads over 16 KiB before mutation.
@@ -201,7 +228,7 @@ The v0 fixture PostgreSQL chain SHALL use unique, gap-free, strictly increasing 
 - **AND** rollback to the prior application requires no destructive schema reversal
 
 ### Requirement: Wave 2 activation requires concurrency, recovery, and zero-host proof
-The Wave 2 transport SHALL remain dark until a production-shaped isolated environment records dated evidence for role isolation, actor binding, body-bound replay, response-loss recovery, matcher/claim contention, ledger conservation, terminal escrow contention, migration recovery, and zero-host behavior. Evidence SHALL include environment, exact commands, load, latency distributions, resource occupancy, and raw failure counts and SHALL receive independent review before host-approved activation.
+The Wave 2 transport SHALL remain dark until a production-shaped isolated environment records dated evidence for role isolation, actor binding, body-bound replay, response-loss recovery, matcher/claim contention, ledger conservation, terminal logical-reservation contention, migration recovery, and zero-host behavior. Evidence SHALL include environment, exact commands, load, latency distributions, resource occupancy, and raw failure counts and SHALL receive independent review before host-approved activation.
 
 #### Scenario: capability-sharded claim storm stays correct and bounded
 - **WHEN** 500 synthetic daemons receive 1,000 paid requests over five minutes through the production-shaped capability push and narrow claim boundary without mocked delivery
@@ -218,8 +245,8 @@ The Wave 2 transport SHALL remain dark until a production-shaped isolated enviro
 - **THEN** aggregate throughput is at least 5,000 committed transactions per second, p99 is below 250 milliseconds, and balances and postings remain zero-sum with no negative internal balance, deadlock, timeout, or duplicate effect
 - **AND** sustained CPU and pool occupancy remain below 80%, with p50, p95, and p99 recorded
 
-#### Scenario: one escrow has one terminal result
-- **WHEN** 500 callers concurrently attempt to settle and drain the same escrow
+#### Scenario: one logical reservation account has one terminal result
+- **WHEN** 500 callers concurrently attempt to settle and drain the same logical reservation account
 - **THEN** exactly one terminal settlement succeeds
 - **AND** every other caller receives the prior result or a clean state/idempotency conflict
 

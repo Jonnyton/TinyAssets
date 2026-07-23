@@ -1,10 +1,10 @@
 ## Context
 
-PR #1440 landed the pure `tinyassets.paid_market` package and prototype migrations 006–008. The pure package already supplies exact settlement objects, posting adapters, `Ledger.assert_drained`, and deterministic `match.best_execution`, but production code does not call them. Current money actions instead use the older SQLite payment path, and founder decision D2 forbids a dual-write bridge: `public.ledger` stays frozen as v1 history while new money movement eventually uses the double-entry `market.*` ledger.
+PR #1440 landed the pure `tinyassets.paid_market` package and prototype migrations 006–008. The pure package already supplies exact settlement objects, posting adapters, `Ledger.assert_drained`, and deterministic `match.best_execution`, but production code does not call them. Current money actions instead use the older SQLite payment path, and founder decision D2 forbids a dual-write bridge: `public.ledger` stays frozen as v1 history while new logical market accounting eventually uses the double-entry `market.*` ledger. Real wallet/chain effects remain a separate authority domain.
 
 The prototype is not a live migration system. It mounts every SQL file into `docker-entrypoint-initdb.d`, applies only on an empty volume, has duplicate active `003` identifiers, and records no migration history. It also contains deliberately non-production substitutes such as GUC-based auth, `TO PUBLIC` policies, and 16-dimensional vectors. Migration 008 exposes a `SECURITY DEFINER` function without revoking default function execution from `PUBLIC`, does not bind idempotency keys to request bodies, and separates posting from drain assertion. None of this prototype SQL is production migration authority.
 
-The transport crosses security, money, migration, distributed-execution, and uptime boundaries. It therefore remains dark until distributed-execution S14/B36 binds settlement to the current lease fence, accepted-result hash, claim ownership, verified actor/payment facts, and independent verification. Base smart-contract escrow remains the custodian of real funds; PostgreSQL is an accounting/intent system and never holds signing keys.
+The transport crosses security, money, migration, distributed-execution, and uptime boundaries. It therefore remains dark until distributed-execution S14/B36 binds settlement to the current lease fence, accepted-result hash, claim ownership, verified actor/payment facts, and independent verification. User-owned wallets remain the source of real-fund authority; PostgreSQL is only a logical reservation/accounting-intent system and never holds signing keys. Wave 2 adds no smart-contract escrow.
 
 ## Goals / Non-Goals
 
@@ -20,7 +20,7 @@ The transport crosses security, money, migration, distributed-execution, and upt
 **Non-Goals:**
 
 - Enabling `TINYASSETS_PAID_MARKET`, applying migrations live, or moving real funds.
-- Implementing Base signing, a wallet custodian, or an on-chain payout dispatcher.
+- Implementing chain signing, a wallet custodian, a smart-contract escrow, or an on-chain payout dispatcher.
 - Implementing Wave 3 quote/index endpoints, Wave 4 forward UX, demand signals, pooled/training/fabrication public endpoints, or a new MCP action.
 - Replacing the repo-file node-bid claim domain or rewriting v1 settlement YAML/`public.ledger`.
 - Reopening accepted founder decisions or choosing still-open forward defaults.
@@ -46,8 +46,8 @@ One internal stored procedure owns the boundary:
 1. derive authenticated subject plus tenant/universe from verified request authority and verify every tenant-scoped business-state/version and, after S14 exists, lease fence plus accepted-result identity;
 2. verify the actor/account binding, any bounded signed on-behalf grant, and the server-recomputed versioned/domain-separated canonical request hash;
 3. derive/receive only the unchanged posting list produced by the named pure adapter;
-4. coalesce duplicate accounts and lock tenant-scoped business, escrow/collateral, idempotency, and balance rows in the single global order before invoking internal `market.apply_tx` once;
-5. invoke internal drain checks for every temporary escrow/collateral account; and
+4. coalesce duplicate accounts and lock tenant-scoped business, logical reservation/collateral, idempotency, and balance rows in the single global order before invoking internal `market.apply_tx` once;
+5. invoke internal drain checks for every temporary logical reservation/collateral account; and
 6. commit business state, transaction, postings, balances, and drain success together.
 
 Any error rolls back every step. `market.apply_tx` is not a public PostgREST surface. Its transaction row stores the server-recomputed `request_sha256` plus encoding/domain version; same tenant-scoped key plus same canonical body returns the original transaction, while a caller-hash mismatch or changed body conflicts.
@@ -56,7 +56,7 @@ Alternative considered: call `apply_tx`, then `assert_drained` through two clien
 
 ### 4. The SQL privilege boundary is deny-by-default
 
-Ledger functions use a non-login owner and fixed `search_path` containing only trusted schemas. The migration explicitly revokes function execution and table/sequence DML from `PUBLIC`, anonymous, authenticated, and ordinary application roles, then grants only the settlement wrapper to a dedicated internal service role. Raw `market.apply_tx` and drain helpers remain callable only inside the trusted boundary. The wrapper independently compares verified request authority with tenant-scoped locked rows, derives buyer, seller, escrow, and collateral accounts from those rows, and accepts the treasury account only from fixed server configuration. Caller-supplied tenants, treasury accounts, and every `external:*` or `pool:*` account are rejected in Wave 2. Host on-behalf action requires an immutable signed grant bounded by target, tenant, action, account, amount, expiry, and revocation generation and records both principals plus grant id. A future external-funding entry needs a separately reviewed, receipt-verified ingress. `UNIVERSE_SERVER_USER` or `UNIVERSE_SERVER_HOST_USER` environment values confer no money authority.
+Ledger functions use a non-login owner and fixed `search_path` containing only trusted schemas. The migration explicitly revokes function execution and table/sequence DML from `PUBLIC`, anonymous, authenticated, and ordinary application roles, then grants only the settlement wrapper to a dedicated internal service role. Raw `market.apply_tx` and drain helpers remain callable only inside the trusted boundary. The wrapper independently compares verified request authority with tenant-scoped locked rows, derives buyer, seller, logical reservation (`escrow:*`), and collateral accounting accounts from those rows, and accepts the treasury account only from fixed server configuration. Caller-supplied tenants, treasury accounts, and every `external:*` or `pool:*` account are rejected in Wave 2. Host on-behalf action requires an immutable signed grant bounded by target, tenant, action, account, amount, expiry, and revocation generation and records both principals plus grant id. A future external-funding entry needs a separately reviewed, receipt-verified ingress. `UNIVERSE_SERVER_USER` or `UNIVERSE_SERVER_HOST_USER` environment values confer no money authority.
 
 Wave 2 payloads are bounded: at most 16 postings, 128 UTF-8 bytes for an idempotency key, 512 bytes for a memo, 256 bytes per account name, and 16 KiB for canonical posting JSON. Larger future settlement families need a separately reviewed bulk contract.
 
@@ -64,11 +64,11 @@ Alternative considered: rely on revoked table writes while granting `apply_tx` b
 
 ### 5. Dark, non-custodial settlement posture
 
-This apply lane may build adapters, SQL, tests, and shadow comparison, but it may not expose a live claim/settle route. It proves only database idempotency, including response loss after commit; it does not invent a chain saga or resubmission policy. Real escrow remains in Base contracts. The later S14/B36 on-chain lane must bind each effect to exactly `job_id:lease_fence:accepted_result_sha256` and define durable reconciliation, reorg, retry, worker, and alarm behavior before any signer exists. PostgreSQL may record bounded intent/accounting; it never stores user signing keys or treats an accounting row as proof of payout.
+This apply lane may build adapters, SQL, tests, and shadow comparison, but it may not expose a live claim/settle route. It proves only database idempotency, including response loss after commit; it does not invent a chain saga, resubmission policy, signer, payout dispatcher, or smart-contract escrow. The required later §18.6 chain-settlement successor must bind each effect to exactly `job_id:lease_fence:accepted_result_sha256`, implement the locked hybrid batched/immediate posture, and define durable reconciliation, reorg, retry, worker, alarm, wallet authority, receipt verification, and custody posture before a signer exists. PostgreSQL may record bounded logical reservation/accounting intent; it never stores user signing keys or treats an accounting row as proof of funding or payout.
 
-Live activation depends on distributed-execution S14/B36, opposite-provider approval, host-approved dual verification, and explicit cutover. Dual verification may compare results, but dual money movement is forbidden.
+Live activation depends on distributed-execution S14/B36, the reviewed and implemented §18.6 chain-settlement successor, opposite-provider approval, host-approved dual verification, and explicit cutover. Dual verification may compare results, but dual money movement is forbidden.
 
-Alternative considered: platform-controlled off-chain escrow or an independent Wave 2 payout path. Rejected by the binding non-custodial rule and the current distributed-execution authority model.
+Alternative considered: platform-controlled off-chain custody, a Wave 2 smart-contract escrow, or an independent Wave 2 payout path. Rejected from this lane because the cooperative launch posture specifies no escrow, Wave 2 has no chain-effect authority, and the approved §18.6 settlement target requires its own reviewed successor.
 
 ### 6. Prototype replay and production baselining are separate
 
@@ -96,7 +96,7 @@ Existing YAML settlement records and `public.ledger` stay byte-for-byte unchange
 
 ### 8. Activation is evidence-gated
 
-The apply lane must leave executable evidence for role isolation, actor binding, body-bound replay, database crash points, migration resume/drift, pure-oracle differential behavior, matcher/claim contention, ledger conservation, escrow drain contention, and zero-host honesty. Database load runs on an isolated Supabase test project matching the intended launch region and compute plan, recording PostgreSQL version, pool settings, CPU, connections, and exact commands. The ledger target is at least 5,000 committed transactions/second aggregate, p99 below 250 ms, zero deadlocks/timeouts, and sustained database CPU and pool occupancy below 80%. The §14 scenario routes 500 synthetic daemons and 1,000 requests through the real production-shaped Realtime capability push, not a mock, with claim p99 below three seconds. The dark-lane zero-host proof covers available reads/durable state and honest pending/unavailable settlement; hosted retry workers and alarms are deferred to S14/B36 rollout proof.
+The apply lane must leave executable evidence for role isolation, actor binding, body-bound replay, database crash points, migration resume/drift, pure-oracle differential behavior, matcher/claim contention, ledger conservation, logical-reservation drain contention, and zero-host honesty. Database load runs on an isolated Supabase test project matching the intended launch region and compute plan, recording PostgreSQL version, pool settings, CPU, connections, and exact commands. The ledger target is at least 5,000 committed transactions/second aggregate, p99 below 250 ms, zero deadlocks/timeouts, and sustained database CPU and pool occupancy below 80%. The §14 scenario routes 500 synthetic daemons and 1,000 requests through the real production-shaped Realtime capability push, not a mock, with claim p99 below three seconds. The dark-lane zero-host proof covers available reads/durable state and honest pending/unavailable settlement; hosted retry workers and alarms are deferred to S14/B36 rollout proof.
 
 ## Risks / Trade-offs
 
@@ -118,11 +118,11 @@ The apply lane must leave executable evidence for role isolation, actor binding,
 6. Run PostgreSQL integration, fault-injection, concurrency, and §14 load suites in the specified isolated test project; record dated environment and latency evidence.
 7. Obtain opposite-provider implementation review. Keep the flag off and the route dark.
 8. After distributed-execution S14/B36 lands, perform host-approved shadow/dual verification with no dual money movement.
-9. Only a separate host-approved rollout may apply production-native migrations, enable settlement, connect Base escrow effects, run canary/rendered-chatbot proof if a public surface changes, and leave a clean-use watch until real-user evidence exists.
+9. Only after the required §18.6 chain-settlement successor is reviewed and implemented may a separate host-approved rollout apply production-native migrations, enable settlement, connect that chain-effect boundary, run canary/rendered-chatbot proof if a public surface changes, and leave a clean-use watch until real-user evidence exists.
 
 Rollback before activation is code/config rollback with the flag off; additive schemas remain unused and v1 stays authoritative. A populated upgrade must pass a prior-application-version compatibility test before cutover. After any future live migration, schema rollback is forward-fix only unless the reviewed rollout artifact proves a reversible data migration; settlement effects are never “rolled back” by deleting accounting history.
 
 ## Open Questions
 
-- The actual deployed Supabase baseline, production migration home, live migration, market enablement, S14/B36 cutover, and on-chain settlement deployment each remain explicit host decisions.
+- The actual deployed Supabase baseline, production migration home, live migration, market enablement, S14/B36 cutover, and deployment of the required §18.6 chain-settlement successor each remain explicit host decisions.
 - Forward collateral/threshold/bucket defaults remain open downstream decisions and do not block the dark Wave 2 spot transport.

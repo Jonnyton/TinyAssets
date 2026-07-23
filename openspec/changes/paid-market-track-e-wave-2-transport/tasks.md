@@ -18,9 +18,9 @@
 - [ ] 3.2 Implement only the missing pure spot adapter in `tinyassets/paid_market/ledger.py`, export it through `tinyassets/paid_market/__init__.py`, and keep the package free of I/O/environment/database imports.
 - [ ] 3.3 Add failing fixture PostgreSQL tests for role/DML/RPC denial, fixed-search-path resistance, non-login ownership, exact account provenance, posting/key/memo/account/body bounds, 100 concurrent identical replays, and same-key/different-body conflict.
 - [ ] 3.4 Harden fixture `009_market_ledger.sql`: store `request_sha256`, explicitly revoke function/table/sequence privileges from public/user-facing roles, grant only a dedicated internal settlement role, fix the trusted search path, validate Wave 2 bounds, reject `external:*`/`pool:*` and caller-supplied treasury accounts, and make raw apply/drain helpers internal. Repeat only in later production-native SQL authored from the approved live baseline.
-- [ ] 3.5 Add one internal settlement wrapper that atomically performs business-state/version CAS, actor/account authorization, adapter postings, `market.apply_tx`, every required drain assertion, and audit-state commit; prove any failure rolls back all effects.
-- [ ] 3.6 Differential-test randomized persistent transactions against pure `Ledger`, including overdrafts, repeated accounts, reverse-order first-touch accounts, residual escrows, identical replays, and changed-body conflicts.
-- [ ] 3.7 Add adversarial tests for verified-request tenant derivation, mixed-tenant rejection, signed/bounded/revoked on-behalf grants, server-recomputed canonical hashes, hash mismatch, composite tenant keys, duplicate-account coalescing, and the global cross-family lock order.
+- [ ] 3.5 Add one internal logical-accounting wrapper that atomically performs business-state/version CAS, actor/account authorization, adapter postings, `market.apply_tx`, every required logical reservation/collateral drain assertion, and audit-state commit; prove any database failure rolls back all effects and that success never serves as wallet-funding or chain-effect authority.
+- [ ] 3.6 Differential-test randomized persistent transactions against pure `Ledger`, including overdrafts, repeated accounts, reverse-order first-touch accounts, residual logical reservation accounts, identical replays, changed-body conflicts, and the exact pure-oracle `self_hosted_zero_fee` exemption.
+- [ ] 3.7 Add adversarial tests for verified-request tenant derivation, mixed-tenant rejection, signed/bounded/revoked on-behalf grants, server-recomputed canonical hashes, hash mismatch, composite tenant keys, duplicate-account coalescing, and the global cross-family lock order. Prove the self-host exemption derives only from exact equality of locked `request.requester_user_id` and `winning_offer.host_owner_user_id`, linked-but-not-identical actors retain the ordinary fee, and database accounting rows alone confer no wallet or chain authority.
 
 ## 4. Dark Transport and Atomic Claim
 
@@ -29,7 +29,7 @@
 - [ ] 4.3 Implement a psycopg adapter only in prototype/integration-test scope with explicit transaction, result, and error mapping; defer the production client until the Supabase baseline is approved.
 - [ ] 4.4 Write failing integration tests for single-request narrow claim and multi-offer matching: use `best_execution`, lock selected IDs in canonical order, compare monotonic versions, reject stale selections atomically, retry at most three times with jitter, and return honest insufficient-supply/contention results.
 - [ ] 4.5 Implement the atomic claim wrapper and transport orchestration without full-inbox polling, greedy matching, partial claims, or changes to the repo-file node-bid claim domain.
-- [ ] 4.6 Record the S14/B36 dependency on exact future chain-effect identity `job_id:lease_fence:accepted_result_sha256`; do not add provisional chain states, signer, resubmission, reconciliation worker, or alarm behavior in Wave 2.
+- [ ] 4.6 Record the S14/B36 dependency on exact future chain-effect identity `job_id:lease_fence:accepted_result_sha256` and the required separately reviewed §18.6 hybrid chain-settlement successor; do not add provisional chain states, signer, resubmission, reconciliation worker, or alarm behavior in Wave 2.
 
 ## 5. Fault, Concurrency, and Uptime Proof
 
@@ -37,7 +37,7 @@
 - [ ] 5.2 Run 100 concurrent buyers against one versioned offer book; prove no offer sells twice and each committed selection equals `best_execution` for its valid snapshot.
 - [ ] 5.3 Run the §14 capability-sharded scenario through the production-shaped Supabase Realtime push, without mocked delivery, with 500 synthetic daemons and 1,000 requests over five minutes; prove zero lost/duplicate claims, no poll-all storm, and claim latency p99 below three seconds.
 - [ ] 5.4 On an isolated Supabase test project matching launch region/compute, run at least 64 writers through at least one million overlapping transfers. Require at least 5,000 committed transactions/second aggregate, p99 below 250 ms, zero conservation drift/negative internal balance/deadlock/timeout, and sustained CPU/pool occupancy below 80%; record environment plus p50/p95/p99.
-- [ ] 5.5 Run 500 simultaneous terminal attempts on one escrow; prove one settlement succeeds and every other caller gets the prior result or a clean state/idempotency conflict, with the escrow drained exactly once.
+- [ ] 5.5 Run 500 simultaneous terminal attempts on one logical reservation account; prove one accounting settlement succeeds and every other caller gets the prior result or a clean state/idempotency conflict, with the logical reservation drained exactly once.
 - [ ] 5.6 Stop every tray/daemon host and prove market reads/durable state remain available, work remains honestly pending, no settlement is fabricated, and the surface reports settlement unavailable. Defer hosted retry/alarm proof to S14/B36 rollout.
 
 ## 6. Verification, Mirror, and Handoff
@@ -45,5 +45,5 @@
 - [ ] 6.1 Rebuild the Claude plugin runtime mirror and run its parity/import probe after the new pure/payment modules land; do not hand-edit generated mirror files.
 - [ ] 6.2 Run focused tests, the full relevant PostgreSQL integration suite, `python -m ruff check` on changed Python, both strict OpenSpec validations, and the pre-change 180-test pure-core/matcher suite; attach dated environment and raw latency/failure evidence.
 - [ ] 6.3 Obtain independent implementation review across correctness, security, migration safety, concurrency, non-custodial boundaries, and diff simplicity; resolve every Critical/Important finding and re-run affected evidence.
-- [ ] 6.4 Keep migrations unapplied, transport unregistered, on-chain effects absent, and `TINYASSETS_PAID_MARKET` off; record explicit dependencies on distributed-execution S14/B36 plus host decisions for migration, cutover, enablement, and Base deployment.
+- [ ] 6.4 Keep migrations unapplied, transport unregistered, on-chain effects absent, and `TINYASSETS_PAID_MARKET` off; require the reviewed §18.6 hybrid chain-settlement successor and record explicit dependencies on distributed-execution S14/B36 plus host decisions for migration, cutover, enablement, wallet authority, and chain-effect deployment.
 - [ ] 6.5 After implementation lands, sync the delta into `openspec/specs/`, validate idempotently, archive this change in the same lane, and remove the STATUS row in the landing commit.
