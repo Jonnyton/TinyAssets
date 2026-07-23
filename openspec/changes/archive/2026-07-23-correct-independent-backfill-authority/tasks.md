@@ -14,5 +14,5 @@
 
 - [x] 3.1 Run whole-tree strict validation plus the focused external-effector and provider-call tests.
 - [x] 3.2 Inspect the canonical post-sync requirement blocks and verify the audit no longer states the rejected absolutes.
-- [ ] 3.3 Archive the completed OpenSpec change, commit the correction, and publish a draft PR stacked on #1621.
+- [x] 3.3 Archive the completed OpenSpec change, commit the correction, and publish draft PR #1623 stacked on #1621.
 - [x] 3.4 Keep merge gated on the project-required opposite-provider review and record that Codex review alone does not satisfy it.

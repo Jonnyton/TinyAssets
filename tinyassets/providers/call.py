@@ -224,8 +224,11 @@ def call_provider(
 
     Routes through the installed :class:`ProviderRouter`'s synchronous
     ``call_sync`` (which runs the async fallback chain in a dedicated thread).
-    On transient exhaustion, retries up to 3 times with exponential backoff.
-    Falls back to mock/``fallback_response`` only when forced or exhausted.
+    Every ``AllProvidersExhaustedError`` is retried for up to three total
+    attempts; other exceptions are not retried.  After terminal router failure,
+    any non-``None`` ``fallback_response`` is returned; without one, the final
+    exception is raised.  Forced-mock mode returns the supplied fallback or the
+    deterministic mock response.
 
     Parameters
     ----------
@@ -236,9 +239,9 @@ def call_provider(
     role:
         Routing role (writer, judge, extract).
     fallback_response:
-        Returned if all providers fail. If ``None`` in production, provider
-        exhaustion surfaces as the real error rather than masquerading as an
-        empty LLM response downstream.
+        Returned after a terminal router exception or when no router is
+        installed. If ``None`` in production, the terminal exception surfaces
+        rather than masquerading as an empty LLM response downstream.
     universe_context:
         Optional per-universe routing context (:class:`~tinyassets.providers.
         base.UniverseContext`) threaded through to ``call_sync`` so engine
