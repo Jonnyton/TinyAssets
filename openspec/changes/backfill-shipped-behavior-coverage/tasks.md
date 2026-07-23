@@ -23,7 +23,7 @@
 
 - [x] 4.1 Obtain independent source-to-requirement review for constraint/desktop and coordination/domain deltas.
 - [x] 4.2 Rebase on current `origin/main`, re-check active-change overlaps, and update evidence freshness.
-- [ ] 4.3 Push a draft PR with explicit no-runtime scope and validation evidence.
+- [x] 4.3 Push a draft PR with explicit no-runtime scope and validation evidence.
 
 ## 5. Landing lifecycle
 
