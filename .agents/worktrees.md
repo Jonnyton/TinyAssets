@@ -986,3 +986,18 @@ Notes:
 - Related implications: `paid-market-live-price-discovery`; `paid-market-track-e-wave-2-transport`; target-spec PLAN conflict
 - Idea feed refs: archived compute/model/task/fabrication market research
 - Ship/abandon: land reference-only edits, then close #1574 as superseded
+
+## 2026-07-23 - create provider-attempt-receipts
+
+- Provider: codex-provider-receipts
+- Branch: codex/provider-attempt-receipts
+- Lane state: Active spec-only lane; apply blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-attempt-receipts
+- STATUS/Issue/PR: `R2-1b provider-attempt receipts (spec only)`; local commit pending root review
+- PLAN refs: Providers; Cross-Cutting Principles; State & Artifacts; Brain
+- Purpose: specify result-local provider-attempt evidence for reply and learning calls without runtime or canonical-spec edits
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-attempt-receipts\_PURPOSE.md
+- Memory refs: `.claude/agent-memory/dev-2/reference_plan_md_provider_invariants.md`; PR #1606; R2-1a STATUS row
+- Related implications: fail-closed provider auth overlay; credential-vault backfill; both `converse` writer calls
+- Idea feed refs: none
+- Ship/abandon: strict-validate and commit locally; apply waits for #1606/R2-1a, and no push/PR occurs before root review
