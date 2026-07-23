@@ -228,7 +228,7 @@ def test_dockerfile_ships_plan_md_for_live_review_context():
     )
     assert "COPY --from=builder /build/PLAN.md /app/PLAN.md" in text, (
         "Final image must place PLAN.md at /app/PLAN.md, matching "
-        "tinyassets.api.universe._repo_root() in the container"
+        "tinyassets.api.universe._bundled_source_root() in the container"
     )
 
 

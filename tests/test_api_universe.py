@@ -641,3 +641,70 @@ def test_daemon_control_actions_accept_top_level_daemon_id(
     assert control_status["daemon_count"] == 1
     assert control_status["runtime_count"] == 1
     assert control_status["runtimes"][0]["daemon_id"] == daemon_id
+
+
+# ---------------------------------------------------------------------------
+# Bundled-asset root vs the community-pool storage variable
+#
+# `TINYASSETS_REPO_ROOT` names the git checkout used for `producers.goal_pool`
+# and catalog writes. In the deployed container `deploy/compose.yml` sets it to
+# `/data/community-pool` (a data volume, NOT a source checkout) so that
+# `repo_root_path()` resolves at all — the container has no `.git` for the
+# git-detect fallback to find.
+#
+# `_bundled_source_root()` answers a *different* question: where the shipped
+# `PLAN.md` asset lives. The Dockerfile stages it at `/app/PLAN.md`. Wiring the
+# asset lookup to that storage variable made the deployed reader look on the
+# data volume and silently return zero architecture sections.
+# ---------------------------------------------------------------------------
+
+
+def test_bundled_source_root_ignores_pool_volume_override(
+    monkeypatch, tmp_path,
+) -> None:
+    """The pool storage variable must not steer the PLAN.md asset lookup."""
+    pool = tmp_path / "community-pool"
+    pool.mkdir()
+    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(pool))
+
+    root = univ_mod._bundled_source_root()
+
+    assert (root / "PLAN.md").is_file(), (
+        "_bundled_source_root() must resolve to a root that ships PLAN.md; "
+        f"got {root} while TINYASSETS_REPO_ROOT pointed at the pool volume"
+    )
+
+
+def test_bundled_source_root_ignores_even_a_checkout_shaped_override(
+    monkeypatch, tmp_path,
+) -> None:
+    """Full decoupling, not a 'does the override happen to hold PLAN.md?' sniff.
+
+    A heuristic that honored overrides containing PLAN.md would still couple an
+    immutable package asset to a mutable storage variable. Pin the stronger
+    contract: the variable is never consulted here.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "PLAN.md").write_text(
+        "## Scoping Rules\nDecoy checkout.\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(checkout))
+
+    assert univ_mod._bundled_source_root() != checkout
+
+
+def test_change_loop_plan_context_survives_pool_volume_override(
+    monkeypatch, tmp_path,
+) -> None:
+    """The deployed review context must not silently ship zero PLAN sections."""
+    pool = tmp_path / "community-pool"
+    pool.mkdir()
+    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(pool))
+
+    sections = univ_mod._change_loop_plan_context()
+
+    assert sections, (
+        "_change_loop_plan_context() returned no PLAN.md sections under the "
+        "deployed container config - the shipped /app/PLAN.md was unreachable"
+    )
