@@ -5,7 +5,9 @@
 `tinyassets.outcomes` SHALL publicly export
 `HyperparameterImportanceEvaluator`, whose `evaluate(state)` method satisfies
 the structural `Evaluator` protocol and returns `EvalResult` with kind
-`custom` and label `hyperparameter_importance`.
+`custom` and label `hyperparameter_importance`. The export SHALL NOT register
+the evaluator in a catalog or cause automatic invocation; a caller MUST
+explicitly construct and invoke it.
 
 Missing or falsey `run_results` SHALL return score `-1.0`, verdict `skip`, and
 reason `no run_results in state`. The evaluator SHALL convert `min_runs` with
@@ -30,6 +32,7 @@ selected method uses only one.
 
 - **WHEN** a caller imports `HyperparameterImportanceEvaluator` from `tinyassets.outcomes`
 - **THEN** its instance satisfies `Evaluator` without inheriting a TinyAssets base class
+- **AND** no catalog registration or automatic invocation occurs from the public export
 
 #### Scenario: Missing and empty run results skip before controls and dependencies
 

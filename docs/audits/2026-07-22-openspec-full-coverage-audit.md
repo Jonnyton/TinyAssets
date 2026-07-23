@@ -101,8 +101,8 @@ by this section.
 ### Legacy specification inventory is not OpenSpec completion
 
 `docs/specs/` contains 52 Markdown files, all classified filename by filename
-in `2026-07-22-legacy-spec-disposition.md`: 16 CANONICAL provenance files, no
-ACTIVE owner, 20 CLAIMED inputs assigned to live successor lanes, and 16
+in `2026-07-22-legacy-spec-disposition.md`: 18 CANONICAL provenance files, no
+ACTIVE owner, 18 CLAIMED inputs assigned to live successor lanes, and 16
 HISTORY files. `docs/specs/INDEX.md` now points to OpenSpec rather than claiming
 current authority for the legacy directory.
 
@@ -537,9 +537,11 @@ must carry the executable SHALL/scenario contracts and tasks.
    concurrency/load, CI, and post-fix evidence gates when behavior changes.
 
 **Current verdict: NOT COMPLETE.** Criterion 1 fails on the credential-vault
-and hyperparameter-importance remainders above. Criterion 3 fails only on the three
-PLAN-gated groups; PRs #1627 and #1542 now durably own the other five target
-groups as active, unsynced changes. Criterion 5 now passes: all 263
+and hyperparameter-importance remainders above. Criterion 3 fails on five
+target-owner groups: three PLAN-gated groups plus the promoted runtime-fiction
+memory graph and future hyperparameter science node/fixtures. PRs #1627 and
+#1542 durably own the other five full-platform groups as active, unsynced
+changes. Criterion 5 now passes: all 263
 requirements and 759 scenarios are independently grounded and strict-valid.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
