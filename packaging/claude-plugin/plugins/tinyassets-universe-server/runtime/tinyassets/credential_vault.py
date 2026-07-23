@@ -390,6 +390,8 @@ def resolve_llm_api_key(
 def provider_auth_env_overrides(
     universe_dir: str | Path | None,
     provider_name: str,
+    *,
+    include_api_keys: bool = True,
 ) -> dict[str, str]:
     """Return subprocess env overrides for a CLI-subprocess provider.
 
@@ -397,7 +399,14 @@ def provider_auth_env_overrides(
     founder-deposited BYO API key (OPENAI_API_KEY / ANTHROPIC_API_KEY). The key
     is overlaid here, AFTER ``subprocess_env_without_api_keys`` has stripped the
     process-global keys, so a per-universe key never leaks across universes and
-    the platform default is not exposed to a BYO-key universe.
+    the platform default is not exposed to a BYO-key universe. Each provider gets
+    ONLY its own key (codex→OPENAI, claude→ANTHROPIC), never the other's.
+
+    ``include_api_keys=False`` overlays ONLY subscription auth and drops the BYO
+    API keys. Sandbox-required coding-node spawns pass this (Codex S3 round-4):
+    the vault overlay must honor the ``TINYASSETS_ALLOW_API_KEY_PROVIDERS`` opt-in
+    just like host-env keys, or it silently re-adds an API key the sanitizer
+    stripped.
     """
     provider = provider_name.strip()
     if provider == "codex":
@@ -405,9 +414,10 @@ def provider_auth_env_overrides(
         codex_home = ensure_codex_home_from_vault(universe_dir)
         if codex_home:
             overrides["CODEX_HOME"] = str(codex_home)
-        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
-        if api_key:
-            overrides["OPENAI_API_KEY"] = api_key
+        if include_api_keys:
+            api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
+            if api_key:
+                overrides["OPENAI_API_KEY"] = api_key
         return overrides
     if provider == "claude-code":
         overrides = {}
@@ -417,9 +427,10 @@ def provider_auth_env_overrides(
         oauth_token = resolve_claude_oauth_token(universe_dir)
         if oauth_token:
             overrides["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
-        api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
-        if api_key:
-            overrides["ANTHROPIC_API_KEY"] = api_key
+        if include_api_keys:
+            api_key = resolve_llm_api_key(universe_dir, "ANTHROPIC_API_KEY")
+            if api_key:
+                overrides["ANTHROPIC_API_KEY"] = api_key
         return overrides
     return {}
 
@@ -436,8 +447,14 @@ def apply_provider_auth_env(
     provider_name: str,
     *,
     universe_dir: str | Path | None = None,
+    include_api_keys: bool = True,
 ) -> dict[str, str]:
-    """Overlay per-universe subscription auth settings onto *env*."""
+    """Overlay per-universe subscription auth settings onto *env*.
+
+    ``include_api_keys=False`` overlays subscription auth only (drops the vault
+    BYO API keys) — sandbox-required spawns pass this so the overlay honors the
+    API-key opt-in and never re-adds a key the sanitizer stripped.
+    """
     resolved_universe = (
         Path(universe_dir)
         if universe_dir is not None
@@ -446,7 +463,53 @@ def apply_provider_auth_env(
     if resolved_universe is None:
         return env
     try:
-        env.update(provider_auth_env_overrides(resolved_universe, provider_name))
+        env.update(provider_auth_env_overrides(
+            resolved_universe, provider_name, include_api_keys=include_api_keys,
+        ))
     except ValueError:
         raise
     return env
+
+
+# --------------------------------------------------------------------------- #
+# Job-scoped credential grant — vault-broker CONSUMPTION seams (Codex S3 r19 #1)
+# --------------------------------------------------------------------------- #
+#
+# The isolated-executor boundary (Codex S3 r16+) must NOT carry a raw, forgeable
+# ``universe_id`` — a compromised worker could forge it to reach another tenant's
+# credentials. Instead the daemon issues an OPAQUE, JOB-SCOPED grant derived from
+# the AUTHORITATIVE run binding, and the isolated worker redeems it to a SCOPED
+# credential context via the vault broker.
+#
+# These are CONSUMPTION SEAMS the credential-vault workstream fills — S3 does NOT
+# implement a parallel grant/credential store here (host directive: "consume the
+# vault broker's primitive, do not invent a parallel one"). Phase 1 / no broker
+# wired → issuance returns ``None`` and redemption returns ``None`` (fail closed):
+# the request carries no grant and the worker cannot resolve ANY tenant's
+# credentials. The vault-broker slice replaces these with real, signed/expiring,
+# cross-universe-safe issuance + redemption.
+
+
+def issue_job_credential_grant(
+    *, run_id: str, universe_dir: str | Path | None,
+) -> Any | None:
+    """Issue an OPAQUE, daemon-issued, JOB-SCOPED credential grant for the run's
+    AUTHORITATIVE universe binding (``universe_dir`` resolved from the run record —
+    NEVER caller-forgeable metadata). Returns an opaque token the isolated worker
+    later redeems via :func:`redeem_job_credential_grant`, or ``None`` when no
+    vault broker is wired (Phase 1) → the request carries no grant → fail closed.
+
+    Vault-broker CONSUMPTION seam (Codex S3 r19 #1): S3 consumes it; the vault
+    workstream implements real issuance (signed, expiring, single-universe-scoped)."""
+    return None
+
+
+def redeem_job_credential_grant(grant: Any) -> Any | None:
+    """Redeem an opaque job-scoped grant to a SCOPED credential context (e.g. a
+    :class:`tinyassets.providers.base.UniverseContext`) the isolated worker binds
+    its provider to. FAIL CLOSED (``None``) for a missing / malformed / expired /
+    cross-universe grant. Phase 1 / no broker wired → ``None``.
+
+    Vault-broker CONSUMPTION seam (Codex S3 r19 #1): S3 consumes it; the vault
+    workstream implements real redemption + scope enforcement."""
+    return None

@@ -211,6 +211,12 @@ def _restartable_work_exists(universe_path: Path) -> bool:
 
 register_domain_callable(
     "fantasy_author", "universe_cycle_wrapper", universe_cycle_wrapper,
+    # Codex S3 r13 #1: HOST-ONLY. This invokes the FULL daemon graph — it accepts
+    # caller-controlled universe paths and reaches the filesystem, SQLite, and
+    # provider ops. It is NOT a pure text transform (the r12 capability="text" was
+    # WRONG). Only the daemon's own trusted compile may run it; a user-authored
+    # branch selecting domain_id="fantasy_author" fails closed.
+    host_only=True,
 )
 register_domain_branch_slug("fantasy_author", "fantasy_author/universe-cycle")
 register_domain_branch_slug("fantasy_author", "fantasy_author:universe_cycle_wrapper")

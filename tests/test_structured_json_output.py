@@ -45,7 +45,7 @@ def _make_fn(
 ):
     return _build_prompt_template_node(
         node,
-        provider_call=lambda prompt, system, role="writer": response,
+        provider_call=lambda prompt, system, role="writer", **_kw: response,
         event_sink=None,
         state_schema=state_schema,
     )
@@ -228,7 +228,7 @@ def test_json_contract_suffix_appears_in_prompt():
     with."""
     captured: dict = {}
 
-    def provider(prompt, system, role="writer"):
+    def provider(prompt, system, role="writer", **_kw):
         captured["prompt"] = prompt
         return '{"title": "t", "body": "b"}'
 

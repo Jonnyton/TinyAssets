@@ -223,7 +223,7 @@ class TestBiteLoopDiagnostics:
         _LAST_BITE_OUTCOMES.clear()
 
     def test_all_parse_failures_tally_nonzero(self):
-        def bad_provider(prompt, system, role):
+        def bad_provider(prompt, system, role, **_kw):
             return "I'm sorry, I can't help with that."
 
         source = "Lorem ipsum " * 10_000
@@ -237,7 +237,7 @@ class TestBiteLoopDiagnostics:
         assert outcomes["bites_total"] >= 1
 
     def test_empty_response_tally(self):
-        def empty_provider(prompt, system, role):
+        def empty_provider(prompt, system, role, **_kw):
             return ""
 
         source = "x " * 30_000
@@ -250,7 +250,7 @@ class TestBiteLoopDiagnostics:
         assert outcomes["ok"] == 0
 
     def test_provider_error_tally(self):
-        def erroring_provider(prompt, system, role):
+        def erroring_provider(prompt, system, role, **_kw):
             raise RuntimeError("rate limit")
 
         source = "x " * 30_000
@@ -262,7 +262,7 @@ class TestBiteLoopDiagnostics:
         assert outcomes["provider_error"] >= 1
 
     def test_ok_tally_on_success(self):
-        def good_provider(prompt, system, role):
+        def good_provider(prompt, system, role, **_kw):
             return '{"topic_a": "content from this bite"}'
 
         source = "x " * 10_000
@@ -274,7 +274,7 @@ class TestBiteLoopDiagnostics:
         assert outcomes["ok"] >= 1
 
     def test_parsed_but_empty_tally(self):
-        def empty_obj_provider(prompt, system, role):
+        def empty_obj_provider(prompt, system, role, **_kw):
             return "{}"
 
         source = "x " * 30_000

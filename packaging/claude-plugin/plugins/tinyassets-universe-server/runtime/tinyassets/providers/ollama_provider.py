@@ -28,6 +28,9 @@ class OllamaProvider(BaseProvider):
 
     name = "ollama-local"
     family = "local"
+    # Inherently tool-less HTTP text-generation — cannot execute tools at all, so
+    # it is SAFE for a closed-surface node (Codex S3 REJECT r3 C3).
+    enforces_closed_tool_surface = True
 
     def __init__(
         self,

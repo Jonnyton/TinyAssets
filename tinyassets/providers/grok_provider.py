@@ -27,6 +27,9 @@ class GrokProvider(BaseProvider):
 
     name = "grok-free"
     family = "xai"
+    # Inherently tool-less HTTP text-generation — SAFE for a closed-surface node
+    # (Codex S3 REJECT r3 C3).
+    enforces_closed_tool_surface = True
 
     def __init__(self) -> None:
         require_api_key_provider_opt_in(self.name)

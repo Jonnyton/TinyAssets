@@ -320,7 +320,11 @@ def register_search_repo_files() -> None:
     """
     from tinyassets.domain_registry import register_domain_callable
 
-    register_domain_callable(DOMAIN_ID, NODE_ID, search_repo_files)
+    # Codex S3 r12 #1: search_repo_files searches a user-bound repo (GitHub API) —
+    # a repo-READ capability (search is a read), fails closed until the runner.
+    register_domain_callable(
+        DOMAIN_ID, NODE_ID, search_repo_files, capability="repo_read",
+    )
 
 
 __all__ = [

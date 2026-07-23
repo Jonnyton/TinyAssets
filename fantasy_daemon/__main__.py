@@ -1081,7 +1081,12 @@ def _build_unified_graph_builder() -> Any:
         )
     raw = yaml.safe_load(seed_path.read_text(encoding="utf-8"))
     branch = BranchDefinition.from_dict(raw)
-    compiled_branch = compile_branch(branch)
+    # Codex S3 r13 #1: this is the DAEMON compiling its own host-authored seed
+    # branch (loaded from disk, not user-authored) — the ONLY trusted compile, so
+    # its HOST-ONLY ``universe_cycle_wrapper`` adapter is permitted. The user
+    # run_branch path never passes trusted=True, so a stranger's remixed branch
+    # selecting domain_id="fantasy_author" fails closed at the choke point.
+    compiled_branch = compile_branch(branch, trusted=True)
     return compiled_branch.graph
 
 

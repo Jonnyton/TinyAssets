@@ -220,7 +220,7 @@ def test_compile_branch_emits_warnings_through_event_sink():
 def _make_prompt_fn(
     node: NodeDefinition,
     *,
-    provider_call=lambda prompt, system, role="writer": f"RENDERED::{prompt}",
+    provider_call=lambda prompt, system, role="writer", **_kw: f"RENDERED::{prompt}",
     event_sink=None,
 ):
     return _build_prompt_template_node(
