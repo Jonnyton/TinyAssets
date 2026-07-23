@@ -77,9 +77,10 @@ receipt whose referenced run no longer resolves passes the current public-list
 visibility predicate rather than failing closed.
 
 Receipt access helpers derive a universe only from a run actor beginning
-`universe:`. They enforce that universe's read/write policy in that case, but
-currently return allowed for any non-universe actor string rather than checking
-a general run-owner ACL.
+`universe:` whose trimmed suffix is non-empty. They enforce that universe's
+read/write policy in that case, but currently return allowed for non-universe
+actor strings and `universe:` with an empty suffix rather than checking a
+general run-owner ACL.
 
 Mailbox send validates the source run but not destination node or reply
 existence. All message actions use the installation's shared
@@ -87,9 +88,10 @@ existence. All message actions use the installation's shared
 `universe_access_allows`, or per-run read/write check. Reads with no node
 enumerate that data-root mailbox. Ack authorization compares a caller-supplied
 node string, broadcast ack is global, and the returned acknowledgement time is
-not persisted. A non-integer public receive limit can raise before the
-handler's JSON error wrapper. These facts must remain visible until a
-separately reviewed hardening change replaces them.
+not persisted. A public receive limit rejected by `int()` can raise before the
+handler's JSON error wrapper, while integer-convertible values are coerced.
+These facts must remain visible until a separately reviewed hardening change
+replaces them.
 
 ## Risks / Trade-offs
 

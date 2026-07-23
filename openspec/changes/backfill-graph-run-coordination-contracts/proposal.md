@@ -19,16 +19,17 @@ OpenSpec requirement owns their behavior or their security limitations.
 - State the current limitations explicitly: run receipts assign no truth rank
   and provide no caller idempotency; the declared receipt foreign key is not
   enforced and orphan receipt rows pass the current visibility predicate;
-  receipt ACL derivation applies only to `universe:<uid>` run actors while
-  other actor strings pass; extension keys are not validated; teammate
+  receipt ACL derivation applies only when a run actor's `universe:` suffix
+  trims to a non-empty ID while other or empty-suffix actor strings pass;
+  extension keys are not validated; teammate
   recipients and reply targets are not storage-validated; empty-node reads
   enumerate the
   shared data-root mailbox; the message actions perform no run-visibility,
   universe-access, or resource-level actor check; caller node identity is not
   independently authenticated; acknowledgement time is returned but not
-  stored; a non-integer public receive limit can escape the JSON error wrapper;
-  and the callable graph-compiler message helpers are not integrated into
-  `NodeDefinition` or the `compile_branch` execution path.
+  stored; a public receive limit rejected by `int()` can escape the JSON error
+  wrapper; and the callable graph-compiler message helpers are not integrated
+  into `NodeDefinition` or the `compile_branch` execution path.
 - Change OpenSpec only. Runtime behavior and public tool shape do not change.
 
 ## Capabilities
