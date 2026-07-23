@@ -332,7 +332,7 @@ def test_production_mutation_before_image_mutation_publishes_failed_terminal_tru
                 running_image_ref=_OTHER,
             ),
             "rollback_failed",
-            "passed",
+            "failed",
         ),
         (
             "no rollback target",

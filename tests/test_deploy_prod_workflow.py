@@ -85,11 +85,37 @@ def test_deploy_resolves_image_to_digest_and_never_latest():
     )
 
 
-def test_deploy_resolves_previous_image_to_digest_for_rollback():
-    text = _text()
-    assert "previous TINYASSETS_IMAGE to immutable rollback ref" in text
-    assert "prev_digest=" in text
-    assert "prev_image=\"${prev%%:*}\"" in text
+def test_capture_previous_uses_configured_and_running_digest_observations():
+    wf = _load()
+    step = _step_named(wf, "Capture previous image tag (for rollback)")
+    run_script = step.get("run", "") or ""
+
+    assert "docker inspect --type container" in run_script
+    assert "{{.Image}}" in run_script
+    assert "tinyassets-daemon" in run_script
+    assert "docker image inspect" in run_script
+    assert "{{json .RepoDigests}}" in run_script
+    assert "configured_image_ref=" in run_script
+    assert "running_image_ref=" in run_script
+    assert "previous=" in run_script
+    assert "docker buildx imagetools inspect" not in run_script, (
+        "a mutable configured tag cannot be converted into rollback proof"
+    )
+
+
+def test_capture_previous_transports_bounded_prior_receipt_read_only():
+    wf = _load()
+    step = _step_named(wf, "Capture previous image tag (for rollback)")
+    run_script = step.get("run", "") or ""
+
+    assert "docker volume inspect tinyassets-data" in run_script
+    assert "head -c 65537" in run_script
+    assert "base64 -w0" in run_script
+    assert "prior_receipt_b64=" in run_script
+    for forbidden in (" install ", " mv ", " rm ", "set TINYASSETS_IMAGE"):
+        assert forbidden not in run_script, (
+            "pre-mutation capture must remain read-only on the production host"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -647,9 +673,20 @@ def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
     assert helper_idx < transfer_idx < install_idx
     assert "release-state.json" in run_script
     assert "/data/release-state.json" in run_script
+    assert "release-state.json.next" in run_script
+    assert "mv " in run_script, (
+        "receipt replacement must rename a validated same-volume sibling "
+        "instead of exposing a partially written terminal receipt"
+    )
     assert terminal_step.get("continue-on-error") is not True, (
         "terminal writer failure must keep the workflow red"
     )
+
+
+def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
+    text = _text()
+    assert "github.event.workflow_run.head_sha || github.sha" not in text
+    assert "org.opencontainers.image.revision" in text
 
 
 def test_terminal_writer_outputs_are_visible_before_fallible_work():
