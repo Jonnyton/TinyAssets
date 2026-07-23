@@ -911,3 +911,18 @@ Notes:
 - Related implications: fail-closed provider auth overlay; R2-1a/R2-1b
 - Idea feed refs: none
 - Ship/abandon: land only the coordination correction; no OpenSpec or runtime edits
+
+## 2026-07-23 - create uptime-alarm-concurrency-proof-coord
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/uptime-alarm-concurrency-proof-coord
+- Lane state: Blocked coordination lane
+- Worktree: C:\Users\Jonathan\Projects\wf-uptime-alarm-concurrency-proof-coord
+- STATUS/Issue/PR: `Prove uptime alarm §14 concurrency after #1638/#1639`; coordination PR after review
+- PLAN refs: Uptime & Alarms; Cross-Cutting Principles
+- Purpose: restore the mandatory queued-trigger and incident-order concurrency proof omitted from #1638
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-uptime-alarm-concurrency-proof-coord\_PURPOSE.md
+- Memory refs: PRs #1638/#1639; post-merge independent ADAPT review
+- Related implications: active wiki-canary OAuth-challenge lane owns overlapping uptime files
+- Idea feed refs: none
+- Ship/abandon: publish the pending row now; build only after the active owner releases the workflow/spec
