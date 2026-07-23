@@ -1,7 +1,7 @@
 ## 1. Contract ownership and review gates
 
 - [x] 1.1 Release `paid-market-price-index-and-forwards` from the Wave 2 transaction/migration change and record this change as the build-forward umbrella’s narrow live-price successor.
-- [x] 1.2 Obtain opposite-provider review of the proposal, design, full delta, PR #1574 sources, and TinyAssets context. Claude Sonnet approved the corrected source mapping on 2026-07-22; the verdict is recorded in `docs/audits/2026-07-22-paid-market-live-price-source-review.md`.
+- [x] 1.2 Obtain opposite-provider review of the proposal, design, full delta, and compute/LLM/task/fabrication research now archived by PR #1648 against TinyAssets context. Claude Sonnet approved the corrected source mapping on 2026-07-22; the verdict is recorded in `docs/audits/2026-07-22-paid-market-live-price-source-review.md`.
 - [ ] 1.3 Confirm the Wave 2 logical-accounting transaction owner, required wallet/chain-effect successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, outbound boundary authority/receipts successor, tenant identity/isolation, R2-1 provider authority/credential-class receipts, distributed execution, and each domain capacity/evidence owner have landed before their dependent adapter, public, executable, settlement, or paid-observation tasks; otherwise keep those tasks blocked and dark.
 - [x] 1.4 Run `openspec validate paid-market-live-price-discovery --strict`, full strict validation, requirement/scenario counts, and `git diff --check` after every contract amendment.
 
