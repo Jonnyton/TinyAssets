@@ -1056,3 +1056,18 @@ Notes:
 - STATUS/Issue/PR: implementation row retired; P1 live-failure-exercise watch retained; PR pending
 - Verification: 240 focused checks; pinned actionlint 1.7.7; strict OpenSpec 42/42; three independent approvals
 - Ship/abandon: merge through PR; do not claim operational proof until both production-safe failure exercises pass
+
+## 2026-07-23 - create command-center-lan-auth
+
+- Provider: codex-gpt5-desktop-lan
+- Branch: fix/command-center-lan-auth
+- Lane state: Active OpenSpec + TDD P0 repair
+- Worktree: C:\Users\Jonathan\Projects\wf-command-center-lan-auth
+- STATUS/Issue/PR: P0 from merged #1489; PR pending
+- PLAN refs: Scoping Rules; Daemon Platform; API & MCP Interface; Harness & Coordination
+- Purpose: replace optional unauthenticated LAN access with a fail-closed local-dashboard authentication and mutation boundary
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-command-center-lan-auth\_PURPOSE.md
+- Memory refs: current canonical `development-coordination-runtime` Agent Village requirements; merged #1489
+- Related implications: local dashboard; provider subscription spending; session-transcript privacy
+- Idea feed refs: `ideas/2026-07-19-agent-village-command-center.md`
+- Ship/abandon: land one reviewed security repair; no provider/model dispatch during acceptance
