@@ -1,9 +1,9 @@
 # Request authority, open compute markets, and remaining OpenSpec gaps
 
-**Freshness:** 2026-07-22 PT  
-**Initial provider:** Codex  
-**Repository baseline:** `origin/main` at `7c23c881502460f65cfd5ee81c27042d87743f24`  
-**Status:** Research and spec proposal only. Runtime implementation is blocked on an independent Claude security review after its 2026-07-24 evening PT capacity reset.  
+**Freshness:** 2026-07-22 PT
+**Initial provider:** Codex
+**Repository baseline:** `origin/main` at `2190f65d03f58ef8cb619b3eefbf0a13588d4828`
+**Status:** Research and spec proposal only. Runtime implementation is blocked on an independent Claude security review after its 2026-07-24 evening PT capacity reset.
 **User constraint:** TinyAssets provides the control plane, not user compute. A user's work may use that user's BYOC resources or an exact market agreement they accepted; it never consumes project maintainer/founder/operator credentials, subscriptions, quota, accounts, hardware, or hidden platform compute.
 
 ## Executive judgment
