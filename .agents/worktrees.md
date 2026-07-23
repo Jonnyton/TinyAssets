@@ -1001,3 +1001,18 @@ Notes:
 - Related implications: fail-closed provider auth overlay; credential-vault backfill; both `converse` writer calls
 - Idea feed refs: none
 - Ship/abandon: strict-validate and commit locally; apply waits for #1606/R2-1a, and no push/PR occurs before root review
+
+## 2026-07-23 - create disk-watch-remediation-continuity
+
+- Provider: codex-gpt5-desktop-disk
+- Branch: fix/disk-watch-remediation-continuity
+- Lane state: Active OpenSpec + TDD uptime repair
+- Worktree: C:\Users\Jonathan\Projects\wf-disk-watch-remediation
+- STATUS/Issue/PR: P1 disk-watch stop-on-pressure seam; PR pending
+- PLAN refs: Uptime & Alarms
+- Purpose: keep the intentional disk-pressure alert failure visible while guaranteeing later transcript rotation and disposable-host reclamation commands are attempted in order
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-disk-watch-remediation\_PURPOSE.md
+- Memory refs: canonical `uptime-and-alarms` disk-pressure stop-seam requirement
+- Related implications: P0 disk-full triage; deploy unit installation convergence
+- Idea feed refs: none
+- Ship/abandon: land one reviewed OpenSpec/TDD repair with focused tests; no host-install claim without live evidence
