@@ -858,7 +858,7 @@ Notes:
 - Branch: codex/hyperparameter-importance-spec-backfill
 - Lane state: Active lane
 - Worktree: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec
-- STATUS/Issue/PR: Backfill shipped hyperparameter-importance evaluator
+- STATUS/Issue/PR: PR #1633 — Backfill shipped hyperparameter-importance evaluator
 - PLAN refs: Evaluation; Outcomes
 - Purpose: canonicalize the shipped fail-soft RF/Spearman evaluator and correct the legacy audit so the incompatible future science-domain target remains distinct
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec\_PURPOSE.md
