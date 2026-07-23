@@ -53,3 +53,19 @@ def test_episodic_coordinate_shape_round_trips_and_replaces_by_domain():
 
 def test_unknown_domain_has_no_episodic_coordinate_shape():
     assert resolve_episodic_coordinate_shape("unknown") is None
+
+
+def test_fantasy_domain_registers_its_exact_episodic_coordinate_shape():
+    import importlib
+    from domains.fantasy_daemon.memory import schemas
+
+    importlib.reload(schemas)
+
+    shape = resolve_episodic_coordinate_shape("fantasy_author")
+    assert shape is not None
+    assert shape.coordinate_fields == (
+        "book_number",
+        "chapter_number",
+        "scene_number",
+    )
+    assert shape.sequence_field == "chapter_number"

@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: The provider call bridge retries only transient full-chain exhaustion
-The shared provider call bridge SHALL retry `AllProvidersExhaustedError` up to three total router attempts with exponential waits bounded from two through eight seconds. It SHALL NOT retry unrelated exceptions. After failure or when no router exists, it SHALL return the caller-supplied fallback response when present and otherwise raise the real exhaustion error rather than synthesize empty prose.
+The shared provider call bridge SHALL retry `AllProvidersExhaustedError` up to three total router attempts with exponential waits bounded from two through eight seconds. It SHALL NOT retry unrelated exceptions. After failure or when no router exists, it SHALL return the caller-supplied fallback response when present and otherwise re-raise the original unrelated error, or raise `AllProvidersExhaustedError` for exhaustion or a missing router, rather than synthesize empty prose.
 
 #### Scenario: Transient exhaustion clears
 - **WHEN** the first router attempt raises `AllProvidersExhaustedError` and the second succeeds

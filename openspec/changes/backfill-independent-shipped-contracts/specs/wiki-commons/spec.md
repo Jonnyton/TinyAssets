@@ -12,7 +12,7 @@
 - **THEN** each successful call increments the stored count by one without creating another typed filing
 
 ### Requirement: Wiki deletion is dry-run first, hash-guarded, and protects anchors
-Wiki deletion SHALL resolve only an exact `pages/<category>/<slug>.md` or `drafts/<category>/<slug>.md` path or a unique slug; it SHALL reject traversal, ambiguity, and protected anchor pages. It SHALL default to a dry run that returns the current SHA-256 and `would_delete=true`; a real delete SHALL require a non-empty reason, SHALL reject a supplied mismatched expected hash, and SHALL log the exact deletion.
+Wiki deletion SHALL resolve only an exact categorized `pages/<category>/<slug>` or `drafts/<category>/<slug>` path with an optional `.md` extension, or a unique slug; it SHALL reject traversal, ambiguity, and protected anchor pages. It SHALL default to a dry run that returns the current SHA-256 and `would_delete=true`; a real delete SHALL require a non-empty reason, SHALL reject a supplied mismatched expected hash, and SHALL log the exact deletion.
 
 #### Scenario: Default delete is non-mutating
 - **WHEN** a caller requests deletion without setting `dry_run=false`
@@ -26,16 +26,20 @@ Wiki deletion SHALL resolve only an exact `pages/<category>/<slug>.md` or `draft
 - **WHEN** a caller targets `index`, `log`, `schema`, or the root wiki document
 - **THEN** deletion returns a protected error even if a reason is supplied
 
-### Requirement: Draft consolidation is explicit and longest-body preserving
-Wiki consolidation SHALL cluster draft pages whose pairwise similarity meets the caller threshold and SHALL default to reporting clusters without mutation. In execution mode it SHALL choose the longest-body draft as primary, append the other bodies with source/date markers, remove merged secondary drafts on a best-effort basis, and report the executed clusters.
+### Requirement: Draft consolidation is seed-clustered and best-effort
+Wiki consolidation SHALL compare each unmerged draft seed with later unmerged drafts and place every threshold match in that seed's cluster; members therefore need not meet the threshold with one another. It SHALL default to reporting clusters without mutation. In execution mode it SHALL choose the longest-body draft as primary, build content containing the other bodies with source/date markers, attempt to remove each secondary, and only then attempt to write the primary. Secondary unlink and primary-write errors are swallowed and the cluster is still reported as executed. This ordering can lose a removed secondary if the later primary write fails and is an explicit as-built limitation.
 
 #### Scenario: Consolidation defaults to preview
 - **WHEN** similar drafts exist and the caller omits `dry_run=false`
 - **THEN** the response reports candidate clusters and no draft file changes
 
-#### Scenario: Executed consolidation preserves source bodies
-- **WHEN** the caller executes consolidation for a cluster
-- **THEN** the longest-body draft remains primary and includes each merged draft body with its provenance marker
+#### Scenario: Seed matches need not be pairwise matches
+- **WHEN** two later drafts each meet the threshold against the cluster seed but not against one another
+- **THEN** consolidation reports all three drafts in the same seed-based cluster
+
+#### Scenario: Execution remains best-effort on filesystem failure
+- **WHEN** a secondary unlink or the subsequent primary write raises an `OSError`
+- **THEN** consolidation swallows that operation error and still reports the cluster in executed mode, without guaranteeing that every source body remains on disk
 
 ### Requirement: Wiki lint reports local and whole-wiki integrity without repairing it
 Page-scoped lint SHALL report missing link targets and, for drafts, promotion blockers; for published pages it SHALL also report orphan/index and current metadata-freshness issues. Whole-wiki lint SHALL report orphaned, missing, unindexed, ghost, supersession, stale-confidence, source, and pending-draft conditions, returning `healthy` only when no issue is found. Lint SHALL not mutate pages or the index.

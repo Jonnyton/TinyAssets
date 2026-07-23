@@ -27,11 +27,11 @@ PR creation SHALL operate only on a recorded eligible auto-ship attempt and a va
 - **THEN** status still returns an `auto_ship_health` object with `ledger_available=false` and a `ledger_read_failed` warning
 
 ### Requirement: Branch-task restarts reuse completed runs and recover nested Patch Packets
-The daemon branch-task executor SHALL derive the stable run name `branch-task-<branch_task_id>` and reuse a matching completed durable run rather than execute it again. For a completed bug-investigation task it SHALL find the first non-empty packet in `patch_packet`, `candidate_patch_packet`, or `child_candidate_patch_packet`, recursively inspect `attached_child_output`, or derive implementation/test fields from a `coding_packet`; non-empty strings SHALL become an implementation sketch. It SHALL attach the recovered packet to the source wiki page, while non-completed runs, non-investigation tasks, missing bug ids, and empty packets SHALL not write a false Patch Packet.
+The daemon branch-task executor SHALL derive the stable run name `branch-task-<branch_task_id>` and reuse a matching completed durable run rather than execute it again. It SHALL return metadata containing the reused run id, status, actor, branch definition, and reuse flag; the stored output is consumed internally rather than returned. For a completed bug-investigation task it SHALL find the first non-empty packet in `patch_packet`, `candidate_patch_packet`, or `child_candidate_patch_packet`, recursively inspect `attached_child_output`, or derive implementation/test fields from a `coding_packet`; non-empty strings SHALL become an implementation sketch. It SHALL attach the recovered packet to the source wiki page, while non-completed runs, non-investigation tasks, missing bug ids, and empty packets SHALL not write a false Patch Packet.
 
 #### Scenario: Completed durable run is reused after restart
 - **WHEN** a claimed branch task has a matching completed run under its stable run name
-- **THEN** the executor returns that run id and output with `reused_existing_run=true` without invoking branch execution again
+- **THEN** the executor returns reused-run metadata with that run id and `reused_existing_run=true`, uses stored output only for packet recovery, and does not invoke branch execution again
 
 #### Scenario: Nested child packet is attached
 - **WHEN** a completed bug-investigation output contains `attached_child_output.candidate_patch_packet`

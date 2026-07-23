@@ -6,7 +6,7 @@
 
 ## 2. Grounding And Verification
 
-- [ ] 2.1 Obtain independent requirement-by-requirement source review and correct every overclaim, omission, and ownership collision
+- [x] 2.1 Obtain independent requirement-by-requirement source review and correct every overclaim, omission, and ownership collision
 - [x] 2.2 Run the focused behavior suites and strict-validate the change without invoking `tests/test_uptime_canary_layer2.py` through Codex on Windows
 
 ## 3. Canonicalization

@@ -29,3 +29,37 @@ The cross-provider drift checker SHALL report a `missing-artifact` issue when a 
 #### Scenario: Provider context candidates are machine-readable
 - **WHEN** `provider_context_feed.py --json` is invoked at a lifecycle phase
 - **THEN** it emits a parseable array of the ranked context candidate records without promoting any candidate into authority
+
+### Requirement: Authority resolution uses a frozen fail-closed v1 decision contract
+The authority-resolution contract SHALL use schema version `resolver-decision-v1` and SHALL accept only decision statuses `resolved`, `unresolved`, and `needs-human-decision`. A decision SHALL carry confidence in `[0.0, 1.0]`, at least one evidence handle, a source-role-map entry for every handle, a non-empty resolver version and reason, and no unknown payload fields. Resolver input SHALL require a universe-scoped question, conflict type, and at least one citation while allowing unknown source roles or surface types through the input boundary so the taxonomy guard can return an auditable unresolved decision.
+
+#### Scenario: Decision payload round-trips exactly
+- **WHEN** a valid v1 decision is serialized and reconstructed
+- **THEN** schema version, status, confidence, evidence handles, source-role map, resolver version, and reason are preserved
+
+#### Scenario: Unknown decision field is rejected
+- **WHEN** a raw v1 decision payload includes a field outside the frozen dataclass shape
+- **THEN** validation raises instead of silently treating a future schema as v1
+
+#### Scenario: Unknown taxonomy fails closed
+- **WHEN** a citation uses a surface type or source role outside the known v1 sets
+- **THEN** the guard returns `unresolved` with confidence `0.0`, preserves every evidence handle, labels the unknown entry in `source_role_map`, and names the unknown taxonomy in its reason
+
+### Requirement: The deterministic resolver preserves evidence and never forces a conflicting winner
+`resolve_authority` SHALL first apply the unknown-taxonomy guard. For known taxonomy it SHALL return `resolved` with confidence `0.9` when all non-empty normalized claim texts agree; SHALL return `unresolved` with confidence `0.0` when normalized claims conflict; SHALL return `needs-human-decision` with confidence `0.0` when no citation has claim text; and SHALL reframe `surface-mismatch` as `resolved` with confidence `0.82` while preserving every evidence handle and typed surface label. It SHALL preserve the input source role for every known citation and SHALL not implement a configurable precedence policy.
+
+#### Scenario: Matching claims resolve deterministically
+- **WHEN** all cited claim texts differ only by case or whitespace
+- **THEN** the resolver returns `resolved` at confidence `0.9` with all evidence handles preserved
+
+#### Scenario: Direct conflict remains unresolved
+- **WHEN** known citations make different non-empty normalized claims
+- **THEN** the resolver returns `unresolved` at confidence `0.0` and does not choose a winner
+
+#### Scenario: Surface mismatch is reframed rather than discarded
+- **WHEN** the conflict type is `surface-mismatch` and all citation taxonomy is known
+- **THEN** the resolver returns `resolved` at confidence `0.82` and its reason lists every evidence handle with its surface type
+
+#### Scenario: Missing claim text needs human judgment
+- **WHEN** no citation provides non-empty claim text
+- **THEN** the resolver returns `needs-human-decision` at confidence `0.0`
