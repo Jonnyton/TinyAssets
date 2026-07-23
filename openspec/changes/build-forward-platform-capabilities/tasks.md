@@ -4,15 +4,13 @@
 
 ## 1. Slice the umbrella before implementation
 
-- [ ] 1.1 Create a successor change for versioned market schema history and the single authenticated transaction transport, including differential oracle tests and direct-path retirement.
+- [x] 1.1 Delegate the complete versioned schema-history and single authenticated logical-accounting transport slice to `paid-market-track-e-wave-2-transport`; physically release the umbrella `paid-market-economy` delta and require the successor to preserve the single-path and differential-oracle guarantees without treating database accounting as real-fund authority.
 - [ ] 1.2 Create a successor change for outbound boundary grants, action caps, credential-blind adapters, inboxes, typed artifacts, and destination-reconciled effect batches.
 - [ ] 1.3 Record explicit Depends edges from every later slice to its transaction, boundary, identity, distributed-execution, gate, and provenance prerequisites; every market slice depends on the `paid-market-economy` transaction owner.
 
 ## 2. Live pricing and capacity forwards
 
-- [ ] 2.1 Implement normalized settlement evidence and the field-fresh quote aggregation service behind a default-off flag.
-- [ ] 2.2 Implement authenticated forward posting/purchase/expiry/settlement with durable collateral, buyer caps, principal-level manipulation controls, and unsupported-instrument refusal.
-- [ ] 2.3 Add bounded public HTTP/MCP quote reads and pass security, cache, concurrency/load, live canary, and rendered-chatbot acceptance gates.
+- [x] 2.1 Delegate the complete live-price and capacity-forward slice to `paid-market-live-price-discovery`; that successor owns preservation, implementation, acceptance, sync, and archive of the removed capability delta.
 
 ## 3. Data and training commons
 
