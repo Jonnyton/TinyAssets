@@ -1,8 +1,9 @@
 # Legacy specification disposition
 
 - **Date:** 2026-07-22
-- **Baseline:** PR #1620 merge on `origin/main` at `8cab31d8`, plus archived
-  change `2026-07-23-backfill-independent-shipped-contracts`
+- **Baseline:** PR #1622 merge on `origin/main` at `35817a3e`, plus archived
+  changes `2026-07-23-backfill-independent-shipped-contracts` and
+  `2026-07-23-backfill-runtime-memory-shipped-contracts`
 - **Scope:** all 52 Markdown files under `docs/specs/`, including the index
 - **Authority rule:** `openspec/specs/` is as-built behavioral truth,
   `openspec/changes/` is in-flight target truth, and PLAN.md owns architecture.
@@ -27,9 +28,9 @@
 
 | Disposition | Files |
 |---|---:|
-| CANONICAL | 16 |
+| CANONICAL | 18 |
 | ACTIVE | 0 |
-| CLAIMED | 20 |
+| CLAIMED | 18 |
 | HISTORY | 16 |
 | **Total** | **52** |
 
@@ -53,8 +54,8 @@
 | [`2026-04-19-track-n-vibe-coding-authoring-sandbox.md`](../specs/2026-04-19-track-n-vibe-coding-authoring-sandbox.md) | CLAIMED | Node authoring/file-I/O/evaluator-catalog/autoresearch behavior is an uncovered full-platform target group. |
 | [`2026-04-27-hyperparameter-importance-evaluator-node.md`](../specs/2026-04-27-hyperparameter-importance-evaluator-node.md) | CLAIMED | Promoted, science-lane-blocked domain target; a new STATUS successor now owns conversion to an active OpenSpec change. Generic evaluator behavior remains canonical separately. |
 | [`2026-04-27-hyperparameter-importance-fixture-pack.md`](../specs/2026-04-27-hyperparameter-importance-fixture-pack.md) | CLAIMED | Fixture companion to the promoted hyperparameter target; the same domain-target OpenSpec successor owns it. |
-| [`2026-04-27-recency-and-continue-branch-primitives.md`](../specs/2026-04-27-recency-and-continue-branch-primitives.md) | CLAIMED | The standalone recency/continue actions are superseded, but §§2.1–2.4 preserve the shipped `run_branch resume_from=<run_id>` contract; fold that surviving portion into the graph backfill owner. |
-| [`2026-04-27-recency-continue-fixture-pack.md`](../specs/2026-04-27-recency-continue-fixture-pack.md) | CLAIMED | Current `run_branch resume_from=<run_id>` behavior is shipped and tested but not stated exactly in canonical OpenSpec; fold it into the `graph-execution-substrate` portion of the 17-group backfill lane. |
+| [`2026-04-27-recency-and-continue-branch-primitives.md`](../specs/2026-04-27-recency-and-continue-branch-primitives.md) | CANONICAL | `graph-execution-substrate` owns the surviving `run_branch resume_from=<run_id>` terminal-source guards, input merge, distinct-run, and lineage contract; retired standalone actions remain historical. |
+| [`2026-04-27-recency-continue-fixture-pack.md`](../specs/2026-04-27-recency-continue-fixture-pack.md) | CANONICAL | `graph-execution-substrate` owns the shipped and tested terminal-run-seeded new-run behavior; the fixture pack remains evidence rather than authority. |
 | [`2026-04-27-runtime-memory-graph-minimal-schema-v1.md`](../specs/2026-04-27-runtime-memory-graph-minimal-schema-v1.md) | CLAIMED | The promoted runtime-fiction target still depends on this four-entity schema freeze; the `runtime-fiction-memory-graph` successor lane owns its disposition alongside the broader target. |
 | [`2026-04-30-classic-game-restoration-branch.md`](../specs/2026-04-30-classic-game-restoration-branch.md) | HISTORY | Community-built domain/Branch exemplar with no new platform primitive; retained as project evidence. |
 | [`2026-05-02-acceptance-scenario-minimal-schema.md`](../specs/2026-05-02-acceptance-scenario-minimal-schema.md) | CANONICAL | `evaluation-runtime-and-scenarios` owns validation, registry dispatch, normalization, and current MCP-call limits. |
@@ -93,10 +94,10 @@
 ## Successor impact
 
 This disposition creates two bounded successors for promoted domain targets.
-The twenty CLAIMED files fold into live STATUS work:
+The eighteen CLAIMED files fold into live STATUS work:
 
-- the eight-group dependency-bound shipped-contract backfill (the two
-  `resume_from` documents contribute concrete graph-execution evidence);
+- the four remaining direct-owner shipped-contract backfills; the runtime,
+  host-pool, graph, OKF-export, and `resume_from` residue is now canonical;
 - the PLAN-conflict host decision (schema/store/private-data/public-surface
   portions of the April/June cross-cutting specs plus the Phase-7 store plan);
 - the eight-group full-platform target change (catalog/collaboration,

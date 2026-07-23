@@ -1,10 +1,12 @@
 # OpenSpec Full-Coverage Audit
 
 - **Freshness:** 2026-07-23 UTC; canonical re-audit completed through PR #1619,
-  legacy authority classified through PR #1620, and nine independent shipped
-  contract groups source-reviewed, synced, and archived
-- **Code/spec baseline:** PR #1620 merge on `origin/main` at `8cab31d8`, plus
-  archived change `2026-07-23-backfill-independent-shipped-contracts`
+  legacy authority classified through PR #1620, nine independent shipped
+  groups landed through PR #1622, and four runtime/memory groups independently
+  source-reviewed, synced, and archived in this lane
+- **Code/spec baseline:** PR #1622 merge on `origin/main` at `35817a3e`, plus
+  archived changes `2026-07-23-backfill-independent-shipped-contracts` and
+  `2026-07-23-backfill-runtime-memory-shipped-contracts`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -17,8 +19,9 @@
 The original baseline verdict below is now historical. The repository has
 since landed eight Batch A canonical spec files, enriched the core runtime,
 provider/credential, and knowledge/memory owners, reclassified the eight
-forward-vision files, classified all 52 legacy specification documents, and
-archived nine independent shipped-contract backfills. The strict-valid tree
+forward-vision files, classified all 52 legacy specification documents,
+archived nine independent shipped-contract backfills, and reconciled four
+runtime/memory groups. The strict-valid tree
 now contains **25 canonical capabilities** and **9 active changes**. The eight
 forward-vision capability directories no longer exist under
 `openspec/specs/`; their shipped pure-core subsets are canonical and their
@@ -27,8 +30,8 @@ unbuilt outcomes are preserved by the active
 
 This progress does **not** yet prove full coverage. The canonical grounding
 pass identified seven inaccurate requirements; that correction plus the
-independently reviewed backfill now makes all 231 canonical requirements true
-as written. Eight dependency-bound shipped groups and eight full-platform
+independently reviewed backfills now make all 245 canonical requirements true
+as written. Four direct-owner shipped groups and eight full-platform
 target groups remain. The accurate answer is: current canonical OpenSpec
 describes built behavior, but not everything built or targeted is fully
 specified yet.
@@ -53,8 +56,8 @@ require host approval, so this audit records rather than repairs that drift.
 
 ### Current OpenSpec inventory
 
-Fresh strict validation after the independent backfill sync passes for the
-whole tree. Canonical OpenSpec contains 25 capabilities, 231 requirements, and 642
+Fresh strict validation after the runtime/memory backfill sync passes for the
+whole tree. Canonical OpenSpec contains 25 capabilities, 245 requirements, and 692
 scenarios. The nine active
 changes contain 104 proposed requirements and 196 top-level tasks, 39
 currently checked (nested checklist evidence is excluded from these task
@@ -105,10 +108,12 @@ validation.
   lifecycle strings; delayed discard remains explicit.
 - **Batch B (8 capabilities):** all 73 requirements and 179 scenarios are BUILT
   as bounded, including their explicit limitations. The audit nevertheless
-  found shipped behavior with no complete canonical owner: child-branch
-  invocation/await/receipt attachment; the read-only OKF exporter; persisted
-  `external_write_results` snapshot/quarantine behavior; and the full live
-  `get_status` early-return/session-boundary plus prompt/tool-metadata contract.
+  found shipped behavior with incomplete canonical ownership. The independent
+  and runtime/memory backfills have closed child-branch invocation/await/receipt
+  attachment, terminal-run seeding, the read-only OKF exporter, and persisted
+  `external_write_results` snapshot/quarantine behavior. The full live
+  `get_status` early-return/session-boundary plus prompt/tool-metadata contract
+  remains direct-owner work.
 - **Batch C (8 capabilities):** all 77 requirements and 236 scenarios are BUILT
   as bounded. The six former mismatches now state the actual integer-conversion
   and legacy-bid boundary, sequential settlement race, configured Goal auth and
@@ -120,10 +125,17 @@ validation.
   partial remote writes and best-effort receipt finalization, narrow Windows
   redaction, seed-based wiki consolidation, stored-output reuse, provider error
   propagation, exact authority-resolver outcomes, and ScenePacket emission.
+- **Runtime/memory backfill (4 capabilities):** 14 added requirements and two
+  enriched existing requirements add 50 net scenarios, all BUILT as bounded.
+  Independent review corrected wrapper-only cooperative cancellation and its
+  pending/claim race, exact GC/recovery limits, one-shot child attachment,
+  distinct live/frozen/await behavior, thread-local retry accounting,
+  terminal-run-seeded lineage, and the exporter's lightweight local
+  conformance boundary.
 
-Overall, **all 231 canonical requirements and all 642 scenarios are BUILT as
-written**. This is a grounding result, not a claim of full coverage: eight
-dependency-bound groups of shipped behavior still lack canonical ownership, and eight full-platform
+Overall, **all 245 canonical requirements and all 692 scenarios are BUILT as
+written**. This is a grounding result, not a claim of full coverage: four
+direct-owner groups of shipped behavior still lack canonical ownership, and eight full-platform
 target groups still lack complete active owners.
 
 The requirement-by-requirement classifications, source/test anchors, and
@@ -148,9 +160,13 @@ limitations as target architecture.
 
 On 2026-07-22, Windows, Python 3.14, focused Batch A evidence passed 1,026
 tests; 13 failures were stale-test debt
-(11 dispatcher fixtures omit the now-required loop declaration, one desktop
-fixture expects the retired `workflow` GUI script, and one Windows assertion
-expects LF where the platform writes CRLF). The original Batch A pytest argv
+(11 dispatcher fixtures first stop at the now-required loop declaration, one
+desktop fixture expects the retired `workflow` GUI script, and one Windows
+assertion expects LF where the platform writes CRLF). A 2026-07-22 diagnostic
+only added a temporary legacy-loop marker and reduced the dispatcher failures
+to four, exposing stale host-identity assertions plus a current
+`operator_request`/`host_request` tier mismatch; that temporary edit was not
+retained, and neither result proves a canonical requirement. The original Batch A pytest argv
 was not retained after reviewer-context compaction; its matrix records that
 provenance and a reconstructed explicit evidence-file command without claiming
 the reconstruction produced those totals. On the same date/environment,
@@ -173,6 +189,16 @@ sync proof preserved all eight prior canonical files as exact text prefixes
 while each of the 27 added requirement headings occurred exactly once. The
 Windows layer-2 uptime canary was not run.
 
+On 2026-07-22 PT / 2026-07-23 UTC, Windows, Python 3.14, the runtime/memory
+backfill's 10-file focused suite passed **210 tests** with 80 third-party
+deprecation warnings; a separate temporary-directory exercise passed pending,
+unauthorized-running, and capability-authorized running cancellation. Two
+independent reviewers approved after correcting source-visible limitations.
+Sync added 14 requirements, enriched two existing host-pool requirements, and
+preserved every untouched canonical requirement block. Full-tree strict
+validation passed all **34** current items, and the cross-provider drift
+self-test was clean. The Windows layer-2 uptime canary was not run.
+
 ### Shipped behavior still missing canonical ownership
 
 The reverse-direction audit also found behavior that exists in source but is
@@ -182,10 +208,6 @@ obligations, not permission to redesign the behavior:
 | Recommended canonical owner | Missing shipped contract | Coordination edge |
 |---|---|---|
 | `credential-vault` | Claude OAuth/BYO-key mapping and injection, plus the current temp-and-replace write boundary. | Do not overlap the active fail-closed provider-overlay lane; do not claim cross-process locking that is absent. |
-| `daemon-identity-and-host-pool` | Daemon-wiki soul scaffolding, explicitly flagged latest-soul selection, capped/versioned behavior proposals, deregistration, pricing/concurrency fields, and callback-error isolation. | Coordinate `distributed-execution` and `universe-creation`. |
-| `daemon-runtime-and-dispatch` | Lease heartbeat ownership, cooperative cancellation, terminal queue GC, and the still-callable-but-no-longer-startup-wired `recover_claimed_tasks`. | Coordinate `distributed-execution`. |
-| `graph-execution-substrate` | Child-Branch invocation, mappings, depth/wait modes, terminal propagation, receipt wait, and validated/idempotent existing-child attachment. | Read-coordinate `distributed-execution`; current local receipts are not future signed owner-daemon authority. |
-| `knowledge-retrieval-and-memory` | Curated read-only OKF export and its exclusions. | Coordinate `brain-okf-canonical-store`; export does not make OKF the current write-through canonical store. |
 | `live-mcp-connector-surface` for metadata; `identity-auth-and-access-control` for status identity | Four-prompt catalog, tool title/tag/annotation invariants, and exact early/config-error/full status variants, including that early responses currently omit `session_boundary`. | Coordinate connector-manifest, legacy-tool-retirement, and identity/reset changes. |
 | `universe-lifecycle-and-soul` | Authenticated request-scoped versus anonymous host-global `switch_universe`. | Coordinate `universe-creation` and `test-identity-and-reset`. |
 | `uptime-and-alarms` | DNS incident canary, LLM-binding canary, release reconciler, and disk-pressure alert/rotation/auto-prune controller. | Every uptime owner retains its concurrency/load evidence obligation. |
@@ -449,10 +471,10 @@ must carry the executable SHALL/scenario contracts and tasks.
 6. Public and uptime-sensitive surfaces retain their required rendered,
    concurrency/load, CI, and post-fix evidence gates when behavior changes.
 
-**Current verdict: NOT COMPLETE.** Criterion 1 fails on the eight
+**Current verdict: NOT COMPLETE.** Criterion 1 fails on the four
 dependency-bound shipped backfill groups above; criterion 3 fails on the eight
 full-platform target groups without complete active owners. Criterion 5 now
-passes: all 231 requirements and 642 scenarios are independently grounded and
+passes: all 245 requirements and 692 scenarios are independently grounded and
 strict-valid.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
