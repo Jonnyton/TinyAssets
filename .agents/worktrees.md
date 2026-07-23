@@ -751,7 +751,7 @@ Notes:
 - Worktree: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination
 - STATUS/Issue/PR: Backfill graph-run coordination contracts
 - PLAN refs: Engine & Domains; API & MCP Interface; State & Artifacts
-- Purpose: backfill shipped run evidence receipts and universe-local teammate mailbox behavior missed by the full-coverage audit
+- Purpose: backfill shipped run evidence receipts and installation/data-root-local teammate mailbox behavior missed by the full-coverage audit
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination\_PURPOSE.md
 - Memory refs: conformance triage from PR #1597 lane; stale PR #1560 and commit 375b0155 read-only
 - Related implications: universe-visibility and provider-status own the moved isolation/evidence concerns
