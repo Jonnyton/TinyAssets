@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from scripts.deploy_terminal_receipt import (
     build_terminal_receipt,
     initial_terminal_receipt_result,
@@ -432,11 +433,7 @@ def test_terminal_outcome_matrix(
         ),
         (
             "missing output",
-            {
-                key: value
-                for key, value in _observations().items()
-                if key != "rollback_reason"
-            },
+            {key: value for key, value in _observations().items() if key != "rollback_reason"},
             1,
         ),
         (
@@ -631,9 +628,7 @@ def test_not_needed_issue_wording_requires_complete_terminal_health_tuple(
         ),
     ],
 )
-def test_complete_rollback_issue_wording_matrix(
-    outputs: dict[str, Any], expected: str
-) -> None:
+def test_complete_rollback_issue_wording_matrix(outputs: dict[str, Any], expected: str) -> None:
     assert rollback_issue_sentence(outputs) == expected
 
 
@@ -767,9 +762,7 @@ def test_v1_source_is_derived_afresh_from_matching_digest_revision() -> None:
 
 def test_matching_v2_terminal_proof_may_seed_validated_provenance_and_ancestry() -> None:
     receipt = build_terminal_receipt(
-        _failed_before_image_mutation(
-            prior_receipt_b64=_b64_json(_v2_terminal_proof())
-        )
+        _failed_before_image_mutation(prior_receipt_b64=_b64_json(_v2_terminal_proof()))
     )
 
     assert receipt["prior_receipt_match_status"] == "v2_terminal_proof_match"
@@ -798,9 +791,7 @@ def test_matching_v2_terminal_proof_may_seed_validated_provenance_and_ancestry()
         ("canary_bundle_status", "failed"),
     ],
 )
-def test_v2_receipt_must_satisfy_every_terminal_proof_invariant(
-    field: str, bad_value: Any
-) -> None:
+def test_v2_receipt_must_satisfy_every_terminal_proof_invariant(field: str, bad_value: Any) -> None:
     prior = _v2_terminal_proof()
     prior[field] = bad_value
 
@@ -870,12 +861,8 @@ def test_invalid_prior_receipt_transport_is_untrusted_but_outcome_is_reportable(
         pytest.param(65_537, "invalid", id="one-byte-over-limit-is-rejected"),
     ],
 )
-def test_prior_receipt_decoded_size_bound_is_exact(
-    decoded_size: int, expected_match: str
-) -> None:
-    payload = json.dumps(
-        _v1_prior(), sort_keys=True, separators=(",", ":")
-    ).encode()
+def test_prior_receipt_decoded_size_bound_is_exact(decoded_size: int, expected_match: str) -> None:
+    payload = json.dumps(_v1_prior(), sort_keys=True, separators=(",", ":")).encode()
     assert len(payload) < decoded_size
     padded_payload = payload + (b" " * (decoded_size - len(payload)))
     assert len(padded_payload) == decoded_size
@@ -1028,9 +1015,7 @@ def test_success_receipt_contains_every_legacy_field_with_exact_projection() -> 
                 image_ref=_PREVIOUS,
                 image_digest=_PREVIOUS,
                 build_run_id="prior-build",
-                build_run_url=(
-                    "https://github.com/tinyassets/tinyassets/actions/runs/100"
-                ),
+                build_run_url=("https://github.com/tinyassets/tinyassets/actions/runs/100"),
                 canary_bundle_status="passed",
                 deployed_at=_TERMINAL_AT,
                 rollback_target=_ANCESTOR,
@@ -1048,9 +1033,7 @@ def test_success_receipt_contains_every_legacy_field_with_exact_projection() -> 
                 image_ref=_ATTEMPTED,
                 image_digest=_ATTEMPTED,
                 build_run_id="111",
-                build_run_url=(
-                    "https://github.com/tinyassets/tinyassets/actions/runs/111"
-                ),
+                build_run_url=("https://github.com/tinyassets/tinyassets/actions/runs/111"),
                 rollback_target=_PREVIOUS,
             ),
         ),
@@ -1067,9 +1050,7 @@ def test_success_receipt_contains_every_legacy_field_with_exact_projection() -> 
                 image_ref=_PREVIOUS,
                 image_digest=_PREVIOUS,
                 build_run_id="prior-build",
-                build_run_url=(
-                    "https://github.com/tinyassets/tinyassets/actions/runs/100"
-                ),
+                build_run_url=("https://github.com/tinyassets/tinyassets/actions/runs/100"),
                 deployed_at=_PRIOR_DEPLOYED_AT,
                 rollback_target=_ANCESTOR,
             ),
@@ -1274,9 +1255,7 @@ def test_cli_is_deterministic_canonical_json_and_matches_the_importable_core() -
     observations = _observations()
     original = copy.deepcopy(observations)
     expected_receipt = build_terminal_receipt(observations)
-    expected_stdout = (
-        json.dumps(expected_receipt, sort_keys=True, separators=(",", ":")) + "\n"
-    )
+    expected_stdout = json.dumps(expected_receipt, sort_keys=True, separators=(",", ":")) + "\n"
     stdin = json.dumps(observations, sort_keys=False)
 
     first = subprocess.run(

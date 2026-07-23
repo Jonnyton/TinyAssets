@@ -21,6 +21,7 @@ import pytest
 
 try:
     import yaml
+
     _YAML_AVAILABLE = True
 except ImportError:
     _YAML_AVAILABLE = False
@@ -28,9 +29,7 @@ except ImportError:
 _REPO = Path(__file__).resolve().parent.parent
 _WORKFLOW = _REPO / ".github" / "workflows" / "deploy-prod.yml"
 
-pytestmark = pytest.mark.skipif(
-    not _YAML_AVAILABLE, reason="pyyaml not installed"
-)
+pytestmark = pytest.mark.skipif(not _YAML_AVAILABLE, reason="pyyaml not installed")
 
 
 def _load() -> dict:
@@ -71,7 +70,7 @@ def test_workflow_dispatch_has_image_tag_input():
     wf = _load()
     triggers = _triggers(wf)
     dispatch = triggers.get("workflow_dispatch") or {}
-    inputs = (dispatch.get("inputs") or {})
+    inputs = dispatch.get("inputs") or {}
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
 
 
@@ -79,10 +78,8 @@ def test_deploy_resolves_image_to_digest_and_never_latest():
     text = _text()
     assert "image_ref=" in text
     assert "docker buildx imagetools inspect" in text
-    assert "tag=\"latest\"" not in text
-    assert ":latest" not in text, (
-        "deploy-prod must not use :latest for deploy or rollback targets"
-    )
+    assert 'tag="latest"' not in text
+    assert ":latest" not in text, "deploy-prod must not use :latest for deploy or rollback targets"
 
 
 def test_capture_previous_uses_configured_and_running_digest_observations():
@@ -134,8 +131,9 @@ def test_workflow_run_fires_on_build_image():
     triggers = _triggers(wf)
     wr = triggers.get("workflow_run") or {}
     workflows = wr.get("workflows", [])
-    assert any("Build" in w for w in workflows), \
+    assert any("Build" in w for w in workflows), (
         "workflow_run must reference the build-image workflow"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +194,7 @@ def _step_named(wf: dict, name: str) -> dict:
 
 def _step_with_run_token(wf: dict, token: str) -> dict:
     step = next(
-        (
-            candidate
-            for candidate in _steps(wf)
-            if token in (candidate.get("run", "") or "")
-        ),
+        (candidate for candidate in _steps(wf) if token in (candidate.get("run", "") or "")),
         None,
     )
     assert step is not None, f"deploy job must include a run step containing {token!r}"
@@ -218,8 +212,9 @@ def _previous_executable_line(lines: list[str], before: int) -> str:
 def test_post_deploy_canary_step_present():
     wf = _load()
     names = [s.get("name", "") for s in _steps(wf)]
-    assert any("canary" in (n or "").lower() for n in names), \
+    assert any("canary" in (n or "").lower() for n in names), (
         "deploy job must have a post-deploy canary step"
+    )
 
 
 def test_canary_step_only_probes_canonical():
@@ -280,8 +275,9 @@ def test_access_gate_blocks_on_200():
 def test_rollback_step_present():
     wf = _load()
     names = [s.get("name", "") for s in _steps(wf)]
-    assert any("rollback on failure" in (n or "").lower() for n in names), \
+    assert any("rollback on failure" in (n or "").lower() for n in names), (
         "deploy job must have a 'Rollback on failure' step"
+    )
 
 
 def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
@@ -297,9 +293,9 @@ def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
     )
     assert "failure()" not in cond
     assert "steps.prev.outputs.previous != ''" not in cond
-    assert "image_mutation_started" in str(
-        step_env.get("IMAGE_MUTATION_STARTED", "")
-    ), "rollback eligibility must consume the image-mutation marker"
+    assert "image_mutation_started" in str(step_env.get("IMAGE_MUTATION_STARTED", "")), (
+        "rollback eligibility must consume the image-mutation marker"
+    )
     assert "IMAGE_MUTATION_STARTED" in run_script
     assert "production_mutation_started" not in cond, (
         "production mutation requires terminal publication, but it must not "
@@ -355,13 +351,9 @@ def test_disk_preflight_runs_before_deploy_image_pull():
     steps = _steps(wf)
     names = [s.get("name", "") for s in steps]
     preflight_idx = next(
-        i for i, name in enumerate(names)
-        if name == "Preflight droplet disk before image pull"
+        i for i, name in enumerate(names) if name == "Preflight droplet disk before image pull"
     )
-    deploy_idx = next(
-        i for i, step in enumerate(steps)
-        if step.get("id") == "deploy"
-    )
+    deploy_idx = next(i for i, step in enumerate(steps) if step.get("id") == "deploy")
 
     assert preflight_idx < deploy_idx, (
         "disk preflight must happen before TINYASSETS_IMAGE is changed, "
@@ -372,8 +364,7 @@ def test_disk_preflight_runs_before_deploy_image_pull():
 def test_disk_preflight_prunes_disposable_state_and_fails_before_restart():
     wf = _load()
     step = next(
-        s for s in _steps(wf)
-        if s.get("name") == "Preflight droplet disk before image pull"
+        s for s in _steps(wf) if s.get("name") == "Preflight droplet disk before image pull"
     )
     run_script = step.get("run", "") or ""
 
@@ -446,11 +437,7 @@ def test_deploy_retires_legacy_workflow_service_before_restart():
     wf = _load()
     steps = _steps(wf)
     retire_idx = next(
-        (
-            i
-            for i, s in enumerate(steps)
-            if s.get("name") == "Retire legacy Workflow service"
-        ),
+        (i for i, s in enumerate(steps) if s.get("name") == "Retire legacy Workflow service"),
         None,
     )
     deploy_idx = next(
@@ -475,7 +462,7 @@ def test_deploy_retires_legacy_workflow_service_before_restart():
     assert "workflow-worker-claude-1" in run_script
     assert "workflow-worker-claude-2" in run_script
     assert "docker rm -f" in run_script
-    assert "rm -f \"$unit_file\"" in run_script
+    assert 'rm -f "$unit_file"' in run_script
     assert "systemctl mask workflow-daemon.service" in run_script
 
 
@@ -510,10 +497,7 @@ def test_deploy_requires_llm_binding_even_without_visible_deploy_secret():
     wf = _load()
     step_name = "Report subscription LLM binding when no deploy auth bundle is configured"
     step = next(
-        (
-            s for s in _steps(wf)
-            if s.get("name") == step_name
-        ),
+        (s for s in _steps(wf) if s.get("name") == step_name),
         None,
     )
     assert step is not None
@@ -530,9 +514,7 @@ def test_production_marker_is_immediately_before_first_scrub_host_write():
     scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
     run_script = scrub_step.get("run", "") or ""
     lines = run_script.splitlines()
-    first_host_write = next(
-        i for i, line in enumerate(lines) if line.strip().startswith("ssh ")
-    )
+    first_host_write = next(i for i, line in enumerate(lines) if line.strip().startswith("ssh "))
     marker_line = _previous_executable_line(lines, first_host_write)
 
     assert scrub_step.get("id"), (
@@ -557,10 +539,7 @@ def test_image_marker_is_immediately_before_first_tinyassets_image_write():
 
     # Walk to the start of the continued ssh command that invokes the helper.
     command_start = image_write_line
-    while (
-        command_start > 0
-        and lines[command_start - 1].rstrip().endswith("\\")
-    ):
+    while command_start > 0 and lines[command_start - 1].rstrip().endswith("\\"):
         command_start -= 1
     marker_line = _previous_executable_line(lines, command_start)
 
@@ -572,9 +551,7 @@ def test_rollback_and_terminal_receipt_are_ordered_under_always():
     wf = _load()
     steps = _steps(wf)
     canary_step = _step_named(wf, "Post-deploy canary — canonical URL only")
-    access_step = _step_named(
-        wf, "Verify CF Access gates direct URL (expects 403/401)"
-    )
+    access_step = _step_named(wf, "Verify CF Access gates direct URL (expects 403/401)")
     rollback_step = _step_named(wf, "Rollback on failure")
     terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
 
@@ -595,12 +572,8 @@ def test_terminal_receipt_keys_to_production_marker():
     step_env = terminal_step.get("env") or {}
     run_script = terminal_step.get("run", "") or ""
 
-    expected_ref = (
-        f"steps.{scrub_step['id']}.outputs.production_mutation_started"
-    )
-    assert expected_ref in str(
-        step_env.get("PRODUCTION_MUTATION_STARTED", "")
-    )
+    expected_ref = f"steps.{scrub_step['id']}.outputs.production_mutation_started"
+    assert expected_ref in str(step_env.get("PRODUCTION_MUTATION_STARTED", ""))
     assert "PRODUCTION_MUTATION_STARTED" in run_script
     assert "not_applicable" in run_script
     assert "failed" in run_script
@@ -641,9 +614,7 @@ def test_rollback_emits_safe_defaults_and_final_outputs_before_exit():
             "safe defaults and the final tuple"
         )
         helper_definition = run_script.find(output_helper)
-        first_helper_call = run_script.find(
-            output_helper, helper_definition + len(output_helper)
-        )
+        first_helper_call = run_script.find(output_helper, helper_definition + len(output_helper))
         assert first_helper_call < first_fallible
         assert first_fallible < run_script.rfind(output_helper) < final_exit
     else:
@@ -665,8 +636,7 @@ def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
     transfer_idx = run_script.find("scp ")
     install_idx = run_script.find("install -m 0644 -o 1001 -g 1001")
     assert helper_idx != -1, (
-        "terminal publication must invoke the directly executable pure "
-        "classifier/builder"
+        "terminal publication must invoke the directly executable pure classifier/builder"
     )
     assert transfer_idx != -1
     assert install_idx != -1
@@ -700,9 +670,7 @@ def test_terminal_writer_outputs_are_visible_before_fallible_work():
     )
 
     failed_idx = run_script.find("terminal_receipt_result=failed")
-    not_applicable_idx = run_script.find(
-        "terminal_receipt_result=not_applicable"
-    )
+    not_applicable_idx = run_script.find("terminal_receipt_result=not_applicable")
     published_idx = run_script.find("terminal_receipt_result=published")
     install_idx = run_script.find("install -m 0644 -o 1001 -g 1001")
     assert 0 <= failed_idx < first_fallible, (
@@ -737,9 +705,7 @@ def test_deploy_failure_issue_consumes_rollback_and_terminal_outputs():
     assert terminal_step.get("id"), "terminal outputs require a stable step id"
 
     cond = str(issue_step.get("if", ""))
-    env_text = "\n".join(
-        str(value) for value in (issue_step.get("env") or {}).values()
-    )
+    env_text = "\n".join(str(value) for value in (issue_step.get("env") or {}).values())
     assert "always()" in cond and "failure()" in cond, (
         "the issue must still run after a red rollback or terminal writer"
     )
@@ -749,9 +715,9 @@ def test_deploy_failure_issue_consumes_rollback_and_terminal_outputs():
         "rollback_canary_status",
         "rollback_reason",
     ):
-        assert (
-            f"steps.{rollback_step['id']}.outputs.{output_name}" in env_text
-        ), f"deploy-failed issue must consume {output_name}"
+        assert f"steps.{rollback_step['id']}.outputs.{output_name}" in env_text, (
+            f"deploy-failed issue must consume {output_name}"
+        )
     for output_name in (
         "terminal_receipt_result",
         "terminal_outcome",
@@ -761,9 +727,9 @@ def test_deploy_failure_issue_consumes_rollback_and_terminal_outputs():
         "terminal_running_image_ref",
         "terminal_active_image_ref",
     ):
-        assert (
-            f"steps.{terminal_step['id']}.outputs.{output_name}" in env_text
-        ), f"deploy-failed issue must consume {output_name}"
+        assert f"steps.{terminal_step['id']}.outputs.{output_name}" in env_text, (
+            f"deploy-failed issue must consume {output_name}"
+        )
 
 
 def test_deploy_failure_issue_has_truthful_bounded_wording():
@@ -786,9 +752,7 @@ def test_deploy_failure_issue_has_truthful_bounded_wording():
         ),
         "Rollback was not attempted; forward production health is unproven.",
         "Rollback succeeded and the rollback canary passed.",
-        (
-            "Rollback status is unavailable; rollback success was not proven."
-        ),
+        ("Rollback status is unavailable; rollback success was not proven."),
         "Terminal release-state receipt published.",
         (
             "Terminal release-state publication failed; durable active-release "
@@ -809,10 +773,7 @@ def test_deploy_failure_issue_has_truthful_bounded_wording():
 
 def _codex_volume_step(wf: dict) -> dict:
     step = next(
-        (
-            s for s in _steps(wf)
-            if s.get("name") == "Prepare codex auth persistent volume"
-        ),
+        (s for s in _steps(wf) if s.get("name") == "Prepare codex auth persistent volume"),
         None,
     )
     assert step is not None, (
@@ -828,10 +789,7 @@ def test_codex_volume_step_runs_before_deploy():
     steps = _steps(wf)
     names = [s.get("name", "") for s in steps]
     volume_idx = names.index("Prepare codex auth persistent volume")
-    deploy_idx = next(
-        i for i, step in enumerate(steps)
-        if step.get("id") == "deploy"
-    )
+    deploy_idx = next(i for i, step in enumerate(steps) if step.get("id") == "deploy")
     assert volume_idx < deploy_idx, (
         "Codex auth volume must be provisioned BEFORE the daemon "
         "container restarts; otherwise the first restart may miss "
@@ -858,24 +816,33 @@ def test_codex_volume_step_chown_is_unconditional():
         (i for i, line in enumerate(lines) if line.endswith("<<'SH'")),
         None,
     )
-    end = next(
-        (i for i, line in enumerate(lines[start + 1:], start=start + 1)
-         if line.strip() == "SH"),
-        None,
-    ) if start is not None else None
+    end = (
+        next(
+            (
+                i
+                for i, line in enumerate(lines[start + 1 :], start=start + 1)
+                if line.strip() == "SH"
+            ),
+            None,
+        )
+        if start is not None
+        else None
+    )
     assert start is not None and end is not None, (
         "Could not locate heredoc body in 'Prepare codex auth persistent volume'"
     )
-    body = lines[start + 1: end]
+    body = lines[start + 1 : end]
 
     chown_line_idx = next(
-        (i for i, line in enumerate(body)
-         if line.strip().startswith('chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"')),
+        (
+            i
+            for i, line in enumerate(body)
+            if line.strip().startswith('chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"')
+        ),
         None,
     )
     chmod_line_idx = next(
-        (i for i, line in enumerate(body)
-         if line.strip().startswith('chmod 700 "$CODEX_DIR"')),
+        (i for i, line in enumerate(body) if line.strip().startswith('chmod 700 "$CODEX_DIR"')),
         None,
     )
     assert chown_line_idx is not None, "chown on $CODEX_DIR must be present"
@@ -900,8 +867,7 @@ def test_codex_volume_step_chown_is_unconditional():
         "is exactly the Finding-2 regression we are guarding against."
     )
     assert chmod_indent == base_indent, (
-        f"chmod line must sit at heredoc base indent ({base_indent}); "
-        f"got indent {chmod_indent}."
+        f"chmod line must sit at heredoc base indent ({base_indent}); got indent {chmod_indent}."
     )
 
 
@@ -910,8 +876,7 @@ def test_codex_volume_step_creates_dir_idempotently():
     step = _codex_volume_step(wf)
     run_script = step.get("run", "") or ""
     assert 'docker volume create "$VOLUME_NAME"' in run_script, (
-        "tinyassets-data named volume must be created idempotently before "
-        "resolving its mountpoint"
+        "tinyassets-data named volume must be created idempotently before resolving its mountpoint"
     )
     assert 'docker volume inspect "$VOLUME_NAME"' in run_script, (
         "deploy must resolve the local volume mountpoint before preparing .codex"
@@ -953,10 +918,10 @@ def test_codex_volume_step_migrates_from_running_container_once():
     assert "docker inspect tinyassets-worker" in run_script, (
         "migration must check tinyassets-worker presence before docker cp"
     )
-    assert 'docker exec tinyassets-worker test -f /data/.codex/auth.json' in run_script, (
+    assert "docker exec tinyassets-worker test -f /data/.codex/auth.json" in run_script, (
         "migration must check the new CODEX_HOME path before copying"
     )
-    assert 'docker exec tinyassets-worker test -f /app/.codex/auth.json' in run_script, (
+    assert "docker exec tinyassets-worker test -f /app/.codex/auth.json" in run_script, (
         "migration must also support one-time legacy /app/.codex pickup"
     )
     assert "docker cp tinyassets-worker:/data/.codex/auth.json" in run_script
@@ -973,8 +938,8 @@ def test_subscription_volume_step_prepares_claude_config_dir():
     assert 'mkdir -p "$CLAUDE_DIR"' in run_script
     assert 'chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"' in run_script
     assert 'chmod 700 "$CLAUDE_DIR"' in run_script
-    assert 'docker exec tinyassets-worker test -d /data/.claude' in run_script
-    assert 'docker exec tinyassets-worker test -d /app/.claude' in run_script
+    assert "docker exec tinyassets-worker test -d /data/.claude" in run_script
+    assert "docker exec tinyassets-worker test -d /app/.claude" in run_script
     assert "docker cp tinyassets-worker:/data/.claude/." in run_script
     assert "docker cp tinyassets-worker:/app/.claude/." in run_script
 
@@ -1042,26 +1007,17 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
         "HAS_GITHUB_PR_CAPABILITY=true so absence is a warning, not "
         "an unbound-variable failure"
     )
-    assert (
-        'printf \'%s\' "${TINYASSETS_GITHUB_PR_CAPABILITIES}"'
-        in run_script
-    ), (
+    assert "printf '%s' \"${TINYASSETS_GITHUB_PR_CAPABILITIES}\"" in run_script, (
         "deploy must pipe the secret via printf '%s' so the value is "
         "never echoed to the GH Actions log (matches the codex-auth "
         "pattern)"
     )
-    assert (
-        "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
-        in run_script
-    ), (
+    assert "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES" in run_script, (
         "deploy must call the atomic install-tinyassets-env.sh helper "
         "(the same path that enforces root:tinyassets 640 + post-write "
         "readability) to write the capability map"
     )
-    assert (
-        "TINYASSETS_GITHUB_PR_CAPABILITIES is not visible to deploy"
-        in run_script
-    ), (
+    assert "TINYASSETS_GITHUB_PR_CAPABILITIES is not visible to deploy" in run_script, (
         "deploy must emit a structured ::warning:: when the secret is "
         "absent so the operator notices before chatbots try real-PR "
         "emission and see missing_capability dry-run evidence"
@@ -1078,10 +1034,7 @@ def test_deploy_step_summary_reports_github_pr_capability_visibility():
     )
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
-    assert (
-        "TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy"
-        in run_script
-    ), (
+    assert "TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy" in run_script, (
         "deploy step summary must report the capability-map visibility "
         "alongside the codex-auth visibility line so the operator can "
         "verify both auth surfaces from one place"
@@ -1139,10 +1092,7 @@ def test_deploy_step_deletes_github_pr_capability_when_secret_absent():
     )
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
-    assert (
-        "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
-        in run_script
-    ), (
+    assert "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES" in run_script, (
         "Deploy step must issue an explicit `install-tinyassets-env.sh "
         "delete TINYASSETS_GITHUB_PR_CAPABILITIES` call when the secret "
         "is absent so revoking the GH Actions secret actually "
@@ -1168,9 +1118,7 @@ def test_capability_delete_is_gated_on_else_branch():
     # Anchor the conditional. The set call must come before the
     # else+delete tail.
     set_marker = "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
-    delete_marker = (
-        "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
-    )
+    delete_marker = "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
     set_idx = run_script.find(set_marker)
     delete_idx = run_script.find(delete_marker)
     assert set_idx != -1, "set call must remain in the truthy branch"
@@ -1185,7 +1133,7 @@ def test_capability_delete_is_gated_on_else_branch():
     # token sits between them. This is the regression guard: a future
     # refactor that flattens the conditional without re-checking would
     # fail this assertion.
-    between = run_script[set_idx + len(set_marker):delete_idx]
+    between = run_script[set_idx + len(set_marker) : delete_idx]
     assert "else" in between, (
         "An `else` keyword must appear between the set call and the "
         "delete call. If a refactor restructures the conditional, the "
