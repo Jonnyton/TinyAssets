@@ -174,7 +174,9 @@ def test_liveness_provider_auth_block_ok(tmp_path, monkeypatch):
 
     out = _compute_supervisor_liveness(tmp_path)
     assert out["provider_auth"]["writers"]["codex"]["status"] == "ok"
+    assert out["provider_auth"]["writers"]["codex"]["evidence"] == "fresh_timestamp"
     assert out["provider_auth"]["writers"]["claude-code"]["status"] == "ok"
+    assert out["provider_auth"]["writers"]["claude-code"]["evidence"] == "presence_only"
     assert out["provider_auth"]["all_writers_unauthenticated"] is False
     assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
 

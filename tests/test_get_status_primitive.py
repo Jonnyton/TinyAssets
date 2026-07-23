@@ -394,6 +394,29 @@ def test_llm_endpoint_bound_claude_cli_present_but_unauthed_is_unset(
     assert hint == "unset"
 
 
+def test_llm_endpoint_bound_rejects_deferred_auth_evidence(
+    monkeypatch, tmp_path,
+) -> None:
+    from tinyassets.providers import base as provider_base
+
+    monkeypatch.setattr(
+        provider_base,
+        "subscription_auth_health",
+        lambda *_args, **_kwargs: {
+            "provider": "claude-code",
+            "status": "ok",
+            "evidence": "probe_deferred",
+            "detail": "live probe deferred",
+        },
+    )
+    hint = _get_endpoint_hint(
+        monkeypatch,
+        env={"TINYASSETS_DATA_DIR": str(tmp_path)},
+        which_map={"claude": "/usr/local/bin/claude"},
+    )
+    assert hint == "unset"
+
+
 def test_llm_endpoint_bound_unset_when_nothing_available(monkeypatch) -> None:
     hint = _get_endpoint_hint(
         monkeypatch,

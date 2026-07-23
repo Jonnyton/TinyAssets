@@ -362,6 +362,9 @@ def _compute_auto_ship_health(
 # auth was missing claimed tasks and failed every one for ~3 weeks undetected)
 # is visible in get_status instead of buried in worker logs.
 _SUBSCRIPTION_WRITERS = ("codex", "claude-code")
+_ROUTABLE_AUTH_EVIDENCE = frozenset({
+    "live_probe", "cached", "fresh_timestamp", "presence_only",
+})
 
 
 def _provider_auth_snapshot() -> dict[str, Any]:
@@ -381,7 +384,11 @@ def _provider_auth_snapshot() -> dict[str, Any]:
         # never block on the codex live-probe subprocess (up to 120s).
         # Fast paths + cached verdicts only; the worker gate owns probing.
         health = subscription_auth_health(name, allow_probe=False)
-        writers[name] = {"status": health["status"], "detail": health["detail"]}
+        writers[name] = {
+            "status": health["status"],
+            "evidence": health["evidence"],
+            "detail": health["detail"],
+        }
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
     all_down = bool(known_states) and all(
@@ -789,10 +796,13 @@ def get_status(universe_id: str = "") -> str:
     # the binary-only check let a dead-auth claude masquerade as bound (the
     # 2026-06-25 blind spot). Codex already gates on auth.json below; mirror it.
     from tinyassets.providers.base import subscription_auth_health as _auth_health
-    claude_authed = (
+    claude_auth = _auth_health("claude-code", allow_probe=False)
+    # presence_only is deliberate here: this is a configured-endpoint hint,
+    # not a liveness claim, and Claude has no safe inline probe on this MCP path.
+    claude_authed = bool(
         _shutil.which("claude")
-        and _auth_health("claude-code", allow_probe=False)["status"]
-        != "not_logged_in"
+        and claude_auth["status"] == "ok"
+        and claude_auth["evidence"] in _ROUTABLE_AUTH_EVIDENCE
     )
     if os.environ.get("OLLAMA_HOST"):
         endpoint_hint = "ollama"
