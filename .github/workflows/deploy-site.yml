@@ -46,6 +46,9 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Test Tiny companion
+        run: npm run test:unit
+
       # Re-bake the snapshot on the 6h cron AND on manual dispatch with the toggle.
       # CI always does a COMPLETE (full) bake — SNAPSHOT_FULL=1 — so the live snapshot
       # is always complete and never accumulates incremental-merge drift. (~20-30 min,

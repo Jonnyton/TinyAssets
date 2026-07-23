@@ -9,7 +9,8 @@
     "build": "next build",
     "preview": "npm run build && npx --yes serve out -l 4322 --no-clipboard",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:unit": "node --test ../site/tests/tinybot-sprite.test.mjs"
   },
   "dependencies": {
     "@tiny/design-system": "file:../design-system",

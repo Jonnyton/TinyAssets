@@ -65,6 +65,9 @@ jobs:
       - name: Install site deps
         run: npm ci
 
+      - name: Test Tiny companion
+        run: npm run test:unit
+
       - name: Build (static export)
         run: npm run build
 
