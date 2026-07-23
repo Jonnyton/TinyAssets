@@ -821,3 +821,33 @@ Notes:
 - Related implications: active distributed-execution owner must reclassify its proposal as extending the new canonical base
 - Idea feed refs: none
 - Ship/abandon: reviewed and archived; retain worktree until PR #1629 lands
+
+## 2026-07-22 - create sandbox-availability-spec-backfill
+
+- Provider: codex-gpt56-spec-2
+- Branch: codex/sandbox-availability-spec-backfill
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-sandbox-availability-spec-backfill
+- STATUS/Issue/PR: Backfill sandbox availability and fail-loud execution contracts
+- PLAN refs: Providers; Graph Execution; Uptime and Alarms
+- Purpose: canonicalize shipped bwrap probing/caching and loud execution failure without claiming real confinement
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-sandbox-availability-spec-backfill\_PURPOSE.md
+- Memory refs: post-PR #1629 reverse-coverage audit
+- Related implications: PR #1573 and active distributed-execution remain future/read-only; PR #1626 did not canonicalize sandbox-status wording
+- Idea feed refs: none
+- Ship/abandon: sync/archive after strict validation, focused evidence, and independent review
+
+## 2026-07-23 - retire sandbox-availability-spec-backfill
+
+- Provider: codex-gpt56-spec-2
+- Branch: codex/sandbox-availability-spec-backfill
+- Lane state: Reviewed and archived; retirement staged in PR #1632
+- Worktree: C:\Users\Jonathan\Projects\wf-sandbox-availability-spec-backfill
+- STATUS/Issue/PR: PR #1632; landing diff removes the active claim
+- PLAN refs: Providers; Graph Execution; Uptime and Alarms
+- Purpose: fold seven shipped sandbox contracts into five canonical owners
+- _PURPOSE.md: retained locally until the PR merges
+- Memory refs: three independent APPROVE verdicts in the archived review record
+- Related implications: credential-vault and hyperparameter importance remain shipped-coverage residuals
+- Idea feed refs: none
+- Ship/abandon: remove the physical worktree only after PR #1632 lands
