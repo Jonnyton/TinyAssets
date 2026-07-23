@@ -27,7 +27,8 @@
 
 ## 5. Landing lifecycle
 
-- [ ] 5.1 After the broader `tests/` claim clears, promote and land the exact test-only `tests/test_desktop.py` GUI-entrypoint repair; require the focused assertion to pass.
-- [ ] 5.2 After approval and 5.1, sync all four deltas into canonical specs and strict-validate the synced tree.
-- [ ] 5.3 Archive the change and retire the Wave 1 STATUS row in the same landing lane.
-- [ ] 5.4 Re-run the full-coverage audit and promote the next safe staged successor.
+- [ ] 5.1 Merge corrective PR #1621 first, then rebase and preserve its reviewed STATUS/legacy-authority corrections plus this lane's two intentional successors.
+- [ ] 5.2 After the broader `tests/` claim clears, promote and land the exact test-only `tests/test_desktop.py` GUI-entrypoint repair; require the focused assertion to pass.
+- [ ] 5.3 After approval and 5.1-5.2, sync all four deltas into canonical specs and strict-validate the synced tree.
+- [ ] 5.4 Archive the change and retire the Wave 1 STATUS row in the same landing lane.
+- [ ] 5.5 Re-run the full-coverage audit and promote the next safe staged successor.
