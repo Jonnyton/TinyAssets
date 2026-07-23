@@ -1,6 +1,7 @@
 ---
 title: Acceptance Probe Catalog
 date: 2026-04-20
+last_swept: 2026-07-22
 author: navigator
 status: living doc — add validated probes here; remove if they go stale
 ---
@@ -11,6 +12,14 @@ Named, validated probes for testing the full System → Chatbot → User chain.
 Each entry records the exact prompt, what it exercises, and the evidence of
 its validation. Use these as reference probes for cutover acceptance, regression
 checks, and new-connector verification.
+
+> **Read this before trusting a `Validated:` line.** Those lines are claims about
+> when a probe was *last checked*, not proof it is working *now*, and nothing
+> re-checks them automatically. A probe can sit certified here while red in CI
+> for days — PROBE-003 did exactly that. Current per-probe status is in
+> § *Claim freshness sweep — 2026-07-22* at the end of this document. If you are
+> here because a probe is red, check that section **first**: the probe itself may
+> be the thing that broke.
 
 ---
 
@@ -127,13 +136,38 @@ Are you there? Call get_status and tell me the llm_endpoint_bound value.
 
 ### Cross-host caveat
 
-Layer-2 binds to host availability — the persona's CDP profile + browser run on the host machine. CI (GHA) runs the script every 5 min and exits 14 SKIP cleanly (no browser). A long-term host-independent Layer-2 (e.g. Browserbase or hosted Playwright) is a separate follow-on; today's PROBE-002 is "Layer-2 when host is up; SKIP otherwise."
+Layer-2 binds to host availability — the persona's CDP profile + browser run on the host machine. A long-term host-independent Layer-2 (e.g. Browserbase or hosted Playwright) is a separate follow-on; the *design intent* of PROBE-002 is "Layer-2 when host is up; SKIP otherwise."
+
+> **⚠ STALE CLAIM CORRECTED 2026-07-22.** This section previously read "CI (GHA)
+> runs the script every 5 min and exits 14 SKIP cleanly (no browser)." That is
+> **not what happens.** In the `layer2-probe` job of
+> `.github/workflows/uptime-canary.yml`, the probe exits **13
+> (`RED_browser_load_error`)**, not 14 (`SKIP_lock_unavailable`) — confirmed on
+> 5 of 5 runs sampled (`29888685398`, `29882421314`, `29878986733`,
+> `29872629105`, `29863658078`). Because that step is `continue-on-error: true`
+> and only exits non-zero for codes other than 0/14, the red is swallowed: it
+> never fails the workflow and never pages anyone. **Net effect: Layer-2 has no
+> CI coverage today, and the absence is invisible.** Observed cadence is also
+> ~1 run/hour, not every 5 min (see PROBE-003 § *Cadence caveat*). A `codex`
+> lane (`fix/layer2-probe-skip-detection`) is dispatched for the skip-detection
+> fix; this catalog entry should be re-verified when it lands.
 
 ---
 
 ## PROBE-003 — Wiki gate + read (auto-heal pipeline integrity)
 
-**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. Scheduled in CI 2026-04-26 — Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 min on the GHA cron alongside the other Layer-1 probes. **Reworked 2026-07-14** after the server-side anonymous-write gate (#1441): the anonymous write-then-read roundtrip is impossible by design, so the probe now asserts the gate itself plus the open read path.
+> **⚠ CURRENTLY RED — and the red is the probe, not the service.**
+> Failing continuously since run `29452256324` (2026-07-15T21:31:53Z):
+> **106 consecutive failed runs across ~6.4 days, zero green**, verified
+> 2026-07-22 ~06:00Z. The live service is behaving **correctly** for every one
+> of those runs. **Do not treat a red PROBE-003 as an outage** — read
+> § *Known false-red history* below first. Full forensics:
+> `docs/audits/2026-07-22-uptime-canary-false-red-incident.md` (PR #1513).
+
+**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. Scheduled in CI 2026-04-26 — Layer-1e step in `.github/workflows/uptime-canary.yml`, alongside the other Layer-1 probes. **Reworked 2026-07-14** (`6f8cebc7`, PR #1449) after the server-side anonymous-write gate (#1441): the anonymous write-then-read roundtrip is impossible by design, so the probe asserts the gate itself plus the open read path.
+**Current validity — NOT CURRENT.** The 2026-07-14 rework was already stale the next day. At 2026-07-15T20:54:19Z, `972d0cc3` moved the server contract again: pure-write MCP handles now answer **HTTP 401 + `WWW-Authenticate` pre-dispatch** (so MCP clients launch OAuth) instead of returning the in-band `status=rejected` / `auth_required=true` envelope the probe still asserts at `scripts/wiki_canary.py:232-237`. The 401 raises at the transport layer inside `post()` (`scripts/wiki_canary.py:199-205`), so the envelope assertion is now **unreachable against production** — realigning this probe is not a matter of editing the envelope check.
+**Freshness stamp:** verified 2026-07-22 against live CI (`gh run list --workflow=uptime-canary.yml --limit 200`) and `origin/main`, where `6f8cebc7` is still the latest commit touching `scripts/wiki_canary.py`. **Remediation is NOT landed** — `git ls-remote --heads origin | grep -i canary` returns no fix branch. A `codex` lane owns the repair; see § *Known false-red history*.
+**Cadence caveat:** the workflow is configured `cron: '*/5 * * * *'`, but observed delivery on 2026-07-22 was roughly **one run per hour** (12 runs spanned ~13.6 h) — GitHub deprioritizes cron schedules under load. Treat 5 minutes as a best case, not a guarantee, when reasoning about detection latency.
 **Source script:** `scripts/wiki_canary.py`
 **Persona:** `wiki-canary` (automated; client name `wiki-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -153,32 +187,146 @@ Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=option
 | Layer | What's tested |
 |---|---|
 | System | MCP `initialize` handshake reaches the daemon. |
-| System | Anonymous `write_page` is REJECTED with the `status=rejected` / `auth_required=true` envelope (write gate active). |
-| System | `read_page` returns the persisted canary draft `drafts/notes/uptime-probe.md` verbatim (reads stay open; catches wiki-read / storage-mount breakage, e.g. the readonly-volume class). |
+| System | Anonymous `write_page` is refused by the write gate. **⚠ The probe asserts the pre-`972d0cc3` in-band envelope (`status=rejected` / `auth_required=true`); the live server now refuses with HTTP 401 pre-dispatch instead. This assertion is what is failing.** |
+| System | `read_page` returns the persisted canary draft `drafts/notes/uptime-probe.md` verbatim (reads stay open; catches wiki-read / storage-mount breakage, e.g. the readonly-volume class). **⚠ Not currently reached** — step 2 raises first, so the read half has had no live coverage since 2026-07-15. |
 | User-impact | Auth policy integrity — an anonymous write silently persisting is a security regression; wiki reads staying open keeps discovery/remix live. |
 
 ### Green criteria
 
+> **⚠ Unreachable as written (2026-07-22).** These are the criteria the probe
+> *currently enforces*, not criteria the live server can currently satisfy. The
+> second bullet describes a contract `972d0cc3` retired, so exit 0 is not
+> attainable against production until the `codex` lane realigns the probe.
+
 - Exit code 0.
-- Anonymous `write_page` returns `status=rejected` with `auth_required=true` (no `isError`).
-- `read_page` returns content matching `_CANARY_CONTENT` byte-for-byte.
+- Anonymous `write_page` returns `status=rejected` with `auth_required=true` (no `isError`) — **retired contract; the server now answers HTTP 401 + `WWW-Authenticate` pre-dispatch.**
+- `read_page` returns content matching `_CANARY_CONTENT` byte-for-byte — **still the correct criterion, but unexercised while step 2 fails first.**
 
 ### Red signals
 
 - Exit 2 — MCP handshake failed (initialize or session establishment).
-- Exit 6 — write-gate probe failed: anonymous write ACCEPTED (gate regression), `isError=true`, unexpected envelope, or network error.
+- Exit 6 — write-gate step failed. **Overloaded across seven raise sites spanning
+  incompatible severities — see the table below before acting on it.**
 - Exit 7 — wiki read failed or canary draft content mismatched.
 - Exit 99 — unexpected error.
 
+#### Exit 6 is overloaded — the seven things it can mean
+
+`scripts/wiki_canary.py` raises `ToolCanaryError(6, ...)` from seven distinct
+sites. They span "transient network blip" through "the public write surface is
+open to anonymous writers." Line numbers are against `6f8cebc7` (current
+`origin/main`).
+
+| Site | Condition | Severity |
+|---|---|---|
+| `:199-205` — `post(..., step_code=6)` | Transport/HTTP error on `tools/call` — network, TLS, non-200. **Includes the HTTP 401 the current server correctly returns**, which is what fires today. | Ambiguous — noise *or* contract drift |
+| `:207` | `write_page` returned no `result` | Write surface broken |
+| `:211` | `isError=true` | Write surface broken |
+| `:216` | No text content in the result | Write surface broken |
+| `:220-222` | Result text is not JSON | Write surface broken |
+| `:223-231` | **Anonymous `write_page` was ACCEPTED — the #1441 gate has regressed** | **P0 security regression** |
+| `:232-237` | Envelope not `status=rejected` + `auth_required=true` | Contract drift |
+
+Note the spread: a network blip and a live authentication bypass on the public
+write surface are reported by the same integer.
+
+#### How to tell which exit 6 you are looking at
+
+**From the CI log alone, you cannot — verified 2026-07-22.** This is the single
+most important operational fact about this probe.
+
+`.github/workflows/uptime-canary.yml:212` invokes the probe without
+`--format gha`, so `fmt` defaults to `log`. In `run_probe()`
+(`scripts/wiki_canary.py:295-301`) the `ToolCanaryError` message is written only
+to `_append_log(...)` → `LOG_PATH = <repo>/.agents/uptime.log`
+(`scripts/uptime_canary.py:66`) — a file on the **ephemeral GHA runner**,
+discarded when the job ends. `_emit_gha_kv("msg", exc.msg)` fires *only* when
+`fmt == "gha"`. So the reason reaches neither stdout nor `$GITHUB_OUTPUT`.
+
+The workflow does capture and echo the probe's stdout — but by then it holds
+nothing discriminating. Verbatim, the *entire* captured output of run
+`29894145473` (2026-07-22T05:34:15Z):
+
+```
+=== wiki canary (https://tinyassets.io/mcp) exit=6 ===
+[wiki-canary] handshake OK sid='facc399f54664ac3b3ed6f1edfd65d1d'
+```
+
+An exit code, and a **success line from the preceding step**. The failure reason
+is absent. That same string propagates into `msg_wiki` and into the P0 alarm
+issue comment — so the alarm body for a six-day red streak reads "handshake OK".
+Over the full run log, `grep -c Unauthorized` and `grep -c "HTTP 401"` both
+return **0**.
+
+**To disambiguate, run the probe yourself:**
+
+```
+python scripts/wiki_canary.py --url https://tinyassets.io/mcp --format gha
+```
+
+`--format gha` routes the message through `_emit_gha_kv`, which **prints to
+stdout** (`scripts/wiki_canary.py:150-158`); the `msg=` line carries the
+discriminating text (today: `HTTP 401 on tools/call: Unauthorized`). Without
+that flag the reason is written only to a local `.agents/uptime.log`.
+
+Until CI surfaces this, treat every `wiki=6` in a CI log as **undiagnosed** —
+neither "known false red" nor "security regression" — and reproduce locally
+before concluding either.
+
+### Known false-red history
+
+This probe has drifted out of alignment with the server **twice**, and both
+times the drift presented as a P0 outage that did not exist. A reader hitting
+`wiki=6` should check drift before checking the service.
+
+| | Round 1 | Round 2 (current) |
+|---|---|---|
+| Server change | #1441 anonymous-write gate, deployed 2026-07-14 04:55Z | `972d0cc3` 401-pre-dispatch, 2026-07-15 20:54Z |
+| Alarm issue | #1447 | **#1461** (still open) |
+| Duration | ~18 h | **~6.4 days, ongoing** |
+| False alarms | 16 | **109+** |
+| Fix | `6f8cebc7` (PR #1449) | **not landed** |
+
+The recurrence is the point. `6f8cebc7` fixed round 1 by hand-re-copying the new
+contract into the probe; `git blame -L 220,240 scripts/wiki_canary.py` attributes
+the now-stale lines **to that fix itself**. A hand-mirrored contract with no
+shared fixture and no cross-check will drift again — and round 2 lasted 8×
+longer than round 1, because by then the alarm channel had been trained to be
+ignorable. Full forensics, including why the test suite stayed green throughout
+(the fixtures assert the retired shape), are in
+`docs/audits/2026-07-22-uptime-canary-false-red-incident.md` (PR #1513).
+
+**Paired remediation lanes (in flight, not landed as of 2026-07-22):** a `codex`
+lane owns `scripts/wiki_canary.py` + `.github/workflows/uptime-canary.yml` — the
+401-contract realignment, the `--format gha` diagnostic fix, and any split of the
+exit-6 codes. **When that lands, the exit-6 table and the "how to tell" section
+above must be updated in the same pass.**
+
 ### Why this probe earns a catalog slot
 
-BUG-028 demonstrated that a slug-normalization bug could silently break bug filing while the Layer-1 MCP handshake stayed green — the read half keeps that class covered. Post-#1441 the write half guards the auth boundary instead: a regression that silently re-opens anonymous writes would otherwise be invisible to every other probe. Known gap: authenticated write-path persistence is NOT exercised — restoring that coverage needs a canary service credential (tracked in `STATUS.md`).
+BUG-028 demonstrated that a slug-normalization bug could silently break bug filing while the Layer-1 MCP handshake stayed green — the read half keeps that class covered. Post-#1441 the write half guards the auth boundary instead: a regression that silently re-opens anonymous writes would otherwise be invisible to every other probe.
 
 ### When to use
 
 - After any change to wiki write/read tool handlers, slug normalization, or wiki storage backend.
 - After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, or the auth gate (`writes_require_identity` / `write_gate_rejection`).
 - As a continuous P0 canary alongside PROBE-002.
+
+### Limitations
+
+- **Authenticated write-path persistence is NOT exercised.** Post-#1441 the probe
+  asserts only that an *anonymous* write is refused; nothing confirms an
+  *authorized* write actually persists. Restoring that coverage needs a canary
+  service credential — tracked as a `host-decision` row in `STATUS.md`.
+  Consequence: a regression that breaks authenticated wiki writes while leaving
+  the gate and the read path intact is invisible to every probe in this catalog.
+- **Scope is auth-gated deployments only** (see § *Invocation*). Against a
+  dev-mode server the `:223-231` exit-6 row fires by design, which is why that
+  row cannot be read as an unconditional security alarm.
+- **The probe hand-mirrors a server contract.** There is no shared fixture
+  between `scripts/wiki_canary.py` and the server, and no cross-check binding the
+  canary's unit-test fixtures to the live response shape. That is the mechanism
+  behind both entries in § *Known false-red history*.
 
 ---
 
@@ -232,7 +380,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 
 ## PROBE-005 — Last-activity freshness (node execution liveness)
 
-**Validated:** registration 2026-04-26 — script live since task #15 landed (tests at `tests/test_last_activity_canary.py`). Scheduled in CI as the `activity_probe` step in `.github/workflows/uptime-canary.yml`, runs every 5 min on the GHA cron after handshake + tool canaries pass.
+**Validated:** registration 2026-04-26 — script live since task #15 landed (tests at `tests/test_last_activity_canary.py`). Scheduled in CI as the `activity_probe` step in `.github/workflows/uptime-canary.yml`, after handshake + tool canaries pass. Cadence: configured `*/5 * * * *`, but observed delivery on 2026-07-22 was ~1 run/hour (see PROBE-003 § *Cadence caveat*).
 **Source script:** `scripts/last_activity_canary.py`
 **Persona:** `last-activity-canary` (automated; client name `workflow-last-activity-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -281,7 +429,7 @@ PROBE-001/002 prove the daemon answers MCP. PROBE-004 proves a tool handler runs
 
 ## PROBE-006 — Revert-loop detection (busy-broken pathology)
 
-**Validated:** registration 2026-04-26 — script live since revert-loop spec landed; spec at `docs/design-notes/2026-04-23-revert-loop-canary-spec.md`. Scheduled in CI as the `revert_loop_probe` step in `.github/workflows/uptime-canary.yml`, runs every 5 min on the GHA cron after handshake + tool canaries pass.
+**Validated:** registration 2026-04-26 — script live since revert-loop spec landed; spec at `docs/design-notes/2026-04-23-revert-loop-canary-spec.md`. Scheduled in CI as the `revert_loop_probe` step in `.github/workflows/uptime-canary.yml`, after handshake + tool canaries pass. Cadence: configured `*/5 * * * *`, but observed delivery on 2026-07-22 was ~1 run/hour (see PROBE-003 § *Cadence caveat*).
 **Source script:** `scripts/revert_loop_canary.py`
 **Persona:** `revert-loop-canary` (automated; client name `revert-loop-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -473,6 +621,37 @@ These canary-adjacent scripts exist in the repo but do NOT earn standalone catal
 | `.github/workflows/dr-drill.yml` | Quarterly disaster-recovery rehearsal triggered by `workflow_dispatch` only. Acceptance-test-as-CI rather than steady-state probe; same family as `selfhost_smoke.py`. STATUS Work table tracks drill cadence. |
 
 A "post-fix clean-use evidence" verification primitive (AGENTS.md Quality Gates) also has no automated probe today. This is intentional: the primitive is evidence-gathering against real-user traces, not a parseable green/red script.
+
+---
+
+## Claim freshness sweep — 2026-07-22
+
+Every `Validated:` line in this catalog is a **claim about the past** that
+silently becomes a claim about the present when an on-call reader uses it to
+decide whether a red probe is real. Nothing re-checks them. PROBE-003 sat
+certified as "Reworked 2026-07-14" while red for six days.
+
+This is a point-in-time sweep, not a standing guarantee. Environment: live
+GitHub Actions history + `origin/main` @ `6f8cebc7`, Windows host, 2026-07-22
+~06:00Z.
+
+| Probe | Verdict | Evidence |
+|---|---|---|
+| PROBE-001 | **Unverifiable by script** — by design | Manual rendered-chatbot probe; no automated signal exists. Source audit `docs/audits/user-chat-intelligence/2026-04-20-do-cutover-acceptance.md` is present. Last live validation **2026-04-20 (~3 months stale)**; the Baseline-evidence table is history, not currency. Needs a fresh `ui-test` run to re-certify. |
+| PROBE-002 | **STALE — corrected in place** | Claimed CI "exits 14 SKIP cleanly"; actually exits **13 `RED_browser_load_error`** on 5/5 sampled runs, swallowed by `continue-on-error: true`. Separately re-verified: `Get-ScheduledTask -TaskName TinyAssets-Canary-L2` → **still not registered** on the host, so the 2026-05-01 "UNWIRED" note remains accurate. |
+| PROBE-003 | **STALE — corrected in place** | 106 consecutive CI failures since 2026-07-15T20:38:50Z; last green run `29449080825`. Contract drift vs `972d0cc3`. Remediation not landed. |
+| PROBE-004 | **Still true** | `tool=0` green in every sampled `uptime-canary` run; `scripts/mcp_tool_canary.py` present. |
+| PROBE-005 | **Still true** (cadence clause corrected) | `activity=0` green in every sampled run; `scripts/last_activity_canary.py` present. |
+| PROBE-006 | **Still true** (cadence clause corrected) | `revert=0` green in every sampled run; `scripts/revert_loop_canary.py` present. |
+| PROBE-007 | **Still true**, cadence claim partial | `dns-canary.yml` 5/5 recent runs `success`. Claimed "every 15 min"; observed gaps of 1.1–3.4 h — same GHA cron-throttling caveat as PROBE-003. |
+| PROBE-008 | **Still true** | `llm-binding-canary.yml` 5/5 recent runs `success`; `scripts/verify_llm_binding.py` present. |
+| PROBE-009 | **Still true** | `tier3-oss-clone-nightly.yml` 5/5 recent runs `success`; both referenced scripts present. |
+
+**Summary: 6 of 9 verified still true, 2 stale and corrected here, 1
+unverifiable by construction.** The two stale entries (PROBE-002, PROBE-003) are
+both *monitors that hand-mirror a contract they do not share with the thing they
+monitor* — the same structural defect, found twice, and in both cases the probe
+failed silently rather than loudly.
 
 ---
 
