@@ -119,14 +119,19 @@ jobs:
         id: tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          if [ -n "${{ inputs.image_tag }}" ]; then
-            tag="${{ inputs.image_tag }}"
+          if [ -n "${REQUESTED_IMAGE_TAG}" ]; then
+            tag="${REQUESTED_IMAGE_TAG}"
           elif [ "${{ github.event_name }}" = "workflow_run" ]; then
             full_sha="${{ github.event.workflow_run.head_sha }}"
             tag="${full_sha:0:12}"
           else
             tag="$(git rev-parse --short=12 HEAD)"
+          fi
+          if [[ ! "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::refusing invalid OCI image tag"
+            exit 1
           fi
           owner_lower="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           image="ghcr.io/${owner_lower}/tinyassets-daemon"
@@ -140,8 +145,8 @@ jobs:
           fi
 
           digest="$(docker buildx imagetools inspect "${image}:${tag}" | awk '/^Digest:/ {print $2; exit}')"
-          if [ -z "${digest}" ]; then
-            echo "::error::could not resolve digest for ${image}:${tag}"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::refusing non-canonical immutable image digest for ${image}:${tag}"
             exit 1
           fi
           image_ref="${image}@${digest}"
@@ -179,27 +184,99 @@ jobs:
 
       - name: Capture previous image tag (for rollback)
         id: prev
+        env:
+          TARGET_REPOSITORY: ${{ steps.tag.outputs.image }}
         run: |
-          # Read current TINYASSETS_IMAGE from the running env file.
-          prev=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env | head -1 | cut -d= -f2-" \
-              || echo '')
-          if [ -z "$prev" ]; then
-            echo "::warning::no previous TINYASSETS_IMAGE found on box; rollback unavailable for this deploy"
-          elif [[ "${prev}" != *@sha256:* ]]; then
-            prev_digest="$(docker buildx imagetools inspect "${prev}" | awk '/^Digest:/ {print $2; exit}' || true)"
-            if [ -z "${prev_digest}" ]; then
-              echo "::warning::previous TINYASSETS_IMAGE is not digest-pinned and could not be resolved; rollback unavailable"
-              prev=""
-            else
-              prev_image="${prev%%:*}"
-              prev="${prev_image}@${prev_digest}"
-              echo "::notice::resolved previous TINYASSETS_IMAGE to immutable rollback ref: ${prev}"
-            fi
+          set -euo pipefail
+          # This step is deliberately read-only. Capture configured and actual
+          # running identities independently; a mutable env tag is not rollback
+          # proof. The prior receipt is capped one byte beyond the accepted
+          # 65,536-byte bound so the pure classifier can distinguish oversize.
+          capture_json="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash -s -- '${TARGET_REPOSITORY}'" <<'REMOTE'
+          set -euo pipefail
+          target_repository="$1"
+          configured_image_ref="$(
+            grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>/dev/null \
+              | tail -1 | cut -d= -f2- || true
+          )"
+          image_id="$(
+            docker inspect --type container --format '{{.Image}}' \
+              tinyassets-daemon 2>/dev/null || true
+          )"
+          repo_digests_json='[]'
+          if [ -n "${image_id}" ]; then
+            repo_digests_json="$(
+              docker image inspect "${image_id}" \
+                --format '{{json .RepoDigests}}' 2>/dev/null || printf '[]'
+            )"
           fi
-          echo "previous=${prev}" >> "$GITHUB_OUTPUT"
-          echo "Previous: ${prev}"
+          release_state_host_dir="$(
+            docker volume inspect tinyassets-data \
+              --format '{{ .Mountpoint }}' 2>/dev/null || true
+          )"
+          prior_receipt_b64=''
+          if [ -n "${release_state_host_dir}" ] \
+              && [ -f "${release_state_host_dir}/release-state.json" ]; then
+            prior_receipt_b64="$(
+              head -c 65537 "${release_state_host_dir}/release-state.json" \
+                | base64 -w0
+            )"
+          fi
+          export target_repository configured_image_ref repo_digests_json
+          export prior_receipt_b64
+          python3 - <<'PY'
+          import json
+          import os
+
+          try:
+              digests = json.loads(os.environ["repo_digests_json"])
+          except (json.JSONDecodeError, TypeError):
+              digests = []
+          print(json.dumps({
+              "target_repository": os.environ["target_repository"],
+              "configured_image_ref": os.environ["configured_image_ref"],
+              "repo_digests": digests if isinstance(digests, list) else [],
+              "prior_receipt_b64": os.environ["prior_receipt_b64"],
+          }, sort_keys=True, separators=(",", ":")))
+          PY
+          REMOTE
+          )"
+          CAPTURE_JSON="${capture_json}" python - "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          canonical = re.compile(
+              r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
+              r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+              r"@sha256:[0-9a-f]{64}$"
+          )
+          captured = json.loads(os.environ["CAPTURE_JSON"])
+          repository = captured["target_repository"]
+          configured = captured.get("configured_image_ref", "")
+          if not isinstance(configured, str) or not canonical.fullmatch(configured):
+              configured = ""
+          candidates = sorted({
+              value for value in captured.get("repo_digests", [])
+              if isinstance(value, str)
+              and value.startswith(f"{repository}@sha256:")
+              and canonical.fullmatch(value)
+          })
+          running = candidates[0] if len(candidates) == 1 else ""
+          previous = configured if configured and configured == running else ""
+          prior_b64 = captured.get("prior_receipt_b64", "")
+          with open(sys.argv[1], "a", encoding="utf-8") as output:
+              output.write(f"configured_image_ref={configured}\n")
+              output.write(f"running_image_ref={running}\n")
+              output.write(f"previous_configured_image_ref={configured}\n")
+              output.write(f"previous_running_image_ref={running}\n")
+              output.write(f"previous={previous}\n")
+              output.write(f"prior_receipt_b64={prior_b64}\n")
+          PY
 
       # INVARIANT — /etc/tinyassets/env must stay root:tinyassets 640.
       # All env mutations route through `deploy/install-tinyassets-env.sh`
@@ -223,7 +300,9 @@ jobs:
       # WORKFLOW_* override and workflow-named backup/log target so the
       # container environment no longer exposes retired product surfaces.
       - name: Scrub stale cloud env overrides
+        id: production_mutation
         run: |
+          echo "production_mutation_started=true" >> "$GITHUB_OUTPUT"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_DEST BACKUP_GH_REPO LOG_DEST" \
@@ -521,6 +600,7 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          echo "image_mutation_started=true" >> "$GITHUB_OUTPUT"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "printf '%s' '${NEW_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
@@ -829,124 +909,458 @@ jobs:
             echo "Access gate confirmed: ${DIRECT_URL} → HTTP ${http_code} (expected 403/401)"
           fi
 
-      - name: Publish release-state receipt
+      - name: Mark forward path complete
+        id: forward
+        run: echo "forward_succeeded=true" >> "$GITHUB_OUTPUT"
+
+      - name: Rollback on failure
+        id: rollback
+        if: always()
         env:
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          TARGET_IMAGE: ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
-          TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          PRODUCTION_MUTATION_STARTED: ${{ steps.production_mutation.outputs.production_mutation_started }}
+          IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
+          FORWARD_SUCCEEDED: ${{ steps.forward.outputs.forward_succeeded }}
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
+          TARGET_REPOSITORY: ${{ steps.tag.outputs.image }}
+        run: |
+          set +e
+          rollback_attempted=false
+          rollback_result=not_attempted
+          rollback_canary_status=not_run
+          rollback_reason=pre_host_write_failure
+          emit_rollback_outputs() {
+            {
+              echo "rollback_attempted=${rollback_attempted}"
+              echo "rollback_result=${rollback_result}"
+              echo "rollback_canary_status=${rollback_canary_status}"
+              echo "rollback_reason=${rollback_reason}"
+            } >> "$GITHUB_OUTPUT"
+          }
+          emit_rollback_outputs
+
+          if [ "${PRODUCTION_MUTATION_STARTED}" != "true" ] \
+              && [ "${IMAGE_MUTATION_STARTED}" != "true" ]; then
+            rollback_reason=pre_host_write_failure
+            emit_rollback_outputs
+            exit 0
+          fi
+          if [ "${PRODUCTION_MUTATION_STARTED}" = "true" ] \
+              && [ "${IMAGE_MUTATION_STARTED}" != "true" ]; then
+            rollback_reason=image_mutation_not_started
+            emit_rollback_outputs
+            exit 0
+          fi
+          if [ "${PRODUCTION_MUTATION_STARTED}" != "true" ] \
+              || [ "${IMAGE_MUTATION_STARTED}" != "true" ]; then
+            rollback_reason=no_valid_target
+            emit_rollback_outputs
+            exit 1
+          fi
+          if [ "${FORWARD_SUCCEEDED}" = "true" ]; then
+            rollback_reason=not_needed
+            emit_rollback_outputs
+            exit 0
+          fi
+          if [ -z "${PREV_IMAGE}" ]; then
+            rollback_reason=no_valid_target
+            emit_rollback_outputs
+            exit 1
+          fi
+
+          rollback_attempted=true
+          rollback_reason=attempted
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          command_status=$?
+          if [ "${command_status}" -eq 0 ]; then
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "printf '%s' '${PREV_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
+            command_status=$?
+          fi
+          if [ "${command_status}" -eq 0 ]; then
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "set -e; sudo docker pull '${PREV_IMAGE}'; sudo systemctl restart tinyassets-daemon"
+            command_status=$?
+          fi
+          if [ "${command_status}" -ne 0 ]; then
+            rollback_result=failed
+            rollback_canary_status=not_run
+            emit_rollback_outputs
+            exit 1
+          fi
+
+          sleep 30
+          python scripts/mcp_public_canary.py --url "${CANARY_URL}" --verbose
+          canary_status=$?
+          if [ "${canary_status}" -ne 0 ]; then
+            rollback_result=failed
+            rollback_canary_status=failed
+            emit_rollback_outputs
+            exit 1
+          fi
+          rollback_canary_status=passed
+          rollback_result=succeeded
+
+          observation_json="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash -s -- '${TARGET_REPOSITORY}'" <<'REMOTE'
+          set -euo pipefail
+          target_repository="$1"
+          configured_image_ref="$(
+            grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>/dev/null \
+              | tail -1 | cut -d= -f2- || true
+          )"
+          image_id="$(
+            docker inspect --type container --format '{{.Image}}' \
+              tinyassets-daemon 2>/dev/null || true
+          )"
+          repo_digests_json='[]'
+          if [ -n "${image_id}" ]; then
+            repo_digests_json="$(
+              docker image inspect "${image_id}" \
+                --format '{{json .RepoDigests}}' 2>/dev/null || printf '[]'
+            )"
+          fi
+          export target_repository configured_image_ref repo_digests_json
+          python3 - <<'PY'
+          import json
+          import os
+          try:
+              digests = json.loads(os.environ["repo_digests_json"])
+          except (json.JSONDecodeError, TypeError):
+              digests = []
+          print(json.dumps({
+              "repository": os.environ["target_repository"],
+              "configured": os.environ["configured_image_ref"],
+              "repo_digests": digests if isinstance(digests, list) else [],
+          }, sort_keys=True, separators=(",", ":")))
+          PY
+          REMOTE
+          )"
+          OBSERVATION_JSON="${observation_json}" PREVIOUS="${PREV_IMAGE}" python - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          canonical = re.compile(
+              r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
+              r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+              r"@sha256:[0-9a-f]{64}$"
+          )
+          observed = json.loads(os.environ["OBSERVATION_JSON"])
+          configured = observed.get("configured", "")
+          candidates = sorted({
+              value for value in observed.get("repo_digests", [])
+              if isinstance(value, str)
+              and value.startswith(f"{observed['repository']}@sha256:")
+              and canonical.fullmatch(value)
+          })
+          running = candidates[0] if len(candidates) == 1 else ""
+          previous = os.environ["PREVIOUS"]
+          if not (
+              canonical.fullmatch(configured or "")
+              and configured == running == previous
+          ):
+              sys.exit(1)
+          PY
+          identity_status=$?
+          if [ "${identity_status}" -ne 0 ]; then
+            emit_rollback_outputs
+            exit 1
+          fi
+          emit_rollback_outputs
+          exit 0
+
+      - name: Publish release-state receipt
+        id: terminal
+        if: always()
+        env:
+          PRODUCTION_MUTATION_STARTED: ${{ steps.production_mutation.outputs.production_mutation_started }}
+          IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
+          FORWARD_SUCCEEDED: ${{ steps.forward.outputs.forward_succeeded }}
+          FORWARD_CANARY_OUTCOME: ${{ steps.canary.outcome }}
+          ROLLBACK_ATTEMPTED: ${{ steps.rollback.outputs.rollback_attempted }}
+          ROLLBACK_RESULT: ${{ steps.rollback.outputs.rollback_result }}
+          ROLLBACK_CANARY_STATUS: ${{ steps.rollback.outputs.rollback_canary_status }}
+          ROLLBACK_REASON: ${{ steps.rollback.outputs.rollback_reason }}
+          TARGET_REPOSITORY: ${{ steps.tag.outputs.image }}
+          ATTEMPTED_IMAGE_TAG: ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          ATTEMPTED_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          PREVIOUS_CONFIGURED_IMAGE_REF: ${{ steps.prev.outputs.previous_configured_image_ref }}
+          PREVIOUS_RUNNING_IMAGE_REF: ${{ steps.prev.outputs.previous_running_image_ref }}
+          PRIOR_RECEIPT_B64: ${{ steps.prev.outputs.prior_receipt_b64 }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
           BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
           TINYASSETS_EVENT: ${{ github.event_name }}
         run: |
-          DEPLOY_RUN_ID="${GITHUB_RUN_ID}"
-          DEPLOY_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          if [ -z "${BUILD_RUN_ID}" ]; then
-            BUILD_RUN_ID="manual:${GITHUB_RUN_ID}"
-            BUILD_RUN_URL="${DEPLOY_RUN_URL}"
+          set -euo pipefail
+          if [ "${PRODUCTION_MUTATION_STARTED}" != "true" ]; then
+            echo "terminal_receipt_result=not_applicable" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "terminal_receipt_result=failed" >> "$GITHUB_OUTPUT"
 
-          image_digest="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker image inspect '${TARGET_IMAGE_REF}' --format '{{index .RepoDigests 0}}' 2>/dev/null || true")"
-          config_hash="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo sha256sum /etc/tinyassets/env 2>/dev/null | awk '{print \$1}' || true")"
-          if [ -n "${config_hash}" ]; then
-            config_hash="sha256:${config_hash}"
+          terminal_observation="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash -s -- '${TARGET_REPOSITORY}' '${ATTEMPTED_IMAGE_REF}'" <<'REMOTE'
+          set -euo pipefail
+          target_repository="$1"
+          attempted_image_ref="$2"
+          configured_image_ref="$(
+            grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>/dev/null \
+              | tail -1 | cut -d= -f2- || true
+          )"
+          image_id="$(
+            docker inspect --type container --format '{{.Image}}' \
+              tinyassets-daemon 2>/dev/null || true
+          )"
+          repo_digests_json='[]'
+          active_revision_label=''
+          if [ -n "${image_id}" ]; then
+            repo_digests_json="$(
+              docker image inspect "${image_id}" \
+                --format '{{json .RepoDigests}}' 2>/dev/null || printf '[]'
+            )"
+            active_revision_label="$(
+              docker image inspect "${image_id}" \
+                --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+                2>/dev/null || true
+            )"
           fi
-          release_state_host_dir="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker volume inspect tinyassets-data --format '{{ .Mountpoint }}' 2>/dev/null" || true)"
-          if [ -z "${release_state_host_dir}" ]; then
-            echo "::error::Could not resolve tinyassets-data Docker volume mountpoint"
-            exit 1
-          fi
-
-          export image_digest config_hash BUILD_RUN_URL DEPLOY_RUN_ID DEPLOY_RUN_URL
-          python - <<'PY' > /tmp/tinyassets-release-state.json
+          attempted_revision_label="$(
+            docker image inspect "${attempted_image_ref}" \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+              2>/dev/null || true
+          )"
+          config_hash="$(
+            sha256sum /etc/tinyassets/env 2>/dev/null | awk '{print $1}' || true
+          )"
+          release_state_host_dir="$(
+            docker volume inspect tinyassets-data \
+              --format '{{ .Mountpoint }}' 2>/dev/null
+          )"
+          export target_repository configured_image_ref repo_digests_json
+          export active_revision_label attempted_revision_label config_hash
+          export release_state_host_dir
+          python3 - <<'PY'
           import json
           import os
+          try:
+              digests = json.loads(os.environ["repo_digests_json"])
+          except (json.JSONDecodeError, TypeError):
+              digests = []
+          print(json.dumps({
+              "repository": os.environ["target_repository"],
+              "configured": os.environ["configured_image_ref"],
+              "repo_digests": digests if isinstance(digests, list) else [],
+              "active_revision_label": os.environ["active_revision_label"],
+              "attempted_revision_label": os.environ["attempted_revision_label"],
+              "config_hash": os.environ["config_hash"],
+              "release_state_host_dir": os.environ["release_state_host_dir"],
+          }, sort_keys=True, separators=(",", ":")))
+          PY
+          REMOTE
+          )"
+
+          export terminal_observation
+          python - "$RUNNER_TEMP/deploy-terminal-observation.json" <<'PY'
+          import json
+          import os
+          import re
+          import sys
           from datetime import UTC, datetime
 
-          receipt = {
-              "git_sha": os.environ["SOURCE_SHA"],
-              "image_tag": os.environ["TARGET_IMAGE"],
-              "image_ref": os.environ["TARGET_IMAGE_REF"],
-              "image_digest": os.environ.get("image_digest", ""),
-              "build_run_id": os.environ["BUILD_RUN_ID"],
-              "build_run_url": os.environ["BUILD_RUN_URL"],
-              "deploy_run_id": os.environ["DEPLOY_RUN_ID"],
-              "deploy_run_url": os.environ["DEPLOY_RUN_URL"],
-              "config_hash": os.environ.get("config_hash", ""),
-              "config_version": "tinyassets-env-v1",
-              "schema_migration_rev": "not_applicable",
-              "canary_bundle_status": "passed",
-              "deployed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-              "rollback_target": os.environ["PREV_IMAGE"],
+          canonical = re.compile(
+              r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
+              r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+              r"@sha256:[0-9a-f]{64}$"
+          )
+          observed = json.loads(os.environ["terminal_observation"])
+          repository = observed["repository"]
+          configured = observed.get("configured", "")
+          if not isinstance(configured, str) or not canonical.fullmatch(configured):
+              configured = ""
+          candidates = sorted({
+              value for value in observed.get("repo_digests", [])
+              if isinstance(value, str)
+              and value.startswith(f"{repository}@sha256:")
+              and canonical.fullmatch(value)
+          })
+          running = candidates[0] if len(candidates) == 1 else ""
+
+          def marker(value):
+              if value == "true":
+                  return True
+              if value == "false" or value == "":
+                  return False
+              return value
+
+          canary_outcome = os.environ.get("FORWARD_CANARY_OUTCOME", "")
+          forward_canary_status = {
+              "success": "passed",
+              "failure": "failed",
+          }.get(canary_outcome, "not_run")
+          config_hash = observed.get("config_hash", "")
+          if isinstance(config_hash, str) and re.fullmatch(r"[0-9a-f]{64}", config_hash):
+              config_hash = f"sha256:{config_hash}"
+          else:
+              config_hash = ""
+          value = {
+              "production_mutation_started": marker(
+                  os.environ.get("PRODUCTION_MUTATION_STARTED", "")
+              ),
+              "image_mutation_started": marker(
+                  os.environ.get("IMAGE_MUTATION_STARTED", "")
+              ),
+              "forward_deploy_status": (
+                  "succeeded"
+                  if os.environ.get("FORWARD_SUCCEEDED") == "true"
+                  else "failed"
+              ),
+              "forward_canary_status": forward_canary_status,
+              "rollback_attempted": marker(
+                  os.environ.get("ROLLBACK_ATTEMPTED", "")
+              ),
+              "rollback_result": os.environ.get("ROLLBACK_RESULT", ""),
+              "rollback_canary_status": os.environ.get(
+                  "ROLLBACK_CANARY_STATUS", ""
+              ),
+              "rollback_reason": os.environ.get("ROLLBACK_REASON", ""),
+              "attempted_image_tag": os.environ.get("ATTEMPTED_IMAGE_TAG", ""),
+              "attempted_image_ref": os.environ.get("ATTEMPTED_IMAGE_REF", ""),
+              "attempted_revision_label": observed.get(
+                  "attempted_revision_label", ""
+              ),
+              "workflow_event": os.environ.get("TINYASSETS_EVENT", ""),
+              "workflow_head_sha": os.environ.get("WORKFLOW_HEAD_SHA", ""),
+              "github_sha": os.environ.get("GITHUB_SHA_VALUE", ""),
+              "build_run_id": os.environ.get("BUILD_RUN_ID", ""),
+              "build_run_url": os.environ.get("BUILD_RUN_URL", ""),
+              "deploy_run_id": os.environ["GITHUB_RUN_ID"],
+              "deploy_run_url": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/"
+                  f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                  f"{os.environ['GITHUB_RUN_ID']}"
+              ),
               "actor": os.environ["GITHUB_ACTOR"],
               "repository": os.environ["GITHUB_REPOSITORY"],
-              "workflow_event": os.environ["TINYASSETS_EVENT"],
+              "previous_configured_image_ref": os.environ.get(
+                  "PREVIOUS_CONFIGURED_IMAGE_REF", ""
+              ),
+              "previous_running_image_ref": os.environ.get(
+                  "PREVIOUS_RUNNING_IMAGE_REF", ""
+              ),
+              "configured_image_ref": configured,
+              "running_image_ref": running,
+              "active_revision_label": observed.get(
+                  "active_revision_label", ""
+              ),
+              "config_hash": config_hash,
+              "terminal_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+              "prior_receipt_b64": os.environ.get("PRIOR_RECEIPT_B64", ""),
           }
-          print(json.dumps(receipt, sort_keys=True, indent=2))
+          with open(sys.argv[1], "w", encoding="utf-8") as output:
+              json.dump(value, output, sort_keys=True, separators=(",", ":"))
           PY
 
+          python scripts/deploy_terminal_receipt.py \
+              < "$RUNNER_TEMP/deploy-terminal-observation.json" \
+              > "$RUNNER_TEMP/tinyassets-release-state.json"
+          python - "$RUNNER_TEMP/tinyassets-release-state.json" \
+              "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+          receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+          if receipt["outcome"] == "deployed":
+              terminal_canary = receipt["forward_canary_status"]
+          elif receipt["outcome"] == "rolled_back" or receipt["rollback_attempted"]:
+              terminal_canary = receipt["rollback_canary_status"]
+          else:
+              terminal_canary = receipt["forward_canary_status"]
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write(f"terminal_outcome={receipt['outcome']}\n")
+              output.write(
+                  "terminal_active_identity_status="
+                  f"{receipt['active_identity_status']}\n"
+              )
+              output.write(f"terminal_canary_status={terminal_canary}\n")
+              output.write(
+                  "terminal_configured_image_ref="
+                  f"{receipt['configured_image_ref']}\n"
+              )
+              output.write(
+                  f"terminal_running_image_ref={receipt['running_image_ref']}\n"
+              )
+              output.write(
+                  f"terminal_active_image_ref={receipt['active_image_ref']}\n"
+              )
+          PY
+
+          remote_receipt="/tmp/tinyassets-release-state-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              /tmp/tinyassets-release-state.json \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-release-state.json"
-          # Ownership MUST be the container uid/gid 1001 NUMERICALLY. The host
-          # user named "tinyassets" is uid 994 — `install -d -o tinyassets` on
-          # the (already-existing) volume root re-chowned /data to 994 on every
-          # deploy, reverting the "Prepare codex auth" step's chown and leaving
-          # uid-1001 daemon processes unable to create SQLite journal/WAL files
-          # next to /data/.auth.db ("attempt to write a readonly database",
-          # 500 on every POST /mcp after the next restart — the 2026-07-12
-          # outage class, root-caused 2026-07-14).
+              "$RUNNER_TEMP/tinyassets-release-state.json" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_receipt}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; \
-               sudo install -d -m 0755 -o 1001 -g 1001 '${release_state_host_dir}'; \
-               sudo install -m 0644 -o 1001 -g 1001 /tmp/tinyassets-release-state.json '${release_state_host_dir}/release-state.json'"
+              "set -euo pipefail; \
+               release_state_host_dir=\$(sudo docker volume inspect tinyassets-data --format '{{ .Mountpoint }}'); \
+               next_receipt=\"\${release_state_host_dir}/release-state.json.next.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}\"; \
+               sudo install -m 0644 -o 1001 -g 1001 '${remote_receipt}' \"\${next_receipt}\"; \
+               sudo mv -f \"\${next_receipt}\" \"\${release_state_host_dir}/release-state.json\""
+          echo "terminal_receipt_result=published" >> "$GITHUB_OUTPUT"
           {
-            echo "### Release-state receipt"
+            echo "### Terminal release-state receipt"
             echo ""
             echo "- Container path: \`/data/release-state.json\`"
-            echo "- Host volume path: \`${release_state_host_dir}/release-state.json\`"
-            echo "- Source SHA: \`${SOURCE_SHA}\`"
-            echo "- Image: \`${TARGET_IMAGE}\`"
-            echo "- Immutable ref: \`${TARGET_IMAGE_REF}\`"
-            echo "- Digest: \`${image_digest:-unknown}\`"
+            echo "- Outcome: \`$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"outcome\"])' "$RUNNER_TEMP/tinyassets-release-state.json")\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${FORWARD_SUCCEEDED}" = "true" ]; then
+            if ! python - "$RUNNER_TEMP/tinyassets-release-state.json" <<'PY'
+          import json
+          import sys
 
-      - name: Rollback on failure
-        if: failure() && steps.deploy.outcome == 'success' && steps.prev.outputs.previous != ''
-        env:
-          PREV_IMAGE: ${{ steps.prev.outputs.previous }}
-        run: |
-          echo "::warning::Rolling back to ${PREV_IMAGE}"
-          # Restore previous tag via the atomic helper (same root:tinyassets
-          # 640 invariant as the deploy step). The helper is already in
-          # /tmp/install-tinyassets-env.sh from the deploy step's scp; if
-          # the deploy step failed before scp, push it again here.
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/install-tinyassets-env.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' '${PREV_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo docker pull '${PREV_IMAGE}' || true; sudo systemctl restart tinyassets-daemon"
-          # Confirm rollback restored green.
-          sleep 30
-          python scripts/mcp_public_canary.py --url "${CANARY_URL}" --verbose
+          receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+          proven = (
+              receipt["outcome"] == "deployed"
+              and receipt["active_identity_status"] == "agreed"
+              and receipt["forward_canary_status"] == "passed"
+          )
+          raise SystemExit(0 if proven else 1)
+          PY
+            then
+              echo "::error::forward terminal state is unproven after publication; keeping deploy red"
+              exit 1
+            fi
+          fi
 
       - name: Open deploy-failed issue
-        if: failure()
+        if: always() && failure()
         uses: actions/github-script@v7
         env:
           NEW_TAG: ${{ steps.tag.outputs.tag }}
+          ATTEMPTED_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
+          PRODUCTION_MUTATION_STARTED: ${{ steps.production_mutation.outputs.production_mutation_started }}
+          IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
+          ROLLBACK_ATTEMPTED: ${{ steps.rollback.outputs.rollback_attempted }}
+          ROLLBACK_RESULT: ${{ steps.rollback.outputs.rollback_result }}
+          ROLLBACK_CANARY_STATUS: ${{ steps.rollback.outputs.rollback_canary_status }}
+          ROLLBACK_REASON: ${{ steps.rollback.outputs.rollback_reason }}
+          TERMINAL_RECEIPT_RESULT: ${{ steps.terminal.outputs.terminal_receipt_result }}
+          TERMINAL_OUTCOME: ${{ steps.terminal.outputs.terminal_outcome }}
+          TERMINAL_ACTIVE_IDENTITY_STATUS: ${{ steps.terminal.outputs.terminal_active_identity_status }}
+          TERMINAL_CANARY_STATUS: ${{ steps.terminal.outputs.terminal_canary_status }}
+          TERMINAL_CONFIGURED_IMAGE_REF: ${{ steps.terminal.outputs.terminal_configured_image_ref }}
+          TERMINAL_RUNNING_IMAGE_REF: ${{ steps.terminal.outputs.terminal_running_image_ref }}
+          TERMINAL_ACTIVE_IMAGE_REF: ${{ steps.terminal.outputs.terminal_active_image_ref }}
         with:
           script: |
             const label = "deploy-failed";
@@ -964,12 +1378,140 @@ jobs:
                   repo: context.repo.repo,
                   name: label,
                   color: 'fbca04',
-                  description: 'CI deploy to DO Droplet failed; auto-rollback attempted.',
+                  description: 'CI production deploy failed; inspect terminal rollback evidence.',
                 });
               } else {
                 throw e;
               }
             }
+            const productionMarker = process.env.PRODUCTION_MUTATION_STARTED || "";
+            const imageMarker = process.env.IMAGE_MUTATION_STARTED || "";
+            const rollbackAttemptedMarker = process.env.ROLLBACK_ATTEMPTED || "";
+            const productionStarted = productionMarker === "true";
+            const productionNotStarted = productionMarker === "" || productionMarker === "false";
+            const imageStarted = imageMarker === "true";
+            const imageNotStarted = imageMarker === "" || imageMarker === "false";
+            const rollbackAttempted = rollbackAttemptedMarker === "true";
+            const rollbackNotAttempted = rollbackAttemptedMarker === "false";
+            const rollbackResult = process.env.ROLLBACK_RESULT || "";
+            const rollbackCanary = process.env.ROLLBACK_CANARY_STATUS || "";
+            const rollbackReason = process.env.ROLLBACK_REASON || "";
+            const terminalResult = process.env.TERMINAL_RECEIPT_RESULT || "";
+            const terminalOutcome = process.env.TERMINAL_OUTCOME || "";
+            const terminalIdentity = process.env.TERMINAL_ACTIVE_IDENTITY_STATUS || "";
+            const terminalCanary = process.env.TERMINAL_CANARY_STATUS || "";
+            const previousImage = process.env.PREV_IMAGE || "";
+            const canonicalRepoDigest = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/;
+
+            let rollbackSentence;
+            if (
+              productionNotStarted
+              && imageNotStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "pre_host_write_failure"
+            ) {
+              rollbackSentence = "Production host write did not start; image rollback was not attempted.";
+            } else if (
+              productionStarted
+              && imageNotStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "image_mutation_not_started"
+            ) {
+              rollbackSentence = "Production mutation started, but image mutation did not; image rollback was not required.";
+            } else if (
+              productionStarted
+              && imageStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "not_needed"
+            ) {
+              if (
+                terminalOutcome === "deployed"
+                && terminalIdentity === "agreed"
+                && terminalCanary === "passed"
+              ) {
+                rollbackSentence = "Rollback was not needed because terminal outcome is deployed, active image identity agrees, and the applicable canary passed.";
+              } else {
+                rollbackSentence = "Rollback was not attempted; forward production health is unproven.";
+              }
+            } else if (
+              productionStarted
+              && imageStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "no_valid_target"
+            ) {
+              rollbackSentence = "Rollback was not attempted because no validated immutable previous image was available.";
+            } else if (
+              productionStarted
+              && imageStarted
+              && rollbackAttempted
+              && rollbackResult === "succeeded"
+              && rollbackCanary === "passed"
+              && rollbackReason === "attempted"
+            ) {
+              if (
+                terminalOutcome === "rolled_back"
+                && terminalIdentity === "agreed"
+                && canonicalRepoDigest.test(previousImage)
+                && process.env.TERMINAL_ACTIVE_IMAGE_REF === previousImage
+              ) {
+                rollbackSentence = "Rollback succeeded and the rollback canary passed.";
+              } else {
+                rollbackSentence = "Rollback was not proven: the canary passed but configured and running image identity did not agree with the rollback target.";
+              }
+            } else if (
+              productionStarted
+              && imageStarted
+              && rollbackAttempted
+              && rollbackResult === "failed"
+              && rollbackCanary === "failed"
+              && rollbackReason === "attempted"
+            ) {
+              rollbackSentence = "Rollback failed; the rollback canary failed.";
+            } else if (
+              productionStarted
+              && imageStarted
+              && rollbackAttempted
+              && rollbackResult === "failed"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "attempted"
+            ) {
+              rollbackSentence = "Rollback failed before the rollback canary ran.";
+            } else {
+              rollbackSentence = "Rollback status is unavailable; rollback success was not proven.";
+            }
+
+            let receiptSentence;
+            if (terminalResult === "published") {
+              receiptSentence = "Terminal release-state receipt published.";
+            } else if (terminalResult === "failed") {
+              receiptSentence = "Terminal release-state publication failed; durable active-release truth is not proven and the prior receipt may be stale.";
+            } else if (terminalResult === "not_applicable" && productionNotStarted) {
+              receiptSentence = "Terminal release-state publication was not applicable; the prior receipt was left unchanged.";
+            } else {
+              receiptSentence = "Terminal release-state status is unavailable or inconsistent; durable active-release truth is not proven.";
+            }
+
+            let identitySentence;
+            if (terminalIdentity === "agreed") {
+              identitySentence = `Active image: \`${process.env.TERMINAL_ACTIVE_IMAGE_REF}\`.`;
+            } else if (terminalIdentity === "mismatch") {
+              identitySentence = `Active image mismatch: configured \`${process.env.TERMINAL_CONFIGURED_IMAGE_REF}\`, running \`${process.env.TERMINAL_RUNNING_IMAGE_REF}\`.`;
+            } else if (terminalIdentity === "configured_unknown") {
+              identitySentence = `Active image unproven: configured image observation is unavailable.`;
+            } else if (terminalIdentity === "running_unknown") {
+              identitySentence = `Active image unproven: running container observation is unavailable.`;
+            } else {
+              identitySentence = `Active image unproven: configured and running observations are unavailable or inconsistent.`;
+            }
+
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             await github.rest.issues.create({
               owner: context.repo.owner,
@@ -980,11 +1522,15 @@ jobs:
                 `Auto-opened by the deploy-prod tinyassets.`,
                 ``,
                 `- Attempted: \`${process.env.NEW_TAG}\``,
-                `- Rolled back to: \`${process.env.PREV_IMAGE}\``,
+                `- Attempted immutable ref: \`${process.env.ATTEMPTED_IMAGE_REF}\``,
+                `- Rollback tuple: \`${process.env.ROLLBACK_ATTEMPTED}/${process.env.ROLLBACK_RESULT}/${process.env.ROLLBACK_CANARY_STATUS}/${process.env.ROLLBACK_REASON}\``,
                 `- Run: ${runUrl}`,
                 ``,
-                `Check the run logs for the failing step (build, deploy, canary, or rollback).`,
-                `If rollback canary is also red, the daemon is down — investigate urgently.`,
+                rollbackSentence,
+                receiptSentence,
+                identitySentence,
+                ``,
+                `Check the run logs for the failing step and terminal evidence.`,
               ].join('\n'),
             });
 
@@ -996,8 +1542,14 @@ jobs:
             echo ""
             echo "- **Target image:** \`${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}\`"
             echo "- **Previous image:** \`${{ steps.prev.outputs.previous }}\`"
+            echo "- **Production mutation:** \`${{ steps.production_mutation.outputs.production_mutation_started }}\`"
+            echo "- **Image mutation:** \`${{ steps.deploy.outputs.image_mutation_started }}\`"
             echo "- **Deploy step:** \`${{ steps.deploy.outcome }}\`"
             echo "- **Canary step:** \`${{ steps.canary.outcome }}\`"
             echo "- **Access gate step:** \`${{ steps.access-gate.outcome }}\`"
+            echo "- **Rollback:** \`${{ steps.rollback.outputs.rollback_attempted }}/${{ steps.rollback.outputs.rollback_result }}/${{ steps.rollback.outputs.rollback_canary_status }}/${{ steps.rollback.outputs.rollback_reason }}\`"
+            echo "- **Terminal receipt:** \`${{ steps.terminal.outputs.terminal_receipt_result }}\`"
+            echo "- **Terminal outcome:** \`${{ steps.terminal.outputs.terminal_outcome }}\`"
+            echo "- **Terminal active identity:** \`${{ steps.terminal.outputs.terminal_active_identity_status }}\`"
             echo "- **Overall:** \`${{ job.status }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
