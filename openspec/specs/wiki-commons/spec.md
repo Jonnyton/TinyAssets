@@ -115,16 +115,31 @@ The `wiki` tool SHALL dispatch exactly the fifteen actions in `WIKI_ACTIONS` (`r
 - **WHEN** a branch needs to publish output back to a wiki page
 - **THEN** it declares an external-write packet consumed by the wiki write-back effector rather than writing inline
 
-### Requirement: Trigger receipts are append-only and recorded before enqueue
-Auto-trigger attempts for filed pages (FEAT-004, `tinyassets/wiki/trigger_receipts.py`) SHALL be persisted in an append-only SQLite table, with a `pending` receipt row created BEFORE the dispatcher enqueue is attempted so an enqueue failure cannot erase the fact that a trigger was expected. Each receipt SHALL then transition from `pending` to exactly one terminal state — `queued` (dispatcher returned a request id), `failed` (dispatcher raised; error class and message recorded), or `skipped` (no canonical branch configured) — and the table SHALL support orphan detection for receipts stuck in `pending`/`queued` past a staleness cutoff.
+### Requirement: Trigger receipts use one mutable per-attempt row attempted before enqueue
+Before dispatcher enqueue, each filed-page auto-trigger handler SHALL attempt
+to insert one SQLite row in `pending`. If receipt creation raises, the handler
+SHALL log the failure and continue enqueue without a receipt so bug filing
+survives the receipt-store outage. When a receipt exists, `mark_queued`,
+`mark_failed`, and `mark_skipped` SHALL update that row by
+`trigger_attempt_id`. These helpers
+SHALL NOT condition the update on the previous status or reject a zero affected
+row count, so a later terminal helper can overwrite an earlier terminal status.
+The orphan query SHALL continue to return `pending` or `queued` attempts older
+than the configured cutoff.
 
-#### Scenario: pending receipt precedes the enqueue
-- **WHEN** a filed page attempts to auto-trigger its investigation branch
-- **THEN** a `pending` receipt row is written before the enqueue is attempted
+#### Scenario: successful pending receipt precedes enqueue
+- **WHEN** pending receipt creation succeeds for a filed-page auto-trigger
+- **THEN** a `pending` receipt row is written before enqueue is attempted
 
-#### Scenario: receipt reaches a single terminal status
-- **WHEN** the trigger attempt resolves
-- **THEN** the receipt transitions from `pending` to exactly one of `queued`, `failed`, or `skipped`, with error details recorded on `failed`
+#### Scenario: receipt-store failure does not prevent enqueue
+- **WHEN** pending receipt creation raises
+- **THEN** the handler logs the receipt-store failure
+- **AND** continues the investigation enqueue without a receipt
+
+#### Scenario: a later terminal update can overwrite an earlier terminal status
+- **WHEN** terminal-marking helpers are invoked more than once for the same attempt
+- **THEN** each helper updates by `trigger_attempt_id` without checking the prior status
+- **AND** the last update can replace an earlier `queued`, `failed`, or `skipped` value
 
 #### Scenario: stale attempts are detectable as orphans
 - **WHEN** a receipt remains in `pending` or `queued` past the staleness cutoff

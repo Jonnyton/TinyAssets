@@ -37,17 +37,31 @@ Value-moving actions (fund, set-wallet, withdraw, lock) SHALL act on the authent
 - **WHEN** the authenticated actor equals `UNIVERSE_SERVER_HOST_USER` and supplies another actor's `staker_id`
 - **THEN** the action proceeds against that actor's escrow
 
-### Requirement: All money amounts are integer MicroTokens, never floats
-The payments subsystem SHALL represent every currency amount as `MicroToken`, an immutable non-negative `int` subclass (1 Token = 1,000,000 MicroTokens), so no settlement value is ever a float. Constructing a negative `MicroToken` SHALL raise, and a subtraction that would go negative SHALL raise rather than wrap. Money-action transports SHALL coerce a supplied `amount` to `int` and reject a non-integer amount with an error rather than silently rounding.
+### Requirement: Payment-core conversions produce integers while legacy bids permit non-integer scalars
+The payments core SHALL construct `MicroToken` through Python's `int` boundary
+after rejecting values that compare below zero, and subtraction below zero
+SHALL raise. Current money-action transports SHALL also call `int(...)`; a
+fractional JSON number can therefore be truncated and `True` becomes `1`, while
+`False` becomes `0` and mutating payment actions subsequently reject converted
+amounts less than or equal to zero. A fractional string that `int(...)` cannot
+parse SHALL be rejected. `NodeBid.bid` SHALL preserve the caller/YAML scalar
+type without runtime coercion, so float bids are permitted, while v1 settlement
+serialization SHALL coerce `bid_amount` to float.
 
-#### Scenario: negative money is impossible
+#### Scenario: negative payment-core money is rejected
 - **WHEN** code constructs `MicroToken(-1)` or subtracts past zero
 - **THEN** a `ValueError` is raised
 
-#### Scenario: non-integer amount is rejected at the transport
-- **WHEN** an escrow money action receives an `amount` that does not parse as an integer
-- **THEN** the action returns a `rejected` status naming the bad amount
-- **AND** performs no money movement
+#### Scenario: current transport conversion can truncate a numeric fraction
+- **WHEN** a money action receives a positive fractional JSON number such as `1.5`
+- **THEN** current `int(...)` conversion passes `1` to the action rather than rejecting the fraction at transport
+- **AND** a converted amount less than or equal to zero is rejected by the mutating payment action
+- **AND** a fractional string such as `"1.5"` is rejected because `int(...)` cannot parse it
+
+#### Scenario: legacy bid storage permits float amounts
+- **WHEN** a `NodeBid` receives and serializes a fractional float bid
+- **THEN** its runtime/YAML representation preserves that supplied scalar type
+- **AND** a v1 settlement derived from it serializes `bid_amount` as a float
 
 ### Requirement: Paid-market computation library is pure and I/O-free
 The `tinyassets/paid_market/` package (spot index, buckets, forwards, ceiling, training, pools, fund, licenses, shuttles, fabrication, matching, ledger) SHALL contain no I/O: it reads no files, opens no database, and reads no environment — transport layers sit on top of it. Every money-path computation SHALL be integer or `Fraction` exact with conservation invariants asserted internally, so a rounding residue can never silently create or destroy value. As-built, this library is a complete, tested subset with no live money-moving MCP transport wired to it; its only importers are the package's own modules and the test suite.
@@ -73,17 +87,26 @@ A node bid SHALL be a cross-universe, single-node execution request persisted as
 - **THEN** it is logged and skipped
 - **AND** the remaining valid bids are still read
 
-### Requirement: Settlement records are immutable and write-once
-Bid settlement SHALL append a repo-root-level record at `settlements/<bid_id>__<daemon_id>.yaml` carrying `schema_version: "1"`, the requester/owner/daemon identities, bid amount, evidence URL, completion timestamp, an `outcome_status` of exactly `succeeded` or `failed`, and `settled: false`. Recording SHALL be write-once: a second record for the same `(bid_id, daemon_id)` pair SHALL raise `SettlementExistsError` rather than overwrite, and an `outcome_status` outside the allowed set SHALL raise. v1 records SHALL never be rewritten, so the audit trail survives a future token-launch migration byte-for-byte.
+### Requirement: Settlement recording rejects pre-existing paths sequentially but is not race-atomic
+`record_settlement_event` SHALL validate `outcome_status`, derive the v1
+repo-root settlement path, reject a path that already exists, and then write the
+YAML record with ordinary `Path.write_text`. This check-then-write boundary
+SHALL protect sequential calls but SHALL NOT provide an atomic single-winner
+guarantee for concurrent writers that both observe the path as absent.
 
-#### Scenario: double-settle is refused
-- **WHEN** a settlement already exists for a `(bid_id, daemon_id)` pair and recording is attempted again
+#### Scenario: sequential double-settle is refused
+- **WHEN** a settlement path already exists and recording is attempted again
 - **THEN** `SettlementExistsError` is raised
 - **AND** the existing record is left unchanged
 
 #### Scenario: invalid outcome status is rejected
 - **WHEN** a settlement is recorded with an `outcome_status` other than `succeeded` or `failed`
 - **THEN** a `ValueError` is raised and no file is written
+
+#### Scenario: concurrent creation has no single-winner guard
+- **WHEN** two writers both pass the path-existence check before either ordinary write completes
+- **THEN** the current recorder does not guarantee a single winner
+- **AND** a later write may replace the earlier record
 
 ### Requirement: Treasury take is conserved basis-point math with a read-only status surface
 The treasury SHALL compute its take as pure integer basis-point math: a 1% platform take (100 bp) split 50/50 between a bounty pool and treasury retention, using floor division so `net_to_claimer + bounty_pool + treasury_retained` equals the settlement amount exactly. The treasury/cost-ledger status surface SHALL be strictly read-only — it SHALL NOT run migrations, create the database, or lock/release/refund/batch/spend — reporting `autonomous_spend_allowed: false` and treating a missing database or table as zeroed sections so a status check can never become an implicit payment write. It is exposed as an economy read on the universe MCP tool.
