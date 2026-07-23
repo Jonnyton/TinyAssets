@@ -215,16 +215,20 @@ The provider layer SHALL expose `subscription_auth_health(provider_name, allow_p
 - **THEN** `provider_auth.writers` contains each status and detail, `all_writers_unauthenticated` is true only when both checked subscription writers are `not_logged_in`, and warnings distinguish that condition from partial subscription-writer loss
 - **AND** the roll-up does not inspect `ollama-local` or opted-in API-key providers and MUST NOT be treated as proof that every possible provider route is unavailable
 
-### Requirement: The provider call bridge retries only transient full-chain exhaustion
-The shared provider call bridge SHALL retry `AllProvidersExhaustedError` up to three total router attempts with exponential waits bounded from two through eight seconds. It SHALL NOT retry unrelated exceptions. After failure or when no router exists, it SHALL return the caller-supplied fallback response when present and otherwise re-raise the original unrelated error, or raise `AllProvidersExhaustedError` for exhaustion or a missing router, rather than synthesize empty prose.
+### Requirement: The provider call bridge retries every full-chain exhaustion by exception type
+When a router is installed, the shared provider call bridge SHALL retry every `AllProvidersExhaustedError`, including subclasses, for up to three total router attempts. It SHALL use `wait_exponential(multiplier=1, min=2, max=8)` between retryable failures. If all three attempts are needed, it SHALL wait two seconds after the first `AllProvidersExhaustedError` and two seconds after the second, and SHALL perform no wait after the terminal third failure. Retry eligibility SHALL depend on the exception type rather than a transient/permanent cause classification, so permanent policy, allowlist, pinned-provider, credential, and no-eligible-provider exhaustion can also delay the final result for up to three attempts. The bridge SHALL NOT retry unrelated exceptions. After terminal router failure, it SHALL return any caller-supplied non-`None` fallback response, including an empty string, and otherwise re-raise the final original exception. When no router exists, it SHALL make no retry attempts, return a non-`None` fallback response when supplied, and otherwise raise `AllProvidersExhaustedError`, rather than synthesize empty prose.
 
-#### Scenario: Transient exhaustion clears
+#### Scenario: Exhaustion clears on a later attempt
 - **WHEN** the first router attempt raises `AllProvidersExhaustedError` and the second succeeds
 - **THEN** the bridge returns the successful provider text after two attempts
 
 #### Scenario: Three exhaustion attempts use the explicit fallback
 - **WHEN** all three router attempts raise `AllProvidersExhaustedError` and `fallback_response` is supplied
 - **THEN** the bridge returns that fallback response
+
+#### Scenario: Permanent exhaustion is also retried
+- **WHEN** the router represents a permanent policy, allowlist, pinned-provider, credential, or no-eligible-provider failure as `AllProvidersExhaustedError`
+- **THEN** the bridge retries that exception for up to three total router attempts before returning a supplied fallback or raising the final exhaustion error
 
 #### Scenario: Exhaustion without fallback fails loudly
 - **WHEN** all router attempts exhaust and no fallback response is supplied

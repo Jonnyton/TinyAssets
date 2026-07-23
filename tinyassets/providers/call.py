@@ -178,11 +178,12 @@ def _call_router_with_retry(
     config: Any = None,
     universe_context: Any = None,
 ) -> str:
-    """Call the installed router with tenacity retry on transient exhaustion.
+    """Call the installed router with exception-type exhaustion retries.
 
-    Retries up to 3 times with exponential backoff (2s, 4s, 8s) when all
-    providers are temporarily exhausted (rate-limit cooldowns expiring between
-    attempts).
+    Every ``AllProvidersExhaustedError`` is eligible for up to three total
+    attempts, regardless of whether its cause is transient or permanent.  The
+    configured exponential wait yields two-second waits after failures one and
+    two when all three attempts are needed, with no wait after terminal failure.
     """
     from tinyassets.exceptions import AllProvidersExhaustedError
 

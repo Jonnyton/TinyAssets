@@ -3,10 +3,13 @@
 - **Freshness:** 2026-07-23 UTC; canonical re-audit completed through PR #1619,
   legacy authority classified through PR #1620, and PR #1622's nine
   dependency-independent shipped-contract groups synced and archived; a
-  post-merge authority review returned ADAPT on two requirement wordings
+  post-merge authority review returned ADAPT on two requirement wordings, and
+  the dedicated correction is Codex-reviewed, synced, and archived while the
+  project-required opposite-provider approval remains pending
 - **Code/spec baseline:** PR #1622 merge on `origin/main` at
   `35817a3e8463c095f63fe2ea7d739728f67a4679`, including archived change
-  `2026-07-23-backfill-independent-shipped-contracts`
+  `2026-07-23-backfill-independent-shipped-contracts`, plus archived correction
+  `2026-07-23-correct-independent-backfill-authority`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -31,11 +34,13 @@ This progress does **not** yet prove full coverage. The earlier canonical
 review identified and corrected seven inaccurate requirements. PR #1622 then
 synced 27 added requirements and 85 scenarios, but post-merge review found two
 wording defects: GitHub pull-request kill-switch precedence and provider retry
-eligibility by exception type. The requirement/scenario counts and strict
-validation are current, but this audit cannot claim that all 231 canonical
-requirements are true as written or independently grounded until that
-correction is reviewed, synced, and archived. Eight dependency-bound shipped
-groups and eight full-platform target groups remain.
+eligibility by exception type. The dedicated correction now aligns both
+requirements with shipped behavior and adds three executable scenarios. The
+requirement/scenario counts and strict validation are current, but this audit
+cannot claim that all canonical requirements are independently grounded until
+the corrected authority receives the project-required opposite-provider
+approval. Eight dependency-bound shipped groups and eight full-platform target
+groups remain.
 
 ### Design-truth conflicts that block blind target-spec transcription
 
@@ -129,15 +134,18 @@ prove independent code grounding.
   nevertheless found two requirements not true as written: the GitHub PR
   kill switch precedes the no-destination Phase-1 path, and the provider bridge
   retries every `AllProvidersExhaustedError`, not only proven-transient causes.
-  This batch remains ADAPT pending the dedicated authority correction.
+  The dedicated authority correction updates both requirements, adds three
+  scenarios, and has independent Codex source/test review; required
+  opposite-provider approval remains pending.
 
 Overall, the canonical tree contains **231 requirements and 645 scenarios** and
-passes strict validation, but two PR #1622 requirement wordings are not grounded
-as written and no durable pre-merge independent approval for that batch was
-found. Do not infer that every canonical item is independently grounded from
-these counts. Separately, eight dependency-bound groups of shipped behavior
-still lack canonical ownership, and eight full-platform target groups still
-lack complete active owners.
+passes strict validation. The two PR #1622 wording defects now match as-built
+source and tests, but no durable pre-merge independent approval for that batch
+was found and the correction still lacks the required opposite-provider
+approval. Do not infer that every canonical item is independently grounded
+from these counts. Separately, eight dependency-bound groups of shipped
+behavior still lack canonical ownership, and eight full-platform target groups
+still lack complete active owners.
 
 The requirement-by-requirement classifications, source/test anchors, and
 reproduction evidence are durable in the companion matrices for
@@ -187,6 +195,14 @@ text prefixes and each of the 27 added requirement headings occurs once. These
 facts establish regression, syntax, and sync integrity; they do not establish
 independent grounding of every requirement. The Windows layer-2 uptime canary
 was not run.
+
+After the dedicated authority correction was synced and archived on 2026-07-22
+PT / 2026-07-23 UTC, Windows, canonical inventory was independently recounted
+at **231 requirements and 645 scenarios**, whole-tree strict validation passed
+all **34** current items, and the four focused provider-call/external-effector
+files passed **79 tests** with 2 third-party deprecation warnings in 13.32
+seconds. These results verify the corrected wording, sync shape, and regression
+surface; the project-required opposite-provider approval remains pending.
 
 ### Shipped behavior still missing canonical ownership
 
@@ -467,10 +483,11 @@ must carry the executable SHALL/scenario contracts and tasks.
 **Current verdict: NOT COMPLETE.** Criterion 1 fails on the eight
 dependency-bound shipped backfill groups above; criterion 3 fails on the eight
 full-platform target groups without complete active owners. Criterion 5 does
-not yet pass: strict validation passes all 34 current items, but post-merge
-independent review returned ADAPT on two PR #1622 requirements and no durable
-pre-merge independent approval for that batch was found. Criterion 5 can pass
-after the authority correction is reviewed, synced, archived, and revalidated.
+not yet pass: strict validation passes all 34 current items and the two PR #1622
+wording defects are corrected, but no durable pre-merge independent approval
+for that batch was found and the corrected authority has not received the
+project-required opposite-provider approval. Codex review alone does not
+satisfy that gate.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
 owns the backfill, runtime-hardening, legacy-disposition, PLAN-decision, and
