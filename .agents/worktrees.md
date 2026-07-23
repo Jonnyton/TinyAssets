@@ -1016,3 +1016,18 @@ Notes:
 - Related implications: P0 disk-full triage; deploy unit installation convergence
 - Idea feed refs: none
 - Ship/abandon: land one reviewed OpenSpec/TDD repair with focused tests; no host-install claim without live evidence
+
+## 2026-07-23 - refresh operator-request-trigger-spec
+
+- Provider: codex-refresh-operator-spec
+- Branch: codex/operator-request-trigger-spec
+- Lane state: Planning-only draft PR; refreshed locally for root review
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-request-trigger-spec
+- STATUS/Issue/PR: live P1 `operator_request` concern; draft PR #1628; no spec-only Work claim
+- PLAN refs: Daemon Platform; API & MCP Interface; Uptime & Alarms
+- Purpose: rebase the reviewed admission contract without implying that runtime is fixed
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-request-trigger-spec\_PURPOSE.md
+- Memory refs: `docs/audits/2026-07-22-openspec-full-coverage-audit.md`; PR #1628 review record
+- Related implications: rebase audit found only STATUS/worktree coordination conflicts; runtime P1 remains live
+- Idea feed refs: none
+- Ship/abandon: root review before push; merge as planning authority only, then claim exact runtime/test files in a separate lane after blockers clear
