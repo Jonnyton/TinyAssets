@@ -7,9 +7,10 @@ the public canaries in both the configured-auth-bundle and no-bundle branches
 with `--timeout 20 --require-sandbox --retries 12 --retry-delay 10`. The
 verifier SHALL first require a reported LLM binding. When sandbox checking is
 enabled, a missing or falsey `sandbox_status.bwrap_available` SHALL raise
-`VerifyError` code 5 carrying the reported reason. The CLI SHALL retry failed
-verification up to the requested total attempt count and return the last error
-code if no attempt recovers.
+`VerifyError` code 5 carrying the reported reason, or
+`sandbox_status missing` when no reason is present. The CLI SHALL retry
+`VerifyError` failures up to the requested total attempt count and return the
+last error code if no attempt recovers.
 
 This post-deploy readiness gate is distinct from the scheduled LLM-binding
 canary, which intentionally omits `--require-sandbox`. Neither path executes a
@@ -19,7 +20,7 @@ confinement.
 #### Scenario: Missing sandbox readiness produces exit code 5
 
 - **WHEN** the verifier sees a reported LLM binding but missing or falsey `sandbox_status.bwrap_available`
-- **THEN** the sandbox check raises `VerifyError` code 5 with the reported reason
+- **THEN** the sandbox check raises `VerifyError` code 5 with the reported reason, or `sandbox_status missing` when no reason is present
 - **AND** exhausting the configured attempts returns exit code 5
 
 #### Scenario: A later green observation recovers within the retry budget
