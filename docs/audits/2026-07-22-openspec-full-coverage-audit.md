@@ -9,7 +9,7 @@
 - **Code/spec baseline:** `origin/main` at `a050bfbc`, plus
   archived changes `2026-07-23-backfill-independent-shipped-contracts` and
   `2026-07-23-backfill-runtime-memory-shipped-contracts`,
-  `2026-07-23-backfill-per-job-sandbox-runner-seam`, and this branch's
+  `2026-07-23-backfill-per-job-sandbox-runner-seam`, and PR #1626's
   `2026-07-23-backfill-direct-owner-shipped-contracts`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after

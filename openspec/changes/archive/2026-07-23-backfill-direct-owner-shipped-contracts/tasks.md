@@ -22,4 +22,4 @@
 - [x] 4.2 Sync approved deltas while preserving every untouched canonical requirement block
 - [x] 4.3 Update the full-coverage audit and legacy disposition (no canonical spec index file exists); strictly validate the full tree and run the drift self-test
 - [x] 4.4 Archive the synced change
-- [ ] 4.5 Land through a reviewed PR and remove the STATUS claim
+- [x] 4.5 Land through reviewed PR #1626 and replace the completed broad STATUS claim with the credential remainder
