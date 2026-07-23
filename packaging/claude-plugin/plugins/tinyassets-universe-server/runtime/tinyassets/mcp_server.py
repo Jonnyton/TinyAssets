@@ -1,11 +1,12 @@
-"""MCP server exposing the TinyAssets daemon's file interface.
+"""Legacy local MCP server exposing the TinyAssets daemon's file interface.
 
 Provides tools for any AI client to read status, add notes for the daemon,
 manage premises, read output, and control execution.
 
-Usage::
+This stdio server is disabled by default. The supported public MCP endpoint is
+``https://tinyassets.io/mcp``. To opt in to the legacy local server::
 
-    python -m tinyassets.mcp_server
+    TINYASSETS_ENABLE_LEGACY_MCP=1 python -m tinyassets.mcp_server
 
 Set ``TINYASSETS_UNIVERSE`` to the universe directory path,
 or it defaults to ``output/default-universe/``.
@@ -426,6 +427,13 @@ _mcp_add_canon = _register_structured_tool(
 
 def main() -> None:
     """Run the MCP server."""
+    enabled = os.environ.get("TINYASSETS_ENABLE_LEGACY_MCP", "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        raise SystemExit(
+            "legacy MCP server is disabled by default; use "
+            "https://tinyassets.io/mcp or explicitly opt in with "
+            "TINYASSETS_ENABLE_LEGACY_MCP=1"
+        )
     mcp.run()
 
 
