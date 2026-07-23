@@ -199,6 +199,7 @@ def test_wiki_probe_uses_gha_output_mode_and_preserves_diagnostic() -> None:
     run = step["run"]
 
     assert "python scripts/wiki_canary.py" in run
+    assert "--verbose" in run
     assert "--format gha" in run
     assert "output=$(" in run and "2>&1" in run
     assert "echo \"wiki_msg<<${_delim}\"" in run
