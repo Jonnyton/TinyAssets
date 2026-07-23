@@ -328,7 +328,7 @@ If yes, update this skill immediately, then run:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1
 python scripts/validate_skills.py
-git diff --check -- .agents/skills .claude/skills .codex/skills
+git diff --check -- .agents/skills .claude/skills
 ```
 
 ## Output Shape
