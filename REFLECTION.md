@@ -27,3 +27,11 @@ approval.
 One thing I would do differently: build the source-to-archive hash manifest before
 creating the STATUS claim so the mechanical-copy proof and permitted header drift
 are explicit from the first increment.
+
+## 2026-07-23 — Provider-attempt receipt specification
+
+What surprised me: the router already carries provider/model/family evidence, so the hard part is not provider discovery; it is preserving call-local attribution across the string bridge, retry waves, and the separate learning call.
+
+Pattern worth capturing: an audit envelope needs two orthogonal terminal fields when fallback exists — how output completed (`outcome`) and why routing stopped (`route_condition`). Combining them makes missing-router fallback and exhausted-chain fallback ambiguous.
+
+One thing I would do differently: model synthetic fallback and missing-router behavior before drafting the first enum list, because that boundary exposed the only internal contradiction found by the consistency pass.
