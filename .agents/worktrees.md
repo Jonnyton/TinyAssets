@@ -851,3 +851,18 @@ Notes:
 - Related implications: credential-vault and hyperparameter importance remain shipped-coverage residuals
 - Idea feed refs: none
 - Ship/abandon: remove the physical worktree only after PR #1632 lands
+
+## 2026-07-22 - create hyperparameter-importance-spec
+
+- Provider: codex-gpt56-spec-2
+- Branch: codex/hyperparameter-importance-spec-backfill
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec
+- STATUS/Issue/PR: Backfill shipped hyperparameter-importance evaluator
+- PLAN refs: Evaluation; Outcomes
+- Purpose: canonicalize the shipped fail-soft RF/Spearman evaluator without importing incompatible future science-domain semantics
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec\_PURPOSE.md
+- Memory refs: post-PR #1632 full-coverage residual audit
+- Related implications: canonical evaluation-runtime owner; PR #1627 and future science-domain material remain target-only/read-only
+- Idea feed refs: none
+- Ship/abandon: sync/archive after strict validation, focused evidence, and independent review
