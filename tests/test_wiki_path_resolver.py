@@ -9,6 +9,7 @@ OSS contributor, etc.). The resolver closes the class the same way
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -196,13 +197,22 @@ def test_data_dir_rejects_windows_path_on_posix(clean_env, monkeypatch):
     assert "TINYASSETS_DATA_DIR" in str(exc_info.value)
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "Must run on real Windows. Faking os.name='nt' on POSIX poisons pathlib "
+        "globally: Path() then builds a WindowsPath, which raises "
+        "NotImplementedError on Linux — including inside pytest's own failure "
+        "reporting (`Path(os.getcwd())` in _repr_failure_py). That crashes the "
+        "xdist worker and aborts the whole session, so unrelated tests silently "
+        "stop running. A faked os.name cannot prove 'actual Windows' behaviour "
+        "anyway; the POSIX side is covered by the _on_posix tests above."
+    ),
+)
 def test_windows_path_accepted_on_windows(clean_env, monkeypatch, tmp_path):
     """On actual Windows the path resolver must accept drive-letter paths."""
-    import os as _os
-
     import tinyassets.storage as storage
 
-    monkeypatch.setattr(_os, "name", "nt")
     # Use a real tmp path — resolve() on Windows runtime will produce a
     # valid absolute path.
     clean_env.setenv("TINYASSETS_WIKI_PATH", str(tmp_path))

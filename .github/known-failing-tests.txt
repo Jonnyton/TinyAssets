@@ -1,0 +1,1 @@
+# Known-failing tests on main. See docs/decisions/ADR-003-required-test-aggregator.md
