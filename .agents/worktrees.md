@@ -956,3 +956,18 @@ Notes:
 - Related implications: exact-script concurrency proof design prepared; implementation waits for canonical spec release
 - Idea feed refs: none
 - Ship/abandon: publish only the dependency edge; remove it when the P0-triage lane lands and releases the spec
+
+## 2026-07-23 - create retire-p0-triage-row
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/retire-p0-triage-row
+- Lane state: Coordination cleanup
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-p0-triage-row
+- STATUS/Issue/PR: retire the landed #1645 P0-triage/concurrency row
+- PLAN refs: Uptime & Alarms
+- Purpose: remove the stale claimed row after #1645 synced and archived the completed OpenSpec change
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-p0-triage-row\_PURPOSE.md
+- Memory refs: PRs #1644/#1645; independent ADAPT review
+- Related implications: canonical uptime concurrency proof is now shipped and archived
+- Idea feed refs: none
+- Ship/abandon: publish only the STATUS retirement and append-only worktree event
