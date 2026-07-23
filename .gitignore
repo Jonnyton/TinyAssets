@@ -20,6 +20,24 @@ build/
 .codex-test-tmp/
 .workflow-test-data/
 
+# Agent scratch dirs. These are the highest-volume untracked producers in a
+# working checkout — as of 2026-07-22 they were 4,646 of 4,699 untracked files
+# (99%), which buries real unversioned work in `git status` noise. That noise is
+# how PR #1489 (a 26-file feature) and PR #1490 (32 documents) each sat
+# uncommitted in one checkout until found by accident. Note `.tmp-*` below
+# under "OS / editor" does NOT match `.tmp/`, and `.codex/` does not match
+# `codex-tmp/` — hence the explicit entries here.
+.tmp/
+codex-tmp/
+.codex-worktrees/
+.codex-scratch-*
+.claude/.fleet_floor_state.json
+# NOT ignored, deliberately: `.agents/village-inbox/`. It looks like scratch but
+# command_center/collector.py writes host->agent messages there and the design
+# note calls it "durable, agents can poll". Ignoring it would repeat the exact
+# mistake this section exists to fix, for 2 files of volume benefit. Codex
+# cross-family review 2026-07-22 caught this; see the audit below.
+
 # Databases (local state)
 *.db
 *.db-wal
@@ -92,3 +110,13 @@ BettaFish_Deep_Dive_Research.docx
 Community_Branches_Plan.docx
 .hetzner-credentials
 .cowork-bootstrap/
+
+# Fundraising / company material. This repo is PUBLIC — a cap table, an
+# investor pipeline, and pitch decks must never land in it. Ignored so the
+# exclusion is a recorded decision rather than an accident of nobody having
+# run `git add` yet. These files are NOT backed up by being ignored — see
+# docs/audits/2026-07-22-untracked-business-material.md for the durable-storage
+# host ask, and note `git clean -xdff` targets ignored files specifically.
+data-room/
+pitch-deck/
+investor-list/
