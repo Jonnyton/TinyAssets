@@ -164,36 +164,38 @@ def subprocess_env_for_provider(
     resolve per-universe credentials for an explicitly threaded universe.
     """
     env = subprocess_env_without_api_keys() or os.environ.copy()
+    bound_universe = env.get("TINYASSETS_UNIVERSE", "").strip()
+    resolved_universe = (
+        Path(universe_dir)
+        if universe_dir is not None
+        else Path(bound_universe) if bound_universe else None
+    )
+    if resolved_universe is None:
+        return env
+
+    for name in (*API_KEY_PROVIDER_ENV_VARS, *HOST_SUBSCRIPTION_ENV_VARS):
+        env.pop(name, None)
+    credential_root = resolved_universe / ".credentials"
+    env["CLAUDE_CONFIG_DIR"] = str(credential_root / "claude")
+    env["CODEX_HOME"] = str(credential_root / "codex")
+
+    credential_resolution_failed = False
     try:
-        from tinyassets.credential_vault import (
-            apply_provider_auth_env,
-            resolve_universe_from_env,
-        )
+        from tinyassets.credential_vault import apply_provider_auth_env
 
-        before = {k: env.get(k) for k in HOST_SUBSCRIPTION_ENV_VARS}
-        apply_provider_auth_env(env, provider_name, universe_dir=universe_dir)
-
-        resolved = (
-            Path(universe_dir)
-            if universe_dir is not None
-            else resolve_universe_from_env(env)
+        apply_provider_auth_env(
+            env, provider_name, universe_dir=resolved_universe,
         )
-        if resolved is not None and all(
-            env.get(k) == before.get(k) for k in HOST_SUBSCRIPTION_ENV_VARS
-        ):
-            # A universe is in play and the vault supplied nothing for it, so
-            # every host subscription variable is still exactly as inherited.
-            # Drop them: the provider then fails to authenticate rather than
-            # quietly billing the host. Fail closed, not open.
-            for name in HOST_SUBSCRIPTION_ENV_VARS:
-                env.pop(name, None)
     except ValueError:
         raise
     except Exception:
-        # Provider calls should not crash merely because no universe/vault
-        # helper is available in a local import context. Malformed vaults still
-        # raise ValueError above and fail loudly.
-        pass
+        credential_resolution_failed = True
+    if credential_resolution_failed:
+        from tinyassets.exceptions import ProviderUnavailableError
+        raise ProviderUnavailableError(
+            f"{provider_name} credential resolution failed for "
+            "universe-scoped provider"
+        )
     return env
 
 

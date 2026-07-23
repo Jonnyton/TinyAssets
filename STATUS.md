@@ -4,7 +4,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
-- **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
+- **[P0 filed:2026-07-22 verified:2026-07-22]** CLI fallback + SDK providers can spend host auth. Never spend maintainer quota. #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
 - [filed:2026-07-02 verified:2026-07-22] Reshape residuals: WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors.
@@ -17,7 +17,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - [filed:2026-07-13 verified:2026-07-15] `workflow-voice` (dormant) has 3 stale `pending` queue rows — review before ever activating it.
 
 ## Work
-
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
@@ -28,7 +27,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | **Resolve target-spec PLAN conflicts** — store, private data, primitives, privacy guidance | PLAN.md | full-coverage audit; host selects coherent positions | host-decision |
 | **Specify uncovered full-platform targets** — collaboration, moderation, tray, market, portability, authoring, handoffs | openspec/changes/complete-full-platform-target-specs/ | audit; PLAN decisions; build-forward-platform-capabilities | pending |
 | **Release reconcile event trigger** — retain cron backstop; also reconcile after proven-under-load `Docker build smoke` completions; stable concurrency coalesces stampedes | .github/workflows/release-reconcile.yml, openspec/changes/release-reconcile-event-trigger/ | live runs 1892, 1883 | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
-| **R2-1a set_engine must constrain allowed_providers** — host-credential half LANDED 92dd60c5 (fail-closed + mutation proof). Still open: a founder's own key silently falls through the writer chain to a provider they never chose | tinyassets/providers/router.py, tinyassets/api/engine.py, tests/ | - | pending |
+| **CLI universe credential isolation** — 92dd60c5 is PARTIAL: partial/error/default-home/API-opt-in paths leak host auth | tinyassets/providers/base.py, packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py, tests/test_credential_fail_closed.py, openspec/changes/close-universe-host-subscription-fallback/, openspec/specs/credential-vault/spec.md | - | claimed:codex-spec-handoff-1582 ACTIVE 2026-07-22 |
+| **R2-1a set_engine must constrain allowed_providers** — a founder's own key can fall through the writer chain to a provider they never chose | tinyassets/providers/router.py, tinyassets/api/engine.py, tests/ | universe credential isolation | pending |
 | **R2-1b provider receipt** — no receipt exists, so 92dd60c5 is asserted but UNAUDITABLE in prod. Design decided: thread provider off the same result object, NOT the `_last_provider` global (races); report credential class; cover BOTH converse writer calls | tinyassets/providers/call.py, tinyassets/universe_intelligence.py, tests/ | R2-1a | pending |
 | **R2-4 wiki onboarding split** — read_page returns agent-coordination logs; assistant refused to build and offered to replace TinyAssets with a chat artifact (live 2026-07-21) | tinyassets/api/wiki.py, wiki/ | - | in-flight PR #1550 |
 | **Universe-personification relay survivors** — #1515 retires the reversed change; successor stays active/unbuilt. Page-write boundary awaits host decision + complete mutation inventory | openspec/changes/reconcile-universe-personification-relay/ | #1583 host decision, universe-visibility, brain-okf-canonical-store, live-mcp-connector-surface | pending |
