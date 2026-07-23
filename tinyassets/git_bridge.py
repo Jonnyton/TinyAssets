@@ -3,11 +3,12 @@
 Six primitives (``stage``, ``commit``, ``pull``, ``push``, ``open_pr``,
 ``has_uncommitted_changes``) plus ``is_enabled`` for capability detection.
 
-All primitives return structured results. None raise — an uninstalled
-``git`` binary, a missing repo, a network hiccup, or a timeout all come
-back as ``ok=False`` with a human-readable ``error`` string. Phase 7.2
-features must no-op cleanly when git isn't usable so dev/test paths that
-don't want git aren't forced into it.
+Operational Git failures return structured results: an uninstalled ``git``
+binary, a missing repo, a network hiccup, or a timeout come back as
+``ok=False`` with a human-readable ``error`` string. Supplying a mutation
+path outside ``repo_path`` is a caller policy error and raises ``ValueError``
+before Git executes. Phase 7.2 features must no-op cleanly when git isn't
+usable so dev/test paths that don't want git aren't forced into it.
 
 Concurrency: mutation primitives (``stage`` / ``commit`` / ``pull`` /
 ``push``) are serialized via a process-local :class:`threading.Lock`.
@@ -31,7 +32,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
-_ENABLED_CACHE: bool | None = None
+_ENABLED_CACHE: dict[Path, bool] = {}
 
 # Timeouts — every subprocess call must set one so a hung remote doesn't
 # freeze the MCP dispatcher. Local ops are fast; network ops get more.
@@ -83,52 +84,78 @@ class PRResult:
 # ---------------------------------------------------------------------------
 
 
+def _resolved_repo_root(repo_path: Path | None) -> Path:
+    return (Path(repo_path) if repo_path is not None else Path.cwd()).resolve()
+
+
+def _require_paths_within_repo(
+    paths: list[Path], *, repo_path: Path | None,
+) -> None:
+    repo_root = _resolved_repo_root(repo_path)
+    for path in paths:
+        candidate = Path(path)
+        resolved = (
+            candidate.resolve()
+            if candidate.is_absolute()
+            else (repo_root / candidate).resolve()
+        )
+        try:
+            resolved.relative_to(repo_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"path {resolved} is outside repo_root {repo_root}"
+            ) from exc
+
+
 def is_enabled(repo_path: Path | None = None) -> bool:
-    """Return True if ``git`` is usable from the current working tree.
+    """Return True only when ``repo_path`` is the Git work-tree root.
 
-    Cached at first call. Checks:
+    Cached per resolved repository path. Checks:
     1. ``git`` binary is on PATH.
-    2. ``git rev-parse --is-inside-work-tree`` inside ``repo_path`` (or CWD).
+    2. ``git rev-parse --show-toplevel`` equals ``repo_path`` (or CWD).
 
-    Fail-open: when either check fails, callers should treat git features
-    as no-ops rather than raising. Use :func:`invalidate_cache` in tests
-    to re-probe.
+    A nested directory is deliberately disabled: pytest scratch directories
+    and other callers must never inherit a parent checkout's remotes. Use
+    :func:`invalidate_cache` in tests to re-probe.
     """
-    global _ENABLED_CACHE
-    if _ENABLED_CACHE is not None:
-        return _ENABLED_CACHE
+    repo_root = _resolved_repo_root(repo_path)
+    if repo_root in _ENABLED_CACHE:
+        return _ENABLED_CACHE[repo_root]
 
     if shutil.which("git") is None:
         logger.info("git_bridge: git binary not found on PATH; disabling")
-        _ENABLED_CACHE = False
+        _ENABLED_CACHE[repo_root] = False
         return False
 
-    cwd = str(repo_path) if repo_path is not None else None
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
+            ["git", "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, check=False,
-            timeout=_TIMEOUT_LOCAL, cwd=cwd,
+            timeout=_TIMEOUT_LOCAL, cwd=str(repo_root),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.info("git_bridge: probe failed (%s); disabling", exc)
-        _ENABLED_CACHE = False
+        _ENABLED_CACHE[repo_root] = False
         return False
 
-    enabled = result.returncode == 0 and result.stdout.strip() == "true"
+    top_level = (
+        Path(result.stdout.strip()).resolve()
+        if result.returncode == 0 and result.stdout.strip()
+        else None
+    )
+    enabled = top_level == repo_root
     if not enabled:
         logger.info(
-            "git_bridge: not inside a git work tree (rc=%s); disabling",
-            result.returncode,
+            "git_bridge: repo_path is not a work-tree root (rc=%s, root=%s); disabling",
+            result.returncode, top_level,
         )
-    _ENABLED_CACHE = enabled
+    _ENABLED_CACHE[repo_root] = enabled
     return enabled
 
 
 def invalidate_cache() -> None:
     """Drop the cached ``is_enabled`` result. Test helper."""
-    global _ENABLED_CACHE
-    _ENABLED_CACHE = None
+    _ENABLED_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +170,7 @@ def has_uncommitted_changes(path: Path, *, repo_path: Path | None = None) -> boo
     (see scope §3e). Returns False on any failure — safer to proceed and
     let a later conflict surface than to block on a probe error.
     """
+    _require_paths_within_repo([path], repo_path=repo_path)
     if not is_enabled(repo_path):
         return False
     cwd = str(repo_path) if repo_path is not None else None
@@ -161,6 +189,7 @@ def has_uncommitted_changes(path: Path, *, repo_path: Path | None = None) -> boo
 
 def stage(path: Path, *, repo_path: Path | None = None) -> bool:
     """Stage ``path`` with ``git add``. Returns True on success."""
+    _require_paths_within_repo([path], repo_path=repo_path)
     if not is_enabled(repo_path):
         return False
     cwd = str(repo_path) if repo_path is not None else None
@@ -191,7 +220,10 @@ def unstage(paths: list[Path], *, repo_path: Path | None = None) -> bool:
     sweep in our half-staged YAML. Returns True if every path was
     unstaged (or the repo has no HEAD yet — unborn-branch case).
     """
-    if not is_enabled(repo_path) or not paths:
+    if not paths:
+        return False
+    _require_paths_within_repo(paths, repo_path=repo_path)
+    if not is_enabled(repo_path):
         return False
     cwd = str(repo_path) if repo_path is not None else None
     with _LOCK:
@@ -250,6 +282,8 @@ def commit(
         # grows dependencies on storage-adjacent modules.
         from tinyassets.identity import git_author
         author = git_author()
+    if paths:
+        _require_paths_within_repo(paths, repo_path=repo_path)
     if not is_enabled(repo_path):
         return CommitResult(ok=False, error="git not enabled")
     cwd = str(repo_path) if repo_path is not None else None
@@ -266,9 +300,12 @@ def commit(
                         ok=False,
                         error=f"git add failed for {p}: {rc_add.stderr.strip()}",
                     )
+        command = ["git", "commit", f"--author={author}", "-m", message]
+        if paths:
+            command.extend(["--only", "--", *[str(p) for p in paths]])
         try:
             result = subprocess.run(
-                ["git", "commit", f"--author={author}", "-m", message],
+                command,
                 capture_output=True, text=True, check=False,
                 timeout=_TIMEOUT_LOCAL, cwd=cwd,
             )

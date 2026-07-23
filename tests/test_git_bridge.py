@@ -71,6 +71,15 @@ def test_is_enabled_false_outside_repo(tmp_path: Path):
     assert git_bridge.is_enabled(repo_path=tmp_path) is False
 
 
+def test_is_enabled_requires_the_repository_root(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    nested = repo / "pytest-temp"
+    nested.mkdir()
+
+    assert git_bridge.is_enabled(repo_path=nested) is False
+
+
 def test_is_enabled_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _init_repo(tmp_path)
     assert git_bridge.is_enabled(repo_path=tmp_path) is True
@@ -119,6 +128,14 @@ def test_stage_and_commit_returns_sha(tmp_path: Path):
     assert log == "add my-branch"
 
 
+def test_stage_resolves_relative_path_from_repo_root(tmp_path: Path):
+    _init_repo(tmp_path)
+    _seed_initial_commit(tmp_path)
+    (tmp_path / "relative.yaml").write_text("relative: true\n", encoding="utf-8")
+
+    assert git_bridge.stage(Path("relative.yaml"), repo_path=tmp_path) is True
+
+
 def test_commit_with_paths_arg_stages_and_commits(tmp_path: Path):
     _init_repo(tmp_path)
     _seed_initial_commit(tmp_path)
@@ -132,6 +149,49 @@ def test_commit_with_paths_arg_stages_and_commits(tmp_path: Path):
     )
     assert result.ok, result.error
     assert result.sha
+
+
+def test_commit_with_paths_does_not_sweep_unrelated_staged_file(tmp_path: Path):
+    _init_repo(tmp_path)
+    _seed_initial_commit(tmp_path)
+    unrelated = tmp_path / "unrelated.yaml"
+    unrelated.write_text("unrelated: true\n", encoding="utf-8")
+    _run(["git", "add", "unrelated.yaml"], tmp_path)
+    target = tmp_path / "target.yaml"
+    target.write_text("target: true\n", encoding="utf-8")
+
+    result = git_bridge.commit(
+        "commit target only", AUTHOR, paths=[target], repo_path=tmp_path,
+    )
+
+    assert result.ok, result.error
+    committed = _run(
+        ["git", "show", "--pretty=", "--name-only", "HEAD"], tmp_path,
+    ).stdout.splitlines()
+    assert committed == ["target.yaml"]
+    assert "A  unrelated.yaml" in _run(
+        ["git", "status", "--short"], tmp_path,
+    ).stdout
+
+
+def test_commit_rejects_path_outside_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _seed_initial_commit(repo)
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("outside: true\n", encoding="utf-8")
+
+    def _git_must_not_run(*_args, **_kwargs):
+        raise AssertionError("outside paths must be rejected before Git executes")
+
+    monkeypatch.setattr(git_bridge.subprocess, "run", _git_must_not_run)
+
+    with pytest.raises(ValueError, match="outside repo_root"):
+        git_bridge.commit(
+            "must not escape", AUTHOR, paths=[outside], repo_path=repo,
+        )
 
 
 def test_commit_returns_nothing_to_commit_on_clean_tree(tmp_path: Path):
@@ -268,6 +328,19 @@ def test_pull_conflict_aborts_and_returns_file_list(tmp_path: Path):
 
 def test_push_no_op_when_git_disabled(tmp_path: Path):
     assert git_bridge.push(repo_path=tmp_path).ok is False
+
+
+def test_push_no_op_after_another_repo_was_enabled(tmp_path: Path):
+    enabled_repo = tmp_path / "enabled"
+    _init_repo(enabled_repo)
+    assert git_bridge.is_enabled(repo_path=enabled_repo) is True
+
+    disabled_repo = tmp_path / "disabled"
+    disabled_repo.mkdir()
+    result = git_bridge.push(repo_path=disabled_repo)
+
+    assert result.ok is False
+    assert result.error == "git not enabled"
 
 
 def test_pull_no_op_when_git_disabled(tmp_path: Path):
