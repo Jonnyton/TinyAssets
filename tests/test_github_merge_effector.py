@@ -1,200 +1,155 @@
-"""PR-175: github_merge effector is head-SHA-bound and fail-closed."""
+"""Patch-loop S4 (GitHub-native): the merge effector maps the owner-bound merge
+PREFERENCE to the right native GitHub action and RECORDS the exact call.
+
+Phase 1 records/schedules only — no live merge. Autonomous preferences
+(auto / not_before) FAIL CLOSED unless a verified review gate is proven via the
+injected GitHub client. GitHub is authoritative for the merge itself.
+"""
 
 from __future__ import annotations
 
-import json
-from types import SimpleNamespace
-
-from tinyassets import effectors
-from tinyassets.credential_vault import write_credential_vault
+from tests.fake_github import InMemoryGitHubApi, code_owner_review_ruleset
 from tinyassets.effectors import github_merge
+from tinyassets.storage import review_queue as rq
 
-_DEST = "Jonnyton/TinyAssets"
+_DEST = "Owner/Repo"
 _HEAD = "a" * 40
-_OTHER_HEAD = "b" * 40
+_PR = 7
+_BDID = "patch_loop_reference"
 
 
-def _packet(**payload):
-    data = {
-        "sink": github_merge.EXTERNAL_WRITE_SINK_GITHUB_MERGE,
-        "destination": _DEST,
-        "payload": {
-            "pr_number": 1325,
-            "expected_head_sha": _HEAD,
-            "authorization": {
-                "mode": github_merge.AUTHORIZATION_MODE_GITHUB_BRANCH_PROTECTION,
-            },
-            **payload,
-        },
-    }
-    return {"merge_packet": data}
-
-
-def _run(run_state=None, base_path=None):
-    return github_merge.run_github_merge_effector(
-        node_id="merge",
-        output_keys=["merge_packet"],
-        run_state=_packet() if run_state is None else run_state,
-        base_path=base_path,
-    )
-
-
-def _with_capability(monkeypatch):
-    monkeypatch.setenv(
-        "TINYASSETS_GITHUB_PR_CAPABILITIES",
-        json.dumps({_DEST: "capability-token"}),
-    )
-
-
-def _scripted_api(responses):
-    def fake(*, method, path, capability_token, body=None):
-        fake.calls.append((method, path, capability_token, body))
-        for matcher, result in responses:
-            if matcher(method, path):
-                return result
-        raise AssertionError(f"no scripted response for {method} {path}")
-
-    fake.calls = []
-    return fake
-
-
-def _open_pr(head_sha=_HEAD):
+def _packet():
     return {
-        "state": "open",
-        "draft": False,
-        "head": {"sha": head_sha},
-    }
-
-
-def test_missing_authorization_fails_before_github(monkeypatch):
-    _with_capability(monkeypatch)
-    fake = _scripted_api([])
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    state = _packet(authorization={})
-    result = _run(state)
-    assert result["error_kind"] == "missing_merge_authorization"
-    assert fake.calls == []
-
-
-def test_head_sha_mismatch_refuses_stale_authorization(monkeypatch):
-    _with_capability(monkeypatch)
-    fake = _scripted_api([
-        (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(_OTHER_HEAD), None)),
-    ])
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run()
-    assert result["error_kind"] == "head_sha_mismatch"
-    assert result["expected_head_sha"] == _HEAD
-    assert result["actual_head_sha"] == _OTHER_HEAD
-    assert [call[0] for call in fake.calls] == ["GET"]
-
-
-def test_github_branch_protection_block_is_fail_closed(monkeypatch):
-    _with_capability(monkeypatch)
-    fake = _scripted_api([
-        (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(), None)),
-        (
-            lambda m, p: m == "PUT" and p.endswith("/pulls/1325/merge"),
-            (None, {"http_status": 405, "detail": "Required reviews are missing"}),
-        ),
-    ])
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run()
-    assert result["error_kind"] == "github_merge_blocked"
-    assert result["http_status"] == 405
-    assert fake.calls[1][3]["sha"] == _HEAD
-
-
-def test_successful_merge_is_bound_to_expected_head_sha(monkeypatch):
-    _with_capability(monkeypatch)
-    fake = _scripted_api([
-        (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(), None)),
-        (
-            lambda m, p: m == "PUT" and p.endswith("/pulls/1325/merge"),
-            ({"merged": True, "sha": "mergecommit", "message": "merged"}, None),
-        ),
-    ])
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run()
-    assert result["merged"] is True
-    assert result["head_sha"] == _HEAD
-    assert result["merge_commit_sha"] == "mergecommit"
-    assert fake.calls[1][3] == {"sha": _HEAD, "merge_method": "squash"}
-
-
-def test_missing_capability_returns_dry_run(monkeypatch):
-    monkeypatch.delenv("TINYASSETS_GITHUB_PR_CAPABILITIES", raising=False)
-    fake = _scripted_api([])
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run()
-    assert result["dry_run"] is True
-    assert result["reason"] == "missing_capability"
-    assert fake.calls == []
-
-
-def test_vault_capability_overrides_env_when_base_path_is_bound(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "TINYASSETS_GITHUB_PR_CAPABILITIES",
-        json.dumps({_DEST: "env-token"}),
-    )
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "vcs",
-                "service": "github",
-                "destination": _DEST,
-                "purpose": "write",
-                "token": "vault-token",
-            }
-        ],
-    )
-    fake = _scripted_api([
-        (lambda m, p: m == "GET" and p.endswith("/pulls/1325"), (_open_pr(), None)),
-        (
-            lambda m, p: m == "PUT" and p.endswith("/pulls/1325/merge"),
-            ({"merged": True, "sha": "mergecommit"}, None),
-        ),
-    ])
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-
-    result = _run(base_path=tmp_path)
-
-    assert result["merged"] is True
-    assert fake.calls[0][2] == "vault-token"
-    assert fake.calls[1][2] == "vault-token"
-
-
-def test_operator_kill_switch_returns_dry_run(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", "1")
-    fake = _scripted_api([])
-    monkeypatch.setattr(github_merge, "_github_api", fake)
-    result = _run()
-    assert result["dry_run"] is True
-    assert result["reason"] == "operator_kill_switch_active"
-    assert fake.calls == []
-
-
-def test_package_run_effects_dispatches_github_merge(monkeypatch):
-    def fake_merge(**kwargs):
-        return {"merged": True, "node_id": kwargs["node_id"]}
-
-    monkeypatch.setattr(effectors, "run_github_merge_effector", fake_merge)
-    branch = SimpleNamespace(
-        node_defs=[
-            SimpleNamespace(
-                node_id="merge-node",
-                output_keys=["merge_packet"],
-                effects=[github_merge.EXTERNAL_WRITE_SINK_GITHUB_MERGE],
-            )
-        ]
-    )
-    result = effectors.run_effects_for_branch(branch=branch, run_state=_packet())
-    assert result == {
-        "merge-node": {
-            github_merge.EXTERNAL_WRITE_SINK_GITHUB_MERGE: {
-                "merged": True,
-                "node_id": "merge-node",
-            }
+        "merge_packet": {
+            "sink": github_merge.EXTERNAL_WRITE_SINK_GITHUB_MERGE,
+            "destination": _DEST,
+            "payload": {
+                "pr_number": _PR,
+                "expected_head_sha": _HEAD,
+                "base_ref": "main",
+                "merge_method": "squash",
+            },
         }
     }
+
+
+def _run(tmp_path, **kw):
+    # Default the gate inputs the hardened autonomous path needs; individual
+    # tests override (e.g. drop the api to assert fail-closed).
+    kw.setdefault("app_actor_id", 4242)
+    kw.setdefault("expected_owner", "owner")
+    # Autonomous merge reads the gate via a SEPARATE verifier identity (Codex r13
+    # #3). In tests the same fake serves both roles unless a test overrides.
+    if kw.get("github_api") is not None and "verifier_api" not in kw:
+        kw["verifier_api"] = kw["github_api"]
+    return github_merge.run_github_merge_effector(
+        node_id="merge", output_keys=["merge_packet"], run_state=_packet(),
+        base_path=str(tmp_path), run_id="run-1",
+        authoritative_branch_def_id=_BDID, **kw,
+    )
+
+
+def _bind(tmp_path, preference, **kw):
+    rq.set_merge_preference_binding(
+        tmp_path, branch_def_id=_BDID, merge_preference=preference, bound_by="owner", **kw
+    )
+
+
+# ── manual: owner-triggered; records the merge_pr call ────────────────────────
+
+
+def test_manual_records_merge_call_no_api_needed(tmp_path):
+    _bind(tmp_path, "manual")
+    out = _run(tmp_path)  # no github_api needed for manual
+    assert out["action"] == "await_owner_merge"
+    assert out["github_call"]["kind"] == "merge_pr"
+    assert out["github_call"]["params"]["sha"] == _HEAD
+    assert out["merge_preference"] == "manual"
+
+
+# ── auto: requires a verified gate ────────────────────────────────────────────
+
+
+def test_auto_without_api_fails_closed(tmp_path):
+    _bind(tmp_path, "auto")
+    out = _run(tmp_path)  # no api wired
+    assert out["error_kind"] == "review_gate_unverifiable"
+    assert "manual" in out["error"]
+
+
+def test_auto_without_verifier_identity_refuses(tmp_path):
+    """Codex r13 #3: autonomous merge needs the OPT-IN ruleset-read verifier
+    identity; the App's minimal merge client alone can't see bypass_actors, so
+    the effector refuses (manual stays available)."""
+    _bind(tmp_path, "auto")
+    api = InMemoryGitHubApi()
+    # github_api present but NO verifier_api → refuse.
+    out = _run(tmp_path, github_api=api, verifier_api=None)
+    assert out["error_kind"] == "autonomous_requires_verifier"
+    assert "manual" in out["error"]
+
+
+def test_auto_with_verified_gate_records_enable_auto_merge(tmp_path):
+    _bind(tmp_path, "auto")
+    api = InMemoryGitHubApi()  # default: code-owner ruleset + CODEOWNERS present
+    out = _run(tmp_path, github_api=api)
+    assert out["action"] == "enable_auto_merge"
+    assert out["github_call"]["kind"] == "enable_auto_merge"
+    assert out["setup"]["gated"] is True
+
+
+def test_auto_refuses_when_gate_not_configured(tmp_path):
+    _bind(tmp_path, "auto")
+    api = InMemoryGitHubApi(rulesets=[], codeowners=None)  # nothing configured
+    out = _run(tmp_path, github_api=api)
+    assert out["error_kind"] == "review_gate_not_configured"
+    assert "required_code_owner_review_rule" in out["setup"]["missing"]
+    assert "codeowners_strict_founder_only" in out["setup"]["missing"]
+
+
+def test_auto_refuses_when_app_is_bypass_actor(tmp_path):
+    _bind(tmp_path, "auto")
+    rs = code_owner_review_ruleset(
+        bypass_actors=[{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "always"}]
+    )
+    api = InMemoryGitHubApi(rulesets=[rs])
+    out = _run(tmp_path, github_api=api, app_actor_id=4242)
+    assert out["error_kind"] == "review_gate_not_configured"
+    assert "app_not_bypass_actor" in out["setup"]["missing"]
+
+
+# ── not_before: verified gate, then a single durable timer ───────────────────
+
+
+def test_not_before_schedules_timer_and_records_on_fire_call(tmp_path):
+    _bind(tmp_path, "not_before", not_before_delay_s=3600)
+    api = InMemoryGitHubApi()
+    out = _run(tmp_path, github_api=api, now=1000.0)
+    assert out["action"] == "scheduled_not_before"
+    assert out["not_before"] == 1000.0 + 3600
+    assert out["github_call_on_fire"]["kind"] == "enable_auto_merge"
+    # A durable timer is scheduled.
+    due = rq.due_not_before_timers(tmp_path, now=1000.0 + 3600 + 1)
+    assert len(due) == 1 and due[0]["pr_number"] == _PR
+
+
+# ── packet validation ─────────────────────────────────────────────────────────
+
+
+def test_missing_head_sha_fails_closed(tmp_path):
+    _bind(tmp_path, "manual")
+    packet = _packet()
+    packet["merge_packet"]["payload"].pop("expected_head_sha")
+    out = github_merge.run_github_merge_effector(
+        node_id="merge", output_keys=["merge_packet"], run_state=packet,
+        base_path=str(tmp_path), authoritative_branch_def_id=_BDID,
+    )
+    assert out["error_kind"] == "missing_expected_head_sha"
+
+
+def test_no_matching_packet(tmp_path):
+    out = github_merge.run_github_merge_effector(
+        node_id="merge", output_keys=["merge_packet"], run_state={},
+        base_path=str(tmp_path), authoritative_branch_def_id=_BDID,
+    )
+    assert out["error_kind"] == "no_matching_packet"

@@ -1136,9 +1136,16 @@ def run_github_pr_effector(
     run_state: dict[str, Any],
     base_path: str | Path | None = None,
     run_id: str = "",
+    authoritative_branch_def_id: str = "",
+    authoritative_universe_id: str = "",
     dry_run: bool = True,  # retained for signature compat — ignored
 ) -> dict[str, Any]:
     """Run the GitHub-PR effector for a single node.
+
+    ``authoritative_branch_def_id`` / ``authoritative_universe_id`` come from the
+    run/effector context (the run that produced the PR) and are the ONLY trusted
+    source for resolving the owner-bound merge policy (Codex R7 C2) — a
+    model-emitted packet cannot select which branch's policy applies.
 
     Phase 2 Slice 1 — gate-orchestrated. Returns one of:
 
@@ -1500,6 +1507,81 @@ def run_github_pr_effector(
             # already exists; flag the inconsistency so the operator
             # can spot it without us masking the successful write.
             evidence["receipt_finalize_failed"] = True
+
+    # -- Owner review projection (patch-loop present node) --
+    # CONFIG-DRIVEN projection: whether an App-authored PR enters the owner's
+    # review surface is decided by the OWNER-BOUND branch config resolved by the
+    # AUTHORITATIVE branch_def_id — NOT a model-emitted packet block. A remixed
+    # loop's node cannot skip owner review by omitting the ``review_queue``
+    # payload. The ``review_queue`` block (if present) is advisory only
+    # (request_ref + verify hint). run_id / branch_def_id / universe_id come from
+    # the run context; the packet cannot point branch_def_id at another branch's
+    # binding. GitHub is authoritative for review/merge state — this only
+    # projects the PR into TinyAssets' coordination cache.
+    if universe_dir is not None and isinstance(invocation.get("pr_number"), int):
+        try:
+            from tinyassets.storage import review_queue as _rq
+
+            branch_def_id = (authoritative_branch_def_id or "").strip()
+            universe_id = (
+                (authoritative_universe_id or "").strip()
+                or (universe_dir.name if universe_dir is not None else "")
+            )
+            bound = _rq.resolve_merge_preference_binding(
+                universe_dir, branch_def_id=branch_def_id
+            )
+            # Project iff the owner config requires review — packet-independent.
+            if bound["bound"] and bound["review_required"]:
+                rq_cfg = payload.get("review_queue")
+                rq_cfg = rq_cfg if isinstance(rq_cfg, dict) else {}
+                projection = _rq.project_pr(
+                    universe_dir,
+                    destination=destination,
+                    pr_number=invocation["pr_number"],
+                    pr_url=invocation["pr_url"],
+                    head_sha=str(materialize.get("commit_sha") or ""),
+                    request_ref=str(rq_cfg.get("request_ref") or ""),
+                    verify_verdict=str(
+                        rq_cfg.get("verify_verdict") or _rq.VERIFY_UNKNOWN
+                    ),
+                    universe_id=universe_id,
+                    branch_def_id=branch_def_id,
+                    run_id=run_id or "",
+                )
+                evidence["review_queue_pr_number"] = projection.get("pr_number")
+                evidence["review_queue_workflow_outcome"] = projection.get(
+                    "workflow_outcome"
+                )
+                evidence["review_queue_preference_bound"] = bound["bound"]
+                # E3: SUSPEND the run at the present node awaiting owner review.
+                # The suspension is the durable checkpoint of the pause (survives
+                # restart); the owner verb resumes it to merge / reshape / reject.
+                if run_id:
+                    suspension = _rq.suspend_run_for_review(
+                        universe_dir,
+                        run_id=run_id,
+                        destination=destination,
+                        pr_number=invocation["pr_number"],
+                        branch_def_id=branch_def_id,
+                        head_sha=str(materialize.get("commit_sha") or ""),
+                        universe_id=universe_id,
+                    )
+                    evidence["review_queue_run_suspended"] = (
+                        suspension.get("status") == _rq.SUSPENSION_SUSPENDED
+                    )
+                    # Codex r13 #5: cancel the canonical runs of any suspension
+                    # this one superseded, so an older run isn't stranded at
+                    # INTERRUPTED forever.
+                    stranded = suspension.get("superseded_run_ids") or []
+                    if stranded:
+                        from tinyassets.runs import supersede_stranded_review_runs
+
+                        evidence["review_queue_superseded_runs"] = (
+                            supersede_stranded_review_runs(universe_dir, stranded)
+                        )
+        except Exception as exc:  # noqa: BLE001 — never fail a landed PR open
+            evidence["review_queue_enqueue_error"] = str(exc)
+
     return evidence
 
 
@@ -1533,6 +1615,10 @@ def run_effects_for_branch(
     del dry_run  # retained for signature compat
     evidence_map: dict[str, Any] = {}
     node_defs = getattr(branch, "node_defs", None) or []
+    # Authoritative identity from the RUN context (Codex R7 C2): the branch that
+    # produced the PR + its universe, never a model-emitted packet field.
+    authoritative_branch_def_id = str(getattr(branch, "branch_def_id", "") or "")
+    authoritative_universe_id = Path(base_path).name if base_path else ""
     for node in node_defs:
         effects = getattr(node, "effects", None) or []
         if not effects:
@@ -1549,6 +1635,8 @@ def run_effects_for_branch(
                         run_state=run_state,
                         base_path=base_path,
                         run_id=run_id,
+                        authoritative_branch_def_id=authoritative_branch_def_id,
+                        authoritative_universe_id=authoritative_universe_id,
                     )
                 except Exception as exc:  # defensive — never raise
                     logger.exception(
