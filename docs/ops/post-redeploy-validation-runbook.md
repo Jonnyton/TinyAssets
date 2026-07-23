@@ -135,19 +135,53 @@ writes are rejected by design, so the old write-roundtrip is impossible.
 The probe now asserts the gate itself plus the open read path. It has NO
 side effects — nothing is written to the live wiki.
 
-**Green:** exit 0, verbose output shows `handshake OK`, `anonymous
-write-gate OK: rejected with auth_required=true`, `wiki read OK —
-persisted canary draft content confirmed`.
+> **⚠ STALE CONTRACT — corrected 2026-07-22. This probe cannot currently
+> go green against production, and that is the probe's fault, not the
+> service's.** The 2026-07-14 rework above was obsolete the next day.
+> `972d0cc3` (2026-07-15 20:54:19 -0700) made **pure-write** MCP handles —
+> `write_graph`, `run_graph`, `write_page`, `converse` — answer **HTTP 401 +
+> `WWW-Authenticate` pre-dispatch**, so MCP clients launch OAuth, instead of
+> returning the in-band `status=rejected` / `auth_required=true` envelope the
+> probe still asserts. `write_page` is in that set. The 401 raises at the
+> transport layer, so the envelope assertion is now unreachable in production
+> and the read half below is never reached. **A red here is expected until the
+> probe is realigned — do not escalate it as an outage.** Forensics:
+> `docs/audits/2026-07-22-uptime-canary-false-red-incident.md` (PR #1513).
+>
+> The in-band envelope is **not** retired platform-wide — it is simply no longer
+> what `write_page` returns *on `/mcp`*. It remains the fail-closed backstop
+> behind the 401 (`auth/middleware.py:312-313`) and the live contract on
+> `/mcp-directory`, which `_auth_challenge_path` deliberately does not sweep in
+> (`middleware.py:88-95`). Note also that mixed read/write dispatch tools (wiki,
+> goals, universe, extensions) refuse with a **third** shape —
+> `auth_scope_required=true`, generally with no `status` key. Three shapes, three
+> surfaces; a fix targeting one does not cover the others.
 
-**Red:** exit 6 (gate probe failed — including an anonymous write being
-ACCEPTED, which is a #1441 gate regression / security red), exit 7 (read
-failed or draft content mismatch), exit 2 (handshake broken).
+**Green (as the probe asserts it — not currently attainable against
+production, see above):** exit 0, verbose output shows `handshake OK`,
+`anonymous write-gate OK: rejected with auth_required=true`, `wiki read
+OK — persisted canary draft content confirmed`.
+
+**Red:** exit 7 (read failed or draft content mismatch), exit 2
+(handshake broken), and **exit 6 — which is overloaded across three
+causes of incompatible severity:**
+
+1. **Transport / HTTP error**, *including the HTTP 401 production
+   correctly returns today*. Benign; this is what fires now.
+2. **Stale-envelope mismatch** — the write was refused, but not in the
+   shape the probe expects. Probe drift, not a service fault.
+3. **Anonymous write ACCEPTED** — the #1441 gate has regressed and the
+   public write surface is open. **P0 security regression.**
+
+Cause 3 must never be dismissed as cause 1. The verbose output above
+distinguishes them; a bare `exit 6` in a CI log does not.
 
 **Scope:** this probe targets auth-gated deployments (production runs
 `UNIVERSE_SERVER_AUTH=optional`). Against a dev-mode server
 (`UNIVERSE_SERVER_AUTH=false`) anonymous writes are open by design, so
-the gate step reds with exit 6 — that is the probe telling you the
-server is not auth-gated, not a wiki outage.
+cause 3 fires benignly there — but only once you have independently
+confirmed the target is dev-mode. Against `https://tinyassets.io/mcp` an
+accepted anonymous write is never a configuration note.
 
 ### §2.3 MCP tool-invocation canary (PROBE-004)
 
