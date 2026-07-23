@@ -653,6 +653,26 @@ def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
     )
 
 
+def test_terminal_receipt_never_mutates_the_deployed_image_after_publication():
+    wf = _load()
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    run_script = terminal_step.get("run", "") or ""
+
+    published_idx = run_script.find("terminal_receipt_result=published")
+    assert published_idx != -1
+    post_publication = run_script[published_idx:]
+    for forbidden in (
+        "TINYASSETS_IMAGE",
+        "docker pull",
+        "systemctl restart tinyassets-daemon",
+        "${PREV_IMAGE}",
+    ):
+        assert forbidden not in post_publication, (
+            "the installed terminal receipt must describe the final production "
+            f"state; found a later image mutation token: {forbidden}"
+        )
+
+
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
     text = _text()
     assert "github.event.workflow_run.head_sha || github.sha" not in text

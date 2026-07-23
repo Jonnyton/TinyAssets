@@ -1327,15 +1327,6 @@ jobs:
             echo "- Container path: \`/data/release-state.json\`"
             echo "- Outcome: \`$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"outcome\"])' "$RUNNER_TEMP/tinyassets-release-state.json")\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' '${PREV_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo docker pull '${PREV_IMAGE}' || true; sudo systemctl restart tinyassets-daemon"
-          # Confirm rollback restored green.
-          sleep 30
-          python scripts/mcp_public_canary.py --url "${CANARY_URL}" --verbose
 
       - name: Open deploy-failed issue
         if: always() && failure()
