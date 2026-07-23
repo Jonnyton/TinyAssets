@@ -159,6 +159,36 @@ def _steps(wf: dict) -> list[dict]:
     return wf.get("jobs", {}).get("deploy", {}).get("steps", [])
 
 
+def _step_named(wf: dict, name: str) -> dict:
+    step = next(
+        (candidate for candidate in _steps(wf) if candidate.get("name") == name),
+        None,
+    )
+    assert step is not None, f"deploy job must include a '{name}' step"
+    return step
+
+
+def _step_with_run_token(wf: dict, token: str) -> dict:
+    step = next(
+        (
+            candidate
+            for candidate in _steps(wf)
+            if token in (candidate.get("run", "") or "")
+        ),
+        None,
+    )
+    assert step is not None, f"deploy job must include a run step containing {token!r}"
+    return step
+
+
+def _previous_executable_line(lines: list[str], before: int) -> str:
+    for line in reversed(lines[:before]):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return ""
+
+
 def test_post_deploy_canary_step_present():
     wf = _load()
     names = [s.get("name", "") for s in _steps(wf)]
@@ -228,17 +258,27 @@ def test_rollback_step_present():
         "deploy job must have a 'Rollback on failure' step"
 
 
-def test_rollback_conditioned_on_failure():
+def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
     wf = _load()
-    for step in _steps(wf):
-        if "rollback on failure" in (step.get("name") or "").lower():
-            cond = step.get("if", "")
-            assert "failure" in cond, "rollback step must be conditioned on failure()"
-            assert "steps.prev.outputs.previous != ''" in cond, (
-                "rollback must be skipped when no immutable previous image exists"
-            )
-            return
-    pytest.fail("'Rollback on failure' step not found")
+    step = _step_named(wf, "Rollback on failure")
+    cond = str(step.get("if", ""))
+    step_env = step.get("env") or {}
+    run_script = step.get("run", "") or ""
+
+    assert cond.strip() == "always()", (
+        "rollback must always run so pre-host, pre-image, success, and required "
+        "rollback paths all publish a bounded result tuple"
+    )
+    assert "failure()" not in cond
+    assert "steps.prev.outputs.previous != ''" not in cond
+    assert "image_mutation_started" in str(
+        step_env.get("IMAGE_MUTATION_STARTED", "")
+    ), "rollback eligibility must consume the image-mutation marker"
+    assert "IMAGE_MUTATION_STARTED" in run_script
+    assert "production_mutation_started" not in cond, (
+        "production mutation requires terminal publication, but it must not "
+        "make image rollback eligible"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -459,55 +499,270 @@ def test_deploy_requires_llm_binding_even_without_visible_deploy_secret():
     assert "::warning::No deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64" not in run_script
 
 
-def test_deploy_publishes_release_state_after_canaries_and_access_gate():
+def test_production_marker_is_immediately_before_first_scrub_host_write():
+    wf = _load()
+    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
+    run_script = scrub_step.get("run", "") or ""
+    lines = run_script.splitlines()
+    first_host_write = next(
+        i for i, line in enumerate(lines) if line.strip().startswith("ssh ")
+    )
+    marker_line = _previous_executable_line(lines, first_host_write)
+
+    assert scrub_step.get("id"), (
+        "the scrub step needs an id so later always-running steps can consume "
+        "production_mutation_started even when the SSH write fails"
+    )
+    assert "production_mutation_started=true" in marker_line
+    assert "GITHUB_OUTPUT" in marker_line
+
+
+def test_image_marker_is_immediately_before_first_tinyassets_image_write():
+    wf = _load()
+    deploy_step = next(step for step in _steps(wf) if step.get("id") == "deploy")
+    run_script = deploy_step.get("run", "") or ""
+    lines = run_script.splitlines()
+    image_write_line = next(
+        i
+        for i, line in enumerate(lines)
+        if "install-tinyassets-env.sh set TINYASSETS_IMAGE" in line
+        and not line.lstrip().startswith("#")
+    )
+
+    # Walk to the start of the continued ssh command that invokes the helper.
+    command_start = image_write_line
+    while (
+        command_start > 0
+        and lines[command_start - 1].rstrip().endswith("\\")
+    ):
+        command_start -= 1
+    marker_line = _previous_executable_line(lines, command_start)
+
+    assert "image_mutation_started=true" in marker_line
+    assert "GITHUB_OUTPUT" in marker_line
+
+
+def test_rollback_and_terminal_receipt_are_ordered_under_always():
     wf = _load()
     steps = _steps(wf)
-    names = [s.get("name", "") for s in steps]
+    canary_step = _step_named(wf, "Post-deploy canary — canonical URL only")
+    access_step = _step_named(
+        wf, "Verify CF Access gates direct URL (expects 403/401)"
+    )
+    rollback_step = _step_named(wf, "Rollback on failure")
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
 
-    canary_idx = names.index("Post-deploy canary — canonical URL only")
-    access_idx = names.index("Verify CF Access gates direct URL (expects 403/401)")
-    receipt_idx = names.index("Publish release-state receipt")
-    rollback_idx = names.index("Rollback on failure")
+    assert str(rollback_step.get("if", "")).strip() == "always()"
+    assert str(terminal_step.get("if", "")).strip() == "always()"
+    assert steps.index(canary_step) < steps.index(rollback_step)
+    assert steps.index(access_step) < steps.index(rollback_step)
+    assert steps.index(rollback_step) < steps.index(terminal_step), (
+        "terminal classification must run after rollback so its receipt "
+        "describes the final observed production state"
+    )
 
-    assert canary_idx < receipt_idx < rollback_idx
-    assert access_idx < receipt_idx
 
-    receipt_step = steps[receipt_idx]
-    run_script = receipt_step.get("run", "") or ""
-    step_env = receipt_step.get("env") or {}
+def test_terminal_receipt_keys_to_production_marker():
+    wf = _load()
+    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    step_env = terminal_step.get("env") or {}
+    run_script = terminal_step.get("run", "") or ""
 
-    for field in (
-        "git_sha",
-        "image_tag",
-        "image_digest",
-        "build_run_id",
-        "build_run_url",
-        "deploy_run_id",
-        "deploy_run_url",
-        "config_hash",
-        "config_version",
-        "schema_migration_rev",
-        "canary_bundle_status",
-        "deployed_at",
-        "rollback_target",
-        "actor",
-        "repository",
-        "workflow_event",
-    ):
-        assert field in run_script
+    expected_ref = (
+        f"steps.{scrub_step['id']}.outputs.production_mutation_started"
+    )
+    assert expected_ref in str(
+        step_env.get("PRODUCTION_MUTATION_STARTED", "")
+    )
+    assert "PRODUCTION_MUTATION_STARTED" in run_script
+    assert "not_applicable" in run_script
+    assert "failed" in run_script
 
-    assert "SOURCE_SHA" in step_env
-    assert "TARGET_IMAGE" in step_env
-    assert "PREV_IMAGE" in step_env
-    assert "TINYASSETS_EVENT" in step_env
-    assert "docker image inspect" in run_script
-    assert "sha256sum /etc/tinyassets/env" in run_script
-    assert "docker volume inspect tinyassets-data" in run_script
-    assert "release_state_host_dir" in run_script
+
+def test_rollback_emits_safe_defaults_and_final_outputs_before_exit():
+    wf = _load()
+    rollback_step = _step_named(wf, "Rollback on failure")
+    run_script = rollback_step.get("run", "") or ""
+    output_keys = (
+        "rollback_attempted",
+        "rollback_result",
+        "rollback_canary_status",
+        "rollback_reason",
+    )
+
+    fallible_positions = [
+        position
+        for token in ("scp ", "ssh ", "scripts/mcp_public_canary.py")
+        if (position := run_script.find(token)) != -1
+    ]
+    assert fallible_positions, "rollback must contain the fallible rollback work"
+    first_fallible = min(fallible_positions)
+    output_helper = "emit_rollback_outputs"
+
+    for key in output_keys:
+        first_output = run_script.find(f"{key}=")
+        assert first_output != -1, f"rollback must expose {key}"
+        assert first_output < first_fallible, (
+            f"rollback must emit a safe {key} default before fallible work"
+        )
+
+    final_exit = run_script.rfind("exit ")
+    assert final_exit != -1, "rollback must return its exact classified exit"
+    if output_helper in run_script:
+        assert run_script.count(output_helper) >= 3, (
+            "the rollback output helper must be defined and called for both "
+            "safe defaults and the final tuple"
+        )
+        helper_definition = run_script.find(output_helper)
+        first_helper_call = run_script.find(
+            output_helper, helper_definition + len(output_helper)
+        )
+        assert first_helper_call < first_fallible
+        assert first_fallible < run_script.rfind(output_helper) < final_exit
+    else:
+        for key in output_keys:
+            assert run_script.count(f"{key}=") >= 2, (
+                f"rollback must emit both the safe default and final {key} output"
+            )
+            assert run_script.rfind(f"{key}=") < final_exit, (
+                f"rollback final {key} output must be visible before failure"
+            )
+
+
+def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
+    wf = _load()
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    run_script = terminal_step.get("run", "") or ""
+
+    helper_idx = run_script.find("python scripts/deploy_terminal_receipt.py")
+    transfer_idx = run_script.find("scp ")
+    install_idx = run_script.find("install -m 0644 -o 1001 -g 1001")
+    assert helper_idx != -1, (
+        "terminal publication must invoke the directly executable pure "
+        "classifier/builder"
+    )
+    assert transfer_idx != -1
+    assert install_idx != -1
+    assert helper_idx < transfer_idx < install_idx
+    assert "release-state.json" in run_script
     assert "/data/release-state.json" in run_script
-    assert "${release_state_host_dir}/release-state.json" in run_script
-    assert "/tmp/tinyassets-release-state.json /data/release-state.json" not in run_script
-    assert "canary_bundle_status\": \"passed\"" in run_script
+    assert terminal_step.get("continue-on-error") is not True, (
+        "terminal writer failure must keep the workflow red"
+    )
+
+
+def test_terminal_writer_outputs_are_visible_before_fallible_work():
+    wf = _load()
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    run_script = terminal_step.get("run", "") or ""
+    first_fallible = min(
+        position
+        for token in ("ssh ", "scp ", "python scripts/deploy_terminal_receipt.py")
+        if (position := run_script.find(token)) != -1
+    )
+
+    failed_idx = run_script.find("terminal_receipt_result=failed")
+    not_applicable_idx = run_script.find(
+        "terminal_receipt_result=not_applicable"
+    )
+    published_idx = run_script.find("terminal_receipt_result=published")
+    install_idx = run_script.find("install -m 0644 -o 1001 -g 1001")
+    assert 0 <= failed_idx < first_fallible, (
+        "writer failure must leave a visible failed output before host "
+        "observation, classification, transfer, or install can fail"
+    )
+    assert 0 <= not_applicable_idx < first_fallible, (
+        "the pre-host path must publish not_applicable without host contact"
+    )
+    assert install_idx != -1
+    assert published_idx > install_idx, (
+        "published is truthful only after the atomic receipt install succeeds"
+    )
+    for output_name in (
+        "terminal_outcome",
+        "terminal_active_identity_status",
+        "terminal_canary_status",
+    ):
+        output_idx = run_script.find(f"{output_name}=")
+        assert 0 <= output_idx < install_idx, (
+            f"{output_name} must be exposed before atomic install so issue "
+            "wording survives writer failure"
+        )
+
+
+def test_deploy_failure_issue_consumes_rollback_and_terminal_outputs():
+    wf = _load()
+    rollback_step = _step_named(wf, "Rollback on failure")
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    issue_step = _step_named(wf, "Open deploy-failed issue")
+    assert rollback_step.get("id"), "rollback outputs require a stable step id"
+    assert terminal_step.get("id"), "terminal outputs require a stable step id"
+
+    cond = str(issue_step.get("if", ""))
+    env_text = "\n".join(
+        str(value) for value in (issue_step.get("env") or {}).values()
+    )
+    assert "always()" in cond and "failure()" in cond, (
+        "the issue must still run after a red rollback or terminal writer"
+    )
+    for output_name in (
+        "rollback_attempted",
+        "rollback_result",
+        "rollback_canary_status",
+        "rollback_reason",
+    ):
+        assert (
+            f"steps.{rollback_step['id']}.outputs.{output_name}" in env_text
+        ), f"deploy-failed issue must consume {output_name}"
+    for output_name in (
+        "terminal_receipt_result",
+        "terminal_outcome",
+        "terminal_active_identity_status",
+        "terminal_canary_status",
+        "terminal_configured_image_ref",
+        "terminal_running_image_ref",
+        "terminal_active_image_ref",
+    ):
+        assert (
+            f"steps.{terminal_step['id']}.outputs.{output_name}" in env_text
+        ), f"deploy-failed issue must consume {output_name}"
+
+
+def test_deploy_failure_issue_has_truthful_bounded_wording():
+    wf = _load()
+    issue_step = _step_named(wf, "Open deploy-failed issue")
+    script = str((issue_step.get("with") or {}).get("script", ""))
+
+    assert "Rolled back to:" not in script, (
+        "a previous-image value is not proof that rollback succeeded"
+    )
+    for required_sentence in (
+        "Production host write did not start; image rollback was not attempted.",
+        (
+            "Production mutation started, but image mutation did not; "
+            "image rollback was not required."
+        ),
+        (
+            "Rollback was not needed because terminal outcome is deployed, "
+            "active image identity agrees, and the applicable canary passed."
+        ),
+        "Rollback was not attempted; forward production health is unproven.",
+        "Rollback succeeded and the rollback canary passed.",
+        (
+            "Rollback status is unavailable; rollback success was not proven."
+        ),
+        "Terminal release-state receipt published.",
+        (
+            "Terminal release-state publication failed; durable active-release "
+            "truth is not proven and the prior receipt may be stale."
+        ),
+        (
+            "Terminal release-state publication was not applicable; the prior "
+            "receipt was left unchanged."
+        ),
+    ):
+        assert required_sentence in script
 
 
 # ---------------------------------------------------------------------------
