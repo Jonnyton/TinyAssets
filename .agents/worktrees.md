@@ -860,9 +860,9 @@ Notes:
 - Worktree: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec
 - STATUS/Issue/PR: Backfill shipped hyperparameter-importance evaluator
 - PLAN refs: Evaluation; Outcomes
-- Purpose: canonicalize the shipped fail-soft RF/Spearman evaluator without importing incompatible future science-domain semantics
+- Purpose: canonicalize the shipped fail-soft RF/Spearman evaluator and correct the legacy audit so the incompatible future science-domain target remains distinct
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec\_PURPOSE.md
 - Memory refs: post-PR #1632 full-coverage residual audit
-- Related implications: canonical evaluation-runtime owner; PR #1627 and future science-domain material remain target-only/read-only
+- Related implications: canonical evaluation-runtime owner; PR #1627 remains read-only; the future science-domain node/fixture target keeps a separate successor
 - Idea feed refs: none
 - Ship/abandon: sync/archive after strict validation, focused evidence, and independent review
