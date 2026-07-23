@@ -881,3 +881,18 @@ Notes:
 - Related implications: credential-vault is the only remaining shipped-coverage residual; five target-owner groups remain
 - Idea feed refs: none
 - Ship/abandon: remove the physical worktree only after PR #1633 lands
+
+## 2026-07-22 - create hyperparameter-science-spec
+
+- Provider: codex-gpt56-spec-3
+- Branch: codex/hyperparameter-science-spec
+- Lane state: Design review only; OpenSpec/build blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-hyperparameter-science-spec
+- STATUS/Issue/PR: Review hyperparameter science target design
+- PLAN refs: Scoping Rules; Engine & Domains; Evolution & Evaluation; State & Artifacts
+- Purpose: refine the promoted science-domain evaluator/fixture target into an approval-ready owner design without conflating the shipped generic evaluator
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-hyperparameter-science-spec\_PURPOSE.md
+- Memory refs: PR #1633 archived review; Priya/W&B idea pipeline provenance
+- Related implications: scientific-computing domain catalog; existing evaluator/runtime canonical owner; future model-design/training user journey
+- Idea feed refs: `ideas/PIPELINE.md` hyperparameter evaluator promotion; `ideas/INBOX.md` 2026-04-24 Priya signal
+- Ship/abandon: commit/push coordination only; research/design artifact requires user approval and Claude opposite-provider review before OpenSpec or implementation advances
