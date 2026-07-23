@@ -1,6 +1,10 @@
 ## Context
 
-The TINY brain spec (`docs/specs/2026-06-10-tiny-first-principles-spec.md` §5) was ratified 2026-06-10 with the store line *"SQLite canonical (entries + FTS + vectors); wiki becomes a RENDERING."* The research companion (`docs/specs/2026-06-10-brain-v2-research-implications.md`) then adopted **OpenClaw's** *"markdown source-of-truth + rebuildable SQLite index"* model (the index-is-disposable invariant; `chunk identity = hash(source:lines:content:model_version)`). That is a **cross-artifact mismatch** between the spec wording and the adopted precedent — not strictly an internal §5 contradiction (disposable FTS/vectors can be consistent with SQLite-canonical), but a real divergence about which artifact is source of truth.
+Two June legacy documents preserve a useful cross-artifact mismatch: the TINY
+narrative records SQLite-canonical wording, while the research companion records
+OpenClaw's markdown-source-of-truth/rebuildable-index model. They are provenance,
+not ratified authority. PLAN owns the architectural decision; this active
+change owns only the proposed behavioral contract until host-approved foldback.
 
 On 2026-06-12 Google published **OKF v0.1** (`github.com/GoogleCloudPlatform/knowledge-catalog` → `okf/SPEC.md`): markdown + YAML-frontmatter files, one file per concept, cross-links as an UNTYPED relationship graph, reserved `index.md`/`log.md`; only `type` required; consumers MUST tolerate unknown types and SHOULD preserve unknown keys; broken links are valid; versioned `<major>.<minor>` with backward-compatible minor bumps; bundle root MAY declare `okf_version`. There is **no profile registry** — extensibility is free `type` + additional keys + GitHub-governed PRs. Host directive 2026-06-24: OKF is the brain's format foundation and the brain must auto-sync as it evolves.
 
@@ -9,7 +13,9 @@ Current live state: the brain write path is **unbuilt** and gated behind the Cod
 ## Goals / Non-Goals
 
 **Goals:**
-- Make the OKF bundle the canonical source of truth and SQLite/FTS/vectors a rebuildable operational index (resolve the cross-artifact mismatch in favor of the model the companion already adopted).
+- Make the OKF bundle the proposed canonical source of truth and
+  SQLite/FTS/vectors a rebuildable operational index, subject to host-approved
+  PLAN foldback.
 - Define a real commit protocol so durability is sound under public concurrency (not a naive dual-write).
 - Map Tiny's typed entries onto OKF as a conformant producer/consumer with zero special-casing.
 - Make durability, federation, and no-lock-in fall out of the bundle (git snapshot = the store; export = the bundle).
@@ -24,7 +30,9 @@ Current live state: the brain write path is **unbuilt** and gated behind the Cod
 ## Decisions
 
 **D1 — OKF bundle canonical; SQLite is the rebuildable operational index.**
-Rationale: host directive; completes the OpenClaw model the companion already adopted; strengthens durability (the git snapshot becomes the store, not a backup-of-a-DB — retiring the rebuild-mandate backup gap) and no-lock-in (wholesale OKF export is native).
+Rationale: host directive plus the research provenance; strengthens durability
+(the git snapshot becomes the store, not a backup of a DB) and no-lock-in
+(wholesale OKF export is native).
 Alternatives: *keep SQLite-canonical* — rejected (contradicts the directive + the adopted index-is-disposable invariant; export/federation become secondary). *Dual-canonical* — rejected (ambiguous source of truth).
 
 **D2 — Write-through under an explicit commit protocol; the bundle is the durability boundary.**
@@ -36,14 +44,19 @@ Alternatives: *naive dual-write* — rejected (accepted-in-SQLite-but-not-in-bun
 Alternatives: *OKF profile/extension registry* — rejected (OKF specifies none).
 
 **D4 — Auto-sync is a composable steward; conformance validation is substrate.**
-A forkable `[composable]` steward holds a vigil on the OKF spec repo (§6.2 change-control treats standards as upstream assets), pins `okf_version`, and PROPOSES migrations on minor bumps. The bundle store, the rebuildable index, AND OKF-**conformance validation** are `[substrate]` (build-boundary law #4).
+A forkable `[composable]` steward holds a vigil on the OKF spec repo under the
+project's upstream-asset change-control principle, pins `okf_version`, and
+PROPOSES migrations on minor bumps. The bundle store, the rebuildable index,
+AND OKF-**conformance validation** are `[substrate]`.
 Alternatives: *conformance + sync both composable* — rejected (validation is a substrate guarantee, not a forkable default).
 
 **D5 — OKF compatibility shim for the existing wiki (not "already a bundle").**
 The current wiki is not OKF-conformant as-is (root `index.md` carries `title/type/updated`; `[[wikilinks]]`). Slice-1 consumes it through a shim — lossless wikilink→Markdown-link projection, root-`index.md`→`okf_version`-only, `log.md` date normalization, and a `drafts/` = bundle-concept-vs-operational-staging rule. No content migration.
 
-**D6 — Amend the narrative spec in the same change.**
-Edit §5 + §5h, §11.2 (redaction order + secrets tombstone), §13 (build-boundary), §14 (backup) so the ratified narrative and this capability never diverge.
+**D6 — Keep legacy provenance immutable; fold accepted architecture into PLAN.**
+The June legacy documents remain evidence of the earlier conflict. Before this
+change gates implementation or syncs behavior, the host-approved source-of-truth,
+redaction, build-boundary, and backup decisions SHALL be recorded in PLAN.
 
 ## Risks / Trade-offs
 
@@ -53,11 +66,18 @@ Edit §5 + §5h, §11.2 (redaction order + secrets tombstone), §13 (build-bound
 - **Git-snapshot race** capturing half-projected state → atomic bundle generations / write-lock coordination at snapshot.
 - **Redaction staleness** → operational index must stop serving FIRST (tombstone/block) before bundle delete + rebuild; secrets-class tombstones omit recoverable content hashes.
 - **OKF is v0.1 Draft** → depend only on its stable core (markdown + frontmatter + non-empty `type` + reserved files); `okf_version` pin + steward absorb minor bumps; a major bump is a deliberate reviewed migration.
-- **File-per-entry scale** (1,183+ entries) → bounded by §5 size-pressure caps + consolidation; "just files" scales like git.
+- **File-per-entry scale** (1,183+ entries) → implementation remains gated on
+  explicit size-pressure caps, consolidation policy, and load proof; "just
+  files" is not itself scale evidence.
 
 ## Migration Plan
 
-Design amendment only — **no data migration, no runtime change**. The narrative-spec edits land with this change. Slice-1 (gated, future) reads the existing wiki through the D5 compatibility shim; later slices build the commit protocol + index-rebuild + steward behind the Codex gates. **Rollback:** revert the spec edits; nothing runtime depends on this change yet.
+Design proposal only — **no data migration, no runtime change**. The legacy
+documents are not edited as authority. After host-approved PLAN foldback,
+Slice-1 (gated, future) reads the existing wiki through the D5 compatibility
+shim; later slices build the commit protocol, index rebuild, and steward behind
+the Codex gates. **Rollback:** retire/revert the active change; nothing runtime
+depends on it yet.
 
 ## Open Questions
 

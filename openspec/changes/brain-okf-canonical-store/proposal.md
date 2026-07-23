@@ -1,15 +1,27 @@
 ## Why
 
-The host-ratified TINY brain spec (`docs/specs/2026-06-10-tiny-first-principles-spec.md` §5) declares the SQLite entry store **canonical** and markdown a mere rendering — yet the research companion simultaneously adopted OpenClaw's *"markdown source-of-truth + rebuildable SQLite index"* mechanics (the index-is-disposable invariant; `chunk identity = hash(source:lines:content:model_version)`), leaving §5 in **cross-artifact tension** with the precedent it adopted — not strictly an internal contradiction, but a real divergence about which artifact is source of truth. On 2026-06-12 Google published the **Open Knowledge Format (OKF) v0.1** — a vendor-neutral open standard that *is* that markdown-canonical model with a published, conformance-defined contract. Host directive 2026-06-24: adopt OKF as the brain's canonical format and auto-sync as the standard evolves. The change is cheap now — the brain write path is unbuilt (gated behind the Codex pre-build gates) and the first slice is a read-only projection over the existing markdown wiki — and expensive once a SQLite-canonical write path ships.
+Two June legacy documents preserve conflicting design provenance: the TINY
+first-principles narrative describes SQLite as canonical, while its research
+companion records OpenClaw's markdown-source-of-truth/rebuildable-index model.
+Neither file is current authority: PLAN owns architecture and this active
+OpenSpec change owns the in-flight behavioral target. On 2026-06-12 Google
+published **Open Knowledge Format (OKF) v0.1**, a vendor-neutral version of the
+markdown-canonical model. Host directive 2026-06-24: adopt OKF as the brain's
+format and auto-sync as the standard evolves. The change is cheap now — the
+brain write path is unbuilt and gated — and expensive once a SQLite-canonical
+write path ships.
 
 ## What Changes
 
-- **Canonicality inversion (the core decision):** the canonical source of truth becomes an **OKF bundle** — a directory of markdown + YAML-frontmatter files, one file per entry, cross-links forming the graph, reserved `index.md` + `log.md`. The SQLite entry store + FTS + vectors becomes a **fully rebuildable operational index** over the bundle (disposable by design; one-command rebuild). *(Previously §5 made SQLite the source of truth.)*
+- **Canonicality inversion (the core decision):** the canonical source of truth becomes an **OKF bundle** — a directory of markdown + YAML-frontmatter files, one file per entry, cross-links forming the graph, reserved `index.md` + `log.md`. The SQLite entry store + FTS + vectors becomes a **fully rebuildable operational index** over the bundle (disposable by design; one-command rebuild). *(The earlier SQLite-canonical wording survives only as legacy provenance.)*
 - **Write-through durability under a commit protocol:** a write lands transactionally in the operational layer (concurrency + candidate gate) and projects to the bundle under an explicit commit protocol (idempotency key, pending→durable states, atomic temp+rename, outbox ordering, crash recovery); an entry is durable only once it is in the bundle. Write-through **re-houses, not resolves**, the public-concurrency hazards of research-impl Gap #4. The bundle is the unit of nightly git-snapshot durability, cross-universe federation (the commons = union of public goal-addressed bundle entries), and wholesale self-host/fork export ("format not platform" = real no-lock-in).
 - **OKF conformance mapping:** Tiny's typed/scoped/lifecycled entry fields (`goal_id`, `universe_id`, `visibility`, `lifecycle`, `ttl_class`, `supersedes`, `evidence_refs`) ride as **additional frontmatter keys** — explicitly OKF-conformant (only `type` is required; consumers MUST tolerate unknown types and preserve unknown keys). Reserved-file/section mapping: `index.md` ↔ progressive-disclosure manifest; `log.md` ↔ bi-temporal lineage + consolidation diary; `# Citations` / `references/` ↔ citation-required promotion; broken cross-links ↔ not-yet-written candidate knowledge; concept-ID-as-path ↔ entry addressing.
 - **Auto-sync to the standard:** a forkable steward holds a vigil on the OKF spec repo (`okf_version` pin); backward-compatible minor bumps are absorbed; Tiny's conventions are contributed upstream via community PR (OKF has **no** formal profile mechanism — extensibility is free `type` + additional keys + GitHub governance). This steward is `[composable]` (a forkable default branch), never platform code.
 - **Slice-1 needs no content migration, but a compatibility shim:** the first build slice (read-only `assemble(lens)` over the existing wiki) reads it through an OKF compatibility shim (lossless `[[wikilink]]`→Markdown-link projection, root-`index.md`→`okf_version`-only, `log.md` normalization) — the wiki is *not* OKF-conformant as-is. No content is migrated.
-- Amend the host-ratified narrative spec (`docs/specs/2026-06-10-tiny-first-principles-spec.md` §5 store bullet + §5h, §11.2 redaction order, §13 build-boundary wording, §14 migration/backup note) to match this capability. *(Tracked as a task; lands with this change.)*
+- Treat the two legacy June documents as provenance only. Before this target
+  can gate implementation or sync, fold the host-approved architectural
+  source-of-truth decision into PLAN; the OpenSpec delta remains the sole
+  behavioral target owner.
 
 ## Capabilities
 
@@ -21,8 +33,16 @@ The host-ratified TINY brain spec (`docs/specs/2026-06-10-tiny-first-principles-
 
 ## Impact
 
-- **Ratified narrative spec:** `docs/specs/2026-06-10-tiny-first-principles-spec.md` §5 (store bullet + §5h), §11.2 (redaction propagation order), §13 (build-boundary audit wording), §14 (migration/backup note). Companion `docs/specs/2026-06-10-brain-v2-research-implications.md` already canonicalizes the OpenClaw markdown-source-of-truth model — unchanged; becomes the precedent reference.
+- **Architecture authority:** PLAN must receive the host-approved store decision
+  before implementation or spec sync. The TINY narrative and research
+  companion are conflicting provenance inputs, not files this change amends or
+  treats as canonical.
 - **Future code (gated — NOT in this change):** the unbuilt `tinyassets/brain/` package — bundle reader/writer, index-rebuild command, write-through projection, conformance + auto-sync steward. The slice-1 read-only `assemble(lens)` path is unchanged.
-- **Durability:** §14 brain-backup (nightly snapshot → git) is reframed — the snapshot IS the canonical bundle, retiring the 2026-06-09 rebuild-mandate "backup was never finished" gap.
-- **Gates:** this is a **design amendment only** — it does not unblock build. It stays under the Codex 6 pre-build gates + cross-provider review; OKF-as-foundation is research-derived, so the amendment requires a **Codex review pass** before it gates any implementation.
-- **Doctrine strengthened (§11):** no-lock-in (wholesale OKF export is the native form), commons (federation is bundle-union), redaction (deletes from the canonical bundle first, then rebuilds the index).
+- **Durability target:** the nightly git snapshot is the canonical bundle rather
+  than a secondary backup of an authoritative database.
+- **Gates:** this is an in-flight behavioral proposal and does not unblock
+  build. It stays under the Codex 6 pre-build gates, cross-provider review, and
+  host-approved PLAN foldback; OKF-as-foundation is research-derived.
+- **Target principles:** no-lock-in (wholesale OKF export is the native form),
+  commons (federation is bundle-union), and redaction (block the operational
+  index, delete from the bundle, then rebuild).
