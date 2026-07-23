@@ -941,3 +941,18 @@ Notes:
 - Related implications: `reconcile-external-connector-manifests` tasks 1.1 and 2.1–2.5
 - Idea feed refs: none
 - Ship/abandon: land only the deterministic MCPB parity slice; defer Polsia handoff, directory acceptance, and host-rendered proof
+
+## 2026-07-23 - create uptime-proof-p0-blocker-coord
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/uptime-proof-p0-blocker-coord
+- Lane state: Coordination-only dependency correction
+- Worktree: C:\Users\Jonathan\Projects\wf-uptime-proof-blocker-coord2
+- STATUS/Issue/PR: `Prove uptime alarm §14 concurrency after #1638/#1639`; PR after focused review
+- PLAN refs: Uptime & Alarms; Cross-Cutting Principles
+- Purpose: preserve the active P0-triage lane’s canonical uptime-spec ownership after #1641/#1642 released the prior wiki-canary blocker
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-uptime-proof-blocker-coord2\_PURPOSE.md
+- Memory refs: PRs #1640–#1643; local `codex/fix-p0-triage-failure-escalation` claim
+- Related implications: exact-script concurrency proof design prepared; implementation waits for canonical spec release
+- Idea feed refs: none
+- Ship/abandon: publish only the dependency edge; remove it when the P0-triage lane lands and releases the spec
