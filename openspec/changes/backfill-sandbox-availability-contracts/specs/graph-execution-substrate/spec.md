@@ -39,10 +39,10 @@ no-op.
 
 `NodeDefinition.requires_sandbox` SHALL default to false, serialize, and
 round-trip. For rows admitted by the ordinary branch visibility and scope
-rules, branch listing SHALL report `has_sandbox_nodes`, support
-`requires_sandbox=none` by returning only branches without marked nodes, and
-support `requires_sandbox=any` by returning only branches with at least one
-marked node.
+rules, branch listing SHALL report `has_sandbox_nodes`. The
+`requires_sandbox` filter SHALL be stripped and lowercased; `none` returns only
+branches without marked nodes, `any` returns only branches with at least one
+marked node, and an empty or any other value applies no sandbox-demand filter.
 
 Branch validation SHALL best-effort read the cached production sandbox status.
 When it is falsey and the branch contains marked nodes, validation SHALL add
@@ -77,6 +77,12 @@ runtime is advisory wording, not an enforced or universal outcome.
 - **WHEN** scope-eligible branches are listed with `requires_sandbox=none` or `requires_sandbox=any`
 - **THEN** it returns respectively only unmarked branches or only branches with at least one marked node
 - **AND** each returned row reports its `has_sandbox_nodes` value
+
+#### Scenario: Empty and unknown filters preserve all otherwise-admitted rows
+
+- **WHEN** scope-eligible rows are listed with an empty or unrecognized `requires_sandbox` value
+- **THEN** every otherwise-admitted row remains
+- **AND** each row still reports `has_sandbox_nodes`
 
 #### Scenario: Runtime ignores the advisory flag
 

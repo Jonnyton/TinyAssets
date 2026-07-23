@@ -1,6 +1,6 @@
 ## 1. Reconcile Ownership and Evidence
 
-- [x] 1.1 Adjudicate ownership against canonical provider, graph, live-MCP, and distributed-execution capabilities
+- [x] 1.1 Adjudicate ownership against canonical provider, graph, live-MCP, distributed-execution, and uptime capabilities
 - [x] 1.2 Map current source, tests, active changes, and PR boundaries with two independent audits
 - [x] 1.3 Preserve dangerous-bypass, quick-exit, advisory-metadata, duplicate-API, and no-backend limitations
 
@@ -13,7 +13,7 @@
 
 ## 3. Fold Back Canonical Truth
 
-- [ ] 3.1 Sync the approved deltas into all four canonical capability specs
+- [ ] 3.1 Sync the approved deltas into all five canonical capability specs and expand the distributed-execution purpose to include the detached diagnostic seam
 - [ ] 3.2 Update the full-coverage audit counts, grounding result, residual inventory, and verification evidence
 - [ ] 3.3 Rebase on current main, strict-validate the final archived tree, and confirm untouched requirements remain intact
 - [ ] 3.4 Archive the completed change, merge the reviewed PR, and retire its STATUS/worktree lane

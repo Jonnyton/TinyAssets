@@ -22,10 +22,13 @@ execution gate, and neither probe is an OS-isolating backend.
 - Extend `distributed-execution` with the separate, uncached
   `tinyassets.sandbox` diagnostic API and its explicit lack of production
   integration.
-- Preserve the current gaps as normative limitations: no OS backend, no
-  `converse` confinement, no fail-closed `requires_sandbox` admission, an
-  ordinary Codex dangerous-bypass fallback, and a fast-exit ordering that can
-  preempt typed sandbox-failure recognition.
+- Extend `uptime-and-alarms` with the production post-deploy verifier that
+  requires both a reported LLM binding and sandbox readiness.
+- Preserve the current gaps as normative limitations: no usable OS-isolating
+  `SandboxBackend` for `SandboxRunner`, no OS-level `converse` confinement, no
+  fail-closed `requires_sandbox` admission, an ordinary Codex
+  dangerous-bypass fallback, and a fast-exit ordering that can preempt typed
+  sandbox-failure recognition.
 
 ## Capabilities
 
@@ -41,6 +44,8 @@ None.
   metadata.
 - `live-mcp-connector-surface`: best-effort sandbox evidence in `get_status`.
 - `distributed-execution`: the detached sandbox-detection compatibility API.
+- `uptime-and-alarms`: the post-deploy subscription-binding and sandbox
+  readiness gate.
 
 ## Impact
 

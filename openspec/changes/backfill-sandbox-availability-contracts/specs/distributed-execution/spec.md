@@ -4,9 +4,10 @@
 
 `tinyassets.sandbox` SHALL export its own `SandboxStatus`,
 `SandboxUnavailableError`, `detect_bwrap`, and `check_bwrap_output`.
-`SandboxStatus` SHALL serialize `available`, `reason`, `bwrap_path`, and
-`version`. This exception and status shape SHALL remain distinct from the
-production provider-layer dictionary and exception.
+It SHALL also export `_BWRAP_FAILURE_PATTERNS`.
+`SandboxStatus.to_dict()` SHALL return exactly `available`, `reason`,
+`bwrap_path`, and `version`. This exception and status shape SHALL remain
+distinct from the production provider-layer dictionary and exception.
 
 `detect_bwrap` SHALL return unavailable immediately on non-Linux platforms,
 when `bwrap` is absent from `PATH`, when `bwrap --version` exits nonzero, when
@@ -14,11 +15,14 @@ a minimal `bwrap --ro-bind / / /bin/sh -c true` launch exits nonzero, or when
 launching either subprocess raises `OSError`; each subprocess SHALL have a
 five-second timeout. It SHALL return available, the executable path, and the
 reported version only after both subprocesses exit zero. It SHALL not cache
-results, and exceptions other than `OSError`, including a subprocess timeout,
-may propagate.
+results. Exceptions other than `OSError` are not caught; in particular,
+`subprocess.TimeoutExpired` SHALL propagate.
 
-On Linux, `check_bwrap_output` SHALL case-insensitively recognize the four
-landed Bubblewrap signatures and raise the diagnostic exception; on every
+On Linux, `check_bwrap_output` SHALL case-insensitively recognize
+`bwrap: No permissions to create a new namespace`,
+`bwrap: No permissions to create new namespace`,
+`bwrap: No such file or directory`, and
+`sandbox initialization failed`, then raise the diagnostic exception; on every
 non-Linux platform it SHALL be a no-op. As built, no production caller uses
 this diagnostic API, and it is not a `SandboxBackend` implementation usable by
 `SandboxRunner`. It therefore SHALL NOT be represented as provider readiness,
@@ -36,10 +40,10 @@ co-residency.
 - **WHEN** the host is non-Linux, the executable is absent, either result is nonzero, or either launch raises `OSError`
 - **THEN** `detect_bwrap` returns `available=false` with a reason and any evidence collected before the failure
 
-#### Scenario: A diagnostic timeout may escape
+#### Scenario: A diagnostic timeout propagates
 
 - **WHEN** either diagnostic subprocess exceeds its five-second timeout
-- **THEN** the resulting timeout exception may propagate rather than becoming `SandboxStatus`
+- **THEN** `subprocess.TimeoutExpired` propagates rather than becoming `SandboxStatus`
 
 #### Scenario: The diagnostic is detached from production execution
 

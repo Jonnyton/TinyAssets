@@ -8,6 +8,11 @@ also inspect subprocess stderr for four known sandbox-failure signatures.
 Compiled graph nodes preserve the provider-layer exception and defensively
 scan returned text for the same signatures.
 
+Production deployment adds another consumer: after its public canaries,
+`deploy-prod.yml` invokes `verify_llm_binding.py --require-sandbox` in both
+auth-bundle branches and retries before preserving the verifier's final exit
+code.
+
 Branch metadata has a separate, weaker role. `requires_sandbox` round-trips,
 drives list filters, and can produce a validation warning when the cached
 probe is unavailable. It does not affect `runnable`, compile admission, or
@@ -23,7 +28,8 @@ production caller.
 
 **Goals:**
 
-- Give every shipped sandbox-availability surface an exact canonical owner.
+- Give every sandbox-availability surface reconciled by this change an exact
+  canonical owner.
 - Make the production probe, diagnostic probe, and runner seam visibly
   distinct.
 - Preserve failure-recognition and propagation behavior without claiming
@@ -32,9 +38,10 @@ production caller.
 
 **Non-Goals:**
 
-- Build an OS sandbox, Bubblewrap backend, container backend, or WSL2 backend.
-- Confine `converse`, prompt nodes, source-code nodes, paid-market jobs, or
-  arbitrary subprocesses.
+- Build a usable OS-isolating `SandboxBackend` for `SandboxRunner`, Bubblewrap
+  backend, container backend, or WSL2 backend.
+- Add OS-level confinement to `converse`, prompt nodes, source-code nodes,
+  paid-market jobs, or arbitrary subprocesses.
 - Turn `requires_sandbox` into an admission or execution gate.
 - Unify the two probe APIs or their exception classes.
 - Fix fast-exit error ordering, mutable cache semantics, or dangerous-bypass
@@ -70,7 +77,7 @@ The provider helper recognizes four signatures case-insensitively on
 non-win32 paths and raises the provider-layer `SandboxUnavailableError` with a
 bounded excerpt and remediation. Provider completions call it only after
 earlier quick-exit classification. A return-code-1 process that exits within
-five seconds can therefore become `ProviderUnavailableError` before the
+under five seconds can therefore become `ProviderUnavailableError` before the
 sandbox recognizer runs. This ordering is part of the as-built limitation.
 
 Graph code re-raises only the provider-layer exception before generic wrapping.
@@ -89,11 +96,20 @@ ordinary Codex calls can bypass.
 
 Full `get_status` assembly includes the cached provider probe under
 `sandbox_status`. A probe exception is converted into an unavailable
-dictionary with a `probe_error` reason so the broader full response still
-succeeds. Existing no-home, access-denied, and configuration-load failures
-return earlier without the field. This extends the existing read-only status
-contract; it does not make status a live health refresh or an enforcement
-surface.
+dictionary with a `probe_error` reason so that lookup failure does not itself
+abort assembly. Existing no-home, access-denied, and configuration-load
+failures return earlier without the field. This extends the existing read-only
+status contract; it does not make status a live health refresh or an
+enforcement surface.
+
+### Keep scheduled observation distinct from the production post-deploy gate
+
+The scheduled LLM-binding canary intentionally reads only reported binding
+status. The production deploy workflow separately invokes the same verifier
+with `--require-sandbox`, twelve attempts, and a ten-second retry delay in both
+auth-bundle branches. Missing or falsey readiness becomes verifier exit code 5;
+a later green attempt recovers. This is post-deploy readiness evidence, not a
+model execution or confinement proof.
 
 ## Risks / Trade-offs
 
@@ -114,7 +130,7 @@ surface.
 
 ## Migration Plan
 
-1. Strictly validate the four capability deltas.
+1. Strictly validate the five capability deltas.
 2. Run focused provider, graph, branch, status, and diagnostic tests.
 3. Verify runtime/plugin mirror parity and obtain independent
    requirement-to-source plus whole-diff review.

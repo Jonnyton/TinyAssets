@@ -63,7 +63,7 @@ Claude text completion, Claude JSON completion, and Codex completion SHALL pass
 stderr through this helper when control reaches their post-communicate sandbox
 check, including an exit-zero invocation that emitted a recognized failure.
 The check does not dominate every error path: each CLI provider's quick
-return-code-1 classification within five seconds occurs first and raises
+return-code-1 classification at elapsed time under five seconds occurs first and raises
 `ProviderUnavailableError`, so such a Bubblewrap failure is not guaranteed to
 retain the sandbox-specific type.
 
@@ -78,8 +78,8 @@ retain the sandbox-specific type.
 - **WHEN** stderr is empty or unmatched, or the process platform is win32
 - **THEN** `check_bwrap_failure` returns without raising a sandbox error
 
-#### Scenario: A fast return-code-1 failure is classified before sandbox recognition
+#### Scenario: A return-code-1 failure under five seconds is classified before sandbox recognition
 
-- **WHEN** a Claude or Codex subprocess exits with return code 1 within the quick-exit window and its stderr also contains a recognized signature
+- **WHEN** a Claude or Codex subprocess exits with return code 1 at elapsed time under five seconds and its stderr also contains a recognized signature
 - **THEN** the provider's earlier quick-exit path raises `ProviderUnavailableError`
 - **AND** the sandbox-specific recognizer is not reached for that invocation

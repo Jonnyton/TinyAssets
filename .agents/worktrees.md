@@ -833,6 +833,6 @@ Notes:
 - Purpose: canonicalize shipped bwrap probing/caching and loud execution failure without claiming real confinement
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-sandbox-availability-spec-backfill\_PURPOSE.md
 - Memory refs: post-PR #1629 reverse-coverage audit
-- Related implications: PR #1573 and active distributed-execution remain future/read-only; PR #1626 owns status response wording
+- Related implications: PR #1573 and active distributed-execution remain future/read-only; PR #1626 did not canonicalize sandbox-status wording
 - Idea feed refs: none
 - Ship/abandon: sync/archive after strict validation, focused evidence, and independent review

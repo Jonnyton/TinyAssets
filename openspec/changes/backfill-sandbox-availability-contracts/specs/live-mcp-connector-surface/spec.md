@@ -7,9 +7,9 @@ the path reaches full daemon-status assembly, the response includes
 `sandbox_status` from the production
 `tinyassets.providers.base.get_sandbox_status` cache. Its ordinary shape SHALL
 include boolean `bwrap_available` and nullable or explanatory `reason`. If
-obtaining the cached result raises, full status assembly SHALL still succeed
-and substitute `{"bwrap_available": false, "reason": "probe_error:
-<exception>"}`.
+obtaining the cached result raises, the sandbox lookup failure SHALL be caught
+and substituted with `{"bwrap_available": false, "reason": "probe_error:
+<exception>"}` without itself aborting the remaining assembly.
 
 This evidence is a best-effort, process-cached readiness observation. Reading
 status SHALL not refresh the probe, provision a universe, gate execution, or
@@ -24,7 +24,7 @@ responses return before full status assembly and do not include this field.
 #### Scenario: A probe error does not break status
 
 - **WHEN** obtaining sandbox status raises an exception
-- **THEN** full daemon-status assembly still succeeds
+- **THEN** the lookup failure is caught and does not itself abort full daemon-status assembly
 - **AND** `sandbox_status.bwrap_available` is false with a `probe_error` reason
 
 #### Scenario: Early status responses omit sandbox evidence
