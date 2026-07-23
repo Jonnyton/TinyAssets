@@ -62,13 +62,15 @@ The spec deliberately does not call this cryptographic attestation. The module
 does not authenticate or recompute those assertions, and `policy_sha256` is
 only checked as a 64-character string.
 
-### Specify the exact JSON boundary without claiming payload scrubbing
+### Specify the strict payload boundary without claiming whole-request validation
 
 Requests contain nine landed wire fields and derive actions from the immutable
 capability mapping. Payloads are detached through strict JSON round-trip and
 must be objects. The top-level contract carries only opaque credential and
-workspace references, but arbitrary JSON payload keys are not scrubbed.
-Therefore the requirement cannot claim that a caller is prevented from placing
+workspace references, but arbitrary JSON payload keys are not scrubbed and the
+other request fields are passed through without runtime type, nonempty, or JSON
+validation. Therefore the requirement cannot claim that the whole request is a
+validated JSON-only boundary or that a caller is prevented from placing
 sensitive data inside the payload.
 
 ### Keep absence executable and visible

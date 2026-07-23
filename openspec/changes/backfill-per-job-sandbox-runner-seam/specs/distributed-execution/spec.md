@@ -1,21 +1,25 @@
 ## ADDED Requirements
 
-### Requirement: The per-job runner exposes a versioned JSON-only job seam
+### Requirement: The per-job runner exposes a versioned typed seam with a strict JSON-object payload
 
 `tinyassets.sandbox_runner` SHALL define protocol `runner/v1`, request schema
-`runner-job/v1`, and result schema `runner-result/v1`. Its frozen request,
-capability-report, enforcement-receipt, and result carriers SHALL expose exactly
-the landed typed fields. A request wire object SHALL contain schema version,
-job ID, idempotency key, owner scope, capability, derived actions, payload,
-workspace reference, and credential-grant reference. The payload SHALL be
-detached through strict JSON serialization, reject non-finite values and Python
-objects, and be a JSON object. Actions SHALL be derived from the immutable
-capability mapping rather than accepted from the caller.
+`runner-job/v1`, and result schema `runner-result/v1`, with frozen typed carrier
+dataclasses for requests, capability reports, enforcement receipts, and
+results. A request wire object SHALL contain schema version, job ID,
+idempotency key, owner scope, capability, derived actions, payload, workspace
+reference, and credential-grant reference. The payload SHALL be detached
+through strict JSON serialization, reject non-finite values and
+non-JSON-serializable Python values, and be a JSON object. Actions SHALL be
+derived from the immutable capability mapping rather than accepted from the
+caller.
 
 The supported capability/action pairs SHALL be:
 `source_exec` → `source_exec`; `repo_read` → `list, read`; `repo_exec` →
 `list, read, exec`; and `coding` → `list, read, write, exec`. The result status
 vocabulary SHALL be exactly `succeeded`, `failed`, and `cancelled`.
+The non-payload request fields are carried through without runtime type,
+nonempty, or JSON validation; their dataclass annotations are not an
+authentication or shape check.
 
 #### Scenario: Capability determines the wire action list
 
@@ -25,20 +29,22 @@ vocabulary SHALL be exactly `succeeded`, `failed`, and `cancelled`.
 
 #### Scenario: Non-JSON request data is refused before dispatch
 
-- **WHEN** the payload contains a callable, a Python object, or a non-finite number, or the payload is not an object
+- **WHEN** the payload contains a callable, another non-JSON-serializable value, or a non-finite number, or the payload is not an object
 - **THEN** serialization raises `SandboxRequestError`
 - **AND** no backend dispatch occurs
 
 ### Requirement: Backend capability preflight fails closed before dispatch
 
-`SandboxRunner.dispatch` SHALL invoke the supplied backend only when its
-capability report states `ready`, `isolation_enforced`,
+`SandboxRunner.dispatch` SHALL invoke the supplied backend's job-dispatch method
+only when its capability report states `ready`, `isolation_enforced`,
 `platform_secrets_absent`, and `self_test_passed`; advertises exact protocol
 `runner/v1`; supports request schema `runner-job/v1`; and supports the requested
 capability. A readiness, enforcement, self-test, or capability failure SHALL
 raise `SandboxRunnerUnavailableError`. A protocol or request-schema mismatch
-SHALL raise `SandboxRunnerProtocolError`. Every preflight failure SHALL occur
-before the backend receives the request.
+SHALL raise `SandboxRunnerProtocolError`. Every runner-created preflight failure
+SHALL occur before `backend.dispatch(request)` receives the request. Exceptions
+raised by `backend.capabilities()` or `backend.dispatch(request)` itself are not
+normalized by this seam and propagate as supplied.
 
 #### Scenario: Incomplete enforcement assertions never reach the backend
 
@@ -55,8 +61,9 @@ before the backend receives the request.
 ### Requirement: Returned results are structurally validated and request-bound
 
 A backend result SHALL be an object using `runner-result/v1`, one of the three
-landed statuses, JSON-object output, and string job-ID and error fields. Its
-enforcement receipt SHALL name a nonempty backend and a 64-character
+landed statuses, JSON-object output, and a string job ID. An omitted `error`
+field SHALL default to an empty string, while a present `error` SHALL be a
+string. Its enforcement receipt SHALL name a nonempty backend and a 64-character
 `policy_sha256`, assert `job_isolated=true` and
 `platform_secrets_absent=true`, and state `cleanup=confirmed`. The result job ID
 SHALL equal the request job ID, and the receipt backend and policy value SHALL
@@ -67,6 +74,8 @@ equal the preflight report. Any violated condition SHALL raise
 These checks are structural backend assertions, not cryptographic attestation:
 the runner does not authenticate or recompute isolation, secret absence,
 cleanup, or policy, and it does not require `policy_sha256` to be hexadecimal.
+Unknown top-level result and enforcement fields are tolerated and discarded
+rather than rejected or retained.
 
 #### Scenario: A matching valid result returns through the typed seam
 
@@ -78,7 +87,7 @@ cleanup, or policy, and it does not require `policy_sha256` to be hexadecimal.
 - **WHEN** the schema, status, output shape, job ID, backend, policy value, isolation assertions, or cleanup confirmation is invalid
 - **THEN** dispatch raises `SandboxRunnerProtocolError`
 
-### Requirement: The landed runner seam is unavailable and unwired by default
+### Requirement: The only built-in backend is unavailable and the seam is unwired
 
 The built-in `UnavailableSandboxBackend` SHALL report no supported capability,
 `ready=false`, `isolation_enforced=false`,
@@ -97,10 +106,4 @@ signed terminal attestation.
 
 - **WHEN** `UnavailableSandboxBackend` is passed to `SandboxRunner`
 - **THEN** dispatch fails readiness with `SandboxRunnerUnavailableError`
-- **AND** no job runs
-
-#### Scenario: The seam alone does not prove confinement
-
-- **WHEN** a caller or status surface observes that `tinyassets.sandbox_runner` exists
-- **THEN** it cannot infer that any production job uses an isolated backend
-- **AND** the separate no-OS-sandbox concern remains valid
+- **AND** the backend's job-dispatch method is not invoked

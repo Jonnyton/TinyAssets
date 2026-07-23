@@ -11,9 +11,9 @@ small landed protocol indistinguishable.
 
 - Create the as-built canonical base for the `distributed-execution`
   capability using only the shipped `runner/v1` seam.
-- Specify its immutable capability/action vocabulary, JSON-only request
-  boundary, fail-closed backend preflight, and result/enforcement-receipt
-  validation.
+- Specify its immutable capability/action vocabulary, strict JSON-object
+  payload boundary, fail-closed backend preflight, and
+  result/enforcement-receipt validation.
 - Record that the only built-in backend is unavailable, no production caller
   invokes the seam, and no real confinement, authority, lease, persistence, or
   secret-removal guarantee has shipped.
@@ -25,7 +25,7 @@ small landed protocol indistinguishable.
 ### New Capabilities
 
 - `distributed-execution`: the currently landed, backend-neutral per-job runner
-  protocol and its explicit unavailable-by-default boundary.
+  protocol, its only built-in unavailable backend, and its unwired boundary.
 
 ### Modified Capabilities
 
