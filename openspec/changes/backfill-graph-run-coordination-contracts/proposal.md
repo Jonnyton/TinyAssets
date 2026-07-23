@@ -10,19 +10,25 @@ OpenSpec requirement owns their behavior or their security limitations.
 
 - Add the as-built contract for run-bound source-acquisition, claim-lineage,
   and revision receipts: type-specific normalization, contradiction checks,
-  bounded payloads, extension preservation, run-existence validation,
-  filtering, ordering, and public record/list authorization.
+  bounded compact size-check encoding, JSON-compatible extension preservation,
+  run-existence validation, filtering, ordering, and public record/list
+  authorization.
 - Add the as-built contract for durable teammate-message send, receive, and
   acknowledgement: exact message types, JSON bodies, wildcard broadcasts,
   filtering, ordering, bounds, and current acknowledgement checks.
 - State the current limitations explicitly: run receipts assign no truth rank
   and provide no caller idempotency; the declared receipt foreign key is not
-  enforced; extension keys are not validated; teammate recipients and reply
-  targets are not storage-validated; empty-node reads enumerate the
+  enforced and orphan receipt rows pass the current visibility predicate;
+  receipt ACL derivation applies only to `universe:<uid>` run actors while
+  other actor strings pass; extension keys are not validated; teammate
+  recipients and reply targets are not storage-validated; empty-node reads
+  enumerate the
   shared data-root mailbox; the message actions perform no run-visibility,
   universe-access, or resource-level actor check; caller node identity is not
   independently authenticated; acknowledgement time is returned but not
-  stored; and the graph-compiler message primitives remain unwired.
+  stored; a non-integer public receive limit can escape the JSON error wrapper;
+  and the callable graph-compiler message helpers are not integrated into
+  `NodeDefinition` or the `compile_branch` execution path.
 - Change OpenSpec only. Runtime behavior and public tool shape do not change.
 
 ## Capabilities

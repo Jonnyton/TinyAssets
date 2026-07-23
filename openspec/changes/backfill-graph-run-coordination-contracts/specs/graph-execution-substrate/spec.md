@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Run evidence receipts are typed, bounded, and non-authoritative
-The run substrate SHALL accept only `source_acquisition_receipt`, `claim_lineage_receipt`, and `revision_receipt` payloads, normalize each type's known fields, preserve unknown JSON keys, reject invalid or contradictory known fields, and enforce the positive byte cap selected by `TINYASSETS_RECEIPT_PAYLOAD_MAX_BYTES` (default 65,536 bytes). These receipts MUST remain caller-supplied evidence records: unknown keys and `extensions` round-trip without validation, signature, truth rank, certification, or external-effect authority.
+The run substrate SHALL accept only `source_acquisition_receipt`, `claim_lineage_receipt`, and `revision_receipt` payloads; normalize their type-specific known fields; reject missing required subject identifiers, non-list or non-string list values, non-boolean source flags, and the defined source-state contradictions; and preserve unknown keys and JSON-compatible values. Values supplied directly that are not JSON-compatible MAY be stringified during sizing and persistence and therefore have no byte-for-byte round-trip guarantee. The substrate SHALL enforce the positive cap selected by `TINYASSETS_RECEIPT_PAYLOAD_MAX_BYTES` (default 65,536 bytes) against its compact, sorted UTF-8 JSON size-check encoding. These receipts MUST remain caller-supplied evidence records: unknown keys and `extensions` gain no validation, signature, truth rank, certification, or external-effect authority.
 
 #### Scenario: Source acquisition aliases and flags normalize
 - **WHEN** a source receipt supplies its subject through `source_ref`, `source`, `file_ref`, or `corpus_ref`
-- **THEN** the first non-empty value becomes the trimmed `source_ref` and `subject_id`, missing timestamps/string fields and six boolean acquisition flags receive their defaults, and every supplied flag must be a JSON boolean
+- **THEN** the first truthy value in precedence order `source_ref`, `source`, `file_ref`, `corpus_ref` is stringified and trimmed; if that selected value trims empty, validation fails without consulting later aliases; otherwise it becomes `source_ref` and `subject_id`, missing timestamps/string fields and six boolean acquisition flags receive their defaults, and every supplied flag must be a JSON boolean
 
 #### Scenario: Contradictory source states are rejected
 - **WHEN** `not_searched` is combined with `fetched`, `viewed`, `verified`, `snapshotted`, or `unavailable`, or `unavailable` is combined with an acquired flag
@@ -13,18 +13,18 @@ The run substrate SHALL accept only `source_acquisition_receipt`, `claim_lineage
 
 #### Scenario: Claim lineage and revision lists are normalized
 - **WHEN** a claim-lineage receipt names a non-empty `claim_id`, or a revision receipt names at least one of `old_run_id` and `old_claim_id`
-- **THEN** the corresponding evidence, changed-claim, affected-output, and rerun fields are normalized as trimmed string lists and the claim or prior-run identifier becomes the receipt subject
+- **THEN** claim lineage trims `claim_id`, normalizes `evidence_refs`, `imported_prior_run_claims`, `counter_evidence_refs`, and `changed_claims`, and uses `claim_id` as `subject_id`; revision trims `old_run_id` and `old_claim_id`, normalizes `new_evidence_refs`, `affected_outputs`, and `recommended_reruns`, and uses non-empty `old_claim_id` as `subject_id` before falling back to `old_run_id`
 
 #### Scenario: Extensions survive without gaining authority
 - **WHEN** a valid receipt includes unknown top-level keys or an `extensions` object
-- **THEN** those values round-trip unchanged but the run substrate assigns them no schema validity, truth rank, or authority
+- **THEN** JSON-compatible values round-trip unchanged and receive no schema validity, truth rank, or authority, while a directly supplied non-JSON-compatible value may be stringified
 
-#### Scenario: Serialized payload cap is enforced
-- **WHEN** the normalized UTF-8 JSON payload exceeds the configured positive byte cap, or the cap is non-integer or non-positive
-- **THEN** recording fails with a validation error and no receipt is inserted
+#### Scenario: Compact size-check payload cap is enforced
+- **WHEN** the compact sorted UTF-8 JSON encoding used by the size checker exceeds the configured positive byte cap, or the cap is non-integer or non-positive
+- **THEN** recording fails with a validation error and no receipt is inserted, without claiming that the separately encoded on-disk `payload_json` blob is bounded to the same byte count
 
 ### Requirement: Run receipt persistence and public actions preserve run visibility
-The run substrate SHALL append a receipt only for an existing run, generating a receipt ID and created time when the caller does not supply them, and SHALL list receipts newest-first with optional exact run, receipt-type, and subject filters and a limit clamped from 1 through 1,000. The public `record_run_receipt` action MUST apply the run's current write authorization before insertion, and `list_run_receipts` MUST apply current read authorization both for one-run queries and to every row returned by unscoped enumeration.
+The run substrate SHALL append a receipt only for an existing run, generating a receipt ID when none is supplied and always assigning the current creation time, and SHALL list receipts newest-first with optional exact run, receipt-type, and subject filters and a limit clamped from 1 through 1,000. For a run whose actor begins `universe:`, the public `record_run_receipt` action MUST derive that universe and apply its current write authorization before insertion, and `list_run_receipts` MUST apply its current read authorization both for one-run queries and to every resolvable row during unscoped enumeration. As-built limitations: a non-universe actor string currently passes these helpers without a general run-owner ACL check, and because the foreign key is unenforced, a receipt whose run record later disappears passes the current `rec is None or _run_read_allowed(rec)` visibility predicate.
 
 #### Scenario: Missing run cannot receive a receipt
 - **WHEN** a caller records an otherwise valid receipt for a run ID absent from the current data-root runs database
@@ -32,15 +32,27 @@ The run substrate SHALL append a receipt only for an existing run, generating a 
 
 #### Scenario: Receipt filtering is bounded and newest-first
 - **WHEN** receipts are listed with any combination of run ID, valid receipt type, subject ID, and limit
-- **THEN** matching rows are returned by descending creation time with the limit clamped to at least 1 and at most 1,000
+- **THEN** matching rows are returned by descending creation time with the limit defaulting to 100 and clamped to at least 1 and at most 1,000
 
-#### Scenario: Private run write is filtered before recording
-- **WHEN** the public record action resolves an existing run that the current caller may not write
+#### Scenario: Public receipt list normalizes invalid limits
+- **WHEN** the public list action receives a missing, falsey, or non-integer limit
+- **THEN** it uses the default limit of 100 before the storage-layer clamp
+
+#### Scenario: Private universe-bound run write is filtered before recording
+- **WHEN** the public record action resolves an existing `universe:<uid>` run whose universe the current caller may not write
 - **THEN** it returns the canonical run-write denial and does not insert a receipt
 
-#### Scenario: Enumeration cannot leak private-run receipts
+#### Scenario: Enumeration filters private universe-bound receipts
 - **WHEN** the public list action is called with or without a run ID
-- **THEN** a receipt is returned only when the current caller may read its owning run, with repeated receipts for one run sharing the per-request visibility result
+- **THEN** a receipt whose run still resolves to a `universe:<uid>` actor is returned only when the current caller may read that universe, with repeated receipts for one run sharing the per-request visibility result
+
+#### Scenario: Non-universe run actors bypass resource ACL derivation
+- **WHEN** a receipt's resolvable run actor does not begin `universe:`
+- **THEN** the current receipt access helpers treat the row as allowed without deriving a universe or checking a general run-owner ACL
+
+#### Scenario: Orphan receipt visibility is not fail-closed
+- **WHEN** an unenforced or externally altered data-root leaves a receipt whose referenced run row no longer resolves
+- **THEN** the current public list predicate treats that orphan receipt as visible rather than failing closed
 
 #### Scenario: Persistence does not claim caller idempotency
 - **WHEN** a caller records the same logical payload repeatedly without reusing a colliding explicit receipt ID
@@ -51,15 +63,19 @@ The run substrate SHALL persist teammate messages with a generated message ID, e
 
 #### Scenario: Send validates the stored message envelope
 - **WHEN** a caller sends a message with an existing source run, non-empty destination, allowed type, and JSON body
-- **THEN** the mailbox stores it unacknowledged and the public action returns its message ID and sent time
+- **THEN** the mailbox stores it unacknowledged and the public action returns `message_id` plus `delivered_at` equal to the stored `sent_at`
 
-#### Scenario: Invalid source, type, or body is rejected
-- **WHEN** the source run is absent, the message type is outside the seven-value set, or the body is not JSON-serializable
+#### Scenario: Invalid source, destination, type, or body is rejected
+- **WHEN** the source run is absent, the source or destination ID is empty, the message type is outside the seven-value set, or the body is not JSON-serializable
 - **THEN** no teammate message is inserted
 
 #### Scenario: Receive filters destination and broadcasts
 - **WHEN** a non-empty node receives messages
-- **THEN** it sees rows addressed to that node plus `*` broadcasts, optionally filtered by inclusive `since` and supplied message types, ordered from earliest sent time, and clamped to 1 through 1,000 rows
+- **THEN** it sees rows addressed to that node plus `*` broadcasts, optionally filtered by inclusive `since` and supplied message types, ordered from earliest sent time, with a default limit of 50 clamped to 1 through 1,000 rows
+
+#### Scenario: Non-integer public mailbox limit can escape the handler
+- **WHEN** the public receive action receives a non-integer limit
+- **THEN** its eager integer conversion may raise before the handler's JSON error wrapper rather than returning a normalized error envelope
 
 #### Scenario: Empty-node receive enumerates the data-root mailbox
 - **WHEN** receive is called with an empty node ID
@@ -73,10 +89,15 @@ The run substrate SHALL persist teammate messages with a generated message ID, e
 - **WHEN** the caller-supplied node ID differs from a directed message's destination
 - **THEN** acknowledgement fails without changing the stored flag
 
+#### Scenario: Public acknowledgement validates required identifiers
+- **WHEN** the public acknowledgement action receives an empty message ID or node ID, or the message ID does not exist
+- **THEN** it returns an error and does not modify a mailbox row
+
 #### Scenario: Current mailbox identity and reference limitations remain visible
 - **WHEN** send, receive, or acknowledge is used through the public actions
 - **THEN** the handlers perform no run read/write or universe-access check, the store validates no destination-node or reply-message existence, independently authenticates no sender or caller node identity beyond the surrounding tool context, stores no acknowledgement timestamp, and treats one broadcast acknowledgement as global
 
-#### Scenario: Graph message primitives remain unwired
-- **WHEN** a BranchDefinition contains `send_message_spec` or `receive_messages_spec`
-- **THEN** callable helper and recipient-validation code does not make the primitive part of the compile/execution path, and its focused graph-compiler tests remain strict expected failures
+#### Scenario: Graph message helpers are callable but detached from Branch execution
+- **WHEN** the send, receive, or recipient-validation helper is called directly
+- **THEN** its focused helper behavior is available
+- **AND** current `NodeDefinition` and `BranchDefinition` shapes expose no message-spec field and `compile_branch` never invokes these helpers, so compiled graph execution is not wired

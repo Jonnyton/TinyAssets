@@ -6,7 +6,7 @@
 
 ## 2. Verify and review the delta
 
-- [x] 2.1 Run `tests/test_run_receipts.py`, `tests/test_teammate_message.py`, and the receipt isolation cases in `tests/test_universe_server_isolation.py`.
+- [x] 2.1 Run `tests/test_run_receipts.py`, `tests/test_teammate_message.py`, and the receipt isolation cases in `tests/test_universe_server_isolation.py`; structurally verify that `NodeDefinition` and `compile_branch` do not wire the directly callable message helpers.
 - [x] 2.2 Strictly validate this change and the complete OpenSpec tree.
 - [ ] 2.3 Obtain independent requirement-to-source, capability-ownership, limitation, and public-authorization review; adapt all Critical or Important findings.
 

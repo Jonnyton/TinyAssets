@@ -32,7 +32,8 @@ local run-database records.
 - No signed authority, truth scoring, external-effect idempotency, remote
   transport, or claim of cross-universe isolation.
 - No claim that `send_message_spec` or `receive_messages_spec` executes from a
-  compiled graph; those tests remain strict expected failures.
+  compiled graph. Their helper functions are callable and directly tested, but
+  `NodeDefinition` and `compile_branch` do not invoke them.
 - No stronger sender, recipient, reply-target, or acknowledgement identity
   than the current functions enforce.
 
@@ -69,7 +70,16 @@ hidden-tool registration and tool-level authentication remain owned by
 
 The receipt foreign key is declarative because SQLite foreign-key enforcement
 is not enabled. Receipt IDs are not caller-idempotency keys. Unknown payload
-keys round-trip without validation or truth status.
+keys and JSON-compatible values round-trip without validation or truth status;
+direct non-JSON values may stringify. The configured byte cap measures a
+compact size-check encoding, not the separately encoded on-disk JSON blob. A
+receipt whose referenced run no longer resolves passes the current public-list
+visibility predicate rather than failing closed.
+
+Receipt access helpers derive a universe only from a run actor beginning
+`universe:`. They enforce that universe's read/write policy in that case, but
+currently return allowed for any non-universe actor string rather than checking
+a general run-owner ACL.
 
 Mailbox send validates the source run but not destination node or reply
 existence. All message actions use the installation's shared
@@ -77,16 +87,18 @@ existence. All message actions use the installation's shared
 `universe_access_allows`, or per-run read/write check. Reads with no node
 enumerate that data-root mailbox. Ack authorization compares a caller-supplied
 node string, broadcast ack is global, and the returned acknowledgement time is
-not persisted. These facts must remain visible until a separately reviewed
-hardening change replaces them.
+not persisted. A non-integer public receive limit can raise before the
+handler's JSON error wrapper. These facts must remain visible until a
+separately reviewed hardening change replaces them.
 
 ## Risks / Trade-offs
 
 - **[Risk] Backfill language accidentally upgrades local evidence into
   authority.** → State that receipts preserve caller data without truth rank,
   signature, or external-effect semantics.
-- **[Risk] Mailbox wording implies graph execution wiring.** → Name the strict
-  expected-failure tests and state the compiler primitives are unwired.
+- **[Risk] Mailbox wording implies graph execution wiring.** → Distinguish the
+  directly tested helper functions from the unwired node-definition and
+  `compile_branch` path.
 - **[Risk] A future distributed transport duplicates local semantics.** → Keep
   `distributed-execution` as a read-only dependency and require it to compose
   or explicitly replace this local owner.
