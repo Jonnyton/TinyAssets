@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import sys
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -94,6 +96,32 @@ def _wiki_write_rejected_resp(
     )
 
 
+def _write_oauth_challenge_error(
+    *,
+    code: int = 401,
+    challenge: str | None = "Bearer realm=\"tinyassets\"",
+) -> ToolCanaryError:
+    headers = Message()
+    if challenge is not None:
+        headers["WWW-Authenticate"] = challenge
+    cause = HTTPError(
+        "https://fake/mcp",
+        code,
+        "Unauthorized" if code == 401 else "Service Unavailable",
+        headers,
+        None,
+    )
+    error = ToolCanaryError(6, f"HTTP {code} on tools/call: {cause.reason}")
+    error.__cause__ = cause
+    return error
+
+
+def _tool_error_with_cause(code: int, cause: Exception) -> ToolCanaryError:
+    error = ToolCanaryError(6, f"HTTP {code} on tools/call")
+    error.__cause__ = cause
+    return error
+
+
 def _wiki_write_accepted_resp(sid: str = "sess-wiki") -> tuple[dict, str]:
     # Pre-#1441 shape: anonymous write persisting. Now a gate REGRESSION.
     body = json.dumps({
@@ -140,7 +168,7 @@ def _happy_scripted() -> ScriptedPost:
     return ScriptedPost([
         _init_resp(),
         _notif_resp(),
-        _wiki_write_rejected_resp(),
+        _write_oauth_challenge_error(),
         _wiki_read_ok_resp(),
     ])
 
@@ -152,7 +180,7 @@ def test_happy_path_run_canary_no_raise():
     wc.run_canary("https://fake/mcp", 5.0, post_fn=_happy_scripted())
 
 
-def test_happy_path_accepts_structured_content_previews():
+def test_exit_6_when_old_json_rejection_envelope_is_dispatched():
     scripted = ScriptedPost([
         _init_resp(),
         _notif_resp(),
@@ -165,17 +193,12 @@ def test_happy_path_accepts_structured_content_previews():
                 "tool": "write_page",
             },
         ),
-        _wiki_read_ok_resp(
-            raw_text="Tool result available in structuredContent.",
-            structured_content={
-                "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
-                "is_draft": True,
-                "content": f"[DRAFT] {wc._CANARY_CONTENT}",
-                "truncated": False,
-            },
-        ),
     ])
-    wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+    assert "pre-dispatch" in ei.value.msg
+    assert len(scripted.calls) == 3
 
 
 def test_run_canary_can_scope_filename_for_bisect_replay():
@@ -274,32 +297,112 @@ def test_exit_6_when_anonymous_write_is_accepted_gate_regression():
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
-    assert "regressed" in ei.value.msg
+    assert "dispatched JSON" in ei.value.msg
+    assert len(scripted.calls) == 3
 
 
-def test_exit_6_when_rejection_lacks_auth_required():
-    body = json.dumps({"status": "rejected", "error": "nope"})
+def test_exit_6_when_401_lacks_oauth_challenge():
     scripted = ScriptedPost([
         _init_resp(), _notif_resp(),
-        ({"jsonrpc": "2.0", "id": 2, "result": {
-            "content": [{"type": "text", "text": body}],
-            "isError": False,
-        }}, "sess-wiki"),
+        _write_oauth_challenge_error(challenge=" "),
     ])
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
-    assert "auth_required" in ei.value.msg
+    assert "WWW-Authenticate" in ei.value.msg
 
 
-def test_exit_6_on_wiki_write_network_error():
+def test_gha_failure_output_includes_missing_challenge_cause(capsys):
     scripted = ScriptedPost([
         _init_resp(), _notif_resp(),
-        ToolCanaryError(6, "HTTP 503 on wiki write"),
+        _write_oauth_challenge_error(challenge=None),
+    ])
+    with patch("wiki_canary._append_log"):
+        rc = wc.run_probe("https://fake/mcp", 5.0, fmt="gha", post_fn=scripted)
+
+    captured = capsys.readouterr().out
+    assert rc == 6
+    assert "status=6" in captured
+    assert "msg=write_page HTTP 401 lacks a non-empty WWW-Authenticate challenge" in captured
+
+
+def test_exit_6_on_wiki_write_non_401_http_error():
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        _write_oauth_challenge_error(code=503),
     ])
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
+    assert "HTTP 503" in ei.value.msg
+
+
+def test_exit_6_on_403_even_with_oauth_challenge():
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        _write_oauth_challenge_error(code=403),
+    ])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+
+
+def test_exit_6_when_401_message_is_not_chained_http_error():
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        ToolCanaryError(6, "HTTP 401 on tools/call: Unauthorized"),
+    ])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+
+
+def test_exit_6_when_401_has_inaccessible_headers():
+    class BrokenHeaders:
+        def get(self, _name):
+            raise RuntimeError("header access failed")
+
+    cause = HTTPError("https://fake/mcp", 401, "Unauthorized", BrokenHeaders(), None)
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(), _tool_error_with_cause(401, cause),
+    ])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+
+
+def test_exit_6_when_401_challenge_is_not_a_string():
+    class NonStringHeaders:
+        def get(self, _name):
+            return 401
+
+    cause = HTTPError("https://fake/mcp", 401, "Unauthorized", NonStringHeaders(), None)
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(), _tool_error_with_cause(401, cause),
+    ])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+
+
+def test_exit_6_on_write_url_error():
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(),
+        _tool_error_with_cause(6, URLError("offline")),
+    ])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 6
+
+
+def test_initialize_401_stays_exit_2():
+    cause = HTTPError("https://fake/mcp", 401, "Unauthorized", Message(), None)
+    initialize_error = ToolCanaryError(2, "HTTP 401 on initialize: Unauthorized")
+    initialize_error.__cause__ = cause
+    scripted = ScriptedPost([initialize_error])
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert ei.value.code == 2
 
 
 def test_exit_6_on_wiki_write_iserror():
@@ -313,7 +416,7 @@ def test_exit_6_on_wiki_write_iserror():
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
-    assert "isError" in ei.value.msg
+    assert "dispatched JSON" in ei.value.msg
 
 
 def test_exit_6_on_wiki_write_unexpected_status():
@@ -328,7 +431,7 @@ def test_exit_6_on_wiki_write_unexpected_status():
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
-    assert "status" in ei.value.msg
+    assert "dispatched JSON" in ei.value.msg
 
 
 def test_exit_6_on_wiki_write_no_result():
@@ -371,7 +474,7 @@ def test_exit_6_on_wiki_write_non_json_text():
 
 def test_exit_7_on_wiki_read_network_error():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
+        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
         ToolCanaryError(7, "HTTP 503 on wiki read"),
     ])
     with pytest.raises(ToolCanaryError) as ei:
@@ -381,7 +484,7 @@ def test_exit_7_on_wiki_read_network_error():
 
 def test_exit_7_on_wiki_read_iserror():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
+        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "not found"}],
             "isError": True,
@@ -395,7 +498,7 @@ def test_exit_7_on_wiki_read_iserror():
 
 def test_exit_7_on_wiki_read_roundtrip_mismatch():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
+        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "wrong content entirely"}],
             "isError": False,
@@ -409,7 +512,7 @@ def test_exit_7_on_wiki_read_roundtrip_mismatch():
 
 def test_exit_7_on_wiki_read_no_result():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
+        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
         ({"jsonrpc": "2.0", "id": 3}, "sess-wiki"),
     ])
     with pytest.raises(ToolCanaryError) as ei:
@@ -419,7 +522,7 @@ def test_exit_7_on_wiki_read_no_result():
 
 def test_exit_7_on_wiki_read_no_text_content():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
+        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [], "isError": False,
         }}, "sess-wiki"),
@@ -449,7 +552,7 @@ def test_red_log_line_contains_surface_wiki_gate_on_exit_6():
 def test_red_log_line_contains_surface_wiki_gate_on_exit_7():
     logged: list[str] = []
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
+        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
         ToolCanaryError(7, "roundtrip mismatch"),
     ])
     with patch("wiki_canary._append_log", side_effect=logged.append):
@@ -481,14 +584,14 @@ def test_exit_99_on_unexpected_exception():
     ([_init_resp(), _notif_resp(), ToolCanaryError(6, "write fail")], 6),
     # exit 7: wiki read roundtrip mismatch
     ([
-        _init_resp(), _notif_resp(), _wiki_write_rejected_resp(),
+        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "wrong"}],
             "isError": False,
         }}, "sess-wiki"),
     ], 7),
     # exit 0: all pass
-    ([_init_resp(), _notif_resp(), _wiki_write_rejected_resp(), _wiki_read_ok_resp()], 0),
+    ([_init_resp(), _notif_resp(), _write_oauth_challenge_error(), _wiki_read_ok_resp()], 0),
 ])
 def test_main_propagates_exit_codes(monkeypatch, responses, expected_rc):
     scripted = ScriptedPost(responses)
