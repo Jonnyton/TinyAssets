@@ -1,16 +1,16 @@
 ## 1. Resolve lane prerequisites
 
-- [ ] 1.1 Confirm `collapse-live-mcp-surface-to-5-handles` has been archived with `--skip-specs`; do not restore or sync its obsolete `mcp-five-handle-surface` delta.
+- [x] 1.1 Confirm `collapse-live-mcp-surface-to-5-handles` has been archived with `--skip-specs`; do not restore or sync its obsolete `mcp-five-handle-surface` delta.
 - [ ] 1.2 Coordinate PR #1522 before touching the handoff: preserve its rename/provenance corrections by folding them into this lane or close/supersede it; do not merge its edit to the archived change.
 - [ ] 1.3 Record three separate observations: exact-seven `tools/list` from remote `/mcp`, exact-seven middleware-applied enumeration from the staged local MCPB runtime, and exact-five `tools/list` from the current versioned remote directory endpoint. A remote probe SHALL NOT stand in for a local package probe.
 
 ## 2. Lock MCPB catalog parity test-first
 
-- [ ] 2.1 Add a failing regression test that stages the MCPB artifact and reports the current manifest/runtime mismatch (`{universe, extensions}` versus the seven middleware-advertised handles).
-- [ ] 2.2 Add a staged subprocess catalog probe to `packaging/mcpb/build_bundle.py` that imports the staged `tinyassets.universe_server`, enumerates `tools/list` with middleware applied, and fails loudly with missing/extra sets when the staged manifest differs.
-- [ ] 2.3 Isolate the subprocess probe with a temporary TinyAssets data directory and prove import/enumeration failures fail the build rather than being skipped or converted to warnings.
-- [ ] 2.4 Update `packaging/mcpb/manifest.json` to declare exactly `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`; do not declare hidden legacy fat tools.
-- [ ] 2.5 Make the red parity regression green and retain the official MCPB schema validator as a separate passing check.
+- [x] 2.1 Add a failing regression test that stages the MCPB artifact and reports the current manifest/runtime mismatch (`{universe, extensions}` versus the seven middleware-advertised handles).
+- [x] 2.2 Add a staged subprocess catalog probe to `packaging/mcpb/build_bundle.py` that imports the staged `tinyassets.universe_server`, enumerates `tools/list` with middleware applied, and fails loudly with missing/extra sets when the staged manifest differs.
+- [x] 2.3 Isolate the subprocess probe with a temporary TinyAssets data directory and prove import/enumeration failures fail the build rather than being skipped or converted to warnings.
+- [x] 2.4 Update `packaging/mcpb/manifest.json` to declare exactly `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`; do not declare hidden legacy fat tools.
+- [x] 2.5 Make the red parity regression green and retain the official MCPB schema validator as a separate passing check.
 - [ ] 2.6 Add launcher/config tests proving the package selects stdio, requires and validates `TINYASSETS_DATA_DIR`, preserves optional `UNIVERSE_SERVER_DEFAULT_UNIVERSE`, and does not expose or set `UNIVERSE_SERVER_AUTH`.
 - [ ] 2.7 Prove unset package auth selects `DevAuthProvider` and that default actorless `converse` returns `auth_required` before provider selection/invocation; exact-seven enumeration SHALL NOT be reported as seven operational handles.
 - [ ] 2.8 Keep all package/parity/acceptance tests provider-free: no maintainer/platform model, credential, quota, or compute may be supplied or consumed.

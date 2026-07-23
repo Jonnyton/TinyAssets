@@ -926,3 +926,18 @@ Notes:
 - Related implications: active wiki-canary OAuth-challenge lane owns overlapping uptime files
 - Idea feed refs: none
 - Ship/abandon: publish the pending row now; build only after the active owner releases the workflow/spec
+
+## 2026-07-23 - create mcpb-catalog-parity
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/mcpb-catalog-parity
+- Lane state: Active implementation lane
+- Worktree: C:\Users\Jonathan\Projects\wf-mcpb-catalog-parity
+- STATUS/Issue/PR: `MCPB staged catalog parity`; PR after independent review
+- PLAN refs: Distribution & Discoverability; API & MCP Interface
+- Purpose: make MCPB manifest tool metadata equal the staged middleware’s canonical seven-handle catalog and make packaging fail closed on future drift
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-mcpb-catalog-parity\_PURPOSE.md
+- Memory refs: PR #1600; archived `collapse-live-mcp-surface-to-5-handles`
+- Related implications: `reconcile-external-connector-manifests` tasks 1.1 and 2.1–2.5
+- Idea feed refs: none
+- Ship/abandon: land only the deterministic MCPB parity slice; defer Polsia handoff, directory acceptance, and host-rendered proof

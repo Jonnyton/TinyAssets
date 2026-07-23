@@ -43,12 +43,32 @@
   },
   "tools": [
     {
-      "name": "universe",
-      "description": "Inspect, read, and modify universe state through the coarse-grained TinyAssets Server control tool."
+      "name": "read_graph",
+      "description": "Read TinyAssets graph state through the canonical graph query surface."
     },
     {
-      "name": "extensions",
-      "description": "Register, inspect, approve, disable, and remove custom workflow graph nodes."
+      "name": "write_graph",
+      "description": "Create or update TinyAssets graph state through the canonical mutation surface."
+    },
+    {
+      "name": "run_graph",
+      "description": "Start or control TinyAssets graph execution through the canonical runtime surface."
+    },
+    {
+      "name": "read_page",
+      "description": "Read TinyAssets wiki and commons pages through the canonical page surface."
+    },
+    {
+      "name": "write_page",
+      "description": "Create or update TinyAssets wiki and commons pages through the canonical page surface."
+    },
+    {
+      "name": "converse",
+      "description": "Relay a message to a TinyAssets universe and return that universe's own reply."
+    },
+    {
+      "name": "get_status",
+      "description": "Read current TinyAssets universe and daemon status without creating a universe."
     }
   ],
   "prompts_generated": true,
