@@ -1069,5 +1069,6 @@ Notes:
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-command-center-lan-auth\_PURPOSE.md
 - Memory refs: current canonical `development-coordination-runtime` Agent Village requirements; merged #1489
 - Related implications: local dashboard; provider subscription spending; session-transcript privacy
+- Scope broadened 2026-07-23 after collision-clear security review: `scripts/peer_agent.py` + `tests/test_peer_agent.py` for bearer scrubbing and provider process-tree cleanup before quota-slot release
 - Idea feed refs: `ideas/2026-07-19-agent-village-command-center.md`
 - Ship/abandon: land one reviewed security repair; no provider/model dispatch during acceptance
