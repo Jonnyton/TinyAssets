@@ -108,8 +108,8 @@ provider promotes one literal directory after collision and review checks.
 | Exact successor | Legacy residue | Promotion gate |
 |---|---|---|
 | STATUS `Resolve target-spec PLAN conflicts` → `complete-full-platform-target-specs` | Store/private-data choice, catalog/collaboration, moderation, packaged tray, market workflow, portability, authoring, connectors/handoffs, and load proof. | Host selects coherent PLAN positions; successor applies the minimal-primitives test before adding platform behavior. |
-| STATUS `enforce-private-goal-read-visibility` | Private Goal visibility across direct, derived, and aggregate reads. | Retire or supersede incomplete draft #1554; opposite-provider review before implementation or sync. |
-| STATUS `harden-canonical-absolute-guarantees` | Money/attribution/birth/learning/receipt absolutes. | Active paid/universe/relay owners merge first. |
+| STATUS `enforce-private-goal-read-visibility` | Private Goal visibility across direct, derived, alias, and aggregate reads using signed owner request identity only. | Retire or supersede incomplete draft #1554; caller/env identity grants no authority; any signed host exception requires a separate decision; opposite-provider review before implementation or sync. |
+| STATUS `harden-canonical-absolute-guarantees` | Money/attribution/birth/learning/receipt absolutes. | Private Goal visibility lands first on the shared market/test files; active paid/universe/relay owners merge before their remaining slices. |
 | STATUS `runtime-fiction-memory-graph` | Runtime-fiction schema, ScenePacket Phase 1c prior-scene query/validation residue, and any future ledger target. | Brain-OKF authority/shape dependencies settle first. |
 | STATUS `reconcile-hyperparameter-importance-evaluator` | Exact shipped evaluator and inline-test truth versus incompatible legacy evaluator/fixture promises. | Science-domain owner review; decide backfill, move, or retirement without silently rewriting runtime. |
 | `backfill-graph-mutation-and-resume-contracts` | `resume_from` and composite mutation validation/rollback/receipt behavior. | Coordinate `graph-execution-substrate`, legacy-tool retirement, and distributed execution; no remote-authority implication. |
@@ -132,8 +132,10 @@ gate.
 - Every CLAIMED row maps to a live STATUS owner or an exact successor and
   promotion gate in the table above rather than an untracked chat-only intent.
 - Three read-only range reviews covered all 52 rows. Their ADAPT findings plus
-  the post-PR-#1622 ownership review were reconciled into the 12/0/27/13 matrix
-  and exact successor table.
+  the post-PR-#1622 domain/security reviews were reconciled into the
+  12/0/27/13 matrix and exact successor table. The separate
+  `correct-independent-backfill-authority` lane owns the two canonical wording
+  defects and full-coverage-certainty downgrade found by that security review.
 - `tests/test_outcome_evaluators.py -k HyperparameterImportanceEvaluator`:
   5 passed, 3 skipped; `tests/test_branch_evaluation_iteration.py -k
   resume_from`: 5 passed.
