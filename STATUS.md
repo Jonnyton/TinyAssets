@@ -43,6 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 | Memory-scope Stage 2c flag | - | 30d clean | monitoring |
+| Mobile app download wiring — home/start "Download SDK" buttons are static links to the predicted `android-latest` release asset (see `docs/reference/mobile-app-release-convention.md`); 404 until CI in `release-android.yml` publishes it, which is dormant until `clients/android` lands on main | WebSite/site/src/lib/{mcp/appRelease.ts,components/AppDownload.svelte}, WebSite/site/src/routes/{+page.svelte,start/+page.svelte}, .github/workflows/release-android.yml | mobile app scaffold branch (`wf-ios-app-scaffold`) merging `clients/android` to main | dev-ready |
 
 ## Live brain notes
 

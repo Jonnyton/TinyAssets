@@ -15,6 +15,7 @@
   import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
   import Ladder from '$lib/components/Ladder.svelte';
+  import AppDownload from '$lib/components/AppDownload.svelte';
   import { fmtDate, fmtRel } from '$lib/fmt';
 
   const MCP_URL = 'https://tinyassets.io/mcp';
@@ -211,6 +212,7 @@
           <code>{MCP_URL.replace('https://', '')}</code>
           <span class="urlchip__copy">{copied ? 'copied ✓' : 'copy'}</span>
         </button>
+        <AppDownload variant="compact" />
       </div>
     </div>
     <div class="cover__pulse">
