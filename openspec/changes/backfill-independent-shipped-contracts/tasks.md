@@ -11,8 +11,8 @@
 
 ## 3. Canonicalization
 
-- [ ] 3.1 Sync and archive the reviewed deltas into their nine canonical owners
-- [ ] 3.2 Prove unrelated requirements are preserved and strict-validate the complete OpenSpec tree
+- [x] 3.1 Sync the reviewed deltas into their nine canonical owners; archive follows after the preservation gate
+- [x] 3.2 Prove unrelated requirements are preserved and strict-validate the complete OpenSpec tree
 
 ## 4. Publication
 
