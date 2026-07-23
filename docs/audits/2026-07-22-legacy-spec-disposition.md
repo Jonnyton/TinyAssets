@@ -52,8 +52,8 @@
 | [`2026-04-19-handoffs-real-world-pipeline.md`](../specs/2026-04-19-handoffs-real-world-pipeline.md) | CLAIMED | `distributed-execution` owns generic signed execution/effect authority; explicit handoff/outcome linkage remains an uncovered full-platform target. |
 | [`2026-04-19-plan-b-selfhost-migration-playbook.md`](../specs/2026-04-19-plan-b-selfhost-migration-playbook.md) | CLAIMED | Data portability, account deletion/succession, and complete self-host migration remain in the full-platform target lane after store decisions. |
 | [`2026-04-19-track-n-vibe-coding-authoring-sandbox.md`](../specs/2026-04-19-track-n-vibe-coding-authoring-sandbox.md) | CLAIMED | Node authoring/file-I/O/evaluator-catalog/autoresearch behavior is an uncovered full-platform target group. |
-| [`2026-04-27-hyperparameter-importance-evaluator-node.md`](../specs/2026-04-27-hyperparameter-importance-evaluator-node.md) | CLAIMED | Promoted, science-lane-blocked domain target; a new STATUS successor now owns conversion to an active OpenSpec change. Generic evaluator behavior remains canonical separately. |
-| [`2026-04-27-hyperparameter-importance-fixture-pack.md`](../specs/2026-04-27-hyperparameter-importance-fixture-pack.md) | CLAIMED | Fixture companion to the promoted hyperparameter target; the same domain-target OpenSpec successor owns it. |
+| [`2026-04-27-hyperparameter-importance-evaluator-node.md`](../specs/2026-04-27-hyperparameter-importance-evaluator-node.md) | CLAIMED | Promoted future science-domain target; the distinct `Promote future hyperparameter science node/fixtures` STATUS successor owns conversion to an active target change. The shipped generic evaluator is reconciled separately by `backfill-hyperparameter-importance-shipped-contracts`. |
+| [`2026-04-27-hyperparameter-importance-fixture-pack.md`](../specs/2026-04-27-hyperparameter-importance-fixture-pack.md) | CLAIMED | Fixture companion to the future science-domain target; its distinct STATUS successor owns it, while the shipped evaluator backfill deliberately excludes these proposed fixtures. |
 | [`2026-04-27-recency-and-continue-branch-primitives.md`](../specs/2026-04-27-recency-and-continue-branch-primitives.md) | CANONICAL | `graph-execution-substrate` owns the surviving `run_branch resume_from=<run_id>` terminal-source guards, input merge, distinct-run, and lineage contract; retired standalone actions remain historical. |
 | [`2026-04-27-recency-continue-fixture-pack.md`](../specs/2026-04-27-recency-continue-fixture-pack.md) | CANONICAL | `graph-execution-substrate` owns the shipped and tested terminal-run-seeded new-run behavior; the fixture pack remains evidence rather than authority. |
 | [`2026-04-27-runtime-memory-graph-minimal-schema-v1.md`](../specs/2026-04-27-runtime-memory-graph-minimal-schema-v1.md) | CLAIMED | The promoted runtime-fiction target still depends on this four-entity schema freeze; the `runtime-fiction-memory-graph` successor lane owns its disposition alongside the broader target. |
@@ -104,8 +104,10 @@ The eighteen CLAIMED files fold into live STATUS work:
 - the eight-group full-platform target change (catalog/collaboration,
   moderation, packaged tray, market workflow, portability, authoring, and
   handoffs/connectors, with its load-proof obligation); and
-- the two promoted-domain successors (runtime-fiction memory graph and
-  hyperparameter-importance evaluator/fixtures).
+- the two promoted-domain successors (runtime-fiction memory graph and the
+  future hyperparameter-importance science node/fixtures); the existing
+  generic hyperparameter evaluator follows a separate shipped-contract
+  backfill.
 
 No legacy file itself is an ACTIVE owner. The 16 HISTORY files are explicitly
 not current targets; their ideas may be revived only through the normal

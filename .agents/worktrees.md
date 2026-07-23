@@ -851,3 +851,33 @@ Notes:
 - Related implications: credential-vault and hyperparameter importance remain shipped-coverage residuals
 - Idea feed refs: none
 - Ship/abandon: remove the physical worktree only after PR #1632 lands
+
+## 2026-07-22 - create hyperparameter-importance-spec
+
+- Provider: codex-gpt56-spec-2
+- Branch: codex/hyperparameter-importance-spec-backfill
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec
+- STATUS/Issue/PR: PR #1633 — Backfill shipped hyperparameter-importance evaluator
+- PLAN refs: Evaluation; Outcomes
+- Purpose: canonicalize the shipped fail-soft RF/Spearman evaluator and correct the legacy audit so the incompatible future science-domain target remains distinct
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec\_PURPOSE.md
+- Memory refs: post-PR #1632 full-coverage residual audit
+- Related implications: canonical evaluation-runtime owner; PR #1627 remains read-only; the future science-domain node/fixture target keeps a separate successor
+- Idea feed refs: none
+- Ship/abandon: sync/archive after strict validation, focused evidence, and independent review
+
+## 2026-07-23 - retire hyperparameter-importance-spec
+
+- Provider: codex-gpt56-spec-2
+- Branch: codex/hyperparameter-importance-spec-backfill
+- Lane state: Reviewed and archived; retirement staged in PR #1633
+- Worktree: C:\Users\Jonathan\Projects\wf-hyperparameter-importance-spec
+- STATUS/Issue/PR: PR #1633 approved; landing diff retires the temporary shipped-backfill claim
+- PLAN refs: Evaluation; Outcomes
+- Purpose: canonicalize the shipped generic evaluator while preserving the future science node/fixtures as a distinct target
+- _PURPOSE.md: retained locally until PR #1633 merges
+- Memory refs: archived independent review at `openspec/changes/archive/2026-07-23-backfill-hyperparameter-importance-shipped-contracts/reviews/2026-07-23-independent-review.md`
+- Related implications: credential-vault is the only remaining shipped-coverage residual; five target-owner groups remain
+- Idea feed refs: none
+- Ship/abandon: remove the physical worktree only after PR #1633 lands
