@@ -956,3 +956,18 @@ Notes:
 - Related implications: exact-script concurrency proof design prepared; implementation waits for canonical spec release
 - Idea feed refs: none
 - Ship/abandon: publish only the dependency edge; remove it when the P0-triage lane lands and releases the spec
+
+## 2026-07-23 - create archive-1574-research
+
+- Provider: codex-gpt5-desktop
+- Branch: docs/archive-1574-research
+- Lane state: Active archival documentation lane
+- Worktree: C:\Users\Jonathan\Projects\wf-1574-research-archive
+- STATUS/Issue/PR: `Archive PR #1574 research without design-truth foldback`; parent review before push
+- PLAN refs: Scoping Rules; Commons-first architecture; Providers; no PLAN edits authorized
+- Purpose: preserve nine dated research/review artifacts and gated idea pointers without landing stale PLAN or coordination truth from draft PR #1574
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-1574-research-archive\_PURPOSE.md
+- Memory refs: draft PR #1574; current-main paid-market source-context approval
+- Related implications: `paid-market-live-price-discovery`; R2-1a/R2-1b; target-spec PLAN host decision
+- Idea feed refs: compute/model/task/fabrication markets; Zapier-equivalent automation; concurrency/scale; organizational universes; regulated-industry profiles
+- Ship/abandon: local commit only until parent review; land docs, refreshed pointers, and task reflection, never #1574 PLAN/runtime/OpenSpec/stale coordination edits
