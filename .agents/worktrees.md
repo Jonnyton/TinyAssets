@@ -881,3 +881,18 @@ Notes:
 - Related implications: credential-vault is the only remaining shipped-coverage residual; five target-owner groups remain
 - Idea feed refs: none
 - Ship/abandon: remove the physical worktree only after PR #1633 lands
+
+## 2026-07-23 - create runtime-fiction-openspec
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/runtime-fiction-openspec
+- Lane state: Active planning lane; research/build review-blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-runtime-fiction-openspec
+- STATUS/Issue/PR: `Promote runtime-fiction memory graph into OpenSpec`; no PR until opposite-provider review
+- PLAN refs: Engine & Domains; Brain; Evolution & Evaluation; State & Artifacts
+- Purpose: promote the unbuilt runtime-fiction memory graph into a strict target capability while preserving shipped ScenePacket ownership
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-runtime-fiction-openspec\_PURPOSE.md
+- Memory refs: `.agents/activity.log`; `docs/design-notes/2026-04-09-memory-graph-research-brief.md`
+- Related implications: `brain-okf-canonical-store`; canonical `domain-plugin-runtime`; legacy-spec disposition audit
+- Idea feed refs: `ideas/PIPELINE.md` Runtime fiction memory graph
+- Ship/abandon: publish artifacts only after Claude review; abandon if an existing owner or PLAN conflict supersedes the target
