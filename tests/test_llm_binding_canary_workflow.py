@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -156,6 +158,36 @@ def test_probe_propagates_published_red_as_job_failure(wf) -> None:
     assert '"$OVERALL" = "red"' in terminal.get("run", "")
     assert "exit 1" in terminal.get("run", "")
     assert terminal.get("continue-on-error", False) is False
+
+    if os.name == "nt":
+        shell = shutil.which("wsl")
+        shell_command = [shell, "--exec", "bash", "-c"] if shell else []
+    else:
+        shell = shutil.which("bash")
+        shell_command = [shell, "-c"] if shell else []
+    if not shell_command:
+        pytest.skip("bash is required to exercise the propagation script")
+    green = subprocess.run(
+        shell_command + ["export OVERALL=green\n" + terminal["run"]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    red = subprocess.run(
+        shell_command + ["export OVERALL=red\n" + terminal["run"]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert green.returncode == 0, green.stderr
+    assert red.returncode != 0, red.stderr
+
+    sink = wf["jobs"]["alarm-sink"]
+    assert sink["needs"] == "probe"
+    assert sink.get("if", "").strip().lower() == "always()"
+    assert sink["steps"][0]["env"]["OVERALL"] == (
+        "${{ needs.probe.outputs.overall }}"
+    )
 
 
 # ── Probe step calls verify_llm_binding.py ────────────────────────────
