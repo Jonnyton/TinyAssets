@@ -239,7 +239,6 @@ jobs:
               "target_repository": os.environ["target_repository"],
               "configured_image_ref": os.environ["configured_image_ref"],
               "repo_digests": digests if isinstance(digests, list) else [],
-              "active_revision_label": os.environ["active_revision_label"],
               "prior_receipt_b64": os.environ["prior_receipt_b64"],
           }, sort_keys=True, separators=(",", ":")))
           PY

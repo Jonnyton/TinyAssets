@@ -144,6 +144,7 @@ def test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs():
     run_script = step.get("run", "") or ""
 
     assert "previous_active_revision_label=" not in run_script
+    assert "active_revision_label" not in run_script
     assert "org.opencontainers.image.revision" not in run_script
 
 
