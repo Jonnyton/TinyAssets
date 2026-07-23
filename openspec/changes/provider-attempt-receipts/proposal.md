@@ -9,7 +9,8 @@ overlapping calls.
 ## What Changes
 
 - Add an immutable, result-local provider-attempt receipt for each provider
-  bridge result, including reply, fallback, exhaustion, and forced-mock paths.
+  bridge result, including reply, fallback, exhausted-judge sentinel,
+  exhaustion, and forced-mock paths.
 - Keep `call_provider(...) -> str` source and return compatibility; add an
   explicit result-returning path for callers that need the text and its receipt.
 - Distinguish the reply and learning-extraction phases and require both

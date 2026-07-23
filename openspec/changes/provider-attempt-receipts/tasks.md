@@ -10,7 +10,7 @@
 - [ ] 2.2 Add the result-returning bridge path and immutable receipt/attempt types, make the legacy string operation delegate to it, and ensure no receipt field reads `_last_provider` or any other global last-call state.
 - [ ] 2.3 Thread credential kind and authority class from the exact auth-resolution/provider-execution boundary through the same provider response, including explicit `unknown`, `local`, and `none` semantics and the ban on host authority for a universe-scoped remote success.
 - [ ] 2.4 Aggregate redacted ordered attempts across all bounded retry waves and attach the immutable receipt to exhaustion and other observed error paths without changing existing exception identity or retry behavior.
-- [ ] 2.5 Represent provider success, explicit fallback, forced mock, exhaustion, and unrelated-error outcomes plus the independent missing-router/exhaustion/provider-error route conditions without attributing synthetic text to a provider, model, family, credential, or authority.
+- [ ] 2.5 Represent provider success, explicit fallback, forced mock, the exhausted-judge degraded sentinel, exhaustion, and unrelated-error outcomes plus the independent missing-router/exhaustion/provider-error route conditions without attributing synthetic text to a provider, model, family, credential, or authority.
 
 ## 3. Reply and Learning Integration
 

@@ -32,8 +32,9 @@ settled.
 - Keep reply and learning-extraction receipts separate under concurrent calls.
 - Define provider, model, family, credential-kind, and authority-class
   semantics without exposing secret material.
-- Represent success, retry/fallback, forced-mock, missing-router, and exhausted
-  outcomes without pretending synthetic text came from a provider.
+- Represent success, retry/fallback, forced-mock, exhausted-judge sentinel,
+  missing-router, and exhausted outcomes without pretending synthetic text
+  came from a provider.
 
 **Non-Goals:**
 
@@ -71,7 +72,7 @@ Each bridge invocation will allocate one opaque `call_id`, record the routing
 `role` and caller-supplied `phase`, and produce an immutable receipt with:
 
 - `outcome`: `provider_success`, `explicit_fallback`, `forced_mock`,
-  `exhausted`, or `error`;
+  `degraded_sentinel`, `exhausted`, or `error`;
 - `route_condition`: `none`, `chain_exhausted`, `router_missing`, or
   `provider_error`, so the reason routing stopped remains distinct from how
   returned text was produced;
@@ -147,7 +148,7 @@ Alternative considered: one turn-level receipt with a mutable "last phase".
 Rejected because the learning call would overwrite the evidence for the text
 shown to the founder.
 
-### 5. Synthetic and exhausted outcomes remain explicit
+### 5. Synthetic, degraded-sentinel, and exhausted outcomes remain explicit
 
 An explicit fallback or forced mock returns its configured text with no winning
 provider/model/family and with `credential_kind=none` and
@@ -155,8 +156,15 @@ provider/model/family and with `credential_kind=none` and
 remain in the receipt. `outcome=explicit_fallback` may therefore pair with
 `route_condition=chain_exhausted`, `provider_error`, or `router_missing`; a
 forced mock pairs with `route_condition=none`. Exhaustion without fallback
-still raises rather than producing text, and the error carries the ordered
-receipt. `route_condition=router_missing` is distinct from
+still raises rather than producing text except for the canonical single-judge
+quality-floor sentinel. When `role=judge` exhausts and the router returns that
+sentinel, the bridge preserves the exact sentinel text, records
+`outcome=degraded_sentinel` and `route_condition=chain_exhausted`, retains the
+ordered attempts, and leaves final provider/model/family absent with
+`credential_kind=none` and `authority_class=none`. The sentinel's synthetic
+`provider=none`, `model=quality-floor-only`, and `family=none` markers are not a
+winning provider identity. Other exhaustion still raises and carries the
+ordered receipt. `route_condition=router_missing` is distinct from
 `route_condition=chain_exhausted`.
 
 This preserves current fallback behavior while preventing synthetic text from
