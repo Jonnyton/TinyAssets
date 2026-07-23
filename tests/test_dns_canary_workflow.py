@@ -164,6 +164,27 @@ def test_alarm_sink_fires_always():
     )
 
 
+def test_dns_check_propagates_published_red_as_job_failure():
+    wf = _load(_DNS_WF)
+    job = _jobs(wf)["dns-check"]
+    steps = job["steps"]
+    probe_index = next(
+        index for index, step in enumerate(steps) if step.get("id") == "dns"
+    )
+    probe = steps[probe_index]
+    terminal = steps[-1]
+
+    assert probe.get("continue-on-error") is True
+    assert job["outputs"]["overall"] == "${{ steps.dns.outputs.overall }}"
+    assert probe_index < len(steps) - 1
+    assert terminal.get("env", {}).get("OVERALL") == (
+        "${{ steps.dns.outputs.overall }}"
+    )
+    assert '"$OVERALL" = "red"' in terminal.get("run", "")
+    assert "exit 1" in terminal.get("run", "")
+    assert terminal.get("continue-on-error", False) is False
+
+
 # ---------------------------------------------------------------------------
 # (g) alarm-sink logic: issue opened / closed
 # ---------------------------------------------------------------------------

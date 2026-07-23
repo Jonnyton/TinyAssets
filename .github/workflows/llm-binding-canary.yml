@@ -72,6 +72,15 @@ jobs:
           echo "$output"
           exit $code
 
+      - name: Propagate red probe result
+        env:
+          OVERALL: ${{ steps.probe.outputs.overall }}
+        run: |
+          if [ "$OVERALL" = "red" ]; then
+            echo "LLM binding canary published red; failing the probe job."
+            exit 1
+          fi
+
   alarm-sink:
     needs: probe
     if: always()
