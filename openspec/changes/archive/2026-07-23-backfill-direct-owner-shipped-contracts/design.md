@@ -1,10 +1,11 @@
 ## Context
 
 The full-coverage audit found four groups of already-shipped behavior without
-complete canonical ownership. The five eventual canonical files are also
-coordination points for active credential, connector, identity/universe, and
-release changes. This lane therefore writes only a separate delta change until
-those owners clear.
+complete canonical ownership. Requirement-level comparison found that the
+prompt/status, universe-switch, and uptime clauses do not replace requirements
+owned by active target changes. The credential clauses alone overlap an
+actively claimed canonical file and now live in
+`backfill-credential-vault-shipped-contracts`.
 
 The source review also found one important divergence between comment-level
 intent and executable behavior: the disk-watch unit calls its three steps
@@ -19,38 +20,35 @@ seams.
 
 **Goals:**
 
-- State the exact credential projection aliases, prompt/tool metadata,
-  status variants, universe-switch scopes, and four uptime controllers.
+- State the exact prompt/tool metadata, status variants, universe-switch
+  scopes, and four uptime controllers.
 - Preserve observable failure modes and missing guarantees.
-- Produce strict-valid deltas that can be independently reviewed now and
-  rebased onto dependency owners before canonical sync.
+- Produce strict-valid deltas that can be independently reviewed and synced
+  without importing target behavior.
 - Keep executable source and tests unchanged.
 
 **Non-Goals:**
 
-- Repair credential fail-closed behavior, status identity coverage, universe
+- Repair credential behavior, status identity coverage, universe
   visibility/creation, release triggers, or disk-pressure cleanup.
-- Sync or archive while an overlapping canonical owner remains in flight.
 - Claim live-model execution from the LLM-binding canary, public-address
   validation from the DNS canary, live-receipt validation from release
-  reconciliation, or cross-process serialization from credential writes.
+  reconciliation, or launch-scale load coverage.
 
 ## Decisions
 
 ### Modify an existing owner or add only absent clauses
 
 The prompt catalog modifies the complete existing Remote Streamable-HTTP MCP
-Endpoint requirement because that block already owns prompt availability. The
-credential delta adds only the exact alias-selection, first-record extraction,
-fixed-temporary-path, and missing-concurrency semantics absent from the active
-provider-overlay and canonical vault owners. Other headings remain unique.
-Before sync, the change must be rebased and duplicate clauses consolidated if a
-dependency lands equivalent ownership.
+Endpoint requirement because that block already owns prompt availability.
+Every other heading in this change is absent canonically. Active target deltas
+modify different requirements or add future behavior. The credential delta is
+split because its canonical file remains actively claimed.
 
-Alternative considered: modify the current provider-auth, advertised-handle,
-status-identity, lifecycle, and uptime requirements immediately. Rejected for
-the blocks with active owners because those changes already own their full
-replacement text.
+Alternative considered: wait for every active change that mentions the same
+capability. Rejected because capability-level adjacency is not a
+requirement-level collision and would leave shipped truth indefinitely
+unspecified.
 
 ### Treat code and workflow control flow as authority over comments
 
@@ -68,13 +66,14 @@ because canonical specs are as-built truth.
 Prompt/tool titles, tags, and annotations are specified exactly, but behavior
 hints are not treated as permission grants. Runtime gates remain authoritative.
 
-### Require fresh dependency and scale checks before sync
+### Preserve future-owner and scale obligations
 
-Each canonical owner must be re-read after its dependency lands. The uptime
-foldback task also requires explicit concurrency/load evidence or an explicit
-bounded limitation before archive, consistent with the Forever Rule. GitHub's
-same-group pending-run replacement remains an explicit limitation, and task
-3.4 stays unsatisfied until the required proof exists.
+Each active target owner was compared at requirement level before sync. The
+uptime foldback retains an explicit bounded limitation: repository workflow
+concurrency declarations serialize running jobs but GitHub may replace pending
+same-group runs, and no launch-scale load test is claimed. This specification
+change ships no new uptime behavior; any future uptime behavior change still
+requires its own Forever Rule section 14 proof.
 
 ## Risks / Trade-offs
 
@@ -90,12 +89,11 @@ same-group pending-run replacement remains an explicit limitation, and task
 
 ## Migration Plan
 
-1. Strict-validate and independently review this draft change.
-2. Wait for or coordinate each named dependency owner.
-3. Rebase, re-run source/test grounding, and remove any duplicated clauses.
-4. Broaden the STATUS write boundary to only the canonical files whose
-   dependencies have cleared.
-5. Run focused evidence plus the explicit uptime concurrency/load gate.
+1. Strict-validate and independently review the combined draft.
+2. Isolate the actively claimed credential remainder.
+3. Compare every remaining requirement against active target deltas.
+4. Broaden the STATUS write boundary to the dependency-cleared canonical files.
+5. Record the bounded uptime concurrency/load limitation.
 6. Sync, prove preservation of untouched requirements, archive, review, and
    merge.
 
@@ -104,9 +102,9 @@ normal OpenSpec history and git revert preserve the prior canonical state.
 
 ## Open Questions
 
-- Whether the release dependency will replace deploy-run ancestry with the
-  live release receipt before this delta can sync.
-- Whether identity/reset makes `session_boundary` present in early status
-  responses, eliminating the current three-shape distinction.
-- Whether legacy-tool retirement lands before metadata sync, shrinking the
+- The release event-trigger lane must modify the deploy-run-ancestry owner if
+  it changes shipped reconciliation behavior.
+- Identity/reset must modify the response-shape owner if it adds evidence to
+  early status responses.
+- Legacy-tool retirement must modify the metadata owner when it shrinks the
   registered-tool table.

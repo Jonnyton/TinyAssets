@@ -1,14 +1,14 @@
 ## Why
 
-Four groups of shipped behavior still lack complete canonical OpenSpec
-ownership after the 2026-07-22 full-coverage audit. This change records those
-current contracts without redesigning them or importing target behavior from
-the active credential, connector, identity/universe, or release changes.
+Three dependency-cleared groups of shipped behavior still lack complete
+canonical OpenSpec ownership after the 2026-07-22 full-coverage audit. This
+change records those current contracts without redesigning them or importing
+target behavior from active connector, identity/universe, or release changes.
+The overlapping credential-vault remainder is isolated in
+`backfill-credential-vault-shipped-contracts`.
 
 ## What Changes
 
-- Specify the current credential alias/secret-selection quirks and fixed
-  temporary-file replacement boundary.
 - Specify the shipped prompt catalog and metadata plus the exact
   early/config-error/full status response variants.
 - Specify public universe-switch authorization, authenticated request scope,
@@ -19,8 +19,8 @@ the active credential, connector, identity/universe, or release changes.
 - Preserve every observed limitation explicitly, including absent
   cross-process credential-file locking and omitted `session_boundary` fields
   in early status responses.
-- Keep the change draft-only until each active dependency owner clears; do not
-  sync its deltas into canonical specs while overlapping owners are in flight.
+- Sync these requirement-level independent deltas while keeping future target
+  changes responsible for modifying the resulting as-built owners.
 
 ## Capabilities
 
@@ -30,8 +30,6 @@ None.
 
 ### Modified Capabilities
 
-- `credential-vault`: Add exact alias/first-record secret selection and the
-  fixed-temp-file replacement limitation not already owned canonically.
 - `live-mcp-connector-surface`: Add the shipped prompt catalog and
   tool/prompt metadata invariants.
 - `identity-auth-and-access-control`: Add the exact identity-bearing status
@@ -43,8 +41,8 @@ None.
 
 ## Impact
 
-The eventual canonical owners are the five capabilities above. Current source,
+The eventual canonical owners are the four capabilities above. Current source,
 workflow, and focused tests are read-only evidence in this change. Active
-dependency changes retain authority over future credential, connector,
-identity/universe, and release behavior; this change may be rebased or split
-before canonical sync if those owners alter the shipped boundaries.
+target changes retain authority over future connector, identity/universe, and
+release behavior and must modify these as-built owners when their runtime
+changes land.

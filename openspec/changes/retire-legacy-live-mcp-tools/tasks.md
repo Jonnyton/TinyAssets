@@ -25,6 +25,7 @@
 - [ ] 4.2 Remove `_DeprecatedToolVisibility`, the legacy-name set, and dead registration-only state; add no compatibility alias or alternate hidden dispatch path.
 - [ ] 4.3 Make the public canary compare against one exact seven-name set with required `get_status`; rename inaccurate internal `assert_five_handles*` identifiers without aliases while preserving the existing `--assert-handles` CLI.
 - [ ] 4.4 Update the packaged runtime mirror and verify byte parity without changing the intentional `tinyassets/directory_server.py` reviewed surface.
+- [ ] 4.5 Replace the canonical registered-tool metadata owner with the exact seven-row table; leave no retired-tool metadata residue.
 
 ## 5. Verification and review
 
