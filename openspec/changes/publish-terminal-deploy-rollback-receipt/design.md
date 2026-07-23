@@ -23,8 +23,9 @@ inventing a value.
 
 **Goals:**
 
-- Publish one truthful terminal receipt after every deploy path that began the
-  `TINYASSETS_IMAGE` mutation.
+- Attempt one truthful terminal receipt after every deploy path that crossed
+  the first production-host-write boundary, including failures before image
+  mutation.
 - Require configured/running immutable-image agreement before classifying
   `deployed` or `rolled_back`.
 - Keep legacy release-state fields as explicitly defined projections of the
@@ -41,7 +42,8 @@ inventing a value.
 
 - Change image admission, deploy concurrency, rollback eligibility, or the
   canonical canary itself.
-- Claim that a pre-mutation failure changed production.
+- Claim that a failure before the first production-host-write marker changed
+  production.
 - Make receipt publication itself a successful recovery.
 - Modify public MCP response fields in this change.
 - Prove the workflow has executed on the production host.
@@ -99,21 +101,32 @@ Before mutation, the workflow captures the prior receipt as strict base64. The
 decoded payload limit is exactly **65,536 bytes**, measured before UTF-8 or JSON
 parsing. Empty input means absent. Invalid base64, decoded byte 65,537 or later,
 invalid UTF-8, non-object JSON, unsupported field types, or invalid identity
-fields makes the entire prior receipt unusable for provenance and ancestry.
-Unknown fields are ignored rather than copied.
+fields makes the entire prior receipt unusable. Unknown fields are ignored
+rather than copied.
 
-The pre-mutation previous image is rollback-eligible only when the configured
+The pre-image-mutation previous image is rollback-eligible only when the configured
 and actual running daemon observations both validate and agree. A mutable
-configured tag is not converted into proof after the fact. The captured prior
-receipt may contribute source provenance and ancestry only when its canonical
-active identity exactly equals that agreed previous ref.
+configured tag is not converted into proof after the fact. The captured
+receipt's trust depends on version:
 
-For a version-1 receipt, the prior active identity is its canonical `image_ref`
-(and `image_digest`, when present, must equal it). For version 2 it is
-`active_image_ref` (and its active/legacy identity fields, when non-empty, must
-agree). A prior `rollback_target` is reusable only when it is canonical, differs
-from the failed attempted ref, and the prior receipt matches the restored
-active ref.
+- A structurally valid version-1 receipt may only corroborate current identity:
+  its canonical `image_ref` (and equal `image_digest`, when present) may produce
+  `prior_receipt_match_status=v1_identity_match` after configured/running
+  observation already agrees with that ref. No version-1 field may seed
+  `git_sha`, `image_tag`, build provenance, `deployed_at`, or
+  `rollback_target`.
+- A version-2 receipt may seed provenance or ancestry only when it is
+  **terminal-proof**: `release_state_version=2`,
+  `outcome=deployed|rolled_back`, `active_identity_status=agreed`,
+  configured/running/active/legacy canonical refs all agree,
+  `canary_bundle_status=passed`, and its active ref equals the newly observed
+  agreed ref. Its reusable fields must also pass their own type/format checks.
+  Only this case produces
+  `prior_receipt_match_status=v2_terminal_proof_match`.
+
+The other bounded prior-match states are `absent`, `invalid`, and `mismatch`.
+A terminal-proof prior `rollback_target` is reusable only when it is canonical
+and differs from the failed attempted ref. Version-1 data is never ancestry.
 
 Alternative: infer prior source SHA from registry tags. Rejected because tags
 are mutable and do not bind source to bytes.
@@ -126,8 +139,8 @@ immutable image digest:
 - the admitted repository's `org.opencontainers.image.revision` label read by
   inspecting that immutable digest, validated as a full 40-lowercase-hex SHA;
   or
-- a validated prior receipt whose active image exactly matches the observed
-  active ref.
+- a validated version-2 terminal-proof prior receipt whose active image exactly
+  matches the observed active ref.
 
 For a `workflow_run`, build run fields are retained only when the digest-bound
 revision also equals the triggering run's full `head_sha`. For
@@ -135,42 +148,77 @@ revision also equals the triggering run's full `head_sha`. For
 `github.sha`, the tag text, and a SHA-shaped tag are never evidence. If the
 label is missing, malformed, or disagrees with event metadata,
 `attempted_git_sha` is empty. This is the required behavior for a manually
-selected arbitrary old tag.
+selected arbitrary old tag. When the observed active image matches only a
+version-1 receipt, active source is derived afresh from that immutable image's
+digest-bound revision label or remains unknown; it is never copied from v1.
 
 The bounded provenance enums are:
 
 - `attempted_source_provenance`:
   `digest_revision_label|unknown`;
 - `active_source_provenance`:
-  `attempted_digest|prior_receipt|unknown`.
+  `attempted_digest|digest_revision_label|v2_terminal_proof|unknown`.
 
 Alternative: use `${{ github.event.workflow_run.head_sha || github.sha }}`.
 Rejected because its manual-dispatch branch lies about old image source.
 
-### 4. Mark mutation and make rollback outputs survive failure
+### 4. Separate production and image mutation boundaries
 
-The deploy step writes `mutation_started=true` to `GITHUB_OUTPUT` immediately
-before invoking the atomic helper that changes `TINYASSETS_IMAGE`. The output
-therefore survives a helper failure. Pre-mutation failures leave the durable
-receipt untouched.
+The workflow writes two distinct step outputs:
+
+- `production_mutation_started=true` immediately before the first
+  state-changing command directed at the production host. In the current
+  workflow that boundary is immediately before the `Scrub stale cloud env
+  overrides` SSH command; it precedes remote env scrubbing, runtime-file SCP,
+  disk pruning, credential-volume repair, legacy-service cleanup, and every
+  later host write.
+- `image_mutation_started=true` immediately before invoking the atomic helper
+  that first changes `TINYASSETS_IMAGE`.
+
+Both markers are intent boundaries and therefore survive failure of the command
+immediately after them. The exact pre-host-write paths are the checkout action
+and the `Resolve image tag`, `Verify secrets present`, `Install SSH key`, and
+expanded read-only `Capture previous image tag (for rollback)` steps (including
+prior receipt/configured image/running image capture). Those paths have both
+markers false, do not invoke host mutation or terminal host publication, emit
+`terminal_receipt_result=not_applicable`, and leave the durable receipt
+unchanged.
+
+Once `production_mutation_started=true`, terminal publication is required even
+when the first remote command fails before actually changing bytes, because the
+runner cannot prove whether a remote write partially occurred. Image rollback,
+however, is eligible only when `image_mutation_started=true`. A failure after
+production mutation began but before image mutation records
+`rollback_reason=image_mutation_not_started` and never rewrites
+`TINYASSETS_IMAGE`.
 
 Rollback handling runs after the forward stages with `if: always()`. It writes
 safe defaults before any fallible command, updates outputs as work occurs, then
-returns nonzero after all final outputs are present when rollback is not proven.
-The bounded outputs are:
+emits all final outputs before its exact exit. The bounded outputs are:
 
 - `rollback_attempted`: JSON-style `true|false`;
 - `rollback_result`: `succeeded|failed|not_attempted`;
 - `rollback_canary_status`: `passed|failed|not_run`;
 - `rollback_reason`:
-  `attempted|not_needed|pre_mutation_failure|no_valid_target`.
+  `attempted|not_needed|pre_host_write_failure|image_mutation_not_started|no_valid_target`.
 
-The only success tuple is
-`true/succeeded/passed/attempted`, and it additionally requires terminal
-configured/running agreement with the previous ref. A passed canary with image
-mismatch is still a failed rollback classification. A rollback command failure
-before the canary produces `true/failed/not_run/attempted`; a red canary
-produces `true/failed/failed/attempted`.
+The rollback step exit table is exact:
+
+| State and final tuple | Step exit |
+|---|---|
+| production marker false, image marker false, `false/not_attempted/not_run/pre_host_write_failure` | zero; rollback is validly not required |
+| production marker true, image marker false, `false/not_attempted/not_run/image_mutation_not_started` | zero; no image mutation exists to undo |
+| forward path fully green, `false/not_attempted/not_run/not_needed` | zero; rollback is validly not required |
+| image marker true, forward path failed, no valid previous ref, `false/not_attempted/not_run/no_valid_target` | nonzero; required rollback was unavailable |
+| image marker true, `true/succeeded/passed/attempted`, with configured/running agreement on previous ref | zero |
+| image marker true and rollback command, canary, or required identity proof failed/unavailable | nonzero |
+| any missing, invalid, or contradictory marker/output tuple | nonzero |
+
+A passed canary with image mismatch is an unproven required rollback and exits
+nonzero. A rollback command failure before the canary produces
+`true/failed/not_run/attempted`; a red canary produces
+`true/failed/failed/attempted`. `not_needed` is valid only for a fully green
+forward path; it is not a generic way to make the rollback step green.
 
 ### 5. Use a small pure classifier/builder
 
@@ -199,6 +247,9 @@ The bounded receipt fields are:
   `deployed|rolled_back|rollback_failed|failed_without_rollback`;
 - `forward_deploy_status`: `succeeded|failed`;
 - `forward_canary_status`: `passed|failed|not_run`;
+- `production_mutation_started` and `image_mutation_started`: booleans;
+- `prior_receipt_match_status`:
+  `absent|invalid|mismatch|v1_identity_match|v2_terminal_proof_match`;
 - the identity and provenance enums above;
 - `attempted_git_sha`, `attempted_image_tag`, `attempted_image_ref`,
   `attempted_image_digest`;
@@ -215,15 +266,24 @@ Outcome classification is exact:
 
 | Outcome | Required conditions |
 |---|---|
-| `deployed` | mutation started; every forward admission check and forward canary passed; rollback was not needed; configured and running refs agree exactly with attempted ref |
-| `rolled_back` | mutation started; forward path failed; rollback tuple is `true/succeeded/passed/attempted`; configured and running refs agree exactly with captured previous ref |
-| `rollback_failed` | mutation started and rollback was attempted, but command, canary, or terminal identity agreement with the previous ref is not proven |
-| `failed_without_rollback` | mutation started, `deployed` is not proven, and rollback was not attempted |
+| `deployed` | both mutation markers true; every forward admission check and forward canary passed; rollback was validly `not_needed`; configured and running refs agree exactly with attempted ref |
+| `rolled_back` | both mutation markers true; forward path failed; rollback tuple is `true/succeeded/passed/attempted`; configured and running refs agree exactly with captured previous ref |
+| `rollback_failed` | image marker true and required rollback command, canary, or terminal identity agreement with the previous ref is not proven |
+| `failed_without_rollback` | production marker true, `deployed` is not proven, and image rollback was not attempted, including failure before image mutation and unavailable rollback target |
 
 Receipt publication failure does not rewrite this observed-host outcome. For
-example, a healthy agreed forward release may classify `deployed` while the
-step output reports that saving the receipt failed; the job and issue remain
-red because durable terminal truth was not published.
+example, an agreed forward release with applicable canary passed may classify
+`deployed` while the step output reports that saving the receipt failed; the
+job and issue remain red because durable terminal truth was not published.
+Before any atomic-install attempt, the terminal step exposes bounded
+`terminal_outcome`, `terminal_active_identity_status`, and
+`terminal_canary_status` outputs from the classifier so issue wording never
+infers health merely from `rollback_reason=not_needed`.
+`terminal_canary_status` is exactly the forward canary status for
+`terminal_outcome=deployed`, the rollback canary status for
+`terminal_outcome=rolled_back` or an attempted rollback, and the forward canary
+status for a non-rollback failure. Therefore the applicable canary in the
+healthy no-rollback issue tuple is always the forward canary.
 
 ### 7. Define every legacy field
 
@@ -232,17 +292,17 @@ unproven; it is preferable to false attribution.
 
 | Legacy field | Exact version-2 meaning |
 |---|---|
-| `git_sha` | proven Git SHA for the agreed active image; attempted digest provenance for the attempted image, matching prior receipt provenance for the restored prior image, otherwise empty |
-| `image_tag` | mutable display ref known to have resolved to the agreed active digest in its source receipt/run; otherwise empty |
+| `git_sha` | proven Git SHA for the agreed active image; fresh digest-label provenance or matching version-2 terminal-proof provenance, never copied from version 1; otherwise empty |
+| `image_tag` | mutable display ref known to have resolved to the agreed active digest in the current run or a matching version-2 terminal-proof receipt; never copied from version 1; otherwise empty |
 | `image_ref` | agreed canonical active RepoDigest; otherwise empty |
 | `image_digest` | same agreed canonical active RepoDigest (the legacy field historically stores the full RepoDigest); otherwise empty |
-| `build_run_id`, `build_run_url` | build run proven to have produced the active digest; current triggering run only when digest-bound revision equals `head_sha`, matching prior values for a restored prior release, otherwise empty |
+| `build_run_id`, `build_run_url` | build run proven to have produced the active digest; current triggering run only when digest-bound revision equals `head_sha`, or matching version-2 terminal-proof prior values; never copied from version 1; otherwise empty |
 | `deploy_run_id`, `deploy_run_url` | current deploy workflow run that published this terminal receipt, for every version-2 receipt |
 | `config_hash` | terminal SHA-256 hash of the readable live `/etc/tinyassets/env`, prefixed `sha256:`; otherwise empty |
 | `config_version` | `tinyassets-env-v1` when `config_hash` is present; otherwise empty |
 | `schema_migration_rev` | `not_applicable` until a real observed migration revision exists; it never carries image provenance |
 | `canary_bundle_status` | canary applicable to the agreed active identity: `passed`, `failed`, or `not_run`; never `passed` for an identity mismatch |
-| `deployed_at` | `terminal_at` for `deployed` or `rolled_back`; for a failed outcome whose active image matches a valid prior receipt, its validated prior `deployed_at`; otherwise empty |
+| `deployed_at` | `terminal_at` for `deployed` or `rolled_back`; for a failed outcome whose active image matches a version-2 terminal-proof prior receipt, its validated prior `deployed_at`; never copied from version 1; otherwise empty |
 | `rollback_target` | canonical future repair target selected only by the matrix below; otherwise empty |
 | `actor` | actor of the current terminal deploy workflow |
 | `repository` | repository of the current terminal deploy workflow |
@@ -252,13 +312,13 @@ The complete `rollback_target` matrix is:
 
 | Outcome | Agreed active identity | `rollback_target` |
 |---|---|---|
-| `deployed` | attempted ref | pre-mutation previous ref, only when pre-mutation configured/running observations agreed canonically; else empty |
-| `rolled_back` | previous ref | prior receipt's canonical `rollback_target`, only when that receipt validates and matches the restored ref; else empty |
+| `deployed` | attempted ref | pre-image-mutation previous ref, only when the pre-image configured/running observations agreed canonically; else empty |
+| `rolled_back` | previous ref | prior receipt's canonical `rollback_target`, only when it is version-2 terminal-proof and matches the restored ref; else empty |
 | `rollback_failed` | attempted ref | captured canonical previous ref; else empty |
-| `rollback_failed` | previous ref | validated matching prior receipt's canonical `rollback_target`; else empty |
+| `rollback_failed` | previous ref | matching version-2 terminal-proof prior receipt's canonical `rollback_target`; else empty |
 | `rollback_failed` | another ref or no agreement | empty |
 | `failed_without_rollback` | attempted ref | captured canonical previous ref; else empty |
-| `failed_without_rollback` | previous ref | validated matching prior receipt's canonical `rollback_target`; else empty |
+| `failed_without_rollback` | previous ref | matching version-2 terminal-proof prior receipt's canonical `rollback_target`; else empty |
 | `failed_without_rollback` | another ref or no agreement | empty |
 
 The target must always pass the canonical-ref validator and must never equal the
@@ -271,10 +331,10 @@ can still point safely to the independently observed previous image.
 One step after rollback uses `if: always()`. Its first action emits a safe
 `terminal_receipt_result` default:
 
-- `not_applicable` when `mutation_started` is not `true`; it does not contact
-  the host or replace the prior receipt;
-- `failed` when mutation started, before any observation, classification,
-  transfer, or install command;
+- `not_applicable` when `production_mutation_started` is not `true`; it does
+  not contact the host or replace the prior receipt;
+- `failed` when production mutation started, before any observation,
+  classification, transfer, or install command;
 - `published` only after the validated receipt is atomically installed with the
   existing numeric `1001:1001`, mode `0644` contract.
 
@@ -292,10 +352,12 @@ from this complete matrix:
 
 | Outputs/condition | Required issue wording |
 |---|---|
-| mutation not started; reason `pre_mutation_failure` | "Production mutation did not start; rollback was not attempted." |
-| mutation started; reason `not_needed`; forward checks passed | "Rollback was not needed because the forward deployment was proven healthy." |
-| mutation started; reason `no_valid_target` | "Rollback was not attempted because no validated immutable previous image was available." |
-| `true/succeeded/passed/attempted` plus terminal agreement with previous ref | "Rollback succeeded and the rollback canary passed." |
+| production marker false; reason `pre_host_write_failure` | "Production host write did not start; image rollback was not attempted." |
+| production marker true; image marker false; reason `image_mutation_not_started` | "Production mutation started, but image mutation did not; image rollback was not required." |
+| reason `not_needed` plus terminal outcome `deployed`, terminal active identity `agreed`, and terminal applicable canary `passed` | "Rollback was not needed because terminal outcome is deployed, active image identity agrees, and the applicable canary passed." |
+| reason `not_needed` without that complete terminal tuple | "Rollback was not attempted; forward production health is unproven." |
+| image marker true; reason `no_valid_target` | "Rollback was not attempted because no validated immutable previous image was available." |
+| `true/succeeded/passed/attempted` plus terminal outcome `rolled_back` and terminal agreement with previous ref | "Rollback succeeded and the rollback canary passed." |
 | attempted; canary `failed` | "Rollback failed; the rollback canary failed." |
 | attempted; canary `not_run` | "Rollback failed before the rollback canary ran." |
 | attempted; canary passed but active identity is not agreed with previous ref | "Rollback was not proven: the canary passed but configured and running image identity did not agree with the rollback target." |
@@ -307,14 +369,14 @@ It then appends exactly one receipt sentence:
 |---|---|
 | `published` | "Terminal release-state receipt published." |
 | `failed` | "Terminal release-state publication failed; durable active-release truth is not proven and the prior receipt may be stale." |
-| `not_applicable` with no mutation | "Terminal release-state publication was not applicable; the prior receipt was left unchanged." |
-| `not_applicable` after mutation, empty, or any other value | "Terminal release-state status is unavailable or inconsistent; durable active-release truth is not proven." |
+| `not_applicable` with production marker false | "Terminal release-state publication was not applicable; the prior receipt was left unchanged." |
+| `not_applicable` after production marker, empty, or any other value | "Terminal release-state status is unavailable or inconsistent; durable active-release truth is not proven." |
 
 For active identity, `agreed` prints the canonical active ref; `mismatch` prints
 both configured and running refs and explicitly says they disagree; an unknown
 state names which observation was unavailable. No branch substitutes an empty
 previous image into "rolled back to", and no branch turns missing outputs into
-success.
+success. In particular, `not_needed` alone is never phrased as proven healthy.
 
 ## Risks / Trade-offs
 
@@ -324,6 +386,9 @@ success.
 - **[Prior receipt is stale, malformed, or oversized]** -> reject the entire
   receipt for provenance/ancestry, retain independently observed identities,
   and leave unverifiable legacy fields/rollback ancestry empty.
+- **[Prior receipt is valid but version 1]** -> allow identity corroboration
+  only, derive source afresh from the active digest label, and leave build,
+  deployment-time, and rollback-target ancestry empty.
 - **[Env and running container diverge]** -> record both observations, classify
   mismatch, forbid `deployed`/`rolled_back`, and keep unsafe identity fields
   empty.
@@ -341,9 +406,10 @@ success.
    observations and outputs to it.
 2. On the next successful deploy, verify a version-2 `outcome=deployed`
    receipt, dual-observation agreement, and unchanged public legacy projection.
-3. Exercise an isolated post-mutation failure with a known prior immutable
-   image and verify rollback, terminal receipt, issue wording, red workflow
-   conclusion, and safe next rollback target.
+3. Exercise both a post-production/pre-image failure and an isolated
+   post-image-mutation failure with a known prior immutable image; verify
+   terminal publication on both, rollback only on the latter, issue wording,
+   red workflow conclusion, and safe next rollback target.
 4. Exercise or simulate terminal writer failure and confirm
    `terminal_receipt_result=failed` remains visible to the issue step.
 5. If terminal publication causes a regression, revert the workflow; the last

@@ -12,20 +12,26 @@ the workflow-definition `github.sha` to unrelated image bytes.
 
 ## What Changes
 
-- Capture the active release receipt before production mutation so rollback can
-  preserve prior source and immutable-image ancestry only when the bounded,
-  validated receipt matches observed production.
+- Capture the active release receipt before production mutation. A validated
+  version-1 receipt may only corroborate current image identity after dual
+  observation; only a validated version-2 terminal-proof receipt may preserve
+  prior source, build, deployment-time, or rollback-target ancestry.
+- Mark `production_mutation_started` immediately before the workflow's first
+  production-host write and `image_mutation_started` immediately before its
+  first `TINYASSETS_IMAGE` write. Terminal publication keys off the former;
+  image rollback eligibility keys off the latter.
 - Make rollback publish explicit attempted/result/canary/reason outputs even
   when one of its commands fails.
 - Classify active identity from both the configured immutable image reference
   and the actual running daemon container. `deployed` and `rolled_back` require
   exact agreement with the expected target plus the applicable green canary.
 - Derive source Git SHA only from provenance bound to the immutable digest or a
-  validated matching prior receipt. A manual tag never inherits `github.sha`.
-- Add one terminal receipt step after rollback handling. For every path that
-  reached production mutation it atomically replaces `/data/release-state.json`
-  with a bounded record that distinguishes the attempted release from the
-  active release and records rollback truth.
+  matching version-2 terminal-proof prior receipt. A version-1 receipt never
+  seeds provenance or ancestry, and a manual tag never inherits `github.sha`.
+- Add one terminal receipt step after rollback handling. Every path that crossed
+  the first-host-write boundary attempts to atomically replace
+  `/data/release-state.json` with a bounded record that distinguishes the
+  attempted release from the active release and records rollback truth.
 - Publish a bounded `terminal_receipt_result` step output
   (`published|failed|not_applicable`) before returning any writer failure, so
   the issue step can report whether durable terminal truth was actually saved.
@@ -33,9 +39,13 @@ the workflow-definition `github.sha` to unrelated image bytes.
   versioned terminal outcome, attempted/active identities, and structured
   rollback state. Define every legacy field and every `rollback_target` outcome
   so no failure path invents provenance or a future repair target.
+- Give rollback handling an exact exit table: valid non-required cases exit
+  zero; required-but-unavailable, failed, or unproven rollback exits nonzero.
 - Make `deploy-failed` issue wording derive from bounded outputs; never say
   rollback succeeded when rollback was unavailable, skipped, red, or not proven
-  by configured/running identity agreement.
+  by configured/running identity agreement, and never call a no-rollback
+  forward path proven healthy without terminal `deployed` outcome, agreed
+  active identity, and the applicable passed canary.
 - Put classification and receipt construction in a small pure executable with
   table-driven unit tests; keep workflow shell responsible only for observation,
   mutation, transport, and atomic installation.
