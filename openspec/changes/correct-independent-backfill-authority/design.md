@@ -32,7 +32,7 @@ The provider requirement will say that every `AllProvidersExhaustedError` is ret
 
 ### Downgrade audit certainty without discarding valid evidence
 
-The audit will retain strict-validation counts, inventories, source anchors, and focused-test results, but will stop asserting that all 231 requirements and 642 scenarios were independently grounded or BUILT as written. The post-merge findings will be named explicitly, and completion criterion 5 will remain failed until the corrected authority set receives the required durable review.
+The audit will retain strict-validation counts, inventories, source anchors, and focused-test results, but will stop asserting that the pre-correction 231 requirements and 642 scenarios were independently grounded or BUILT as written. After the correction adds three scenarios, the current inventory will be 231 requirements and 645 scenarios. The post-merge findings will be named explicitly, and completion criterion 5 will remain failed until the corrected authority set receives the required durable review.
 
 ## Risks / Trade-offs
 

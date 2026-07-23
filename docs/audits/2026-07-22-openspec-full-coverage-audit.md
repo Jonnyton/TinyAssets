@@ -1,10 +1,12 @@
 # OpenSpec Full-Coverage Audit
 
 - **Freshness:** 2026-07-23 UTC; canonical re-audit completed through PR #1619,
-  legacy authority classified through PR #1620, and nine independent shipped
-  contract groups source-reviewed, synced, and archived
-- **Code/spec baseline:** PR #1620 merge on `origin/main` at `8cab31d8`, plus
-  archived change `2026-07-23-backfill-independent-shipped-contracts`
+  legacy authority classified through PR #1620, and PR #1622's nine
+  dependency-independent shipped-contract groups synced and archived; a
+  post-merge authority review returned ADAPT on two requirement wordings
+- **Code/spec baseline:** PR #1622 merge on `origin/main` at
+  `35817a3e8463c095f63fe2ea7d739728f67a4679`, including archived change
+  `2026-07-23-backfill-independent-shipped-contracts`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -18,20 +20,22 @@ The original baseline verdict below is now historical. The repository has
 since landed eight Batch A canonical spec files, enriched the core runtime,
 provider/credential, and knowledge/memory owners, reclassified the eight
 forward-vision files, classified all 52 legacy specification documents, and
-archived nine independent shipped-contract backfills. The strict-valid tree
+archived PR #1622's nine dependency-independent shipped-contract backfills. The strict-valid tree
 now contains **25 canonical capabilities** and **9 active changes**. The eight
 forward-vision capability directories no longer exist under
 `openspec/specs/`; their shipped pure-core subsets are canonical and their
 unbuilt outcomes are preserved by the active
 `build-forward-platform-capabilities` change.
 
-This progress does **not** yet prove full coverage. The canonical grounding
-pass identified seven inaccurate requirements; that correction plus the
-independently reviewed backfill now makes all 231 canonical requirements true
-as written. Eight dependency-bound shipped groups and eight full-platform
-target groups remain. The accurate answer is: current canonical OpenSpec
-describes built behavior, but not everything built or targeted is fully
-specified yet.
+This progress does **not** yet prove full coverage. The earlier canonical
+review identified and corrected seven inaccurate requirements. PR #1622 then
+synced 27 added requirements and 85 scenarios, but post-merge review found two
+wording defects: GitHub pull-request kill-switch precedence and provider retry
+eligibility by exception type. The requirement/scenario counts and strict
+validation are current, but this audit cannot claim that all 231 canonical
+requirements are true as written or independently grounded until that
+correction is reviewed, synced, and archived. Eight dependency-bound shipped
+groups and eight full-platform target groups remain.
 
 ### Design-truth conflicts that block blind target-spec transcription
 
@@ -53,8 +57,8 @@ require host approval, so this audit records rather than repairs that drift.
 
 ### Current OpenSpec inventory
 
-Fresh strict validation after the independent backfill sync passes for the
-whole tree. Canonical OpenSpec contains 25 capabilities, 231 requirements, and 642
+Fresh strict validation after the PR #1622 backfill sync passes for the
+whole tree. Canonical OpenSpec contains 25 capabilities, 231 requirements, and 645
 scenarios. The nine active
 changes contain 104 proposed requirements and 196 top-level tasks, 39
 currently checked (nested checklist evidence is excluded from these task
@@ -91,13 +95,13 @@ Those files remain design/provenance inputs, not proof that behavior is built.
 The same rule applies to `docs/vetted-specs.md`; it is a scoping artifact, not
 canonical behavioral truth.
 
-### Fresh canonical grounding results
+### Canonical grounding evidence and remaining review gap
 
 The original re-audit split 24 canonical capabilities into three independently
-reviewed batches. The independent shipped-contract archive adds a fourth
-source-grounded batch. Results are requirement/scenario classifications
-against current source and focused tests, not an inference from strict syntax
-validation.
+reviewed batches. PR #1622 adds a fourth source- and test-backed batch. The
+classifications below distinguish those earlier reviewed matrices from PR
+#1622's sync and regression evidence; strict syntax validation alone does not
+prove independent code grounding.
 
 - **Batch A (8 capabilities):** all 54 requirements and 142 scenarios are
   BUILT as bounded. Work-target helpers use conventional lifecycle values,
@@ -114,17 +118,26 @@ validation.
   and legacy-bid boundary, sequential settlement race, configured Goal auth and
   best-effort attribution, fallible founder rollback, tolerant learning
   filters, and mutable/fail-open receipt behavior.
-- **Independent backfill (9 capabilities):** all 27 added requirements and 85
-  scenarios are BUILT as bounded. The review corrected optional receipt use,
-  transitional soul-authority fallthrough, API-delegated merge enforcement,
-  partial remote writes and best-effort receipt finalization, narrow Windows
-  redaction, seed-based wiki consolidation, stored-output reuse, provider error
-  propagation, exact authority-resolver outcomes, and ScenePacket emission.
+- **PR #1622 dependency-independent backfill (9 capabilities):** 27 added
+  requirement headings and 85 scenarios were synced and covered by the
+  branch's focused evidence suite. The branch incorporated source-aligned
+  corrections for optional receipt use, transitional soul-authority
+  fallthrough, API-delegated merge enforcement, partial remote writes,
+  best-effort receipt finalization, narrow Windows redaction, seed-based wiki
+  consolidation, stored-output reuse, provider error propagation, exact
+  authority-resolver outcomes, and ScenePacket emission. Post-merge review
+  nevertheless found two requirements not true as written: the GitHub PR
+  kill switch precedes the no-destination Phase-1 path, and the provider bridge
+  retries every `AllProvidersExhaustedError`, not only proven-transient causes.
+  This batch remains ADAPT pending the dedicated authority correction.
 
-Overall, **all 231 canonical requirements and all 642 scenarios are BUILT as
-written**. This is a grounding result, not a claim of full coverage: eight
-dependency-bound groups of shipped behavior still lack canonical ownership, and eight full-platform
-target groups still lack complete active owners.
+Overall, the canonical tree contains **231 requirements and 645 scenarios** and
+passes strict validation, but two PR #1622 requirement wordings are not grounded
+as written and no durable pre-merge independent approval for that batch was
+found. Do not infer that every canonical item is independently grounded from
+these counts. Separately, eight dependency-bound groups of shipped behavior
+still lack canonical ownership, and eight full-platform target groups still
+lack complete active owners.
 
 The requirement-by-requirement classifications, source/test anchors, and
 reproduction evidence are durable in the companion matrices for
@@ -165,13 +178,15 @@ tests/test_universe_intelligence.py tests/test_wiki_trigger_receipts.py`: 217
 passed with 7 warnings in 29.37 seconds. The Windows layer-2 uptime canary was
 not run.
 
-On 2026-07-22 PT / 2026-07-23 UTC, Windows, Python 3.14, the independent
-backfill's 27-file focused suite passed **694 tests** with 8 third-party
-deprecation warnings in 35.04 seconds; the cross-provider drift self-test was
-clean. Full-tree strict validation passed all **34** current items, and the
-sync proof preserved all eight prior canonical files as exact text prefixes
-while each of the 27 added requirement headings occurred exactly once. The
-Windows layer-2 uptime canary was not run.
+PR #1622 records that, on 2026-07-22 PT / 2026-07-23 UTC, Windows, Python 3.14,
+its 27-file focused suite passed **694 tests** with 8 third-party deprecation
+warnings in 35.04 seconds and the cross-provider drift self-test was clean.
+Post-merge validation on exact merge `35817a3e` passed all **34** current
+OpenSpec items; the sync preserved all eight prior canonical files as exact
+text prefixes and each of the 27 added requirement headings occurs once. These
+facts establish regression, syntax, and sync integrity; they do not establish
+independent grounding of every requirement. The Windows layer-2 uptime canary
+was not run.
 
 ### Shipped behavior still missing canonical ownership
 
@@ -451,9 +466,11 @@ must carry the executable SHALL/scenario contracts and tasks.
 
 **Current verdict: NOT COMPLETE.** Criterion 1 fails on the eight
 dependency-bound shipped backfill groups above; criterion 3 fails on the eight
-full-platform target groups without complete active owners. Criterion 5 now
-passes: all 231 requirements and 642 scenarios are independently grounded and
-strict-valid.
+full-platform target groups without complete active owners. Criterion 5 does
+not yet pass: strict validation passes all 34 current items, but post-merge
+independent review returned ADAPT on two PR #1622 requirements and no durable
+pre-merge independent approval for that batch was found. Criterion 5 can pass
+after the authority correction is reviewed, synced, archived, and revalidated.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
 owns the backfill, runtime-hardening, legacy-disposition, PLAN-decision, and
