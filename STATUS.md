@@ -4,7 +4,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
-- **[P1 filed:2026-07-22]** DNS/LLM two-red sinks read prior run conclusion, but probe failures are `continue-on-error`; threshold may never open.
 - **[P1 filed:2026-07-22]** Disk-watch exits 1 on pressure; systemd can stop before rotation/auto-prune despite “independent” claim.
 - **[P1 filed:2026-07-22]** Priority-authorized submit emits unknown `operator_request`; dispatcher only enables `host_request`, stranding work.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
@@ -23,6 +22,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **Fix DNS/LLM consecutive-red alarm threshold** — probe red must make the job/run fail after publishing outputs so the next tick can observe prior failure and open the durable issue | .github/workflows/dns-canary.yml; .github/workflows/llm-binding-canary.yml; tests/test_dns_canary_workflow.py; tests/test_llm_binding_canary_workflow.py; openspec/changes/fix-canary-consecutive-red-threshold/; openspec/specs/uptime-and-alarms/spec.md | current as-built limitation in uptime-and-alarms spec | claimed:codex-gpt5-desktop ACTIVE 2026-07-23 |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Backfill remaining credential-vault shipped contracts** — exact alias/first-record secret selection and fixed-temp replacement limitation | openspec/changes/backfill-credential-vault-shipped-contracts/ | PR #1606 settles canonical `credential-vault` owner | pending |
