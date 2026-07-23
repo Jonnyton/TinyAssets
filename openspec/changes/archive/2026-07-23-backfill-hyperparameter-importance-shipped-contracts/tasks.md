@@ -9,11 +9,11 @@
 - [x] 2.1 Strictly validate the isolated change and all OpenSpec items
 - [x] 2.2 Run focused evaluator tests and dependency-independent edge probes
 - [x] 2.3 Verify runtime/plugin parity and repository documentation gates
-- [ ] 2.4 Obtain independent requirement-to-source and whole-diff review and resolve every finding
+- [x] 2.4 Obtain independent requirement-to-source and whole-diff review and resolve every finding
 
 ## 3. Fold Back Canonical Truth
 
-- [ ] 3.1 Sync the approved delta into `evaluation-runtime-and-scenarios`
-- [ ] 3.2 Update the full-coverage audit counts, grounding result, residual inventory, and verification evidence
-- [ ] 3.3 Rebase on current main, strict-validate the final archived tree, and confirm untouched requirements remain intact
-- [ ] 3.4 Archive the completed change, publish the reviewed PR, and retire its STATUS/worktree lane
+- [x] 3.1 Sync the approved delta into `evaluation-runtime-and-scenarios`
+- [x] 3.2 Update the full-coverage audit counts, grounding result, residual inventory, and verification evidence
+- [x] 3.3 Rebase on current main, strict-validate the final archived tree, and confirm untouched requirements remain intact
+- [x] 3.4 Archive the completed change, publish the reviewed PR, and retire its STATUS/worktree lane
