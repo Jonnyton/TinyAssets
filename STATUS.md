@@ -4,7 +4,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
-- **[P1 filed:2026-07-23 verified:2026-07-23]** Deploy rollback/receipt + DR archive-input/state-proof/red-evidence remain out of spec.
+- **[P1 filed:2026-07-23 verified:2026-07-23]** Deploy rollback/receipt integrity remains out of spec.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P0 filed:2026-07-22 verified:2026-07-23]** Fresh hosts omit disk-watch and do not converge watchdog/backup/prune timers.
 - **[P1 filed:2026-07-22]** Priority-authorized submit emits unknown `operator_request`; dispatcher only enables `host_request`, stranding work.
@@ -23,8 +23,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Harden full-volume disaster restore** — extract into `_data`, validate before mutation, preserve prior volume on corrupt archives, and prove concurrent isolation | deploy/backup-restore.sh; tests/test_backup_script.py; tests/test_backup_restore_drill_invariants.py; docs/ops/backup-restore-runbook.md; deploy/RESTORE.md; openspec/changes/harden-volume-restore/; openspec/specs/uptime-and-alarms/spec.md | fresh 2026-07-23 DR audit; Fire DR drill #3 only after merge | claimed:codex-gpt56-sol ACTIVE 2026-07-23 |
-| **Keep disk-pressure remediation running** — local branch verified and archived; preserve alert exit 1 while continuing rotation then auto-prune | openspec/changes/archive/2026-07-23-keep-disk-pressure-remediation-running/; openspec/specs/uptime-and-alarms/spec.md; deploy/tinyassets-disk-watch.service; tests/test_disk_watch.py; STATUS.md | root review; no live host install/activation claimed | host-review |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Backfill remaining credential-vault shipped contracts** — canonical owner landed via #1607; alias/first-record selection remains; re-check fixed-temp truth after #1606 disposition | openspec/changes/backfill-credential-vault-shipped-contracts/ | fail-closed provider overlay releases `openspec/specs/credential-vault/spec.md`; #1606 or declared successor settles replacement semantics/disposition | pending |
@@ -45,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| Fire DR drill #3 via workflow_dispatch | `.github/workflows/dr-drill.yml` | - | host or lead-with-PAT |
+| **Harden and fire DR drill #3** — validate archive input, prove transferred checksum + representative restored state, preserve red evidence | .github/workflows/dr-drill.yml; tests/test_dr_drill_workflow.py; docs/ops/dr-drill-log.md; openspec/changes/harden-dr-drill-evidence/; openspec/specs/uptime-and-alarms/spec.md | #1651; no live dispatch before code lands | pending |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
