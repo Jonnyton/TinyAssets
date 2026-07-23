@@ -1,6 +1,6 @@
 # Status
 
-Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; substantive work lives in the MCP brain (`PR-###`/`BUG-###` + dispatcher + auto-change loop), while coordination without a wiki home stays here; check both.
+Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; substantive work lives in the MCP brain (`PR-###`/`BUG-###` + dispatcher + auto-change loop), while coordination without a wiki home stays here; check both.
 
 ## Concerns
 
@@ -11,26 +11,22 @@ Live steering only. **Budget 4 KB / 60 lines.** Concerns/Work = one line each; l
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
 - [filed:2026-07-02 verified:2026-07-22] Dogfood open: persona payload rework + OKF reserved-file frontmatter. Founder-seed-at-create closed by #1462.
 - [filed:2026-04-17 verified:2026-07-22] Privacy Q6.3 still platform: gemini/groq/grok remain in the fallback chains (`providers/router.py:89`).
-- [filed:2026-04-24] Task #9 host Qs: GROQ/GEMINI/XAI GH Actions secrets present + rotation e2e validated once the deploy step ships.
 - **[P1 filed:2026-04-30]** Castles II run `28479d8ddfb44488`: `provider_exhausted` at `candidate_discovery` (BUG-038/039); blocks branch-run proof.
 - [filed:2026-05-19] Wiki drifting to agent scratch space (81% of post-05-01 notes); host conversation: split coordination off the knowledge wiki?
 - [filed:2026-07-14 verified:2026-07-14] Watch: anon-write gate LIVE + `ui-test` passed; pending first organic authenticated-user write.
 - [filed:2026-07-13 verified:2026-07-15] `workflow-voice` (dormant) has 3 stale `pending` queue rows — review before ever activating it.
-
-## Approved Specs
-
-Full specs: `docs/vetted-specs.md` (H2 per spec). Dev reads there, never wiki. On land, delete row + H2 section together.
-
-| Spec | Status |
-|---|---|
-| Daemon roster + node/gate soul policy + ledger/attribution/royalty/bounty items | deferred, needs-scoping; READ path landed (#900) |
 
 ## Work
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
-| **Audit remaining OpenSpec full coverage** — prove canonical requirements are built and substantive shipped capabilities are specified | docs/audits/2026-07-22-openspec-full-coverage-audit.md | #1614/#1615; read-only across PLAN.md, specs, changes, code, tests | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
+| **Resolve seven canonical OpenSpec drift findings** — runtime hardening or exact as-built narrowing per finding | openspec/changes/reconcile-as-built-contract-drift/ | full-coverage audit; active overlaps | pending |
+| **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
+| **Backfill 17 shipped contracts into canonical OpenSpec** — current behavior only | openspec/changes/backfill-shipped-behavior-coverage/ | full-coverage audit; credential/distributed/OKF/connector changes | pending |
+| **Disposition all 52 legacy specs** — canonical, active, history, or claimed target | docs/audits/2026-07-22-legacy-spec-disposition.md; docs/specs/INDEX.md | full-coverage audit | pending |
+| **Resolve target-spec PLAN conflicts** — store, private data, primitives, privacy guidance | PLAN.md | full-coverage audit; host selects coherent positions | host-decision |
+| **Specify uncovered full-platform targets** — collaboration, moderation, tray, market, portability, authoring, handoffs | openspec/changes/complete-full-platform-target-specs/ | audit; PLAN decisions; build-forward-platform-capabilities | pending |
 | **Release reconcile event trigger** — retain cron backstop; also reconcile after proven-under-load `Docker build smoke` completions; stable concurrency coalesces stampedes | .github/workflows/release-reconcile.yml, openspec/changes/release-reconcile-event-trigger/ | live runs 1892, 1883 | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
 | **R2-1a set_engine must constrain allowed_providers** — host-credential half LANDED 92dd60c5 (fail-closed + mutation proof). Still open: a founder's own key silently falls through the writer chain to a provider they never chose | tinyassets/providers/router.py, tinyassets/api/engine.py, tests/ | - | pending |
 | **R2-1b provider receipt** — no receipt exists, so 92dd60c5 is asserted but UNAUDITABLE in prod. Design decided: thread provider off the same result object, NOT the `_last_provider` global (races); report credential class; cover BOTH converse writer calls | tinyassets/providers/call.py, tinyassets/universe_intelligence.py, tests/ | R2-1a | pending |

@@ -1,7 +1,9 @@
 # OpenSpec Full-Coverage Audit
 
-- **Freshness:** 2026-07-22
-- **Code/spec baseline:** `origin/main` at `babce413a637e6d08429e39f8f75b3bc8c0ee52f`
+- **Freshness:** 2026-07-22; canonical re-audit completed after PRs #1602, #1604,
+  #1607, #1611, #1614, and #1615
+- **Code/spec baseline:** `origin/main` at
+  `7c23c881502460f65cfd5ee81c27042d87743f24`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -9,7 +11,200 @@
   post-baseline first-parent review, and three independent read-only module
   audits
 
-## Verdict
+## Current reconciliation status
+
+The original baseline verdict below is now historical. The repository has
+since landed eight Batch A canonical spec files, enriched the core runtime,
+provider/credential, and knowledge/memory owners, and reclassified the eight
+forward-vision files. The strict-valid tree now contains **24 canonical
+capabilities** and **9 active changes**. The eight forward-vision capability
+directories no longer exist under `openspec/specs/`; their shipped pure-core
+subsets are canonical and their unbuilt outcomes are preserved by the active
+`build-forward-platform-capabilities` change.
+
+This progress does **not** yet prove full coverage. The completed canonical
+grounding pass below identifies seven inaccurate requirements, shipped
+behavior without canonical owners, and full-platform targets without complete
+active owners. The accurate answer is: canonical OpenSpec is intended to
+describe built behavior, but the repository has not yet proved that everything
+specified is built or that everything built/targeted is fully specified.
+
+### Design-truth conflicts that block blind target-spec transcription
+
+The integrated 2026-04-18 architecture remains a target reference, but newer
+PLAN rules supersede or contradict several of its concrete prescriptions. A
+future OpenSpec change cannot silently choose among these:
+
+| Conflict | Current evidence | Consequence |
+|---|---|---|
+| Canonical platform store | PLAN's system-shape reference says Postgres/Supabase is canonical and GitHub is an export sink; PLAN's Open Tensions says that decision is unresolved. | Catalog, collaboration, export, and deletion specs need a host-approved single position. |
+| Private data placement | PLAN's Commons-first rule says private content stays on hosts and the platform never stores it; architecture §17 prescribes private Supabase Storage, private concept visibility, and field-level platform records. | Do not spec private platform storage or private platform catalog rows until reconciled. |
+| Public tool surface | PLAN fixes five permissioned handles and requires minimal primitives; architecture §§15, 21, 23, 27, 31, and 33 name many standalone RPC/MCP tools. | Preserve behaviors only as targets under the canonical handles unless a new irreducible primitive is approved. |
+| Privacy policy ownership | PLAN says threat-model/privacy patterns are community-built while platform code owns only enforcement boundaries; architecture §31 proposes platform privacy-guidance tools and a platform-authored taxonomy. | Separate enforceable data boundaries from community guidance before drafting requirements. |
+
+The diagnostic `plan_module_audit.py` also reports all 11 PLAN modules as
+55-64 days old and three missing substrate paths (`tinyassets/runtime/`,
+`tinyassets/storage/goals_gates.py`, and `tinyassets/servers/`). PLAN edits
+require host approval, so this audit records rather than repairs that drift.
+
+### Current OpenSpec inventory
+
+Fresh strict validation on `7c23c881` passes for the whole tree. Canonical
+OpenSpec contains 24 capabilities and 204 requirements. The nine active
+changes contain 104 proposed requirements and 196 top-level tasks, 39
+currently checked (nested checklist evidence is excluded from these task
+counts):
+
+| Active change | Requirements | Tasks done | Classification |
+|---|---:|---:|---|
+| `brain-okf-canonical-store` | 7 | 9/16 | future brain-store migration |
+| `build-forward-platform-capabilities` | 54 | 1/21 | future boundary/data/demand/hardware/market/training/token umbrella |
+| `distributed-execution` | 6 | 1/22 | in-flight authority and external execution program |
+| `reconcile-external-connector-manifests` | 9 | 0/27 | connector-product reconciliation, not yet shipped |
+| `reconcile-universe-personification-relay` | 7 | 22/33 | surviving unbuilt relay/personification behavior |
+| `retire-legacy-live-mcp-tools` | 4 | 0/25 | gated breaking live-surface cleanup |
+| `test-identity-and-reset` | 5 | 0/9 | future live identity/reset acceptance substrate |
+| `universe-creation` | 8 | 6/33 | residual creation and compute-authority behavior |
+| `universe-visibility` | 4 | 0/10 | proposed visibility model |
+
+No runtime code changed between the original audit baseline `babce413` and
+this baseline; the intervening work is spec reconciliation and coordination.
+Therefore the original shipped-surface inventory remains useful evidence, but
+its counts and forward/canonical classification were stale and are superseded
+by this section.
+
+### Legacy specification inventory is not OpenSpec completion
+
+`docs/specs/` still contains 52 Markdown files. Thirteen April full-platform
+execution specs describe themselves as active pre-drafts with no code yet
+(schema/RLS, web catalog, gateway, host tray, market settlement, moderation,
+export sync, load testing, remix/convergence, connector integration, handoffs,
+node authoring/sandbox, and Plan-B hosting). Later files mix shipped contracts,
+historical records, superseded proposals, research-derived designs, paused
+verticals, and additional unbuilt work. `docs/specs/INDEX.md` still calls that
+directory the home of current specs even though the 2026-07-19 project rule
+makes `openspec/` canonical.
+
+Those files are design/provenance inputs, not proof that their behavior is
+built. Full reconciliation requires a filename-by-filename disposition:
+canonical OpenSpec owner, active OpenSpec owner, explicitly superseded/history,
+or a newly claimed target-spec lane. The same rule applies to
+`docs/vetted-specs.md`; it remains a scoping artifact, not canonical behavioral
+truth.
+
+### Fresh canonical grounding results
+
+The re-audit splits the 24 canonical capabilities into three read-only batches.
+Results are requirement/scenario classifications against current source and
+focused tests, not an inference from strict syntax validation.
+
+- **Batch A (8 capabilities):** 53/54 requirements and 141/142 scenarios are
+  BUILT. `daemon-runtime-and-dispatch`'s requirement “The work-target registry
+  has an explicit lifecycle” is PARTIAL: delayed two-step discard is built,
+  but the requirement and first scenario claim a closed lifecycle set while
+  `WorkTarget.from_dict` and `create_target` deliberately persist arbitrary
+  lifecycle strings. A later requirement in the same spec states that
+  permissive behavior correctly, making the canonical file internally
+  inconsistent.
+- **Batch B (8 capabilities):** all 73 requirements and 179 scenarios are BUILT
+  as bounded, including their explicit limitations. The audit nevertheless
+  found shipped behavior with no complete canonical owner: child-branch
+  invocation/await/receipt attachment; the read-only OKF exporter; persisted
+  `external_write_results` snapshot/quarantine behavior; and the full live
+  `get_status` early-return/session-boundary plus prompt/tool-metadata contract.
+- **Batch C (8 capabilities):** 71/77 requirements and 221/227 scenarios are
+  BUILT; four requirements/scenarios are PARTIAL and two are CONTRADICTED. The
+  mismatches are broad absolute guarantees that are not upheld by current
+  failure, concurrency, or adversarial paths.
+
+Overall, **197/204 canonical requirements and 541/548 scenarios are BUILT;
+five requirements/scenarios are PARTIAL and two are CONTRADICTED**. The seven
+non-BUILT requirements are:
+
+The requirement-by-requirement classifications, source/test anchors, and
+reproduction evidence are durable in the companion matrices for
+[Batch A](2026-07-22-openspec-grounding-batch-a.md),
+[Batch B](2026-07-22-openspec-grounding-batch-b.md), and
+[Batch C](2026-07-22-openspec-grounding-batch-c.md).
+
+| Capability and requirement | Classification | Grounded mismatch | Correction owner |
+|---|---|---|---|
+| `daemon-runtime-and-dispatch` — work-target registry lifecycle | PARTIAL | Delayed discard is built, but `WorkTarget.from_dict` and `create_target` accept arbitrary lifecycle strings (`tinyassets/work_targets.py:42-48,145-184`), contradicting the closed-set wording; delayed finalization is at `:506-531,627-675` and tested at `tests/test_work_targets.py:98-118`. | Correct the canonical requirement to distinguish conventional helper values from the deliberately permissive generic storage boundary. |
+| `paid-market-economy` — all money amounts are integer MicroTokens, never floats | CONTRADICTED | `MicroToken(1.5)` truncates (`tinyassets/payments/identifiers.py:27-30`); transports call `int(raw_amount)` (`tinyassets/api/market.py:474,597,688`); node bids/settlements use floats (`tinyassets/bid/node_bid.py:46`, `tinyassets/bid/settlements.py:24,120`) and tests preserve `7.25` (`tests/test_node_bid.py:830,862`). | New paid-market integer-money hardening change, coordinated with `build-forward-platform-capabilities`; otherwise narrow the contract if legacy floats are intentional. |
+| `paid-market-economy` — settlement records are immutable and write-once | PARTIAL | Settlement performs `path.exists()` then ordinary `write_text` (`tinyassets/bid/settlements.py:101-106,126-129`), so concurrent writers can overwrite; `tests/test_node_bid.py:883` covers only sequential overwrite. | Paid-market hardening change using exclusive creation plus a two-writer race test. |
+| `shared-goals-and-convergence` — Goal writes append to the global contribution ledger | PARTIAL | `_dispatch_goal_action` catches every `_append_global_ledger` failure and still returns the successful mutation (`tinyassets/api/market.py:2424-2446`); `tests/test_goals_surface.py:639-675` proves only the happy path. | Corrective goals delta: make mutation plus attribution durable/atomic, fail the write, or explicitly canonicalize and test best-effort behavior. |
+| `universe-lifecycle-and-soul` — authenticated creation grants founder ownership and binds a home | PARTIAL | Index registration failure is logged and ignored (`tinyassets/api/universe.py:4771-4779`); grants/home then mutate shared state (`:4781-4803`) while rollback removes only the directory (`:4808-4824`). | A new corrective lifecycle delta: make registration mandatory and creation transactional, or add complete compensating cleanup; the active `universe-creation` design explicitly excludes canonical birth/ACL behavior. |
+| `universe-personification-and-relay` — learning is fail-closed over explicitly taught facts | PARTIAL | The prompt asks for grounding (`tinyassets/universe_intelligence.py:203-233`) but extraction trusts returned JSON (`:258-275`) and commit accepts non-empty governed content (`:334-405`); the only deterministic check is a narrow identity regex (`:295-297,359-368`). Existing tests inject grounded or boilerplate proposals (`tests/test_universe_intelligence.py:102-137,300-327`). | New corrective relay delta with source evidence and deterministic grounding, coordinated with the active personification change. |
+| `wiki-commons` — trigger receipts are append-only and reach one terminal status | CONTRADICTED | A mutable attempt row (`tinyassets/wiki/trigger_receipts.py:115-130`) is updated without pending-status compare-and-swap (`:235-330`), allowing terminal overwrites; tests cover normal transitions/stale pending only (`tests/test_wiki_trigger_receipts.py:62-127,212-239`). | New wiki corrective delta with guarded transitions, or an append-only transition-event model if literal history is intended. |
+
+The classification is code-grounded, not merely test-derived. Representative
+evidence for the seven mismatches is in `tinyassets/work_targets.py`,
+`tinyassets/payments/identifiers.py`, `tinyassets/bid/settlements.py`,
+`tinyassets/api/market.py`, `tinyassets/api/universe.py`,
+`tinyassets/universe_intelligence.py`, and
+`tinyassets/wiki/trigger_receipts.py`; each correction lane must carry the
+focused failure/race/adversarial tests named above.
+
+On 2026-07-22, Windows, Python 3.14, focused Batch A evidence passed 1,026
+tests; 13 failures were stale-test debt
+(11 dispatcher fixtures omit the now-required loop declaration, one desktop
+fixture expects the retired `workflow` GUI script, and one Windows assertion
+expects LF where the platform writes CRLF). The original Batch A pytest argv
+was not retained after reviewer-context compaction; its matrix records that
+provenance and a reconstructed explicit evidence-file command without claiming
+the reconstruction produced those totals. On the same date/environment,
+focused Batch B evidence passed 1,180 tests with 3 skips; three failures were
+verification debt because early status responses omit `session_boundary` and
+two recursion-limit fixtures omit the runs schema. None of these failures is
+counted as proof for a canonical requirement. Batch C was static source/test
+inspection and did not execute tests. The Windows layer-2 uptime canary was not
+run.
+
+### Shipped behavior still missing canonical ownership
+
+The reverse-direction audit also found behavior that exists in source but is
+not materially specified by any canonical requirement. These are backfill
+obligations, not permission to redesign the behavior:
+
+| Recommended canonical owner | Missing shipped contract | Coordination edge |
+|---|---|---|
+| `community-patch-loop` | Exact VCS token resolution, open-PR reuse/stale-head rejection, `auto_ship_health`, nested Patch Packet extraction, and completed-run reuse. | Preserve current GitHub-effect boundaries. |
+| `constraint-evaluation` | Multi-shot `validate_incremental` grounding behavior. | None active. |
+| `credential-vault` | Claude OAuth/BYO-key mapping and injection, plus the current temp-and-replace write boundary. | Do not overlap the active fail-closed provider-overlay lane; do not claim cross-process locking that is absent. |
+| `daemon-identity-and-host-pool` | Daemon-wiki soul scaffolding, explicitly flagged latest-soul selection, capped/versioned behavior proposals, deregistration, pricing/concurrency fields, and callback-error isolation. | Coordinate `distributed-execution` and `universe-creation`. |
+| `daemon-runtime-and-dispatch` | Lease heartbeat ownership, cooperative cancellation, terminal queue GC, and the still-callable-but-no-longer-startup-wired `recover_claimed_tasks`. | Coordinate `distributed-execution`. |
+| `desktop-host-runtime` | Canonical `tinyassets` GUI entrypoint and tunnel-default-off behavior. | Add focused tests while retiring the stale `workflow` expectation. |
+| `development-coordination-runtime` | Missing-artifact and skill-mirror drift checks; stable machine-readable coordination outputs where already shipped. | Keep provider-specific implementation details out of behavioral guarantees. |
+| `domain-plugin-runtime` | Domain-owned branch-slug registry and episodic-coordinate shapes. | None active. |
+| `external-effect-adapters` (new) | Shipped GitHub PR/merge, Twitter, wiki-writeback, and Windows sinks; trusted run-snapshot `external_write_results` and forged-evidence quarantine. | Depend on `external-effect-receipts`; do not import future deterministic-key/cap/whole-batch guarantees from the boundary-layer change. |
+| `graph-execution-substrate` | Child-Branch invocation, mappings, depth/wait modes, terminal propagation, receipt wait, and validated/idempotent existing-child attachment. | Read-coordinate `distributed-execution`; current local receipts are not future signed owner-daemon authority. |
+| `knowledge-retrieval-and-memory` | Curated read-only OKF export and its exclusions. | Coordinate `brain-okf-canonical-store`; export does not make OKF the current write-through canonical store. |
+| `live-mcp-connector-surface` for metadata; `identity-auth-and-access-control` for status identity | Four-prompt catalog, tool title/tag/annotation invariants, and exact early/config-error/full status variants, including that early responses currently omit `session_boundary`. | Coordinate connector-manifest, legacy-tool-retirement, and identity/reset changes. |
+| `provider-routing` | Three-attempt exponential bridge retry and fallback-response semantics. | None active. |
+| `shared-goals-and-convergence` | ChatGPT compatibility Goal aliases. | Preserve canonical action semantics. |
+| `universe-lifecycle-and-soul` | Authenticated request-scoped versus anonymous host-global `switch_universe`. | Coordinate `universe-creation` and `test-identity-and-reset`. |
+| `uptime-and-alarms` | DNS incident canary, LLM-binding canary, release reconciler, and disk-pressure alert/rotation/auto-prune controller. | Every uptime owner retains its concurrency/load evidence obligation. |
+| `wiki-commons` | Cosign, protected/hash-guarded delete, consolidation, lint, and project-sync semantics. | Preserve action-catalog boundaries. |
+
+### Full-platform targets with no complete active owner
+
+The active changes preserve many forward requirements, but they do not yet own
+the entire full-platform target. New target changes are still required for:
+
+1. the collaborative catalog/control plane after resolving canonical-store,
+   private-data, and public-tool-surface conflicts;
+2. realtime collaborative editing, node CRUD/discovery/remix/convergence,
+   presence, export, and the host/private boundary;
+3. moderation, abuse response, appeals, and rate limits;
+4. packaged one-click tray installation across supported operating systems;
+5. production realtime paid-market inbox, atomic bid matching, claims, and
+   delivery (the active market umbrella owns transactions/oracles, not this
+   complete workflow);
+6. data portability, account deletion, succession, and feedback;
+7. node authoring/file I/O, evaluator catalog, and autoresearch surfaces;
+8. explicit real-world handoff/outcome linkage beyond generic future adapters.
+
+## Historical baseline verdict (superseded)
 
 TinyAssets is not yet fully represented in OpenSpec.
 
@@ -40,7 +235,7 @@ Strict validation proves syntax and scenario shape. It does not prove that all
 shipped behavior is represented, that future-only files are built, or that an
 active delta has landed.
 
-## PLAN Module Coverage
+## Historical PLAN Module Coverage (superseded)
 
 | PLAN module | Existing canonical coverage | Material uncovered as-built behavior |
 |---|---|---|
@@ -56,7 +251,7 @@ active delta has landed.
 | Uptime & Alarms | `uptime-and-alarms` | Tier-3 fresh-clone workflow is shipped but unspecced; canaries do not cover tray install, discovery/remix/live collaboration, paid-market inbox, or moderation. The latter surfaces are unbuilt rather than omitted as-built behavior. |
 | Constraints | none | ASP loading, validation, surface scoring, and synthesis (`constraints/`). Current missing-rule behavior warns and continues, contradicting PLAN's fail-loud target; the as-built spec must state that limitation without endorsing it. |
 
-## Forever Rule Surface Coverage
+## Historical Forever Rule Surface Coverage (superseded)
 
 | Surface | Current evidence | Classification |
 |---|---|---|
@@ -68,7 +263,7 @@ active delta has landed.
 | Moderation/abuse response | Architecture and rubric documents only | Unbuilt and not represented by an active complete OpenSpec change |
 | Cross-surface uptime | MCP/wiki/daemon/revert/paging/recovery/deploy/backup paths canonical | Partial until each built surface has its own probe and unbuilt Forever surfaces land |
 
-## Canonical-Looking Material That Is Not Completion Evidence
+## Historical Canonical-Looking Material (superseded)
 
 - The eight forward-vision files listed in the verdict are design requirements,
   not an as-built baseline.
@@ -84,7 +279,7 @@ active delta has landed.
 - `prototype/full-platform-v0/` and the integrated architecture note are target
   evidence, not shipped behavior.
 
-## Reconciliation Batches
+## Historical Reconciliation Batches (completed or superseded)
 
 The full-spec program must preserve capability boundaries and avoid active
 change collisions.
@@ -249,3 +444,12 @@ must carry the executable SHALL/scenario contracts and tasks.
 5. Canonical specs pass strict validation and independent code-grounding review.
 6. Public and uptime-sensitive surfaces retain their required rendered,
    concurrency/load, CI, and post-fix evidence gates when behavior changes.
+
+**Current verdict: NOT COMPLETE.** Criterion 1 fails on the 17 shipped
+backfill groups above; criterion 3 fails on the eight full-platform target
+groups without complete active owners; criterion 5 fails on five PARTIAL and
+two CONTRADICTED canonical requirements. Criterion 6 additionally requires an
+explicit concurrency/load proof task in every uptime-target change before that
+change can be treated as done. STATUS.md owns the correction, backfill,
+runtime-hardening, legacy-disposition, PLAN-decision, and remaining target-spec
+successor lanes.
