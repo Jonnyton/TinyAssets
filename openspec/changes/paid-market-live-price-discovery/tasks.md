@@ -15,7 +15,7 @@
 
 ## 3. Price surfaces and reference adapters
 
-- [ ] 3.1 Add failing tests for per-descriptor raw-VWAP/native-ask/external-ceiling/composite-index fields, independent timestamps/TTLs/sample counts/owner counts, null versus zero, valid all-in ceiling clamp-and-flag, incomplete/stale never-clamp behavior, and confidence flags.
+- [ ] 3.1 Add failing tests for per-descriptor raw-VWAP/native-ask/external-ceiling/composite-index fields, independent timestamps/TTLs/sample counts/owner counts, null versus zero, valid all-in ceiling clamp-and-flag, incomplete/stale never-clamp behavior, confidence flags, and fail-closed paid-observation joins across tenant/universe identity, fence-bound accepted-result identity, parties, currency/token/chain, gross/net/fee amounts, and §18.6 finality/reorg status.
 - [ ] 3.2 Implement the pure field-fresh aggregation oracle and differential-test it against canonical paid-market settlement/index primitives.
 - [ ] 3.3 Define the read-only credential-blind reference-adapter boundary and add contract tests proving it cannot execute, reserve, claim, settle, access secrets, or return an executable route.
 - [ ] 3.4 Add at least two fake external reference adapters and fault tests for timeout, malformed units/currency, incompatible terms, omitted tax/egress/region/minimum/discount components, partial staleness, independent failure, and partial-reference labeling; use no live credential, quota, or paid API.
