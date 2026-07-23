@@ -5,8 +5,10 @@ Guards the `inspect_storage_utilization` surface + its wiring into
 
 Covered:
 - Shape contract (keys present, types correct).
+- Reconciliation: attributed + unattributed == backing-volume used bytes.
 - Missing subsystem path → bytes=0 (not an error).
-- pressure_level thresholds: ok < 80% ≤ warn < 95% ≤ critical.
+- pressure_level is unknown for incomplete/unavailable accounting; existing
+  volume thresholds still override to warn at 80% and critical at 95%.
 - growth_estimate is null in Phase 1 (no timeseries yet).
 - Synthetic-fs: monkeypatched `shutil.disk_usage` exercises all three
   pressure levels deterministically without touching the real disk.
@@ -43,6 +45,11 @@ class TestShapeContract:
             "volume_percent",
             "volume_bytes_total",
             "volume_bytes_free",
+            "volume_bytes_used",
+            "attributed_bytes",
+            "unattributed_bytes",
+            "attributed_fraction",
+            "accounting_complete",
             "per_subsystem",
             "growth_estimate",
             "pressure_level",
@@ -135,13 +142,67 @@ class TestDirectoryRecursion:
         assert result["per_subsystem"]["wiki"]["bytes"] == 600
 
 
+class TestAccountingReconciliation:
+    def test_exposes_and_reconciles_unattributed_bytes(
+        self, isolated_data_dir: Path, monkeypatch,
+    ):
+        wiki = isolated_data_dir / "wiki"
+        wiki.mkdir()
+        (wiki / "page.md").write_bytes(b"x" * 100)
+        monkeypatch.setattr(
+            "shutil.disk_usage",
+            lambda _path: _FakeUsage(total=1_000, used=500, free=500),
+        )
+
+        result = inspect_storage_utilization()
+
+        assert result["volume_bytes_used"] == 500
+        assert result["attributed_bytes"] == 100
+        assert result["unattributed_bytes"] == 400
+        assert result["attributed_bytes"] + result["unattributed_bytes"] == 500
+        assert result["attributed_fraction"] == 0.2
+        assert result["accounting_complete"] is False
+        assert result["pressure_level"] == "unknown"
+
+    def test_complete_accounting_below_threshold_can_report_ok(
+        self, isolated_data_dir: Path, monkeypatch,
+    ):
+        wiki = isolated_data_dir / "wiki"
+        wiki.mkdir()
+        (wiki / "page.md").write_bytes(b"x" * 500)
+        monkeypatch.setattr(
+            "shutil.disk_usage",
+            lambda _path: _FakeUsage(total=1_000, used=500, free=500),
+        )
+
+        result = inspect_storage_utilization()
+
+        assert result["accounting_complete"] is True
+        assert result["unattributed_bytes"] == 0
+        assert result["pressure_level"] == "ok"
+
+    def test_synthetic_near_full_volume_cannot_report_ok(
+        self, isolated_data_dir: Path, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "shutil.disk_usage",
+            lambda _path: _FakeUsage(total=1_000, used=960, free=40),
+        )
+
+        result = inspect_storage_utilization()
+
+        assert result["attributed_bytes"] + result["unattributed_bytes"] == 960
+        assert result["pressure_level"] == "critical"
+        assert result["pressure_level"] != "ok"
+
+
 class TestPressureLevelThresholds:
     @pytest.mark.parametrize(
         "percent,expected",
         [
             (0.0, "ok"),
-            (0.50, "ok"),
-            (0.79, "ok"),
+            (0.50, "unknown"),
+            (0.79, "unknown"),
             (0.80, "warn"),
             (0.85, "warn"),
             (0.94, "warn"),
@@ -178,7 +239,31 @@ class TestPressureLevelThresholds:
         result = inspect_storage_utilization()
 
         assert result["volume_percent"] == 0.0
-        assert result["pressure_level"] == "ok"
+        assert result["pressure_level"] == "unknown"
+        assert result["accounting_complete"] is False
+
+    @pytest.mark.parametrize(
+        "used,expected",
+        [
+            (799_990, "unknown"),
+            (949_990, "warn"),
+        ],
+    )
+    def test_rounded_display_value_does_not_cross_pressure_threshold(
+        self, isolated_data_dir, monkeypatch, used, expected,
+    ):
+        monkeypatch.setattr(
+            "shutil.disk_usage",
+            lambda _path: _FakeUsage(
+                total=1_000_000,
+                used=used,
+                free=1_000_000 - used,
+            ),
+        )
+
+        result = inspect_storage_utilization()
+
+        assert result["pressure_level"] == expected
 
     def test_disk_usage_oserror_tolerated(
         self, isolated_data_dir, monkeypatch,
@@ -192,7 +277,8 @@ class TestPressureLevelThresholds:
         result = inspect_storage_utilization()
 
         assert result["volume_bytes_total"] == 0
-        assert result["pressure_level"] == "ok"
+        assert result["pressure_level"] == "unknown"
+        assert result["accounting_complete"] is False
 
 
 class TestGrowthEstimate:
@@ -225,7 +311,7 @@ class TestGetStatusIntegration:
         su = payload["storage_utilization"]
         assert "volume_percent" in su
         assert "per_subsystem" in su
-        assert su["pressure_level"] in {"ok", "warn", "critical"}
+        assert su["pressure_level"] in {"unknown", "ok", "warn", "critical"}
 
     def test_get_status_patches_activity_log_and_outputs_from_universe_dir(
         self, isolated_data_dir, monkeypatch,
@@ -269,6 +355,10 @@ class TestGetStatusIntegration:
             f"universe_outputs bytes should be >= {expected_output_bytes} from udir, "
             f"got {output_entry.get('bytes', 0)}"
         )
+        assert su["attributed_bytes"] == sum(
+            subsystem["bytes"] for subsystem in su["per_subsystem"].values()
+        )
+        assert su["attributed_bytes"] + su["unattributed_bytes"] == 10_000_000
 
 
 class TestPathSizeHelper:

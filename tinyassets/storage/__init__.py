@@ -625,6 +625,51 @@ def _pressure_level_from_percent(percent: float) -> str:
     return "ok"
 
 
+def reconcile_storage_utilization(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Recompute storage accounting fields from the final subsystem snapshot.
+
+    ``disk_usage(data_dir())`` describes the whole filesystem backing the data
+    directory, while ``per_subsystem`` only describes paths the daemon knows
+    how to itemize. Keep that gap explicit and refuse to call incomplete or
+    unavailable accounting ``ok``.
+    """
+    total = int(snapshot.get("volume_bytes_total", 0) or 0)
+    free = int(snapshot.get("volume_bytes_free", 0) or 0)
+    measurement_valid = total > 0 and 0 <= free <= total
+    used = total - free if measurement_valid else 0
+    volume_percent = used / total if measurement_valid else 0.0
+
+    per_subsystem = snapshot.get("per_subsystem", {})
+    attributed = 0
+    if isinstance(per_subsystem, dict):
+        for subsystem in per_subsystem.values():
+            if isinstance(subsystem, dict):
+                value = subsystem.get("bytes", 0)
+                if isinstance(value, int):
+                    attributed += max(0, value)
+
+    unattributed = max(0, used - attributed)
+    accounting_complete = measurement_valid and attributed == used
+
+    snapshot["volume_bytes_used"] = used
+    snapshot["volume_percent"] = round(volume_percent, 4)
+    snapshot["attributed_bytes"] = attributed
+    snapshot["unattributed_bytes"] = unattributed
+    snapshot["attributed_fraction"] = (
+        round(attributed / used, 4) if used > 0 else None
+    )
+    snapshot["accounting_complete"] = accounting_complete
+
+    if not measurement_valid:
+        pressure_level = "unknown"
+    else:
+        pressure_level = _pressure_level_from_percent(volume_percent)
+        if pressure_level == "ok" and not accounting_complete:
+            pressure_level = "unknown"
+    snapshot["pressure_level"] = pressure_level
+    return snapshot
+
+
 def inspect_storage_utilization() -> dict[str, Any]:
     """Return a snapshot of daemon storage state.
 
@@ -638,6 +683,11 @@ def inspect_storage_utilization() -> dict[str, Any]:
           volume_percent: float,  # 0.0-1.0, root volume usage
           volume_bytes_total: int,
           volume_bytes_free: int,
+          volume_bytes_used: int,
+          attributed_bytes: int,
+          unattributed_bytes: int,
+          attributed_fraction: float | null,
+          accounting_complete: bool,
           per_subsystem: {
             <name>: {bytes: int, path: str},
             ...
@@ -646,7 +696,7 @@ def inspect_storage_utilization() -> dict[str, Any]:
             bytes_per_day_recent: int,
             days_until_full_at_recent_rate: float | null
           } | null,
-          pressure_level: 'ok' | 'warn' | 'critical'
+          pressure_level: 'unknown' | 'ok' | 'warn' | 'critical'
         }
 
     Invariants:
@@ -721,7 +771,7 @@ def inspect_storage_utilization() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — observability must not break probe
         subsystem_caps = {}
 
-    return {
+    return reconcile_storage_utilization({
         "volume_percent": round(volume_percent, 4),
         "volume_bytes_total": volume_bytes_total,
         "volume_bytes_free": volume_bytes_free,
@@ -731,8 +781,8 @@ def inspect_storage_utilization() -> dict[str, Any]:
         # later phase when run-transcript rotation emits size-at-time
         # samples. Null is the spec-mandated shape for the no-data case.
         "growth_estimate": None,
-        "pressure_level": _pressure_level_from_percent(volume_percent),
-    }
+        "pressure_level": "unknown",
+    })
 
 
 def base_path_from_universe(universe_path: str | Path) -> Path:
@@ -798,6 +848,7 @@ __all__ = [
     "data_dir",
     "db_path",
     "inspect_storage_utilization",
+    "reconcile_storage_utilization",
     "universe_id_from_path",
     "wiki_path",
     "_connect",

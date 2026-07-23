@@ -965,10 +965,14 @@ def get_status(universe_id: str = "") -> str:
     # BUG-023 Phase 1 — surface per-subsystem disk observability so
     # operators can see a storage-pressure signal via the same MCP probe
     # that carries routing evidence. Uptime canary pages on
-    # pressure_level in {warn, critical}; this block never raises so a
-    # bad stat call can't break the status probe.
+    # pressure_level in {unknown, warn, critical}; this block never raises
+    # so a bad stat call can't break the status probe.
     try:
-        from tinyassets.storage import inspect_storage_utilization, path_size_bytes
+        from tinyassets.storage import (
+            inspect_storage_utilization,
+            path_size_bytes,
+            reconcile_storage_utilization,
+        )
         storage_utilization = inspect_storage_utilization()
         # BUG-032 — activity_log + universe_outputs live inside the universe
         # directory, not at data_dir() root; patch the per-subsystem byte
@@ -1001,6 +1005,7 @@ def get_status(universe_id: str = "") -> str:
                 })
             except Exception:  # noqa: BLE001 — keep status best-effort
                 pass
+            storage_utilization = reconcile_storage_utilization(storage_utilization)
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         storage_utilization = {
             "error": "inspect_failed",
