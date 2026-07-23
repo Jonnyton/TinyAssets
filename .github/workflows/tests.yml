@@ -1,0 +1,110 @@
+name: Tests
+
+# Why this exists
+# ---------------
+# Until this workflow landed, NEITHER required status check on `main` tested code
+# behaviour:
+#
+#   * `policy` (daemon-request-policy.yml) only reads writer:/checker: labels. A
+#     PR carrying none of them passes it trivially.
+#   * `Diff scope declared` (pr-scope-guard.yml) is a scope-DECLARATION gate and
+#     says so in its own honesty note.
+#
+# Since the repo auto-merges any non-draft PR once required checks pass, and
+# merges flow on to production, code could reach live users without a single
+# behavioural gate. This workflow is that gate.
+#
+# MUST run unconditionally — no `paths:` filter, no job-level `if:`.
+# A REQUIRED status check that is path-filtered never reports at all on PRs
+# outside those paths, and the PR then hangs forever on "Expected — waiting for
+# status". That is why `lint`/actionlint is path-filtered and must NEVER be made
+# required. Every `exit` path below produces a conclusion for the same check name.
+
+on:
+  pull_request:
+    # No `paths:` — see above. Drafts get `opened`/`synchronize` too, so the gate
+    # gives signal before a PR is marked ready and becomes auto-merge eligible.
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
+# EXECUTING the PR's code, so it must run in the untrusted-by-default context
+# where the token is read-only and secrets are withheld. The scope guard uses
+# _target for the opposite reason — it only reads metadata and must not be
+# editable by the PR it judges.
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required-tests:
+    # This exact string is the branch-protection context. Renaming the job
+    # silently detaches the requirement and every PR goes green on nothing —
+    # change it only together with the `gh api` update in
+    # docs/decisions/ADR-003-required-test-aggregator.md.
+    name: required-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          pip install pytest-xdist
+
+      - name: Run the required test surface
+        env:
+          # Keep the suite off the real repo tree and off any host state. The
+          # conftest already forces mock providers and sqlite_only storage; this
+          # is belt-and-braces for anything that reads the env directly.
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p "$TINYASSETS_DATA_DIR"
+          # -m 'not slow'  : `slow` is the repo's declared opt-in stress/race marker.
+          # -n auto        : the suite is ~9k tests; serial is too slow to gate on.
+          # --dist loadfile: whole files to one worker. Tests in a file share
+          #                  fixtures/state far more often than tests across
+          #                  files, so this is the split least likely to invent
+          #                  parallelism-only failures.
+          # NO `-x`        : fail-fast hides the breadth of a regression. We want the
+          #                  full failure list in one run.
+          # NO `|| true`   : the exit code IS the gate.
+          pytest -m 'not slow' -n auto --dist loadfile \
+                 -q --no-header -rf --durations=15 \
+                 --junitxml=junit.xml \
+            | tee pytest-out.txt
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### Required tests"
+            echo ""
+            echo '```'
+            tail -30 pytest-out.txt 2>/dev/null || echo "no pytest output — the run died before reporting"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-required-tests
+          path: junit.xml
+          if-no-files-found: warn
