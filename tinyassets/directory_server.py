@@ -322,6 +322,9 @@ def run_graph(
         graph_id: Optional graph/universe identifier.
         recursion_limit_override: Optional per-run recursion limit.
     """
+    rejection = write_gate_rejection("run_graph")
+    if rejection:
+        return rejection
     return _extensions_impl(
         action="run_branch",
         branch_def_id=branch_def_id,
