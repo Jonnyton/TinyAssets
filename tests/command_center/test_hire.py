@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,7 @@ def test_hire_preset_writes_config(tmp_path: Path, fake_engines):
 
 def test_hire_rejects_market_and_unknown(tmp_path: Path, fake_engines):
     cfg = _cfg(tmp_path)
+    cfg.dispatch = True
     _universe(cfg)
     market = collector.hire(cfg, {"universe_id": "u-hire1", "provider": "market"})
     assert market["ok"] is False
@@ -91,7 +94,414 @@ def test_hire_rejects_market_and_unknown(tmp_path: Path, fake_engines):
 
 def test_hire_dispatch_needs_dispatchable_engine(tmp_path: Path, fake_engines):
     cfg = _cfg(tmp_path)
+    cfg.dispatch = True
     _universe(cfg)
     result = collector.hire(cfg, {"universe_id": "u-hire1", "provider": "ollama"})
     assert result["ok"] is False
     assert "preset" in result["error"]
+
+
+def _wait_until(predicate, *, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition did not become true before the test deadline")
+
+
+def _dispatchable_engine() -> dict:
+    return {
+        "id": "claude",
+        "label": "Claude Code",
+        "kind": "local-cli",
+        "available": True,
+        "dispatchable": True,
+        "note": "/fake/claude",
+    }
+
+
+def _local_universe(udir: Path) -> dict:
+    return {
+        "id": udir.name,
+        "name": "Test Universe",
+        "premise": "No real provider is ever invoked.",
+        "source": "local",
+        "path": str(udir),
+    }
+
+
+def _join_village_threads() -> None:
+    for thread in list(threading.enumerate()):
+        if thread.name.startswith(("village-dispatch-", "village-hire-")):
+            thread.join(timeout=3)
+
+
+def _dispatch_setup(tmp_path: Path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.dispatch = True
+    udir = _universe(cfg)
+    universe = _local_universe(udir)
+    engine = _dispatchable_engine()
+    (cfg.root / "scripts" / "peer_agent.py").write_text(
+        "# fake only\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        collector,
+        "_agent_by_id",
+        lambda _cfg, ident: {
+            "id": ident,
+            "name": ident,
+            "provider": "claude",
+            "action": "testing",
+        },
+    )
+    monkeypatch.setattr(collector, "discover_universes", lambda *_: [universe])
+    monkeypatch.setattr(collector, "discover_providers", lambda *_: [engine])
+    return cfg, udir
+
+
+def test_dispatch_off_talk_is_inbox_only_and_never_starts_a_worker(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    cfg.dispatch = False
+    monkeypatch.setattr(
+        collector,
+        "_agent_by_id",
+        lambda _cfg, ident: {
+            "id": ident,
+            "name": "Fake Agent",
+            "provider": "claude",
+            "action": "testing",
+        },
+    )
+
+    class ForbiddenThread:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("dispatch-off talk constructed a provider worker")
+
+    monkeypatch.setattr(collector.threading, "Thread", ForbiddenThread)
+
+    result = collector.talk(cfg, "agent:fake-1", "keep this local")
+
+    assert result == {"ok": True, "mode": "inbox", "to": "Fake Agent"}
+    assert "keep this local" in (
+        cfg.inbox_dir / "fake-1.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_dispatch_off_hire_rejects_before_discovery_lookup_writes_or_threads(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    cfg.dispatch = False
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dispatch-off hire crossed a side-effect boundary")
+
+    monkeypatch.setattr(collector, "discover_universes", forbidden)
+    monkeypatch.setattr(collector, "discover_providers", forbidden)
+    monkeypatch.setattr(collector, "_append_inbox", forbidden)
+    monkeypatch.setattr(collector.threading, "Thread", forbidden)
+
+    result = collector.hire(
+        cfg,
+        {
+            "universe_id": "u-hire1",
+            "provider": "claude",
+            "count": 1,
+            "task": "must not dispatch",
+            "preset": False,
+        },
+    )
+
+    assert result["ok"] is False
+    assert "dispatch" in result["error"].lower()
+
+
+def test_hire_dispatch_boundary_rechecks_process_level_gate(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    cfg.dispatch = False
+    universe = _local_universe(_universe(cfg))
+    (cfg.root / "scripts" / "peer_agent.py").write_text("# fake only\n", encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("_hire_dispatch crossed a side-effect boundary")
+
+    monkeypatch.setattr(collector, "_append_inbox", forbidden)
+    monkeypatch.setattr(collector.threading, "Thread", forbidden)
+
+    result = collector._hire_dispatch(
+        cfg, universe, _dispatchable_engine(), "must not dispatch", 1
+    )
+
+    assert result["ok"] is False
+    assert "dispatch" in result["error"].lower()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("preset", "false"),
+        ("preset", 0),
+        ("count", True),
+        ("count", "2"),
+        ("count", 0),
+        ("count", 9),
+        ("task", 7),
+        ("task", "x" * 2001),
+        ("task", "nul\0task"),
+        ("task", "surrogate\ud800task"),
+    ],
+)
+def test_hire_rejects_type_confusion_and_unsafe_scalars_before_discovery(
+    tmp_path: Path, monkeypatch, field: str, value
+):
+    cfg = _cfg(tmp_path)
+    cfg.dispatch = True
+    payload = {
+        "universe_id": "u-hire1",
+        "provider": "claude",
+        "count": 1,
+        "task": "safe",
+        "preset": False,
+    }
+    payload[field] = value
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(f"invalid {field} crossed the collector boundary")
+
+    monkeypatch.setattr(collector, "discover_universes", forbidden)
+    monkeypatch.setattr(collector, "discover_providers", forbidden)
+
+    result = collector.hire(cfg, payload)
+
+    assert result["ok"] is False
+    assert field in result["error"].lower()
+
+
+def test_talk_and_hire_share_one_atomic_eight_process_tree_pool(
+    tmp_path: Path, monkeypatch
+):
+    cfg, udir = _dispatch_setup(tmp_path, monkeypatch)
+
+    release = threading.Event()
+    eight_entered = threading.Event()
+    lock = threading.Lock()
+    entered = 0
+
+    def fake_run_peer(cmd, *, cwd, timeout, env):
+        nonlocal entered
+        assert "--timeout" in cmd and cmd[cmd.index("--timeout") + 1] == "540"
+        assert timeout == 600
+        with lock:
+            entered += 1
+            if entered == 8:
+                eight_entered.set()
+        release.wait(timeout=3)
+        return ""
+
+    monkeypatch.setattr(collector, "_run_peer", fake_run_peer, raising=False)
+
+    try:
+        for index in range(4):
+            assert collector.talk(
+                cfg, f"agent:talk-{index}", f"message {index}"
+            )["ok"]
+        hire_result = collector.hire(
+            cfg,
+            {
+                "universe_id": "u-hire1",
+                "provider": "claude",
+                "count": 4,
+                "task": "fill remaining capacity",
+                "preset": False,
+            },
+        )
+        assert hire_result["ok"] is True
+        assert eight_entered.wait(timeout=3), "eight fake process trees did not enter"
+
+        chat_path = udir / "village-inbox.md"
+        chat_before = (
+            chat_path.read_text(encoding="utf-8") if chat_path.exists() else ""
+        )
+        over_hire = collector.hire(
+            cfg,
+            {
+                "universe_id": "u-hire1",
+                "provider": "claude",
+                "count": 1,
+                "task": "must be all-or-nothing",
+                "preset": False,
+            },
+        )
+        over_talk = collector.talk(
+            cfg, "agent:over-cap", "this write must remain inbox-only"
+        )
+        time.sleep(0.1)
+
+        assert over_hire["ok"] is False
+        assert "capacity" in over_hire["error"].lower()
+        assert (
+            chat_path.read_text(encoding="utf-8") if chat_path.exists() else ""
+        ) == chat_before
+        assert over_talk["ok"] is True
+        assert over_talk["mode"] == "inbox"
+        assert "capacity" in over_talk.get("note", "").lower()
+        assert "this write must remain inbox-only" in (
+            cfg.inbox_dir / "over-cap.md"
+        ).read_text(encoding="utf-8")
+        with lock:
+            assert entered == 8
+    finally:
+        release.set()
+        _join_village_threads()
+
+
+def test_hire_reservation_is_all_or_nothing_when_only_two_slots_are_free(
+    tmp_path: Path, monkeypatch
+):
+    cfg, udir = _dispatch_setup(tmp_path, monkeypatch)
+
+    release = threading.Event()
+    six_entered = threading.Event()
+    lock = threading.Lock()
+    entered = 0
+
+    def fake_run_peer(cmd, *, cwd, timeout, env):
+        nonlocal entered
+        with lock:
+            entered += 1
+            if entered == 6:
+                six_entered.set()
+        release.wait(timeout=3)
+        return ""
+
+    monkeypatch.setattr(collector, "_run_peer", fake_run_peer, raising=False)
+
+    try:
+        for index in range(6):
+            collector.talk(cfg, f"agent:holder-{index}", "hold a fake slot")
+        assert six_entered.wait(timeout=3)
+        chat_path = udir / "village-inbox.md"
+
+        result = collector.hire(
+            cfg,
+            {
+                "universe_id": "u-hire1",
+                "provider": "claude",
+                "count": 3,
+                "task": "three do not fit in two slots",
+                "preset": False,
+            },
+        )
+        time.sleep(0.1)
+
+        assert result["ok"] is False
+        assert "capacity" in result["error"].lower()
+        assert not chat_path.exists(), "rejected hire wrote its chat/inbox record"
+        with lock:
+            assert entered == 6, "hire partially dispatched before rejecting"
+    finally:
+        release.set()
+        _join_village_threads()
+
+
+@pytest.mark.parametrize("worker_outcome", ["success", "failure"])
+def test_dispatch_slot_releases_after_worker_finishes(
+    tmp_path: Path, monkeypatch, worker_outcome: str
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+
+    first_done = threading.Event()
+    second_release = threading.Event()
+    eight_entered = threading.Event()
+    lock = threading.Lock()
+    calls = 0
+    second_wave = 0
+
+    def fake_run_peer(cmd, *, cwd, timeout, env):
+        nonlocal calls, second_wave
+        with lock:
+            calls += 1
+            call = calls
+            if call > 1:
+                second_wave += 1
+                if second_wave == 8:
+                    eight_entered.set()
+        if call == 1:
+            first_done.set()
+            if worker_outcome == "failure":
+                raise RuntimeError("synthetic fake-peer failure")
+            return ""
+        second_release.wait(timeout=3)
+        return ""
+
+    monkeypatch.setattr(collector, "_run_peer", fake_run_peer, raising=False)
+
+    try:
+        collector.talk(cfg, "agent:first", "finish one reservation")
+        assert first_done.wait(timeout=3)
+        _wait_until(
+            lambda: not any(
+                t.name == "village-dispatch-first" for t in threading.enumerate()
+            )
+        )
+
+        result = collector.hire(
+            cfg,
+            {
+                "universe_id": "u-hire1",
+                "provider": "claude",
+                "count": 8,
+                "task": "all eight slots should be reusable",
+                "preset": False,
+            },
+        )
+
+        assert result["ok"] is True
+        assert eight_entered.wait(timeout=3), (
+            f"slot leaked after fake-peer {worker_outcome}"
+        )
+    finally:
+        second_release.set()
+        _join_village_threads()
+
+
+def test_village_wrapper_scrubs_its_bearers_preserves_provider_auth_and_nests_timeouts(
+    tmp_path: Path, monkeypatch
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("TINYASSETS_VILLAGE_TOKEN", "village-secret")
+    monkeypatch.setenv("WORKFLOW_MCP_TOKEN", "mcp-secret")
+    monkeypatch.setenv("FAKE_PROVIDER_SUBSCRIPTION_AUTH", "provider-auth-survives")
+
+    captured: dict = {}
+    finished = threading.Event()
+
+    def fake_run_peer(cmd, *, cwd, timeout, env):
+        captured.update(cmd=cmd, cwd=cwd, timeout=timeout, env=dict(env))
+        finished.set()
+        return ""
+
+    monkeypatch.setattr(collector, "_run_peer", fake_run_peer, raising=False)
+
+    collector.talk(cfg, "agent:env-probe", "inspect fake environment only")
+    assert finished.wait(timeout=3)
+    _join_village_threads()
+
+    assert "TINYASSETS_VILLAGE_TOKEN" not in captured["env"]
+    assert "WORKFLOW_MCP_TOKEN" not in captured["env"]
+    assert (
+        captured["env"]["FAKE_PROVIDER_SUBSCRIPTION_AUTH"]
+        == "provider-auth-survives"
+    )
+    assert captured["timeout"] == 600
+    inner_timeout = int(
+        captured["cmd"][captured["cmd"].index("--timeout") + 1]
+    )
+    assert inner_timeout == 540
+    assert inner_timeout < captured["timeout"]
