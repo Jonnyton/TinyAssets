@@ -896,3 +896,18 @@ Notes:
 - Related implications: credential-vault is the only remaining shipped-coverage residual; five target-owner groups remain
 - Idea feed refs: none
 - Ship/abandon: remove the physical worktree only after PR #1633 lands
+
+## 2026-07-23 - create credential-backfill-coordination
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/credential-backfill-coordination
+- Lane state: Active coordination-only correction
+- Worktree: C:\Users\Jonathan\Projects\wf-credential-backfill-coordination
+- STATUS/Issue/PR: `Backfill remaining credential-vault shipped contracts`; PR after review
+- PLAN refs: Brain; Providers; State & Artifacts
+- Purpose: replace the stale #1606 canonical-owner dependency with the landed #1607 owner and current semantic/file blockers
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-credential-backfill-coordination\_PURPOSE.md
+- Memory refs: PRs #1606, #1607, #1626; full-coverage audit
+- Related implications: fail-closed provider auth overlay; R2-1a/R2-1b
+- Idea feed refs: none
+- Ship/abandon: land only the coordination correction; no OpenSpec or runtime edits
