@@ -42,7 +42,7 @@ The forward audit classified every existing requirement in these four capabiliti
 |---|---|---|
 | `constraint-evaluation` | One Clingo control grounds base/world rules once, accumulates each scene in order, and emits one result after each addition. | Unsatisfied diagnostics inspect base/world text plus the current scene, not an exact solver core or a full prior-scene text snapshot. |
 | `desktop-host-runtime` | `[project.gui-scripts]` publishes `tinyassets = tinyassets.desktop.launcher:main`. | This does not prove a packaged installer, a legacy `workflow` alias, or macOS/Linux tray packaging. |
-| `development-coordination-runtime` | Cross-provider checks detect referenced missing guards and skill mirror absence/drift; claim, worktree, context, and drift tools emit JSON. | Checks diagnose and prescribe; they do not auto-repair. JSON is the current machine form, not a newly versioned external API. |
+| `development-coordination-runtime` | Cross-provider checks detect referenced missing guards and inspected skill mirror absence/normalized-text drift; claim, worktree, context, and drift tools emit JSON. | Default scans cover all skill pairs; `--paths` covers named pairs only. Text comparison normalizes newlines and collapses unreadable text to empty, so it is not byte integrity. Checks do not auto-repair; JSON is not a newly versioned external API. |
 | `domain-plugin-runtime` | Process-local registries expose domain-owned Branch slugs and episodic coordinate shapes. | Registrations are mutable process memory, are not persisted or synchronized, and do not make shared episodic tables domain-specific. |
 
 ### 4. Treat a stale test as verification debt, not behavioral truth
