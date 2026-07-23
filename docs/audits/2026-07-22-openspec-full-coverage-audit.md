@@ -4,11 +4,13 @@
   legacy authority classified through PR #1620, nine independent shipped
   groups landed through PR #1622, and four runtime/memory groups independently
   source-reviewed, synced, and archived through PR #1624; the subsequently
-  discovered per-job runner omission is reconciled through PR #1629
-- **Code/spec baseline:** PR #1624 merge on `origin/main` at `dff6795e`, plus
+  discovered per-job runner omission is reconciled through PR #1629, and this
+  foldback adds three dependency-cleared direct-owner groups
+- **Code/spec baseline:** `origin/main` at `a050bfbc`, plus
   archived changes `2026-07-23-backfill-independent-shipped-contracts` and
-  `2026-07-23-backfill-runtime-memory-shipped-contracts`, and this lane's
-  `2026-07-23-backfill-per-job-sandbox-runner-seam`
+  `2026-07-23-backfill-runtime-memory-shipped-contracts`,
+  `2026-07-23-backfill-per-job-sandbox-runner-seam`, and this branch's
+  `2026-07-23-backfill-direct-owner-shipped-contracts`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -25,17 +27,19 @@ forward-vision files, classified all 52 legacy specification documents,
 archived nine independent shipped-contract backfills, and reconciled four
 runtime/memory groups. It also folds the shipped per-job `runner/v1` seam into
 the canonical distributed-execution base. The strict-valid tree now contains
-**26 canonical capabilities** and **9 active changes**. The eight
+**26 canonical capabilities** and **10 active changes**. The eight
 forward-vision capability directories no longer exist under
 `openspec/specs/`; their shipped pure-core subsets are canonical and their
 unbuilt outcomes are preserved by the active
-`build-forward-platform-capabilities` change.
+`build-forward-platform-capabilities` change. Three dependency-cleared
+direct-owner groups are now canonical; their credential remainder stays active
+behind PR #1606.
 
 This progress does **not** yet prove full coverage. The canonical grounding
 pass identified seven inaccurate requirements; that correction plus the
-independently reviewed backfills now make all 249 canonical requirements true
-as written. Four direct-owner shipped groups and eight full-platform
-target groups remain. The accurate answer is: current canonical OpenSpec
+independently reviewed backfills now make all 256 canonical requirements true
+as written. One credential-vault shipped group and the still-unlanded
+full-platform target owners remain. The accurate answer is: current canonical OpenSpec
 describes built behavior, but not everything built or targeted is fully
 specified yet.
 
@@ -59,21 +63,22 @@ require host approval, so this audit records rather than repairs that drift.
 
 ### Current OpenSpec inventory
 
-Fresh strict validation after the per-job runner foldback passes for the
-whole tree. Canonical OpenSpec contains 26 capabilities, 249 requirements, and 699
-scenarios. The nine active
-changes contain 104 proposed requirements and 196 top-level tasks, 39
+Fresh strict validation after the direct-owner foldback passes for the whole
+tree. Canonical OpenSpec contains 26 capabilities, 256 requirements, and 733
+scenarios. The ten active changes contain 107 proposed requirements and 205
+top-level tasks, 41
 currently checked (nested checklist evidence is excluded from these task
 counts):
 
 | Active change | Requirements | Tasks done | Classification |
 |---|---:|---:|---|
+| `backfill-credential-vault-shipped-contracts` | 2 | 2/8 | shipped credential remainder blocked by PR #1606 |
 | `brain-okf-canonical-store` | 7 | 9/16 | future brain-store migration |
 | `build-forward-platform-capabilities` | 54 | 1/21 | future boundary/data/demand/hardware/market/training/token umbrella |
 | `distributed-execution` | 6 | 1/22 | in-flight authority and external execution program |
 | `reconcile-external-connector-manifests` | 9 | 0/27 | connector-product reconciliation, not yet shipped |
 | `reconcile-universe-personification-relay` | 7 | 22/33 | surviving unbuilt relay/personification behavior |
-| `retire-legacy-live-mcp-tools` | 4 | 0/25 | gated breaking live-surface cleanup |
+| `retire-legacy-live-mcp-tools` | 5 | 0/26 | gated breaking live-surface cleanup |
 | `test-identity-and-reset` | 5 | 0/9 | future live identity/reset acceptance substrate |
 | `universe-creation` | 8 | 6/33 | residual creation and compute-authority behavior |
 | `universe-visibility` | 4 | 0/10 | proposed visibility model |
@@ -141,10 +146,10 @@ validation.
   recorded optional result errors and tolerated extension fields, and retained
   the absence of an OS-isolating `SandboxBackend` usable by `SandboxRunner`.
 
-Overall, **all 249 canonical requirements and all 699 scenarios are BUILT as
-written**. This is a grounding result, not a claim of full coverage: four
-direct-owner groups of shipped behavior still lack canonical ownership, and eight full-platform
-target groups still lack complete active owners.
+Overall, **all 256 canonical requirements and all 733 scenarios are BUILT as
+written**. This is a grounding result, not a claim of full coverage: one
+credential-vault group of shipped behavior still lacks canonical ownership,
+and the remaining full-platform target owners are not yet all landed.
 
 The requirement-by-requirement classifications, source/test anchors, and
 reproduction evidence are durable in the companion matrices for
@@ -218,9 +223,9 @@ current items. No Windows layer-2 uptime test was relevant or run.
 
 ### Shipped behavior still missing canonical ownership
 
-The reverse-direction audit also found behavior that exists in source but is
-not materially specified by any canonical requirement. These are backfill
-obligations, not permission to redesign the behavior:
+The dependency-cleared prompt/status, universe-switch, and uptime groups are
+now canonical. One reverse-direction gap remains; it is a backfill obligation,
+not permission to redesign the behavior:
 
 A post-audit residual check found a fifth omission: PR #1485's shipped
 per-job `runner/v1` seam. PR #1629 reconciles its four source-reviewed
@@ -236,9 +241,6 @@ backfill does not edit that collision-owned active change or PR #1475.
 | Recommended canonical owner | Missing shipped contract | Coordination edge |
 |---|---|---|
 | `credential-vault` | Claude OAuth/BYO-key mapping and injection, plus the current temp-and-replace write boundary. | Do not overlap the active fail-closed provider-overlay lane; do not claim cross-process locking that is absent. |
-| `live-mcp-connector-surface` for metadata; `identity-auth-and-access-control` for status identity | Four-prompt catalog, tool title/tag/annotation invariants, and exact early/config-error/full status variants, including that early responses currently omit `session_boundary`. | Coordinate connector-manifest, legacy-tool-retirement, and identity/reset changes. |
-| `universe-lifecycle-and-soul` | Authenticated request-scoped versus anonymous host-global `switch_universe`. | Coordinate `universe-creation` and `test-identity-and-reset`. |
-| `uptime-and-alarms` | DNS incident canary, LLM-binding canary, release reconciler, and disk-pressure alert/rotation/auto-prune controller. | Every uptime owner retains its concurrency/load evidence obligation. |
 
 ### Full-platform targets with no complete active owner
 
@@ -499,11 +501,11 @@ must carry the executable SHALL/scenario contracts and tasks.
 6. Public and uptime-sensitive surfaces retain their required rendered,
    concurrency/load, CI, and post-fix evidence gates when behavior changes.
 
-**Current verdict: NOT COMPLETE.** Criterion 1 fails on the four
-dependency-bound shipped backfill groups above; criterion 3 fails on the eight
-full-platform target groups without complete active owners. Criterion 5 now
-passes: all 249 requirements and 699 scenarios are independently grounded and
-strict-valid.
+**Current verdict: NOT COMPLETE.** Criterion 1 fails only on the
+credential-vault remainder above. Criterion 3 remains open until the reviewed
+target drafts in PRs #1542 and #1627 land and the three PLAN-gated groups gain
+approved active owners. Criterion 5 now passes: all 256 requirements and 733
+scenarios are independently grounded and strict-valid.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
 owns the backfill, runtime-hardening, legacy-disposition, PLAN-decision, and

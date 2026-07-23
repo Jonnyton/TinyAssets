@@ -32,6 +32,39 @@ The live MCP server SHALL register and advertise exactly seven handles: `read_gr
 - **WHEN** a client calls `read_graph(target="bogus")`
 - **THEN** the result is a JSON error with `error="unknown_target"`, `handle="read_graph"`, and the list of allowed targets
 
+### Requirement: Registered tools publish exact discoverability and behavior metadata
+
+The system SHALL attach the following title, tag set, and four MCP behavior
+hints to every registered tool after retirement. In the hint columns, `T`
+means true and `F` means false, ordered as read-only, destructive, idempotent,
+and open-world:
+
+| Tool | Title | Tags | R | D | I | O |
+|---|---|---|---:|---:|---:|---:|
+| `read_graph` | `Read Graph` | `graph`, `read`, `tinyassets` | T | F | T | F |
+| `write_graph` | `Write Graph` | `graph`, `tinyassets`, `write` | F | F | F | F |
+| `run_graph` | `Run Graph` | `graph`, `run`, `tinyassets` | F | F | F | F |
+| `read_page` | `Read Page` | `page`, `read`, `tinyassets`, `wiki` | T | F | T | F |
+| `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | F | F | T |
+| `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | F |
+| `get_status` | `Daemon Status + Routing Evidence` | `confidential-tier`, `privacy`, `routing`, `status`, `tinyassets`, `verification` | T | F | T | F |
+
+These hints SHALL remain descriptive MCP metadata rather than authorization
+enforcement; the tool implementations and permission middleware retain
+authority over whether an invocation can mutate or access state. No retired
+tool SHALL retain a registry metadata row after its registration is removed.
+
+#### Scenario: Retired registrations leave no metadata residue
+
+- **WHEN** the registry is listed after the six legacy tools are retired
+- **THEN** its metadata table contains exactly the seven rows above
+- **AND** no metadata row remains for `universe`, `community_change_context`, `extensions`, `goals`, `gates`, or `wiki`
+
+#### Scenario: Behavior hints do not grant authority
+
+- **WHEN** a remaining tool's metadata marks it non-destructive or open-world
+- **THEN** that metadata alone does not bypass the tool's write gate, authentication, ownership, or action-specific validation
+
 ### Requirement: Public Canary And Directory Review Surface
 
 The platform SHALL provide a stdlib-only public canary (`scripts/mcp_public_canary.py`) whose `--assert-handles` mode performs a full handshake, reads `tools/list`, and fails (exit 4) unless the live surface advertises exactly `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}`. The platform SHALL continue to expose a separate narrower directory surface (`tinyassets/directory_server.py`, served at `/mcp-directory`) intended for reviewed host directories such as Claude's Connectors Directory and ChatGPT Apps; it advertises no catch-all `action` inputs and returns a redacted `get_status` that strips operator diagnostics and injects a `directory_privacy_note`.

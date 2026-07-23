@@ -96,8 +96,9 @@
 This disposition creates two bounded successors for promoted domain targets.
 The eighteen CLAIMED files fold into live STATUS work:
 
-- the four remaining direct-owner shipped-contract backfills; the runtime,
-  host-pool, graph, OKF-export, and `resume_from` residue is now canonical;
+- the remaining credential-vault shipped-contract backfill; the prompt/status,
+  universe-switch, uptime, runtime, host-pool, graph, OKF-export, and
+  `resume_from` residue is now canonical;
 - the PLAN-conflict host decision (schema/store/private-data/public-surface
   portions of the April/June cross-cutting specs plus the Phase-7 store plan);
 - the eight-group full-platform target change (catalog/collaboration,

@@ -4,6 +4,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
+- **[P1 filed:2026-07-22]** DNS/LLM two-red sinks read prior run conclusion, but probe failures are `continue-on-error`; threshold may never open.
+- **[P1 filed:2026-07-22]** Disk-watch exits 1 on pressure; systemd can stop before rotation/auto-prune despite “independent” claim.
 - **[P1 filed:2026-07-22]** Priority-authorized submit emits unknown `operator_request`; dispatcher only enables `host_request`, stranding work.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
@@ -23,7 +25,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 |------|-------|---------|--------|
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
-| **Backfill 4 direct-owner shipped contracts into canonical OpenSpec** — credential, live MCP/status identity, universe switch, uptime/release | openspec/changes/backfill-direct-owner-shipped-contracts/ | credential overlay; connector/identity/universe deltas; release lane | pending |
+| **Fold dependency-cleared direct-owner shipped backfills; isolate credential remainder** | openspec/changes/{backfill-direct-owner-shipped-contracts,backfill-credential-vault-shipped-contracts,retire-legacy-live-mcp-tools}/; openspec/changes/archive/2026-07-23-backfill-direct-owner-shipped-contracts/; openspec/specs/{live-mcp-connector-surface,identity-auth-and-access-control,universe-lifecycle-and-soul,uptime-and-alarms}/spec.md; docs/audits/2026-07-22-{openspec-full-coverage-audit,legacy-spec-disposition}.md | credential remainder waits for PR #1606; future release/retirement targets modify synced as-built owners | in-flight PR #1626 ACTIVE 2026-07-22 |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote hyperparameter-importance evaluator into OpenSpec** | openspec/changes/hyperparameter-importance-evaluator/ | science-domain lane | pending |
 | **Resolve target-spec PLAN conflicts** — store, private data, primitives, privacy guidance | PLAN.md | full-coverage audit; host selects coherent positions | host-decision |
