@@ -3,10 +3,12 @@
 - **Freshness:** 2026-07-23 UTC; canonical re-audit completed through PR #1619,
   legacy authority classified through PR #1620, nine independent shipped
   groups landed through PR #1622, and four runtime/memory groups independently
-  source-reviewed, synced, and archived through PR #1624
+  source-reviewed, synced, and archived through PR #1624; the subsequently
+  discovered per-job runner omission is reconciled through PR #1629
 - **Code/spec baseline:** PR #1624 merge on `origin/main` at `dff6795e`, plus
   archived changes `2026-07-23-backfill-independent-shipped-contracts` and
-  `2026-07-23-backfill-runtime-memory-shipped-contracts`
+  `2026-07-23-backfill-runtime-memory-shipped-contracts`, and this lane's
+  `2026-07-23-backfill-per-job-sandbox-runner-seam`
 - **Scope:** every PLAN module, every Forever Rule surface, canonical
   `openspec/specs/`, active OpenSpec changes, and substantive code landed after
   the 2026-07-19 `spec-out-existing-platform` baseline
@@ -21,8 +23,9 @@ since landed eight Batch A canonical spec files, enriched the core runtime,
 provider/credential, and knowledge/memory owners, reclassified the eight
 forward-vision files, classified all 52 legacy specification documents,
 archived nine independent shipped-contract backfills, and reconciled four
-runtime/memory groups. The strict-valid tree
-now contains **25 canonical capabilities** and **9 active changes**. The eight
+runtime/memory groups. It also folds the shipped per-job `runner/v1` seam into
+the canonical distributed-execution base. The strict-valid tree now contains
+**26 canonical capabilities** and **9 active changes**. The eight
 forward-vision capability directories no longer exist under
 `openspec/specs/`; their shipped pure-core subsets are canonical and their
 unbuilt outcomes are preserved by the active
@@ -30,7 +33,7 @@ unbuilt outcomes are preserved by the active
 
 This progress does **not** yet prove full coverage. The canonical grounding
 pass identified seven inaccurate requirements; that correction plus the
-independently reviewed backfills now make all 245 canonical requirements true
+independently reviewed backfills now make all 249 canonical requirements true
 as written. Four direct-owner shipped groups and eight full-platform
 target groups remain. The accurate answer is: current canonical OpenSpec
 describes built behavior, but not everything built or targeted is fully
@@ -56,8 +59,8 @@ require host approval, so this audit records rather than repairs that drift.
 
 ### Current OpenSpec inventory
 
-Fresh strict validation after the runtime/memory backfill sync passes for the
-whole tree. Canonical OpenSpec contains 25 capabilities, 245 requirements, and 692
+Fresh strict validation after the per-job runner foldback passes for the
+whole tree. Canonical OpenSpec contains 26 capabilities, 249 requirements, and 699
 scenarios. The nine active
 changes contain 104 proposed requirements and 196 top-level tasks, 39
 currently checked (nested checklist evidence is excluded from these task
@@ -132,8 +135,13 @@ validation.
   distinct live/frozen/await behavior, thread-local retry accounting,
   terminal-run-seeded lineage, and the exporter's lightweight local
   conformance boundary.
+- **Per-job runner backfill (1 capability):** 4 requirements and 7 scenarios
+  are BUILT as bounded. Independent review narrowed the strict JSON boundary
+  to payloads, preserved the five unvalidated pass-through reference fields,
+  recorded optional result errors and tolerated extension fields, and retained
+  the absence of an OS-isolating `SandboxBackend` usable by `SandboxRunner`.
 
-Overall, **all 245 canonical requirements and all 692 scenarios are BUILT as
+Overall, **all 249 canonical requirements and all 699 scenarios are BUILT as
 written**. This is a grounding result, not a claim of full coverage: four
 direct-owner groups of shipped behavior still lack canonical ownership, and eight full-platform
 target groups still lack complete active owners.
@@ -199,11 +207,31 @@ preserved every untouched canonical requirement block. Full-tree strict
 validation passed all **34** current items, and the cross-provider drift
 self-test was clean. The Windows layer-2 uptime canary was not run.
 
+On 2026-07-22 PT / 2026-07-23 UTC, Windows, Python 3.14, the per-job runner
+backfill's focused suite passed **18 tests**. The runtime and packaged plugin
+copies were byte-identical at SHA-256
+`F461555404F82F992B8C49C09A70CDB0E0D98D6C3082777FB18DFDB9F9548ECC`.
+Independent ownership and requirement-to-source reviews corrected whole-request
+JSON validation, optional result-error, backend-dispatch, and executable-scenario
+overclaims before approval. Full-tree strict validation passed all **35**
+current items. No Windows layer-2 uptime test was relevant or run.
+
 ### Shipped behavior still missing canonical ownership
 
 The reverse-direction audit also found behavior that exists in source but is
 not materially specified by any canonical requirement. These are backfill
 obligations, not permission to redesign the behavior:
+
+A post-audit residual check found a fifth omission: PR #1485's shipped
+per-job `runner/v1` seam. PR #1629 reconciles its four source-reviewed
+requirements into the canonical `distributed-execution` base while retaining
+the absence of a production caller or an OS-isolating `SandboxBackend`
+implementation usable by `SandboxRunner`. The remaining table therefore still
+contains four dependency-bound groups:
+
+The active `distributed-execution` owner must separately reclassify its
+proposal from introducing a new spec to extending this canonical base. This
+backfill does not edit that collision-owned active change or PR #1475.
 
 | Recommended canonical owner | Missing shipped contract | Coordination edge |
 |---|---|---|
@@ -474,7 +502,7 @@ must carry the executable SHALL/scenario contracts and tasks.
 **Current verdict: NOT COMPLETE.** Criterion 1 fails on the four
 dependency-bound shipped backfill groups above; criterion 3 fails on the eight
 full-platform target groups without complete active owners. Criterion 5 now
-passes: all 245 requirements and 692 scenarios are independently grounded and
+passes: all 249 requirements and 699 scenarios are independently grounded and
 strict-valid.
 Criterion 6 additionally requires an explicit concurrency/load proof task in
 every uptime-target change before that change can be treated as done. STATUS.md
