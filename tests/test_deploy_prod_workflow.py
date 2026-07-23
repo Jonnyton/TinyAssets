@@ -82,6 +82,29 @@ def test_deploy_resolves_image_to_digest_and_never_latest():
     assert ":latest" not in text, "deploy-prod must not use :latest for deploy or rollback targets"
 
 
+def test_manual_image_tag_is_env_bound_and_validated_before_use():
+    wf = _load()
+    step = _step_named(wf, "Resolve image tag")
+    run_script = step.get("run", "") or ""
+    env = step.get("env") or {}
+
+    assert env.get("REQUESTED_IMAGE_TAG") == "${{ inputs.image_tag }}"
+    assert "${{ inputs.image_tag }}" not in run_script, (
+        "workflow input must not be interpolated into executable shell source"
+    )
+    assert "[A-Za-z0-9_][A-Za-z0-9._-]{0,127}" in run_script
+    assert "refusing invalid OCI image tag" in run_script
+
+
+def test_resolved_digest_is_canonical_before_any_host_write():
+    wf = _load()
+    step = _step_named(wf, "Resolve image tag")
+    run_script = step.get("run", "") or ""
+
+    assert "sha256:[0-9a-f]{64}" in run_script
+    assert "refusing non-canonical immutable image digest" in run_script
+
+
 def test_capture_previous_uses_configured_and_running_digest_observations():
     wf = _load()
     step = _step_named(wf, "Capture previous image tag (for rollback)")
@@ -113,6 +136,15 @@ def test_capture_previous_transports_bounded_prior_receipt_read_only():
         assert forbidden not in run_script, (
             "pre-mutation capture must remain read-only on the production host"
         )
+
+
+def test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs():
+    wf = _load()
+    step = _step_named(wf, "Capture previous image tag (for rollback)")
+    run_script = step.get("run", "") or ""
+
+    assert "previous_active_revision_label=" not in run_script
+    assert "org.opencontainers.image.revision" not in run_script
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +659,26 @@ def test_rollback_emits_safe_defaults_and_final_outputs_before_exit():
             )
 
 
+def test_rollback_identity_failure_preserves_the_passed_canary_tuple():
+    wf = _load()
+    rollback_step = _step_named(wf, "Rollback on failure")
+    run_script = rollback_step.get("run", "") or ""
+
+    passed_idx = run_script.find("rollback_canary_status=passed")
+    identity_check_idx = run_script.find('if [ "${identity_status}" -ne 0 ]')
+    assert 0 <= passed_idx < identity_check_idx
+    pre_identity = run_script[passed_idx:identity_check_idx]
+    assert "rollback_result=succeeded" in pre_identity, (
+        "a passed rollback canary must retain the valid succeeded/passed tuple "
+        "so terminal classification can record rollback_failed when the "
+        "separate identity proof fails"
+    )
+    identity_failure = run_script[identity_check_idx : run_script.find("fi", identity_check_idx)]
+    assert "rollback_result=failed" not in identity_failure, (
+        "failed/passed is a contradictory tuple rejected by the pure builder"
+    )
+
+
 def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
     wf = _load()
     terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
@@ -716,6 +768,34 @@ def test_terminal_writer_outputs_are_visible_before_fallible_work():
         )
 
 
+def test_terminal_canary_output_preserves_the_raw_applicable_canary():
+    wf = _load()
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    run_script = terminal_step.get("run", "") or ""
+
+    assert "terminal_canary_status={receipt['canary_bundle_status']}" not in run_script
+    assert 'receipt["forward_canary_status"]' in run_script
+    assert 'receipt["rollback_canary_status"]' in run_script
+    assert 'receipt["rollback_attempted"]' in run_script
+
+
+def test_forward_green_terminal_identity_failure_stays_red_after_publication():
+    wf = _load()
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    run_script = terminal_step.get("run", "") or ""
+
+    published_idx = run_script.find("terminal_receipt_result=published")
+    proof_gate_idx = run_script.find('if [ "${FORWARD_SUCCEEDED}" = "true" ]')
+    proof_error_idx = run_script.find("forward terminal state is unproven")
+    assert 0 <= published_idx < proof_gate_idx < proof_error_idx, (
+        "terminal evidence must be installed before the forward identity gate returns nonzero"
+    )
+    proof_tail = run_script[proof_gate_idx:]
+    assert "exit 1" in proof_tail
+    for required in ("deployed", "active_identity_status", "agreed", "passed"):
+        assert required in proof_tail
+
+
 def test_deploy_failure_issue_consumes_rollback_and_terminal_outputs():
     wf = _load()
     rollback_step = _step_named(wf, "Rollback on failure")
@@ -750,6 +830,29 @@ def test_deploy_failure_issue_consumes_rollback_and_terminal_outputs():
         assert f"steps.{terminal_step['id']}.outputs.{output_name}" in env_text, (
             f"deploy-failed issue must consume {output_name}"
         )
+
+
+def test_deploy_failure_issue_rejects_partial_or_contradictory_tuples():
+    wf = _load()
+    issue_step = _step_named(wf, "Open deploy-failed issue")
+    script = str((issue_step.get("with") or {}).get("script", ""))
+
+    for required in (
+        "productionNotStarted",
+        "imageNotStarted",
+        "rollbackNotAttempted",
+        'rollbackResult === "not_attempted"',
+        'rollbackResult === "succeeded"',
+        'rollbackResult === "failed"',
+        'rollbackCanary === "not_run"',
+        'rollbackCanary === "passed"',
+        'rollbackCanary === "failed"',
+        'rollbackReason === "attempted"',
+        "canonicalRepoDigest.test(previousImage)",
+    ):
+        assert required in script
+    assert 'rollbackAttempted && rollbackCanary === "failed"' not in script
+    assert 'rollbackAttempted && rollbackCanary === "not_run"' not in script
 
 
 def test_deploy_failure_issue_has_truthful_bounded_wording():

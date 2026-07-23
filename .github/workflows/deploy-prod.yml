@@ -119,14 +119,19 @@ jobs:
         id: tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          if [ -n "${{ inputs.image_tag }}" ]; then
-            tag="${{ inputs.image_tag }}"
+          if [ -n "${REQUESTED_IMAGE_TAG}" ]; then
+            tag="${REQUESTED_IMAGE_TAG}"
           elif [ "${{ github.event_name }}" = "workflow_run" ]; then
             full_sha="${{ github.event.workflow_run.head_sha }}"
             tag="${full_sha:0:12}"
           else
             tag="$(git rev-parse --short=12 HEAD)"
+          fi
+          if [[ ! "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::refusing invalid OCI image tag"
+            exit 1
           fi
           owner_lower="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           image="ghcr.io/${owner_lower}/tinyassets-daemon"
@@ -140,8 +145,8 @@ jobs:
           fi
 
           digest="$(docker buildx imagetools inspect "${image}:${tag}" | awk '/^Digest:/ {print $2; exit}')"
-          if [ -z "${digest}" ]; then
-            echo "::error::could not resolve digest for ${image}:${tag}"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::refusing non-canonical immutable image digest for ${image}:${tag}"
             exit 1
           fi
           image_ref="${image}@${digest}"
@@ -202,16 +207,10 @@ jobs:
               tinyassets-daemon 2>/dev/null || true
           )"
           repo_digests_json='[]'
-          active_revision_label=''
           if [ -n "${image_id}" ]; then
             repo_digests_json="$(
               docker image inspect "${image_id}" \
                 --format '{{json .RepoDigests}}' 2>/dev/null || printf '[]'
-            )"
-            active_revision_label="$(
-              docker image inspect "${image_id}" \
-                --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-                2>/dev/null || true
             )"
           fi
           release_state_host_dir="$(
@@ -227,7 +226,7 @@ jobs:
             )"
           fi
           export target_repository configured_image_ref repo_digests_json
-          export active_revision_label prior_receipt_b64
+          export prior_receipt_b64
           python3 - <<'PY'
           import json
           import os
@@ -270,11 +269,6 @@ jobs:
           })
           running = candidates[0] if len(candidates) == 1 else ""
           previous = configured if configured and configured == running else ""
-          revision = (
-              captured.get("active_revision_label", "")
-              if isinstance(captured.get("active_revision_label", ""), str)
-              else ""
-          )
           prior_b64 = captured.get("prior_receipt_b64", "")
           with open(sys.argv[1], "a", encoding="utf-8") as output:
               output.write(f"configured_image_ref={configured}\n")
@@ -282,7 +276,6 @@ jobs:
               output.write(f"previous_configured_image_ref={configured}\n")
               output.write(f"previous_running_image_ref={running}\n")
               output.write(f"previous={previous}\n")
-              output.write(f"previous_active_revision_label={revision}\n")
               output.write(f"prior_receipt_b64={prior_b64}\n")
           PY
 
@@ -1010,6 +1003,7 @@ jobs:
             exit 1
           fi
           rollback_canary_status=passed
+          rollback_result=succeeded
 
           observation_json="$(
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -1077,11 +1071,9 @@ jobs:
           PY
           identity_status=$?
           if [ "${identity_status}" -ne 0 ]; then
-            rollback_result=failed
             emit_rollback_outputs
             exit 1
           fi
-          rollback_result=succeeded
           emit_rollback_outputs
           exit 0
 
@@ -1288,15 +1280,19 @@ jobs:
           import json
           import sys
           receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+          if receipt["outcome"] == "deployed":
+              terminal_canary = receipt["forward_canary_status"]
+          elif receipt["outcome"] == "rolled_back" or receipt["rollback_attempted"]:
+              terminal_canary = receipt["rollback_canary_status"]
+          else:
+              terminal_canary = receipt["forward_canary_status"]
           with open(sys.argv[2], "a", encoding="utf-8") as output:
               output.write(f"terminal_outcome={receipt['outcome']}\n")
               output.write(
                   "terminal_active_identity_status="
                   f"{receipt['active_identity_status']}\n"
               )
-              output.write(
-                  f"terminal_canary_status={receipt['canary_bundle_status']}\n"
-              )
+              output.write(f"terminal_canary_status={terminal_canary}\n")
               output.write(
                   "terminal_configured_image_ref="
                   f"{receipt['configured_image_ref']}\n"
@@ -1327,6 +1323,24 @@ jobs:
             echo "- Container path: \`/data/release-state.json\`"
             echo "- Outcome: \`$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"outcome\"])' "$RUNNER_TEMP/tinyassets-release-state.json")\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${FORWARD_SUCCEEDED}" = "true" ]; then
+            if ! python - "$RUNNER_TEMP/tinyassets-release-state.json" <<'PY'
+          import json
+          import sys
+
+          receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+          proven = (
+              receipt["outcome"] == "deployed"
+              and receipt["active_identity_status"] == "agreed"
+              and receipt["forward_canary_status"] == "passed"
+          )
+          raise SystemExit(0 if proven else 1)
+          PY
+            then
+              echo "::error::forward terminal state is unproven after publication; keeping deploy red"
+              exit 1
+            fi
+          fi
 
       - name: Open deploy-failed issue
         if: always() && failure()
@@ -1371,9 +1385,15 @@ jobs:
                 throw e;
               }
             }
-            const productionStarted = process.env.PRODUCTION_MUTATION_STARTED === "true";
-            const imageStarted = process.env.IMAGE_MUTATION_STARTED === "true";
-            const rollbackAttempted = process.env.ROLLBACK_ATTEMPTED === "true";
+            const productionMarker = process.env.PRODUCTION_MUTATION_STARTED || "";
+            const imageMarker = process.env.IMAGE_MUTATION_STARTED || "";
+            const rollbackAttemptedMarker = process.env.ROLLBACK_ATTEMPTED || "";
+            const productionStarted = productionMarker === "true";
+            const productionNotStarted = productionMarker === "" || productionMarker === "false";
+            const imageStarted = imageMarker === "true";
+            const imageNotStarted = imageMarker === "" || imageMarker === "false";
+            const rollbackAttempted = rollbackAttemptedMarker === "true";
+            const rollbackNotAttempted = rollbackAttemptedMarker === "false";
             const rollbackResult = process.env.ROLLBACK_RESULT || "";
             const rollbackCanary = process.env.ROLLBACK_CANARY_STATUS || "";
             const rollbackReason = process.env.ROLLBACK_REASON || "";
@@ -1382,49 +1402,89 @@ jobs:
             const terminalIdentity = process.env.TERMINAL_ACTIVE_IDENTITY_STATUS || "";
             const terminalCanary = process.env.TERMINAL_CANARY_STATUS || "";
             const previousImage = process.env.PREV_IMAGE || "";
+            const canonicalRepoDigest = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/;
 
             let rollbackSentence;
-            if (!productionStarted && rollbackReason === "pre_host_write_failure") {
+            if (
+              productionNotStarted
+              && imageNotStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "pre_host_write_failure"
+            ) {
               rollbackSentence = "Production host write did not start; image rollback was not attempted.";
             } else if (
               productionStarted
-              && !imageStarted
+              && imageNotStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
               && rollbackReason === "image_mutation_not_started"
             ) {
               rollbackSentence = "Production mutation started, but image mutation did not; image rollback was not required.";
             } else if (
-              rollbackReason === "not_needed"
-              && terminalOutcome === "deployed"
-              && terminalIdentity === "agreed"
-              && terminalCanary === "passed"
+              productionStarted
+              && imageStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "not_needed"
             ) {
-              rollbackSentence = "Rollback was not needed because terminal outcome is deployed, active image identity agrees, and the applicable canary passed.";
-            } else if (rollbackReason === "not_needed") {
-              rollbackSentence = "Rollback was not attempted; forward production health is unproven.";
-            } else if (imageStarted && rollbackReason === "no_valid_target") {
+              if (
+                terminalOutcome === "deployed"
+                && terminalIdentity === "agreed"
+                && terminalCanary === "passed"
+              ) {
+                rollbackSentence = "Rollback was not needed because terminal outcome is deployed, active image identity agrees, and the applicable canary passed.";
+              } else {
+                rollbackSentence = "Rollback was not attempted; forward production health is unproven.";
+              }
+            } else if (
+              productionStarted
+              && imageStarted
+              && rollbackNotAttempted
+              && rollbackResult === "not_attempted"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "no_valid_target"
+            ) {
               rollbackSentence = "Rollback was not attempted because no validated immutable previous image was available.";
             } else if (
-              rollbackAttempted
+              productionStarted
+              && imageStarted
+              && rollbackAttempted
               && rollbackResult === "succeeded"
               && rollbackCanary === "passed"
-              && terminalOutcome === "rolled_back"
-              && terminalIdentity === "agreed"
-              && process.env.TERMINAL_ACTIVE_IMAGE_REF === previousImage
+              && rollbackReason === "attempted"
             ) {
-              rollbackSentence = "Rollback succeeded and the rollback canary passed.";
-            } else if (rollbackAttempted && rollbackCanary === "failed") {
-              rollbackSentence = "Rollback failed; the rollback canary failed.";
-            } else if (rollbackAttempted && rollbackCanary === "not_run") {
-              rollbackSentence = "Rollback failed before the rollback canary ran.";
+              if (
+                terminalOutcome === "rolled_back"
+                && terminalIdentity === "agreed"
+                && canonicalRepoDigest.test(previousImage)
+                && process.env.TERMINAL_ACTIVE_IMAGE_REF === previousImage
+              ) {
+                rollbackSentence = "Rollback succeeded and the rollback canary passed.";
+              } else {
+                rollbackSentence = "Rollback was not proven: the canary passed but configured and running image identity did not agree with the rollback target.";
+              }
             } else if (
-              rollbackAttempted
-              && rollbackCanary === "passed"
-              && (
-                terminalIdentity !== "agreed"
-                || process.env.TERMINAL_ACTIVE_IMAGE_REF !== previousImage
-              )
+              productionStarted
+              && imageStarted
+              && rollbackAttempted
+              && rollbackResult === "failed"
+              && rollbackCanary === "failed"
+              && rollbackReason === "attempted"
             ) {
-              rollbackSentence = "Rollback was not proven: the canary passed but configured and running image identity did not agree with the rollback target.";
+              rollbackSentence = "Rollback failed; the rollback canary failed.";
+            } else if (
+              productionStarted
+              && imageStarted
+              && rollbackAttempted
+              && rollbackResult === "failed"
+              && rollbackCanary === "not_run"
+              && rollbackReason === "attempted"
+            ) {
+              rollbackSentence = "Rollback failed before the rollback canary ran.";
             } else {
               rollbackSentence = "Rollback status is unavailable; rollback success was not proven.";
             }
@@ -1434,7 +1494,7 @@ jobs:
               receiptSentence = "Terminal release-state receipt published.";
             } else if (terminalResult === "failed") {
               receiptSentence = "Terminal release-state publication failed; durable active-release truth is not proven and the prior receipt may be stale.";
-            } else if (terminalResult === "not_applicable" && !productionStarted) {
+            } else if (terminalResult === "not_applicable" && productionNotStarted) {
               receiptSentence = "Terminal release-state publication was not applicable; the prior receipt was left unchanged.";
             } else {
               receiptSentence = "Terminal release-state status is unavailable or inconsistent; durable active-release truth is not proven.";
