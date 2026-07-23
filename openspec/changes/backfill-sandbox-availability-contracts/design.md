@@ -87,11 +87,13 @@ ordinary Codex calls can bypass.
 
 ### Keep get_status best-effort and read-only
 
-`get_status` includes the cached provider probe under `sandbox_status`. A probe
-exception is converted into an unavailable dictionary with a `probe_error`
-reason so the broader status response still succeeds. This extends the
-existing read-only status contract; it does not make status a live health
-refresh or an enforcement surface.
+Full `get_status` assembly includes the cached provider probe under
+`sandbox_status`. A probe exception is converted into an unavailable
+dictionary with a `probe_error` reason so the broader full response still
+succeeds. Existing no-home, access-denied, and configuration-load failures
+return earlier without the field. This extends the existing read-only status
+contract; it does not make status a live health refresh or an enforcement
+surface.
 
 ## Risks / Trade-offs
 
