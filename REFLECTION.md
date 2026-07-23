@@ -49,3 +49,11 @@ enumeration—before the first live rename.
 One thing I would do differently: model the directory metadata and Docker
 enumeration failure paths in the first test batch, alongside corrupt archives
 and rename rollback.
+
+## 2026-07-23 — Operator-request contract refresh
+
+What surprised me: the four-commit branch collapsed to one substantive OpenSpec commit after rebasing; every conflict was stale coordination, while current main independently preserved the unfixed runtime P1.
+
+Pattern worth capturing: a planning-only PR should carry durable contract artifacts but no live spec-claim row. Runtime truth stays as a dated concern until a separate implementation lane produces evidence.
+
+One thing I would do differently: compare the branch against current canonical capability owners before replaying coordination commits, because that makes it obvious which conflicts should resolve entirely to current main.
