@@ -9,6 +9,23 @@ commits. This mirrors the `concerns-staleness` stance exactly. The HARD
 budget is a file's own declared ceiling (STATUS.md says "4 KB / 60 lines");
 soft targets for AGENTS.md / CLAUDE.md are advisory. Basis:
 `docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`.
+
+Where the actual gate lives (added 2026-07-22)
+----------------------------------------------
+This invariant reports; it does not gate. `invariants_run.py --check
+context-budget` DOES return 1 on VIOLATED (via `cmd_check_all`), so an operator
+or cron can gate on it — but nothing invoked it, and `pre_commit_scope` stays
+False for two reasons that both still hold:
+
+  1. the stance above — host-managed content, surfaced not blocked; and
+  2. `scripts/git-hooks/pre-commit` is a LOCAL hook, and agents that commit via
+     git plumbing (the documented FUSE path) bypass it entirely, so pre-commit
+     could never have been the enforcement point for multi-provider work.
+
+The enforcement point is `.github/workflows/context-budget.yml`, which runs
+`check_context_budget.py --strict --baseline <merge-base>` on every PR: it fails
+when a change makes an always-loaded file worse, or relaxes a ceiling. Read that
+workflow's header before proposing to move this invariant to pre-commit scope.
 """
 
 from __future__ import annotations
