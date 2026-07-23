@@ -1,7 +1,7 @@
 # Shipped behavior OpenSpec backfill map — Wave 1
 
 - **Freshness:** 2026-07-22 PT
-- **Baseline:** `origin/main` at `2b6188bff0e6c680731e778f085af383a9468f71` (PR #1619 landed)
+- **Baseline:** `origin/main` at `8cab31d8b734720f826a66045c1e962b44e54b72` (PR #1620 landed)
 - **Source:** PR #1616 full-coverage audit, reverse-direction findings
 - **Scope:** four coordination-edge-free shipped contracts; requirements only, no runtime or canonical-spec edits
 
@@ -24,7 +24,7 @@ The following thirteen groups are not silently covered here: community patch-loo
 
 ## Residual decomposition after fresh re-grounding
 
-Freshness: 2026-07-22 PT against `origin/main` `2b6188bf`. Each disposition below is either an independent successor lane or an explicit absorption/correction in an existing owner. “Proposal-safe” permits an as-built proposal, not implementation of future behavior or canonical sync across an active owner.
+Freshness: 2026-07-22 PT against `origin/main` `8cab31d8`. Each disposition below is either an independent successor lane or an explicit absorption/correction in an existing owner. “Proposal-safe” permits an as-built proposal, not implementation of future behavior or canonical sync across an active owner.
 
 | Reverse-coverage group | Exact successor disposition | Readiness and hard boundary |
 |---|---|---|
@@ -62,5 +62,5 @@ Freshness: 2026-07-22 PT, Windows, Python 3.14.3, worktree `wf-openspec-backfill
 - `python -m pytest -q tests/test_worktree_status.py tests/test_provider_context_feed.py`: 38 passed, 1 failed. The failure is the already-audited Windows CRLF assertion at `tests/test_worktree_status.py:356`; actual UTF-8 output is correct and differs only by `\r\n` versus the test's `\n` expectation.
 - Direct assertions passed for the exact `tinyassets` GUI entry, cumulative/empty incremental ASP results, Branch-slug sorting/deduplication, episodic-coordinate tuple normalization/replacement, and absent-domain resolution.
 - JSON parse/shape smokes passed for claim checking, worktree status, provider context, and cross-provider drift. Human versus JSON selection semantics were also covered by the focused coordination tests above.
-- `git diff --check`: passed; `STATUS.md` is 57 lines.
+- `git diff --check`: passed; `STATUS.md` is 58 lines.
 - The Windows-forbidden layer-2 uptime canary was not run. No public or runtime behavior changed, so rendered chatbot and production-use proofs do not apply to this proposal-only lane.
