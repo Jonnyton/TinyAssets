@@ -187,3 +187,20 @@ def test_alarm_sink_stays_always_and_failed_deploy_still_skips_probe() -> None:
         "github.event.workflow_run.conclusion == 'success'"
     )
     assert workflow["env"]["ALARM_THRESHOLD"] == 2
+
+
+def test_wiki_probe_uses_gha_output_mode_and_preserves_diagnostic() -> None:
+    workflow = _workflow()
+    step = next(
+        item
+        for item in workflow["jobs"]["probe"]["steps"]
+        if item.get("id") == "wiki_probe"
+    )
+    run = step["run"]
+
+    assert "python scripts/wiki_canary.py" in run
+    assert "--verbose" in run
+    assert "--format gha" in run
+    assert "output=$(" in run and "2>&1" in run
+    assert "echo \"wiki_msg<<${_delim}\"" in run
+    assert "echo \"$output\"" in run

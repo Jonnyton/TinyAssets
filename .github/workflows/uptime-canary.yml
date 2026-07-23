@@ -210,7 +210,7 @@ jobs:
         run: |
           set +e
           output=$(python scripts/wiki_canary.py \
-              --url "${PROBE_URL}" --timeout 20 --verbose 2>&1)
+              --url "${PROBE_URL}" --timeout 20 --verbose --format gha 2>&1)
           code=$?
           set -e
           _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
