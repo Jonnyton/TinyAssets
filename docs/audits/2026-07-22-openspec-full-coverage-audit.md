@@ -3,7 +3,7 @@
 - **Freshness:** 2026-07-23 UTC; canonical re-audit completed through PR #1619,
   legacy authority classified through PR #1620, nine independent shipped
   groups landed through PR #1622, and four runtime/memory groups independently
-  source-reviewed, synced, and archived in this lane
+  source-reviewed, synced, and archived in PR #1624
 - **Code/spec baseline:** PR #1622 merge on `origin/main` at `35817a3e`, plus
   archived changes `2026-07-23-backfill-independent-shipped-contracts` and
   `2026-07-23-backfill-runtime-memory-shipped-contracts`
