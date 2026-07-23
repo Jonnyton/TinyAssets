@@ -11,3 +11,19 @@ What surprised me: the bundle already staged the canonical runtime correctly; th
 Pattern worth capturing: package validation should compare the artifact’s declared catalog with middleware-visible behavior from the staged artifact itself. Comparing source constants or relying on a schema validator leaves room for silent product drift.
 
 One thing I would do differently: identify the `--skip-probe` plus `--validate` escape path in the first red test, because a semantic gate is incomplete while the official validator can bypass it.
+
+## 2026-07-23 — PR #1574 research archive
+
+What surprised me: current main already had an independently approved paid-market
+consumer of one research slice while the source reports themselves remained only
+on a stale draft branch. Approval of a consumer must not be generalized into
+approval of its source lane or architectural amendments.
+
+Pattern worth capturing: archive dated research with its review verdict adjacent,
+stamp the exact evidence checkpoint, and keep living design/coordination files out
+of the archival commit. `ADAPT` is durable evidence and a gate, not a synonym for
+approval.
+
+One thing I would do differently: build the source-to-archive hash manifest before
+creating the STATUS claim so the mechanical-copy proof and permitted header drift
+are explicit from the first increment.

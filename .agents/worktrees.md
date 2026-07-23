@@ -970,4 +970,4 @@ Notes:
 - Memory refs: draft PR #1574; current-main paid-market source-context approval
 - Related implications: `paid-market-live-price-discovery`; R2-1a/R2-1b; target-spec PLAN host decision
 - Idea feed refs: compute/model/task/fabrication markets; Zapier-equivalent automation; concurrency/scale; organizational universes; regulated-industry profiles
-- Ship/abandon: local commit only until parent review; land docs and refreshed pointers, never #1574 PLAN/runtime/OpenSpec/stale coordination edits
+- Ship/abandon: local commit only until parent review; land docs, refreshed pointers, and task reflection, never #1574 PLAN/runtime/OpenSpec/stale coordination edits
