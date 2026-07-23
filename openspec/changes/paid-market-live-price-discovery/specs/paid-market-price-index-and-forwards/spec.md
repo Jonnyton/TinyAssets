@@ -19,12 +19,12 @@ The market SHALL bind every demand intent, native offer, and quote to a versione
 - **AND** the resolved terms are bound into the firm quote and demand digest
 
 ### Requirement: Settlement records normalized delivery evidence
-The price index SHALL consume immutable accepted settlement observations emitted jointly by the `paid-market-economy` logical-accounting owner, the required §18.6 wallet/chain-effect successor, and the domain execution owners; it SHALL NOT create or mutate settlement truth. A paid settlement SHALL NOT become an accepted price observation until its logical-accounting result, domain acceptance evidence, and independently verified §18.6 wallet/chain receipt agree on the same tenant/universe-scoped settlement identity, `job_id:lease_fence:accepted_result_sha256`, parties, currency/token/chain, and gross/net/fee amounts, with the receipt accepted under §18.6 finality and reorg policy. A new-version inference observation SHALL carry integer `tokens_in`, integer `tokens_out`, applicable integer cached-token counts, integer `unit_price_micros_per_mtok`, the capability descriptor digest, accepted evidence digest, verified chain-receipt digest, and canonical fee schedule/version. Existing v1 settlement records SHALL remain byte-for-byte unchanged, and any new observation shape SHALL use a schema-version bump. Training, task, and fabrication observations SHALL retain their domain-native delivered units and accepted evidence digest rather than translating them into tokens. Missing, mismatched, or implausible delivery evidence SHALL fail loud or enter the domain dispute path. Missing, mismatched, invalid, non-final, or reorg-affected wallet/chain evidence SHALL remain rejected and route only through the §18.6 successor's reconciliation/finality process. Neither failure class SHALL silently produce a final paid price observation.
+The price index SHALL consume immutable accepted settlement observations emitted jointly by the `paid-market-economy` logical-accounting owner, the required wallet/chain-effect successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, and the domain execution owners; it SHALL NOT create or mutate settlement truth. A paid settlement SHALL NOT become an accepted price observation until its logical-accounting result, domain acceptance evidence, and independently verified wallet/chain receipt from that successor agree on the same tenant/universe-scoped settlement identity, `job_id:lease_fence:accepted_result_sha256`, parties, currency/token/chain, and gross/net/fee amounts, with the receipt accepted under that successor's finality and reorg policy. A new-version inference observation SHALL carry integer `tokens_in`, integer `tokens_out`, applicable integer cached-token counts, integer `unit_price_micros_per_mtok`, the capability descriptor digest, accepted evidence digest, verified chain-receipt digest, and canonical fee schedule/version. Existing v1 settlement records SHALL remain byte-for-byte unchanged, and any new observation shape SHALL use a schema-version bump. Training, task, and fabrication observations SHALL retain their domain-native delivered units and accepted evidence digest rather than translating them into tokens. Missing, mismatched, or implausible delivery evidence SHALL fail loud or enter the domain dispute path. Missing, mismatched, invalid, non-final, or reorg-affected wallet/chain evidence SHALL remain rejected and route only through that successor's reconciliation/finality process. Neither failure class SHALL silently produce a final paid price observation.
 
 #### Scenario: inference completion without counts is rejected
 - **WHEN** an inference completion omits required normalized token evidence
 - **THEN** the price index rejects ingestion and publishes no null-count settlement observation or derived price
-- **AND** the domain owner alone controls completion acceptance, `paid-market-economy` records only logical accounting intent, and the §18.6 successor alone controls wallet/chain effects
+- **AND** the domain owner alone produces the semantic completion-acceptance verdict, `paid-market-economy` may record the bound request-lifecycle acceptance transition and logical accounting intent but cannot invent that verdict, and the `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 successor alone controls wallet/chain effects
 
 #### Scenario: non-inference work keeps its native units
 - **WHEN** accepted training, task, or fabrication work becomes a market observation
@@ -37,7 +37,7 @@ The price index SHALL consume immutable accepted settlement observations emitted
 - **AND** no price-discovery component writes a replacement settlement
 
 #### Scenario: logical accounting without a verified chain receipt is not a paid observation
-- **WHEN** domain acceptance and a logical `market.apply_tx` result exist but the matching §18.6 wallet/chain receipt is absent, invalid, or mismatched
+- **WHEN** domain acceptance and a logical `market.apply_tx` result exist but the matching wallet/chain receipt required by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 is absent, invalid, or mismatched
 - **THEN** the index rejects paid-settlement ingestion
 - **AND** no paid-market price, volume, breadth, or confidence evidence is created
 
@@ -135,7 +135,7 @@ The price service SHALL compute and display a deterministic landed monetary tota
 - **AND** the router does not rank raw numeric amounts across currencies
 
 ### Requirement: Economic routing begins only after an explicit fulfillment mandate
-The system SHALL present free queue, requester-owned/BYOC, and paid-market fulfillment as distinct choices and SHALL NOT silently move a request between them. After the requester selects an authorized paid or BYOC path, the economic router SHALL filter hard capability, artifact, license, privacy, locality, authority, budget, and expiry constraints before ranking eligible candidates by the versioned all-in objective. It SHALL return the selected executable quote, deterministic tie-break facts, and material rejection reasons, and SHALL require a separate explicit reservation or purchase transition before execution.
+The system SHALL present free queue, requester-owned/BYOC, and paid-market fulfillment as distinct choices and SHALL NOT silently move a request between them. After the requester selects an authorized paid or BYOC path, the economic router SHALL filter hard capability, artifact, license, privacy, locality, authority, budget, and expiry constraints before ranking eligible candidates by the versioned all-in objective. It SHALL return the selected executable quote, deterministic tie-break facts, and material rejection reasons, and SHALL require a separate explicit reservation or purchase transition before execution. This discovery decision SHALL compare fulfillment lanes and capability-compatible quote envelopes only; it SHALL NOT allocate hosts or fan-out slots. When it selects a native paid path, the Wave 2 `paid-market-economy` workflow SHALL separately revalidate and bind each selected firm quote to a request-scoped bid, then run `best_execution` only across admitted bids within that request/path. Both receipts SHALL preserve the quote-to-bid identity/version/digest link.
 
 #### Scenario: no silent paid fallback
 - **WHEN** free or BYOC fulfillment is unavailable and the requester has not authorized a paid market purchase
@@ -157,6 +157,11 @@ The system SHALL present free queue, requester-owned/BYOC, and paid-market fulfi
 - **THEN** market-tier spend caps and fees do not classify that owned usage as a market settlement
 - **AND** its separate quota/budget authority remains explicit
 
+#### Scenario: discovery selection is not bidder allocation
+- **WHEN** the economic router selects a native paid quote/path
+- **THEN** its receipt authorizes no host, fan-out slot, claim, execution lease, or money effect
+- **AND** the Wave 2 workflow records a separate request-bound bid/match receipt before any atomic claim
+
 ### Requirement: External hosted-provider adapters are reference-only
 External hosted-provider adapters SHALL be credential-blind, read-only price sources in this phase. They SHALL publish exact source, terms, resource envelope, settlement currency, component coverage/missing fields, region, discounts/minimum assumptions, mode, and freshness and SHALL NOT execute, reserve, claim, settle, accept an upstream credential, or return an executable route. A complete comparable price may appear only as an external reference ceiling alongside native executable supply; incomplete prices remain partial references. Requester-owned upstream execution and seller-bundled resale SHALL require separate approved authority and legal contracts.
 
@@ -171,7 +176,7 @@ External hosted-provider adapters SHALL be credential-blind, read-only price sou
 - **AND** no fabricated ceiling or fallback execution is created
 
 ### Requirement: Economic discovery is separate from provider and domain execution routing
-The economic router SHALL NOT modify provider role/health fallback chains, resolve credentials, treat provider health as payment authority, create/fence domain capacity, lock money, or replace domain-native execution protocols. It MAY consume a later provider attempt receipt identity and credential class as evidence. Discovery SHALL evaluate and revalidate a quote; the domain owner SHALL create and fence the capacity grant/lease/work order; `paid-market-economy` SHALL record logical budget reservation/accounting intent; and the required §18.6 successor SHALL remain the sole wallet/chain-effect authority. Interactive inference SHALL retain streaming/cancellation/metering semantics, repo/source work SHALL retain fenced B2 leases, training SHALL retain checkpoint/evaluation acceptance, bounties SHALL retain first verified machine gates, and fabrication SHALL retain work-order/inspection/delivery/cure/rejection semantics.
+The economic router SHALL NOT modify provider role/health fallback chains, resolve credentials, treat provider health as payment authority, create/fence domain capacity, lock money, or replace domain-native execution protocols. It MAY consume a later provider attempt receipt identity and credential class as evidence. Discovery SHALL evaluate and revalidate a quote; the domain owner SHALL create and fence the capacity grant/lease/work order; `paid-market-economy` SHALL record logical budget reservation/accounting intent; and the successor defined by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 SHALL remain the sole wallet/chain-effect authority. Interactive inference SHALL retain streaming/cancellation/metering semantics, repo/source work SHALL retain fenced B2 leases, training SHALL retain checkpoint/evaluation acceptance, bounties SHALL retain first verified machine gates, and fabrication SHALL retain work-order/inspection/delivery/cure/rejection semantics.
 
 #### Scenario: quote selection cannot authorize provider credentials
 - **WHEN** a quote ranks first but no requester-owned credential or accepted market execution lease is bound
@@ -251,7 +256,7 @@ The live index SHALL use dispute-cleared settlements and verified native asks an
 - **AND** account count is not reported as independent owner diversity
 
 ### Requirement: Capacity forwards remain physically delivered and fully collateralized
-Forward instruments SHALL bind an immutable order id, capability descriptor version, one standard 8-hour UTC bucket or calendar-day/calendar-week roll-up no more than 28 days ahead, one supported 1M/10M/100M output-token size, unit price, authenticated seller, collateral terms, and an authenticated monotone posting/purchase/delivery/expiry/cancellation/settlement lifecycle. The initial forward class SHALL be batch-only with no secondary transfer. An order SHALL remain non-executable until canonical collateral is durably locked through the single transaction transport. Its published price SHALL be the deterministic lowest executable open ask for that exact bucket/class/size with source time. Settlement SHALL pass normalized exercised demand and caller-supplied delivered count to the canonical demand-relative oracle, reduce seller payment exactly pro-rata by unserved exercised demand, use the delivery threshold only to gate collateral slashing, compensate the buyer from any slash, persist exact inputs/outputs/version/conservation, and release or slash only from the immutable lock. Spot offers SHALL remain collateral-free unless a separately approved abuse-driven change says otherwise.
+Forward instruments SHALL bind an immutable order id, capability descriptor version, one standard 8-hour UTC bucket or calendar-day/calendar-week roll-up no more than 28 days ahead, one supported 1M/10M/100M output-token size, unit price, authenticated seller, collateral terms, and an authenticated monotone posting/purchase/delivery/expiry/cancellation/settlement lifecycle. The initial forward class SHALL be batch-only with no secondary transfer. An order SHALL remain non-executable until canonical collateral is durably locked through the single transaction transport. Its published price SHALL be the deterministic lowest executable open ask for that exact bucket/class/size with source time. Settlement SHALL pass normalized exercised demand and caller-supplied delivered count to the canonical demand-relative oracle, reduce seller payment exactly pro-rata by unserved exercised demand, use the delivery threshold only to gate collateral slashing, compensate the buyer from any slash, persist exact inputs/outputs/version/conservation, and release or slash only from the immutable lock. Spot offers SHALL remain collateral-free unless a separately approved abuse-driven change says otherwise. These product constraints SHALL NOT be represented as a regulatory safe harbor. Every jurisdiction SHALL remain dark until specialist counsel records the applicable CFTC facts-and-circumstances forward-contract-exclusion analysis—actual delivery, commercial intent, non-severable optionality, and the purpose of volume variation—plus applicable commodities, derivatives, securities, consumer, money-transmission, sanctions, and export-control conclusions and an approved jurisdiction policy version.
 
 #### Scenario: uncollateralized forward cannot execute
 - **WHEN** a seller posts a capacity forward without its matching durable collateral lock
@@ -273,6 +278,11 @@ Forward instruments SHALL bind an immutable order id, capability descriptor vers
 - **THEN** no forward collateral lock is required
 - **AND** the forward rule does not silently change the spot instrument
 
+#### Scenario: forwards remain dark without jurisdiction-specific legal review
+- **WHEN** the current jurisdiction lacks an approved specialist legal analysis and policy version for the proposed capacity-forward product
+- **THEN** forward publication, purchase, transfer, exercise, and settlement remain unavailable in that jurisdiction
+- **AND** physical delivery, collateral, or refusal of cash settlement is not advertised as legal approval or a categorical safe harbor
+
 ### Requirement: Demand forecasting is private and disabled by default
 The demand-forecast signal SHALL remain `TINYASSETS_DEMAND_SIGNAL=off` by default pending privacy review. When deliberately enabled, it SHALL publish only a coarse daily per-capability signal containing bucketed, k-anonymized `n_universes_holding` and `est_tokens_declared`, with no identifiable universe, organization, goal, prompt, dataset, or private workload facts.
 
@@ -281,9 +291,14 @@ The demand-forecast signal SHALL remain `TINYASSETS_DEMAND_SIGNAL=off` by defaul
 - **THEN** no public or seller-visible demand forecast is emitted
 
 ### Requirement: Unsupported financial and upstream instruments are refused
-The initial transport SHALL support only physically delivered native capacity under the declared spot/forward lifecycle and SHALL reject cash- or index-settled derivatives, secondary transfer, cross-margining, portfolio netting, leverage, options, proprietary-model instruments, seller-bundled upstream resale, and F3 swarm execution. External proprietary prices SHALL remain reference-only.
+The initial transport SHALL support only legally approved physically delivered native capacity under the declared spot/forward lifecycle and SHALL reject cash- or index-settled derivatives, secondary transfer, cross-margining, portfolio netting, leverage, options, proprietary-model instruments, seller-bundled upstream resale, and F3 swarm execution. External proprietary prices SHALL remain reference-only. Training/hardware eligibility SHALL consume verified policy facts and fail closed, but it SHALL NOT claim that a seller label or automated policy result constitutes BIS/export-control legal approval; jurisdictions and routes requiring such review SHALL remain dark until current specialist analysis is bound.
 
 #### Scenario: cash-settled or resold instrument is refused
 - **WHEN** a caller requests cash settlement, secondary transfer, or seller-bundled upstream service
 - **THEN** the system returns the exact unsupported-instrument reason
 - **AND** creates no order, credential grant, capacity lock, or settlement
+
+#### Scenario: automated eligibility cannot certify export legality
+- **WHEN** a training or hardware route has only seller-supplied compliance labels or automated policy facts without the current required specialist export-control review
+- **THEN** the route remains ineligible for executable publication or purchase
+- **AND** the platform reports missing legal authority rather than certifying compliance

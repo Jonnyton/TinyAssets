@@ -73,17 +73,135 @@ Legacy repo-file node-bid settlement SHALL remain a repo-root-level record at `s
 
 ## ADDED Requirements
 
+### Requirement: Paid requests follow one durable tenant-scoped workflow
+The paid-market control plane SHALL own one versioned request workflow from submission through settlement or refund. A request SHALL bind the verified requester, requester tenant/universe, capability descriptor/version, visibility, budget and spend cap, bid window, deadline, acceptance policy, settlement-policy version, and optional bounded fan-out before it becomes eligible. The authoritative lifecycle SHALL be `pending -> bidding -> claimed -> running -> completed -> accepted|auto_accepted -> settled`, with `pending|bidding -> cancelled|expired`, `claimed|running -> failed -> refunded`, and `completed -> disputed -> accepted|refunded|running` as explicit branches. The reviewed `disputed -> running` edge authorizes a new fenced correction attempt and later returns through `completed`; it is not a hidden `corrected` terminal state. `completed` SHALL mean that the claimed host submitted an evidence-bound deliverable and the domain owner produced its semantic acceptance-gate verdict; it SHALL NOT mean requester acceptance or money release. A dispute SHALL freeze settlement until an authorized reviewed resolution selects acceptance, a newly fenced correction attempt, or refund.
+
+Submission and every transition SHALL be body-bound idempotent and compare the current state/version in one transaction. The transition history SHALL be append-only and record request id, prior/new state, command digest/version, verified actor and authority/grant, related bid/match/claim/execution/delivery/settlement identities, and timestamp. UI, MCP, tray, worker, and webhook adapters SHALL delegate to this workflow owner and SHALL NOT update request lifecycle columns directly. Public behavior SHALL compose through the then-current canonical handle routers; this change SHALL NOT add a standalone advertised MCP action.
+
+#### Scenario: identical request submission replays one request
+- **WHEN** the requester retries the same body-bound submission after response loss
+- **THEN** the workflow returns the original request identity and version
+- **AND** creates no second request, budget reservation, or notification
+
+#### Scenario: changed-body submission conflicts
+- **WHEN** an idempotency key is reused with a changed capability, payload commitment, budget, bid window, acceptance policy, deadline, visibility, or fan-out
+- **THEN** submission fails with an idempotency conflict
+- **AND** the original request remains unchanged
+
+#### Scenario: invalid or unauthorized transition is rejected
+- **WHEN** an actor lacking the required requester, selected-host, or reviewed-dispute authority attempts a transition, or a command names a state edge not allowed from the locked current version
+- **THEN** the transition fails before mutation
+- **AND** possession of an internal service role or environment identity grants no positive workflow authority
+
+#### Scenario: cancellation and claim race has one winner
+- **WHEN** authorized requester cancellation races an eligible host claim against the same bidding request version
+- **THEN** exactly one compare-and-set transition commits
+- **AND** the losing command observes the committed state without a partial claim or budget effect
+
+#### Scenario: adapters cannot create a second workflow
+- **WHEN** chatbot, web, tray, worker, or webhook code submits or advances a paid request
+- **THEN** it delegates to the same workflow command boundary
+- **AND** no adapter maintains an alternate lifecycle, hidden balance mutation, or compatibility-side request row
+
+### Requirement: The paid inbox is capability-sharded, replayable, and privacy-minimal
+Committed eligible request versions SHALL be announced through capability-sharded Realtime channels keyed by a stable capability digest. The same database transaction that changes request eligibility SHALL append a durable per-shard outbox event with a strictly increasing cursor. Postgres request rows, transition history, and outbox SHALL remain authoritative; websocket frames SHALL be at-least-once invalidations, never queue truth, and the system SHALL NOT depend on native broadcast-replay retention for correctness. Each announcement SHALL carry only an opaque event id, shard cursor, opaque request id, request version, capability/version digest, public routing constraints, bid-window/deadline timestamps, visibility, and bounded fan-out metadata. It SHALL NOT include private payloads, credentials, deliverables, requester secrets, private node content, or money authority.
+
+An authenticated daemon SHALL prove current host ownership, non-revoked capability eligibility, visibility eligibility, and a server-configured positive subscription maximum before subscribing or fetching request details. Reconnect SHALL first subscribe and buffer live frames, then call one authorized repeatable-read database operation that returns the eligible snapshot plus durable per-shard watermark `W`, query durable outbox events with cursor greater than `W` through the current head, merge those with buffered frames by event id/request version, and only then enter live-tail mode. If `W` has been compacted or cannot be proven, the daemon SHALL discard incremental state and repeat from a fresh snapshot/watermark; a provider replay window SHALL NOT weaken this fallback. Duplicate/out-of-order frames SHALL deduplicate by event id plus request version. Backpressure SHALL coalesce superseded invalidations, preserve the newest version, apply server-configured positive page/retry/subscription limits plus per-principal and per-shard fairness, expose degraded/stale status, and use bounded exponential retry; it SHALL NOT fall back to polling all requests or broadcasting every request to every daemon.
+
+#### Scenario: durable commit precedes notification
+- **WHEN** an eligible request is submitted
+- **THEN** its authoritative row and transition event commit before the Realtime announcement is emitted
+- **AND** notification failure leaves durable pending work available to snapshot reconciliation
+
+#### Scenario: reconnect closes the snapshot-tail gap
+- **WHEN** a daemon disconnects while eligible requests are inserted or changed
+- **THEN** subscribe-and-buffer followed by the atomic snapshot/watermark and durable outbox catch-up yields every current eligible request version at least once before live-tail mode
+- **AND** no request depends on a missed websocket frame for discoverability
+
+#### Scenario: duplicate and reordered frames are harmless
+- **WHEN** the notification layer redelivers, delays, or reorders events
+- **THEN** the daemon reconciles by event id and authoritative request version
+- **AND** creates no duplicate bid, claim, execution, or accounting effect
+
+#### Scenario: an unauthorized subscriber learns no private request data
+- **WHEN** a host lacks the required capability, visibility, tenant/network, or current enrollment authority
+- **THEN** subscription or detail fetch is rejected
+- **AND** public routing metadata cannot be expanded into payload, credential, requester-secret, or deliverable access
+
+#### Scenario: hot-shard backpressure does not become poll-all
+- **WHEN** one capability shard exceeds its delivery budget or the Realtime service is degraded
+- **THEN** the system coalesces superseded versions, preserves fair bounded catch-up, and reports degraded freshness
+- **AND** no daemon starts global inbox scans or unbounded retry loops
+
+### Requirement: Paid-workflow storage is deny-by-default and rechecks positive authority
+Request, bid, match, fan-out-slot, claim, transition-event, delivery-receipt, dispute, and outbox tables SHALL revoke direct insert/update/delete from `PUBLIC`, anonymous, authenticated, and ordinary application roles. Reads SHALL use least-privilege views/functions plus row-level policies scoped to the verified requester, selected host, explicitly authorized reviewer/collaborator, or privacy-minimal public projection. Mutations SHALL pass only through fixed-search-path command functions owned by non-login roles and explicitly granted to dedicated internal command roles. Possession of an internal/service role SHALL be necessary but never sufficient: each function SHALL independently lock and verify current request/bid/version, actor/tenant/host/grant, capability/visibility, state edge, idempotency digest, expiry/revocation generation, and delivery ACL before mutation. RLS SHALL remain defense in depth and SHALL NOT be the source of positive authority.
+
+#### Scenario: public and application roles cannot write workflow tables
+- **WHEN** public, anonymous, authenticated, or ordinary application roles attempt direct request, bid, match, claim, event, delivery, dispute, or outbox DML
+- **THEN** PostgreSQL denies the operation
+- **AND** no lifecycle or authority-bearing row changes
+
+#### Scenario: privileged command role cannot invent authority
+- **WHEN** an internal command caller names an actor, tenant, host, grant, request version, state edge, or delivery ACL that does not match the locked authoritative rows
+- **THEN** the command function rejects before mutation
+- **AND** service-role possession does not widen the actor's allowed action
+
+#### Scenario: cross-tenant reads reveal no row existence
+- **WHEN** an unrelated tenant or unselected host reads private request, bid, match, transition, dispute, or delivery state
+- **THEN** the least-privilege surface returns no row and no enumerable identifier, artifact location, or private count
+- **AND** only the explicitly public privacy-minimal projection remains available
+
+#### Scenario: hostile search path cannot redirect a workflow command
+- **WHEN** a caller creates lookalike objects in a writable schema and invokes a privileged workflow function
+- **THEN** the fixed trusted search path resolves only intended objects
+- **AND** no attacker-controlled function, table, or operator executes
+
+#### Scenario: revoked authority fails despite cached RLS visibility
+- **WHEN** a host, capability, collaborator, reviewer, or on-behalf grant is revoked after a prior authorized read
+- **THEN** the next command rechecks the current revocation generation and fails closed
+- **AND** stale cache or RLS-session state cannot preserve positive mutation authority
+
+### Requirement: Bids and match decisions are versioned, authorized, and reproducible
+Only an authenticated, non-revoked host owner or a target/action/time-bounded on-behalf grant SHALL create or replace a bid. Each bid SHALL bind immutable request identity/version, bid identity/version, host and owner identities, capability descriptor/version, executable quantity, landed price and fee-policy version, delivery/acceptance terms, capacity fence, expiry, and canonical digest/signature where required. A persistent bid SHALL materialize exactly one immutable pure `BookOffer` for matching, with `offer_id = bid_id` and identical version, quantity, and economic terms; “offer” SHALL name only that pure adapter value, not a second persisted lifecycle. When price discovery selected a native firm quote, the bid SHALL additionally bind and revalidate its quote id/version/digest. One host-capacity slot SHALL expose at most one current bid version for a request; replacement, cancellation, expiry, capability revocation, capacity consumption, or owner/grant revocation SHALL make earlier versions ineligible without erasing history.
+
+Within one explicitly chosen paid request/path, the market SHALL resolve a bid window by invoking the canonical pure matcher over one versioned eligible bid snapshot. Cross-lane quote evaluation SHALL remain owned by `paid-market-live-price-discovery`; Wave 2 SHALL allocate only request-bound bidders/fan-out slots and SHALL NOT repeat or override that routing decision. It SHALL record an immutable match decision containing the request and selected bid versions, any linked quote versions, rejected bids with bounded reason codes, matcher/oracle version, hard constraints, requester-authorized objective and weights, deterministic tie-break inputs, fan-out slot assignment, and decision digest. Hidden platform preferences, maintainer capacity, provider credentials, or post-window bid mutation SHALL NOT affect selection. A later claim SHALL atomically revalidate and consume the exact recorded versions or recompute through the bounded contention path; a match decision alone SHALL authorize neither execution credentials nor money movement.
+
+#### Scenario: expired or revoked bid cannot win
+- **WHEN** a bid expires or its host, capability, capacity, owner, or grant authority is revoked before the match snapshot
+- **THEN** the matcher excludes that bid with a recorded reason
+- **AND** no stale signature, cached announcement, or internal role restores eligibility
+
+#### Scenario: equal bids resolve reproducibly
+- **WHEN** eligible request-bound bids are equal under the requester-authorized objective
+- **THEN** the recorded matcher version and deterministic tie-break produce the same selection for the same snapshot
+- **AND** no arrival-order race after the bid window or hidden platform weighting changes the result
+
+#### Scenario: match receipt binds the later claim
+- **WHEN** a host attempts to claim from a recorded match decision
+- **THEN** the claim rechecks the exact request, bid, capability, capacity, expiry, authority, and version bindings
+- **AND** any stale binding aborts the entire claim or enters the bounded recomputation path
+
+#### Scenario: fan-out allocates only declared slots
+- **WHEN** a request declares bounded `top_n` fan-out
+- **THEN** the match decision assigns at most the declared number of independently fenced slots
+- **AND** concurrent claims cannot consume the same slot or silently widen the fan-out
+
+#### Scenario: matching grants no provider or payment authority
+- **WHEN** a bid wins deterministic selection
+- **THEN** the decision records economic eligibility only
+- **AND** provider credentials, execution leases, logical reservations, and real-fund effects still require their separate authoritative grants and receipts
+
 ### Requirement: Paid-market claims are narrow, exact, and atomic
-The Postgres paid-request claim transport SHALL claim only eligible offered work in one transaction. Every offer row SHALL carry a monotonic `version` used by compare-and-set. A single-request claim SHALL lock only the addressed request/bid rows. A multi-offer purchase SHALL call `match.best_execution` on a versioned eligible snapshot, lock the selected IDs in canonical order, verify state and version, and transition all selected rows atomically. A stale selected row SHALL roll back and permit at most three jittered recomputations; exhaustion SHALL return an honest contention result rather than a partial fill or retry storm. This claim domain SHALL NOT replace the separate repo-file node-bid claim path.
+The Postgres paid-request claim transport SHALL claim only eligible bid work in one transaction. Every bid row SHALL carry a monotonic `version` used by compare-and-set and SHALL materialize one immutable pure `BookOffer`. A single-request claim SHALL lock only the addressed request/bid rows. A multi-bid allocation SHALL call `match.best_execution` on a versioned eligible bid snapshot, lock the selected bid IDs in canonical order, verify state and version, and transition all selected rows atomically. A stale selected bid SHALL roll back and permit at most three jittered recomputations; exhaustion SHALL return an honest contention result rather than a partial fill or retry storm. This claim domain SHALL NOT replace the separate repo-file node-bid claim path.
 
 #### Scenario: exactly one claimer wins a paid request
 - **WHEN** multiple eligible actors concurrently claim the same offered paid request
 - **THEN** exactly one atomic state transition succeeds
 - **AND** every loser receives a clean contention result with no partial state
 
-#### Scenario: selected offer changes before claim
-- **WHEN** `best_execution` selects multiple offers and any selected version is stale at lock time
-- **THEN** no selected offer is claimed in that transaction
+#### Scenario: selected bid changes before claim
+- **WHEN** `best_execution` selects multiple bid-derived `BookOffer` values and any selected bid version is stale at lock time
+- **THEN** no selected bid is claimed in that transaction
 - **AND** the transport either recomputes within the bounded retry budget or reports contention
 
 #### Scenario: insufficient supply stays honest
@@ -91,8 +209,53 @@ The Postgres paid-request claim transport SHALL claim only eligible offered work
 - **THEN** the transport records no claim
 - **AND** it does not silently accept a partial fill
 
+### Requirement: Paid delivery is fence-bound, replay-safe, and dispute-aware
+Only the host holding the current paid claim and distributed-execution lease SHALL advance a request to `running` or submit completion. Completion SHALL bind the exact `job_id:lease_fence:accepted_result_sha256` identity, request/claim/match versions, immutable deliverable artifact reference and digest, media/schema type, byte count, producer identity, execution receipt, declared domain acceptance gates and the domain owner's semantic verdict, and delivery ACL. The workflow SHALL store the deliverable receipt and `completed` transition atomically or store neither, but it SHALL NOT compute, replace, or upgrade the domain verdict. Progress messages and host self-attestation SHALL NOT constitute completion, acceptance, a paid observation, or settlement authority.
+
+The request SHALL bind the acceptance class permitted by its separately reviewed domain contract. A machine-gate-only bounty or standing-goal task SHALL use policy-driven lifecycle acceptance from the first positive immutable machine-gate verdict; the requester SHALL NOT bind discretionary review, withhold acceptance, or reverse a positive verdict by subjective preference. A dispute in that class MAY challenge evidence integrity, actor/lease authority, or gate execution and MAY trigger a deterministic rerun or higher-tier evaluator, but the resolver SHALL NOT replace a valid machine verdict with unstructured human judgment. Explicit requester/inspector review or a disclosed bounded dispute window with policy-authorized `auto_accepted` SHALL be available only to domains whose contracts declare those human/inspection semantics, such as fabrication inspection or training checkpoint review. Acceptance SHALL revalidate the immutable delivery receipt, current request version, bound domain verdict, and allowed acceptance class; `paid-market-economy` owns the lifecycle transition but not the domain semantics. An authorized dispute SHALL record bounded reason/evidence references, preserve the deliverable and history, block settlement, and route resolution through the domain's reviewed dispute boundary plus moderation only for abuse/process integrity. A reviewed correction SHALL transition `disputed -> running` only by issuing a new fenced execution attempt; its result SHALL return through `completed` with a new immutable receipt and domain verdict. A failed or rejected terminal result SHALL invoke the same atomic accounting transport for the policy-defined refund only after its required evidence is recorded. Delivery reads SHALL enforce requester, selected-host, reviewer, and explicitly granted collaborator ACLs; public routing metadata SHALL never make a private deliverable public.
+
+#### Scenario: stale lease cannot submit a deliverable
+- **WHEN** a former claimer or worker submits completion under an expired or superseded lease fence
+- **THEN** completion is rejected before storing a delivery receipt or changing request state
+- **AND** the current claim remains authoritative
+
+#### Scenario: completion response loss replays one receipt
+- **WHEN** the selected host loses the response after an evidence-bound completion command commits
+- **THEN** an identical retry returns the original delivery receipt and completed transition
+- **AND** creates no duplicate artifact, transition, acceptance timer, or settlement trigger
+
+#### Scenario: changed deliverable retry conflicts
+- **WHEN** the completion idempotency key is reused with a changed artifact digest, accepted-result hash, gate result, receipt, or ACL
+- **THEN** the command conflicts and preserves the original immutable delivery
+- **AND** no changed body inherits the original authority
+
+#### Scenario: dispute freezes settlement
+- **WHEN** the requester files an authorized dispute before the bound acceptance deadline
+- **THEN** the workflow enters `disputed`, preserves evidence, and blocks settlement or price-observation admission
+- **AND** only the authorized reviewed resolution can select acceptance, refund, or a new fenced correction attempt returning through `running -> completed`
+
+#### Scenario: auto-accept follows only the bound policy
+- **WHEN** the disclosed dispute window expires without a valid dispute and the request bound an auto-accept policy
+- **THEN** the policy worker rechecks the bound positive domain verdict and compare-and-sets the unchanged completed version to `auto_accepted`
+- **AND** an absent, changed, premature, or stale policy cannot release settlement
+
+#### Scenario: requester cannot veto a positive machine-gated bounty
+- **WHEN** a machine-gate-only bounty or standing-goal task has a valid first positive immutable domain verdict and the requester attempts discretionary rejection or withholding
+- **THEN** the workflow follows the domain's policy-driven acceptance and settlement path
+- **AND** any integrity dispute can only invoke the reviewed evidence/gate rerun process, not substitute subjective requester judgment
+
+#### Scenario: private delivery remains private
+- **WHEN** an unrelated tenant, unselected host, public quote reader, or Realtime subscriber requests the deliverable
+- **THEN** access is denied without revealing artifact location or private content
+- **AND** only privacy-minimal routing and terminal-status metadata permitted by policy remains visible
+
+#### Scenario: failed work refunds through the accounting owner
+- **WHEN** the accepted failure/refund policy and required failure evidence authorize a refund
+- **THEN** the workflow invokes the single body-bound market accounting transport and records the linked refund identity
+- **AND** no API, worker, or dispute adapter writes balances directly
+
 ### Requirement: One authenticated transaction transport owns all logical market accounting transitions
-Every market-accounting debit, credit, logical reservation transition, fee entry, refund entry, and collateral-account transition SHALL use the named pure adapter and the single internal versioned `market.apply_tx` transaction boundary owned by `paid-market-economy`; application, API, SQL, HTTP, MCP, and workflow code SHALL NOT compute and write balances or ledger rows through an alternate path. In Wave 2, account names beginning `escrow:*` denote logical reservation accounting only, never proof of custody or real-fund reservation. Wave 2 transport SHALL combine tenant-scoped business-state compare-and-set, actor/account authority, body-bound idempotency, adapter-derived postings, `market.apply_tx`, and every required logical reservation/collateral drain assertion in one server-side database transaction. The trusted wrapper SHALL ignore any caller-computed hash, recompute SHA-256 over a versioned domain-separated canonical encoding of the complete command, and bind the deterministic tenant-scoped idempotency key to that digest; an identical replay returns the original result, while a supplied-hash mismatch or changed canonical body conflicts. It SHALL coalesce duplicate accounts and acquire every touched row in one reviewed global order: tenant-scoped business rows by type/id, logical reservation/collateral rows by type/id, idempotency transaction row, then balance accounts lexicographically; postings/audit rows are inserted only after required locks. Any authorization, oracle, overdraft, residual, state, deadlock-order, or transport failure SHALL roll back the entire transaction, and persistent results SHALL be differential-tested against the canonical pure `Ledger` and settlement oracles. A completion-dependent settlement SHALL NOT create a releasable accounting result until the domain owner validates every normalized delivery field required for that completion; missing or implausible required evidence SHALL reject the completion or enter its domain dispute path before transport invocation. Direct SQLite accounting side paths SHALL be removed before launch, and schema history SHALL precede prototype migrations 006–008. `market.apply_tx` success SHALL neither prove nor authorize wallet funding, real-fund reservation, payout, refund, or chain settlement. User-owned wallets remain the source of real-fund authority; PostgreSQL stores only bounded logical reservation/accounting intent and independently verified receipt state, and Wave 2 adds no user signing-key storage, signer, payout dispatcher, or smart-contract escrow. The transport SHALL remain unreachable from live claim/settle paths while `TINYASSETS_PAID_MARKET` is off and until distributed-execution S14/B36, the required §18.6 chain-settlement successor, independent review, and host-approved cutover are complete.
+Every market-accounting debit, credit, logical reservation transition, fee entry, refund entry, and collateral-account transition SHALL use the named pure adapter and the single internal versioned `market.apply_tx` transaction boundary owned by `paid-market-economy`; application, API, SQL, HTTP, MCP, and workflow code SHALL NOT compute and write balances or ledger rows through an alternate path. In Wave 2, account names beginning `escrow:*` denote logical reservation accounting only, never proof of custody or real-fund reservation. Wave 2 transport SHALL combine tenant-scoped business-state compare-and-set, actor/account authority, body-bound idempotency, adapter-derived postings, `market.apply_tx`, and every required logical reservation/collateral drain assertion in one server-side database transaction. The trusted wrapper SHALL ignore any caller-computed hash, recompute SHA-256 over a versioned domain-separated canonical encoding of the complete command, and bind the deterministic tenant-scoped idempotency key to that digest; an identical replay returns the original result, while a supplied-hash mismatch or changed canonical body conflicts. It SHALL coalesce duplicate accounts and acquire every touched row in one reviewed global order: tenant-scoped business rows by type/id, logical reservation/collateral rows by type/id, idempotency transaction row, then balance accounts lexicographically; postings/audit rows are inserted only after required locks. Any authorization, oracle, overdraft, residual, state, deadlock-order, or transport failure SHALL roll back the entire transaction, and persistent results SHALL be differential-tested against the canonical pure `Ledger` and settlement oracles. A completion-dependent settlement SHALL NOT create a releasable accounting result until the domain owner validates every normalized delivery field required for that completion; missing or implausible required evidence SHALL reject the completion or enter its domain dispute path before transport invocation. Direct SQLite accounting side paths SHALL be removed before launch, and schema history SHALL precede prototype migrations 006–008. `market.apply_tx` success SHALL neither prove nor authorize wallet funding, real-fund reservation, payout, refund, or chain settlement. User-owned wallets remain the source of real-fund authority; PostgreSQL stores only bounded logical reservation/accounting intent and independently verified receipt state, and Wave 2 adds no user signing-key storage, signer, payout dispatcher, or smart-contract escrow. The transport SHALL remain unreachable from live claim/settle paths while `TINYASSETS_PAID_MARKET` is off and until S14/B36 from `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`, the required chain-settlement successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, independent review, and host-approved cutover are complete.
 
 #### Scenario: successful dark settlement conserves and drains
 - **WHEN** an authorized dark-path settlement uses a pure adapter and valid current business state
@@ -105,7 +268,7 @@ Every market-accounting debit, credit, logical reservation transition, fee entry
 - **AND** no completion-dependent funds movement or null-count settlement observation is recorded
 
 #### Scenario: self-hosted work is zero-fee and not a paid-market self-deal
-- **WHEN** locked tenant-scoped request and winning-offer rows prove exact immutable equality of `request.requester_user_id` and `winning_offer.host_owner_user_id`
+- **WHEN** locked tenant-scoped request and winning-bid rows prove exact immutable equality of `request.requester_user_id` and `winning_bid.host_owner_user_id`
 - **THEN** the trusted wrapper invokes the canonical pure self-host settlement adapter and records `self_hosted_zero_fee` with no treasury fee and no on-chain transfer
 - **AND** that work is excluded from paid-market volume and price formation
 
@@ -115,7 +278,7 @@ Every market-accounting debit, credit, logical reservation transition, fee entry
 - **AND** no caller field, grant, or economic-principal inference can select `self_hosted_zero_fee`
 
 #### Scenario: logical reservation is not real-fund authority
-- **WHEN** a logical reservation or balanced `market.apply_tx` transaction exists without a separately verified wallet or chain-authority receipt required by the §18.6 successor
+- **WHEN** a logical reservation or balanced `market.apply_tx` transaction exists without a separately verified wallet or chain-authority receipt required by the `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 successor
 - **THEN** the request remains unfunded and non-executable for real-value work
 - **AND** no work release, payout, refund, or chain effect is authorized from the database row alone
 
@@ -125,7 +288,7 @@ Every market-accounting debit, credit, logical reservation transition, fee entry
 - **AND** no business-state change, transaction, posting, or balance update commits
 
 #### Scenario: live payout remains unavailable before authority cutover
-- **WHEN** distributed-execution S14/B36, the required §18.6 chain-settlement successor, or host-approved cutover is incomplete
+- **WHEN** the distributed-execution exec plan’s S14/B36 gates, the required chain-settlement successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, or host-approved cutover is incomplete
 - **THEN** no public/API path can activate a market claim, settlement, or on-chain payout
 - **AND** read-only market state remains available only with an explicit dark/unavailable status
 
@@ -228,16 +391,21 @@ The v0 fixture PostgreSQL chain SHALL use unique, gap-free, strictly increasing 
 - **AND** rollback to the prior application requires no destructive schema reversal
 
 ### Requirement: Wave 2 activation requires concurrency, recovery, and zero-host proof
-The Wave 2 transport SHALL remain dark until a production-shaped isolated environment records dated evidence for role isolation, actor binding, body-bound replay, response-loss recovery, matcher/claim contention, ledger conservation, terminal logical-reservation contention, migration recovery, and zero-host behavior. Evidence SHALL include environment, exact commands, load, latency distributions, resource occupancy, and raw failure counts and SHALL receive independent review before host-approved activation.
+The Wave 2 request workflow and transport SHALL remain dark until a production-shaped isolated environment records dated evidence for role isolation, actor binding, body-bound replay, Realtime disconnect/reconnect and duplicate delivery, hot-shard backpressure, bid replacement/expiry, deterministic match replay, matcher/claim contention, fenced completion and delivery replay, dispute/acceptance races, response-loss recovery, ledger conservation, terminal logical-reservation contention, migration recovery, and zero-host behavior. Evidence SHALL include environment, exact commands, load, event-to-visible and command latency distributions, reconnect/catch-up lag, resource occupancy, raw failure counts, duplicate/lost event and effect counts, tenant/shard fairness, and independent review before host-approved activation.
 
 #### Scenario: capability-sharded claim storm stays correct and bounded
 - **WHEN** 500 synthetic daemons receive 1,000 paid requests over five minutes through the production-shaped capability push and narrow claim boundary without mocked delivery
-- **THEN** no request is lost or claimed twice and claim latency p99 remains below three seconds
+- **THEN** no request is lost, no eligible current request version remains undiscoverable after bounded catch-up, no request or fan-out slot is claimed twice, and event-to-visible plus claim latency p99 remain below three seconds
 - **AND** the system creates no poll-all retry storm
 
-#### Scenario: offer-book contention never double-sells
-- **WHEN** 100 buyers concurrently match and claim from one versioned offer book
-- **THEN** no offer is sold twice
+#### Scenario: reconnect and backpressure preserve current work
+- **WHEN** 20 percent of 500 synthetic daemons repeatedly disconnect and reconnect while one capability shard is saturated and request versions are replaced or cancelled
+- **THEN** snapshot-plus-cursor reconciliation converges every authorized daemon to the current eligible set with no private cross-shard disclosure
+- **AND** duplicate frames, superseded versions, and bounded coalescing create no duplicate bid, claim, execution, delivery, or accounting effect
+
+#### Scenario: bid-book contention never double-sells
+- **WHEN** 100 buyers concurrently match and claim from one versioned bid book
+- **THEN** no bid-derived capacity slot is sold twice
 - **AND** every committed selection equals `best_execution` for its valid snapshot
 
 #### Scenario: overlapping writers preserve conservation
@@ -251,9 +419,14 @@ The Wave 2 transport SHALL remain dark until a production-shaped isolated enviro
 - **AND** every other caller receives the prior result or a clean state/idempotency conflict
 
 #### Scenario: fault injection never applies twice
-- **WHEN** execution stops before or after claim CAS, ledger apply, drain assertion, commit, or response delivery
+- **WHEN** execution stops before or after request submission, notification emission, bid replacement, match recording, claim CAS, completion receipt storage, acceptance/dispute CAS, ledger apply, drain assertion, commit, or response delivery
 - **THEN** recovery yields zero or one committed effect
 - **AND** no retry creates a duplicate transaction or posting
+
+#### Scenario: completion and dispute race cannot release twice
+- **WHEN** duplicate completion, requester acceptance, auto-accept expiry, and dispute commands race on one delivered request
+- **THEN** each body-bound command replays or conflicts against one versioned lifecycle history and at most one settlement/refund disposition becomes authoritative
+- **AND** a timely committed dispute prevents settlement until reviewed resolution
 
 #### Scenario: zero hosts remains honest
 - **WHEN** every tray and daemon host is offline
