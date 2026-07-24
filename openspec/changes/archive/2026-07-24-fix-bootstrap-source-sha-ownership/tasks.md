@@ -11,5 +11,5 @@
 ## 3. Verification And Handoff
 
 - [x] 3.1 Run focused bootstrap/installer tests, shell syntax/lint, strict OpenSpec validation, and diff checks.
-- [ ] 3.2 Obtain independent exact-SHA review, sync/archive the change, and publish the infra PR.
-- [ ] 3.3 Preserve the exact-landed DR rerun and its bootstrap/restore/state/probe/deletion evidence as the production monitoring handoff.
+- [x] 3.2 Obtain independent exact-SHA review, sync/archive the change, and publish the infra PR.
+- [x] 3.3 Preserve the exact-landed DR rerun and its bootstrap/restore/state/probe/deletion evidence as the production monitoring handoff.
