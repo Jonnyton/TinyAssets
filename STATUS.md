@@ -43,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| **Monitor hardened DR drill #3** — dispatch exact landed SHA; record bounded provider result, checksum/restored-state proof, and deletion outcome | docs/ops/dr-drill-log.md; production workflow/issue evidence | hardening PR must land before re-dispatch | monitoring |
+| **Refresh DR drill Debian image and rerun #3** — exact run 30062035537 passed archive preflight, then bounded HTTP 422 proved `debian-12-x64` retired | .github/workflows/dr-drill.yml; tests/test_dr_drill_workflow.py; openspec/changes/refresh-drill-debian-image/; openspec/specs/uptime-and-alarms/spec.md; STATUS.md; REFLECTION.md | #1661 landed; official DO image catalog names `debian-13-x64`; no re-dispatch before fix lands | claimed:codex-gpt56-sol ACTIVE 2026-07-23 |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
