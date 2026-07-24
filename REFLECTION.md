@@ -79,6 +79,22 @@ One thing I would do differently: start the contract test from the runtime's
 actual environment and enumerate every linked guide before drafting the
 write-set.
 
+## 2026-07-23 — storage-independent moderation authority
+
+What surprised me: a policy can fail closed and still violate tenant isolation
+by letting an unrelated tenant's same-named grant block resolution. Separately,
+a council quorum looked strong while silently substituting for the required
+two-reviewer concurrence.
+
+Pattern worth capturing: terminal authority is a conjunction of independently
+proved quorums. Bind every terminal authorization to the exact immutable
+decision set, enforce event chronology, and tenant-qualify every durable
+authority key.
+
+One thing I would do differently: write the complete adversarial truth table
+first—one reviewer, two reviewers, council before/after review, replayed grant
+generations, and cross-tenant duplicate IDs—before implementing the resolver.
+
 ## 2026-07-23 — convergent host uptime installation
 
 What surprised me: installing every unit was not sufficient for a fresh host;
