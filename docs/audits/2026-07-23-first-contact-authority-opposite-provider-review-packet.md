@@ -83,20 +83,29 @@ test is authorized by this packet.
     receipt truth from the existing mutable `_last_provider` global, and this
     lane must not create a second receipt system.
 11. PR #1685 (`c1fe0f85`) landed the transactional operator-request admission
-    storage seam, which remains unreachable from an activated public execution
-    route. PR #1689 (`5c64605a`) landed exact-universe operator-priority grant
-    lifecycle. PR #1692 (`129a68f7`) then landed one request-local admission
-    verdict: authenticated ordinary submit scope plus exact-universe ACL can
-    admit zero-weight legacy work; positive priority also needs an exact active
-    grant, yet remains `operator_priority_unavailable` with zero persistence
-    until the public v2 writer/rollout exists. These are queue-admission and
-    priority seams only. Their verdict, grant, receipt, task, and scheduling
-    claim grant no provider, compute, economic, model-access, market, funding,
-    execution-lease, settlement, or spending authority. No
-    distributed-execution B2 identity/claim/lease/fence authority is landed on
-    main; the usable remote-execution slice is blocked until that separately
-    reviewed target contract lands, and any eventual external execution must
-    require it.
+    storage seam, and PR #1689 (`5c64605a`) landed exact-universe
+    operator-priority grant lifecycle. PR #1692 (`129a68f7`) added the
+    request-local verdict. PR #1693 (`0b6b43e7`) made replay re-check current
+    ordinary scope and exact ACL before lookup: ACL loss is non-enumerating,
+    while priority-only revocation/expiry preserves a committed replay but
+    blocks a new positive-priority key. PR #1694 (`702d18d8`) landed canonical
+    public `write_graph(target="request")` admission on both connector
+    surfaces plus one transactional Request/admission receipt/public committed
+    result/event/pending epoch-2 task. Exact active priority authority can now
+    persist through this canonical v2 transaction; missing priority authority
+    fails with zero writes. The legacy `_action_submit_request` still
+    coexists: zero-weight legacy writes remain possible, while positive
+    priority returns `operator_priority_unavailable`; per-universe cutover,
+    v1 retirement, and rollout remain incomplete. PR #1696 (`0a82dbec`) landed
+    epoch-2 queue lifecycle, pure cross-epoch selection, and a bounded
+    internal queue claim/lease. That lease is a scheduling reservation only.
+    The request-admission receipt is distinct from the pending R2-1b
+    provider-attempt receipt. None of these verdicts, grants, receipts,
+    results, tasks, events, selections, or internal queue leases populates
+    provider eligibility or grants provider, compute, model-access, market,
+    funding, external B2/market lease, settlement, or spending authority. B2
+    signed owner/daemon/job/capsule/lease/fence authority is not landed; the
+    usable remote-execution slice remains blocked on it.
 12. PR #1617 remains open/dirty and currently claims the authority contract.
     The reviewed successor proposal treats it as candidate detail only and
     proposes that it not merge or remain an independent requester-authority
@@ -158,7 +167,7 @@ correctly retain an empty persistent `allowed_providers` ceiling.
 | Exhaustive provider-authority carrier/threading | future subordinate `provider-authority-propagation`, only after this verdict is accepted and folded into `universe-creation` | Carry the accepted authority; do not create a second requester authority, router, receipt, vault, market, or credential-isolation contract |
 | Ambient credential isolation | PR #1546 landed the host-credential half; residual branch `codex/fail-closed-provider-auth-overlay` at `dd71fc1c`; former PR #1609 closed | Residual owner unresolved until republished/merged or superseded; do not consume a hypothetical repair |
 | Result-local invocation receipt | PR #1650 merged the strict-valid `provider-attempt-receipts` contract; runtime pending | Extend its accepted returned result with authority dimensions |
-| Operator request admission and priority | PRs #1685, #1689, and #1692 landed | Queue admission/priority only; never let the verdict, grant, receipt, task, or scheduling claim populate provider eligibility or act as provider, compute, model-access, market, funding, lease, settlement, economic, or spending authority |
+| Operator request admission, replay, receipt, and epoch-2 queue | PRs #1685, #1689, and #1692–#1696 landed | Request-local admission/persistence/scheduling only; the #1696 bounded internal queue lease is not an external B2/market lease, and none of these artifacts populates provider eligibility or grants provider, compute, model-access, market, funding, settlement, economic, or spending authority |
 | Market quote/ranking | active `paid-market-live-price-discovery` | Discovery only; never positive authority |
 | Request/bid/match/claim and logical accounting | active `paid-market-track-e-wave-2-transport` | Consume its accepted terminal handoff; do not duplicate transport |
 | Remote executor identity/lease/fence | active `distributed-execution` | Verify and bind its accepted signed result; do not invent a lease protocol |
@@ -382,11 +391,11 @@ unable to speak.
   retry idempotency with fake executors.
 
 This is the smallest usable P0-closing slice that does not presume platform
-secret custody. It is not currently implementable: main has only 1/22
-`distributed-execution` tasks complete, while its B2
-identity/claim/lease/fence spine remains on open draft PRs. Slice B stays
-blocked until B2 lands and is rechecked against the accepted authority
-contracts.
+secret custody. It is not currently implementable: `distributed-execution`
+has 1 checked, 1 partial, and 21 unchecked task rows, while its B2
+identity/job/capsule/claim/lease/fence spine remains on stale open draft PRs.
+Slice B stays blocked until a current-main B2 extraction lands and is rechecked
+against the accepted authority contracts.
 
 ### Slice C — server-side BYOC (`DEFER`)
 
