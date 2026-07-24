@@ -3,7 +3,8 @@
 **Status:** structural candidate proof; disposable-host and post-merge production
 evidence remain pending
 **Verified:** 2026-07-23 on the rebased implementation/spec tree through
-`c2f0923e` on `codex/converge-host-uptime-installers` in
+`2e4240a5` over `origin/main` `74e2600a` on
+`codex/converge-host-uptime-installers` in
 `C:\Users\Jonathan\Projects\wf-openspec-conformance-audit2`
 **Environment:** Windows 11, Python 3.14.3; Ubuntu WSL2 kernel
 6.6.87.2, systemd 255
@@ -89,8 +90,9 @@ initialization behavior.
 
 | Gate | Evidence |
 |---|---|
-| Installer suite | `python -m pytest tests/test_host_uptime_installers.py -q` → **22 passed in 122.33s** |
-| Affected suites | Installer, bootstrap, disk-watch, prune, backup, deploy workflow, import graph, discovery, registry, and data-dir suites after rebasing onto `85c91087` → **220 passed, 5 skipped in 142.28s** |
+| Fresh-host backup configuration | `python -m pytest tests/test_fresh_host_backup_config.py -q` → **1 passed in 0.25s** |
+| Installer suite | `python -m pytest tests/test_host_uptime_installers.py -q` → **22 passed in 120.86s** |
+| Affected suites | Installer, bootstrap, disk-watch, prune, backup, deploy workflow, import graph, discovery, registry, and data-dir suites after rebasing onto `74e2600a` → **314 passed, 5 skipped in 158.85s** |
 | Runtime logic suites | Watchdog, public MCP canary, and GitHub backup shipping → **51 passed in 0.68s** |
 | Python lint | Ruff on all changed Python files → **passed** |
 | Shell syntax | `bash -n` on installer, bootstrap, and daemon watchdog → **passed** |
