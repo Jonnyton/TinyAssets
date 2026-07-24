@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets import branch_tasks as bt_mod
+from tinyassets.auth.provider import Identity
 from tinyassets.branch_tasks import (
     ARCHIVE_FILENAME,
     QUEUE_FILENAME,
@@ -391,6 +392,24 @@ def server_base(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
+    identity = Identity(
+        user_id="authenticated-requester",
+        username="authenticated-requester",
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
+    from tinyassets.daemon_server import grant_universe_access
+
+    grant_universe_access(
+        base,
+        universe_id=uid,
+        actor_id=identity.user_id,
+        permission="write",
+        granted_by=identity.user_id,
+    )
     return base, uid
 
 
@@ -446,25 +465,30 @@ def test_submit_8kib_cap_still_enforced(server_base, monkeypatch):
     assert "error" in resp
 
 
-def test_submit_host_without_grant_priority_weight_clamped(
+def test_submit_host_without_grant_priority_weight_is_rejected(
     server_base, monkeypatch,
 ):
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
-    _call_submit(universe_id=uid, text="boosted", priority_weight=50.0)
+    response = _call_submit(
+        universe_id=uid,
+        text="boosted",
+        priority_weight=50.0,
+    )
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
-    assert q[0].priority_weight == 0.0
+    assert response["error"] == "priority_authorization_required"
+    assert q == []
 
 
-def test_submit_non_host_priority_weight_clamped(server_base, monkeypatch):
+def test_submit_non_host_priority_weight_is_rejected(server_base, monkeypatch):
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="sneaky", priority_weight=50.0)
-    assert "error" not in resp
+    assert resp["error"] == "priority_authorization_required"
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
-    assert q[0].priority_weight == 0.0
+    assert q == []
 
 
 def test_submit_negative_priority_weight_rejected(server_base, monkeypatch):
@@ -872,17 +896,21 @@ def test_invariant_3_producer_boundary_each_called_exactly_once(
         prod_mod._REGISTRY.extend(saved)
 
 
-def test_invariant_9_priority_weight_clamp_at_submission(
+def test_invariant_9_positive_priority_never_silently_demotes(
     server_base, monkeypatch,
 ):
-    """Redundant with submission-integration tests above, but stated
-    here as its own invariant assertion."""
+    """Unauthorized positive priority fails without an ordinary queue row."""
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
-    _call_submit(universe_id=uid, text="anyone", priority_weight=999.0)
+    response = _call_submit(
+        universe_id=uid,
+        text="anyone",
+        priority_weight=999.0,
+    )
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
-    assert q[0].priority_weight == 0.0
+    assert response["error"] == "priority_authorization_required"
+    assert q == []
 
 
 # ───────────────────────────────────────────────────────────────────────

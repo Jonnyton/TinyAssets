@@ -17,18 +17,46 @@ Covers:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from domains.fantasy_daemon.phases.authorial_priority_review import (
     authorial_priority_review,
 )
+from tinyassets.auth.provider import Identity
+from tinyassets.daemon_server import grant_universe_access
 from tinyassets.work_targets import (
     ROLE_NOTES,
     load_work_targets,
     materialize_pending_requests,
     requests_path,
 )
+
+
+def _authorize_submitter(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    base: Path,
+    universe_id: str,
+    actor_id: str,
+) -> None:
+    identity = Identity(
+        user_id=actor_id,
+        username=actor_id,
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
+    grant_universe_access(
+        base,
+        universe_id=universe_id,
+        actor_id=actor_id,
+        permission="write",
+        granted_by=actor_id,
+    )
 
 
 @pytest.fixture
@@ -221,6 +249,12 @@ def test_submit_request_rejects_oversize_text(tmp_path, monkeypatch):
     _declare_legacy_loop(universe_dir)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    _authorize_submitter(
+        monkeypatch,
+        base=base,
+        universe_id="test-universe",
+        actor_id="tester",
+    )
     from tinyassets.api import universe as us
     importlib.reload(us)
     try:
@@ -250,6 +284,12 @@ def test_submit_request_accepts_text_at_cap(tmp_path, monkeypatch):
     _declare_legacy_loop(universe_dir)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    _authorize_submitter(
+        monkeypatch,
+        base=base,
+        universe_id="test-universe",
+        actor_id="tester",
+    )
     from tinyassets.api import universe as us
     importlib.reload(us)
     try:
@@ -279,6 +319,12 @@ def test_submit_request_response_includes_queue_position(monkeypatch, tmp_path):
     _declare_legacy_loop(universe_dir)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _authorize_submitter(
+        monkeypatch,
+        base=base,
+        universe_id="test-universe",
+        actor_id="alice",
+    )
     from tinyassets.api import universe as us
     importlib.reload(us)
     try:

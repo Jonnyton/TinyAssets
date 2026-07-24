@@ -19,11 +19,11 @@
 
 ## 3. Identity and Grant Lifecycle
 
-- [ ] 3.1 Add failing authority-matrix tests in `tests/test_operator_priority_authority.py` for authenticated subject, ordinary fine/coarse submit scope, exact-universe write/admin ACL, exact-universe priority grant, positive/no-grant refusal, zero-weight opt-out, host/environment non-authority, wildcard rejection, cross-universe isolation, and pre/exact/post-expiry behavior.
+- [x] 3.1 Add failing authority-matrix tests in `tests/test_operator_priority_authority.py` for authenticated subject, ordinary fine/coarse submit scope, exact-universe write/admin ACL, exact-universe priority grant, positive/no-grant refusal, zero-weight opt-out, host/environment non-authority, wildcard rejection, cross-universe isolation, and pre/exact/post-expiry behavior.
 - [x] 3.2 Extend capability-grant persistence in `tinyassets/storage/accounts.py`; add and actively invoke its schema migration from `tinyassets/daemon_server.py` with issuer, issue/expiry/revocation times, and monotonically increasing generation without erasing historical rows.
 - [x] 3.3 Add trusted issue/revoke methods in `tinyassets/storage/accounts.py`; require both exact-universe admin ACL and `grant_capabilities`, make repeated revoke idempotent, and increment generation on regrant.
-- [ ] 3.4 Replace `_env_actor_can` on request admission with one request-local verdict in `tinyassets/api/permissions.py` and `tinyassets/api/universe.py`; retain no environment or host fallback.
-- [ ] 3.5 Prove weight zero is `user_request`/unboosted `owner_queued` even for a grant holder; prove positive weight without an active grant returns `priority_authorization_required` with zero persistence; prove a grant without ordinary authority persists nothing.
+- [x] 3.4 Replace `_env_actor_can` on request admission with one request-local verdict in `tinyassets/api/permissions.py` and `tinyassets/api/universe.py`; retain no environment or host fallback.
+- [x] 3.5 Prove weight zero is `user_request`/unboosted `owner_queued` even for a grant holder; prove positive weight without an active grant returns `priority_authorization_required` with zero persistence; prove a grant without ordinary authority persists nothing.
 - [ ] 3.6 Prove replay checks authentication, ordinary scope, and current ACL before lookup; ACL loss returns non-enumerating `universe_access_denied`, while priority-only revocation or expiry returns committed history and blocks new-key priority.
 
 ## 4. Canonical Public Admission

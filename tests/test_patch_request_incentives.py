@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from tinyassets.api.market import classify_filing_effort, filing_effort_dispatch_route
+from tinyassets.auth.provider import Identity
 from tinyassets.branch_tasks import BranchTask, read_queue
+from tinyassets.daemon_server import grant_universe_access
 from tinyassets.dispatcher import DispatcherConfig, score_task
 from tinyassets.work_targets import (
     choose_authorial_targets,
@@ -16,6 +18,31 @@ from tinyassets.work_targets import (
     materialize_pending_requests,
     requests_path,
 )
+
+
+def _authenticate_request(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    base: Path,
+    universe_id: str,
+    actor_id: str,
+) -> None:
+    identity = Identity(
+        user_id=actor_id,
+        username=actor_id,
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
+    grant_universe_access(
+        base,
+        universe_id=universe_id,
+        actor_id=actor_id,
+        permission="write",
+        granted_by=actor_id,
+    )
 
 
 @pytest.fixture
@@ -32,6 +59,12 @@ def server_base(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
+    _authenticate_request(
+        monkeypatch,
+        base=base,
+        universe_id=uid,
+        actor_id="alice",
+    )
     return base, uid
 
 
@@ -52,7 +85,7 @@ def test_pickup_incentive_boosts_pickup_not_acceptance(
         universe_id=uid,
         text="Please implement the loop status badge.",
         request_type="branch_proposal",
-        priority_weight=999.0,
+        priority_weight=0.0,
         pickup_incentive="20 credits for an accepted review packet",
     )
 
@@ -372,10 +405,17 @@ def test_requester_directed_daemon_requires_ownership(
     queue = read_queue(base / uid)
     assert accepted["requester_directed_daemon"]["effect"] == "applied"
     assert queue[0].trigger_source == "owner_queued"
+    assert queue[0].priority_weight == 0.0
     assert queue[0].directed_daemon_id == daemon["daemon_id"]
     assert queue[0].inputs["requester_directed_daemon"]["scope"] == "proposal_only"
 
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    _authenticate_request(
+        monkeypatch,
+        base=base,
+        universe_id=uid,
+        actor_id="bob",
+    )
     refused = _submit(
         universe_id=uid,
         text="Bob tries to use Alice's daemon.",

@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 import tinyassets.api.universe as us
+from tinyassets.auth.provider import Identity
+from tinyassets.daemon_server import grant_universe_access
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -75,6 +77,28 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return uid
 
 
+def _authenticate_ledger_submitter(
+    uid: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = Identity(
+        user_id="test-user",
+        username="test-user",
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
+    grant_universe_access(
+        us._base_path(),
+        universe_id=uid,
+        actor_id=identity.user_id,
+        permission="write",
+        granted_by=identity.user_id,
+    )
+
+
 def _ledger(uid: str) -> list[dict]:
     data = json.loads((us._base_path() / uid / "ledger.json").read_text(encoding="utf-8"))
     assert isinstance(data, list)
@@ -95,6 +119,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         "subscribe_goal", "unsubscribe_goal", "post_to_goal_pool",
         "submit_node_bid",  # Phase G
         "set_tier_config",  # Phase H
+        "set_engine", "offer_engine",
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
         "daemon_create", "daemon_summon", "daemon_banish",
         "daemon_pause", "daemon_resume", "daemon_restart",
@@ -156,7 +181,11 @@ def test_give_direction_accepts_line_anchor(universe: str) -> None:
     assert entries[0]["payload"]["anchor"] == anchor
 
 
-def test_submit_request_appends_ledger(universe: str) -> None:
+def test_submit_request_appends_ledger(
+    universe: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_ledger_submitter(universe, monkeypatch)
     (us._base_path() / universe / "PROGRAM.md").write_text(
         "A legacy fantasy premise.",
         encoding="utf-8",
@@ -267,9 +296,13 @@ def test_get_ledger_returns_appended_entries(universe: str) -> None:
     assert out["entries"][1]["summary"] == "First."
 
 
-def test_ledger_survives_across_mixed_writes(universe: str) -> None:
+def test_ledger_survives_across_mixed_writes(
+    universe: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from tinyassets.universe_soul import ensure_universe_soul
 
+    _authenticate_ledger_submitter(universe, monkeypatch)
     _call("set_premise", text="Premise.")
     _call("give_direction", text="Direction.")
     ensure_universe_soul(
