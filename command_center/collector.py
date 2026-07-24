@@ -1281,13 +1281,17 @@ def _talk_to_agent(cfg: Config, agent_id: str, message: str) -> dict:
     note: str | None = None
     if cfg.dispatch and agent and agent.get("provider") in ("claude", "codex"):
         if _DISPATCH_CAPACITY.reserve(1):
+            try:
+                threading.Thread(
+                    target=_dispatch_peer_reserved,
+                    args=(cfg, agent, message, inbox),
+                    name=f"village-dispatch-{agent_id}",
+                    daemon=True,
+                ).start()
+            except BaseException:
+                _DISPATCH_CAPACITY.release()
+                raise
             mode = "inbox+dispatch"
-            threading.Thread(
-                target=_dispatch_peer_reserved,
-                args=(cfg, agent, message, inbox),
-                name=f"village-dispatch-{agent_id}",
-                daemon=True,
-            ).start()
         else:
             note = "message saved to inbox; provider dispatch capacity is full"
     result = {"ok": True, "mode": mode, "to": name}
@@ -1628,15 +1632,19 @@ def _hire_dispatch(cfg: Config, universe: dict, engine: dict, task: str, count: 
         return {"ok": False, "error": "scripts/peer_agent.py not found"}
     if not _DISPATCH_CAPACITY.reserve(count):
         return {"ok": False, "error": "provider dispatch capacity is full"}
-    chat_path = _universe_chat_path(cfg, universe)
-    brief = task or (
-        f"Say hello to the universe '{universe['name']}' and propose one concrete "
-        "improvement you could make to it."
-    )
-    _append_inbox(
-        chat_path, "village",
-        f"🧑‍🏭 hired {count} × {engine['label']} for '{universe['name']}': {brief}",
-    )
+    try:
+        chat_path = _universe_chat_path(cfg, universe)
+        brief = task or (
+            f"Say hello to the universe '{universe['name']}' and propose one concrete "
+            "improvement you could make to it."
+        )
+        _append_inbox(
+            chat_path, "village",
+            f"🧑‍🏭 hired {count} × {engine['label']} for '{universe['name']}': {brief}",
+        )
+    except BaseException:
+        _DISPATCH_CAPACITY.release(count)
+        raise
 
     def run_one(slot: int) -> None:
         out_file = chat_path.with_suffix(f".hire{slot}.txt")
@@ -1679,13 +1687,19 @@ def _hire_dispatch(cfg: Config, universe: dict, engine: dict, task: str, count: 
         finally:
             _DISPATCH_CAPACITY.release()
 
-    for slot in range(1, count + 1):
-        threading.Thread(
-            target=run_reserved,
-            args=(slot,),
-            name=f"village-hire-{slot}",
-            daemon=True,
-        ).start()
+    started = 0
+    try:
+        for slot in range(1, count + 1):
+            threading.Thread(
+                target=run_reserved,
+                args=(slot,),
+                name=f"village-hire-{slot}",
+                daemon=True,
+            ).start()
+            started += 1
+    except BaseException:
+        _DISPATCH_CAPACITY.release(count - started)
+        raise
     return {
         "ok": True,
         "mode": "dispatch",

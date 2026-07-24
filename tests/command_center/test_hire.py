@@ -410,6 +410,113 @@ def test_hire_reservation_is_all_or_nothing_when_only_two_slots_are_free(
         _join_village_threads()
 
 
+def test_talk_thread_start_failure_releases_reserved_slot(
+    tmp_path: Path, monkeypatch
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+    capacity = collector._DispatchCapacity()
+    monkeypatch.setattr(collector, "_DISPATCH_CAPACITY", capacity)
+
+    class StartFails:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("synthetic thread start failure")
+
+    monkeypatch.setattr(collector.threading, "Thread", StartFails)
+
+    with pytest.raises(RuntimeError, match="synthetic thread start failure"):
+        collector.talk(cfg, "agent:start-fails", "do not leak this reservation")
+
+    assert capacity.reserve(8), "talk leaked one shared capacity slot"
+    capacity.release(8)
+
+
+def test_hire_inbox_write_failure_releases_all_reserved_slots(
+    tmp_path: Path, monkeypatch
+):
+    cfg, udir = _dispatch_setup(tmp_path, monkeypatch)
+    capacity = collector._DispatchCapacity()
+    monkeypatch.setattr(collector, "_DISPATCH_CAPACITY", capacity)
+
+    def fail_inbox_write(*args, **kwargs):
+        raise OSError("synthetic inbox write failure")
+
+    monkeypatch.setattr(collector, "_append_inbox", fail_inbox_write)
+
+    with pytest.raises(OSError, match="synthetic inbox write failure"):
+        collector._hire_dispatch(
+            cfg,
+            _local_universe(udir),
+            _dispatchable_engine(),
+            "do not leak these reservations",
+            3,
+        )
+
+    assert capacity.reserve(8), "hire inbox failure leaked reserved capacity"
+    capacity.release(8)
+
+
+def test_hire_thread_start_failure_releases_only_unstarted_reservations(
+    tmp_path: Path, monkeypatch
+):
+    cfg, udir = _dispatch_setup(tmp_path, monkeypatch)
+    capacity = collector._DispatchCapacity()
+    monkeypatch.setattr(collector, "_DISPATCH_CAPACITY", capacity)
+
+    worker_entered = threading.Event()
+    worker_release = threading.Event()
+    real_thread = threading.Thread
+    started_threads: list[threading.Thread] = []
+    start_calls = 0
+
+    def fake_run_peer(cmd, *, cwd, timeout, env):
+        worker_entered.set()
+        worker_release.wait(timeout=3)
+        return ""
+
+    class SecondStartFails:
+        def __init__(self, *args, **kwargs):
+            self._thread = real_thread(*args, **kwargs)
+            started_threads.append(self._thread)
+
+        def start(self):
+            nonlocal start_calls
+            start_calls += 1
+            if start_calls == 2:
+                raise RuntimeError("synthetic second thread start failure")
+            self._thread.start()
+
+    monkeypatch.setattr(collector, "_run_peer", fake_run_peer, raising=False)
+    monkeypatch.setattr(collector.threading, "Thread", SecondStartFails)
+
+    try:
+        with pytest.raises(RuntimeError, match="synthetic second thread start failure"):
+            collector._hire_dispatch(
+                cfg,
+                _local_universe(udir),
+                _dispatchable_engine(),
+                "hold only the successfully started worker reservation",
+                3,
+            )
+
+        assert worker_entered.wait(timeout=3)
+        assert capacity.reserve(7), "hire leaked an unstarted worker reservation"
+        assert not capacity.reserve(1), (
+            "hire released the successfully started worker reservation too early"
+        )
+        capacity.release(7)
+    finally:
+        worker_release.set()
+        for thread in started_threads:
+            if thread.is_alive():
+                thread.join(timeout=3)
+
+    assert capacity.reserve(8), "started hire worker did not release in finally"
+    capacity.release(8)
+
+
 @pytest.mark.parametrize("worker_outcome", ["success", "failure"])
 def test_dispatch_slot_releases_after_worker_finishes(
     tmp_path: Path, monkeypatch, worker_outcome: str
