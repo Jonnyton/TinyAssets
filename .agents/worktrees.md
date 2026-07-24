@@ -1081,3 +1081,15 @@ Notes:
 - Verification: 105 authority / 111 focused-regression tests; strict OpenSpec 41/41; independent specification and security APPROVE
 - Remaining gates: Claude/host canonical-store decision; persistence/service/API/discovery; §14; rendered/live evidence
 - Ship/abandon: keep draft until all moderation task-2 gates are green, or split only the approved contract with OpenSpec truth preserved
+
+## 2026-07-23 - create postgres-control-plane-plan
+
+- Provider: codex-gpt5-desktop-postgres-plan
+- Branch: codex/postgres-control-plane-plan
+- Lane state: active review-blocked OpenSpec planning
+- Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-plan
+- STATUS/Issue/PR: host selected Option 1; Claude packet recheck pending; PR pending
+- Purpose: specify the canonical PostgreSQL baseline, migration system, cutover, rollback, and proof without implementation
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-plan\_PURPOSE.md
+- Related implications: all shared control-plane capabilities; no dual-write; private content host-only; stock-Postgres exit
+- Ship/abandon: publish planning-only stacked draft; no PLAN/runtime/migration work before Claude/host gate
