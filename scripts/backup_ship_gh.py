@@ -36,6 +36,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -45,6 +46,14 @@ GH_API = "https://api.github.com"
 GH_UPLOAD_API = "https://uploads.github.com"
 DEFAULT_REPO = "Jonnyton/tinyassets-backups"
 DEFAULT_RETAIN = 30
+PRUNE_RECONCILE_ATTEMPTS = 6
+PRUNE_RECONCILE_DELAY_SECONDS = 2
+
+
+class GitHubAPIError(RuntimeError):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _token() -> str:
@@ -95,7 +104,8 @@ def _api(
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
+        raise GitHubAPIError(
+            exc.code,
             f"GitHub API {method} {url} → {exc.code}: {body_text}"
         ) from exc
 
@@ -200,15 +210,21 @@ def delete_release(
     tag: str,
     *,
     post_fn: Any = None,
-) -> None:
-    _api(token, "DELETE", f"{GH_API}/repos/{repo}/releases/{release_id}",
-         post_fn=post_fn)
+) -> bool:
+    try:
+        _api(token, "DELETE", f"{GH_API}/repos/{repo}/releases/{release_id}",
+             post_fn=post_fn)
+    except GitHubAPIError as exc:
+        if exc.status == 404:
+            return False
+        raise
     # Also delete the tag so the repo stays clean.
     try:
         _api(token, "DELETE", f"{GH_API}/repos/{repo}/git/refs/tags/{tag}",
              post_fn=post_fn)
     except RuntimeError:
         pass  # tag deletion is best-effort
+    return True
 
 
 # Only releases carrying these tag prefixes are subject to retention
@@ -252,24 +268,51 @@ def prune_releases(
     *,
     include_release: dict[str, Any] | None = None,
     post_fn: Any = None,
+    sleep_fn: Any = time.sleep,
 ) -> int:
-    listed = list_releases(token, repo, post_fn=post_fn)
-    if include_release is not None:
-        listed_ids = {release.get("id") for release in listed}
-        if include_release.get("id") not in listed_ids:
-            listed.append(include_release)
-    releases = [
-        r for r in listed
-        if str(r.get("tag_name", "")).startswith(PRUNABLE_TAG_PREFIXES)
-    ]
-    # Sort oldest-first; keep the newest `keep`.
-    releases.sort(key=_release_age_key)
-    victims = releases[:-keep] if len(releases) > keep else []
-    for rel in victims:
-        delete_release(token, repo, rel["id"], rel.get("tag_name", ""),
-                       post_fn=post_fn)
-        print(f"  pruned release: {rel.get('tag_name', rel['id'])}")
-    return len(victims)
+    pruned = 0
+    for attempt in range(PRUNE_RECONCILE_ATTEMPTS):
+        listed = list_releases(token, repo, post_fn=post_fn)
+        if include_release is not None:
+            listed_ids = {release.get("id") for release in listed}
+            if include_release.get("id") not in listed_ids:
+                if attempt + 1 == PRUNE_RECONCILE_ATTEMPTS:
+                    raise RuntimeError(
+                        "GitHub release list did not converge on the "
+                        "just-created backup release"
+                    )
+                sleep_fn(PRUNE_RECONCILE_DELAY_SECONDS)
+                continue
+        releases = [
+            release for release in listed
+            if str(release.get("tag_name", "")).startswith(
+                PRUNABLE_TAG_PREFIXES
+            )
+        ]
+        releases.sort(key=_release_age_key)
+        victims = releases[:-keep] if len(releases) > keep else []
+        stale_victim = False
+        for release in victims:
+            deleted = delete_release(
+                token,
+                repo,
+                release["id"],
+                release.get("tag_name", ""),
+                post_fn=post_fn,
+            )
+            if deleted is False:
+                stale_victim = True
+                break
+            pruned += 1
+            print(
+                f"  pruned release: "
+                f"{release.get('tag_name', release['id'])}"
+            )
+        if not stale_victim:
+            return pruned
+        if attempt + 1 < PRUNE_RECONCILE_ATTEMPTS:
+            sleep_fn(PRUNE_RECONCILE_DELAY_SECONDS)
+    raise RuntimeError("GitHub release retention view did not converge")
 
 
 def ship(

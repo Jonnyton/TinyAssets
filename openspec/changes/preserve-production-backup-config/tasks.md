@@ -14,6 +14,7 @@
 - [x] 2.7 Add an explicit exact-source dispatch option that verifies fresh primary archives and both GitHub release assets.
 - [x] 2.8 Scope every backup evidence marker to the new systemd invocation ID rather than a time window.
 - [x] 2.9 Make GitHub retention include a just-created release even while the list endpoint is eventually consistent.
+- [x] 2.10 Make the explicit production exercise fail on invocation-scoped backup or retention warnings.
 
 ## 3. Verification And Operations
 

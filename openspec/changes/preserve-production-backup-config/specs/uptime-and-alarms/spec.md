@@ -62,6 +62,7 @@ credential configuration are absent.
 - **AND** requires a successful service result and fresh brain/full archives at the primary destination
 - **AND** scopes journal evidence to the new service invocation's exact systemd invocation ID
 - **AND** requires two successful GitHub release asset uploads and the terminal backup completion marker from that invocation
+- **AND** rejects any backup or retention warning/error from that invocation
 - **AND** emits no environment-file contents, rclone configuration, or credential values
 
 #### Scenario: Host-service installation does not request backup exercise
@@ -72,6 +73,7 @@ credential configuration are absent.
 #### Scenario: GitHub release listing lags a successful upload
 
 - **WHEN** a backup release and asset have been created successfully but the release-list endpoint has not yet returned that new release
-- **THEN** retention evaluation still includes the newly created release in the prunable set
+- **THEN** retention boundedly waits for a list view that includes the newly created release before evaluating the prunable set
+- **AND** an already-deleted victim returned by a stale list triggers bounded reconciliation rather than being counted as a successful deletion
 - **AND** it deletes only the oldest recognized backup releases needed to leave at most `BACKUP_GH_RETAIN` recognized releases
 - **AND** it never deletes an unrecognized parked or audit release

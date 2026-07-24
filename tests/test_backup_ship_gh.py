@@ -206,6 +206,23 @@ def test_prune_releases_noop_when_within_limit(monkeypatch) -> None:
     assert pruned == 0
 
 
+def test_delete_release_reports_stale_404_without_hiding_other_errors(
+    monkeypatch,
+) -> None:
+    def _missing(*args, **kwargs):
+        raise bsg.GitHubAPIError(404, "missing")
+
+    monkeypatch.setattr(bsg, "_api", _missing)
+    assert bsg.delete_release("tok", "owner/repo", 7, "old-tag") is False
+
+    def _forbidden(*args, **kwargs):
+        raise bsg.GitHubAPIError(403, "forbidden")
+
+    monkeypatch.setattr(bsg, "_api", _forbidden)
+    with pytest.raises(bsg.GitHubAPIError, match="forbidden"):
+        bsg.delete_release("tok", "owner/repo", 7, "old-tag")
+
+
 # ── ship() end-to-end ─────────────────────────────────────────────────
 
 
@@ -439,8 +456,16 @@ def test_prune_counts_just_created_release_before_list_converges(
         "tag_name": "tinyassets-brain-2026-07-31T03-00-00Z",
         "published_at": "2026-07-31T03:00:10Z",
     }
+    listed = iter((list(releases), [*releases, just_created]))
+    list_calls = 0
+
+    def _list(*args, **kwargs):
+        nonlocal list_calls
+        list_calls += 1
+        return next(listed)
+
     deleted: list[int] = []
-    monkeypatch.setattr(bsg, "list_releases", lambda *a, **kw: list(releases))
+    monkeypatch.setattr(bsg, "list_releases", _list)
     monkeypatch.setattr(
         bsg, "delete_release", lambda tok, repo, rid, tag, **kw: deleted.append(rid),
     )
@@ -450,7 +475,9 @@ def test_prune_counts_just_created_release_before_list_converges(
         "o/r",
         keep=30,
         include_release=just_created,
+        sleep_fn=lambda _: None,
     ) == 1
+    assert list_calls == 2
     assert deleted == [1]
 
 
@@ -475,3 +502,99 @@ def test_prune_does_not_double_count_converged_created_release(
         include_release=dict(release),
     ) == 0
     assert deleted == []
+
+
+def test_prune_fails_when_created_release_never_becomes_list_visible(
+    monkeypatch,
+) -> None:
+    listed = [{
+        "id": 1,
+        "tag_name": "tinyassets-data-2026-07-01T03-00-00Z",
+        "published_at": "2026-07-01T03:00:10Z",
+    }]
+    just_created = {
+        "id": 2,
+        "tag_name": "tinyassets-brain-2026-07-31T03-00-00Z",
+        "published_at": "2026-07-31T03:00:10Z",
+    }
+    list_calls = 0
+
+    def _list(*args, **kwargs):
+        nonlocal list_calls
+        list_calls += 1
+        return list(listed)
+
+    monkeypatch.setattr(bsg, "list_releases", _list)
+    with pytest.raises(RuntimeError, match="did not converge"):
+        bsg.prune_releases(
+            "tok",
+            "o/r",
+            keep=1,
+            include_release=just_created,
+            sleep_fn=lambda _: None,
+        )
+    assert list_calls == bsg.PRUNE_RECONCILE_ATTEMPTS
+
+
+def test_sequential_upload_pruning_skips_stale_already_deleted_victim(
+    monkeypatch,
+) -> None:
+    initial_listing = [
+        {
+            "id": index,
+            "tag_name": f"tinyassets-data-2026-07-{index:02d}T03-00-00Z",
+            "published_at": f"2026-07-{index:02d}T03:00:10Z",
+        }
+        for index in range(1, 31)
+    ]
+    full_release = {
+        "id": 31,
+        "tag_name": "tinyassets-data-2026-07-31T03-00-00Z",
+        "published_at": "2026-07-31T03:00:10Z",
+    }
+    brain_release = {
+        "id": 32,
+        "tag_name": "tinyassets-brain-2026-07-31T03-00-00Z",
+        "published_at": "2026-07-31T03:00:20Z",
+    }
+    delete_attempts: list[int] = []
+    deleted: set[int] = set()
+    listings = iter(
+        (
+            initial_listing,
+            [*initial_listing, full_release],
+            [*initial_listing, full_release, brain_release],
+            [*initial_listing[1:], full_release, brain_release],
+        )
+    )
+
+    def _delete(token, repo, release_id, tag, **kwargs):
+        delete_attempts.append(release_id)
+        if release_id in deleted:
+            return False
+        deleted.add(release_id)
+        return True
+
+    monkeypatch.setattr(
+        bsg,
+        "list_releases",
+        lambda *args, **kwargs: list(next(listings)),
+    )
+    monkeypatch.setattr(bsg, "delete_release", _delete)
+
+    assert bsg.prune_releases(
+        "tok",
+        "o/r",
+        keep=30,
+        include_release=full_release,
+        sleep_fn=lambda _: None,
+    ) == 1
+    assert bsg.prune_releases(
+        "tok",
+        "o/r",
+        keep=30,
+        include_release=brain_release,
+        sleep_fn=lambda _: None,
+    ) == 1
+    assert delete_attempts == [1, 1, 2]
+    assert deleted == {1, 2}

@@ -152,7 +152,11 @@ def _backup_exercise_script() -> str:
     return body.split(terminator, 1)[0]
 
 
-def _run_backup_exercise(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run_backup_exercise(
+    tmp_path: Path,
+    *,
+    emit_warning: bool = False,
+) -> subprocess.CompletedProcess[str]:
     if not _BASH:
         pytest.skip("bash unavailable")
     fake_bin = tmp_path / "bin"
@@ -190,6 +194,9 @@ case "$1" in
   journalctl)
     printf '%s\\n' "$*" > "${{JOURNAL_QUERY}}"
     [[ "$2" == "_SYSTEMD_INVOCATION_ID={invocation_id}" ]]
+    if [[ "${{EMIT_WARNING:-0}}" == "1" ]]; then
+      printf '%s\\n' 'WARN: retention failed'
+    fi
     printf '%s\\n' \
       '  brain upload OK' \
       '  upload OK' \
@@ -215,6 +222,7 @@ esac
             f"chmod +x {shlex.quote(_bash_path(fake_sudo))} &&",
             f"RCLONE_CALLS={shlex.quote(_bash_path(rclone_calls))}",
             f"JOURNAL_QUERY={shlex.quote(_bash_path(journal_query))}",
+            f"EMIT_WARNING={int(emit_warning)}",
             f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin",
             "bash",
             shlex.quote(_bash_path(harness)),
@@ -1455,6 +1463,8 @@ def test_host_service_workflow_exercises_backup_only_on_explicit_dispatch():
     assert "gh-ship: [backup-ship] uploaded:" in run
     assert '"${gh_upload_count}" -eq 2' in run
     assert "backup complete." in run
+    assert "grep -Eq 'WARN:|ERROR:'" in run
+    assert "Backup invocation emitted a warning or error." in run
 
 
 def test_backup_exercise_scopes_evidence_to_new_systemd_invocation(tmp_path):
@@ -1468,3 +1478,9 @@ def test_backup_exercise_scopes_evidence_to_new_systemd_invocation(tmp_path):
     )
     assert "Verified fresh backup:" in result.stdout
     assert "github_assets=2" in result.stdout
+
+
+def test_backup_exercise_rejects_invocation_warning(tmp_path):
+    result = _run_backup_exercise(tmp_path, emit_warning=True)
+    assert result.returncode != 0
+    assert "Verified fresh backup:" not in result.stdout
