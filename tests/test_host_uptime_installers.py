@@ -18,9 +18,6 @@ INSTALLER = REPO / "deploy" / "install-host-uptime-services.sh"
 BOOTSTRAP = REPO / "deploy" / "hetzner-bootstrap.sh"
 WORKFLOW = REPO / ".github" / "workflows" / "install-host-services.yml"
 RESTART_WORKFLOW = REPO / ".github" / "workflows" / "restart-daemon.yml"
-ENV_TEMPLATE = REPO / "deploy" / "tinyassets-env.template"
-DEPLOY_RUNBOOK = REPO / "deploy" / "DEPLOY.md"
-CUTOVER_RUNBOOK = REPO / "docs" / "ops" / "day-of-cutover.md"
 
 TIMERS = (
     "tinyassets-watchdog.timer",
@@ -743,7 +740,9 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "Resolved requested source ${REQUESTED_SOURCE_REF}" in workflow_text
     assert '[[ "${source_sha}" == "${REQUESTED_SOURCE_REF}" ]]' in workflow_text
     assert "install-host-uptime-services.sh" in workflow_text
-    assert workflow_text.count('"bash -se"') == 1
+    assert workflow_text.count('"bash -se --') == 1
+    assert workflow_text.count("<<'REMOTE'") == 1
+    assert 'remote_stage="$1"' in workflow_text
     assert manifest.returncode == 0, f"{manifest.stdout}\n{manifest.stderr}"
     assert manifest.stdout.splitlines() == [
         "deploy/install-host-uptime-services.sh",
@@ -756,22 +755,8 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "install-host-uptime-services.sh" in restart_text
     assert "sha256sum" in restart_text
     assert "mktemp -d /tmp/tinyassets-host-uptime." in restart_text
-    assert restart_text.count('"bash -se"') == 1
+    assert restart_text.count('"bash -se --') == 1
+    assert restart_text.count("<<'REMOTE'") == 1
+    assert 'remote_stage="$1"' in restart_text
     assert "/tmp/daemon-watchdog" not in restart_text
     assert "systemctl enable --now daemon-watchdog.timer" not in restart_text
-
-
-def test_fresh_host_backup_configuration_matches_installed_script():
-    template = ENV_TEMPLATE.read_text(encoding="utf-8")
-    runbook = DEPLOY_RUNBOOK.read_text(encoding="utf-8")
-    cutover = CUTOVER_RUNBOOK.read_text(encoding="utf-8")
-
-    assert "\nBACKUP_DEST=\n" in f"\n{template}"
-    assert "STORAGEBOX_HOST=" not in template
-    assert "STORAGEBOX_USER=" not in template
-    assert "STORAGEBOX_PASS=" not in template
-    assert "sudo rclone config" in template
-    assert "BACKUP_DEST=storagebox:tinyassets-backups" in runbook
-    assert "BACKUP_DEST=storagebox:tinyassets-backups" in cutover
-    assert "/root/.config/rclone/rclone.conf" in cutover
-    assert "/etc/tinyassets/backup/rclone.conf" not in cutover

@@ -93,15 +93,20 @@ jobs:
               "${bundle}" "${checksum}" \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" "bash -se" <<REMOTE
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
           set -euo pipefail
-          cd '${remote_stage}'
-          sha256sum -c '$(basename "${checksum}")'
+          remote_stage="$1"
+          source_sha="$2"
+          bundle_name="$3"
+          checksum_name="$4"
+          cd "${remote_stage}"
+          sha256sum -c "${checksum_name}"
           mkdir source
-          tar -xzf '$(basename "${bundle}")' -C source
-          sudo env TINYASSETS_SOURCE_ROOT='${remote_stage}/source' \
-              TINYASSETS_SOURCE_SHA='${source_sha}' \
-              bash '${remote_stage}/source/deploy/install-host-uptime-services.sh'
+          tar -xzf "${bundle_name}" -C source
+          sudo env TINYASSETS_SOURCE_ROOT="${remote_stage}/source" \
+              TINYASSETS_SOURCE_SHA="${source_sha}" \
+              bash "${remote_stage}/source/deploy/install-host-uptime-services.sh"
           REMOTE
 
       - name: Restart workflow daemon

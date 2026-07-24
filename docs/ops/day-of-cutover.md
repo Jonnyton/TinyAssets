@@ -169,11 +169,10 @@ SUPABASE_SERVICE_ROLE_KEY=<your paste>
 GITHUB_OAUTH_CLIENT_ID=<your paste>
 GITHUB_OAUTH_CLIENT_SECRET=<your paste>
 BETTERSTACK_SOURCE_TOKEN=<your paste or empty>
-BACKUP_DEST=storagebox:tinyassets-backups
 EOF
 
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> \
-    'sudo chown root:tinyassets /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env'
+    'sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env'
 # Expected: no output.
 ```
 
@@ -183,9 +182,9 @@ After §1.5 paste:
 
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> bash -s <<'SSHEOF'
-sudo install -d -m 0700 -o root -g root /root/.config/rclone
+sudo mkdir -p /etc/tinyassets/backup
 OBSCURED=$(echo -n '<STORAGE_BOX_PASSWORD>' | rclone obscure -)
-sudo tee /root/.config/rclone/rclone.conf > /dev/null <<EOF
+sudo tee /etc/tinyassets/backup/rclone.conf > /dev/null <<EOF
 [storagebox]
 type = sftp
 host = <STORAGE_BOX_HOST>
@@ -193,8 +192,8 @@ user = <STORAGE_BOX_USER>
 pass = $OBSCURED
 port = 23
 EOF
-sudo chown root:root /root/.config/rclone/rclone.conf
-sudo chmod 600 /root/.config/rclone/rclone.conf
+sudo chown root:workflow /etc/tinyassets/backup/rclone.conf
+sudo chmod 600 /etc/tinyassets/backup/rclone.conf
 SSHEOF
 # Expected: no output.
 ```

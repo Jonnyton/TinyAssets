@@ -167,29 +167,29 @@ GITHUB_OAUTH_CLIENT_SECRET=
 
 
 # ---------------------------------------------------------------------
-# Offsite state backup — Row J
+# Hetzner Storage Box — Row J state backup
 # ---------------------------------------------------------------------
 
-# Required rclone destination for the nightly backup (deploy/backup.sh +
-# tinyassets-backup.timer). Leave blank to defer backups — the timer still
-# fires, but backup.sh exits 1 with a clear error.
+# Credentials for the nightly backup (deploy/backup.sh +
+# tinyassets-backup.timer). Leave blank to disable backups — the timer
+# will still fire but backup.sh exits 1 with a clear error.
 #
-# Configure the remote for root, because tinyassets-backup.service runs as
-# root:
-#   sudo rclone config
-# Then name the configured remote and destination directory here, for example:
-#   BACKUP_DEST=storagebox:tinyassets-backups
+# Provision: Hetzner Cloud console → Storage Boxes → Add. BX11
+# (100 GB, ~€1/mo) is enough for 7 daily + 4 weekly archives at
+# current volume sizes.
 #
-# Hetzner users should create a dedicated Storage Box subuser scoped to
-# `/tinyassets-backups/` and use those credentials in the `storagebox` rclone
-# remote. Any rclone-compatible destination is supported.
-BACKUP_DEST=
+# Subuser recommendation: create a dedicated subuser for this job
+# (Hetzner console → Storage Box → Subusers) with access scoped to
+# `/tinyassets-backups/` only. Compromised backup creds can't then read
+# or overwrite other Storage-Box content.
+STORAGEBOX_HOST=
+STORAGEBOX_USER=
+STORAGEBOX_PASS=
 
-# Retention — override defaults if the destination fills up or a different
-# recovery window is wanted. Defaults: 7 daily + 4 weekly + 6 monthly.
+# Retention — override defaults if the Storage Box fills up or a
+# different recovery window is wanted. Defaults: 7 daily + 4 weekly.
 # BACKUP_RETAIN_DAILY=7
 # BACKUP_RETAIN_WEEKLY=4
-# BACKUP_RETAIN_MONTHLY=6
 
 
 # ---------------------------------------------------------------------

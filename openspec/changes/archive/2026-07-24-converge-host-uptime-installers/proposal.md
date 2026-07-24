@@ -4,9 +4,6 @@ Fresh production hosts do not install the disk-pressure timer or the second
 watchdog path, and rerunning bootstrap leaves current-but-disabled backup,
 watchdog, and prune timers disabled. That makes the canonical uptime layers
 depend on host history instead of converging from source on every install.
-The fresh-host env template also advertises unused `STORAGEBOX_*` fields while
-the canonical backup implementation requires `BACKUP_DEST`, so following the
-runbook cannot configure the timer successfully.
 
 ## What Changes
 
@@ -23,8 +20,6 @@ runbook cannot configure the timer successfully.
   content-addressed runtime atomically.
 - Wait boundedly for every same-target caller to converge while allowing
   independent host roots to install concurrently.
-- Make the fresh-host env template and runbook expose the canonical
-  `BACKUP_DEST` plus root-owned rclone configuration path.
 
 ## Capabilities
 
@@ -43,5 +38,6 @@ runbook cannot configure the timer successfully.
 - `.github/workflows/install-host-services.yml` upload/install behavior.
 - Production systemd unit and host script ownership, enablement, activation,
   and verification.
-- `deploy/tinyassets-env.template` backup configuration truth.
-- Focused isolated-host and concurrent installer tests plus operator guidance.
+- Focused isolated-host and concurrent installer tests.
+- Fresh-host backup configuration and operator guidance are split into the
+  follow-up `align-fresh-host-backup-config` change.

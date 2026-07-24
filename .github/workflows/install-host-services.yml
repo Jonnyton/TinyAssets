@@ -93,24 +93,29 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
 
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" "bash -se" <<REMOTE
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
           set -euo pipefail
-          cd '${remote_stage}'
-          sha256sum -c '$(basename "${checksum}")'
+          remote_stage="$1"
+          source_sha="$2"
+          bundle_name="$3"
+          checksum_name="$4"
+          cd "${remote_stage}"
+          sha256sum -c "${checksum_name}"
           mkdir source
-          tar -xzf '$(basename "${bundle}")' -C source
-          sudo env TINYASSETS_SOURCE_ROOT='${remote_stage}/source' \
-              TINYASSETS_SOURCE_SHA='${source_sha}' \
-              bash '${remote_stage}/source/deploy/install-host-uptime-services.sh'
+          tar -xzf "${bundle_name}" -C source
+          sudo env TINYASSETS_SOURCE_ROOT="${remote_stage}/source" \
+              TINYASSETS_SOURCE_SHA="${source_sha}" \
+              bash "${remote_stage}/source/deploy/install-host-uptime-services.sh"
           sudo mkdir -p /opt/tinyassets/scripts
           sudo install -m 0755 -o root -g root \
-              '${remote_stage}/source/scripts/github-app-token-refresher.py' \
+              "${remote_stage}/source/scripts/github-app-token-refresher.py" \
               /opt/tinyassets/scripts/github-app-token-refresher.py
           sudo install -m 0644 -o root -g root \
-              '${remote_stage}/source/deploy/github-app-token-refresher.service' \
+              "${remote_stage}/source/deploy/github-app-token-refresher.service" \
               /etc/systemd/system/github-app-token-refresher.service
           sudo install -m 0644 -o root -g root \
-              '${remote_stage}/source/deploy/github-app-token-refresher.timer' \
+              "${remote_stage}/source/deploy/github-app-token-refresher.timer" \
               /etc/systemd/system/github-app-token-refresher.timer
           sudo systemctl daemon-reload
           sudo systemctl enable --now github-app-token-refresher.timer

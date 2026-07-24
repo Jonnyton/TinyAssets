@@ -89,8 +89,8 @@ initialization behavior.
 
 | Gate | Evidence |
 |---|---|
-| Installer suite | `python -m pytest tests/test_host_uptime_installers.py -q` → **23 passed in 130.29s** |
-| Affected suites | Installer, bootstrap, disk-watch, prune, backup, deploy workflow, import graph, discovery, registry, and data-dir suites after rebasing onto `85c91087` → **221 passed, 5 skipped in 149.90s** |
+| Installer suite | `python -m pytest tests/test_host_uptime_installers.py -q` → **22 passed in 122.33s** |
+| Affected suites | Installer, bootstrap, disk-watch, prune, backup, deploy workflow, import graph, discovery, registry, and data-dir suites after rebasing onto `85c91087` → **220 passed, 5 skipped in 142.28s** |
 | Runtime logic suites | Watchdog, public MCP canary, and GitHub backup shipping → **51 passed in 0.68s** |
 | Python lint | Ruff on all changed Python files → **passed** |
 | Shell syntax | `bash -n` on installer, bootstrap, and daemon watchdog → **passed** |

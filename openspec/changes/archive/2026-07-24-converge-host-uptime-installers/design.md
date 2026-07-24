@@ -82,14 +82,6 @@ use the dispatch's immutable `github.sha`. A private per-run bundle contains
 that SHA, the installer's printed exact manifest, and a checksum verified on
 the remote host before installer invocation.
 
-### Expose the backup destination the installed script actually consumes
-
-The fresh-host env template names `BACKUP_DEST`, matching the canonical backup
-script and uptime spec, and tells operators to configure the corresponding
-rclone remote as root because the systemd service runs as root. The runbook no
-longer presents unused `STORAGEBOX_*` fields as sufficient backup
-configuration.
-
 ### Lock and validate each target before mutation
 
 The installer rejects missing/non-regular manifest sources; canonicalizes

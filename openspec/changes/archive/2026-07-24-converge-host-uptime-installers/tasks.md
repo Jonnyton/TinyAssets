@@ -9,9 +9,7 @@
 
 - [x] 2.1 Install fresh-host sudo/flock prerequisites and replace bootstrap's conditional timer blocks with the shared installer.
 - [x] 2.2 Pin automatic reconciliation to the triggering deploy SHA; pin manual dispatch to `github.sha`; checksum a unique remote bundle and invoke the shared installer while retaining token-refresher installation.
-- [x] 2.3 Update operator guidance to name the complete convergent timer set and verification commands.
-- [x] 2.4 Replace unused fresh-host `STORAGEBOX_*` guidance and unread runtime config paths with the canonical `BACKUP_DEST` and root rclone setup across active operator guides.
-- [x] 2.5 Replace the restart workflow's partial watchdog installation with a `github.sha` bundle delegated to the shared installer.
+- [x] 2.3 Replace the restart workflow's partial watchdog installation with a `github.sha` bundle delegated to the shared installer.
 
 ## 3. Verification
 

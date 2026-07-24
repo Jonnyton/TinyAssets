@@ -101,7 +101,6 @@ documents each):
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub → Settings → Developer settings → OAuth Apps → TinyAssets → Client ID. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Same page → "Generate a new client secret" → copy once. |
 | `TINYASSETS_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` before writing `/etc/tinyassets/env`. |
-| `BACKUP_DEST` | Optional until offsite backup is provisioned; a root-configured rclone destination such as `storagebox:tinyassets-backups`. |
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
@@ -287,79 +286,43 @@ cutover for the post-cutover playbook.
 
 ---
 
-## Host uptime services
-
-Bootstrap converges the complete host-uptime set through
-`deploy/install-host-uptime-services.sh`:
-
-- `tinyassets-watchdog.timer`
-- `daemon-watchdog.timer`
-- `tinyassets-backup.timer`
-- `tinyassets-prune.timer`
-- `tinyassets-disk-watch.timer`
-
-The installer validates its complete source manifest and scoped sudoers
-candidate before activation, stores runtime files under
-`/opt/tinyassets-host-uptime/releases/<content-hash>/`, atomically switches the
-`current` symlink, and enables, starts, and verifies every timer on every run.
-It pauses timers and waits boundedly for active oneshot services before
-changing installed files. Re-running bootstrap is therefore also the repair
-path for byte-current but disabled or inactive timers.
-
-Verify the converged set:
-
-```bash
-sudo systemctl is-enabled tinyassets-watchdog.timer daemon-watchdog.timer \
-  tinyassets-backup.timer tinyassets-prune.timer tinyassets-disk-watch.timer
-sudo systemctl is-active tinyassets-watchdog.timer daemon-watchdog.timer \
-  tinyassets-backup.timer tinyassets-prune.timer tinyassets-disk-watch.timer
-sudo systemctl list-timers 'tinyassets-*' 'daemon-watchdog.timer'
-readlink -f /opt/tinyassets-host-uptime/current
-```
-
-The `Install Host Services` workflow uses the same installer. Automatic runs
-checkout the successful triggering deploy's full source SHA; manual runs pin
-the dispatch's `github.sha`. The restart workflow's install option delegates
-to the same manifest. Both workflows checksum a unique private remote bundle
-before invoking the installer.
+## What this deploy does NOT include (future rows)
 
 ## Row L — Daemon watchdog (installed by bootstrap)
 
-The shared installer installs two complementary watchdogs alongside the
-daemon unit. They catch failures systemd's `Restart=always` cannot see:
-an alive but unresponsive `/mcp` process and a stale daemon/container
-heartbeat.
+`hetzner-bootstrap.sh` installs a watchdog alongside the daemon unit.
+Catches the failure systemd's `Restart=always` CAN'T see: daemon
+process alive, `/mcp` unresponsive (hung transaction, wedged thread,
+OOM-adjacent).
 
-- **Timer:** `tinyassets-watchdog.timer` fires every 30s starting 60s after boot.
-- **Local MCP watchdog:** `/opt/tinyassets-host-uptime/current/scripts/watchdog.py` probes `http://127.0.0.1:8001/mcp` via the installed canary. State persists at `/var/lib/tinyassets-watchdog/state.json` across ticks.
-- **Daemon watchdog:** `/opt/tinyassets-host-uptime/current/deploy/daemon-watchdog.sh` checks the systemd unit, compose containers, and freshest worker-supervisor heartbeat.
+- **Timer:** `tinyassets-watchdog.timer` fires every 2 min starting 60s after boot.
+- **Script:** `scripts/watchdog.py` probes `http://127.0.0.1:8001/mcp` via the canary. State persists at `/var/lib/tinyassets-watchdog/state.json` across ticks.
 - **Trigger:** 3 consecutive reds → `sudo systemctl restart tinyassets-daemon.service`.
 - **Rate limit:** min 10 min between restarts — blocks hot-loop on persistent-failure states.
 - **Logs:** `sudo journalctl -u tinyassets-watchdog -f`.
-- **Sudoers:** scoped rule at `/etc/sudoers.d/tinyassets-watchdog` — `tinyassets` user has NOPASSWD ONLY for the one restart command; no other sudo access.
+- **Sudoers:** scoped rule at `/etc/sudoers.d/tinyassets-watchdog` — `workflow` user has NOPASSWD ONLY for the one restart command; no other sudo access.
 
 Check next fire: `sudo systemctl list-timers tinyassets-watchdog.timer`.
 
 ## Row J — State backup (installed by bootstrap)
 
-The shared installer installs a nightly backup of the `tinyassets-data`
-named Docker volume to the configured remote destination. Bootstrap enables the
-timer unconditionally; if `BACKUP_DEST` is blank, `backup.sh`
+`hetzner-bootstrap.sh` installs a nightly backup of the `tinyassets-data`
+named Docker volume to Hetzner Storage Box. Bootstrap enables the
+timer unconditionally; if Storage Box creds are blank, `backup.sh`
 exits 1 with a clear message (so ops sees the wiring but can defer
-remote provisioning).
+the Storage Box provisioning).
 
 - **Timer:** `tinyassets-backup.timer` fires nightly at 03:00 UTC.
-- **Script:** `/opt/tinyassets-host-uptime/current/deploy/backup.sh` creates strict brain and best-effort full-volume `.tar.gz` archives, then uploads them with `rclone`.
-- **Retention:** 7 daily + 4 weekly + 6 monthly (override via `BACKUP_RETAIN_*` env vars).
-- **Host action needed:** configure an rclone remote as root, set its destination in `/etc/tinyassets/env` as `BACKUP_DEST=<remote>:<path>`, then manually run the backup service once.
+- **Script:** `deploy/backup.sh` tars the volume → `zstd` → `rclone` to `storagebox:tinyassets-backups/tinyassets-data-<ts>.tar.zst`.
+- **Retention:** 7 daily + 4 weekly (override via `BACKUP_RETAIN_*` env vars).
+- **Host action needed:** provision a Hetzner Storage Box (BX11 recommended, ~€1/mo), create a dedicated subuser scoped to `/tinyassets-backups/`, fill `STORAGEBOX_HOST` / `STORAGEBOX_USER` / `STORAGEBOX_PASS` in `/etc/tinyassets/env`, `sudo systemctl restart tinyassets-backup.timer`.
 
 Storage Box provisioning (host does this when ready):
 1. Hetzner Cloud console → Storage Boxes → Add → BX11 (100 GB, ~€1/mo).
 2. Create subuser scoped to `/tinyassets-backups/`. Copy the SFTP host + subuser credentials.
-3. Run `sudo rclone config` and create a remote named `storagebox` with those credentials.
-4. Set `BACKUP_DEST=storagebox:tinyassets-backups` in `/etc/tinyassets/env`.
-5. Manually trigger first backup to verify: `sudo systemctl start tinyassets-backup.service && sudo journalctl -u tinyassets-backup -n 50`.
-6. On success, 03:00 UTC nightly cadence takes over.
+3. `sudo nano /etc/tinyassets/env` → fill in the 3 STORAGEBOX_* vars.
+4. Manually trigger first backup to verify: `sudo systemctl start tinyassets-backup.service && sudo journalctl -u tinyassets-backup -n 50`.
+5. On success, 03:00 UTC nightly cadence takes over.
 
 **Restore runbook:** `deploy/RESTORE.md` covers full-volume restore
 from a specific tarball. Estimated 5-15 min depending on archive size.

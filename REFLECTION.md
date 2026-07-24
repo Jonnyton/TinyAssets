@@ -82,8 +82,8 @@ write-set.
 ## 2026-07-23 — convergent host uptime installation
 
 What surprised me: installing every unit was not sufficient for a fresh host;
-the disk-rotation import closure, disabled-timer repair, and backup destination
-guidance each had independent drift.
+the disk-rotation import closure and disabled-timer repair had independent
+drift, while backup configuration required its own follow-up boundary.
 
 Pattern worth capturing: a systemd installer should own units, executable
 assets, configuration names, activation state, and rollback as one versioned
