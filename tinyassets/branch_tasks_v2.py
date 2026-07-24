@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -58,6 +59,16 @@ DescriptorReader = Callable[
 ]
 DESCRIPTOR_VALIDITY_SECONDS = 90
 logger = logging.getLogger(__name__)
+_IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
+_BODY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_BODY_DIGEST_VERSION = "rfc8785-v1"
+_PRIORITY_POLICY_VERSION = "operator-priority-v1"
+_BRANCH_TASK_ID_RE = re.compile(r"^bt2_[0-9a-f]{32}$")
+_ADMISSION_ID_RE = re.compile(r"^adm_[0-9a-f]{32}$")
+_REQUEST_ID_RE = re.compile(r"^req_[0-9a-f]{32}$")
+_UNIVERSE_ID_RE = re.compile(
+    r"^(?:u-[0-9a-hjkmnp-tv-z]{26}|universe-[a-z0-9][a-z0-9-]{0,63})$"
+)
 
 
 @dataclass(frozen=True)
@@ -317,6 +328,13 @@ def _classify_epoch2_row(
         for field in required
     ):
         return "incomplete"
+    if (
+        _BRANCH_TASK_ID_RE.fullmatch(row["branch_task_id"]) is None
+        or _ADMISSION_ID_RE.fullmatch(row["admission_id"]) is None
+        or _REQUEST_ID_RE.fullmatch(row["request_id"]) is None
+        or _UNIVERSE_ID_RE.fullmatch(row["universe_id"]) is None
+    ):
+        return "incomplete"
     if _parse_timestamp(row["queued_at"]) is None:
         return "incomplete"
     if row.get("trigger_source") not in {
@@ -357,6 +375,8 @@ def _classify_epoch2_row(
             return "incomplete"
     linked_weight = row.get("linked_admission_priority_weight")
     linked_generation = row.get("linked_admission_grant_generation")
+    key_hash = row.get("linked_admission_key_hash")
+    body_digest = row.get("linked_admission_body_digest")
     linkage_matches = (
         row.get("linked_admission_id") == row.get("admission_id")
         and row.get("linked_admission_request_id") == row.get("request_id")
@@ -371,15 +391,23 @@ def _classify_epoch2_row(
         and float(linked_weight) == float(weight)
         and row.get("linked_request_id") == row.get("request_id")
         and row.get("linked_request_universe_id") == row.get("universe_id")
+        and row.get("linked_admission_actor_id")
+        == row.get("linked_request_user_id")
         and row.get("linked_admission_state") == "committed"
         and row.get("linked_request_status") == row.get("status")
+        and isinstance(key_hash, str)
+        and _IDEMPOTENCY_HASH_RE.fullmatch(key_hash) is not None
+        and isinstance(body_digest, str)
+        and _BODY_DIGEST_RE.fullmatch(body_digest) is not None
+        and row.get("linked_admission_body_digest_version")
+        == _BODY_DIGEST_VERSION
+        and row.get("linked_admission_policy_version")
+        == _PRIORITY_POLICY_VERSION
         and all(
             isinstance(row.get(field), str) and bool(row[field].strip())
             for field in (
-                "linked_admission_key_hash",
-                "linked_admission_body_digest",
-                "linked_admission_body_digest_version",
-                "linked_admission_policy_version",
+                "linked_admission_tenant_id",
+                "linked_admission_actor_id",
             )
         )
         and type(linked_generation) is int
@@ -390,17 +418,58 @@ def _classify_epoch2_row(
     try:
         receipt = json.loads(str(row.get("linked_admission_receipt_json")))
         result = json.loads(str(row.get("linked_admission_result_json")))
+        request_metadata = json.loads(
+            str(row.get("linked_request_metadata_json"))
+        )
     except (TypeError, ValueError, json.JSONDecodeError):
         return "invalid_operator_admission"
     if (
         not isinstance(receipt, dict)
         or not receipt
         or not isinstance(result, dict)
+        or not isinstance(request_metadata, dict)
     ):
+        return "invalid_operator_admission"
+    metadata_matches = (
+        request_metadata.get("tenant_id")
+        == row["linked_admission_tenant_id"]
+        and request_metadata.get("admission_id") == row["admission_id"]
+        and request_metadata.get("queue_epoch") == QUEUE_EPOCH
+    )
+    if not metadata_matches or not _authority_receipt_matches(row, receipt):
         return "invalid_operator_admission"
     if not _public_admission_result_matches(row, result):
         return "invalid_operator_admission"
     return None
+
+
+def _authority_receipt_matches(
+    row: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+) -> bool:
+    directed = receipt.get("directed_assignment")
+    directed_daemon_id = row.get("directed_daemon_id") or ""
+    if not isinstance(directed, dict):
+        return False
+    if directed_daemon_id:
+        directed_matches = (
+            directed.get("daemon_id") == directed_daemon_id
+            and all(
+                isinstance(directed.get(field), str)
+                and bool(directed[field].strip())
+                for field in ("daemon_soul_hash", "authority_scope")
+            )
+        )
+    else:
+        directed_matches = directed == {}
+    return bool(
+        receipt.get("authority") == "request-local"
+        and receipt.get("grant_generation")
+        == row["linked_admission_grant_generation"]
+        and receipt.get("priority_policy_version")
+        == _PRIORITY_POLICY_VERSION
+        and directed_matches
+    )
 
 
 def _public_admission_result_matches(

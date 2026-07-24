@@ -326,3 +326,12 @@ fresh-host rollback edges found later.
   bound maintenance by rows scanned—not receipts written—while persisting a
   rotating cursor. Finally, validate the public result and lifecycle
   semantically at both selection and claim; parseable evidence is not proof.
+  A rotating cursor also needs a per-cycle high-water mark: last-rowid alone
+  can starve an older row forever under sustained inserts. Bound the SQL batch
+  by physical rows (including terminal/disabled rows, which are skipped after
+  fetch) so the writer-lock budget is real rather than a post-filter illusion.
+  Physical rowids are locators only and never digest material. Receipt
+  sanitization must validate identifier formats and enum values before
+  preserving strings, and authority integrity must bind canonical
+  hash/version/policy formats, receipt generation, actor, tenant metadata, and
+  Request lifecycle—not merely JSON shape.
