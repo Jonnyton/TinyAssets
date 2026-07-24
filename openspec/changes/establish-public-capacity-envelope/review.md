@@ -61,3 +61,79 @@ The final independent review returned `APPROVE`:
 The required next gate remains a fresh Claude source/deployment/ownership
 review. Any `ADAPT` findings must be incorporated and re-reviewed before an
 implementation claim or baseline run begins.
+
+## Current-main refresh — 2026-07-24
+
+Environment: Windows, branch `codex/establish-public-capacity-envelope`,
+rebased onto `origin/main`
+`0a82dbecdf11eb6f4a8a41060e5f26faf5d06662`.
+
+This refresh appends to, and does not rewrite, the historical review above.
+The dated `412a876a` single-origin fixture remains intentional: a run-time
+source, deployment, or topology mismatch must refuse that fixture and require
+a separately reviewed dated fixture. Rebasing the planning branch does not
+silently relabel current main as the topology that `412a876a` observed.
+
+Current main advances the operator-request owner through three later stages:
+
+- #1693 reauthorizes committed replay against current ordinary scope and the
+  exact current ACL before lookup.
+- #1694 commits canonical request admission, its admission receipt, public
+  result/event, and a pending protocol-v2 task transactionally.
+- #1696 adds the bounded internal epoch-2 queue lifecycle, claim lease, and
+  pure cross-epoch selection.
+
+These are stage-typed operator-request facts, not generic capacity evidence.
+The #1694 admission receipt is not a provider-attempt receipt, and the #1696
+internal queue lease is not an external B2/provider/market execution lease.
+None of the three authorizes credentials, compute, provider access, market
+purchase, spending, settlement, or external execution. A harness plug-in may
+consume the owning capability's accepted stage assertions, but passing
+admission, replay, or queue cases must leave unsupported public execution and
+provider capacity `unknown`.
+
+### Refresh verdict: ADAPT
+
+Before accepted re-review, the planning contract must:
+
+1. consume operator-request evidence through stage-typed owner plug-ins without
+   converting admission or internal scheduling success into execution capacity;
+2. replace the stale assertion that an active broad `tests/` owner blocks all
+   work with a fresh exact-Files `claim_check` immediately before a separately
+   claimed implementation lane; and
+3. preserve the dated-fixture mismatch refusal and the distinction between
+   internal queue claims and external execution authority.
+
+The opposite-provider source/deployment/ownership review and accepted re-review
+remain pending. This ADAPT verdict grants no implementation, baseline run,
+production access, activation, threshold, provider, market, or execution
+authority.
+
+### Same-provider re-review after current-main adaptations: APPROVE
+
+The combined planning diff now:
+
+- keys envelope cells by lifecycle stage, actor/scope boundary, and
+  supply-provenance class so admission and internal scheduling evidence cannot
+  promote B2, provider, market, execution, delivery, or settlement capacity;
+- separates path-level evidence from complete-platform readiness and keeps
+  every required failed or unknown Forever Rule surface non-green;
+- pins the owner plug-in ABI, independent observer/oracle, load-validity and
+  concurrent-user metrics, isolation matrix, BYOC provenance, and
+  price-conditioned market supply evidence; and
+- replaces the stale broad-`tests/` blocker with an exact prospective-Files
+  collision check immediately before a separately claimed implementation.
+
+Fresh evidence on 2026-07-24:
+
+- targeted strict OpenSpec validation: pass;
+- full strict OpenSpec validation: 42/42;
+- `git diff --check` and conflict-marker scan: pass;
+- exact eight-file planning/coordination scope, with no runtime, tests,
+  workflows, deployment, canonical specs, or PLAN changes;
+- `STATUS.md`: 56 lines with no landed operator rows; and
+- tasks: 47 unchecked, zero checked or partial.
+
+This same-provider `APPROVE` does not satisfy task 1.1. Fresh Claude
+opposite-provider review and accepted re-review remain mandatory before
+implementation or baseline execution.

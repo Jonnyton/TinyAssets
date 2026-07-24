@@ -1137,3 +1137,17 @@ Notes:
 - STATUS/Issue/PR: draft PR #1695
 - Verification: strict 42/42; 36/36 tasks unchecked; same-provider review APPROVE; Claude review pending
 - Ship/abandon: keep draft until opposite-provider review and every owner/file/authority gate is satisfied
+
+## 2026-07-24 - refresh establish-public-capacity-envelope on current main
+
+- Provider: codex-gpt56-capacity
+- Branch: codex/establish-public-capacity-envelope
+- Current base: `origin/main@0a82dbecdf11eb6f4a8a41060e5f26faf5d06662`
+- Lane state: planning-only current-main review returned ADAPT; accepted re-review pending
+- Worktree: C:\Users\Jonathan\Projects\wf-public-capacity-envelope
+- STATUS/Issue/PR: draft PR #1695
+- Preserved fixture: dated `origin/main@412a876a`; topology mismatch refuses it rather than relabeling current main
+- Stage semantics: #1693 replay reauthorization, #1694 transactional admission, and #1696 bounded internal queue claims remain owner facts, not external execution/provider capacity
+- Collision gate: run exact future-Files `claim_check` before any separately claimed implementation; do not rely on the stale broad-`tests/` premise
+- Review gate: fresh Claude opposite-provider review plus accepted re-review remains required before implementation or baseline execution
+- Ship/abandon: keep draft; no runtime, capacity, activation, provider, market, or execution authority follows from this refresh

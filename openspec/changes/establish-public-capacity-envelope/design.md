@@ -34,6 +34,19 @@ could not prove even a build-bound active-worker count
 probe is a deployment observation, not a throughput, isolation, failover, or
 public-executor envelope.
 
+Current `origin/main` `0a82dbec` contains three later control-plane landings.
+PR #1693 reauthorizes replay against current ordinary scope and exact ACL.
+PR #1694 transactionally commits the canonical Request, admission receipt,
+public committed result/event, and pending epoch-2 task. PR #1696 adds the
+bounded epoch-2 lifecycle and conditional internal queue claim lease. The
+public result still describes a committed admission with a pending request,
+and the queue owner defines its won lease as an internal scheduling
+reservation only. External execution still requires the separately owned
+signed B2 owner/daemon/job/capsule/lease/fence grant; provider/BYOC attempts,
+delivery, market purchase, and settlement retain their own authority and
+evidence contracts. The newer source facts do not rewrite or replace the
+dated `412a876a` topology fixture.
+
 The current truth must be measurable without pretending it is the target
 PostgreSQL topology. Conversely, a future topology should reuse the same
 scenario/evidence contract rather than fork a new "Section 14" implementation.
@@ -61,6 +74,12 @@ ordinary factual or spec adaptations close through accepted re-review.
   unproved paths as `unknown`.
 - Exercise steady load, burst, saturation, recovery, noisy-neighbor,
   cross-tenant, zero-host, and execution-authority boundaries.
+- Keep path-level capacity distinct from complete-platform readiness so one
+  green route cannot stand in for the whole 24/7 product.
+- Bind every measurement to an owner, contract version, lifecycle stage,
+  authority provenance, user/scope identity, and topology fingerprint.
+- Measure dynamic market supply as price- and time-conditioned capacity rather
+  than a fixed vendor ceiling.
 - Make unsafe production/external/provider/market effects impossible by
   default and observable if a fixture attempts them.
 - Preserve domain ownership while letting domain suites contribute workloads
@@ -122,6 +141,32 @@ Alternatives rejected:
 - **Mocks only:** useful for safety and deterministic failure injection, but
   insufficient for topology capacity.
 
+### Path capacity and complete-platform readiness are separate projections
+
+The envelope has two related but non-interchangeable projections:
+
+1. A **path cell** answers whether one exact
+   topology/profile/scenario/stage/fault/scope combination is `verified`,
+   `failed`, or `unknown`.
+2. A **complete-platform readiness matrix** answers whether every required
+   surface for a named launch or uptime profile has applicable, current cells
+   and accepted owner gates.
+
+Readiness is never inferred from an average or a single successful path. Its
+profile enumerates the required user journey and product surfaces, including
+connection/authentication; graph/workflow authoring and run control;
+fan-out/auto-research/evaluation; goals/gates/learning; discovery/remix and live
+collaboration; organization/shared-universe administration; Zapier-equivalent
+triggers/connectors/effects; inference, fine-tuning, and training; provider
+BYOC and market-rented execution; delivery/settlement; moderation/abuse; and
+uptime/recovery. A missing owner, plug-in, stage, isolation proof, or accepted
+gate makes the readiness entry `unknown` or `failed` according to the profile;
+it cannot be silently omitted.
+
+This matrix reports evidence, not rollout authority. An accepted product owner
+still decides which readiness profile gates a launch, and a passing matrix
+cannot activate a surface.
+
 ### The scenario catalog composes domain-owned assertions
 
 The shared catalog owns cross-cutting scenario shape: steady state, burst,
@@ -137,23 +182,41 @@ domain state machine:
 | Concern | Owning capability/change | Harness role |
 |---|---|---|
 | MCP connection, SSE/session, cancellation and reconnect | `live-mcp-connector-surface` and its accepted runtime owner | Drive only accepted session workloads and preserve owner resume/error semantics |
+| Graph/workflow authoring, editing, branching and run control | graph/workflow and engine/domain owners | Measure accepted create/read/update/run/replay/cancel paths; never invent a graph transition |
+| Fan-out, auto-research, evaluators and convergence | graph fan-out, research, evaluation and convergence owners | Drive owner-published breadth/retry/convergence workloads while preserving generator/evaluator separation |
+| Goals, gates, learning, memory and write-back | goals/gates, learning and brain owners | Measure accepted progress/evidence/write-back behavior; never promote a goal, memory, or canon record itself |
 | Commons discovery, remix and live collaboration | `wiki-commons`, discovery/collaboration owners, and PLAN-gated successors | Measure owner-published reads/writes/presence assertions; do not invent missing collaboration state |
+| Organizations, employee administration and shared universes | organization, identity/access and shared-universe owners | Exercise accepted membership, role, Slack/chat control-station and shared-state paths; never infer tenant authority from metadata |
+| Zapier-equivalent triggers, connectors and app automation | trigger, connector and external-effect owners | Drive accepted schedules/events/retries and owner effects; never call an unapproved connector or widen effect authority |
 | Webhook and external ingress/effects | `external-effect-adapters`, boundary/receipt owners, and real-world-handoff successor | Orchestrate accepted duplicate/reorder/recovery cases; never emit an effect directly |
 | Export and GitHub projection | canonical export/projection owner | Measure accepted cadence/drift behavior; never target production repositories by default |
 | Storage growth, retention, deletion and recovery | owning storage/lifecycle/uptime capabilities | Collect owner assertions; do not choose retention, deletion, or durability policy |
 | Moderation and abuse response | moderation owner and PLAN-gated successor | Schedule accepted abuse workloads; never moderate or reserve funds directly |
-| Operator request admission, epochs, claim and zero-capacity states | `daemon-runtime-and-dispatch` / `operator-request-trigger-contract` | Schedule the accepted storm and collect its owner assertions |
+| Operator request admission and replay | `operator-request-trigger-contract` admission owner | Measure ordinary/exact-ACL/grant checks, canonical Request commit, admission receipt and replay; never treat committed admission as enqueue, claim or execution |
+| Durable enqueue, epoch isolation and internal scheduling lease | `operator-request-trigger-contract` queue owner | Measure epoch-2 persistence, selection, conditional claim, heartbeat/recovery and zero-compatible-capacity; a won lease proves only internal scheduling |
+| Provider/executor authority and signed B2 execution lease | `distributed-execution`, credential and provider-authority owners | Consume capability plus signed owner/daemon/job/capsule/lease/fence evidence; admission receipts and internal leases can only narrow or reject this stage |
+| Inference execution lifecycle and result delivery | provider-attempt, execution-lifecycle and delivery owners | Measure accepted start/progress/cancel/result/delivery behavior using owner attempt receipts; never infer completion from a scheduling claim |
+| Fine-tuning and training lifecycle | model-design, dataset, training/tuning and artifact owners | Measure accepted plan/data/compute/checkpoint/evaluation/artifact paths; never infer training supply from inference capacity |
 | Paid inbox, bid, claim, delivery, accounting and zero-host behavior | `paid-market-economy` / `paid-market-track-e-wave-2-transport` | Orchestrate its accepted suite; never mutate or settle directly |
-| Quote eligibility, price freshness and forward authority | `paid-market-price-index-and-forwards` / `paid-market-live-price-discovery` | Measure owner-defined reads/decisions; never invent a quote or purchase |
+| Quote eligibility, price freshness, reservation and settlement | `paid-market-price-index-and-forwards` / `paid-market-live-price-discovery` plus settlement owner | Measure owner-defined quotes, price-conditioned supply, fills, delivery and settlement receipts; never invent a quote, purchase or payment |
 | Universe creation, founder binding and soul lifecycle | `universe-lifecycle-and-soul` / `universe-creation` | Invoke only accepted test fixtures and assert owner results |
 | Request identity and operator-scoped test reset | `identity-auth-and-access-control` and `test-identity-harness` | Consume identities/reset plans; never select or reset a principal itself |
 | Existence, metadata and page visibility | `universe-visibility` | Exercise accepted reads and assert no cross-scope disclosure |
-| Executor isolation and authority | `distributed-execution`, credential/provider owners | Consume capability/receipt evidence; never manufacture a grant |
 | Serving recovery and alarms | `uptime-and-alarms` | Record outcomes; never authorize production failover or activation |
 
 If a required owner has no accepted implementation or test driver, that domain
 path is `unknown`. A generic synthetic substitute may test harness mechanics
 but cannot establish that domain's envelope.
+
+Every plug-in uses a versioned fail-closed ABI. Its manifest declares the owner
+capability and contract version; supported lifecycle stages; driver and fixture
+schemas; assertion IDs and result schema; required topology features and
+authority inputs; forbidden effects; telemetry and trace correlation fields;
+setup/cleanup boundaries; and source/dependency fingerprints. The harness
+rejects an incompatible, incomplete, unattributed, or stage-ambiguous
+plug-in before load. Plug-ins return measurements and owner assertions only:
+they cannot write envelope verdicts, change another stage, synthesize missing
+authority, or register an ad hoc callback outside the manifest.
 
 ### Evidence is typed, attributable, and conservative
 
@@ -163,6 +226,9 @@ Each run emits an immutable evidence packet containing:
 - exact source, image, configuration, adapter, topology, dependency, and
   environment fingerprints;
 - isolated namespace and dataset manifest;
+- owner capability, owner contract version, assertion ID, lifecycle stage,
+  artifact kind, correlation/trace ID, actor/tenant/org/universe/branch/run
+  scope, and capacity-supply provenance for every measured path;
 - threshold values plus provenance (`historical_target`,
   `unapproved_hypothesis`, or `accepted_gate`);
 - exact commands, start/end timestamps, warm-up/measurement durations, and
@@ -171,19 +237,38 @@ Each run emits an immutable evidence packet containing:
 - request/stream/transaction counts; p50/p95/p99/max; throughput; errors,
   timeouts, retries, cancellations, disconnects, duplicates, loss, deadlocks,
   and conflicts;
+- admitted, durably enqueued, internally leased, B2-authorized, started,
+  completed, delivered and settled counts plus per-stage latency, rejection,
+  wait/queue age, retry amplification and failure distributions;
 - CPU, memory, disk/fsync/WAL where applicable, handles, network, pool/queue
   occupancy, backlog/oldest age, realtime catch-up, and recovery timings;
-- per-tenant throughput/wait/error distributions and dominant-tenant share;
+- active/concurrent and unique users; per-user and per-tenant throughput,
+  wait/error/cost distributions; dominant-tenant share; and budget/rate-limit
+  outcomes;
 - credential/provider/market/external-effect sentinel results;
+- requester-BYOC, accepted-market, deterministic-fake, unavailable or other
+  owner-defined supply class, with non-secret authority/quote/reservation/
+  execution/delivery/settlement receipt digests where applicable;
 - unsupported, unavailable, omitted, and failed dimensions; and
 - reviewer verdict, review date, landing SHA, and caveats.
+
+The lifecycle stage set is explicit:
+`admission`, `durable_enqueue_epoch`, `internal_scheduling_lease`,
+`provider_executor_authority`, `signed_b2_execution_lease`,
+`execution_lifecycle`, `delivery`, and `settlement`. An artifact binds to one
+or more stages only when its owning contract says so. In particular, a
+committed request-admission receipt or won epoch-2 queue lease may verify
+admission or internal scheduling latency/contention, but can never verify
+provider/BYOC/market reachability, a signed B2 lease, execution throughput,
+completion, delivery, settlement, or result authority.
 
 Envelope publication is a deterministic projection over accepted packets. A
 cell is:
 
-- `verified` only for the exact topology/profile/fault dimension with current
-  passing evidence, an accepted threshold, the required successful repetition
-  count, raw evidence, and independent review;
+- `verified` only for the exact topology/profile/scenario/stage/fault/scope/
+  supply-provenance dimension with current passing evidence, an accepted
+  threshold, the required successful repetition count, raw evidence, and
+  independent review;
 - `failed` when an applicable executed proof violates an accepted gate; or
 - `unknown` when evidence, applicability, threshold approval, telemetry,
   repetition, review, or freshness is absent.
@@ -195,6 +280,26 @@ freshness window and repetition rule before execution; the harness supplies no
 convenient universal default. Published numbers are measured lower bounds, not
 extrapolations to DAU or vendor ceilings.
 
+### Load validity and isolation are first-class gates
+
+A workload profile declares open-loop or closed-loop arrival semantics,
+generator count and placement, deterministic seed, warm-up/ramp/measurement/
+recovery windows, required full concurrent population, cache and dataset state,
+retry policy, timeout/error accounting, clock-skew bounds, repetition and
+independence rules, and minimum generator/resource headroom. The harness
+detects generator saturation, coordinated omission, population drop, hidden
+client queuing, telemetry loss, background contention, and offered-versus-
+completed load drift. Any applicable validity failure invalidates the affected
+cell rather than lowering the denominator.
+
+Isolation is an explicit matrix across tenant, user, organization, universe,
+branch/goal, run, daemon/worker, queue/lease, provider credential/auth home,
+billing/wallet, artifact/evidence store, network/region and topology. Each
+applicable pair has owner assertions for disclosure, mutation, authority,
+cost-attribution and resource-starvation isolation. A green data-isolation
+probe cannot substitute for authority, billing or noisy-neighbor isolation,
+and an informational `org_id` never establishes a tenant boundary.
+
 ### Safety is deny-by-default and part of the evidence
 
 The runner starts with production target/network/store/read access, production
@@ -205,12 +310,26 @@ accounts/data. Deterministic fakes are the default execution dependency.
 
 A separately reviewed workload may use requester-scoped test capacity or an
 explicitly budgeted market sandbox only when the owning capability supplies
-the authority and receipt contract. That exception cannot expose production
-credentials or widen other effects. Any production target, network, store,
-read, destructive fault, or write access requires a dedicated change and
-host/product-owner approval; none is authorized here. A separately authorized
-bounded live observation is scrubbed context and cannot become capacity
-evidence unless that dedicated production-test change explicitly permits it.
+the stage-specific authority and receipt contract. Its manifest records
+non-secret supply provenance as requester BYOC or accepted-market capacity and
+never falls back to founder/maintainer credentials, quota, accounts or
+hardware. An admission receipt or internal scheduling lease is not an
+execution-attempt, provider, purchase or settlement receipt. That exception
+cannot expose production credentials or widen other effects. Any production
+target, network, store, read, destructive fault, or write access requires a
+dedicated change and host/product-owner approval; none is authorized here. A
+separately authorized bounded live observation is scrubbed context and cannot
+become capacity evidence unless that dedicated production-test change
+explicitly permits it.
+
+Market-backed capacity is published only as a freshness-bounded supply curve
+conditioned on owner-defined dimensions such as capability/model or training
+job, hardware, region, privacy/trust class, quality/SLO, unit, price ceiling and
+time window. Evidence distinguishes quoted, eligible, reserved, started,
+delivered and settled supply and records offer depth, fill rate, time-to-match,
+slippage, expiry and failure. A quote, best router price, vendor list or
+unfilled offer is not executable capacity, and an inference curve cannot prove
+fine-tuning or training capacity.
 
 The implementation must scrub ambient credential/provider variables and auth
 homes from load generators, install canary/sentinel values for forbidden
@@ -279,11 +398,23 @@ re-review and any applicable named host/product-owner decision.
   provenance and require `accepted_gate` before `verified`.
 - **[Skipped or unsupported paths turn green]** → map them to `unknown` and
   make required CI unavailability fail visibly.
+- **[Admission or queue success becomes "execution capacity"]** → stage-type
+  every artifact and forbid cross-stage promotion in the projector.
+- **[One healthy path becomes "platform ready"]** → publish a separate
+  required-surface readiness matrix with no omitted owner or stage.
 - **[The harness duplicates domain state machines]** → keep drivers/assertions
   with owners and treat missing owners as unknown.
+- **[Plug-ins smuggle authority or change verdicts]** → validate a closed,
+  versioned owner ABI and let only the common projector assign cells.
+- **[Invalid load produces attractive percentiles]** → fail cells on generator
+  saturation, coordinated omission, population drop, hidden queues, missing
+  telemetry or denominator drift.
 - **[Load testing leaks credentials or causes effects]** → isolated namespaces,
   scrubbed environments, deterministic fakes, sentinels, and fail-before-run
   safety probes.
+- **[A quote or cheap route becomes market capacity]** → require
+  price-conditioned eligible/reserved/delivered/settled evidence with
+  freshness, fill and slippage.
 - **[The dated baseline is mistaken for public-executor proof]** → represent
   fixed maintainer workers and requester-authorized executors as distinct
   topology classes.
@@ -305,9 +436,10 @@ re-review and any applicable named host/product-owner decision.
    host/product-owner decisions only for PLAN or product-boundary changes,
    budgets, production access/effects, first-write/activation, and numerical
    public-launch SLOs.
-1. Define versioned adapter, workload-profile, run-packet, and envelope schemas
-   plus contract tests that fail on missing topology truth, unknown suppression,
-   stale promotion, unsafe effects, and domain-owner bypass.
+1. Define versioned adapter, owner plug-in, workload-profile, run-packet,
+   path-cell, complete-readiness and envelope schemas plus contract tests that
+   fail on missing topology truth, cross-stage promotion, unknown suppression,
+   stale promotion, unsafe effects, invalid load and domain-owner bypass.
 2. Implement the scenario orchestrator, safety preflight/sentinels, raw evidence
    validator, and deterministic envelope projector using only synthetic
    adapters.
@@ -316,6 +448,8 @@ re-review and any applicable named host/product-owner decision.
    unsupported replica/executor paths as `unknown`.
 4. Let accepted domain changes register their own drivers and assertions.
    Generic harness tests may not substitute for unimplemented owner suites.
+   Expand readiness profiles only by naming every required owner/stage and
+   isolation cell; never by treating an absent surface as out of denominator.
 5. Publish the adapter interface and acceptance checklist for the #1670 owner.
    Any #1670 edits occur only in a separately claimed adaptation by that owner;
    the shared harness then consumes its PostgreSQL adapter and evidence while
@@ -338,6 +472,8 @@ authorize fallback to a different topology.
   repetition count, freshness window, and fingerprint field? The host/product
   owner accepts public-launch SLOs and budgets unless PLAN assigns a narrower
   owner.
+- Which owner and accepted contract define each complete-platform readiness
+  profile, required surface, lifecycle stage and isolation pair?
 - Which exact configuration inputs form each topology fingerprint?
 - What isolated environment can reproduce the current shared-volume topology
   without maintainer auth homes or production data?
@@ -345,3 +481,6 @@ authorize fallback to a different topology.
   tenants before multi-tenant rendered proof?
 - Which #1670 database/Realtime/queue features are present in its first adapter,
   and which must remain `unknown` pending separately owned adapters?
+- Which accepted provider, market, fine-tuning and training owners publish
+  comparable price-conditioned supply dimensions without collapsing distinct
+  compute products into one token or worker count?
