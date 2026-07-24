@@ -4,11 +4,11 @@
 implementation authority.
 
 **Freshness:** refreshed 2026-07-24 PT against `origin/main`
-`129a68f728a0bcb9a7bfaeddd396993178f42189`, open draft
+`0a82dbecdf11eb6f4a8a41060e5f26faf5d06662`, open draft
 [#1617](https://github.com/Jonnyton/TinyAssets/pull/1617), the independently
 approved planning successor in draft
 [#1691](https://github.com/Jonnyton/TinyAssets/pull/1691), published at
-`15d495e27b1a0c4f7966c1883e5bafc734133b01`, and the current OpenSpec tree.
+`2954e4cb02013baa3edc5a94f37c4a960f0d3374`, and the current OpenSpec tree.
 
 **Required reviewer:** Claude, after its 2026-07-24 evening PT capacity reset.
 Codex authored the initial research. Per `AGENTS.md`, only an independent
@@ -67,7 +67,7 @@ test is authorized by this packet.
    speaking newborn. Existing first-contact reply tests replace the provider
    call with a fake before proving the reply path.
 9. The independently approved planning successor is published as draft PR
-   #1691, currently at `15d495e2`. It proposes that draft PR #1606 be
+   #1691, currently at `2954e4cb`. It proposes that draft PR #1606 be
    superseded as the authority owner. The successor owns only
    persistent provider-destination assignment, fail-closed
    request/assignment intersection at routing time, and provider transport
@@ -162,12 +162,12 @@ correctly retain an empty persistent `allowed_providers` ceiling.
 | Concern | Owner / required seam | This lane may do |
 |---|---|---|
 | Founder-home birth and held first contact | active `universe-creation` | Integrate the authority result into first contact |
-| Persistent server-provider ceiling and fallback | independently approved planning successor in draft PR #1691 at `15d495e2`; planning only and not landed | Consume its fresh assignment/request intersection; do not define requester authority or another router |
+| Persistent server-provider ceiling and fallback | independently approved planning successor in draft PR #1691 at `2954e4cb`; planning only and not landed | Consume its fresh assignment/request intersection; do not define requester authority or another router |
 | Requester and market semantic execution authority | active `universe-creation`, 6/33 complete; task 2.0 hard-gated on this verdict | Fold exact accepted findings into this owner; do not revive #1617 as a second owner |
 | Exhaustive provider-authority carrier/threading | future subordinate `provider-authority-propagation`, only after this verdict is accepted and folded into `universe-creation` | Carry the accepted authority; do not create a second requester authority, router, receipt, vault, market, or credential-isolation contract |
 | Ambient credential isolation | PR #1546 landed the host-credential half; residual branch `codex/fail-closed-provider-auth-overlay` at `dd71fc1c`; former PR #1609 closed | Residual owner unresolved until republished/merged or superseded; do not consume a hypothetical repair |
 | Result-local invocation receipt | PR #1650 merged the strict-valid `provider-attempt-receipts` contract; runtime pending | Extend its accepted returned result with authority dimensions |
-| Operator request admission, replay, receipt, and epoch-2 queue | PRs #1685, #1689, and #1692–#1696 landed | Request-local admission/persistence/scheduling only; the #1696 bounded internal queue lease is not an external B2/market lease, and none of these artifacts populates provider eligibility or grants provider, compute, model-access, market, funding, settlement, economic, or spending authority |
+| Operator request admission, replay, receipt, and epoch-2 queue | PRs #1685, #1689, #1692, #1693, #1694, and #1696 landed | Request-local admission/persistence/scheduling only; the #1696 bounded internal queue lease is not an external B2/market lease, and none of these artifacts populates provider eligibility or grants provider, compute, model-access, market, funding, settlement, economic, or spending authority |
 | Market quote/ranking | active `paid-market-live-price-discovery` | Discovery only; never positive authority |
 | Request/bid/match/claim and logical accounting | active `paid-market-track-e-wave-2-transport` | Consume its accepted terminal handoff; do not duplicate transport |
 | Remote executor identity/lease/fence | active `distributed-execution` | Verify and bind its accepted signed result; do not invent a lease protocol |
