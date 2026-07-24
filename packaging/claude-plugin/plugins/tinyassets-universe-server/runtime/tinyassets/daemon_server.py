@@ -1187,6 +1187,43 @@ def update_runtime_instance_status(
     return get_runtime_instance(base_path, instance_id=instance_id)
 
 
+def update_runtime_instance_metadata(
+    base_path: str | Path,
+    *,
+    instance_id: str,
+    metadata_patch: dict[str, Any],
+    forbidden_statuses: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Atomically merge runtime metadata without changing its control status."""
+    with _connect(base_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT status, metadata_json
+            FROM author_runtime_instances
+            WHERE instance_id = ?
+            """,
+            (instance_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(instance_id)
+        if row["status"] in forbidden_statuses:
+            raise ValueError(
+                f"runtime_status_forbids_metadata_update:{row['status']}"
+            )
+        metadata = _json_loads(row["metadata_json"], {})
+        metadata.update(metadata_patch)
+        conn.execute(
+            """
+            UPDATE author_runtime_instances
+            SET updated_at = ?, metadata_json = ?
+            WHERE instance_id = ?
+            """,
+            (_now(), _json_dumps(metadata), instance_id),
+        )
+    return get_runtime_instance(base_path, instance_id=instance_id)
+
+
 def get_runtime_instance(base_path: str | Path, *, instance_id: str) -> dict[str, Any]:
     with _connect(base_path) as conn:
         row = conn.execute(

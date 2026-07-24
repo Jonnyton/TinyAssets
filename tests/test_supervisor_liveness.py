@@ -467,11 +467,26 @@ def test_supervisor_descriptor_has_exact_90_second_validity(
     tmp_path,
     monkeypatch,
 ):
+    image_ref = (
+        "ghcr.io/tinyassets/tinyassets@sha256:" + ("e" * 64)
+    )
     (tmp_path / "release-state.json").write_text(
         json.dumps(
             {
+                "release_state_version": 2,
+                "outcome": "deployed",
+                "active_identity_status": "agreed",
+                "canary_bundle_status": "passed",
+                "configured_image_ref": image_ref,
+                "running_image_ref": image_ref,
+                "active_image_ref": image_ref,
+                "active_image_digest": image_ref,
+                "image_ref": image_ref,
+                "image_digest": image_ref,
                 "git_sha": "a" * 40,
+                "active_git_sha": "a" * 40,
                 "config_hash": "sha256:" + ("b" * 64),
+                "config_version": "tinyassets-env-v1",
             }
         ),
         encoding="utf-8",
@@ -482,6 +497,7 @@ def test_supervisor_descriptor_has_exact_90_second_validity(
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
     now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
     monkeypatch.setattr(cw, "_utcnow", lambda: now)
+    cw._snapshot_worker_protocol_identity_at_boot()
     monkeypatch.setattr(
         cw,
         "_persist_worker_queue_descriptor",

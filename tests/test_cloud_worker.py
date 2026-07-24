@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 _WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
 if str(_WORKFLOW.parent) not in sys.path:
     sys.path.insert(0, str(_WORKFLOW.parent))
@@ -824,16 +826,66 @@ def _write_worker_release_state(
     *,
     build_sha: str = "a" * 40,
     config_hash: str = "sha256:" + ("b" * 64),
+    release_state_version: int = 2,
+    canary_bundle_status: str = "passed",
 ) -> None:
+    image_ref = (
+        "ghcr.io/tinyassets/tinyassets@sha256:" + ("e" * 64)
+    )
     (base_path / "release-state.json").write_text(
         json.dumps(
             {
+                "release_state_version": release_state_version,
+                "outcome": "deployed",
+                "active_identity_status": "agreed",
+                "canary_bundle_status": canary_bundle_status,
+                "configured_image_ref": image_ref,
+                "running_image_ref": image_ref,
+                "active_image_ref": image_ref,
+                "active_image_digest": image_ref,
+                "image_ref": image_ref,
+                "image_digest": image_ref,
                 "git_sha": build_sha,
+                "active_git_sha": build_sha,
                 "config_hash": config_hash,
+                "config_version": "tinyassets-env-v1",
             }
         ),
         encoding="utf-8",
     )
+
+
+@pytest.mark.parametrize(
+    ("mutate",),
+    [
+        (lambda payload: payload.pop("release_state_version"),),
+        (lambda payload: payload.update(release_state_version=1),),
+        (lambda payload: payload.update(outcome="rollback_failed"),),
+        (lambda payload: payload.update(active_identity_status="unknown"),),
+        (lambda payload: payload.update(canary_bundle_status="failed"),),
+        (lambda payload: payload.update(running_image_ref="mismatch"),),
+        (lambda payload: payload.update(active_git_sha="f" * 40),),
+        (
+            lambda payload: payload.update(
+                config_hash=payload["config_hash"].removeprefix("sha256:")
+            ),
+        ),
+        (lambda payload: payload.update(config_version=""),),
+    ],
+)
+def test_worker_release_identity_requires_v2_terminal_proof(
+    tmp_path,
+    monkeypatch,
+    mutate,
+):
+    _write_worker_release_state(tmp_path)
+    path = tmp_path / "release-state.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mutate(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    assert cw._load_worker_release_identity() is None
 
 
 def test_worker_queue_descriptor_is_release_derived_and_boot_bound(
@@ -850,6 +902,20 @@ def test_worker_queue_descriptor_is_release_derived_and_boot_bound(
     monkeypatch.setattr(cw, "_utcnow", lambda: now[0])
     universe = tmp_path / "universe-a"
 
+    boot_identity = cw._snapshot_worker_protocol_identity_at_boot()
+    assert boot_identity["build_sha"] == "a" * 40
+    assert cw._worker_queue_descriptor(
+        universe,
+        runtime_instance_id="",
+    ) is None
+
+    # A registration-delayed process must retain the release that was
+    # terminal-proof when it booted, even if deploy state changes meanwhile.
+    _write_worker_release_state(
+        tmp_path,
+        build_sha="c" * 40,
+        config_hash="sha256:" + ("d" * 64),
+    )
     first = cw._worker_queue_descriptor(
         universe,
         runtime_instance_id="runtime-a",
@@ -868,11 +934,6 @@ def test_worker_queue_descriptor_is_release_derived_and_boot_bound(
     }
     assert first["boot_id"]
 
-    _write_worker_release_state(
-        tmp_path,
-        build_sha="c" * 40,
-        config_hash="sha256:" + ("d" * 64),
-    )
     now[0] = datetime.fromisoformat("2026-07-24T08:00:30+00:00")
     refreshed = cw._worker_queue_descriptor(
         universe,
@@ -884,6 +945,7 @@ def test_worker_queue_descriptor_is_release_derived_and_boot_bound(
     assert refreshed["expires_at"] == "2026-07-24T08:02:00Z"
 
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    cw._snapshot_worker_protocol_identity_at_boot()
     other_worker = cw._worker_queue_descriptor(
         universe,
         runtime_instance_id="runtime-b",
@@ -900,6 +962,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     _write_worker_release_state(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setattr(cw, "_WORKER_RUNTIME_INSTANCE_IDS", {}, raising=False)
     now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
     monkeypatch.setattr(cw, "_utcnow", lambda: now)
     universe = tmp_path / "universe-a"
@@ -924,6 +987,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
 
     runtime_a = runtime_for("worker-a")
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    cw._snapshot_worker_protocol_identity_at_boot()
     monkeypatch.setenv(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
         runtime_a["runtime_instance_id"],
@@ -956,6 +1020,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
 
     runtime_b = runtime_for("worker-b")
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    cw._snapshot_worker_protocol_identity_at_boot()
     monkeypatch.setenv(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
         runtime_b["runtime_instance_id"],
@@ -1009,6 +1074,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     _write_worker_release_state(tmp_path)
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    cw._snapshot_worker_protocol_identity_at_boot()
     monkeypatch.setenv(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
         runtime_a["runtime_instance_id"],
@@ -1025,3 +1091,79 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
         )
     )
     assert "queue_protocol_version" not in mismatched_beat
+
+
+def test_supervisor_clears_last_durable_descriptor_when_runtime_id_is_lost(
+    tmp_path,
+    monkeypatch,
+):
+    _write_worker_release_state(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setattr(cw, "_WORKER_RUNTIME_INSTANCE_IDS", {}, raising=False)
+    cw._snapshot_worker_protocol_identity_at_boot()
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Descriptor Runner",
+        created_by="host",
+        soul_text="Run descriptor-capable queue work.",
+    )
+    runtime = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="universe-a",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet",
+        worker_id="worker-a",
+    )
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime["runtime_instance_id"],
+    )
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+    monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID")
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=2,
+        phase="registration_failed",
+    )
+
+    observed = daemon_registry.list_runtime_instances(
+        tmp_path,
+        universe_id="universe-a",
+    )[0]
+    assert observed["metadata"]["queue_protocol_descriptor"] is None
+    beat = json.loads(
+        (universe / ".worker_supervisor.worker-a.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "queue_protocol_version" not in beat
+
+
+def test_run_supervisor_snapshots_protocol_identity_before_polling(
+    tmp_path,
+    monkeypatch,
+):
+    snapshots = []
+    monkeypatch.setattr(
+        cw,
+        "_snapshot_worker_protocol_identity_at_boot",
+        lambda: snapshots.append("boot"),
+    )
+    monkeypatch.setattr(cw, "threading_is_main", lambda: False)
+
+    cw.run_supervisor(tmp_path, max_iterations=0)
+
+    assert snapshots == ["boot"]

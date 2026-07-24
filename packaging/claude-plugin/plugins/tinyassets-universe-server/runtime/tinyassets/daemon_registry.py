@@ -410,6 +410,7 @@ def set_worker_queue_descriptor(
     *,
     runtime_instance_id: str,
     descriptor: Mapping[str, Any] | None,
+    expected_worker_id: str = "",
 ) -> dict[str, Any]:
     """Persist vetted worker protocol evidence on its exact runtime slot."""
     raw = daemon_server.get_runtime_instance(
@@ -417,6 +418,11 @@ def set_worker_queue_descriptor(
         instance_id=runtime_instance_id,
     )
     runtime = _runtime_from_author_runtime(raw)
+    runtime_worker = str(
+        runtime.get("metadata", {}).get("worker_id") or ""
+    ).strip()
+    if expected_worker_id and runtime_worker != expected_worker_id:
+        raise ValueError("queue_worker_id_mismatch")
     normalized: dict[str, Any] | None = None
     if descriptor is not None:
         capabilities = sorted({
@@ -445,9 +451,6 @@ def set_worker_queue_descriptor(
                 descriptor.get("expires_at") or ""
             ).strip(),
         }
-        runtime_worker = str(
-            runtime.get("metadata", {}).get("worker_id") or ""
-        ).strip()
         if normalized["queue_protocol_version"] != QUEUE_PROTOCOL_VERSION:
             raise ValueError("queue_protocol_version_mismatch")
         if OPERATOR_CAPABILITY not in capabilities:
@@ -464,7 +467,7 @@ def set_worker_queue_descriptor(
             raise ValueError("queue_build_sha_invalid")
         if (
             re.fullmatch(
-                r"(?:sha256:)?[0-9a-f]{64}",
+                r"sha256:[0-9a-f]{64}",
                 normalized["config_hash"],
             )
             is None
@@ -481,11 +484,11 @@ def set_worker_queue_descriptor(
         if runtime["status"] == "retired":
             raise ValueError("queue_runtime_retired")
 
-    updated = daemon_server.update_runtime_instance_status(
+    updated = daemon_server.update_runtime_instance_metadata(
         base_path,
         instance_id=runtime_instance_id,
-        status=runtime["status"],
         metadata_patch={"queue_protocol_descriptor": normalized},
+        forbidden_statuses=("retired",),
     )
     return _runtime_from_author_runtime(updated)
 

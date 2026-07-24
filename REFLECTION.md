@@ -286,14 +286,16 @@ fresh-host rollback edges found later.
 
 ## 2026-07-24 - boot-bound worker protocol evidence
 
-- **What surprised me:** rereading the deployment receipt on every heartbeat
-  would let an old process advertise a newly deployed build SHA. Release
-  identity must be snapshotted at worker boot, not merely read from a trusted
-  file.
+- **What surprised me:** moving release reads into a memoized helper was still
+  too late: registration-delay and auth-quarantine paths could reach a new
+  receipt before first publication. The snapshot must happen at supervisor
+  entry, and only a terminal-proof version-2 receipt is positive evidence.
 - **Pattern worth capturing:** positive protocol evidence exists only when the
   exact worker/runtime/universe tuple is durably recorded and the same
-  descriptor appears in that worker's named heartbeat. Persistence failure or
-  identity mismatch suppresses capability advertisement.
-- **What I would do differently:** start with the mid-process receipt-change
-  test and the worker/runtime mismatch test. They expose false-upgrade claims
-  that a complete-looking heartbeat fixture misses.
+  descriptor appears in that worker's named heartbeat. Metadata publication
+  must preserve concurrent runtime control, and loss of runtime identity must
+  clear the process's last durable descriptor.
+- **What I would do differently:** start with registration-delayed receipt
+  replacement, partial legacy receipts, concurrent pause/retire, and runtime-ID
+  loss. Those four negative tests expose false-upgrade and stale-authority
+  paths that a complete-looking heartbeat fixture misses.

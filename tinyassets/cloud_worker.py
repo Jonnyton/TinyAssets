@@ -114,6 +114,7 @@ WORKER_QUEUE_DESCRIPTOR_FIELDS = (
     "expires_at",
 )
 _WORKER_PROTOCOL_IDENTITIES: dict[str, dict[str, str] | None] = {}
+_WORKER_RUNTIME_INSTANCE_IDS: dict[str, str] = {}
 
 
 def _resolve_universe_path() -> Path:
@@ -191,7 +192,7 @@ def _worker_release_state_path() -> Path:
 
 
 def _load_worker_release_identity() -> dict[str, str] | None:
-    """Load fail-closed build/config identity from the deploy receipt."""
+    """Load build/config identity from a terminal-proof v2 deploy receipt."""
     path = _worker_release_state_path()
     try:
         if not path.is_file() or path.stat().st_size > 65_536:
@@ -201,11 +202,44 @@ def _load_worker_release_identity() -> dict[str, str] | None:
         return None
     if not isinstance(payload, dict):
         return None
+    if type(payload.get("release_state_version")) is not int:
+        return None
+    if payload["release_state_version"] != 2:
+        return None
+    if payload.get("outcome") not in {"deployed", "rolled_back"}:
+        return None
+    if payload.get("active_identity_status") != "agreed":
+        return None
+    if payload.get("canary_bundle_status") != "passed":
+        return None
+    image_fields = (
+        "configured_image_ref",
+        "running_image_ref",
+        "active_image_ref",
+        "active_image_digest",
+        "image_ref",
+        "image_digest",
+    )
+    image_refs = [payload.get(field) for field in image_fields]
+    if not image_refs or re.fullmatch(
+        r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
+        r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+        r"@sha256:[0-9a-f]{64}",
+        str(image_refs[0] or ""),
+    ) is None:
+        return None
+    if any(image_ref != image_refs[0] for image_ref in image_refs[1:]):
+        return None
     build_sha = str(payload.get("git_sha") or "").strip()
+    active_build_sha = str(payload.get("active_git_sha") or "").strip()
     config_hash = str(payload.get("config_hash") or "").strip()
     if re.fullmatch(r"[0-9a-f]{40}", build_sha) is None:
         return None
-    if re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", config_hash) is None:
+    if active_build_sha != build_sha:
+        return None
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", config_hash) is None:
+        return None
+    if payload.get("config_version") != "tinyassets-env-v1":
         return None
     return {
         "build_sha": build_sha,
@@ -213,8 +247,9 @@ def _load_worker_release_identity() -> dict[str, str] | None:
     }
 
 
-def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
-    """Bind release identity and a random boot ID once per worker process."""
+def _snapshot_worker_protocol_identity_at_boot() -> dict[str, str] | None:
+    """Bind terminal release identity and boot ID before supervisor work."""
+    worker_id = _worker_id()
     if worker_id in _WORKER_PROTOCOL_IDENTITIES:
         return _WORKER_PROTOCOL_IDENTITIES[worker_id]
     release = _load_worker_release_identity()
@@ -227,6 +262,11 @@ def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
     }
     _WORKER_PROTOCOL_IDENTITIES[worker_id] = identity
     return identity
+
+
+def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
+    """Return only identity captured at supervisor boot; never load it late."""
+    return _WORKER_PROTOCOL_IDENTITIES.get(worker_id)
 
 
 def _worker_queue_descriptor(
@@ -262,26 +302,55 @@ def _worker_queue_descriptor(
 def _persist_worker_queue_descriptor(
     descriptor: dict[str, Any] | None,
 ) -> bool:
-    runtime_instance_id = str(
-        (descriptor or {}).get("runtime_instance_id")
-        or os.environ.get("TINYASSETS_RUNTIME_INSTANCE_ID", "")
+    worker_id = _worker_id()
+    descriptor_runtime_id = str(
+        (descriptor or {}).get("runtime_instance_id") or ""
     ).strip()
-    if not runtime_instance_id:
+    current_runtime_id = os.environ.get(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        "",
+    ).strip()
+    previous_runtime_id = _WORKER_RUNTIME_INSTANCE_IDS.get(worker_id, "")
+    if descriptor is not None:
+        runtime_ids = [
+            runtime_id
+            for runtime_id in (previous_runtime_id, descriptor_runtime_id)
+            if runtime_id
+        ]
+    else:
+        runtime_ids = [
+            runtime_id
+            for runtime_id in (previous_runtime_id, current_runtime_id)
+            if runtime_id
+        ]
+    runtime_ids = list(dict.fromkeys(runtime_ids))
+    if not runtime_ids:
         return descriptor is None
     try:
         from tinyassets.daemon_registry import set_worker_queue_descriptor
         from tinyassets.storage import data_dir
 
-        set_worker_queue_descriptor(
-            data_dir(),
-            runtime_instance_id=runtime_instance_id,
-            descriptor=descriptor,
-        )
+        for runtime_instance_id in runtime_ids:
+            value = (
+                descriptor
+                if runtime_instance_id == descriptor_runtime_id
+                else None
+            )
+            set_worker_queue_descriptor(
+                data_dir(),
+                runtime_instance_id=runtime_instance_id,
+                descriptor=value,
+                expected_worker_id=worker_id,
+            )
+        if descriptor is None:
+            _WORKER_RUNTIME_INSTANCE_IDS.pop(worker_id, None)
+        else:
+            _WORKER_RUNTIME_INSTANCE_IDS[worker_id] = descriptor_runtime_id
         return True
     except Exception:  # noqa: BLE001
         logger.exception(
-            "cloud_worker: queue descriptor persistence failed runtime=%s",
-            runtime_instance_id,
+            "cloud_worker: queue descriptor persistence failed runtimes=%s",
+            runtime_ids,
         )
         return False
 
@@ -850,6 +919,7 @@ def run_supervisor(
     + ``time.sleep`` at call time (not import time), so tests can
     monkeypatch the module attribute freely.
     """
+    _snapshot_worker_protocol_identity_at_boot()
     if spawn_fn is None:
         if daemon_args:
             def spawn_fn(universe: Path) -> subprocess.Popen:

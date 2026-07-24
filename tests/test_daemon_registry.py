@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tinyassets import daemon_registry
+from tinyassets import daemon_registry, daemon_server
 
 
 def test_create_soulless_daemon_uses_project_wide_daemon_id(tmp_path):
@@ -261,6 +261,135 @@ def test_runtime_control_is_owner_scoped(tmp_path):
     assert paused["effect"] == "applied"
     assert paused["authority_scope"] == "owner"
     assert paused["runtime"]["status"] == "paused"
+
+
+def test_queue_descriptor_metadata_patch_preserves_concurrent_pause(
+    tmp_path,
+    monkeypatch,
+):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Descriptor Runner",
+        created_by="host",
+        soul_text="Publish trusted queue protocol evidence.",
+    )
+    runtime = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="universe-a",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="host",
+        worker_id="worker-a",
+    )
+    runtime_id = runtime["runtime_instance_id"]
+    real_get = daemon_server.get_runtime_instance
+    raced = False
+
+    def get_then_pause(base_path, *, instance_id):
+        nonlocal raced
+        observed = real_get(base_path, instance_id=instance_id)
+        if not raced:
+            raced = True
+            daemon_server.update_runtime_instance_status(
+                base_path,
+                instance_id=instance_id,
+                status="paused",
+            )
+        return observed
+
+    monkeypatch.setattr(
+        daemon_registry.daemon_server,
+        "get_runtime_instance",
+        get_then_pause,
+    )
+
+    updated = daemon_registry.set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=runtime_id,
+        descriptor={
+            "queue_protocol_version": 2,
+            "capabilities": ["operator_request_v1"],
+            "worker_id": "worker-a",
+            "runtime_instance_id": runtime_id,
+            "boot_id": "boot-a",
+            "build_sha": "a" * 40,
+            "config_hash": "sha256:" + ("b" * 64),
+            "universe_id": "universe-a",
+            "expires_at": "2026-07-24T08:01:30Z",
+        },
+    )
+
+    assert updated["status"] == "paused"
+    assert (
+        updated["metadata"]["queue_protocol_descriptor"]["boot_id"]
+        == "boot-a"
+    )
+
+
+def test_queue_descriptor_metadata_patch_rejects_concurrent_retirement(
+    tmp_path,
+    monkeypatch,
+):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Retiring Descriptor Runner",
+        created_by="host",
+        soul_text="Do not publish evidence after retirement.",
+    )
+    runtime = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="universe-a",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="host",
+        worker_id="worker-a",
+    )
+    runtime_id = runtime["runtime_instance_id"]
+    real_get = daemon_server.get_runtime_instance
+    raced = False
+
+    def get_then_retire(base_path, *, instance_id):
+        nonlocal raced
+        observed = real_get(base_path, instance_id=instance_id)
+        if not raced:
+            raced = True
+            daemon_server.retire_runtime_instance(
+                base_path,
+                instance_id=instance_id,
+            )
+        return observed
+
+    monkeypatch.setattr(
+        daemon_registry.daemon_server,
+        "get_runtime_instance",
+        get_then_retire,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="runtime_status_forbids_metadata_update:retired",
+    ):
+        daemon_registry.set_worker_queue_descriptor(
+            tmp_path,
+            runtime_instance_id=runtime_id,
+            descriptor={
+                "queue_protocol_version": 2,
+                "capabilities": ["operator_request_v1"],
+                "worker_id": "worker-a",
+                "runtime_instance_id": runtime_id,
+                "boot_id": "boot-a",
+                "build_sha": "a" * 40,
+                "config_hash": "sha256:" + ("b" * 64),
+                "universe_id": "universe-a",
+                "expires_at": "2026-07-24T08:01:30Z",
+            },
+        )
+
+    retired = real_get(tmp_path, instance_id=runtime_id)
+    assert retired["status"] == "retired"
+    assert "queue_protocol_descriptor" not in retired["metadata"]
 
 
 def test_update_daemon_behavior_records_versioned_policy(tmp_path):
