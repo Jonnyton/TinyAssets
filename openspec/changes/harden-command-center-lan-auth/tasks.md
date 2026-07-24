@@ -23,8 +23,8 @@
 
 ## 3. Verification And Foldback
 
-- [ ] 3.1 Run the focused command-center and peer-launcher suites, full `python -m pytest tests/ -q`, full `python -m ruff check`, Python compilation, diff/secret scans, and the 32-way hostile concurrency proof using fake peers without invoking any provider/model.
-- [ ] 3.2 Run strict validation for this change and the complete OpenSpec tree.
+- [x] 3.1 Run the focused command-center and peer-launcher suites, full `python -m pytest tests/ -q`, full `python -m ruff check`, Python compilation, diff/secret scans, and the 32-way hostile concurrency proof using fake peers without invoking any provider/model.
+- [x] 3.2 Run strict validation for this change and the complete OpenSpec tree.
 - [ ] 3.3 Exercise the loopback UI in a real browser: fragment bootstrap, authenticated polling/chat/preset, secret-free requests/history, failed hostile Host/Origin probes, and dispatch-off behavior.
-- [ ] 3.4 Obtain independent security and code-review approval for startup ordering, listener authority, browser secret transport, mutation framing/schema, hostile concurrency, bearer scrubbing, process-tree cleanup, and quota-spend boundaries.
+- [x] 3.4 Obtain independent security and code-review approval for startup ordering, listener authority, browser secret transport, mutation framing/schema, hostile concurrency, bearer scrubbing, process-tree cleanup, and quota-spend boundaries.
 - [ ] 3.5 Sync the modified requirement into the canonical spec, archive the change, update coordination/reflection records, and publish the reviewed PR.

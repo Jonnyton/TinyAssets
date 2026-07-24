@@ -65,3 +65,11 @@ What surprised me: structural workflow tests and actionlint both passed while an
 Pattern worth capturing: deployment truth needs one final-state invariant across shell outputs, the pure classifier, durable receipts, job exit status, and incident wording. Every dangerous path needs an executable cross-layer regression, not only syntax or token-order assertions.
 
 One thing I would do differently: read the entire rendered step body immediately after the first green structural run, then derive tests from each post-publication mutation and each boundary-crossing tuple before asking for review.
+
+## 2026-07-23 — Agent Village fail-closed boundary
+
+What surprised me: individually correct-looking process groups at the wrapper and provider layers made the combined POSIX timeout path less safe. The outer launcher could not own a provider that had entered a second session, and a PGID handoff introduced publication and PID-reuse races.
+
+Pattern worth capturing: one supervisor-owned process group is cleaner than exchanging descendant identities. The wrapper and provider share one kill boundary; every exit path verifies that boundary is gone before releasing capacity. Real Linux process-tree proof is required because Windows mocks cannot establish POSIX lifecycle truth.
+
+One thing I would do differently: run the adversarial whole-branch review and a live POSIX fake-provider proof immediately after the first process-tree implementation, before expanding the HTTP and browser verification matrix.
