@@ -3,7 +3,8 @@
 The planner consumes facts already loaded by a trusted service boundary.  It
 does not write them: persistence must atomically compare both the exact
 artifact snapshot and rate-bucket version while consuming one token and
-committing the flag plus any visibility transition.
+committing the flag plus any visibility transition, and must verify that the
+bound policy version remains active.
 """
 
 from __future__ import annotations
@@ -125,8 +126,15 @@ def _rate_limit(*, remaining: int = 3) -> FlagRateLimitEvidence:
     )
 
 
-def _policy(*, threshold: int = 3) -> FlagIntakePolicy:
+def _policy(
+    *,
+    policy_ref: str = "policy://moderation/flag-intake",
+    policy_version: int = 7,
+    threshold: int = 3,
+) -> FlagIntakePolicy:
     return FlagIntakePolicy(
+        policy_ref=policy_ref,
+        policy_version=policy_version,
         eligibility=AccountEligibilityPolicy(
             minimum_account_age=timedelta(days=30),
             minimum_completed_interactions=20,
@@ -281,6 +289,8 @@ def test_soft_hide_threshold_must_be_an_integer_of_at_least_two(
 ) -> None:
     with pytest.raises(PolicyError, match="invalid moderation policy"):
         FlagIntakePolicy(
+            policy_ref="policy://moderation/flag-intake",
+            policy_version=7,
             eligibility=AccountEligibilityPolicy(timedelta(days=30), 20),
             soft_hide_threshold=threshold,  # type: ignore[arg-type]
         )
@@ -650,3 +660,118 @@ def test_rate_limit_evidence_requires_exact_bucket_identity_and_version(
 ) -> None:
     with pytest.raises(PolicyError):
         replace(_rate_limit(), **changes)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        ModerationState.ESCALATED,
+        ModerationState.PENDING_DELETE,
+        ModerationState.RECOVERABLE_DELETED,
+    ],
+)
+def test_duplicate_in_unsupported_snapshot_state_refuses_before_idempotency(
+    state: ModerationState,
+) -> None:
+    result = _plan(
+        snapshot=_snapshot(
+            state=state,
+            flags=(_open_flag("reporter-3"),),
+        ),
+        rate_limit=_rate_limit(remaining=0),
+        reason="\x00",
+    )
+
+    assert isinstance(result, FlagRefusal)
+    assert result.code is FlagRefusalCode.INVALID_EVIDENCE
+    assert result.evidence_refs == ()
+
+
+def test_duplicate_visible_snapshot_already_at_threshold_refuses_as_inconsistent() -> None:
+    result = _plan(
+        snapshot=_snapshot(
+            flags=(
+                _open_flag("reporter-1"),
+                _open_flag("reporter-3"),
+            ),
+        ),
+        policy=_policy(threshold=2),
+        rate_limit=_rate_limit(remaining=0),
+        reason="\x00",
+    )
+
+    assert isinstance(result, FlagRefusal)
+    assert result.code is FlagRefusalCode.INVALID_EVIDENCE
+    assert result.evidence_refs == ()
+
+
+def test_accepted_plan_binds_exact_versioned_policy_and_threshold() -> None:
+    policy = _policy(
+        policy_ref="policy://community/moderation",
+        policy_version=19,
+        threshold=4,
+    )
+
+    result = _plan(policy=policy)
+
+    assert isinstance(result, FlagAcceptedPlan)
+    assert result.policy is policy
+    assert result.policy_ref == policy.policy_ref
+    assert result.expected_policy_version == policy.policy_version
+    assert result.soft_hide_threshold == policy.soft_hide_threshold
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"policy_ref": ""},
+        {"policy_version": 0},
+        {"policy_version": True},
+    ],
+)
+def test_flag_intake_policy_requires_stable_ref_and_positive_version(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(PolicyError):
+        replace(_policy(), **changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"policy_ref": "policy://other"},
+        {"expected_policy_version": 8},
+        {"soft_hide_threshold": 4},
+        {"soft_hide_threshold": 1},
+        {"soft_hide_threshold": True},
+    ],
+)
+def test_accepted_plan_rejects_mismatched_policy_binding(
+    changes: dict[str, object],
+) -> None:
+    result = _plan()
+    assert isinstance(result, FlagAcceptedPlan)
+
+    with pytest.raises(PolicyError):
+        replace(result, **changes)
+
+
+def test_one_flag_cannot_directly_construct_a_soft_hide_plan() -> None:
+    result = _plan(policy=_policy(threshold=2))
+    assert isinstance(result, FlagAcceptedPlan)
+    assert result.distinct_flagger_count == 1
+
+    with pytest.raises(PolicyError):
+        replace(
+            result,
+            resulting_state=ModerationState.UNDER_REVIEW,
+            transition_to_under_review=True,
+        )
+
+
+def test_visible_plan_count_at_threshold_requires_under_review_transition() -> None:
+    result = _plan(policy=_policy(threshold=3))
+    assert isinstance(result, FlagAcceptedPlan)
+
+    with pytest.raises(PolicyError):
+        replace(result, distinct_flagger_count=3)

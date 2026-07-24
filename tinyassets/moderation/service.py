@@ -4,7 +4,8 @@ The types in this module are immutable evidence and plans.  They deliberately
 perform no I/O and confer no authority: a trusted service must load every input
 from server-owned state.  Persisting an accepted plan requires one transaction
 that compares both the artifact snapshot and exact rate-bucket version while
-consuming one token.  Snapshot compare-and-swap alone is never sufficient.
+consuming one token, and must verify the exact policy version is still active.
+Snapshot compare-and-swap alone is never sufficient.
 """
 
 from __future__ import annotations
@@ -136,13 +137,21 @@ class FlagRateLimitEvidence:
 class FlagIntakePolicy:
     """Server-configured flag policy, never request-provided authority."""
 
+    policy_ref: str
+    policy_version: int
     eligibility: AccountEligibilityPolicy
     soft_hide_threshold: int
 
     def __post_init__(self) -> None:
+        require_reference(self.policy_ref)
         if not isinstance(self.eligibility, AccountEligibilityPolicy):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
-        if type(self.soft_hide_threshold) is not int or self.soft_hide_threshold < 2:
+        if (
+            type(self.policy_version) is not int
+            or self.policy_version < 1
+            or type(self.soft_hide_threshold) is not int
+            or self.soft_hide_threshold < 2
+        ):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
 
 
@@ -173,12 +182,16 @@ class ProposedFlagFacts:
 
 @dataclass(frozen=True, slots=True)
 class FlagAcceptedPlan:
-    """An uncommitted dual-precondition proposal, never a persistence receipt."""
+    """An uncommitted versioned-precondition plan, never a persistence receipt."""
 
     expected_snapshot_ref: str
     rate_limit_bucket_id: str
     expected_rate_limit_version: int
     rate_limit_evidence_ref: str
+    policy: FlagIntakePolicy
+    policy_ref: str
+    expected_policy_version: int
+    soft_hide_threshold: int
     proposed_flag: ProposedFlagFacts
     distinct_flagger_count: int
     expected_state: ModerationState
@@ -192,9 +205,15 @@ class FlagAcceptedPlan:
         require_reference(self.expected_snapshot_ref)
         require_reference(self.rate_limit_bucket_id)
         require_reference(self.rate_limit_evidence_ref)
+        require_reference(self.policy_ref)
         if (
             type(self.expected_rate_limit_version) is not int
             or self.expected_rate_limit_version < 1
+            or not isinstance(self.policy, FlagIntakePolicy)
+            or type(self.expected_policy_version) is not int
+            or self.expected_policy_version < 1
+            or type(self.soft_hide_threshold) is not int
+            or self.soft_hide_threshold < 2
             or not isinstance(self.proposed_flag, ProposedFlagFacts)
             or type(self.distinct_flagger_count) is not int
             or self.distinct_flagger_count < 1
@@ -203,17 +222,30 @@ class FlagAcceptedPlan:
             or type(self.transition_to_under_review) is not bool
         ):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
-        valid_transition = (
+        if (
+            self.policy_ref != self.policy.policy_ref
+            or self.expected_policy_version != self.policy.policy_version
+            or self.soft_hide_threshold != self.policy.soft_hide_threshold
+        ):
+            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        valid_visible_transition = (
             self.expected_state is ModerationState.VISIBLE
             and self.resulting_state is ModerationState.UNDER_REVIEW
             and self.transition_to_under_review
+            and self.distinct_flagger_count >= self.soft_hide_threshold
         )
-        valid_no_transition = (
-            self.expected_state is self.resulting_state
-            and self.expected_state in {ModerationState.VISIBLE, ModerationState.UNDER_REVIEW}
+        valid_visible_no_transition = (
+            self.expected_state is ModerationState.VISIBLE
+            and self.resulting_state is ModerationState.VISIBLE
+            and self.distinct_flagger_count < self.soft_hide_threshold
             and not self.transition_to_under_review
         )
-        if not (valid_transition or valid_no_transition):
+        valid_under_review = (
+            self.expected_state is ModerationState.UNDER_REVIEW
+            and self.resulting_state is ModerationState.UNDER_REVIEW
+            and not self.transition_to_under_review
+        )
+        if not (valid_visible_transition or valid_visible_no_transition or valid_under_review):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
 
 
@@ -319,7 +351,13 @@ def plan_flag_intake(
     open_flags = tuple(sorted(snapshot.open_flags, key=lambda flag: flag.flag_id))
     if any(flag.opened_at > now or flag.opened_at > snapshot.captured_at for flag in open_flags):
         return _refuse(FlagRefusalCode.INVALID_TIME)
-    if not _valid_open_flags(open_flags, now):
+    if not _valid_open_flags(open_flags):
+        return _refuse(FlagRefusalCode.INVALID_EVIDENCE)
+
+    prior_count = len({flag.actor_id for flag in open_flags})
+    if snapshot.state not in {ModerationState.VISIBLE, ModerationState.UNDER_REVIEW}:
+        return _refuse(FlagRefusalCode.INVALID_EVIDENCE)
+    if snapshot.state is ModerationState.VISIBLE and prior_count >= policy.soft_hide_threshold:
         return _refuse(FlagRefusalCode.INVALID_EVIDENCE)
 
     existing_flag = next(
@@ -330,7 +368,7 @@ def plan_flag_intake(
         return ExistingFlagPlan(
             expected_snapshot_ref=snapshot.snapshot_ref,
             existing_flag=existing_flag,
-            distinct_flagger_count=len({flag.actor_id for flag in open_flags}),
+            distinct_flagger_count=prior_count,
             resulting_state=snapshot.state,
         )
     if not _valid_flag_text(reason, detail):
@@ -360,12 +398,6 @@ def plan_flag_intake(
             evidence_refs=(rate_limit.evidence_ref,),
         )
 
-    prior_count = len({flag.actor_id for flag in open_flags})
-    if snapshot.state not in {ModerationState.VISIBLE, ModerationState.UNDER_REVIEW}:
-        return _refuse(FlagRefusalCode.INVALID_EVIDENCE)
-    if snapshot.state is ModerationState.VISIBLE and prior_count >= policy.soft_hide_threshold:
-        return _refuse(FlagRefusalCode.INVALID_EVIDENCE)
-
     resulting_count = prior_count + 1
     transition = (
         snapshot.state is ModerationState.VISIBLE and resulting_count >= policy.soft_hide_threshold
@@ -376,6 +408,10 @@ def plan_flag_intake(
         rate_limit_bucket_id=rate_limit.bucket_id,
         expected_rate_limit_version=rate_limit.bucket_version,
         rate_limit_evidence_ref=rate_limit.evidence_ref,
+        policy=policy,
+        policy_ref=policy.policy_ref,
+        expected_policy_version=policy.policy_version,
+        soft_hide_threshold=policy.soft_hide_threshold,
         proposed_flag=ProposedFlagFacts(
             flag_id=proposed_flag_id,
             tenant_id=artifact.tenant_id,
@@ -447,11 +483,11 @@ def _evidence_is_current(
     ) and (rate_limit.retry_at is None or rate_limit.retry_at > now)
 
 
-def _valid_open_flags(open_flags: tuple[OpenFlagEvidence, ...], now: datetime) -> bool:
+def _valid_open_flags(open_flags: tuple[OpenFlagEvidence, ...]) -> bool:
     actor_ids: set[str] = set()
     flag_ids: set[str] = set()
     for flag in open_flags:
-        if flag.opened_at > now or flag.actor_id in actor_ids or flag.flag_id in flag_ids:
+        if flag.actor_id in actor_ids or flag.flag_id in flag_ids:
             return False
         actor_ids.add(flag.actor_id)
         flag_ids.add(flag.flag_id)
