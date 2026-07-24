@@ -92,3 +92,17 @@ transaction. Existing content-addressed releases still need byte/mode checks.
 One thing I would do differently: make the first fake systemd reject missing
 units and inject a mid-stop failure, because permissive doubles hid the two
 fresh-host rollback edges found later.
+
+## 2026-07-23 — hardened DR drill evidence
+
+- **What surprised me:** the first live drill failure was not a restore failure
+  at all; `curl -sf` erased the provider response before provisioning, and the
+  previous PASS ordering could have hidden a later cleanup failure.
+- **Pattern worth capturing:** recovery evidence is a state machine, not a
+  collection of successful steps. Bind one artifact by digest across every
+  boundary, encode path metadata crossing workflow protocols, and publish PASS
+  only after cleanup reaches its terminal success state.
+- **What I would do differently:** model provider API failures and resource
+  deletion as explicit tested states in the first proposal, including request
+  timeouts and adversarial output fields, instead of adding them after the
+  happy path is sketched.
