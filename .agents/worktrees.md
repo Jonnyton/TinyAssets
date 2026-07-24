@@ -903,7 +903,7 @@ Notes:
 - Branch: codex/plan-target-decisions
 - Lane state: Active design-only lane
 - Worktree: C:\Users\Jonathan\Projects\wf-plan-target-decisions
-- STATUS/Issue/PR: prepare host decision packet for the PLAN conflicts blocking three full-platform target groups
+- STATUS/Issue/PR: draft PR #1684 publishes host direction and blocker corrections; decision packet remains local pending Claude review
 - PLAN refs: System Shape; Commons-first; Scoping Rule; Privacy; Open Tensions
 - Purpose: reconcile canonical store, private/org data placement, public tool shape, and platform-versus-community privacy/compliance ownership
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-plan-target-decisions\_PURPOSE.md
