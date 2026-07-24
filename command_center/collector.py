@@ -1558,7 +1558,7 @@ def _talk_to_universe(cfg: Config, universe_id: str, message: str) -> dict:
                 return {
                     "ok": False,
                     "error": "the live endpoint refused (writes need OAuth — "
-                    "pass --mcp-token); your note is mirrored locally",
+                    "set WORKFLOW_MCP_TOKEN); your note is mirrored locally",
                 }
             reply_text = reply if isinstance(reply, str) else json.dumps(reply)[:2000]
             _append_inbox(mirror, universe["name"], reply_text)

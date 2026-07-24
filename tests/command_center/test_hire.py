@@ -48,6 +48,39 @@ def test_discover_providers_shape(tmp_path: Path):
         assert {"id", "label", "kind", "available", "dispatchable", "note"} <= set(p)
 
 
+def test_live_universe_auth_error_names_environment_input_not_removed_cli_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cfg = _cfg(tmp_path)
+    cfg.directory_url = "https://example.invalid"
+    monkeypatch.setattr(
+        collector,
+        "discover_universes",
+        lambda _cfg, _now: [
+            {
+                "id": "u-live",
+                "name": "Live Proof",
+                "source": "live",
+            }
+        ],
+    )
+
+    class RefusingClient:
+        def __init__(self, _url: str, *, token: str | None):
+            self.token = token
+
+        def call_tool(self, _name: str, _arguments: dict) -> None:
+            return None
+
+    monkeypatch.setattr(collector, "McpClient", RefusingClient)
+
+    result = collector.talk(cfg, "universe:u-live", "hello")
+
+    assert result["ok"] is False
+    assert "WORKFLOW_MCP_TOKEN" in result["error"]
+    assert "--mcp-token" not in result["error"]
+
+
 _FAKE_ENGINES = [
     {"id": "claude", "label": "Claude Code", "kind": "local-cli",
      "available": True, "dispatchable": True, "note": "/fake/claude"},
