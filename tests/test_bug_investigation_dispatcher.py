@@ -351,6 +351,131 @@ class TestBugInvestigationDirectRunRouting:
 
         assert inputs == {"bug_id": "BUG-009"}
 
+    def test_direct_run_rejects_task_universe_mismatching_physical_queue(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
+
+        universe_path = tmp_path / "physical-universe"
+        universe_path.mkdir()
+        queue_file = universe_path / "branch_tasks.json"
+        queue_file.write_text("[]", encoding="utf-8")
+        queue_before = queue_file.read_bytes()
+        execute_calls = []
+
+        monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "tinyassets.api.branches._resolve_branch_id",
+            lambda requested, base_path: "branch-1",
+        )
+        monkeypatch.setattr(
+            "tinyassets.daemon_server.get_branch_definition",
+            lambda base_path, branch_def_id: {"branch_def_id": branch_def_id},
+        )
+
+        class _Branch:
+            def validate(self):
+                return []
+
+        from tinyassets.branches import BranchDefinition
+        monkeypatch.setattr(
+            BranchDefinition,
+            "from_dict",
+            classmethod(lambda cls, data: _Branch()),
+        )
+        monkeypatch.setattr(
+            "tinyassets.runs.latest_run_by_name",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "tinyassets.runs.execute_branch",
+            lambda *args, **kwargs: execute_calls.append((args, kwargs)),
+        )
+        task = BranchTask(
+            branch_task_id="bt-wrong-universe",
+            branch_def_id="branch-1",
+            universe_id="claimed-other-universe",
+            request_type="branch_run",
+        )
+
+        success, error, metadata = _try_execute_claimed_branch_task(
+            universe_path, task, "daemon-a",
+        )
+
+        assert success is False
+        assert "universe" in error
+        assert "mismatch" in error
+        assert "physical-universe" in (error + repr(metadata))
+        assert "claimed-other-universe" in (error + repr(metadata))
+        assert execute_calls == []
+        assert queue_file.read_bytes() == queue_before
+
+    def test_direct_run_passes_physical_universe_to_matched_execution(
+        self, tmp_path, monkeypatch
+    ):
+        from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
+        from tinyassets.runs import RUN_STATUS_COMPLETED
+
+        universe_path = tmp_path / "physical-universe"
+        universe_path.mkdir()
+        execute_calls = []
+
+        monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "tinyassets.api.branches._resolve_branch_id",
+            lambda requested, base_path: "branch-1",
+        )
+        monkeypatch.setattr(
+            "tinyassets.daemon_server.get_branch_definition",
+            lambda base_path, branch_def_id: {"branch_def_id": branch_def_id},
+        )
+
+        class _Branch:
+            def validate(self):
+                return []
+
+        class _Outcome:
+            run_id = "run-physical"
+            status = RUN_STATUS_COMPLETED
+            output = {}
+            error = ""
+
+        from tinyassets.branches import BranchDefinition
+        monkeypatch.setattr(
+            BranchDefinition,
+            "from_dict",
+            classmethod(lambda cls, data: _Branch()),
+        )
+        monkeypatch.setattr(
+            "tinyassets.runs.latest_run_by_name",
+            lambda *args, **kwargs: None,
+        )
+
+        def _capture_execute(*args, **kwargs):
+            execute_calls.append((args, kwargs))
+            return _Outcome()
+
+        monkeypatch.setattr("tinyassets.runs.execute_branch", _capture_execute)
+        task = BranchTask(
+            branch_task_id="bt-physical",
+            branch_def_id="branch-1",
+            universe_id="physical-universe",
+            request_type="branch_run",
+        )
+
+        success, error, metadata = _try_execute_claimed_branch_task(
+            universe_path, task, "daemon-a",
+        )
+
+        assert success is True
+        assert error == ""
+        assert metadata["run_id"] == "run-physical"
+        assert len(execute_calls) == 1
+        assert (
+            execute_calls[0][1]["_enqueue_universe_id"]
+            == "physical-universe"
+        )
+
     def test_direct_run_reuses_completed_branch_task_run_after_restart(
         self, tmp_path, monkeypatch
     ):
@@ -404,7 +529,7 @@ class TestBugInvestigationDirectRunRouting:
         task = BranchTask(
             branch_task_id="bt-restart",
             branch_def_id="branch-1",
-            universe_id="u",
+            universe_id=tmp_path.name,
             inputs={"bug_id": "BUG-011"},
             request_type=REQUEST_TYPE_BUG_INVESTIGATION,
         )
