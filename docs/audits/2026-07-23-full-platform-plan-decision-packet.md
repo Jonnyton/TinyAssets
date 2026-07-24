@@ -39,6 +39,17 @@ The host approved the bundle's architectural direction with this refinement:
   promptly, with registries, submissions, host proofs, privacy controls, and
   the complete seven-handle experience converging on `/mcp`.
 
+Retirement is a gated migration, not an immediate route deletion. Canonical
+`/mcp` first adopts fail-closed public status projection, neutral server
+instructions, complete per-tool OAuth metadata and challenges, accurate
+open-world/destructive/cost/persistence descriptions, current privacy
+disclosures, and bounded error/result behavior. Registries, host submissions,
+and installed clients then migrate and produce rendered proof. Only after that
+evidence may `/mcp-directory*` reject old callers and be removed. The active
+`reconcile-external-connector-manifests` OpenSpec change is adapted from three
+products to two—remote `/mcp` and local MCPB—rather than creating a competing
+retirement change.
+
 This does not authorize the chatbot to invent legal applicability,
 certification, contractual eligibility, or user consent. It may propose a
 classification or explain likely implications, but an authorized actor owns
