@@ -456,7 +456,10 @@ jobs:
           printf '%s\n' "${journal}" | grep -Fq "  brain upload OK"
           printf '%s\n' "${journal}" | grep -Fq "  upload OK"
           printf '%s\n' "${journal}" | grep -Fq "backup complete."
-          ! printf '%s\n' "${journal}" | grep -Fq "ERROR:"
+          if printf '%s\n' "${journal}" | grep -Eq 'WARN:|ERROR:'; then
+            echo "Backup invocation emitted a warning or error." >&2
+            exit 1
+          fi
           gh_upload_count="$(
             printf '%s\n' "${journal}" \
               | grep -Fc "gh-ship: [backup-ship] uploaded:" \
