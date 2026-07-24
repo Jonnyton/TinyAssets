@@ -2,8 +2,8 @@
 
 **Status:** structural candidate proof; disposable-host and post-merge production
 evidence remain pending
-**Verified:** 2026-07-23 on
-`codex/converge-host-uptime-installers` in
+**Verified:** 2026-07-23 on the rebased implementation/spec tree through
+`c2f0923e` on `codex/converge-host-uptime-installers` in
 `C:\Users\Jonathan\Projects\wf-openspec-conformance-audit2`
 **Environment:** Windows 11, Python 3.14.3; Ubuntu WSL2 kernel
 6.6.87.2, systemd 255
@@ -90,13 +90,13 @@ initialization behavior.
 | Gate | Evidence |
 |---|---|
 | Installer suite | `python -m pytest tests/test_host_uptime_installers.py -q` → **23 passed in 130.29s** |
-| Affected suites | Installer, bootstrap, disk-watch, prune, backup, deploy workflow, import graph, discovery, registry, and data-dir suites → **203 passed, 5 skipped in 156.48s** |
-| Runtime logic suites | Watchdog, public MCP canary, and GitHub backup shipping → **51 passed in 0.67s** |
+| Affected suites | Installer, bootstrap, disk-watch, prune, backup, deploy workflow, import graph, discovery, registry, and data-dir suites after rebasing onto `85c91087` → **221 passed, 5 skipped in 149.90s** |
+| Runtime logic suites | Watchdog, public MCP canary, and GitHub backup shipping → **51 passed in 0.68s** |
 | Python lint | Ruff on all changed Python files → **passed** |
 | Shell syntax | `bash -n` on installer, bootstrap, and daemon watchdog → **passed** |
 | Shell lint | ShellCheck on the same scripts, excluding sourced-file lookup `SC1091` → **passed** |
 | Workflow lint | actionlint on install-host-services and restart-daemon → **passed** |
-| OpenSpec | `openspec validate converge-host-uptime-installers --strict` → **valid** |
+| OpenSpec | Archived delta synced into the canonical uptime spec; `openspec validate --all --strict` → **41 passed, 0 failed** |
 | Whitespace | `git diff --check` → **passed** (Git emitted only an LF/CRLF worktree notice) |
 | systemd | Disposable `--root` verification of all five service/timer pairs with dependency stubs → **`verified=10`** |
 
