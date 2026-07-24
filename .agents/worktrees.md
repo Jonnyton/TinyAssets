@@ -1116,3 +1116,14 @@ Notes:
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-public-capacity-envelope\_PURPOSE.md
 - Related implications: user-growth/concurrent-user research; draft PR #1670 PostgreSQL control plane; test identity; authority/market/domain-owned scenarios
 - Ship/abandon: planning PR only until fresh opposite-provider APPROVE/accepted ADAPT and exact implementation Files are released
+
+## 2026-07-24 - ready establish-public-capacity-envelope
+
+- Provider: codex-gpt56-capacity
+- Branch: codex/establish-public-capacity-envelope
+- Lane state: independently approved planning-only OpenSpec; implementation and baseline execution blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-public-capacity-envelope
+- STATUS/Issue/PR: public capacity envelope contract; PR pending
+- Verification: targeted strict PASS; full strict 42/42; 36/36 tasks unchecked; independent planning review APPROVE
+- Review gate: fresh Claude opposite-provider source/deployment/ownership review remains required
+- Ship/abandon: publish as draft planning PR; no runtime Files or capacity claims until every gate is satisfied
