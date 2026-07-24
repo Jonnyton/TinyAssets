@@ -120,6 +120,101 @@ def _backup_diagnostic_script() -> str:
     return body.split(terminator, 1)[0]
 
 
+def _backup_remote_install_script() -> str:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    backup_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Ensure off-host backup configuration"
+    )
+    run = backup_step["run"]
+    marker = "<<'BACKUP_REMOTE'\n"
+    assert marker in run
+    body = run.split(marker, 1)[1]
+    terminator = "\nBACKUP_REMOTE\n"
+    assert terminator in body
+    return body.split(terminator, 1)[0]
+
+
+def _run_backup_remote_install(
+    tmp_path: Path,
+    *,
+    succeed_on_probe: int,
+) -> subprocess.CompletedProcess[str]:
+    if not _BASH:
+        pytest.skip("bash unavailable")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_sudo = fake_bin / "sudo"
+    harness = tmp_path / "backup-remote.sh"
+    remote_stage = tmp_path / "remote-stage"
+    remote_stage.mkdir()
+    (remote_stage / "rclone.conf").write_text(
+        "[spaces]\ntype = s3\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    counter = tmp_path / "probe-count"
+    delays = tmp_path / "probe-delays"
+    fake_sudo.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  install)
+    exit 0
+    ;;
+  bash)
+    cat >/dev/null
+    exit 0
+    ;;
+  rclone)
+    if [[ "$2" == "mkdir" ]]; then
+      exit 0
+    fi
+    count="$(cat "${PROBE_COUNTER}" 2>/dev/null || printf '0')"
+    count=$((count + 1))
+    printf '%s' "${count}" > "${PROBE_COUNTER}"
+    [[ "${count}" -ge "${SUCCEED_ON_PROBE}" ]]
+    ;;
+  *)
+    exit 99
+    ;;
+esac
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    harness.write_text(
+        (
+            'sleep() { printf \'%s\\n\' "$1" >> "${PROBE_DELAYS}"; }\n'
+            + _backup_remote_install_script()
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    destination = "spaces:workflow-backups-jonnyton-sfo3/workflow-backups"
+    command = " ".join(
+        (
+            f"chmod +x {shlex.quote(_bash_path(fake_sudo))} &&",
+            f"PROBE_COUNTER={shlex.quote(_bash_path(counter))}",
+            f"PROBE_DELAYS={shlex.quote(_bash_path(delays))}",
+            f"SUCCEED_ON_PROBE={succeed_on_probe}",
+            f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin",
+            "bash",
+            shlex.quote(_bash_path(harness)),
+            shlex.quote(_bash_path(remote_stage)),
+            shlex.quote(destination),
+        )
+    )
+    return subprocess.run(
+        [_BASH, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
 def _run_backup_diagnostic(
     tmp_path: Path,
     response: str,
@@ -1016,7 +1111,13 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert '-H @"${api_header_file}"' in run
     assert "/root/.config/rclone/rclone.conf" in run
     assert 'install-tinyassets-env.sh" set BACKUP_DEST' in run
-    assert "rclone lsf" in run
+    assert "for delay in 0 5 10 20 30" in run
+    assert 'sleep "${delay}"' in run
+    assert (
+        'timeout --kill-after=1s 5s sudo rclone lsf "${destination}" --max-depth 1 '
+        "--retries 1 --low-level-retries 1"
+    ) in run
+    assert "Spaces key did not become usable within the propagation window" in run
     assert "configured_ready" in run
     assert "completely_absent" in run
     assert "partial_or_invalid" in run
@@ -1036,6 +1137,29 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert "category = \"bucket_or_grant\"" in run
     assert "message=" not in run
     assert "GITHUB_OUTPUT" not in run
+
+
+def test_backup_remote_install_retries_same_key_until_probe_propagates(tmp_path):
+    result = _run_backup_remote_install(tmp_path, succeed_on_probe=3)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert (tmp_path / "probe-count").read_text(encoding="utf-8") == "3"
+    assert (tmp_path / "probe-delays").read_text(encoding="utf-8").splitlines() == [
+        "5",
+        "10",
+    ]
+
+
+def test_backup_remote_install_rolls_back_after_bounded_probe_window(tmp_path):
+    result = _run_backup_remote_install(tmp_path, succeed_on_probe=99)
+    assert result.returncode == 1
+    assert (tmp_path / "probe-count").read_text(encoding="utf-8") == "5"
+    assert (tmp_path / "probe-delays").read_text(encoding="utf-8").splitlines() == [
+        "5",
+        "10",
+        "20",
+        "30",
+    ]
+    assert "did not become usable within the propagation window" in result.stderr
 
 
 @pytest.mark.parametrize(

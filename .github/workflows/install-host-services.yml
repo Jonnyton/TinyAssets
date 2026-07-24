@@ -312,7 +312,20 @@ jobs:
           printf '%s\n' "${destination}" \
             | sudo bash "${remote_stage}/install-tinyassets-env.sh" set BACKUP_DEST
           sudo rclone mkdir "${destination}"
-          sudo rclone lsf "${destination}" --max-depth 1 >/dev/null
+          probe_ready=0
+          for delay in 0 5 10 20 30; do
+            if [[ "${delay}" -gt 0 ]]; then
+              sleep "${delay}"
+            fi
+            if timeout --kill-after=1s 5s sudo rclone lsf "${destination}" --max-depth 1 --retries 1 --low-level-retries 1 >/dev/null 2>&1; then
+              probe_ready=1
+              break
+            fi
+          done
+          if [[ "${probe_ready}" -ne 1 ]]; then
+            echo "Spaces key did not become usable within the propagation window." >&2
+            exit 1
+          fi
           BACKUP_REMOTE
           echo "Off-host backup configuration installed and verified."
 

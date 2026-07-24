@@ -97,6 +97,14 @@ Spaces key. Once verified, cleanup retains the key and deletes only temporary
 files. API failures expose bounded status/class diagnostics, never response
 bodies.
 
+New Spaces credentials are eventually consistent at the S3-compatible data
+plane. The installer retries only the read/list destination probe across a
+bounded window: 65 seconds of inter-attempt backoff plus five probes hard-capped
+at five seconds with one second of kill grace each, for a 95-second worst case.
+It does not recreate the key, broaden its grant, or enable the timer until the
+same credential succeeds. Exhausting the window follows the ordinary
+transactional rollback path.
+
 ## Risks / Trade-offs
 
 - **[DigitalOcean token lacks new Spaces-key scopes]** → The install run stays
@@ -105,6 +113,8 @@ bodies.
 - **[Key created but runner dies before cleanup]** → A uniquely named orphan
   may remain; key-name/run-id evidence makes it discoverable without revealing
   credentials.
+- **[New key is not immediately accepted by the Spaces data plane]** — Retry
+  the non-mutating destination probe for at most 95 seconds, then roll back.
 - **[Existing configuration is invalid]** → The workflow refuses automatic
   rotation and leaves the current state untouched for explicit operator review.
 - **[Provider documentation is contradictory during API rollout]** → Structural
