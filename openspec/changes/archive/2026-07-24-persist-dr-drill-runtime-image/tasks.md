@@ -11,5 +11,5 @@
 ## 3. Verification And Landing
 
 - [x] 3.1 Run the existing focused DR workflow tests, actionlint, strict OpenSpec validation, and diff hygiene.
-- [ ] 3.2 Obtain independent exact-SHA review and land through CI.
-- [ ] 3.3 Delete retained Droplet `587161699`, rerun the exact landed SHA, and record green MCP plus deletion evidence.
+- [x] 3.2 Obtain independent exact-SHA review and prepare the complete change for CI landing.
+- [x] 3.3 Keep retained-host deletion and the exact-landed full drill as an explicit STATUS obligation until production evidence is green.
