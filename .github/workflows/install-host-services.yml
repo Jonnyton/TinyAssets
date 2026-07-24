@@ -31,11 +31,14 @@ jobs:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Verify secrets present
+        env:
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
         run: |
           missing=()
           [ -z "$DO_DROPLET_HOST" ] && missing+=("DO_DROPLET_HOST")
           [ -z "$DO_SSH_USER" ] && missing+=("DO_SSH_USER")
           [ -z "${{ secrets.DO_SSH_KEY }}" ] && missing+=("DO_SSH_KEY")
+          [ -z "$DO_API_TOKEN" ] && missing+=("DO_API_TOKEN")
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets: ${missing[*]}"
             exit 1
@@ -49,6 +52,217 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ensure off-host backup configuration
+        env:
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          destination="spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups"
+          bucket="tinyassets-backups-jonnyton-sfo3"
+          endpoint="sfo3.digitaloceanspaces.com"
+          key_name="tinyassets-backup-shipper-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          remote_state="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash -s -- $(printf '%q' "${destination}")" <<'BACKUP_STATE'
+          set -euo pipefail
+          expected_destination="$1"
+          env_file="${2:-/etc/tinyassets/env}"
+          config="${3:-/root/.config/rclone/rclone.conf}"
+          rclone_bin="${4:-rclone}"
+          expected_config_identity="${5:-root:root 600}"
+          assignment_count="$(
+            awk -F= '$1 == "BACKUP_DEST" { count++ } END { print count + 0 }' \
+              "${env_file}" 2>/dev/null || printf '0\n'
+          )"
+          configured_destination="$(
+            awk -F= '
+              $1 == "BACKUP_DEST" {
+                value = substr($0, index($0, "=") + 1)
+              }
+              END { print value }
+            ' "${env_file}" 2>/dev/null || true
+          )"
+          config_identity="$(stat -c '%U:%G %a' "${config}" 2>/dev/null || true)"
+          if [[ "${assignment_count}" == "1" &&
+            "${configured_destination}" == "${expected_destination}" &&
+            -f "${config}" && ! -L "${config}" &&
+            "${config_identity}" == "${expected_config_identity}"
+          ]]; then
+            if "${rclone_bin}" lsf "${expected_destination}" --max-depth 1 >/dev/null 2>&1; then
+              printf 'configured_ready\n'
+            else
+              printf 'partial_or_invalid\n'
+            fi
+          elif [[ "${assignment_count}" == "0" &&
+            ! -e "${config}" && ! -L "${config}"
+          ]]; then
+            printf 'completely_absent\n'
+          else
+            printf 'partial_or_invalid\n'
+          fi
+          BACKUP_STATE
+          )"
+
+          case "${remote_state}" in
+            configured_ready)
+              echo "Off-host backup configuration is already verified."
+              exit 0
+              ;;
+            completely_absent)
+              echo "Off-host backup configuration is absent; converging it."
+              ;;
+            partial_or_invalid)
+              echo "::error::Off-host backup configuration is partial or its destination probe failed; refusing automatic rotation."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected backup configuration state."
+              exit 1
+              ;;
+          esac
+
+          response_file="$(mktemp)"
+          credentials_file="$(mktemp)"
+          rclone_file="$(mktemp)"
+          api_header_file="$(mktemp)"
+          chmod 600 \
+            "${response_file}" "${credentials_file}" "${rclone_file}" \
+            "${api_header_file}"
+          printf 'Authorization: Bearer %s\n' "${DO_API_TOKEN}" \
+            > "${api_header_file}"
+          remote_stage=""
+          created_access_key=""
+          cleanup() {
+            rc=$?
+            cleanup_failed=0
+            set +e
+            if [[ "${rc}" -ne 0 && -n "${created_access_key}" ]]; then
+              if [[ -n "${remote_stage}" ]]; then
+                if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                    "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                    "sudo rm -f /root/.config/rclone/rclone.conf; sudo bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_DEST" \
+                    >/dev/null 2>&1
+                then
+                  echo "::error::Remote backup configuration rollback failed."
+                  cleanup_failed=1
+                fi
+              fi
+              delete_http_status="$(
+                curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                  -H @"${api_header_file}" \
+                  "https://api.digitalocean.com/v2/spaces/keys/${created_access_key}"
+              )"
+              delete_transport_rc=$?
+              if [[ "${delete_transport_rc}" -ne 0 ]]; then
+                echo "::error::Spaces key rollback failed with a transport error."
+                cleanup_failed=1
+              elif [[ "${delete_http_status}" != "204" ]]; then
+                echo "::error::Spaces key rollback failed with HTTP ${delete_http_status}."
+                cleanup_failed=1
+              else
+                echo "Rolled back the newly created Spaces key."
+              fi
+            fi
+            if [[ -n "${remote_stage}" ]]; then
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "rm -rf -- $(printf '%q' "${remote_stage}")" \
+                  >/dev/null 2>&1 || true
+            fi
+            rm -f -- \
+              "${response_file}" "${credentials_file}" "${rclone_file}" \
+              "${api_header_file}"
+            if [[ "${cleanup_failed}" -ne 0 ]]; then
+              exit 1
+            fi
+            exit "${rc}"
+          }
+          trap cleanup EXIT
+
+          payload="$(
+            printf '{"name":"%s","grants":[{"bucket":"%s","permission":"readwrite"}]}' \
+              "${key_name}" "${bucket}"
+          )"
+          http_status="$(
+            curl -sS -o "${response_file}" -w '%{http_code}' -X POST \
+              -H @"${api_header_file}" \
+              -H "Content-Type: application/json" \
+              --data-binary "${payload}" \
+              "https://api.digitalocean.com/v2/spaces/keys"
+          )"
+          if [[ "${http_status}" != "201" ]]; then
+            echo "::error::DigitalOcean Spaces key creation failed with HTTP ${http_status}."
+            exit 1
+          fi
+
+          python - "${response_file}" > "${credentials_file}" <<'PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          key = payload.get("key")
+          if not isinstance(key, dict):
+              raise SystemExit("Spaces key response omitted key")
+          access_key = key.get("access_key")
+          secret_key = key.get("secret_key")
+          if not isinstance(access_key, str) or not re.fullmatch(r"[A-Za-z0-9]{8,128}", access_key):
+              raise SystemExit("Spaces key response contained invalid access key")
+          if not isinstance(secret_key, str) or not re.fullmatch(r"[A-Za-z0-9+/=_-]{16,256}", secret_key):
+              raise SystemExit("Spaces key response contained invalid secret key")
+          print(access_key)
+          print(secret_key)
+          PY
+          mapfile -t credentials < "${credentials_file}"
+          [[ "${#credentials[@]}" -eq 2 ]]
+          created_access_key="${credentials[0]}"
+          secret_key="${credentials[1]}"
+          echo "::add-mask::${created_access_key}"
+          echo "::add-mask::${secret_key}"
+
+          printf '%s\n' \
+            '[spaces]' \
+            'type = s3' \
+            'provider = DigitalOcean' \
+            "access_key_id = ${created_access_key}" \
+            "secret_access_key = ${secret_key}" \
+            "endpoint = ${endpoint}" \
+            'acl = private' \
+            > "${rclone_file}"
+
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "mktemp -d /tmp/tinyassets-backup-config.XXXXXX"
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-backup-config[.][A-Za-z0-9]+$ ]]
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${rclone_file}" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/rclone.conf"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
+
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${destination}")" <<'BACKUP_REMOTE'
+          set -euo pipefail
+          remote_stage="$1"
+          destination="$2"
+          sudo install -d -m 0700 -o root -g root /root/.config/rclone
+          sudo install -m 0600 -o root -g root \
+              "${remote_stage}/rclone.conf" \
+              /root/.config/rclone/rclone.conf
+          printf '%s\n' "${destination}" \
+            | sudo bash "${remote_stage}/install-tinyassets-env.sh" set BACKUP_DEST
+          sudo rclone mkdir "${destination}"
+          sudo rclone lsf "${destination}" --max-depth 1 >/dev/null
+          BACKUP_REMOTE
+          echo "Off-host backup configuration installed and verified."
 
       - name: Install exact uptime bundle and token refresher
         env:

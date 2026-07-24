@@ -72,6 +72,197 @@ def _bash_path_env(fake_bin: Path) -> str:
     return f"{_bash_path(fake_bin)}:/usr/local/bin:/usr/bin:/bin"
 
 
+def _backup_state_script() -> str:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    backup_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Ensure off-host backup configuration"
+    )
+    run = backup_step["run"]
+    marker = "<<'BACKUP_STATE'\n"
+    assert marker in run
+    body = run.split(marker, 1)[1]
+    terminator = "\nBACKUP_STATE\n"
+    assert terminator in body
+    return body.split(terminator, 1)[0]
+
+
+def _backup_cleanup_function() -> str:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    backup_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Ensure off-host backup configuration"
+    )
+    run = backup_step["run"]
+    marker = "cleanup() {\n"
+    assert marker in run
+    body = run.split(marker, 1)[1]
+    terminator = "\ntrap cleanup EXIT"
+    assert terminator in body
+    return f"cleanup() {{\n{body.split(terminator, 1)[0]}"
+
+
+def _run_backup_cleanup(
+    tmp_path: Path,
+    *,
+    delete_status: str,
+    transport_rc: int,
+) -> subprocess.CompletedProcess[str]:
+    if not _BASH:
+        pytest.skip("bash unavailable")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    harness = tmp_path / "cleanup-harness.sh"
+    fake_curl.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s' {shlex.quote(delete_status)}\n"
+        f"exit {transport_rc}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    temp_files = [tmp_path / name for name in ("response", "credentials", "rclone", "header")]
+    for path in temp_files:
+        path.write_text("fixture\n", encoding="utf-8", newline="\n")
+    assignments = "\n".join(
+        (
+            f"response_file={shlex.quote(_bash_path(temp_files[0]))}",
+            f"credentials_file={shlex.quote(_bash_path(temp_files[1]))}",
+            f"rclone_file={shlex.quote(_bash_path(temp_files[2]))}",
+            f"api_header_file={shlex.quote(_bash_path(temp_files[3]))}",
+            'remote_stage=""',
+            'created_access_key="ACCESSKEY12345678"',
+            'DO_SSH_USER="fixture"',
+            'DO_DROPLET_HOST="fixture"',
+        )
+    )
+    harness.write_text(
+        f"set -uo pipefail\n{assignments}\n{_backup_cleanup_function()}\n"
+        "false\ncleanup\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    command = (
+        f"chmod +x {shlex.quote(_bash_path(fake_curl))} && "
+        f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin "
+        f"bash {shlex.quote(_bash_path(harness))}"
+    )
+    return subprocess.run(
+        [_BASH, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def _run_backup_state(
+    tmp_path: Path,
+    *,
+    env_text: str | None,
+    config_kind: str,
+    config_mode: str = "600",
+    rclone_rc: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    if not _BASH:
+        pytest.skip("bash unavailable")
+    state_script = tmp_path / "backup-state.sh"
+    env_file = tmp_path / "tinyassets.env"
+    config = tmp_path / "rclone.conf"
+    real_config = tmp_path / "rclone.real.conf"
+    fake_rclone = tmp_path / "rclone"
+    state_script.write_text(
+        _backup_state_script(),
+        encoding="utf-8",
+        newline="\n",
+    )
+    if env_text is not None:
+        env_file.write_text(env_text, encoding="utf-8", newline="\n")
+    if config_kind == "regular":
+        config.write_text(
+            "[spaces]\ntype = s3\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    elif config_kind == "symlink":
+        real_config.write_text(
+            "[spaces]\ntype = s3\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    elif config_kind != "absent":
+        raise AssertionError(f"unknown config kind: {config_kind}")
+    fake_rclone.write_text(
+        f"#!/usr/bin/env bash\nexit {rclone_rc}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    setup = [f"chmod +x {shlex.quote(_bash_path(fake_rclone))}"]
+    if config_kind == "regular":
+        setup.append(f"chmod {config_mode} {shlex.quote(_bash_path(config))}")
+    elif config_kind == "symlink":
+        setup.extend(
+            (
+                f"chmod {config_mode} {shlex.quote(_bash_path(real_config))}",
+                (
+                    f"ln -s {shlex.quote(_bash_path(real_config))} "
+                    f"{shlex.quote(_bash_path(config))}"
+                ),
+            )
+        )
+    subprocess.run(
+        [_BASH, "-lc", " && ".join(setup)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    identity_target = real_config if config_kind == "symlink" else config
+    if config_kind == "absent":
+        expected_identity = "root:root 600"
+    else:
+        actual_identity = subprocess.run(
+            [
+                _BASH,
+                "-lc",
+                f"stat -c '%U:%G %a' {shlex.quote(_bash_path(identity_target))}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+        if config_mode == "600":
+            expected_identity = actual_identity
+        else:
+            owner_group = actual_identity.rsplit(" ", 1)[0]
+            expected_identity = f"{owner_group} 600"
+
+    args = (
+        "spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups",
+        _bash_path(env_file),
+        _bash_path(config),
+        _bash_path(fake_rclone),
+        expected_identity,
+    )
+    command = " ".join(
+        (
+            "bash",
+            shlex.quote(_bash_path(state_script)),
+            *(shlex.quote(arg) for arg in args),
+        )
+    )
+    return subprocess.run(
+        [_BASH, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
 def _assert_current_release(runtime_root: Path) -> Path:
     current = runtime_root / "current"
     result = subprocess.run(
@@ -740,8 +931,9 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "Resolved requested source ${REQUESTED_SOURCE_REF}" in workflow_text
     assert '[[ "${source_sha}" == "${REQUESTED_SOURCE_REF}" ]]' in workflow_text
     assert "install-host-uptime-services.sh" in workflow_text
-    assert workflow_text.count('"bash -se --') == 1
+    assert workflow_text.count('"bash -se --') == 2
     assert workflow_text.count("<<'REMOTE'") == 1
+    assert workflow_text.count("<<'BACKUP_REMOTE'") == 1
     assert 'remote_stage="$1"' in workflow_text
     assert manifest.returncode == 0, f"{manifest.stdout}\n{manifest.stderr}"
     assert manifest.stdout.splitlines() == [
@@ -760,3 +952,157 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert 'remote_stage="$1"' in restart_text
     assert "/tmp/daemon-watchdog" not in restart_text
     assert "systemctl enable --now daemon-watchdog.timer" not in restart_text
+
+
+def test_host_service_workflow_converges_backup_before_installing_timers():
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    steps = workflow["jobs"]["install"]["steps"]
+    names = [step.get("name") for step in steps]
+    backup_index = names.index("Ensure off-host backup configuration")
+    install_index = names.index("Install exact uptime bundle and token refresher")
+    assert backup_index < install_index
+
+    backup_step = steps[backup_index]
+    run = backup_step["run"]
+    assert backup_step["env"]["DO_API_TOKEN"] == "${{ secrets.DO_API_TOKEN }}"
+    assert "/v2/spaces/keys" in run
+    assert '"permission":"readwrite"' in run
+    assert 'bucket="tinyassets-backups-jonnyton-sfo3"' in run
+    assert '"bucket":"%s"' in run
+    assert "fullaccess" not in run
+    assert "::add-mask::" in run
+    assert "secret_key" in run
+    assert 'Authorization: Bearer ${DO_API_TOKEN}' not in run
+    assert '-H @"${api_header_file}"' in run
+    assert "/root/.config/rclone/rclone.conf" in run
+    assert 'install-tinyassets-env.sh" set BACKUP_DEST' in run
+    assert "rclone lsf" in run
+    assert "configured_ready" in run
+    assert "completely_absent" in run
+    assert "partial_or_invalid" in run
+    assert "stat -c '%U:%G %a'" in run
+    assert "root:root 600" in run
+    assert '! -L "${config}"' in run
+    assert '"${assignment_count}" == "1"' in run
+    assert 'delete_http_status="$(' in run
+    assert "-w '%{http_code}' -X DELETE" in run
+    assert '"${delete_http_status}" != "204"' in run
+    assert "Spaces key rollback failed with HTTP" in run
+    assert 'curl -sS -o /dev/null -X DELETE' not in run
+    assert 'cat "${response_file}"' not in run
+    assert "GITHUB_OUTPUT" not in run
+
+
+@pytest.mark.parametrize(
+    ("env_text", "config_kind", "config_mode", "rclone_rc", "expected"),
+    (
+        (
+            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
+            "tinyassets-backups\n",
+            "regular",
+            "600",
+            0,
+            "configured_ready",
+        ),
+        (
+            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
+            "tinyassets-backups\n",
+            "regular",
+            "644",
+            0,
+            "partial_or_invalid",
+        ),
+        (
+            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
+            "tinyassets-backups\n",
+            "symlink",
+            "600",
+            0,
+            "partial_or_invalid",
+        ),
+        (None, "absent", "600", 0, "completely_absent"),
+        (
+            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
+            "tinyassets-backups\n",
+            "absent",
+            "600",
+            0,
+            "partial_or_invalid",
+        ),
+        (
+            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
+            "tinyassets-backups\n",
+            "regular",
+            "600",
+            1,
+            "partial_or_invalid",
+        ),
+        (
+            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
+            "tinyassets-backups\n"
+            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
+            "tinyassets-backups\n",
+            "regular",
+            "600",
+            0,
+            "partial_or_invalid",
+        ),
+    ),
+)
+def test_backup_state_classifier_is_fail_closed(
+    tmp_path,
+    env_text,
+    config_kind,
+    config_mode,
+    rclone_rc,
+    expected,
+):
+    result = _run_backup_state(
+        tmp_path,
+        env_text=env_text,
+        config_kind=config_kind,
+        config_mode=config_mode,
+        rclone_rc=rclone_rc,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert result.stdout.strip() == expected
+
+
+@pytest.mark.parametrize(
+    ("delete_status", "transport_rc", "expected_message"),
+    (
+        ("204", 0, "Rolled back the newly created Spaces key."),
+        ("403", 0, "Spaces key rollback failed with HTTP 403."),
+        ("000", 7, "Spaces key rollback failed with a transport error."),
+    ),
+)
+def test_backup_key_rollback_requires_explicit_204(
+    tmp_path,
+    delete_status,
+    transport_rc,
+    expected_message,
+):
+    result = _run_backup_cleanup(
+        tmp_path,
+        delete_status=delete_status,
+        transport_rc=transport_rc,
+    )
+    assert result.returncode == 1
+    combined = f"{result.stdout}\n{result.stderr}"
+    assert expected_message in combined
+    if delete_status != "204" or transport_rc != 0:
+        assert "::error::" in combined
+
+
+def test_host_service_workflow_requires_backup_provisioning_authority():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    verify_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Verify secrets present"
+    )
+    run = verify_step["run"]
+    assert verify_step["env"]["DO_API_TOKEN"] == "${{ secrets.DO_API_TOKEN }}"
+    assert '[ -z "$DO_API_TOKEN" ]' in run
+    assert 'missing+=("DO_API_TOKEN")' in run
