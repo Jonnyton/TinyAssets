@@ -52,8 +52,8 @@ droplet's own `DO_API_TOKEN` (no human in the loop):
 - Spaces key `tinyassets-backup-shipper-v3` (account-wide `fullaccess` grant —
   keys created with `grants: []` or per-nonexistent-bucket grants get 403;
   use `[{"permission": "fullaccess"}]` with no bucket field).
-- rclone config at `/app/.config/rclone/rclone.conf` (the systemd unit runs
-  with `HOME=/app` from `/etc/tinyassets/env`).
+- rclone config at `/root/.config/rclone/rclone.conf` (the systemd unit runs
+  as root and does not override `HOME`).
 - Verified end-to-end: `Result=success`, both tiers listed in the bucket.
 
 Offsite is now: **DO Spaces (primary) + GitHub releases (secondary)**.
@@ -88,7 +88,7 @@ apt-get install -y rclone
 
 # Create a DO Spaces bucket (once) via DO console or API.
 # Then configure rclone:
-rclone config create spaces s3 \
+sudo rclone config create spaces s3 \
   provider DigitalOcean \
   endpoint nyc3.digitaloceanspaces.com \
   access_key_id "$DO_SPACES_KEY" \
@@ -98,7 +98,7 @@ rclone config create spaces s3 \
 **Hetzner Storage Box (SFTP):**
 
 ```bash
-rclone config create storagebox sftp \
+sudo rclone config create storagebox sftp \
   host u123456.your-storagebox.de \
   user u123456 \
   pass "$(rclone obscure "$STORAGEBOX_PASS")"
@@ -282,7 +282,7 @@ Expected healthy output ends with `backup complete.`
 | `BACKUP_DEST is not set` | Env file missing the variable | Add `BACKUP_DEST=...` to `/etc/tinyassets/env` |
 | `restore already in progress` | Another restore holds this volume's lock | Wait for it to finish; restores of other volume directories remain independent |
 | `archive member validation failed` | Corrupt or unsafe archive (wrong root, traversal, link, or special file) | Leave the live volume untouched and select another full archive |
-| `rclone upload failed` | Network/auth error | Check rclone config: `rclone lsd $BACKUP_DEST` |
+| `rclone upload failed` | Network/auth error | Check root's rclone config: `sudo rclone lsd $BACKUP_DEST` |
 | `failed to install staged volume` | The second same-parent rename failed | The script attempts automatic rollback; confirm the old live data is back before retrying |
 | Timer never fires | Unit not enabled | `systemctl enable --now backup.timer` |
 
