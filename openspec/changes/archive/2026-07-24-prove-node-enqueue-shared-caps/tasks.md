@@ -28,6 +28,6 @@
 
 - [x] 4.1 Run focused enqueue, run, dispatcher, thread, and spawn-process tests on Windows
 - [x] 4.2 Run formatting, static checks, broader regressions, and strict whole-tree OpenSpec validation
-- [ ] 4.3 Obtain independent concurrency/storage/security diff review and address every finding
-- [ ] 4.4 Rebase against the active queue-epoch capability state, re-run strict validation, sync canonical specs, and archive the completed change
-- [ ] 4.5 Publish the reviewed PR, retire the STATUS row, update worktree/reflection records, and state whether post-fix live-use evidence exists
+- [x] 4.3 Obtain independent concurrency/storage/security diff review and address every finding
+- [x] 4.4 Rebase against the active queue-epoch capability state, re-run strict validation, sync canonical specs, and archive the completed change
+- [x] 4.5 Publish the reviewed PR, update coordination/reflection records, and state whether post-fix live-use evidence exists; retire the STATUS row only after merge

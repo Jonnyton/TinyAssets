@@ -1082,3 +1082,14 @@ Notes:
 - Purpose: repair stable-root and lifetime-lineage bypasses exposed by the cap proof, then prove thread/process boundaries
 - Related implications: production activation is proven; the previous no-runtime-change assumption no longer holds
 - Ship/abandon: independent review is mandatory before merge because this now changes live queue admission
+
+## 2026-07-23 - ready finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: OpenSpec archived; implementation independently approved; PR-ready
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: claimed until merge; PR #1672
+- Verification: 47 focused post-archive checks; security review observed 120 related passes; strict OpenSpec 41/41; mirror parity; concurrency/storage and security/spec APPROVE
+- Post-fix live use: none yet; production-clean use must wait for deploy and observation
+- Ship/abandon: make PR ready after CI and final verifier approval; retire STATUS row only after merge
