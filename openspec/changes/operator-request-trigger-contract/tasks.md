@@ -55,7 +55,7 @@
 - [x] 6.2 Extend `tinyassets/cloud_worker.py` and `tinyassets/daemon_registry.py` so release/runtime-derived descriptors are written to durable runtime metadata and each `.worker_supervisor.<worker>.json`; never derive support from request arguments, identity grants, or provider auth.
 - [ ] 6.3 Extend `tinyassets/api/status.py` and `tinyassets/api/universe.py` operational reads to merge epoch counts and distinguish `awaiting_compatible_capacity`, `invalid_operator_admission`, `quarantined`, and `policy_parked`.
 - [ ] 6.4 Update `tinyassets/cloud_worker.py::_has_pickable_branch_task` and wakeup/restart decisions to use eligible merged candidates without treating pending-no-capacity as invalid or spending platform compute.
-- [ ] 6.5 Add separate transactional quarantine maintenance in `tinyassets/branch_tasks_v2.py`; prove insert/move atomicity, one receipt per digest, selector purity, red health on failure, and no raw request/evidence leakage.
+- [x] 6.5 Add separate transactional quarantine maintenance in `tinyassets/branch_tasks_v2.py`; prove insert/move atomicity, one receipt per digest, selector purity, red health on failure, and no raw request/evidence leakage.
 - [ ] 6.6 Inject mixed valid/forged/missing-receipt/unsupported-protocol rows and prove invalid rows never execute or block valid v1/v2 selection.
 
 ## 7. Rollout and Mixed-Version Isolation

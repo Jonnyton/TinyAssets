@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import shutil
 import sqlite3
 import threading
 from dataclasses import replace
@@ -7,7 +10,9 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import rfc8785
 
+import tinyassets.storage.request_admissions as request_admission_storage
 from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
@@ -18,6 +23,7 @@ from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTaskAdapter,
     WorkerClaimDescriptor,
 )
+from tinyassets.daemon_registry import create_daemon
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.storage import db_path
 from tinyassets.storage.request_admissions import (
@@ -45,12 +51,30 @@ def _commit(
     trigger_source: str = "operator_request",
     weight: float = 50.0,
     directed_daemon_id: str = "",
+    directed_soul_hash: str = "c" * 64,
+    directed_authority_scope: str = "owner",
+    universe_id: str = "universe-a",
     created_at: str = "2026-07-24T08:00:00+00:00",
 ) -> dict:
+    if not key.startswith("hmac-sha256:"):
+        key = "hmac-sha256:" + hashlib.sha256(key.encode()).hexdigest()
+    del body
+    canonical_body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": "",
+        "pickup_incentive": "",
+        "priority_weight": weight,
+        "request_type": "general",
+        "schema_version": "request-admission-v2",
+        "text": "repair the queue",
+        "universe_id": universe_id,
+    })
+    body = "sha256:" + hashlib.sha256(canonical_body).hexdigest()
     return RequestAdmissionStore(base_path).commit_admission(
         tenant_id="tenant-a",
         actor_id="actor-a",
-        universe_id="universe-a",
+        universe_id=universe_id,
         idempotency_key_hash=key,
         body_digest=body,
         body_digest_version="rfc8785-v1",
@@ -62,7 +86,20 @@ def _commit(
         accepted_priority_weight=weight,
         policy_version="operator-priority-v1",
         grant_generation=3,
-        receipt={"authority": "request-local"},
+        receipt={
+            "authority": "request-local",
+            "grant_generation": 3,
+            "priority_policy_version": "operator-priority-v1",
+            "directed_assignment": (
+                {
+                    "daemon_id": directed_daemon_id,
+                    "daemon_soul_hash": directed_soul_hash,
+                    "authority_scope": directed_authority_scope,
+                }
+                if directed_daemon_id
+                else {}
+            ),
+        },
         directed_daemon_id=directed_daemon_id,
         created_at=created_at,
     )
@@ -115,13 +152,24 @@ def test_pretraffic_migration_adds_lease_column_to_existing_v2_store(
         conn.execute(
             "ALTER TABLE branch_tasks_v2 DROP COLUMN lease_expires_at"
         )
+        conn.execute(
+            "ALTER TABLE branch_tasks_v2_maintenance_state "
+            "DROP COLUMN cycle_high_rowid"
+        )
         migrate_request_admission_schema(conn)
         columns = {
             str(row[1])
             for row in conn.execute("PRAGMA table_info(branch_tasks_v2)")
         }
+        maintenance_columns = {
+            str(row[1])
+            for row in conn.execute(
+                "PRAGMA table_info(branch_tasks_v2_maintenance_state)"
+            )
+        }
 
     assert "lease_expires_at" in columns
+    assert "cycle_high_rowid" in maintenance_columns
 
 
 def test_adapter_reads_canonical_epoch2_task_and_ids_are_unique(
@@ -158,6 +206,26 @@ def test_adapter_reads_canonical_epoch2_task_and_ids_are_unique(
     assert task.request_id == first["request_id"]
     assert task.admission_id == first["admission_id"]
     assert task.inputs["request_type"] == "general"
+
+
+@pytest.mark.parametrize(
+    "universe_id",
+    ["fantasy", "default-universe", "patch-loop-live"],
+)
+def test_existing_path_safe_universe_ids_remain_eligible(
+    tmp_path: Path,
+    universe_id: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    committed = _commit(tmp_path, universe_id=universe_id)
+
+    candidates = Epoch2BranchTaskAdapter(tmp_path).list_candidates(
+        universe_id=universe_id,
+    )
+
+    assert [task.branch_task_id for task in candidates] == [
+        committed["branch_task_id"]
+    ]
 
 
 def test_claim_rechecks_exact_live_descriptor_inside_transaction(
@@ -616,3 +684,1286 @@ def test_directed_epoch2_task_preserves_owner_tier_and_assignment(
     assert task.trigger_source == "owner_queued"
     assert task.priority_weight == 25
     assert task.directed_daemon_id == "daemon-a"
+
+
+def test_quarantine_maintenance_is_separate_atomic_and_sanitized(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    valid = _commit(
+        tmp_path,
+        key="hmac:epoch2-key-b",
+        body="sha256:epoch2-body-b",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET protocol_version = 99
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
+    )
+
+    # Pure selection rejects the bad row without writing quarantine state.
+    assert [
+        task.branch_task_id for task in adapter.list_candidates()
+    ] == [valid["branch_task_id"]]
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT disabled FROM branch_tasks_v2 "
+            "WHERE branch_task_id = ?",
+            (invalid["branch_task_id"],),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0] == 0
+
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert len(result.receipts) == 1
+    receipt = result.receipts[0]
+    assert receipt.branch_task_id == invalid["branch_task_id"]
+    assert receipt.reason == "unsupported_protocol"
+    assert len(receipt.row_digest) == 64
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        source = conn.execute(
+            """
+            SELECT disabled, quarantine_reason
+            FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()
+        stored = conn.execute(
+            """
+            SELECT row_digest, reason, row_json, seen_count
+            FROM branch_tasks_v2_quarantine
+            """
+        ).fetchone()
+    assert dict(source) == {
+        "disabled": 1,
+        "quarantine_reason": "unsupported_protocol",
+    }
+    assert stored["row_digest"] == receipt.row_digest
+    assert stored["reason"] == "unsupported_protocol"
+    assert stored["seen_count"] == 1
+    snapshot = json.loads(stored["row_json"])
+    assert set(snapshot) == {
+        "branch_task_id",
+        "protocol_version",
+        "queue_epoch",
+        "status",
+        "trigger_source",
+        "universe_id",
+    }
+    assert "repair the queue" not in stored["row_json"]
+    assert "request-local" not in stored["row_json"]
+
+    replay = adapter.maintain_quarantine()
+    assert replay.health == "green"
+    assert replay.quarantined == 0
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "fail_stage",
+    ["quarantine_receipt_written", "quarantine_source_disabled"],
+)
+def test_quarantine_failure_is_red_rollback_and_row_remains_inert(
+    tmp_path: Path,
+    fail_stage: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET admission_id = 'missing-admission'
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
+    )
+
+    def fail_at_stage(stage, _conn):
+        if stage == fail_stage:
+            raise RuntimeError("injected quarantine failure")
+
+    result = adapter.maintain_quarantine(
+        fault_injector=fail_at_stage,
+    )
+
+    assert result.health == "red"
+    assert result.error_code == "quarantine_persistence_failed"
+    assert result.quarantined == 0
+    assert result.receipts == ()
+    assert adapter.list_candidates() == []
+    descriptor = _descriptor()
+    assert adapter.claim(
+        invalid["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    ) is None
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        source = conn.execute(
+            """
+            SELECT disabled, quarantine_reason
+            FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()
+        quarantine_count = conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0]
+        event_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM request_admission_events
+            WHERE branch_task_id = ? AND event_type = 'quarantined'
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()[0]
+    assert source == (0, "")
+    assert quarantine_count == 0
+    assert event_count == 0
+
+    recovered = adapter.maintain_quarantine()
+    assert recovered.health == "green"
+    assert recovered.quarantined == 1
+    assert recovered.receipts[0].reason == "incomplete"
+
+
+def test_malformed_json_is_incomplete_and_never_reaches_task_decoding(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET inputs_json = '{not-json'
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    assert adapter.list_candidates() == []
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "incomplete"
+
+
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("request_type", "revision"),
+        ("branch_id", "forged-branch"),
+        ("pickup_incentive", "forged-pickup"),
+        ("directed_daemon_instruction", "forged instruction"),
+    ],
+)
+def test_parseable_task_input_mutation_breaks_canonical_body_evidence(
+    tmp_path: Path,
+    field: str,
+    forged_value: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        raw = conn.execute(
+            """
+            SELECT inputs_json FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()[0]
+        inputs = json.loads(raw)
+        inputs[field] = forged_value
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET inputs_json = ?
+            WHERE branch_task_id = ?
+            """,
+            (json.dumps(inputs), invalid["branch_task_id"]),
+        )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    assert adapter.list_candidates() == []
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "invalid_operator_admission"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["branch_def_id", "unexpected_input"],
+)
+def test_unauthenticated_executable_task_inputs_are_inert_and_quarantined(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        if mutation == "branch_def_id":
+            conn.execute(
+                """
+                UPDATE branch_tasks_v2 SET branch_def_id = 'forged-branch-def'
+                WHERE branch_task_id = ?
+                """,
+                (invalid["branch_task_id"],),
+            )
+        else:
+            raw = conn.execute(
+                """
+                SELECT inputs_json FROM branch_tasks_v2
+                WHERE branch_task_id = ?
+                """,
+                (invalid["branch_task_id"],),
+            ).fetchone()[0]
+            inputs = json.loads(raw)
+            inputs["unexpected_executable_input"] = "forged"
+            conn.execute(
+                """
+                UPDATE branch_tasks_v2 SET inputs_json = ?
+                WHERE branch_task_id = ?
+                """,
+                (json.dumps(inputs), invalid["branch_task_id"]),
+            )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    descriptor = _descriptor()
+
+    assert adapter.list_candidates() == []
+    assert adapter.claim(
+        invalid["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    ) is None
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "invalid_operator_admission"
+
+
+def test_corrupt_admission_evidence_cannot_claim_before_maintenance(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE request_admissions
+            SET receipt_json = '{not-json'
+            WHERE admission_id = (
+                SELECT admission_id FROM branch_tasks_v2
+                WHERE branch_task_id = ?
+            )
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    descriptor = _descriptor()
+
+    assert adapter.list_candidates() == []
+    assert adapter.claim(
+        invalid["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    ) is None
+    result = adapter.maintain_quarantine()
+    assert result.health == "green"
+    assert result.receipts[0].reason == "invalid_operator_admission"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        (
+            "UPDATE request_admissions "
+            "SET idempotency_key_hash = 'forged-key' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE request_admissions "
+            "SET body_digest = 'forged-body', "
+            "body_digest_version = 'rfc8785-v0' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE request_admissions "
+            "SET priority_policy_version = 'forged-policy' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE request_admissions SET receipt_json = "
+            "'{\"authority\":\"request-local\","
+            "\"grant_generation\":999,"
+            "\"priority_policy_version\":\"operator-priority-v1\","
+            "\"directed_assignment\":{}}' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE request_admissions SET actor_id = 'forged-actor' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE request_admissions SET tenant_id = 'forged-tenant' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE request_admissions SET receipt_json = '{}' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE request_admissions SET result_json = '{}' "
+            "WHERE branch_task_id = ?",
+            "invalid_operator_admission",
+        ),
+        (
+            "UPDATE user_requests SET status = 'succeeded' "
+            "WHERE request_id = ("
+            "SELECT request_id FROM branch_tasks_v2 "
+            "WHERE branch_task_id = ?)",
+            "invalid_operator_admission",
+        ),
+    ],
+)
+def test_parseable_forged_evidence_is_inert_and_quarantined(
+    tmp_path: Path,
+    mutation: str,
+    expected_reason: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(mutation, (invalid["branch_task_id"],))
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    descriptor = _descriptor()
+
+    assert adapter.list_candidates() == []
+    assert adapter.claim(
+        invalid["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    ) is None
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("authority_scope", "soul_hash"),
+    [
+        ("none", "c" * 64),
+        ("local_host", "c" * 64),
+        ("delegated_host", "c" * 64),
+        ("owner", "d" * 64),
+        ("owner", "not-a-canonical-soul-hash"),
+    ],
+)
+def test_unauthorized_directed_receipt_is_inert(
+    tmp_path: Path,
+    authority_scope: str,
+    soul_hash: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    daemon = create_daemon(
+        tmp_path,
+        display_name="Directed Test Daemon",
+        created_by="actor-a",
+        soul_mode="soul",
+        soul_text="A stable directed test soul.",
+    )
+    effective_soul_hash = (
+        daemon["soul_hash"] if soul_hash == "c" * 64 else soul_hash
+    )
+    invalid = _commit(
+        tmp_path,
+        directed_daemon_id=daemon["daemon_id"],
+        directed_soul_hash=daemon["soul_hash"],
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    assert [task.branch_task_id for task in adapter.list_candidates()] == [
+        invalid["branch_task_id"]
+    ]
+    forged_receipt = {
+        "authority": "request-local",
+        "grant_generation": 3,
+        "priority_policy_version": "operator-priority-v1",
+        "directed_assignment": {
+            "daemon_id": daemon["daemon_id"],
+            "daemon_soul_hash": effective_soul_hash,
+            "authority_scope": authority_scope,
+        },
+    }
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE request_admissions SET receipt_json = ?
+            WHERE branch_task_id = ?
+            """,
+            (json.dumps(forged_receipt), invalid["branch_task_id"]),
+        )
+
+    assert adapter.list_candidates() == []
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "invalid_operator_admission"
+
+
+def test_null_task_id_uses_stable_sanitized_quarantine_identifier(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE branch_tasks_v2 SET branch_task_id = NULL "
+            "WHERE branch_task_id = ?",
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    assert adapter.list_candidates() == []
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    receipt = result.receipts[0]
+    assert receipt.reason == "incomplete"
+    assert receipt.branch_task_id.startswith("quarantined-task-")
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        source = conn.execute(
+            """
+            SELECT branch_task_id, disabled, quarantine_reason
+            FROM branch_tasks_v2
+            """
+        ).fetchone()
+        stored = conn.execute(
+            """
+            SELECT branch_task_id, row_json
+            FROM branch_tasks_v2_quarantine
+            """
+        ).fetchone()
+    assert source == (receipt.branch_task_id, 1, "incomplete")
+    assert stored[0] == receipt.branch_task_id
+    assert invalid["branch_task_id"] not in stored[1]
+    replayed = RequestAdmissionStore(tmp_path).quarantine_task(
+        receipt.branch_task_id,
+        reason="incomplete",
+        observed_at="2026-07-24T08:02:00+00:00",
+    )
+    assert replayed["row_digest"] == receipt.row_digest
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        count, seen_count = conn.execute(
+            """
+            SELECT COUNT(*), MAX(seen_count)
+            FROM branch_tasks_v2_quarantine
+            """
+        ).fetchone()
+    assert (count, seen_count) == (1, 2)
+
+
+def test_corrupt_string_identifiers_are_never_exposed_in_receipt(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    private_task_value = "repair the queue bearer-secret-value"
+    private_universe_value = "raw request text authorization evidence"
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET branch_task_id = ?, universe_id = ?
+            WHERE branch_task_id = ?
+            """,
+            (
+                private_task_value,
+                private_universe_value,
+                invalid["branch_task_id"],
+            ),
+        )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    receipt = result.receipts[0]
+    assert receipt.branch_task_id.startswith("quarantined-task-")
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        stored = conn.execute(
+            """
+            SELECT universe_id, row_json
+            FROM branch_tasks_v2_quarantine
+            """
+        ).fetchone()
+    assert stored[0].startswith("unknown-universe-")
+    assert private_task_value not in stored[1]
+    assert private_universe_value not in stored[1]
+
+
+def test_quarantine_digest_is_independent_of_physical_rowid(
+    tmp_path: Path,
+) -> None:
+    first_base = tmp_path / "first"
+    second_base = tmp_path / "second"
+    initialize_author_server(first_base)
+    invalid = _commit(first_base)
+    with sqlite3.connect(db_path(first_base)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET protocol_version = 99
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    with sqlite3.connect(db_path(first_base)) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    second_base.mkdir()
+    shutil.copy2(db_path(first_base), db_path(second_base))
+    with sqlite3.connect(db_path(second_base)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET rowid = 100
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+
+    first = Epoch2BranchTaskAdapter(first_base).maintain_quarantine()
+    second = Epoch2BranchTaskAdapter(second_base).maintain_quarantine()
+
+    assert first.health == second.health == "green"
+    assert first.quarantined == second.quarantined == 1
+    assert first.receipts[0].row_digest == second.receipts[0].row_digest
+
+
+@pytest.mark.parametrize("corruption", ["non_finite", "blob"])
+def test_raw_sqlite_corruption_has_totalized_digest_and_receipt(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        if corruption == "non_finite":
+            conn.execute(
+                """
+                UPDATE branch_tasks_v2 SET priority_weight = ?
+                WHERE branch_task_id = ?
+                """,
+                (float("inf"), invalid["branch_task_id"]),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE branch_tasks_v2 SET branch_def_id = ?
+                WHERE branch_task_id = ?
+                """,
+                (sqlite3.Binary(b"private-corrupt-bytes"), invalid["branch_task_id"]),
+            )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    assert adapter.list_candidates() == []
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "incomplete"
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        row_json = conn.execute(
+            "SELECT row_json FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0]
+    assert "private-corrupt-bytes" not in row_json
+
+
+def test_maintenance_scan_limit_rotates_and_bounds_writer_lock(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    for index in range(8):
+        _commit(
+            tmp_path,
+            key=f"hmac:bounded-{index}",
+            body=f"sha256:bounded-{index}",
+            created_at=f"2026-07-24T08:00:{index:02d}+00:00",
+        )
+    entered = threading.Event()
+    release = threading.Event()
+    writer_done = threading.Event()
+    classifier_calls: list[str] = []
+    failures: list[BaseException] = []
+    store = RequestAdmissionStore(tmp_path)
+
+    def bounded_classifier(row) -> None:
+        classifier_calls.append(str(row["branch_task_id"]))
+        if len(classifier_calls) == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return None
+
+    def maintain() -> None:
+        try:
+            result = store.maintain_v2_quarantine(
+                classifier=bounded_classifier,
+                limit=2,
+            )
+            assert result["scanned"] == 2
+        except BaseException as exc:
+            failures.append(exc)
+
+    def write() -> None:
+        try:
+            _commit(
+                tmp_path,
+                key="hmac:concurrent-writer",
+                body="sha256:concurrent-writer",
+                created_at="2026-07-24T08:01:00+00:00",
+            )
+            writer_done.set()
+        except BaseException as exc:
+            failures.append(exc)
+
+    maintenance_thread = threading.Thread(target=maintain)
+    writer_thread = threading.Thread(target=write)
+    maintenance_thread.start()
+    assert entered.wait(timeout=5)
+    writer_thread.start()
+    release.set()
+    maintenance_thread.join(timeout=10)
+    writer_thread.join(timeout=10)
+
+    assert failures == []
+    assert classifier_calls and len(classifier_calls) == 2
+    assert writer_done.is_set()
+
+
+def test_maintenance_bounds_terminal_history_to_scan_limit(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    for index in range(4):
+        terminal = _commit(
+            tmp_path,
+            key=f"hmac:terminal-{index}",
+            body=f"sha256:terminal-{index}",
+            created_at=f"2026-07-24T08:00:{index:02d}+00:00",
+        )
+        store.transition_task(
+            terminal["branch_task_id"],
+            expected_statuses={"pending"},
+            new_status="succeeded",
+            at=f"2026-07-24T08:01:{index:02d}+00:00",
+        )
+    _commit(
+        tmp_path,
+        key="hmac:active-after-terminal",
+        body="sha256:active-after-terminal",
+        created_at="2026-07-24T08:01:01+00:00",
+    )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine(limit=2)
+
+    assert result.health == "green"
+    assert result.scanned == 2
+    assert result.quarantined == 0
+
+
+def test_compacted_terminal_row_is_not_reclassified_as_invalid(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    terminal = _commit(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    assert Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+    ) == 1
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 0
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0] == 0
+
+
+def test_compaction_hard_caps_physical_rows_per_writer_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    for index in range(3):
+        terminal = _commit(
+            tmp_path,
+            key=f"hmac:compaction-cap-{index}",
+            created_at=f"2026-07-24T08:00:0{index}+00:00",
+        )
+        store.transition_task(
+            terminal["branch_task_id"],
+            expected_statuses={"pending"},
+            new_status="succeeded",
+            at=f"2026-07-24T08:01:0{index}+00:00",
+        )
+    monkeypatch.setattr(
+        request_admission_storage,
+        "MAX_QUARANTINE_SCAN_ROWS",
+        2,
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    first = adapter.compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+        limit=10_000,
+    )
+    second = adapter.compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:02:00+00:00",
+        limit=10_000,
+    )
+
+    assert (first, second) == (2, 1)
+
+
+def test_compaction_rejects_operation_time_before_terminal_without_mutation(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="compacted_at must not precede terminal_at",
+    ):
+        Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+            terminal_before="2026-07-25T00:00:00+00:00",
+            compacted_at="2026-07-24T08:00:00+00:00",
+        )
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        admission = conn.execute(
+            """
+            SELECT compacted_at FROM request_admissions
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+        request_text = conn.execute(
+            """
+            SELECT text FROM user_requests
+            WHERE request_id = ?
+            """,
+            (terminal["request_id"],),
+        ).fetchone()
+    assert admission == (None,)
+    assert request_text == ("repair the queue",)
+
+
+@pytest.mark.parametrize(
+    ("table", "value"),
+    [
+        ("request_admissions", "2026-07-24T08:02:00+00:00"),
+        ("branch_tasks_v2", ""),
+    ],
+)
+def test_compaction_quarantines_inconsistent_persisted_terminal_time(
+    tmp_path: Path,
+    table: str,
+    value: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            f"""
+            UPDATE {table} SET terminal_at = ?
+            WHERE branch_task_id = ?
+            """,
+            (value, terminal["branch_task_id"]),
+        )
+
+    compacted = Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+    )
+
+    assert compacted == 0
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        admission = conn.execute(
+            """
+            SELECT compacted_at FROM request_admissions
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+        quarantine = conn.execute(
+            """
+            SELECT reason FROM branch_tasks_v2_quarantine
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+    assert admission == (None,)
+    assert quarantine == ("invalid_operator_admission",)
+
+
+def test_compaction_quarantines_invalid_terminal_before_erasing_evidence(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE request_admissions SET receipt_json = '{}'
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        )
+
+    compacted = Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+    )
+
+    assert compacted == 0
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        admission = conn.execute(
+            """
+            SELECT compacted_at FROM request_admissions
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+        quarantine = conn.execute(
+            """
+            SELECT reason FROM branch_tasks_v2_quarantine
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+    assert admission == (None,)
+    assert quarantine == ("invalid_operator_admission",)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("terminal_at", "2026-07-24T08:02:00+00:00"),
+        ("compacted_at", "2026-07-24T08:00:00+00:00"),
+    ],
+)
+def test_compacted_terminal_timestamps_must_match_and_be_ordered(
+    tmp_path: Path,
+    column: str,
+    value: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    assert Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+    ) == 1
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            f"""
+            UPDATE request_admissions
+            SET {column} = ?
+            WHERE branch_task_id = ?
+            """,
+            (value, terminal["branch_task_id"]),
+        )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "invalid_operator_admission"
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "reason"),
+    [
+        ("protocol_version", 99, "unsupported_protocol"),
+        ("receipt_json", "{}", "invalid_operator_admission"),
+    ],
+)
+def test_noncompacted_corrupt_terminal_row_is_quarantined(
+    tmp_path: Path,
+    column: str,
+    value: object,
+    reason: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    table = (
+        "branch_tasks_v2"
+        if column == "protocol_version"
+        else "request_admissions"
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            f"UPDATE {table} SET {column} = ? WHERE branch_task_id = ?",
+            (value, terminal["branch_task_id"]),
+        )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == reason
+
+
+def test_disabled_invalid_row_gets_receipt_but_valid_policy_row_does_not(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    valid = _commit(tmp_path)
+    invalid = _commit(
+        tmp_path,
+        key="hmac:disabled-invalid",
+        body="sha256:disabled-invalid",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE branch_tasks_v2 SET disabled = 1 "
+            "WHERE branch_task_id IN (?, ?)",
+            (valid["branch_task_id"], invalid["branch_task_id"]),
+        )
+        conn.execute(
+            "UPDATE request_admissions SET receipt_json = '{}' "
+            "WHERE branch_task_id = ?",
+            (invalid["branch_task_id"],),
+        )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].branch_task_id == invalid["branch_task_id"]
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        valid_source = conn.execute(
+            """
+            SELECT disabled, quarantine_reason
+            FROM branch_tasks_v2 WHERE branch_task_id = ?
+            """,
+            (valid["branch_task_id"],),
+        ).fetchone()
+        valid_receipts = conn.execute(
+            """
+            SELECT COUNT(*) FROM branch_tasks_v2_quarantine
+            WHERE branch_task_id = ?
+            """,
+            (valid["branch_task_id"],),
+        ).fetchone()[0]
+    assert valid_source == (1, "")
+    assert valid_receipts == 0
+
+
+def test_maintenance_hard_caps_caller_requested_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    for index in range(3):
+        _commit(
+            tmp_path,
+            key=f"hmac:hard-cap-{index}",
+            body=f"sha256:hard-cap-{index}",
+            created_at=f"2026-07-24T08:00:{index:02d}+00:00",
+        )
+    monkeypatch.setattr(
+        request_admission_storage,
+        "MAX_QUARANTINE_SCAN_ROWS",
+        2,
+    )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine(
+        limit=1_000_000,
+    )
+
+    assert result.health == "green"
+    assert result.scanned == 2
+
+
+def test_storage_rejects_unbounded_private_quarantine_reason(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    task = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    private_reason = "repair the queue bearer-secret authorization evidence"
+
+    with pytest.raises(ValueError, match="unsupported quarantine reason"):
+        store.quarantine_task(
+            task["branch_task_id"],
+            reason=private_reason,
+            observed_at="2026-07-24T08:01:00+00:00",
+        )
+    with pytest.raises(ValueError, match="unsupported quarantine reason"):
+        store.maintain_v2_quarantine(
+            classifier=lambda _row: private_reason,
+        )
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        source = conn.execute(
+            """
+            SELECT disabled, quarantine_reason
+            FROM branch_tasks_v2 WHERE branch_task_id = ?
+            """,
+            (task["branch_task_id"],),
+        ).fetchone()
+        receipt_count = conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0]
+    assert source == (0, "")
+    assert receipt_count == 0
+
+
+def test_corrupt_status_is_scanned_and_sanitized(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    private_status = "raw request text with bearer-secret"
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET status = ?
+            WHERE branch_task_id = ?
+            """,
+            (private_status, invalid["branch_task_id"]),
+        )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine(limit=1)
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "incomplete"
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        row_json = conn.execute(
+            "SELECT row_json FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0]
+    assert private_status not in row_json
+
+
+def test_cycle_high_water_prevents_starvation_under_sustained_inserts(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    rows = [
+        _commit(
+            tmp_path,
+            key=f"hmac:high-water-{index}",
+            body=f"sha256:high-water-{index}",
+            created_at=f"2026-07-24T08:00:{index:02d}+00:00",
+        )
+        for index in range(3)
+    ]
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    assert adapter.maintain_quarantine(limit=1).scanned == 1
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE request_admissions SET receipt_json = '{}' "
+            "WHERE branch_task_id = ?",
+            (rows[0]["branch_task_id"],),
+        )
+
+    results = []
+    for index in range(3, 6):
+        _commit(
+            tmp_path,
+            key=f"hmac:high-water-{index}",
+            body=f"sha256:high-water-{index}",
+            created_at=f"2026-07-24T08:00:{index:02d}+00:00",
+        )
+        results.append(adapter.maintain_quarantine(limit=1))
+
+    receipts = [
+        receipt
+        for result in results
+        for receipt in result.receipts
+    ]
+    assert [receipt.branch_task_id for receipt in receipts] == [
+        rows[0]["branch_task_id"]
+    ]
+
+
+def test_bounded_maintenance_cursor_reaches_invalid_row_after_valid_rows(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    for index in range(4):
+        _commit(
+            tmp_path,
+            key=f"hmac:cursor-{index}",
+            body=f"sha256:cursor-{index}",
+            created_at=f"2026-07-24T08:00:{index:02d}+00:00",
+        )
+    invalid = _commit(
+        tmp_path,
+        key="hmac:cursor-invalid",
+        body="sha256:cursor-invalid",
+        created_at="2026-07-24T08:00:05+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET protocol_version = 99
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    first = adapter.maintain_quarantine(limit=2)
+    second = adapter.maintain_quarantine(limit=2)
+    third = adapter.maintain_quarantine(limit=2)
+
+    assert (first.scanned, first.quarantined) == (2, 0)
+    assert (second.scanned, second.quarantined) == (2, 0)
+    assert (third.scanned, third.quarantined) == (1, 1)
+    assert third.receipts[0].branch_task_id == invalid["branch_task_id"]
+
+
+def test_concurrent_maintenance_writes_one_receipt_per_digest(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET queue_epoch = 3
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    barrier = threading.Barrier(3)
+    results = []
+    failures = []
+
+    def maintain() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results.append(
+                Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+            )
+        except Exception as exc:  # pragma: no cover - diagnostic capture
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target=maintain),
+        threading.Thread(target=maintain),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert failures == []
+    assert len(results) == 2
+    assert all(result.health == "green" for result in results)
+    assert sum(result.quarantined for result in results) == 1
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        receipt = conn.execute(
+            """
+            SELECT seen_count
+            FROM branch_tasks_v2_quarantine
+            """
+        ).fetchone()
+    assert receipt == (1,)

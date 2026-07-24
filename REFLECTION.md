@@ -305,3 +305,65 @@ fresh-host rollback edges found later.
   atomic “still provisioned” operation. The worker-ID choice belongs in that
   same transaction too: otherwise different workers can steal one unassigned
   slot and identical concurrent starts can create duplicates.
+
+## 2026-07-24 - transactional epoch-2 quarantine
+
+- **What surprised me:** the receipt/disable transaction already existed, but
+  pure selection decoded JSON before validating protocol and linkage. A corrupt
+  row could therefore poison the read path even though claim SQL rejected its
+  protocol.
+- **Pattern worth capturing:** selectors classify raw rows without mutation;
+  maintenance alone owns receipt+disable; claim repeats the integrity boundary.
+  When maintenance rolls back, the selector and claimer still keep the source
+  inert and return a bounded red health result.
+- **What I would do differently:** begin with malformed JSON, broken aggregate
+  links, both precommit fault points, and concurrent maintenance. Those tests
+  distinguish real quarantine isolation from merely having a quarantine table.
+  Treat every imported SQLite storage class as adversarial too: ordinary
+  `TEXT PRIMARY KEY` columns can contain NULL, TEXT-affinity columns can contain
+  BLOBs, and REAL values can be non-finite when constraints were bypassed.
+  Address corrupt sources by rowid, totalize their digest representation, and
+  bound maintenance by rows scanned—not receipts written—while persisting a
+  rotating cursor. Finally, validate the public result and lifecycle
+  semantically at both selection and claim; parseable evidence is not proof.
+  A rotating cursor also needs a per-cycle high-water mark: last-rowid alone
+  can starve an older row forever under sustained inserts. Bound the SQL batch
+  by physical rows (including terminal/disabled rows, which are skipped after
+  fetch) so the writer-lock budget is real rather than a post-filter illusion.
+  Physical rowids are locators only and never digest material. Receipt
+  sanitization must validate identifier formats and enum values before
+  preserving strings, and authority integrity must bind canonical
+  hash/version/policy formats, receipt generation, actor, tenant metadata, and
+  Request lifecycle—not merely JSON shape.
+  Physical cursor progression and semantic classification are separate:
+  terminal tombstones still consume the bounded cursor budget but must not be
+  reclassified after legitimate compaction; disabled rows are skipped only
+  when a quarantine receipt already explains them, otherwise valid rows remain
+  policy-parked and invalid rows gain an audit receipt. Reuse the platform's
+  path-safe custom-universe contract for eligibility while applying a stricter
+  display-safe slug rule to receipts. Closed reason enums, allowed directed
+  scopes, canonical soul hashes, and a non-overridable scan ceiling belong at
+  the storage boundary.
+  Stored evidence is only meaningful when it binds the executable payload:
+  recompute the RFC 8785 body digest from the canonical Request plus task
+  inputs, and bind directed scope/hash to the actual daemon owner/delegation
+  metadata and soul. Terminal rows need two paths: full validation before
+  compaction, or an exact compacted tombstone contract afterward. A status
+  string alone is never permission to skip integrity.
+
+## 2026-07-24 - executable identity and pre-compaction integrity
+
+- **What surprised me:** a canonical request-body digest still left the
+  resolved `branch_def_id` and unexpected task-input keys outside the checked
+  execution envelope. Separately, a correct post-compaction tombstone checker
+  could not recover evidence that compaction had already erased.
+- **Pattern worth capturing:** bind every downstream executable input to at
+  least two authoritative aggregate records, reject surplus keys, and run the
+  same full classifier inside the compaction write transaction before private
+  evidence is replaced. Terminal timestamps are one state transition and must
+  agree across task/admission records before the compaction time can follow
+  them.
+- **What I would do differently:** enumerate the exact fields consumed by the
+  execution handoff and every evidence-destroying maintenance operation during
+  the first threat-model pass, then make each a red mutation test before the
+  initial review.
