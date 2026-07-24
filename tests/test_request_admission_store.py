@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -456,7 +457,12 @@ def test_authority_check_runs_inside_transaction_and_can_abort(tmp_path):
 
 def test_claim_transition_quarantine_and_universe_delete(tmp_path):
     initialize_author_server(tmp_path)
-    store = RequestAdmissionStore(tmp_path)
+    store = RequestAdmissionStore(
+        tmp_path,
+        clock=lambda: datetime.fromisoformat(
+            "2026-07-24T08:01:00+00:00"
+        ),
+    )
     committed = store.commit_admission(**_commit_kwargs())
 
     candidates = store.list_v2_candidates(universe_id="universe-a")
@@ -469,7 +475,6 @@ def test_claim_transition_quarantine_and_universe_delete(tmp_path):
         worker_id="worker-1",
         queue_protocol_version=2,
         capabilities={"operator_request_v1"},
-        claimed_at="2026-07-24T08:01:00Z",
     )
     assert claimed["status"] == "running"
     assert claimed["claimed_by"] == "worker-1"
@@ -478,7 +483,6 @@ def test_claim_transition_quarantine_and_universe_delete(tmp_path):
         worker_id="worker-2",
         queue_protocol_version=2,
         capabilities={"operator_request_v1"},
-        claimed_at="2026-07-24T08:01:01Z",
     ) is None
 
     store.transition_task(
@@ -528,6 +532,37 @@ def test_claim_transition_quarantine_and_universe_delete(tmp_path):
     assert _table_count(tmp_path, "user_requests") == 0
     assert _table_count(tmp_path, "request_admissions") == 0
     assert _table_count(tmp_path, "branch_tasks_v2") == 0
+
+
+def test_worker_transition_ignores_backdated_at_and_uses_transaction_clock(
+    tmp_path,
+):
+    initialize_author_server(tmp_path)
+    now = [datetime.fromisoformat("2026-07-24T08:01:00+00:00")]
+    store = RequestAdmissionStore(tmp_path, clock=lambda: now[0])
+    committed = store.commit_admission(**_commit_kwargs())
+    claimed = store.claim_v2_task(
+        committed["branch_task_id"],
+        worker_id="worker-1",
+        queue_protocol_version=2,
+        capabilities={"operator_request_v1"},
+        lease_seconds=30,
+    )
+    assert claimed is not None
+
+    now[0] = datetime.fromisoformat("2026-07-24T08:01:31+00:00")
+    with pytest.raises(PermissionError, match="branch_task_lease_expired"):
+        store.transition_task(
+            committed["branch_task_id"],
+            expected_statuses={"running"},
+            new_status="succeeded",
+            at="2026-07-24T08:01:01+00:00",
+            worker_id="worker-1",
+        )
+
+    task = store.get_v2_task(committed["branch_task_id"])
+    assert task is not None
+    assert task["status"] == "running"
 
 
 def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):

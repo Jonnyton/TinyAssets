@@ -53,14 +53,23 @@ DescriptorReader = Callable[
     [sqlite3.Connection, str],
     WorkerClaimDescriptor | None,
 ]
+DESCRIPTOR_VALIDITY_SECONDS = 90
 
 
 class Epoch2BranchTaskAdapter:
     """Typed lifecycle operations for the epoch-2 transactional queue."""
 
-    def __init__(self, base_path: Path | str) -> None:
+    def __init__(
+        self,
+        base_path: Path | str,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.base_path = Path(base_path)
-        self._store = RequestAdmissionStore(self.base_path)
+        self._store = RequestAdmissionStore(
+            self.base_path,
+            clock=clock,
+        )
 
     def list_candidates(
         self,
@@ -86,18 +95,15 @@ class Epoch2BranchTaskAdapter:
         *,
         descriptor: WorkerClaimDescriptor,
         descriptor_reader: DescriptorReader,
-        claimed_at: str,
         lease_seconds: int = 90,
     ) -> Epoch2BranchTask | None:
-        if not _descriptor_shape_is_valid(
-            descriptor,
-            claimed_at=claimed_at,
-        ):
+        if not _descriptor_shape_is_valid(descriptor):
             return None
 
         def transaction_check(
             conn: sqlite3.Connection,
             task: Mapping[str, Any],
+            transaction_at: str,
         ) -> bool:
             if task["universe_id"] != descriptor.universe_id:
                 return False
@@ -105,20 +111,18 @@ class Epoch2BranchTaskAdapter:
             return bool(
                 trusted == descriptor
                 and trusted is not None
-                and _descriptor_shape_is_valid(
+                and _descriptor_is_live(
                     trusted,
-                    claimed_at=claimed_at,
+                    transaction_at=transaction_at,
                 )
             )
 
-        lease_expires_at = _add_seconds(claimed_at, lease_seconds)
         row = self._store.claim_v2_task(
             branch_task_id,
             worker_id=descriptor.worker_id,
             queue_protocol_version=descriptor.queue_protocol_version,
             capabilities=descriptor.capabilities,
-            claimed_at=claimed_at,
-            lease_expires_at=lease_expires_at,
+            lease_seconds=lease_seconds,
             claim_check=transaction_check,
         )
         return _as_epoch2_task(row) if row is not None else None
@@ -128,25 +132,21 @@ class Epoch2BranchTaskAdapter:
         branch_task_id: str,
         *,
         worker_id: str,
-        at: str,
         lease_seconds: int = 90,
     ) -> Epoch2BranchTask | None:
         row = self._store.heartbeat_v2_task(
             branch_task_id,
             worker_id=worker_id,
-            at=at,
-            lease_expires_at=_add_seconds(at, lease_seconds),
+            lease_seconds=lease_seconds,
         )
         return _as_epoch2_task(row) if row is not None else None
 
     def request_cancel(
         self,
         branch_task_id: str,
-        *,
-        at: str,
     ) -> Epoch2BranchTask:
         return _as_epoch2_task(
-            self._store.request_v2_cancel(branch_task_id, at=at)
+            self._store.request_v2_cancel(branch_task_id)
         )
 
     def finish(
@@ -155,7 +155,6 @@ class Epoch2BranchTaskAdapter:
         *,
         worker_id: str,
         status: str,
-        at: str,
         detail: Mapping[str, Any] | None = None,
     ) -> Epoch2BranchTask:
         if status not in {"cancelled", "succeeded", "failed"}:
@@ -165,16 +164,15 @@ class Epoch2BranchTaskAdapter:
                 branch_task_id,
                 expected_statuses={"running", "cancel_requested"},
                 new_status=status,
-                at=at,
                 detail=detail,
                 worker_id=worker_id,
             )
         )
 
-    def recover_expired(self, *, now: str) -> list[Epoch2BranchTask]:
+    def recover_expired(self) -> list[Epoch2BranchTask]:
         return [
             _as_epoch2_task(row)
-            for row in self._store.recover_expired_v2_tasks(now=now)
+            for row in self._store.recover_expired_v2_tasks()
         ]
 
     def delete_universe(self, universe_id: str) -> int:
@@ -183,8 +181,6 @@ class Epoch2BranchTaskAdapter:
 
 def _descriptor_shape_is_valid(
     descriptor: WorkerClaimDescriptor,
-    *,
-    claimed_at: str,
 ) -> bool:
     if descriptor.queue_protocol_version != QUEUE_PROTOCOL_VERSION:
         return False
@@ -201,18 +197,24 @@ def _descriptor_shape_is_valid(
     )
     if not all(str(value or "").strip() for value in required):
         return False
-    claimed = _parse_timestamp(claimed_at)
+    return _parse_timestamp(descriptor.expires_at) is not None
+
+
+def _descriptor_is_live(
+    descriptor: WorkerClaimDescriptor,
+    *,
+    transaction_at: str,
+) -> bool:
+    if not _descriptor_shape_is_valid(descriptor):
+        return False
+    now = _parse_timestamp(transaction_at)
     expires = _parse_timestamp(descriptor.expires_at)
-    return bool(claimed and expires and expires > claimed)
-
-
-def _add_seconds(value: str, seconds: int) -> str:
-    parsed = _parse_timestamp(value)
-    if parsed is None:
-        raise ValueError("timestamp must be an ISO-8601 datetime")
-    if seconds < 1:
-        raise ValueError("lease_seconds must be positive")
-    return (parsed + timedelta(seconds=seconds)).isoformat()
+    if now is None or expires is None:
+        return False
+    remaining = expires - now
+    return timedelta(0) < remaining <= timedelta(
+        seconds=DESCRIPTOR_VALIDITY_SECONDS
+    )
 
 
 def _parse_timestamp(value: str) -> datetime | None:

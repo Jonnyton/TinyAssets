@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,17 @@ from tinyassets.storage.request_admissions import (
     RequestAdmissionStore,
     migrate_request_admission_schema,
 )
+
+
+class _MutableClock:
+    def __init__(self, value: str) -> None:
+        self.set(value)
+
+    def __call__(self) -> datetime:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _commit(
@@ -59,7 +72,7 @@ def _descriptor(
     *,
     worker_id: str = "worker-a",
     universe_id: str = "universe-a",
-    expires_at: str = "2026-07-24T08:05:00+00:00",
+    expires_at: str = "2026-07-24T08:02:15+00:00",
 ) -> WorkerClaimDescriptor:
     return WorkerClaimDescriptor(
         queue_protocol_version=2,
@@ -85,10 +98,13 @@ def _request_status(base_path: Path, request_id: str) -> str:
 
 
 @pytest.fixture
-def epoch2(tmp_path: Path) -> tuple[Epoch2BranchTaskAdapter, dict]:
+def epoch2(
+    tmp_path: Path,
+) -> tuple[Epoch2BranchTaskAdapter, dict, _MutableClock]:
     initialize_author_server(tmp_path)
     committed = _commit(tmp_path)
-    return Epoch2BranchTaskAdapter(tmp_path), committed
+    clock = _MutableClock("2026-07-24T08:01:00+00:00")
+    return Epoch2BranchTaskAdapter(tmp_path, clock=clock), committed, clock
 
 
 def test_pretraffic_migration_adds_lease_column_to_existing_v2_store(
@@ -145,9 +161,9 @@ def test_adapter_reads_canonical_epoch2_task_and_ids_are_unique(
 
 
 def test_claim_rechecks_exact_live_descriptor_inside_transaction(
-    epoch2: tuple[Epoch2BranchTaskAdapter, dict],
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
 ) -> None:
-    adapter, committed = epoch2
+    adapter, committed, clock = epoch2
     observed: list[bool] = []
 
     trusted_descriptor = _descriptor()
@@ -161,7 +177,6 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
         committed["branch_task_id"],
         descriptor=false_descriptor,
         descriptor_reader=trusted,
-        claimed_at="2026-07-24T08:01:00+00:00",
     ) is None
     assert observed == []
 
@@ -170,15 +185,13 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
         committed["branch_task_id"],
         descriptor=expired,
         descriptor_reader=trusted,
-        claimed_at="2026-07-24T08:01:00+00:00",
     ) is None
-    assert observed == []
+    assert observed == [True]
 
     claimed = adapter.claim(
         committed["branch_task_id"],
         descriptor=_descriptor(),
         descriptor_reader=trusted,
-        claimed_at="2026-07-24T08:01:00+00:00",
         lease_seconds=90,
     )
 
@@ -186,19 +199,121 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
     assert claimed.status == "running"
     assert claimed.claimed_by == "worker-a"
     assert claimed.lease_expires_at == "2026-07-24T08:02:30+00:00"
-    assert observed == [True]
+    assert observed == [True, True]
     assert _request_status(
         adapter.base_path,
         committed["request_id"],
     ) == "running"
+    clock.set("2026-07-24T08:01:01+00:00")
     assert adapter.claim(
         committed["branch_task_id"],
         descriptor=_descriptor(worker_id="worker-b"),
         descriptor_reader=lambda _conn, _worker_id: _descriptor(
             worker_id="worker-b"
         ),
-        claimed_at="2026-07-24T08:01:01+00:00",
     ) is None
+
+
+def test_claim_uses_transaction_time_for_descriptor_freshness(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    committed = _commit(tmp_path)
+    clock = _MutableClock("2026-07-24T08:01:00+00:00")
+    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=clock)
+    expired = _descriptor(expires_at="2026-07-24T08:00:59+00:00")
+
+    claimed = adapter.claim(
+        committed["branch_task_id"],
+        descriptor=expired,
+        descriptor_reader=lambda _conn, _worker_id: expired,
+    )
+
+    assert claimed is None
+    overlong = _descriptor(expires_at="2026-07-24T08:02:31+00:00")
+    assert adapter.claim(
+        committed["branch_task_id"],
+        descriptor=overlong,
+        descriptor_reader=lambda _conn, _worker_id: overlong,
+    ) is None
+    live = _descriptor()
+    with pytest.raises(ValueError, match="lease_seconds must be between"):
+        adapter.claim(
+            committed["branch_task_id"],
+            descriptor=live,
+            descriptor_reader=lambda _conn, _worker_id: live,
+            lease_seconds=91,
+        )
+    task = adapter.get(committed["branch_task_id"])
+    assert task is not None
+    assert task.status == "pending"
+
+
+def test_concurrent_claim_has_exactly_one_winner(tmp_path: Path) -> None:
+    initialize_author_server(tmp_path)
+    committed = _commit(tmp_path)
+    clock = _MutableClock("2026-07-24T08:01:00+00:00")
+    barrier = threading.Barrier(3)
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+    result_lock = threading.Lock()
+
+    def race(worker_id: str) -> None:
+        try:
+            descriptor = _descriptor(worker_id=worker_id)
+            adapter = Epoch2BranchTaskAdapter(tmp_path, clock=clock)
+            barrier.wait()
+            claimed = adapter.claim(
+                committed["branch_task_id"],
+                descriptor=descriptor,
+                descriptor_reader=lambda _conn, _worker_id: descriptor,
+            )
+            with result_lock:
+                results[worker_id] = claimed
+        except BaseException as exc:
+            with result_lock:
+                errors.append(exc)
+            try:
+                barrier.abort()
+            except threading.BrokenBarrierError:
+                pass
+
+    threads = [
+        threading.Thread(target=race, args=("worker-a",)),
+        threading.Thread(target=race, args=("worker-b",)),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        barrier.wait(timeout=10)
+    except threading.BrokenBarrierError:
+        pass
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    winners = [
+        worker_id for worker_id, task in results.items() if task is not None
+    ]
+    assert len(winners) == 1
+    task = Epoch2BranchTaskAdapter(tmp_path).get(
+        committed["branch_task_id"]
+    )
+    assert task is not None
+    assert task.status == "running"
+    assert task.claimed_by == winners[0]
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        claim_events = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM request_admission_events
+            WHERE branch_task_id = ? AND event_type = 'claimed'
+            """,
+            (committed["branch_task_id"],),
+        ).fetchone()
+    assert claim_events is not None
+    assert claim_events[0] == 1
 
 
 @pytest.mark.parametrize(
@@ -215,11 +330,11 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
     ],
 )
 def test_claim_rejects_every_descriptor_identity_mismatch(
-    epoch2: tuple[Epoch2BranchTaskAdapter, dict],
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
     field_name: str,
     invalid_value,
 ) -> None:
-    adapter, committed = epoch2
+    adapter, committed, _clock = epoch2
     trusted = _descriptor()
     offered = replace(trusted, **{field_name: invalid_value})
 
@@ -227,7 +342,6 @@ def test_claim_rejects_every_descriptor_identity_mismatch(
         committed["branch_task_id"],
         descriptor=offered,
         descriptor_reader=lambda _conn, _worker_id: trusted,
-        claimed_at="2026-07-24T08:01:00+00:00",
     )
 
     assert claimed is None
@@ -246,7 +360,8 @@ def test_heartbeat_cancel_terminal_and_expired_recovery(
         key="hmac:epoch2-key-b",
         body="sha256:epoch2-body-b",
     )
-    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    clock = _MutableClock("2026-07-24T08:01:00+00:00")
+    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=clock)
 
     def trusted_a(_conn, _worker_id):
         return _descriptor()
@@ -258,49 +373,43 @@ def test_heartbeat_cancel_terminal_and_expired_recovery(
         first["branch_task_id"],
         descriptor=_descriptor(),
         descriptor_reader=trusted_a,
-        claimed_at="2026-07-24T08:01:00+00:00",
         lease_seconds=30,
     )
     adapter.claim(
         second["branch_task_id"],
         descriptor=_descriptor(worker_id="worker-b"),
         descriptor_reader=trusted_b,
-        claimed_at="2026-07-24T08:01:00+00:00",
         lease_seconds=30,
     )
 
+    clock.set("2026-07-24T08:01:10+00:00")
     assert adapter.heartbeat(
         first["branch_task_id"],
         worker_id="wrong-worker",
-        at="2026-07-24T08:01:10+00:00",
     ) is None
     heartbeat = adapter.heartbeat(
         first["branch_task_id"],
         worker_id="worker-a",
-        at="2026-07-24T08:01:10+00:00",
         lease_seconds=90,
     )
     assert heartbeat is not None
     assert heartbeat.heartbeat_at == "2026-07-24T08:01:10+00:00"
     assert heartbeat.lease_expires_at == "2026-07-24T08:02:40+00:00"
 
-    cancel_requested = adapter.request_cancel(
-        first["branch_task_id"],
-        at="2026-07-24T08:01:20+00:00",
-    )
+    clock.set("2026-07-24T08:01:20+00:00")
+    cancel_requested = adapter.request_cancel(first["branch_task_id"])
     assert cancel_requested.status == "cancel_requested"
+    clock.set("2026-07-24T08:01:30+00:00")
     cancelled = adapter.finish(
         first["branch_task_id"],
         worker_id="worker-a",
         status="cancelled",
-        at="2026-07-24T08:01:30+00:00",
     )
     assert cancelled.status == "cancelled"
     assert cancelled.terminal_at == "2026-07-24T08:01:30+00:00"
 
-    recovered = adapter.recover_expired(
-        now="2026-07-24T08:01:31+00:00",
-    )
+    clock.set("2026-07-24T08:01:31+00:00")
+    recovered = adapter.recover_expired()
     assert [task.branch_task_id for task in recovered] == [
         second["branch_task_id"]
     ]
@@ -314,14 +423,11 @@ def test_heartbeat_cancel_terminal_and_expired_recovery(
 
 
 def test_pending_cancel_is_terminal_without_claim(
-    epoch2: tuple[Epoch2BranchTaskAdapter, dict],
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
 ) -> None:
-    adapter, committed = epoch2
+    adapter, committed, _clock = epoch2
 
-    cancelled = adapter.request_cancel(
-        committed["branch_task_id"],
-        at="2026-07-24T08:01:00+00:00",
-    )
+    cancelled = adapter.request_cancel(committed["branch_task_id"])
 
     assert cancelled.status == "cancelled"
     assert cancelled.terminal_at == "2026-07-24T08:01:00+00:00"
@@ -333,59 +439,51 @@ def test_pending_cancel_is_terminal_without_claim(
 
 
 def test_expired_worker_cannot_heartbeat_or_finish_before_recovery(
-    epoch2: tuple[Epoch2BranchTaskAdapter, dict],
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
 ) -> None:
-    adapter, committed = epoch2
+    adapter, committed, clock = epoch2
     adapter.claim(
         committed["branch_task_id"],
         descriptor=_descriptor(),
         descriptor_reader=lambda _conn, _worker_id: _descriptor(),
-        claimed_at="2026-07-24T08:01:00+00:00",
         lease_seconds=30,
     )
 
+    clock.set("2026-07-24T08:01:31+00:00")
     assert adapter.heartbeat(
         committed["branch_task_id"],
         worker_id="worker-a",
-        at="2026-07-24T08:01:31+00:00",
     ) is None
     with pytest.raises(PermissionError, match="branch_task_lease_expired"):
         adapter.finish(
             committed["branch_task_id"],
             worker_id="worker-a",
             status="succeeded",
-            at="2026-07-24T08:01:31+00:00",
         )
-    recovered = adapter.recover_expired(
-        now="2026-07-24T08:01:31+00:00"
-    )
+    recovered = adapter.recover_expired()
     assert [task.status for task in recovered] == ["pending"]
 
 
 def test_cancel_requested_task_recovers_to_cancelled(
-    epoch2: tuple[Epoch2BranchTaskAdapter, dict],
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
 ) -> None:
-    adapter, committed = epoch2
+    adapter, committed, clock = epoch2
     adapter.claim(
         committed["branch_task_id"],
         descriptor=_descriptor(),
         descriptor_reader=lambda _conn, _worker_id: _descriptor(),
-        claimed_at="2026-07-24T08:01:00+00:00",
         lease_seconds=30,
     )
-    requested = adapter.request_cancel(
-        committed["branch_task_id"],
-        at="2026-07-24T08:01:10+00:00",
-    )
+    clock.set("2026-07-24T08:01:10+00:00")
+    requested = adapter.request_cancel(committed["branch_task_id"])
     assert requested.status == "cancel_requested"
     assert _request_status(
         adapter.base_path,
         committed["request_id"],
     ) == "cancel_requested"
 
-    recovered = adapter.recover_expired(
-        now="2026-07-24T08:01:31+00:00"
-    )
+    clock.set("2026-07-24T08:01:31+00:00")
+    recovered = adapter.recover_expired()
 
     assert [task.status for task in recovered] == ["cancelled"]
     assert recovered[0].terminal_at == "2026-07-24T08:01:31+00:00"
@@ -397,9 +495,9 @@ def test_cancel_requested_task_recovers_to_cancelled(
 
 
 def test_claim_event_failure_rolls_back_running_transition(
-    epoch2: tuple[Epoch2BranchTaskAdapter, dict],
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
 ) -> None:
-    adapter, committed = epoch2
+    adapter, committed, _clock = epoch2
     with sqlite3.connect(db_path(adapter.base_path)) as conn:
         conn.executescript(
             """
@@ -417,7 +515,6 @@ def test_claim_event_failure_rolls_back_running_transition(
             committed["branch_task_id"],
             descriptor=_descriptor(),
             descriptor_reader=lambda _conn, _worker_id: _descriptor(),
-            claimed_at="2026-07-24T08:01:00+00:00",
         )
 
     task = adapter.get(committed["branch_task_id"])
@@ -468,7 +565,10 @@ def test_v2_worker_can_drain_both_epochs_through_epoch_specific_claimers(
 ) -> None:
     initialize_author_server(tmp_path)
     committed = _commit(tmp_path)
-    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
+    )
     universe_path = tmp_path / "universe-a"
     universe_path.mkdir()
     append_task(
@@ -490,7 +590,6 @@ def test_v2_worker_can_drain_both_epochs_through_epoch_specific_claimers(
         committed["branch_task_id"],
         descriptor=descriptor,
         descriptor_reader=lambda _conn, _worker_id: descriptor,
-        claimed_at="2026-07-24T08:01:00+00:00",
     )
 
     assert claimed_v1 is not None

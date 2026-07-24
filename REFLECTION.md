@@ -270,3 +270,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include expired-heartbeat revival and
   cancel-requested worker loss in the first lease test matrix. Both expose
   lifecycle wedges that a happy claim/finish test cannot see.
+
+## 2026-07-24 - epoch-2 trusted transaction time
+
+- **What surprised me:** exact descriptor equality did not make descriptor
+  freshness trustworthy when the comparison instant still came from the
+  claimant. The same backdating hole existed independently in heartbeat and
+  terminal transitions.
+- **Pattern worth capturing:** authority freshness uses a server clock read
+  after the write transaction begins. Request APIs may choose a shorter lease,
+  but they cannot provide event time or extend the 90-second maximum.
+- **What I would do differently:** make a backdated stale claim, a backdated
+  terminal transition, and a genuinely simultaneous two-writer claim the
+  first red tests for any leased authority boundary.

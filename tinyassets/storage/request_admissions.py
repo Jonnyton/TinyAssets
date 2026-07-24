@@ -16,6 +16,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ PRIORITY_WEIGHT_CAP = 100
 QUEUE_EPOCH = 2
 QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
+MAX_LEASE_SECONDS = 90
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
 
 # Fault-injection checkpoints across every precommit transaction phase.
@@ -202,10 +204,12 @@ class RequestAdmissionStore:
         *,
         id_factory: Callable[[str], str] | None = None,
         busy_timeout_ms: int = 30_000,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.base_path = Path(base_path)
         self._id_factory = id_factory or _random_id
         self._busy_timeout_ms = int(busy_timeout_ms)
+        self._clock = clock or _utc_now
         if self._busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
 
@@ -567,19 +571,28 @@ class RequestAdmissionStore:
         worker_id: str,
         queue_protocol_version: int,
         capabilities: Iterable[str],
-        claimed_at: str,
-        lease_expires_at: str = "",
+        lease_seconds: int = 90,
         claim_check: (
-            Callable[[sqlite3.Connection, Mapping[str, Any]], bool] | None
+            Callable[
+                [sqlite3.Connection, Mapping[str, Any], str],
+                bool,
+            ]
+            | None
         ) = None,
     ) -> dict[str, Any] | None:
         if queue_protocol_version != QUEUE_PROTOCOL_VERSION:
             return None
         if OPERATOR_CAPABILITY not in set(capabilities):
             return None
+        lease_seconds = _bounded_lease_seconds(lease_seconds)
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                claimed_at = _clock_iso(self._clock)
+                lease_expires_at = _add_seconds(
+                    claimed_at,
+                    lease_seconds,
+                )
                 row = conn.execute(
                     """
                     SELECT * FROM branch_tasks_v2
@@ -594,9 +607,13 @@ class RequestAdmissionStore:
                 if row is None:
                     conn.commit()
                     return None
-                if claim_check is not None and not claim_check(
-                    conn,
-                    _task_row(row),
+                if (
+                    claim_check is not None
+                    and not claim_check(
+                        conn,
+                        _task_row(row),
+                        claimed_at,
+                    )
                 ):
                     conn.commit()
                     return None
@@ -651,12 +668,14 @@ class RequestAdmissionStore:
         branch_task_id: str,
         *,
         worker_id: str,
-        at: str,
-        lease_expires_at: str,
+        lease_seconds: int = 90,
     ) -> dict[str, Any] | None:
+        lease_seconds = _bounded_lease_seconds(lease_seconds)
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                at = _clock_iso(self._clock)
+                lease_expires_at = _add_seconds(at, lease_seconds)
                 cursor = conn.execute(
                     """
                     UPDATE branch_tasks_v2
@@ -691,12 +710,11 @@ class RequestAdmissionStore:
     def request_v2_cancel(
         self,
         branch_task_id: str,
-        *,
-        at: str,
     ) -> dict[str, Any]:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                at = _clock_iso(self._clock)
                 row = conn.execute(
                     "SELECT * FROM branch_tasks_v2 "
                     "WHERE branch_task_id = ?",
@@ -765,12 +783,11 @@ class RequestAdmissionStore:
 
     def recover_expired_v2_tasks(
         self,
-        *,
-        now: str,
     ) -> list[dict[str, Any]]:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = _clock_iso(self._clock)
                 rows = conn.execute(
                     """
                     SELECT * FROM branch_tasks_v2
@@ -858,7 +875,7 @@ class RequestAdmissionStore:
         *,
         expected_statuses: set[str],
         new_status: str,
-        at: str,
+        at: str = "",
         detail: Mapping[str, Any] | None = None,
         worker_id: str = "",
     ) -> dict[str, Any]:
@@ -876,6 +893,11 @@ class RequestAdmissionStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                effective_at = (
+                    _clock_iso(self._clock)
+                    if worker_id
+                    else _required(at, "at")
+                )
                 row = conn.execute(
                     "SELECT * FROM branch_tasks_v2 "
                     "WHERE branch_task_id = ?",
@@ -893,11 +915,13 @@ class RequestAdmissionStore:
                 if (
                     worker_id
                     and row["lease_expires_at"]
-                    and _epoch_seconds(at)
+                    and _epoch_seconds(effective_at)
                     >= _epoch_seconds(row["lease_expires_at"])
                 ):
                     raise PermissionError("branch_task_lease_expired")
-                terminal_at = at if new_status in TERMINAL_STATUSES else None
+                terminal_at = (
+                    effective_at if new_status in TERMINAL_STATUSES else None
+                )
                 conn.execute(
                     """
                     UPDATE branch_tasks_v2
@@ -919,7 +943,7 @@ class RequestAdmissionStore:
                         SET terminal_at = ?, updated_at = ?
                         WHERE admission_id = ?
                         """,
-                        (terminal_at, at, row["admission_id"]),
+                        (terminal_at, effective_at, row["admission_id"]),
                     )
                     conn.execute(
                         """
@@ -927,13 +951,17 @@ class RequestAdmissionStore:
                         SET status = ?, updated_at = ?
                         WHERE request_id = ?
                         """,
-                        (new_status, _epoch_seconds(at), row["request_id"]),
+                        (
+                            new_status,
+                            _epoch_seconds(effective_at),
+                            row["request_id"],
+                        ),
                     )
                 self._append_task_event(
                     conn,
                     row,
                     event_type=new_status,
-                    event_at=at,
+                    event_at=effective_at,
                     detail=dict(detail or {}),
                 )
                 updated = conn.execute(
@@ -1267,10 +1295,35 @@ def _required(value: str, name: str) -> str:
     return normalized
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _clock_iso(clock: Callable[[], datetime]) -> str:
+    value = clock()
+    if not isinstance(value, datetime):
+        raise TypeError("clock must return datetime")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _bounded_lease_seconds(value: int) -> int:
+    seconds = int(value)
+    if not 1 <= seconds <= MAX_LEASE_SECONDS:
+        raise ValueError(
+            f"lease_seconds must be between 1 and {MAX_LEASE_SECONDS}"
+        )
+    return seconds
+
+
+def _add_seconds(value: str, seconds: int) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return (parsed + timedelta(seconds=seconds)).isoformat()
+
+
 def _epoch_seconds(timestamp: str) -> float:
     try:
-        from datetime import datetime
-
         return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
     except (TypeError, ValueError):
         return time.time()
