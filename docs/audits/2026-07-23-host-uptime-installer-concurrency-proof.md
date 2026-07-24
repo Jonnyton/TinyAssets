@@ -1,17 +1,15 @@
 # Host uptime installer concurrency proof
 
-**Status:** structural candidate proof; disposable-host and post-merge production
-evidence remain pending
-**Verified:** 2026-07-23 on the rebased implementation/spec tree through
-`2e4240a5` over `origin/main` `74e2600a` on
-`codex/converge-host-uptime-installers` in
-`C:\Users\Jonathan\Projects\wf-openspec-conformance-audit2`
-**Environment:** Windows 11, Python 3.14.3; Ubuntu WSL2 kernel
-6.6.87.2, systemd 255
+**Status:** accepted structural, disposable-host, and exact-merge production
+proof
+**Verified:** 2026-07-24 against production merge
+`a18751dc3b8544d048a745304b1823dfdd9fbb11`, GitHub Actions Ubuntu runners,
+the production Debian host, and a Windows 11/Python 3.14.3 isolated restore
+validation environment
 
 ## Result
 
-The candidate implements the bounded convergence contract from
+The landed implementation satisfies the bounded convergence contract from
 `2026-07-23-host-uptime-installer-convergence.md`:
 
 - One installer owns the exact five service/timer pairs and their runtime
@@ -30,6 +28,12 @@ The candidate implements the bounded convergence contract from
   inspection errors and unknown states are red.
 - Both watchdog units stay installed and scheduled on a newborn host but use
   `ExecCondition` to skip recovery until `TINYASSETS_IMAGE` is configured.
+- Production deploy preserves verified host-owned backup authority; an
+  exact-source installer reuses it, and an explicit backup proof requires
+  fresh primary archives, both GitHub assets, and no invocation-scoped
+  warning/error.
+- GitHub retention reconciles eventual-consistency views under one bounded
+  wall-clock deadline and preserves unrecognized audit releases.
 
 ## Section 14 concurrency evidence
 
@@ -101,20 +105,31 @@ initialization behavior.
 | OpenSpec | Archived delta synced into the canonical uptime spec; `openspec validate --all --strict` → **41 passed, 0 failed** |
 | Whitespace | `git diff --check` → **passed** (Git emitted only an LF/CRLF worktree notice) |
 | systemd | Disposable `--root` verification of all five service/timer pairs with dependency stubs → **`verified=10`** |
+| Disposable full DR | Exact landed run [`30066361115`](https://github.com/Jonnyton/TinyAssets/actions/runs/30066361115) on Debian 13 restored state, passed MCP probes, and deleted the drill Droplet |
+| Final focused suite | 2026-07-24, Windows 11/WSL: backup ship/restore, DR invariants, host installer, and deploy workflow → **185 passed, 3 skipped in 143.65s** |
+| Exact production backup | Run [`30075565479`](https://github.com/Jonnyton/TinyAssets/actions/runs/30075565479), source `a18751dc`: existing configuration verified, five timers converged, fresh brain/full primary uploads, two GitHub assets, terminal completion, no invocation warning/error |
+| Archive integrity | `tinyassets-{brain,data}-2026-07-24T07-28-29Z.tar.gz`: downloaded SHA-256 matched GitHub digests; both tar streams and path confinement passed |
+| Isolated restore | Full archive extracted outside production; 14 SQLite databases returned `PRAGMA integrity_check=ok`; `ledger.json` parsed |
+| Retention | Private backup repository after the exact run: **30 recognized backup releases + 1 permanent audit release** |
+| Deploy preservation | Exact-source deploy [`30076034679`](https://github.com/Jonnyton/TinyAssets/actions/runs/30076034679) passed health/public/five-handle/CF Access gates; automatic installer [`30076156783`](https://github.com/Jonnyton/TinyAssets/actions/runs/30076156783) reported configuration already verified and reconverged five timers |
+| Independent review | Final implementation `c12730fd` and merge resolution `be77063f` → **APPROVE** |
 
 The full repository suite was attempted twice by the independent verifier. It
 exceeded 15-minute and 30-minute bounds without reporting a failure, so this
 artifact does **not** claim a full-suite pass.
 
-## Evidence still required after landing
+## Acceptance disposition
 
-The candidate has not yet run from its exact landed commit on a disposable
-Debian 12 host. That acceptance must prove absent-unit bootstrap, installed
-hashes, five enabled/active timers, repair after manual disable/stop, safe
-oneshot invocation with disposable fixtures, systemd results, and the public
-MCP canary.
+No acceptance evidence remains outstanding for the convergent host-service
+and backup-preservation change:
 
-After merge, production evidence must show the real host-install workflow and
-subsequent watchdog, disk-watch, backup, and prune executions using the landed
-artifacts. Until both evidence sets exist, `STATUS.md` must retain a monitoring
-item and no report should claim proven clean live use.
+- Disposable-host bootstrap/full restore proof is green.
+- The exact production merge ran the installed two-tier backup and produced
+  independently validated archives.
+- Retention converged to its documented recognized-release ceiling.
+- A subsequent production deploy stayed green and the automatic post-deploy
+  installer reused the preserved backup authority.
+
+The scheduled timers provide continuing operational evidence. A future
+failure should open a new dated concern with its run/invocation identifier;
+this completed lane should not remain in `STATUS.md` as historical narrative.

@@ -98,6 +98,22 @@ must carry the new service run's exact systemd invocation ID; time-window
 queries are insufficient because they can mix adjacent runs. The exercise never
 prints the environment file or rclone credentials.
 
+Final exact-merge proof on 2026-07-24 used merge
+`a18751dc3b8544d048a745304b1823dfdd9fbb11`:
+
+- Backup run `30075565479` reused the verified configuration, converged five
+  timers, produced fresh `2026-07-24T07-28-29Z` brain/full archives at both
+  tiers, and emitted no invocation warning/error.
+- The private release repository converged to 30 recognized backup releases
+  plus one permanent audit release.
+- Both downloaded assets matched GitHub's SHA-256 digests, passed tar/path
+  validation, and the full archive extracted outside production. All 14
+  SQLite databases passed read-only `PRAGMA integrity_check`; `ledger.json`
+  parsed.
+- Deploy run `30076034679` passed health and public canaries. Its automatic
+  host-service run `30076156783` then reported the off-host configuration
+  already verified and reconverged all five timers.
+
 The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
 (secondary)**.
 Teardown/rollback: delete the Spaces key via DO API, repoint `BACKUP_DEST`,

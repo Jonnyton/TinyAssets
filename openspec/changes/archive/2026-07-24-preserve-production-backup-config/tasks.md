@@ -20,6 +20,6 @@
 
 - [x] 3.1 Run focused tests, actionlint, Ruff, and strict OpenSpec validation.
 - [x] 3.2 Correct stale runbook truth and document the automatic absent-state convergence path.
-- [ ] 3.3 Obtain independent security/diff review and land the exact reviewed head.
-- [ ] 3.4 Run the exact-merge installer, a real two-tier backup, destination listing, archive validation, and a follow-up production deploy preservation check.
-- [ ] 3.5 Record freshness-stamped evidence, archive/sync the change, and retire the STATUS row.
+- [x] 3.3 Obtain independent security/diff review and land the exact reviewed head.
+- [x] 3.4 Run the exact-merge installer, a real two-tier backup, destination listing, archive validation, and a follow-up production deploy preservation check.
+- [x] 3.5 Record freshness-stamped evidence, archive/sync the change, and retire the STATUS row.

@@ -170,3 +170,19 @@ fresh-host rollback edges found later.
 - **What I would do differently:** map cap scope, physical storage identity,
   and request authority before the first implementation pass, then make those
   boundaries the first independent security-review checklist.
+
+## 2026-07-24 — production backup preservation and retention
+
+- **What surprised me:** the first exact backup was green while GitHub
+  retention remained one release above policy. Two sequential uploads could
+  each observe a different stale list, and a finite retry count still was not
+  a time bound until every network and delete operation shared one deadline.
+- **Pattern worth capturing:** operational acceptance must inspect the
+  resulting external state, not only terminal workflow markers. Eventual-
+  consistency reconciliation needs current-object visibility, typed
+  already-absent handling, and a wall-clock budget covering every nested
+  request and sleep.
+- **What I would do differently:** make release-count verification and
+  invocation-warning rejection part of the first executable production proof,
+  then run independent review against the full two-upload sequence before the
+  first live retention exercise.
