@@ -1103,3 +1103,16 @@ Notes:
 - STATUS/Issue/PR: only the post-deploy organic-use watch remains
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
+
+## 2026-07-23 - create market-capability-descriptors
+
+- Provider: codex-gpt5-desktop-market-descriptors
+- Branch: codex/market-capability-descriptors
+- Lane state: Active pure capability identity/digest/compatibility slice
+- Worktree: C:\Users\Jonathan\Projects\wf-market-capability-descriptors
+- STATUS/Issue/PR: `Build pure market capability descriptors`; PR pending
+- PLAN refs: Module Providers; Reference Full-Platform Architecture; paid-market economy target
+- Purpose: give inference, training, task, and fabrication supply one deterministic substitutability identity without enabling execution
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-market-capability-descriptors\_PURPOSE.md
+- Related implications: paid-market live-price discovery; Track E Wave 2; compute-market frontier research; BYOC-only execution authority
+- Ship/abandon: land only pure I/O-free logic and focused proof; no SQL, credentials, routing, pricing, or execution
