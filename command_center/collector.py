@@ -21,6 +21,7 @@ import re
 import secrets
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -205,8 +206,55 @@ def _peer_environment() -> dict[str, str]:
     return env
 
 
-def _kill_peer_tree(proc: subprocess.Popen[bytes]) -> None:
-    cleanup_error: _PeerCleanupError | None = None
+def _wait_for_process_group_exit(
+    pgid: int,
+    *,
+    label: str,
+    timeout: float = 10.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            raise _PeerCleanupError(
+                f"{label} process group {pgid} could not be verified stopped: {exc}"
+            ) from exc
+        if time.monotonic() >= deadline:
+            raise _PeerCleanupError(
+                f"{label} process group {pgid} still exists after cleanup"
+            )
+        time.sleep(0.01)
+
+
+def _provider_pgid(identity_path: Path, *, wrapper_pid: int) -> int:
+    try:
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise _PeerCleanupError(
+            f"provider process identity could not be read for wrapper {wrapper_pid}: {exc}"
+        ) from exc
+    if (
+        not isinstance(identity, dict)
+        or type(identity.get("wrapper_pid")) is not int
+        or identity["wrapper_pid"] != wrapper_pid
+        or type(identity.get("provider_pgid")) is not int
+        or identity["provider_pgid"] <= 0
+        or identity["provider_pgid"] == wrapper_pid
+    ):
+        raise _PeerCleanupError(
+            f"provider process identity is invalid for wrapper {wrapper_pid}"
+        )
+    return identity["provider_pgid"]
+
+
+def _kill_peer_tree(
+    proc: subprocess.Popen[bytes],
+    provider_pgid_file: Path | None = None,
+) -> None:
+    cleanup_errors: list[_PeerCleanupError] = []
     if os.name == "nt":
         try:
             result = subprocess.run(
@@ -215,42 +263,80 @@ def _kill_peer_tree(proc: subprocess.Popen[bytes]) -> None:
                 check=False,
             )
         except OSError as exc:
-            cleanup_error = _PeerCleanupError(
+            cleanup_errors.append(_PeerCleanupError(
                 f"taskkill failed for peer process tree {proc.pid}: {exc}"
-            )
+            ))
         else:
             if result.returncode != 0:
-                cleanup_error = _PeerCleanupError(
+                cleanup_errors.append(_PeerCleanupError(
                     f"taskkill failed for peer process tree {proc.pid} "
                     f"with exit code {result.returncode}"
-                )
+                ))
     else:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except ProcessLookupError:
             pass
         except OSError as exc:
-            cleanup_error = _PeerCleanupError(
+            cleanup_errors.append(_PeerCleanupError(
                 f"process-group cleanup failed for peer {proc.pid}: {exc}"
-            )
+            ))
     try:
         proc.wait(timeout=10)
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         if os.name == "nt":
             try:
                 proc.kill()
-            finally:
-                raise _PeerCleanupError(
-                    f"peer wrapper {proc.pid} did not exit after process-tree cleanup"
-                ) from exc
-        proc.kill()
-        proc.wait(timeout=10)
+            except OSError as kill_exc:
+                cleanup_errors.append(_PeerCleanupError(
+                    f"peer wrapper {proc.pid} fallback kill failure: {kill_exc}"
+                ))
+            cleanup_errors.append(_PeerCleanupError(
+                f"peer wrapper {proc.pid} did not exit after process-tree cleanup"
+            ))
+        else:
+            cleanup_errors.append(_PeerCleanupError(
+                f"peer wrapper {proc.pid} did not exit after process-tree cleanup"
+            ))
     except OSError as exc:
-        raise _PeerCleanupError(
+        cleanup_errors.append(_PeerCleanupError(
             f"peer wrapper {proc.pid} could not be reaped: {exc}"
-        ) from exc
-    if cleanup_error:
-        raise cleanup_error
+        ))
+    if os.name != "nt":
+        try:
+            _wait_for_process_group_exit(proc.pid, label="peer wrapper")
+        except _PeerCleanupError as exc:
+            cleanup_errors.append(exc)
+        if provider_pgid_file is not None:
+            try:
+                provider_group = _provider_pgid(
+                    provider_pgid_file,
+                    wrapper_pid=proc.pid,
+                )
+            except _PeerCleanupError as exc:
+                cleanup_errors.append(exc)
+            else:
+                try:
+                    os.killpg(
+                        provider_group,
+                        getattr(signal, "SIGKILL", signal.SIGTERM),
+                    )
+                except ProcessLookupError:
+                    pass
+                except OSError as exc:
+                    cleanup_errors.append(_PeerCleanupError(
+                        f"provider process-group cleanup failed for "
+                        f"{provider_group}: {exc}"
+                    ))
+                try:
+                    _wait_for_process_group_exit(
+                        provider_group,
+                        label="provider",
+                    )
+                except _PeerCleanupError as exc:
+                    cleanup_errors.append(exc)
+    if cleanup_errors:
+        raise _PeerCleanupError("; ".join(str(error) for error in cleanup_errors))
 
 
 def _run_peer(
@@ -270,6 +356,14 @@ def _run_peer(
         )
     else:
         kwargs["start_new_session"] = True
+    provider_pgid_file: Path | None = None
+    try:
+        identity_index = cmd.index("--provider-pgid-file")
+    except ValueError:
+        pass
+    else:
+        if identity_index + 1 < len(cmd):
+            provider_pgid_file = Path(cmd[identity_index + 1])
     try:
         proc = subprocess.Popen(
             cmd,
@@ -284,15 +378,40 @@ def _run_peer(
     try:
         stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_peer_tree(proc)
-        proc.communicate()
+        _kill_peer_tree(proc, provider_pgid_file)
+        try:
+            proc.communicate()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise _PeerCleanupError(
+                f"peer wrapper {proc.pid} pipes could not be reaped after cleanup: {exc}"
+            ) from exc
         return ""
     except OSError:
-        _kill_peer_tree(proc)
+        _kill_peer_tree(proc, provider_pgid_file)
         raise
     if proc.returncode == 125:
         raise _PeerCleanupError("peer wrapper reported unverified process-tree cleanup")
     return stdout.decode("utf-8", errors="replace")
+
+
+def _new_dispatch_artifact(anchor: Path, *, label: str) -> Path:
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(
+        prefix=f".{anchor.stem}.{label}-",
+        suffix=".tmp",
+        dir=anchor.parent,
+    )
+    os.close(fd)
+    path = Path(name)
+    path.unlink()
+    return path
+
+
+def _remove_dispatch_artifact(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _age_label(ts: float | None, now: float) -> str:
@@ -1366,37 +1485,40 @@ def _dispatch_peer(cfg: Config, agent: dict, message: str, inbox: Path) -> None:
     if not script.is_file():
         _append_inbox(inbox, "village", f"(dispatch unavailable: {script} missing)")
         return
-    out_file = inbox.with_suffix(".reply.txt")
+    out_file = _new_dispatch_artifact(inbox, label="reply")
+    provider_pgid_file = _new_dispatch_artifact(inbox, label="provider-pgid")
     prompt = (
         f"You are {agent['name']}, one of the agents working in {cfg.root}. "
         f"Your current task: {agent.get('action')}. The host says:\n\n{message}\n\n"
         "Reply briefly as yourself."
     )
-    _run_peer(
-        [
-            "python",
-            str(script),
-            provider,
-            "--out",
-            str(out_file),
-            "--prompt",
-            prompt,
-            "--timeout",
-            "540",
-        ],
-        cwd=cfg.root,
-        timeout=600,
-        env=_peer_environment(),
-    )
     try:
-        reply = out_file.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        reply = ""
-    _append_inbox(inbox, agent["name"], reply or "(no reply came back)")
-    try:
-        out_file.unlink()
-    except OSError:
-        pass
+        _run_peer(
+            [
+                "python",
+                str(script),
+                provider,
+                "--out",
+                str(out_file),
+                "--provider-pgid-file",
+                str(provider_pgid_file),
+                "--prompt",
+                prompt,
+                "--timeout",
+                "540",
+            ],
+            cwd=cfg.root,
+            timeout=600,
+            env=_peer_environment(),
+        )
+        try:
+            reply = out_file.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            reply = ""
+        _append_inbox(inbox, agent["name"], reply or "(no reply came back)")
+    finally:
+        _remove_dispatch_artifact(out_file)
+        _remove_dispatch_artifact(provider_pgid_file)
 
 
 def _engine_note(text: str) -> dict:
@@ -1690,39 +1812,51 @@ def _hire_dispatch(cfg: Config, universe: dict, engine: dict, task: str, count: 
         raise
 
     def run_one(slot: int) -> None:
-        out_file = chat_path.with_suffix(f".hire{slot}.txt")
+        out_file = _new_dispatch_artifact(chat_path, label=f"hire{slot}")
+        provider_pgid_file = _new_dispatch_artifact(
+            chat_path,
+            label=f"hire{slot}-provider-pgid",
+        )
         prompt = (
             f"You were hired in Agent Village to work for the universe "
             f"'{universe['name']}' (id {universe['id']}). Premise: "
             f"{universe.get('premise') or 'unknown'}. Task: {brief}\n\n"
             "Answer as the hired agent: what did you do or what do you recommend?"
         )
-        _run_peer(
-            [
-                "python",
-                str(script),
-                engine["id"],
-                "--out",
-                str(out_file),
-                "--prompt",
-                prompt,
-                "--timeout",
-                "540",
-            ],
-            cwd=cfg.root,
-            timeout=600,
-            env=_peer_environment(),
-        )
         try:
-            reply = out_file.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            reply = ""
-        _append_inbox(chat_path, f"{engine['label']}·hire{slot}",
-                      reply or "(this hire came back empty)")
-        try:
-            out_file.unlink()
-        except OSError:
-            pass
+            _run_peer(
+                [
+                    "python",
+                    str(script),
+                    engine["id"],
+                    "--out",
+                    str(out_file),
+                    "--provider-pgid-file",
+                    str(provider_pgid_file),
+                    "--prompt",
+                    prompt,
+                    "--timeout",
+                    "540",
+                ],
+                cwd=cfg.root,
+                timeout=600,
+                env=_peer_environment(),
+            )
+            try:
+                reply = out_file.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                ).strip()
+            except OSError:
+                reply = ""
+            _append_inbox(
+                chat_path,
+                f"{engine['label']}·hire{slot}",
+                reply or "(this hire came back empty)",
+            )
+        finally:
+            _remove_dispatch_artifact(out_file)
+            _remove_dispatch_artifact(provider_pgid_file)
 
     def run_reserved(slot: int) -> None:
         release_capacity = True

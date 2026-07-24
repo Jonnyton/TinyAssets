@@ -7,6 +7,7 @@ ever resolved or invoked.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import signal
 import subprocess
@@ -39,7 +40,9 @@ class _FinishedPeer:
         return self.returncode
 
 
-def _run_fake_claude_main(monkeypatch, tmp_path: Path, fake_popen) -> int:
+def _run_fake_claude_main(
+    monkeypatch, tmp_path: Path, fake_popen, *extra_args: str
+) -> int:
     monkeypatch.setattr(peer_agent, "resolve_claude", lambda: "fake-claude")
     monkeypatch.setattr(peer_agent.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
@@ -54,6 +57,7 @@ def _run_fake_claude_main(monkeypatch, tmp_path: Path, fake_popen) -> int:
             "fake prompt",
             "--timeout",
             "540",
+            *extra_args,
         ],
     )
     return peer_agent.main()
@@ -149,11 +153,23 @@ def test_posix_cleanup_targets_the_process_group_and_reaps(
     proc = _TreeProcess()
     group_kills: list[tuple[int, signal.Signals]] = []
     monkeypatch.setattr(peer_agent.sys, "platform", "linux")
-    monkeypatch.setattr(peer_agent.os, "getpgid", lambda pid: pid, raising=False)
+
+    def leader_is_already_gone(pid):
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(
+        peer_agent.os, "getpgid", leader_is_already_gone, raising=False
+    )
+
+    def fake_killpg(pgid, sig):
+        group_kills.append((pgid, sig))
+        if sig == 0:
+            raise ProcessLookupError(pgid)
+
     monkeypatch.setattr(
         peer_agent.os,
         "killpg",
-        lambda pgid, sig: group_kills.append((pgid, sig)),
+        fake_killpg,
         raising=False,
     )
 
@@ -165,7 +181,60 @@ def test_posix_cleanup_targets_the_process_group_and_reaps(
         signal.SIGTERM,
         getattr(signal, "SIGKILL", signal.SIGTERM),
     }
+    assert group_kills[-1] == (proc.pid, 0)
     assert any(event[0] == "wait" for event in proc.events)
+
+
+def test_posix_cleanup_surfaces_provider_wait_timeout(
+    monkeypatch,
+):
+    class WaitTimesOut(_TreeProcess):
+        def wait(self, timeout=None):
+            self.events.append(("wait", timeout))
+            raise subprocess.TimeoutExpired("fake-provider", timeout)
+
+    proc = WaitTimesOut()
+    monkeypatch.setattr(peer_agent.sys, "platform", "linux")
+    monkeypatch.setattr(
+        peer_agent.os,
+        "killpg",
+        lambda pgid, sig: (
+            (_ for _ in ()).throw(ProcessLookupError(pgid))
+            if sig == 0
+            else None
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(peer_agent.PeerCleanupError, match="did not exit"):
+        peer_agent.kill_tree(proc)
+
+    assert proc.events == [("wait", 10)]
+
+
+def test_launcher_atomically_reports_wrapper_and_provider_process_groups(
+    tmp_path: Path, monkeypatch
+):
+    identity_path = tmp_path / "provider-process.json"
+
+    monkeypatch.setattr(peer_agent.os, "getpid", lambda: 8123)
+    monkeypatch.setattr(
+        peer_agent, "subprocess_env_for_provider", lambda provider: {}
+    )
+
+    assert _run_fake_claude_main(
+        monkeypatch,
+        tmp_path,
+        lambda cmd, **kwargs: _FinishedPeer(cmd, **kwargs),
+        "--provider-pgid-file",
+        str(identity_path),
+    ) == 0
+
+    assert json.loads(identity_path.read_text(encoding="utf-8")) == {
+        "wrapper_pid": 8123,
+        "provider_pgid": _FinishedPeer.pid,
+    }
+    assert not list(tmp_path.glob(f".{identity_path.name}.*.tmp"))
 
 
 def test_windows_cleanup_uses_taskkill_tree_and_reaps(

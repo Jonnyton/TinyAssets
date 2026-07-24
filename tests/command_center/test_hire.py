@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import signal
 import threading
 import time
 from pathlib import Path
@@ -632,7 +634,9 @@ def test_post_spawn_communicate_oserror_cleans_up_before_it_is_surfaced(
     monkeypatch.setattr(
         collector,
         "_kill_peer_tree",
-        lambda proc: events.append("cleanup") if proc is process else None,
+        lambda proc, provider_pgid_file=None: (
+            events.append("cleanup") if proc is process else None
+        ),
     )
 
     with pytest.raises(OSError, match="synthetic pipe failure"):
@@ -707,6 +711,173 @@ def test_windows_wrapper_wait_timeout_is_not_treated_as_verified_cleanup(
     ]
 
 
+def test_windows_wrapper_fallback_kill_failure_is_dedicated_cleanup_failure(
+    monkeypatch,
+):
+    class Process:
+        pid = 7107
+
+        def wait(self, timeout=None):
+            raise collector.subprocess.TimeoutExpired("fake-peer", timeout)
+
+        def kill(self):
+            raise OSError("synthetic fallback kill failure")
+
+    monkeypatch.setattr(collector.os, "name", "nt")
+    monkeypatch.setattr(
+        collector.subprocess,
+        "run",
+        lambda cmd, **kwargs: collector.subprocess.CompletedProcess(
+            cmd, 0, b"", b""
+        ),
+    )
+
+    with pytest.raises(
+        collector._PeerCleanupError,
+        match="fallback kill failure",
+    ):
+        collector._kill_peer_tree(Process())
+
+
+def test_posix_cleanup_uses_reported_groups_when_wrapper_leader_is_gone(
+    tmp_path: Path, monkeypatch
+):
+    events: list[tuple] = []
+    identity_path = tmp_path / "provider-process.json"
+    identity_path.write_text(
+        json.dumps({"wrapper_pid": 7104, "provider_pgid": 8104}),
+        encoding="utf-8",
+    )
+
+    class Process:
+        pid = 7104
+
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            return 0
+
+    def leader_is_already_gone(pid):
+        raise ProcessLookupError(pid)
+
+    def fake_killpg(pgid, sig):
+        events.append(("killpg", pgid, sig))
+        if sig == 0:
+            raise ProcessLookupError(pgid)
+
+    monkeypatch.setattr(collector.os, "name", "posix")
+    monkeypatch.setattr(
+        collector.os, "getpgid", leader_is_already_gone, raising=False
+    )
+    monkeypatch.setattr(collector.os, "killpg", fake_killpg, raising=False)
+
+    collector._kill_peer_tree(Process(), identity_path)
+
+    kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+    assert ("killpg", 7104, kill_signal) in events
+    assert ("killpg", 8104, kill_signal) in events
+    assert ("killpg", 7104, 0) in events
+    assert ("killpg", 8104, 0) in events
+    assert ("wait", 10) in events
+
+
+def test_posix_cleanup_fails_closed_while_process_group_still_exists(
+    monkeypatch,
+):
+    class Process:
+        pid = 7108
+
+        def wait(self, timeout=None):
+            return 0
+
+    ticks = iter((0.0, 11.0))
+    monkeypatch.setattr(collector.os, "name", "posix")
+    monkeypatch.setattr(collector.os, "killpg", lambda pgid, sig: None, raising=False)
+    monkeypatch.setattr(collector.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(collector.time, "sleep", lambda delay: None)
+
+    with pytest.raises(collector._PeerCleanupError, match="still exists"):
+        collector._kill_peer_tree(Process())
+
+
+def test_posix_wrapper_wait_timeout_is_dedicated_cleanup_failure(
+    monkeypatch,
+):
+    class Process:
+        pid = 7105
+
+        def wait(self, timeout=None):
+            raise collector.subprocess.TimeoutExpired("fake-peer", timeout)
+
+    monkeypatch.setattr(collector.os, "name", "posix")
+    monkeypatch.setattr(
+        collector.os,
+        "killpg",
+        lambda pgid, sig: (
+            (_ for _ in ()).throw(ProcessLookupError(pgid))
+            if sig == 0
+            else None
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(collector._PeerCleanupError, match="did not exit"):
+        collector._kill_peer_tree(Process())
+
+
+@pytest.mark.parametrize(
+    "identity_text",
+    [
+        None,
+        "not-json",
+        json.dumps({"wrapper_pid": 9999, "provider_pgid": 8106}),
+        json.dumps({"wrapper_pid": 7106, "provider_pgid": 7106}),
+    ],
+)
+def test_outer_cleanup_rejects_invalid_provider_identity_after_wrapper_timeout(
+    tmp_path: Path, monkeypatch, identity_text: str | None
+):
+    class Process:
+        pid = 7106
+        returncode = None
+
+        def __init__(self):
+            self.communications = 0
+
+        def communicate(self, timeout=None):
+            self.communications += 1
+            if self.communications == 1:
+                raise collector.subprocess.TimeoutExpired("fake-peer", timeout)
+            return b"", b""
+
+        def wait(self, timeout=None):
+            return 0
+
+    process = Process()
+    identity_path = tmp_path / "provider-process.json"
+    if identity_text is not None:
+        identity_path.write_text(identity_text, encoding="utf-8")
+    monkeypatch.setattr(collector.os, "name", "posix")
+    monkeypatch.setattr(collector.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        collector.os,
+        "killpg",
+        lambda pgid, sig: (
+            (_ for _ in ()).throw(ProcessLookupError(pgid))
+            if sig == 0
+            else None
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(collector._PeerCleanupError, match="identity"):
+        collector._run_peer(
+            ["fake-peer", "--provider-pgid-file", str(identity_path)],
+            cwd=tmp_path,
+            timeout=600,
+            env={},
+        )
+
+
 def test_unverified_cleanup_keeps_talk_capacity_reserved(
     tmp_path: Path, monkeypatch
 ):
@@ -732,3 +903,166 @@ def test_unverified_cleanup_keeps_talk_capacity_reserved(
     assert not capacity.reserve(8), (
         "unverified process-tree cleanup released shared dispatch capacity"
     )
+
+
+def test_artifact_cleanup_error_cannot_mask_unverified_talk_cleanup(
+    tmp_path: Path, monkeypatch
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+    capacity = collector._DispatchCapacity()
+    monkeypatch.setattr(collector, "_DISPATCH_CAPACITY", capacity)
+    finished = threading.Event()
+
+    class CleanupFails:
+        def __str__(self):
+            return str(tmp_path / "synthetic-artifact")
+
+        def unlink(self, *, missing_ok=False):
+            raise OSError("synthetic artifact unlink failure")
+
+    monkeypatch.setattr(
+        collector,
+        "_new_dispatch_artifact",
+        lambda *args, **kwargs: CleanupFails(),
+    )
+
+    def fail_cleanup(*args, **kwargs):
+        try:
+            raise collector._PeerCleanupError(
+                "synthetic cleanup verification failure"
+            )
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(collector, "_run_peer", fail_cleanup)
+
+    collector.talk(cfg, "agent:cleanup-mask", "do not mask cleanup failure")
+    assert finished.wait(timeout=3)
+    _join_village_threads()
+
+    assert not capacity.reserve(8), (
+        "artifact cleanup masked unverified process cleanup and released capacity"
+    )
+
+
+def test_unverified_cleanup_keeps_hire_capacity_reserved(
+    tmp_path: Path, monkeypatch
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+    capacity = collector._DispatchCapacity()
+    monkeypatch.setattr(collector, "_DISPATCH_CAPACITY", capacity)
+    finished = threading.Event()
+
+    def fail_cleanup(*args, **kwargs):
+        try:
+            raise collector._PeerCleanupError(
+                "synthetic cleanup verification failure"
+            )
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(collector, "_run_peer", fail_cleanup)
+
+    result = collector.hire(
+        cfg,
+        {
+            "universe_id": "u-hire1",
+            "provider": "claude",
+            "count": 1,
+            "task": "hold hire capacity fail closed",
+            "preset": False,
+        },
+    )
+    assert result["ok"] is True
+    assert finished.wait(timeout=3)
+    _join_village_threads()
+
+    assert capacity.reserve(7)
+    assert not capacity.reserve(1), (
+        "unverified hire cleanup released its shared dispatch slot"
+    )
+    capacity.release(7)
+
+
+def test_concurrent_same_target_talk_uses_unique_output_artifacts(
+    tmp_path: Path, monkeypatch
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+    both_wrote = threading.Barrier(2)
+    out_paths: list[Path] = []
+    lock = threading.Lock()
+
+    def fake_run_peer(cmd, *, cwd, timeout, env):
+        out_path = Path(cmd[cmd.index("--out") + 1])
+        prompt = cmd[cmd.index("--prompt") + 1]
+        reply = "reply-alpha" if "message alpha" in prompt else "reply-beta"
+        with lock:
+            out_paths.append(out_path)
+        out_path.write_text(reply, encoding="utf-8")
+        both_wrote.wait(timeout=3)
+        return ""
+
+    monkeypatch.setattr(collector, "_run_peer", fake_run_peer)
+
+    collector.talk(cfg, "agent:same-target", "message alpha")
+    collector.talk(cfg, "agent:same-target", "message beta")
+    inbox_path = cfg.inbox_dir / "same-target.md"
+    _wait_until(
+        lambda: all(
+            reply in inbox_path.read_text(encoding="utf-8")
+            for reply in ("reply-alpha", "reply-beta")
+        )
+    )
+    _join_village_threads()
+
+    inbox_text = inbox_path.read_text(encoding="utf-8")
+    assert len(set(out_paths)) == 2
+    assert "reply-alpha" in inbox_text
+    assert "reply-beta" in inbox_text
+
+
+def test_concurrent_same_target_hires_use_unique_output_artifacts(
+    tmp_path: Path, monkeypatch
+):
+    cfg, udir = _dispatch_setup(tmp_path, monkeypatch)
+    both_wrote = threading.Barrier(2)
+    out_paths: list[Path] = []
+    lock = threading.Lock()
+
+    def fake_run_peer(cmd, *, cwd, timeout, env):
+        out_path = Path(cmd[cmd.index("--out") + 1])
+        prompt = cmd[cmd.index("--prompt") + 1]
+        reply = "hire-alpha" if "task alpha" in prompt else "hire-beta"
+        with lock:
+            out_paths.append(out_path)
+        out_path.write_text(reply, encoding="utf-8")
+        both_wrote.wait(timeout=3)
+        return ""
+
+    monkeypatch.setattr(collector, "_run_peer", fake_run_peer)
+
+    for task in ("task alpha", "task beta"):
+        result = collector.hire(
+            cfg,
+            {
+                "universe_id": "u-hire1",
+                "provider": "claude",
+                "count": 1,
+                "task": task,
+                "preset": False,
+            },
+        )
+        assert result["ok"] is True
+    chat_path = udir / "village-inbox.md"
+    _wait_until(
+        lambda: all(
+            reply in chat_path.read_text(encoding="utf-8")
+            for reply in ("hire-alpha", "hire-beta")
+        )
+    )
+    _join_village_threads()
+
+    chat_text = chat_path.read_text(encoding="utf-8")
+    assert len(set(out_paths)) == 2
+    assert "hire-alpha" in chat_text
+    assert "hire-beta" in chat_text
