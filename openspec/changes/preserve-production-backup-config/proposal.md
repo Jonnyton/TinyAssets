@@ -13,6 +13,8 @@ failed before creating either tier.
   overrides.
 - Add executable workflow-contract coverage that prevents backup configuration
   from being classified as stale runtime state again.
+- Preserve the pre-rename identity of the existing external Spaces bucket;
+  product terminology changes do not rename provider resources.
 - Correct the runbook's historical "current droplet" claim and record fresh
   production backup evidence after configuration is restored.
 

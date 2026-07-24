@@ -47,7 +47,7 @@ Until 2026-06-10 the droplet had `BACKUP_DEST=/var/backups/workflow` — a
 local directory on the same disk as the data — and GitHub releases were the
 only true offsite copy. On 2026-06-10, DO Spaces was provisioned as the primary:
 
-- `BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups`
+- `BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/workflow-backups`
 - A dedicated Spaces access key.
 - rclone config at `/root/.config/rclone/rclone.conf` (the systemd unit runs
   as root and does not override `HOME`).
@@ -60,6 +60,14 @@ root's rclone file. Releases after the preservation repair keep
 destination as a no-op, transactionally creates a bucket-scoped `readwrite`
 key when both configuration halves are absent, and fails closed on partial or
 invalid existing configuration.
+
+The Space is an external resource created before the product rename. Its
+provider identity remains `workflow-backups-jonnyton-sfo3`; Spaces buckets
+cannot be renamed. A mechanical repository rename temporarily documented the
+nonexistent `tinyassets-backups-jonnyton-sfo3` name. Read-only provider probes
+on 2026-07-23 returned HTTP 403 for the private pre-rename bucket and HTTP 404
+for the nonexistent renamed bucket. Do not rename external resource
+identifiers during product terminology migrations.
 
 The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
 (secondary)**.

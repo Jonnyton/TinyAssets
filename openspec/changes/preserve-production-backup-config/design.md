@@ -7,10 +7,13 @@ override and deletes it on every deploy. The current host also lost root's
 rclone configuration, so the installed persistent timer is correctly red.
 
 The repository already holds `DO_API_TOKEN`, production SSH credentials, and a
-documented Spaces bucket. DigitalOcean's current `/v2/spaces/keys` API returns
-new key credentials once at creation time, allowing a workflow runner to pass
-them directly to the root-owned host configuration without storing them in the
-daemon environment or repository.
+documented Spaces bucket. The bucket is an external resource that predates the
+product rename: its immutable provider identity remains
+`workflow-backups-jonnyton-sfo3`. A mechanical documentation rename introduced
+the nonexistent `tinyassets-backups-jonnyton-sfo3` name. DigitalOcean's current
+`/v2/spaces/keys` API returns new key credentials once at creation time,
+allowing a workflow runner to pass them directly to the root-owned host
+configuration without storing them in the daemon environment or repository.
 
 ## Goals / Non-Goals
 
@@ -54,10 +57,25 @@ Before installing/enabling timers, `install-host-services.yml` checks the host:
 This is idempotent and avoids destructive surprise. A bad existing key requires
 an explicit rotation lane.
 
+### Preserve the external bucket identity
+
+The canonical destination remains
+`spaces:workflow-backups-jonnyton-sfo3/workflow-backups`. Product-facing names
+move to TinyAssets, but existing provider resources are not renamed by a source
+tree migration. On 2026-07-23, an unauthenticated `HeadBucket`-equivalent probe
+returned HTTP 403 for the pre-rename bucket (private resource exists) and HTTP
+404 for the mechanically renamed bucket (resource absent). The exact-merge
+installer's HTTP 403 `bucket_or_grant` result independently confirms that the
+new name cannot receive a scoped grant.
+
+Alternative: create a new TinyAssets-named bucket. Rejected for this repair
+because it would abandon continuity with the existing primary backup history
+and require account-wide bucket-creation authority.
+
 ### Create one bucket-scoped key and hand it directly to root
 
 The runner creates a uniquely named Spaces key with `readwrite` permission on
-the existing `tinyassets-backups-jonnyton-sfo3` bucket. It immediately masks
+the existing `workflow-backups-jonnyton-sfo3` bucket. It immediately masks
 both returned credential fields, writes a temporary rclone config with mode
 `0600`, copies it over the authenticated SSH channel, installs it as
 `root:root 0600`, and sets only the nonsecret `BACKUP_DEST` through
@@ -67,7 +85,9 @@ The API token never reaches the host. The Spaces secret never reaches the
 daemon environment, GitHub outputs, artifacts, or command arguments.
 
 Alternative: create a full-access key. Rejected because the existing bucket
-allows narrower object read/write/delete authority.
+allows narrower object read/write/delete authority. The original 2026-06-10
+bootstrap used full access only because the bucket did not exist yet; the
+repair must not retain that account-wide privilege after creation.
 
 ### Treat provisioning as a transaction
 
@@ -108,4 +128,5 @@ the workflow change.
 ## Open Questions
 
 None. The existing bucket, region, destination prefix, and primary/secondary
-roles are already canonical in the uptime spec and runbook.
+roles are confirmed by repository history plus provider HTTP behavior. The
+source-tree rename does not authorize creation of replacement infrastructure.

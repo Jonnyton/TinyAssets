@@ -8,6 +8,7 @@
 - [x] 2.1 Remove `BACKUP_DEST` from the production deploy scrub set and correct its ownership comment.
 - [x] 2.2 Make the exact-source host-service workflow verify or transactionally provision the documented scoped Spaces destination before installing timers.
 - [x] 2.3 Keep API and Spaces credentials out of logs, outputs, artifacts, arguments, and `/etc/tinyassets/env`.
+- [x] 2.4 Correct the mechanically renamed bucket identity to the existing immutable pre-rename provider resource.
 
 ## 3. Verification And Operations
 

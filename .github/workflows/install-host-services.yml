@@ -58,8 +58,9 @@ jobs:
           DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
         run: |
           set -euo pipefail
-          destination="spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups"
-          bucket="tinyassets-backups-jonnyton-sfo3"
+          # This external Space predates the product rename and cannot be renamed.
+          destination="spaces:workflow-backups-jonnyton-sfo3/workflow-backups"
+          bucket="workflow-backups-jonnyton-sfo3"
           endpoint="sfo3.digitaloceanspaces.com"
           key_name="tinyassets-backup-shipper-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 

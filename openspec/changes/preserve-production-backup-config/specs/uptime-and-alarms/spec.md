@@ -24,6 +24,7 @@ credential configuration are absent.
 
 - **WHEN** both `BACKUP_DEST` and root's rclone configuration are absent
 - **THEN** the installer creates one bucket-scoped read/write key through the provider API
+- **AND** targets the existing immutable external destination `spaces:workflow-backups-jonnyton-sfo3/workflow-backups`
 - **AND** installs its credentials only at `/root/.config/rclone/rclone.conf` with root ownership and mode `0600`
 - **AND** sets the nonsecret destination through the atomic TinyAssets environment installer
 - **AND** verifies the destination before enabling the backup timer
@@ -39,3 +40,9 @@ credential configuration are absent.
 - **THEN** failure cleanup removes any newly written destination/configuration and requests deletion of that exact new key
 - **AND** no API token, Spaces secret, or provider response body reaches logs, outputs, artifacts, or the daemon environment
 - **AND** provider failures expose only the HTTP or transport class plus an allowlisted error identifier/category derived without printing provider message text
+
+#### Scenario: Product rename does not rename external backup infrastructure
+
+- **WHEN** product-facing source and documentation use the TinyAssets name
+- **THEN** the installer and runbook retain the provider identity of the existing pre-rename Spaces bucket
+- **AND** they do not silently substitute a similarly named bucket that has not been created and verified
