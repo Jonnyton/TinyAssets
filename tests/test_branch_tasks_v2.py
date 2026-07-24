@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from dataclasses import replace
@@ -616,3 +617,245 @@ def test_directed_epoch2_task_preserves_owner_tier_and_assignment(
     assert task.trigger_source == "owner_queued"
     assert task.priority_weight == 25
     assert task.directed_daemon_id == "daemon-a"
+
+
+def test_quarantine_maintenance_is_separate_atomic_and_sanitized(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    valid = _commit(
+        tmp_path,
+        key="hmac:epoch2-key-b",
+        body="sha256:epoch2-body-b",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET protocol_version = 99
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
+    )
+
+    # Pure selection rejects the bad row without writing quarantine state.
+    assert [
+        task.branch_task_id for task in adapter.list_candidates()
+    ] == [valid["branch_task_id"]]
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT disabled FROM branch_tasks_v2 "
+            "WHERE branch_task_id = ?",
+            (invalid["branch_task_id"],),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0] == 0
+
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert len(result.receipts) == 1
+    receipt = result.receipts[0]
+    assert receipt.branch_task_id == invalid["branch_task_id"]
+    assert receipt.reason == "unsupported_protocol"
+    assert len(receipt.row_digest) == 64
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        source = conn.execute(
+            """
+            SELECT disabled, quarantine_reason
+            FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()
+        stored = conn.execute(
+            """
+            SELECT row_digest, reason, row_json, seen_count
+            FROM branch_tasks_v2_quarantine
+            """
+        ).fetchone()
+    assert dict(source) == {
+        "disabled": 1,
+        "quarantine_reason": "unsupported_protocol",
+    }
+    assert stored["row_digest"] == receipt.row_digest
+    assert stored["reason"] == "unsupported_protocol"
+    assert stored["seen_count"] == 1
+    snapshot = json.loads(stored["row_json"])
+    assert set(snapshot) == {
+        "branch_task_id",
+        "protocol_version",
+        "queue_epoch",
+        "status",
+        "trigger_source",
+        "universe_id",
+    }
+    assert "repair the queue" not in stored["row_json"]
+    assert "request-local" not in stored["row_json"]
+
+    replay = adapter.maintain_quarantine()
+    assert replay.health == "green"
+    assert replay.quarantined == 0
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "fail_stage",
+    ["quarantine_receipt_written", "quarantine_source_disabled"],
+)
+def test_quarantine_failure_is_red_rollback_and_row_remains_inert(
+    tmp_path: Path,
+    fail_stage: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET admission_id = 'missing-admission'
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
+    )
+
+    def fail_at_stage(stage, _conn):
+        if stage == fail_stage:
+            raise RuntimeError("injected quarantine failure")
+
+    result = adapter.maintain_quarantine(
+        fault_injector=fail_at_stage,
+    )
+
+    assert result.health == "red"
+    assert result.error_code == "quarantine_persistence_failed"
+    assert result.quarantined == 0
+    assert result.receipts == ()
+    assert adapter.list_candidates() == []
+    descriptor = _descriptor()
+    assert adapter.claim(
+        invalid["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    ) is None
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        source = conn.execute(
+            """
+            SELECT disabled, quarantine_reason
+            FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()
+        quarantine_count = conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0]
+        event_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM request_admission_events
+            WHERE branch_task_id = ? AND event_type = 'quarantined'
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()[0]
+    assert source == (0, "")
+    assert quarantine_count == 0
+    assert event_count == 0
+
+    recovered = adapter.maintain_quarantine()
+    assert recovered.health == "green"
+    assert recovered.quarantined == 1
+    assert recovered.receipts[0].reason == "invalid_operator_admission"
+
+
+def test_malformed_json_is_incomplete_and_never_reaches_task_decoding(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET inputs_json = '{not-json'
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    assert adapter.list_candidates() == []
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "incomplete"
+
+
+def test_concurrent_maintenance_writes_one_receipt_per_digest(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET queue_epoch = 3
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        )
+    barrier = threading.Barrier(3)
+    results = []
+    failures = []
+
+    def maintain() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results.append(
+                Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+            )
+        except Exception as exc:  # pragma: no cover - diagnostic capture
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target=maintain),
+        threading.Thread(target=maintain),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert failures == []
+    assert len(results) == 2
+    assert all(result.health == "green" for result in results)
+    assert sum(result.quarantined for result in results) == 1
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        receipt = conn.execute(
+            """
+            SELECT seen_count
+            FROM branch_tasks_v2_quarantine
+            """
+        ).fetchone()
+    assert receipt == (1,)

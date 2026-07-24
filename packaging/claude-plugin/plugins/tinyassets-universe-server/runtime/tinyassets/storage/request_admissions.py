@@ -540,7 +540,31 @@ class RequestAdmissionStore:
         *,
         universe_id: str = "",
         limit: int = 1000,
+        integrity_check: (
+            Callable[[Mapping[str, Any]], bool] | None
+        ) = None,
     ) -> list[dict[str, Any]]:
+        if integrity_check is not None:
+            with self.connection() as conn:
+                rows = self._v2_integrity_rows(
+                    conn,
+                    universe_id=universe_id,
+                    pending_only=True,
+                )
+            candidates: list[dict[str, Any]] = []
+            for row in rows:
+                raw = dict(row)
+                if not integrity_check(raw):
+                    continue
+                task_only = {
+                    key: value
+                    for key, value in raw.items()
+                    if not key.startswith("linked_")
+                }
+                candidates.append(_task_row(task_only))
+                if len(candidates) >= max(1, int(limit)):
+                    break
+            return candidates
         clauses = ["status = 'pending'", "disabled = 0"]
         params: list[Any] = []
         if universe_id:
@@ -555,6 +579,54 @@ class RequestAdmissionStore:
                 params,
             ).fetchall()
         return [_task_row(row) for row in rows]
+
+    def _v2_integrity_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        universe_id: str = "",
+        pending_only: bool,
+    ) -> list[sqlite3.Row]:
+        clauses = ["t.disabled = 0"]
+        params: list[Any] = []
+        if pending_only:
+            clauses.append("t.status = 'pending'")
+        if universe_id:
+            clauses.append("t.universe_id = ?")
+            params.append(universe_id)
+        return conn.execute(
+            """
+            SELECT
+                t.*,
+                a.admission_id AS linked_admission_id,
+                a.request_id AS linked_admission_request_id,
+                a.branch_task_id AS linked_admission_task_id,
+                a.universe_id AS linked_admission_universe_id,
+                a.trigger_source AS linked_admission_trigger_source,
+                a.accepted_priority_weight
+                    AS linked_admission_priority_weight,
+                a.state AS linked_admission_state,
+                a.idempotency_key_hash AS linked_admission_key_hash,
+                a.body_digest AS linked_admission_body_digest,
+                a.body_digest_version AS linked_admission_body_digest_version,
+                a.priority_policy_version AS linked_admission_policy_version,
+                a.grant_generation AS linked_admission_grant_generation,
+                a.receipt_json AS linked_admission_receipt_json,
+                a.result_json AS linked_admission_result_json,
+                r.request_id AS linked_request_id,
+                r.universe_id AS linked_request_universe_id,
+                r.status AS linked_request_status
+            FROM branch_tasks_v2 AS t
+            LEFT JOIN request_admissions AS a
+                ON a.admission_id = t.admission_id
+            LEFT JOIN user_requests AS r
+                ON r.request_id = t.request_id
+            WHERE
+            """
+            + " AND ".join(clauses)
+            + " ORDER BY t.queued_at ASC, t.branch_task_id ASC",
+            params,
+        ).fetchall()
 
     def get_v2_task(self, branch_task_id: str) -> dict[str, Any] | None:
         with self.connection() as conn:
@@ -595,12 +667,23 @@ class RequestAdmissionStore:
                 )
                 row = conn.execute(
                     """
-                    SELECT * FROM branch_tasks_v2
-                    WHERE branch_task_id = ?
-                      AND status = 'pending'
-                      AND disabled = 0
-                      AND queue_epoch = 2
-                      AND protocol_version = 2
+                    SELECT t.*
+                    FROM branch_tasks_v2 AS t
+                    JOIN request_admissions AS a
+                      ON a.admission_id = t.admission_id
+                     AND a.request_id = t.request_id
+                     AND a.branch_task_id = t.branch_task_id
+                     AND a.universe_id = t.universe_id
+                     AND a.trigger_source = t.trigger_source
+                     AND a.accepted_priority_weight = t.priority_weight
+                    JOIN user_requests AS r
+                      ON r.request_id = t.request_id
+                     AND r.universe_id = t.universe_id
+                    WHERE t.branch_task_id = ?
+                      AND t.status = 'pending'
+                      AND t.disabled = 0
+                      AND t.queue_epoch = 2
+                      AND t.protocol_version = 2
                     """,
                     (branch_task_id,),
                 ).fetchone()
@@ -611,7 +694,7 @@ class RequestAdmissionStore:
                     claim_check is not None
                     and not claim_check(
                         conn,
-                        _task_row(row),
+                        dict(row),
                         claimed_at,
                     )
                 ):
@@ -992,73 +1075,166 @@ class RequestAdmissionStore:
                 ).fetchone()
                 if row is None:
                     raise KeyError(branch_task_id)
-                snapshot = _task_row(row)
-                digest_snapshot = dict(snapshot)
-                digest_snapshot.pop("disabled", None)
-                digest_snapshot.pop("quarantine_reason", None)
-                digest = hashlib.sha256(
-                    _json(digest_snapshot).encode("utf-8")
-                ).hexdigest()
-                receipt_snapshot = _quarantine_receipt_snapshot(snapshot)
-                existing_receipt = conn.execute(
-                    """
-                    SELECT row_digest
-                    FROM branch_tasks_v2_quarantine
-                    WHERE row_digest = ?
-                    """,
-                    (digest,),
-                ).fetchone()
-                conn.execute(
-                    """
-                    INSERT INTO branch_tasks_v2_quarantine (
-                        row_digest, branch_task_id, universe_id, reason,
-                        row_json, first_seen_at, last_seen_at, seen_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                    ON CONFLICT(row_digest) DO UPDATE SET
-                        last_seen_at = excluded.last_seen_at,
-                        seen_count = branch_tasks_v2_quarantine.seen_count + 1
-                    """,
-                    (
-                        digest,
-                        branch_task_id,
-                        row["universe_id"],
-                        _required(reason, "reason"),
-                        _json(receipt_snapshot),
-                        observed_at,
-                        observed_at,
-                    ),
+                receipt = self._quarantine_task_in_transaction(
+                    conn,
+                    row,
+                    reason=reason,
+                    observed_at=observed_at,
                 )
-                conn.execute(
-                    """
-                    UPDATE branch_tasks_v2
-                    SET disabled = 1, quarantine_reason = ?
-                    WHERE branch_task_id = ?
-                    """,
-                    (reason, branch_task_id),
-                )
-                if existing_receipt is None:
-                    self._append_task_event(
-                        conn,
-                        row,
-                        event_type="quarantined",
-                        event_at=observed_at,
-                        detail={"reason": reason, "row_digest": digest},
-                    )
-                receipt = conn.execute(
-                    """
-                    SELECT
-                        row_digest, branch_task_id, reason,
-                        first_seen_at, last_seen_at
-                    FROM branch_tasks_v2_quarantine
-                    WHERE row_digest = ?
-                    """,
-                    (digest,),
-                ).fetchone()
                 conn.commit()
-                return dict(receipt)
+                return receipt
             except Exception:
                 conn.rollback()
                 raise
+
+    def maintain_v2_quarantine(
+        self,
+        *,
+        classifier: Callable[[Mapping[str, Any]], str | None],
+        limit: int = 1000,
+        fault_injector: Callable[[str, sqlite3.Connection], None] | None = None,
+    ) -> dict[str, Any]:
+        """Classify and quarantine invalid rows in one maintenance transaction."""
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                observed_at = _clock_iso(self._clock)
+                rows = self._v2_integrity_rows(
+                    conn,
+                    pending_only=False,
+                )
+                scanned = 0
+                receipts: list[dict[str, Any]] = []
+                for integrity_row in rows:
+                    scanned += 1
+                    reason = classifier(dict(integrity_row))
+                    if not reason:
+                        continue
+                    source = conn.execute(
+                        """
+                        SELECT * FROM branch_tasks_v2
+                        WHERE branch_task_id = ?
+                        """,
+                        (integrity_row["branch_task_id"],),
+                    ).fetchone()
+                    if source is None:
+                        continue
+                    receipts.append(
+                        self._quarantine_task_in_transaction(
+                            conn,
+                            source,
+                            reason=reason,
+                            observed_at=observed_at,
+                            fault_injector=fault_injector,
+                        )
+                    )
+                    if len(receipts) >= max(1, int(limit)):
+                        break
+                conn.commit()
+                return {
+                    "scanned": scanned,
+                    "receipts": receipts,
+                }
+            except Exception:
+                conn.rollback()
+                raise
+
+    def _quarantine_task_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        reason: str,
+        observed_at: str,
+        fault_injector: Callable[[str, sqlite3.Connection], None] | None = None,
+    ) -> dict[str, Any]:
+        snapshot = dict(row)
+        digest_snapshot = dict(snapshot)
+        digest_snapshot.pop("disabled", None)
+        digest_snapshot.pop("quarantine_reason", None)
+        digest = hashlib.sha256(
+            _json(digest_snapshot).encode("utf-8")
+        ).hexdigest()
+        receipt_snapshot = _quarantine_receipt_snapshot(snapshot)
+        existing_receipt = conn.execute(
+            """
+            SELECT row_digest
+            FROM branch_tasks_v2_quarantine
+            WHERE row_digest = ?
+            """,
+            (digest,),
+        ).fetchone()
+        clean_reason = _required(reason, "reason")
+        conn.execute(
+            """
+            INSERT INTO branch_tasks_v2_quarantine (
+                row_digest, branch_task_id, universe_id, reason,
+                row_json, first_seen_at, last_seen_at, seen_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(row_digest) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at,
+                seen_count = branch_tasks_v2_quarantine.seen_count + 1
+            """,
+            (
+                digest,
+                row["branch_task_id"],
+                row["universe_id"],
+                clean_reason,
+                _json(receipt_snapshot),
+                observed_at,
+                observed_at,
+            ),
+        )
+        _inject(fault_injector, "quarantine_receipt_written", conn)
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET disabled = 1, quarantine_reason = ?
+            WHERE branch_task_id = ?
+            """,
+            (clean_reason, row["branch_task_id"]),
+        )
+        _inject(fault_injector, "quarantine_source_disabled", conn)
+        linked = conn.execute(
+            """
+            SELECT 1
+            FROM request_admissions AS a
+            JOIN user_requests AS r
+              ON r.request_id = a.request_id
+             AND r.universe_id = a.universe_id
+            WHERE a.admission_id = ?
+              AND a.request_id = ?
+              AND a.branch_task_id = ?
+              AND a.universe_id = ?
+            """,
+            (
+                row["admission_id"],
+                row["request_id"],
+                row["branch_task_id"],
+                row["universe_id"],
+            ),
+        ).fetchone()
+        if existing_receipt is None and linked is not None:
+            self._append_task_event(
+                conn,
+                row,
+                event_type="quarantined",
+                event_at=observed_at,
+                detail={"reason": clean_reason, "row_digest": digest},
+            )
+        receipt = conn.execute(
+            """
+            SELECT
+                row_digest, branch_task_id, reason,
+                first_seen_at, last_seen_at
+            FROM branch_tasks_v2_quarantine
+            WHERE row_digest = ?
+            """,
+            (digest,),
+        ).fetchone()
+        if receipt is None:  # pragma: no cover - guarded by the insert
+            raise RuntimeError("quarantine_receipt_missing")
+        return dict(receipt)
 
     def compact_terminal_details(
         self,

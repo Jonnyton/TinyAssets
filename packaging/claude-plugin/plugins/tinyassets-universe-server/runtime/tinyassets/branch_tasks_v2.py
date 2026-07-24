@@ -8,6 +8,9 @@ authority.
 
 from __future__ import annotations
 
+import json
+import logging
+import math
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -54,6 +57,25 @@ DescriptorReader = Callable[
     WorkerClaimDescriptor | None,
 ]
 DESCRIPTOR_VALIDITY_SECONDS = 90
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class QuarantineReceipt:
+    row_digest: str
+    branch_task_id: str
+    reason: str
+    first_seen_at: str
+    last_seen_at: str
+
+
+@dataclass(frozen=True)
+class QuarantineMaintenanceResult:
+    health: str
+    scanned: int
+    quarantined: int
+    receipts: tuple[QuarantineReceipt, ...] = ()
+    error_code: str = ""
 
 
 class Epoch2BranchTaskAdapter:
@@ -82,6 +104,9 @@ class Epoch2BranchTaskAdapter:
             for row in self._store.list_v2_candidates(
                 universe_id=universe_id,
                 limit=limit,
+                integrity_check=lambda row: (
+                    _classify_epoch2_row(row) is None
+                ),
             )
         ]
 
@@ -105,6 +130,8 @@ class Epoch2BranchTaskAdapter:
             task: Mapping[str, Any],
             transaction_at: str,
         ) -> bool:
+            if _classify_epoch2_row(task, require_linkage=False) is not None:
+                return False
             if task["universe_id"] != descriptor.universe_id:
                 return False
             trusted = descriptor_reader(conn, descriptor.worker_id)
@@ -175,6 +202,46 @@ class Epoch2BranchTaskAdapter:
             for row in self._store.recover_expired_v2_tasks()
         ]
 
+    def maintain_quarantine(
+        self,
+        *,
+        limit: int = 1000,
+        fault_injector: (
+            Callable[[str, sqlite3.Connection], None] | None
+        ) = None,
+    ) -> QuarantineMaintenanceResult:
+        """Run the separate invalid-row maintenance pass with red health."""
+        try:
+            result = self._store.maintain_v2_quarantine(
+                classifier=_classify_epoch2_row,
+                limit=limit,
+                fault_injector=fault_injector,
+            )
+        except Exception:  # noqa: BLE001 - health must stay bounded and red
+            logger.exception("epoch-2 quarantine maintenance failed")
+            return QuarantineMaintenanceResult(
+                health="red",
+                scanned=0,
+                quarantined=0,
+                error_code="quarantine_persistence_failed",
+            )
+        receipts = tuple(
+            QuarantineReceipt(
+                row_digest=str(receipt["row_digest"]),
+                branch_task_id=str(receipt["branch_task_id"]),
+                reason=str(receipt["reason"]),
+                first_seen_at=str(receipt["first_seen_at"]),
+                last_seen_at=str(receipt["last_seen_at"]),
+            )
+            for receipt in result["receipts"]
+        )
+        return QuarantineMaintenanceResult(
+            health="green",
+            scanned=int(result["scanned"]),
+            quarantined=len(receipts),
+            receipts=receipts,
+        )
+
     def delete_universe(self, universe_id: str) -> int:
         return self._store.delete_universe(universe_id)
 
@@ -227,6 +294,112 @@ def _parse_timestamp(value: str) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _classify_epoch2_row(
+    row: Mapping[str, Any],
+    *,
+    require_linkage: bool = True,
+) -> str | None:
+    if (
+        type(row.get("queue_epoch")) is not int
+        or type(row.get("protocol_version")) is not int
+        or row.get("queue_epoch") != QUEUE_EPOCH
+        or row.get("protocol_version") != QUEUE_PROTOCOL_VERSION
+    ):
+        return "unsupported_protocol"
+    required = (
+        "branch_task_id",
+        "admission_id",
+        "request_id",
+        "universe_id",
+        "branch_def_id",
+        "queued_at",
+    )
+    if not all(str(row.get(field) or "").strip() for field in required):
+        return "incomplete"
+    if row.get("trigger_source") not in {
+        "operator_request",
+        "user_request",
+        "owner_queued",
+    }:
+        return "incomplete"
+    if row.get("status") not in {
+        "pending",
+        "running",
+        "cancel_requested",
+        "cancelled",
+        "succeeded",
+        "failed",
+    }:
+        return "incomplete"
+    weight = row.get("priority_weight")
+    if (
+        isinstance(weight, bool)
+        or not isinstance(weight, (int, float))
+        or not math.isfinite(float(weight))
+        or not 0 <= float(weight) <= 100
+    ):
+        return "incomplete"
+    for raw_field, decoded_field in (
+        ("inputs_json", "inputs"),
+        ("detail_json", "detail"),
+    ):
+        if raw_field in row:
+            try:
+                value = json.loads(str(row[raw_field]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return "incomplete"
+        else:
+            value = row.get(decoded_field)
+        if not isinstance(value, dict):
+            return "incomplete"
+    if require_linkage:
+        linked_weight = row.get("linked_admission_priority_weight")
+        linked_generation = row.get("linked_admission_grant_generation")
+        linkage_matches = (
+            row.get("linked_admission_id") == row.get("admission_id")
+            and row.get("linked_admission_request_id")
+            == row.get("request_id")
+            and row.get("linked_admission_task_id")
+            == row.get("branch_task_id")
+            and row.get("linked_admission_universe_id")
+            == row.get("universe_id")
+            and row.get("linked_admission_trigger_source")
+            == row.get("trigger_source")
+            and isinstance(linked_weight, (int, float))
+            and not isinstance(linked_weight, bool)
+            and float(linked_weight) == float(weight)
+            and row.get("linked_request_id") == row.get("request_id")
+            and row.get("linked_request_universe_id")
+            == row.get("universe_id")
+            and row.get("linked_admission_state") == "committed"
+            and all(
+                str(row.get(field) or "").strip()
+                for field in (
+                    "linked_admission_key_hash",
+                    "linked_admission_body_digest",
+                    "linked_admission_body_digest_version",
+                    "linked_admission_policy_version",
+                    "linked_request_status",
+                )
+            )
+            and type(linked_generation) is int
+            and linked_generation >= 0
+        )
+        if not linkage_matches:
+            return "invalid_operator_admission"
+        for field in (
+            "linked_admission_receipt_json",
+            "linked_admission_result_json",
+        ):
+            try:
+                evidence = json.loads(str(row.get(field)))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return "invalid_operator_admission"
+            if not isinstance(evidence, dict):
+                return "invalid_operator_admission"
+    return None
+
+
 def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
     inputs = dict(row.get("inputs") or {})
     return Epoch2BranchTask(
@@ -254,5 +427,7 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
 __all__ = [
     "Epoch2BranchTask",
     "Epoch2BranchTaskAdapter",
+    "QuarantineMaintenanceResult",
+    "QuarantineReceipt",
     "WorkerClaimDescriptor",
 ]

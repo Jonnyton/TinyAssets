@@ -305,3 +305,17 @@ fresh-host rollback edges found later.
   atomic “still provisioned” operation. The worker-ID choice belongs in that
   same transaction too: otherwise different workers can steal one unassigned
   slot and identical concurrent starts can create duplicates.
+
+## 2026-07-24 - transactional epoch-2 quarantine
+
+- **What surprised me:** the receipt/disable transaction already existed, but
+  pure selection decoded JSON before validating protocol and linkage. A corrupt
+  row could therefore poison the read path even though claim SQL rejected its
+  protocol.
+- **Pattern worth capturing:** selectors classify raw rows without mutation;
+  maintenance alone owns receipt+disable; claim repeats the integrity boundary.
+  When maintenance rolls back, the selector and claimer still keep the source
+  inert and return a bounded red health result.
+- **What I would do differently:** begin with malformed JSON, broken aggregate
+  links, both precommit fault points, and concurrent maintenance. Those tests
+  distinguish real quarantine isolation from merely having a quarantine table.
