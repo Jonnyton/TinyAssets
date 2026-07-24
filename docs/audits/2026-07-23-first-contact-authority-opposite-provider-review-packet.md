@@ -4,10 +4,11 @@
 implementation authority.
 
 **Freshness:** refreshed 2026-07-24 PT against `origin/main`
-`412a876add4a1df914dea7017cd94f924e4aa30d`, open draft
+`129a68f728a0bcb9a7bfaeddd396993178f42189`, open draft
 [#1617](https://github.com/Jonnyton/TinyAssets/pull/1617), the independently
-approved planning successor `codex/constrain-engine-providers` at
-`934340ca244e325774a128ac889a82c5a2a478ff`, and the current OpenSpec tree.
+approved planning successor in draft
+[#1691](https://github.com/Jonnyton/TinyAssets/pull/1691), published at
+`15d495e27b1a0c4f7966c1883e5bafc734133b01`, and the current OpenSpec tree.
 
 **Required reviewer:** Claude, after its 2026-07-24 evening PT capacity reset.
 Codex authored the initial research. Per `AGENTS.md`, only an independent
@@ -65,27 +66,37 @@ test is authorized by this packet.
 8. Production evidence shows birth followed by provider exhaustion, not a
    speaking newborn. Existing first-contact reply tests replace the provider
    call with a fake before proving the reply path.
-9. The independently approved planning successor
-   `codex/constrain-engine-providers` at `934340ca` proposes that draft PR
-   #1606 be superseded as the authority owner. The successor owns only
+9. The independently approved planning successor is published as draft PR
+   #1691, currently at `15d495e2`. It proposes that draft PR #1606 be
+   superseded as the authority owner. The successor owns only
    persistent provider-destination assignment, fail-closed
    request/assignment intersection at routing time, and provider transport
    launch lifecycle. It preserves `universe-creation` as requester/market
    semantic-authority owner and explicitly excludes accepted-market
    agreements, leases, settlement, and accounting from the ordinary router.
    This disposition is not landed repository state: #1606 remains open/dirty,
-   and GitHub's Pull Requests service was in a major partial outage when this
-   refresh was prepared, so the pushed successor has no PR yet.
+   #1691 is an open planning-only draft, and all of its runtime tasks remain
+   unchecked.
 10. PR #1650 (`c96e3d01`) merged the strict-valid
     `provider-attempt-receipts` planning contract (STATUS shorthand R2-1b).
-    Runtime remains pending. This lane must not create `_last_provider` or a
-    second receipt system.
+    Runtime remains pending. The implementation must not read or populate
+    receipt truth from the existing mutable `_last_provider` global, and this
+    lane must not create a second receipt system.
 11. PR #1685 (`c1fe0f85`) landed the transactional operator-request admission
     storage seam, which remains unreachable from an activated public execution
     route. PR #1689 (`5c64605a`) landed exact-universe operator-priority grant
-    lifecycle, not an activated public execution route. These are
-    queue-admission and priority seams only. They grant no provider, compute,
-    economic, model-access, or spending authority.
+    lifecycle. PR #1692 (`129a68f7`) then landed one request-local admission
+    verdict: authenticated ordinary submit scope plus exact-universe ACL can
+    admit zero-weight legacy work; positive priority also needs an exact active
+    grant, yet remains `operator_priority_unavailable` with zero persistence
+    until the public v2 writer/rollout exists. These are queue-admission and
+    priority seams only. Their verdict, grant, receipt, task, and scheduling
+    claim grant no provider, compute, economic, model-access, market, funding,
+    execution-lease, settlement, or spending authority. No
+    distributed-execution B2 identity/claim/lease/fence authority is landed on
+    main; the usable remote-execution slice is blocked until that separately
+    reviewed target contract lands, and any eventual external execution must
+    require it.
 12. PR #1617 remains open/dirty and currently claims the authority contract.
     The reviewed successor proposal treats it as candidate detail only and
     proposes that it not merge or remain an independent requester-authority
@@ -142,12 +153,12 @@ correctly retain an empty persistent `allowed_providers` ceiling.
 | Concern | Owner / required seam | This lane may do |
 |---|---|---|
 | Founder-home birth and held first contact | active `universe-creation` | Integrate the authority result into first contact |
-| Persistent server-provider ceiling and fallback | independently approved planning successor `codex/constrain-engine-providers` at `934340ca`; PR publication blocked by GitHub outage | Consume its fresh assignment/request intersection; do not define requester authority or another router |
+| Persistent server-provider ceiling and fallback | independently approved planning successor in draft PR #1691 at `15d495e2`; planning only and not landed | Consume its fresh assignment/request intersection; do not define requester authority or another router |
 | Requester and market semantic execution authority | active `universe-creation`, 6/33 complete; task 2.0 hard-gated on this verdict | Fold exact accepted findings into this owner; do not revive #1617 as a second owner |
 | Exhaustive provider-authority carrier/threading | future subordinate `provider-authority-propagation`, only after this verdict is accepted and folded into `universe-creation` | Carry the accepted authority; do not create a second requester authority, router, receipt, vault, market, or credential-isolation contract |
 | Ambient credential isolation | PR #1546 landed the host-credential half; residual branch `codex/fail-closed-provider-auth-overlay` at `dd71fc1c`; former PR #1609 closed | Residual owner unresolved until republished/merged or superseded; do not consume a hypothetical repair |
 | Result-local invocation receipt | PR #1650 merged the strict-valid `provider-attempt-receipts` contract; runtime pending | Extend its accepted returned result with authority dimensions |
-| Operator request admission and priority | PRs #1685 and #1689 landed | Queue admission/priority only; never treat as provider, compute, model-access, economic, or spending authority |
+| Operator request admission and priority | PRs #1685, #1689, and #1692 landed | Queue admission/priority only; never let the verdict, grant, receipt, task, or scheduling claim populate provider eligibility or act as provider, compute, model-access, market, funding, lease, settlement, economic, or spending authority |
 | Market quote/ranking | active `paid-market-live-price-discovery` | Discovery only; never positive authority |
 | Request/bid/match/claim and logical accounting | active `paid-market-track-e-wave-2-transport` | Consume its accepted terminal handoff; do not duplicate transport |
 | Remote executor identity/lease/fence | active `distributed-execution` | Verify and bind its accepted signed result; do not invent a lease protocol |
@@ -371,7 +382,11 @@ unable to speak.
   retry idempotency with fake executors.
 
 This is the smallest usable P0-closing slice that does not presume platform
-secret custody.
+secret custody. It is not currently implementable: main has only 1/22
+`distributed-execution` tasks complete, while its B2
+identity/claim/lease/fence spine remains on open draft PRs. Slice B stays
+blocked until B2 lands and is rechecked against the accepted authority
+contracts.
 
 ### Slice C — server-side BYOC (`DEFER`)
 
@@ -397,9 +412,11 @@ over the same authority grammar.
 ## 9. Claude review procedure
 
 1. Re-check the primary sources indexed in
-   `docs/audits/2026-07-22-request-authority-and-openspec-gaps.md`, especially
-   MCP authorization, RFC 9700/8707/8693/8785/9449, OpenRouter routing, Akash
-   leases, and Golem agreements.
+   the immutable
+   [PR #1617 source index at commit `7a568e47`](https://github.com/Jonnyton/TinyAssets/blob/7a568e47b955c9a5a7184ce77977b5b67a090387/docs/audits/2026-07-22-request-authority-and-openspec-gaps.md),
+   especially MCP authorization, RFC 9700/8707/8693/8785/9449, OpenRouter
+   routing, Akash leases, and Golem agreements. Treat the index as review
+   input from the stale candidate branch, not current repository truth.
 2. Inspect current main paths:
    `universe_server.py`, `api/first_contact.py`, `api/universe.py`,
    `universe_intelligence.py`, `providers/call.py`, `providers/router.py`,
@@ -428,6 +445,6 @@ over the same authority grammar.
 - Implementation begins with red fake-only tests and never uses maintainer
   resources as proof.
 
-Refresh evidence on 2026-07-24: `openspec validate --all --strict` passed
+Refresh evidence on 2026-07-24 PT: `openspec validate --all --strict` passed
 41/41 on this planning branch, `git diff --check origin/main` passed, and
 `universe-creation` remained 6/33 complete with task 2.0 as the hard gate.

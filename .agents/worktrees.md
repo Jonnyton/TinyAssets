@@ -1138,3 +1138,14 @@ Notes:
 - Verification: current-main-first conflict resolution; strict OpenSpec 41/41; independent packet ownership/freshness review APPROVE
 - Related implications: R2-1a successor `934340ca`; R2-1b planning #1650 merged; #1685/#1689 are admission/priority only
 - Ship/abandon: force-push only with the old remote `979e58db` lease; request Claude review after provider capacity resets
+
+## 2026-07-24 - refresh first-contact authority packet after PR #1692
+
+- Provider: codex-gpt56-desktop
+- Branch: codex/first-contact-authority-review
+- Lane state: rebased onto `origin/main` `129a68f7`; review packet current; runtime blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-first-contact-authority-review
+- STATUS/Issue/PR: draft PR #1660; awaiting fresh Claude opposite-provider verdict
+- Verification: strict OpenSpec 41/41; diff check clean; current `universe-creation` remains 6/33; critic ADAPT resolved to APPROVE; verifier SHIP
+- Related implications: R2-1a draft PR #1691 at `15d495e2`; #1692 verdict/grant/v1 task grant no provider, compute, market, lease, settlement, or spending authority
+- Ship/abandon: publish refresh with force-with-lease against remote `7ae20972`; request Claude review only after provider capacity resets
