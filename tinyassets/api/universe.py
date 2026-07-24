@@ -63,8 +63,6 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-import rfc8785
-
 from tinyassets.api import permissions
 from tinyassets.api.helpers import (
     _base_path,
@@ -1497,6 +1495,8 @@ def _request_body_digest(
     directed_daemon_instruction: str,
     priority_weight: int | float,
 ) -> str:
+    import rfc8785
+
     canonical = rfc8785.dumps({
         "branch_id": branch_id,
         "directed_daemon_id": directed_daemon_id,

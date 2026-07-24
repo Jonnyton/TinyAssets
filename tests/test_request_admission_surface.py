@@ -5,6 +5,8 @@ import inspect
 import json
 import math
 import sqlite3
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -237,6 +239,31 @@ def test_all_runtime_manifests_include_rfc8785() -> None:
             dependency.startswith("rfc8785")
             for dependency in dependencies
         ), manifest
+
+
+def test_server_import_probe_does_not_require_uninstalled_runtime_dependency(
+) -> None:
+    root = Path(__file__).parents[1]
+    script = """
+import builtins
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == "rfc8785":
+        raise ModuleNotFoundError("blocked probe dependency")
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+import tinyassets.universe_server
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_main_and_directory_use_one_transactional_result_contract(
