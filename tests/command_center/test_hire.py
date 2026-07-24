@@ -612,3 +612,123 @@ def test_village_wrapper_scrubs_its_bearers_preserves_provider_auth_and_nests_ti
     )
     assert inner_timeout == 540
     assert inner_timeout < captured["timeout"]
+
+
+def test_post_spawn_communicate_oserror_cleans_up_before_it_is_surfaced(
+    tmp_path: Path, monkeypatch
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+    events: list[str] = []
+
+    class BrokenPipeProcess:
+        pid = 7101
+
+        def communicate(self, timeout=None):
+            events.append("communicate")
+            raise OSError("synthetic pipe failure")
+
+    process = BrokenPipeProcess()
+    monkeypatch.setattr(collector.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        collector,
+        "_kill_peer_tree",
+        lambda proc: events.append("cleanup") if proc is process else None,
+    )
+
+    with pytest.raises(OSError, match="synthetic pipe failure"):
+        collector._run_peer(
+            ["fake-peer"],
+            cwd=cfg.root,
+            timeout=600,
+            env={},
+        )
+
+    assert events == ["communicate", "cleanup"]
+
+
+def test_windows_taskkill_failure_is_not_treated_as_verified_cleanup(
+    monkeypatch,
+):
+    events: list[tuple] = []
+
+    class Process:
+        pid = 7102
+
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            return 0
+
+    def fake_run(cmd, **kwargs):
+        events.append(("taskkill", cmd))
+        return collector.subprocess.CompletedProcess(cmd, 1, b"", b"access denied")
+
+    monkeypatch.setattr(collector.os, "name", "nt")
+    monkeypatch.setattr(collector.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="taskkill"):
+        collector._kill_peer_tree(Process())
+
+    assert events == [
+        ("taskkill", ["taskkill", "/F", "/T", "/PID", "7102"]),
+        ("wait", 10),
+    ]
+
+
+def test_windows_wrapper_wait_timeout_is_not_treated_as_verified_cleanup(
+    monkeypatch,
+):
+    events: list[tuple] = []
+
+    class Process:
+        pid = 7103
+
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            if len([event for event in events if event[0] == "wait"]) == 1:
+                raise collector.subprocess.TimeoutExpired("fake-peer", timeout)
+            return 0
+
+        def kill(self):
+            events.append(("kill",))
+
+    def fake_run(cmd, **kwargs):
+        events.append(("taskkill", cmd))
+        return collector.subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(collector.os, "name", "nt")
+    monkeypatch.setattr(collector.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="did not exit"):
+        collector._kill_peer_tree(Process())
+
+    assert events[:2] == [
+        ("taskkill", ["taskkill", "/F", "/T", "/PID", "7103"]),
+        ("wait", 10),
+    ]
+
+
+def test_unverified_cleanup_keeps_talk_capacity_reserved(
+    tmp_path: Path, monkeypatch
+):
+    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
+    capacity = collector._DispatchCapacity()
+    monkeypatch.setattr(collector, "_DISPATCH_CAPACITY", capacity)
+    finished = threading.Event()
+
+    def fail_cleanup(*args, **kwargs):
+        try:
+            raise collector._PeerCleanupError(
+                "synthetic cleanup verification failure"
+            )
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(collector, "_run_peer", fail_cleanup)
+
+    collector.talk(cfg, "agent:cleanup-fails", "hold capacity fail closed")
+    assert finished.wait(timeout=3)
+    _join_village_threads()
+
+    assert not capacity.reserve(8), (
+        "unverified process-tree cleanup released shared dispatch capacity"
+    )

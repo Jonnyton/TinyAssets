@@ -96,6 +96,10 @@ class _DispatchCapacity:
 _DISPATCH_CAPACITY = _DispatchCapacity()
 
 
+class _PeerCleanupError(RuntimeError):
+    """The provider process tree could not be proven stopped and reaped."""
+
+
 @dataclass
 class Config:
     root: Path
@@ -202,22 +206,51 @@ def _peer_environment() -> dict[str, str]:
 
 
 def _kill_peer_tree(proc: subprocess.Popen[bytes]) -> None:
+    cleanup_error: _PeerCleanupError | None = None
     if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            cleanup_error = _PeerCleanupError(
+                f"taskkill failed for peer process tree {proc.pid}: {exc}"
+            )
+        else:
+            if result.returncode != 0:
+                cleanup_error = _PeerCleanupError(
+                    f"taskkill failed for peer process tree {proc.pid} "
+                    f"with exit code {result.returncode}"
+                )
     else:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except OSError as exc:
+            cleanup_error = _PeerCleanupError(
+                f"process-group cleanup failed for peer {proc.pid}: {exc}"
+            )
     try:
         proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "nt":
+            try:
+                proc.kill()
+            finally:
+                raise _PeerCleanupError(
+                    f"peer wrapper {proc.pid} did not exit after process-tree cleanup"
+                ) from exc
         proc.kill()
         proc.wait(timeout=10)
+    except OSError as exc:
+        raise _PeerCleanupError(
+            f"peer wrapper {proc.pid} could not be reaped: {exc}"
+        ) from exc
+    if cleanup_error:
+        raise cleanup_error
 
 
 def _run_peer(
@@ -246,15 +279,20 @@ def _run_peer(
             env=env,
             **kwargs,
         )
-        try:
-            stdout, _ = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_peer_tree(proc)
-            proc.communicate()
-            return ""
-        return stdout.decode("utf-8", errors="replace")
     except OSError:
         return ""
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_peer_tree(proc)
+        proc.communicate()
+        return ""
+    except OSError:
+        _kill_peer_tree(proc)
+        raise
+    if proc.returncode == 125:
+        raise _PeerCleanupError("peer wrapper reported unverified process-tree cleanup")
+    return stdout.decode("utf-8", errors="replace")
 
 
 def _age_label(ts: float | None, now: float) -> str:
@@ -1306,12 +1344,17 @@ def _dispatch_peer_reserved(
     message: str,
     inbox: Path,
 ) -> None:
+    release_capacity = True
     try:
         _dispatch_peer(cfg, agent, message, inbox)
+    except _PeerCleanupError as exc:
+        release_capacity = False
+        _append_inbox(inbox, "village", f"(dispatch cleanup unverified: {exc})")
     except Exception as exc:
         _append_inbox(inbox, "village", f"(dispatch failed: {exc})")
     finally:
-        _DISPATCH_CAPACITY.release()
+        if release_capacity:
+            _DISPATCH_CAPACITY.release()
 
 
 def _dispatch_peer(cfg: Config, agent: dict, message: str, inbox: Path) -> None:
@@ -1682,10 +1725,19 @@ def _hire_dispatch(cfg: Config, universe: dict, engine: dict, task: str, count: 
             pass
 
     def run_reserved(slot: int) -> None:
+        release_capacity = True
         try:
             run_one(slot)
+        except _PeerCleanupError as exc:
+            release_capacity = False
+            _append_inbox(
+                chat_path,
+                "village",
+                f"({engine['label']}·hire{slot} cleanup unverified: {exc})",
+            )
         finally:
-            _DISPATCH_CAPACITY.release()
+            if release_capacity:
+                _DISPATCH_CAPACITY.release()
 
     started = 0
     try:

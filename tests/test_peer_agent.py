@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "peer_agent.py"
 _SPEC = importlib.util.spec_from_file_location("peer_agent_under_test", _SCRIPT)
 assert _SPEC and _SPEC.loader
@@ -175,13 +177,57 @@ def test_windows_cleanup_uses_taskkill_tree_and_reaps(
     monkeypatch.setattr(
         peer_agent.subprocess,
         "run",
-        lambda cmd, **kwargs: commands.append(cmd),
+        lambda cmd, **kwargs: (
+            commands.append(cmd)
+            or subprocess.CompletedProcess(cmd, 0, b"", b"")
+        ),
     )
 
     peer_agent.kill_tree(proc)
 
     assert commands == [["taskkill", "/F", "/T", "/PID", str(proc.pid)]]
     assert any(event[0] == "wait" for event in proc.events)
+
+
+def test_windows_cleanup_surfaces_taskkill_failure(
+    monkeypatch,
+):
+    proc = _TreeProcess()
+    monkeypatch.setattr(peer_agent.sys, "platform", "win32")
+    monkeypatch.setattr(
+        peer_agent.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 1, b"", b"access denied"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="taskkill"):
+        peer_agent.kill_tree(proc)
+
+    assert any(event[0] == "wait" for event in proc.events)
+
+
+def test_windows_cleanup_surfaces_wrapper_wait_timeout(
+    monkeypatch,
+):
+    class WaitTimesOut(_TreeProcess):
+        def wait(self, timeout=None):
+            self.events.append(("wait", timeout))
+            raise subprocess.TimeoutExpired("fake-peer", timeout)
+
+    proc = WaitTimesOut()
+    monkeypatch.setattr(peer_agent.sys, "platform", "win32")
+    monkeypatch.setattr(
+        peer_agent.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
+    )
+
+    with pytest.raises(RuntimeError, match="did not exit"):
+        peer_agent.kill_tree(proc)
+
+    assert proc.events == [("wait", 10)]
 
 
 class _TimeoutPeer:
@@ -231,3 +277,46 @@ def test_timeout_cleans_and_reaps_before_launcher_returns(
 
     assert _run_fake_claude_main(monkeypatch, tmp_path, fake_popen) == 124
     assert events == ["timeout", "kill-tree", "wait", "reap-pipes"]
+
+
+def test_post_spawn_communicate_oserror_cleans_up_and_reports_runtime_failure(
+    tmp_path: Path, monkeypatch, capsys
+):
+    events: list[str] = []
+
+    class BrokenPipePeer:
+        pid = 9002
+        returncode = None
+
+        def __init__(self, cmd, **kwargs):
+            self.cmd = cmd
+            self.calls = 0
+
+        def communicate(self, input=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                events.append("communicate-error")
+                raise OSError("synthetic pipe failure")
+            events.append("reap-pipes")
+            self.returncode = -9
+            return b"", b""
+
+        def wait(self, timeout=None):
+            events.append("wait")
+            self.returncode = -9
+            return self.returncode
+
+    def fake_kill_tree(proc):
+        events.append("kill-tree")
+        proc.wait(timeout=10)
+
+    monkeypatch.setattr(peer_agent, "kill_tree", fake_kill_tree)
+    monkeypatch.setattr(
+        peer_agent, "subprocess_env_for_provider", lambda provider: {}
+    )
+
+    assert _run_fake_claude_main(
+        monkeypatch, tmp_path, lambda cmd, **kwargs: BrokenPipePeer(cmd, **kwargs)
+    ) == 126
+    assert events == ["communicate-error", "kill-tree", "wait", "reap-pipes"]
+    assert "communication failed after launch" in capsys.readouterr().err

@@ -20,7 +20,8 @@ Modes:
 
 Output contract: on success the --out file holds the peer's final message;
 on failure it holds a `[peer_agent] ERROR ...` block and the exit code is
-non-zero (2 provider/usage error, 124 timeout, 127 CLI not launchable).
+non-zero (2 provider/usage error, 124 timeout, 125 cleanup unverified,
+126 post-launch I/O failure, 127 CLI not launchable).
 Argparse usage errors are the only failure that cannot write --out (the path
 is not known yet). The full result is also printed to stdout, so a background
 caller sees it in the task log. A pre-existing --out file is never mistaken
@@ -57,6 +58,10 @@ _AUTH_PATTERNS = ("401", "unauthorized", "reconnecting", "auth", "login")
 # argv through cmd.exe parsing even with shell=False (BatBadBut class):
 # list2cmdline quoting does NOT protect these, so reject them loudly instead.
 _CMD_METACHARS = frozenset("&|%<>^\"")
+
+
+class PeerCleanupError(RuntimeError):
+    """The provider process tree could not be proven stopped and reaped."""
 
 
 def resolve_claude() -> str:
@@ -151,10 +156,23 @@ def unsafe_cmd_argv(cmd: list[str]) -> str | None:
 
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill the whole process tree (Windows .cmd -> node grandchildren)."""
+    cleanup_error: PeerCleanupError | None = None
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True
-        )
+        try:
+            result = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+            )
+        except OSError as exc:
+            cleanup_error = PeerCleanupError(
+                f"taskkill failed for provider process tree {proc.pid}: {exc}"
+            )
+        else:
+            if result.returncode != 0:
+                cleanup_error = PeerCleanupError(
+                    f"taskkill failed for provider process tree {proc.pid} "
+                    f"with exit code {result.returncode}"
+                )
     else:
         try:
             os.killpg(
@@ -163,10 +181,19 @@ def kill_tree(proc: subprocess.Popen) -> None:
             )
         except ProcessLookupError:
             pass
+        except OSError as exc:
+            cleanup_error = PeerCleanupError(
+                f"process-group cleanup failed for provider {proc.pid}: {exc}"
+            )
     try:
         proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        pass
+    except subprocess.TimeoutExpired as exc:
+        if sys.platform == "win32":
+            raise PeerCleanupError(
+                f"provider wrapper {proc.pid} did not exit after process-tree cleanup"
+            ) from exc
+    if cleanup_error:
+        raise cleanup_error
 
 
 def main() -> int:
@@ -272,14 +299,14 @@ def main() -> int:
         file=sys.stderr,
     )
     start = time.monotonic()
+    process_group: dict[str, object]
+    if sys.platform == "win32":
+        process_group = {
+            "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        }
+    else:
+        process_group = {"start_new_session": True}
     try:
-        process_group: dict[str, object]
-        if sys.platform == "win32":
-            process_group = {
-                "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            }
-        else:
-            process_group = {"start_new_session": True}
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -289,17 +316,6 @@ def main() -> int:
             cwd=args.cwd,
             **process_group,
         )
-        try:
-            stdout_b, stderr_b = proc.communicate(
-                input=prompt.encode("utf-8"), timeout=args.timeout
-            )
-        except subprocess.TimeoutExpired:
-            kill_tree(proc)  # .cmd -> node grandchildren must die too
-            proc.communicate()  # reap once pipe handles are gone
-            return fail(
-                f"{args.provider} exceeded {args.timeout}s timeout — process tree killed.",
-                124,
-            )
     except OSError as exc:
         # Covers missing binary AND WinError 193 (extensionless bash shim).
         return fail(
@@ -307,6 +323,50 @@ def main() -> int:
             f"Set {args.provider.upper()}_BIN to the full path of the CLI "
             "(.cmd on Windows).",
             127,
+        )
+    try:
+        stdout_b, stderr_b = proc.communicate(
+            input=prompt.encode("utf-8"), timeout=args.timeout
+        )
+    except subprocess.TimeoutExpired:
+        try:
+            kill_tree(proc)  # .cmd -> node grandchildren must die too
+            proc.communicate()  # reap once pipe handles are gone
+        except PeerCleanupError as exc:
+            return fail(
+                f"{args.provider} cleanup could not be verified: {exc}",
+                125,
+            )
+        except OSError as exc:
+            return fail(
+                f"{args.provider} timed out; process-tree cleanup was verified "
+                f"but pipe reaping failed ({exc}).",
+                126,
+            )
+        return fail(
+            f"{args.provider} exceeded {args.timeout}s timeout — process tree killed.",
+            124,
+        )
+    except OSError as exc:
+        try:
+            kill_tree(proc)
+            proc.communicate()
+        except PeerCleanupError as cleanup_exc:
+            return fail(
+                f"{args.provider} communication failed after launch ({exc}); "
+                f"cleanup could not be verified: {cleanup_exc}",
+                125,
+            )
+        except OSError as reap_exc:
+            return fail(
+                f"{args.provider} communication failed after launch ({exc}); "
+                f"cleanup was verified but pipe reaping failed ({reap_exc}).",
+                126,
+            )
+        return fail(
+            f"{args.provider} communication failed after launch ({exc}); "
+            "process-tree cleanup verified.",
+            126,
         )
     elapsed = time.monotonic() - start
 
