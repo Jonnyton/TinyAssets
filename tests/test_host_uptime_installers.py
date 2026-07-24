@@ -278,7 +278,7 @@ def _run_backup_state(
             expected_identity = f"{owner_group} 600"
 
     args = (
-        "spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups",
+        "spaces:workflow-backups-jonnyton-sfo3/workflow-backups",
         _bash_path(env_file),
         _bash_path(config),
         _bash_path(fake_rclone),
@@ -1006,7 +1006,8 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert "/v2/spaces/keys" in run
     assert "--max-filesize 4096" in run
     assert '"permission":"readwrite"' in run
-    assert 'bucket="tinyassets-backups-jonnyton-sfo3"' in run
+    assert 'bucket="workflow-backups-jonnyton-sfo3"' in run
+    assert "tinyassets-backups-jonnyton-sfo3" not in run
     assert '"bucket":"%s"' in run
     assert "fullaccess" not in run
     assert "::add-mask::" in run
@@ -1041,24 +1042,24 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     ("env_text", "config_kind", "config_mode", "rclone_rc", "expected"),
     (
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "600",
             0,
             "configured_ready",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "644",
             0,
             "partial_or_invalid",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "symlink",
             "600",
             0,
@@ -1066,26 +1067,26 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
         ),
         (None, "absent", "600", 0, "completely_absent"),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "absent",
             "600",
             0,
             "partial_or_invalid",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "600",
             1,
             "partial_or_invalid",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n"
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n"
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "600",
             0,
