@@ -383,7 +383,12 @@ def server_base(tmp_path: Path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
     uid = "test-uni"
-    (base / uid).mkdir()
+    udir = base / uid
+    udir.mkdir()
+    (udir / "PROGRAM.md").write_text(
+        "Legacy fixture with an explicit compatibility Loop.",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     return base, uid
@@ -395,7 +400,7 @@ def _call_submit(**kwargs):
     return json.loads(_action_submit_request(**kwargs))
 
 
-def test_submit_request_as_host_queues_host_request_branch_task(
+def test_submit_host_without_grant_queues_user_request(
     server_base, monkeypatch,
 ):
     _, uid = server_base
@@ -405,7 +410,7 @@ def test_submit_request_as_host_queues_host_request_branch_task(
     assert "branch_task_id" in resp and resp["branch_task_id"]
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert len(q) == 1
-    assert q[0].trigger_source == "host_request"
+    assert q[0].trigger_source == "user_request"
 
 
 def test_submit_request_as_non_host_queues_user_request(
@@ -441,13 +446,15 @@ def test_submit_8kib_cap_still_enforced(server_base, monkeypatch):
     assert "error" in resp
 
 
-def test_submit_host_priority_weight_persists(server_base, monkeypatch):
+def test_submit_host_without_grant_priority_weight_clamped(
+    server_base, monkeypatch,
+):
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="boosted", priority_weight=50.0)
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
-    assert q[0].priority_weight == 50.0
+    assert q[0].priority_weight == 0.0
 
 
 def test_submit_non_host_priority_weight_clamped(server_base, monkeypatch):
@@ -896,8 +903,10 @@ def test_queue_list_returns_sorted_scored_queue(server_base, monkeypatch):
     resp = json.loads(_action_queue_list(universe_id=uid))
     assert "queue" in resp
     assert len(resp["queue"]) == 2
-    # host_request should be first (higher tier weight)
-    assert resp["queue"][0]["trigger_source"] == "host_request"
+    # Host identity alone grants no tier elevation; both remain ordinary work.
+    assert {
+        row["trigger_source"] for row in resp["queue"]
+    } == {"user_request"}
     # scores present
     assert "score" in resp["queue"][0]
     # tier_status map present
@@ -906,22 +915,24 @@ def test_queue_list_returns_sorted_scored_queue(server_base, monkeypatch):
     assert "stubbed" in resp["tier_status"]["goal_pool"]
 
 
-def test_queue_cancel_on_running_task_as_host_requests_cancel(
+def test_queue_cancel_on_running_task_with_explicit_grant_requests_cancel(
     server_base, monkeypatch,
 ):
-    """Task #21: host cancelling a running task triggers cooperative
-    cancel (sets cancel_requested) rather than rejecting.
+    """Task #21: an explicitly authorized actor gets cooperative cancel.
 
-    Prior contract ``running_tasks_require_host_override`` retired;
-    host identity is now one of two authorized actors (the other is
-    the claiming daemon). See test_queue_cancel_on_running_task_unauthorized
-    for the rejection path."""
+    Host identity alone is not authority. The other authorized path is the
+    claiming daemon. See test_queue_cancel_on_running_task_unauthorized for
+    the rejection path."""
     from tinyassets.api.universe import _action_queue_cancel
     from tinyassets.branch_tasks import is_task_cancel_requested
 
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
+    monkeypatch.setenv(
+        "UNIVERSE_SERVER_CAPABILITIES",
+        "cancel_branch_task",
+    )
     _call_submit(universe_id=uid, text="A")
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)

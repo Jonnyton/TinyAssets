@@ -439,6 +439,11 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
     """
     with _connect(base_path) as conn:
         conn.executescript(schema)
+        from tinyassets.storage.request_admissions import (
+            migrate_request_admission_schema,
+        )
+
+        migrate_request_admission_schema(conn)
         # Phase 5 migration: branch_definitions.goal_id column. Older
         # installs predate Phase 5. SQLite lacks ADD COLUMN IF NOT EXISTS,
         # so probe table_info first. Nullable so existing rows stay

@@ -1,20 +1,20 @@
 ## 1. Evidence, Inventory, and Claims
 
-- [ ] 1.1 In `docs/ops/operator-request-v2-inventory.md`, record dated production-shaped counts for pending/running v1 `host_request` rows, custom tier weights, public v1 request writers, active worker build SHAs, and worker heartbeat formats; do not relabel any row.
-- [ ] 1.2 Run `python scripts/claim_check.py --provider <provider> --check-files "<exact implementation files>"` and exact diffs against PRs #1606, #1472, and #1464; update the STATUS Files/Depends cells before touching overlaps.
-- [ ] 1.3 Preserve the declared-Loop reproduction and focused baseline commands in `docs/ops/operator-request-v2-inventory.md`, including the current accepted-but-unqueued output and `tests/test_dispatcher_queue.py:398-469,785-823`, `tests/test_submit_request_wiring.py:204-294`, and `tests/test_patch_request_incentives.py:19-77`.
-- [ ] 1.4 Seed valid Loop fixtures and replace obsolete host/environment assertions only in those named test regions; prove the reproduction fails for the intended trigger/admission reason before implementation.
+- [x] 1.1 In `docs/ops/operator-request-v2-inventory.md`, record dated production-shaped counts for pending/running v1 `host_request` rows, custom tier weights, public v1 request writers, active worker build SHAs, and worker heartbeat formats; do not relabel any row.
+- [x] 1.2 Run `python scripts/claim_check.py --provider <provider> --check-files "<exact implementation files>"` and exact diffs against PRs #1606, #1472, and #1464; update the STATUS Files/Depends cells before touching overlaps.
+- [x] 1.3 Preserve the declared-Loop reproduction and focused baseline commands in `docs/ops/operator-request-v2-inventory.md`, including the current accepted-but-unqueued output and `tests/test_dispatcher_queue.py:398-469,785-823`, `tests/test_submit_request_wiring.py:204-294`, and `tests/test_patch_request_incentives.py:19-77`.
+- [x] 1.4 Seed valid Loop fixtures and replace obsolete host/environment assertions only in those named test regions; prove the reproduction fails for the intended trigger/admission reason before implementation.
 
 ## 2. Transactional Schema and Store
 
-- [ ] 2.1 Add failing schema/migration tests in `tests/test_request_admission_store.py` for one-to-one Request/admission/task links, scoped key-hash uniqueness, finite `[0,100]` checks, event foreign keys, quarantine digest uniqueness, and upgrade from a pre-change `.tinyassets.db`.
-- [ ] 2.2 Add the schema/migrator for `request_admissions`, `request_admission_events`, `branch_tasks_v2`, `branch_tasks_v2_quarantine`, and `request_admission_rollouts` in `tinyassets/storage/request_admissions.py`, then invoke it from the active pre-traffic `initialize_author_server` path in `tinyassets/daemon_server.py`; do not leave uncalled DDL in `tinyassets/storage/__init__.py` or lazy-ALTER on first request.
-- [ ] 2.3 Add backend-neutral persistence methods in `tinyassets/storage/request_admissions.py`: `commit_admission`, `lookup_replay`, `list_v2_candidates`, `claim_v2_task`, lifecycle transitions, quarantine, compaction, and universe deletion.
+- [x] 2.1 Add failing schema/migration tests in `tests/test_request_admission_store.py` for one-to-one Request/admission/task links, scoped key-hash uniqueness, finite `[0,100]` checks, event foreign keys, quarantine digest uniqueness, and upgrade from a pre-change `.tinyassets.db`.
+- [x] 2.2 Add the schema/migrator for `request_admissions`, `request_admission_events`, `branch_tasks_v2`, `branch_tasks_v2_quarantine`, and `request_admission_rollouts` in `tinyassets/storage/request_admissions.py`, then invoke it from the active pre-traffic `initialize_author_server` path in `tinyassets/daemon_server.py`; do not leave uncalled DDL in `tinyassets/storage/__init__.py` or lazy-ALTER on first request.
+- [x] 2.3 Add backend-neutral persistence methods in `tinyassets/storage/request_admissions.py`: `commit_admission`, `lookup_replay`, `list_v2_candidates`, `claim_v2_task`, lifecycle transitions, quarantine, compaction, and universe deletion.
 - [ ] 2.4 Reuse `user_requests` as the canonical Request row; update its store API rather than creating a second full request table or persisting raw idempotency keys.
 - [ ] 2.5 In one transaction, re-read stored ACL/grant state, allocate random IDs, insert Request/admission/v2 task/event, and commit; add fault injection at every statement and prove each precommit failure leaves zero aggregate rows.
 - [ ] 2.6 Store the exact successful public-result fields, then prove a postcommit serialization/delivery failure replays the original IDs without another task or mutation-ledger entry.
-- [ ] 2.7 Implement 30-day terminal-detail compaction plus a minimal scoped key-hash/body-digest/ID/state tombstone retained until universe deletion; test pending rows never compact.
-- [ ] 2.8 Add SQLite WAL/foreign-key/busy-timeout and concurrent migration tests matching the shared storage convention; surface lock errors instead of treating them as misses.
+- [x] 2.7 Implement 30-day terminal-detail compaction plus a minimal scoped key-hash/body-digest/ID/state tombstone retained until universe deletion; test pending rows never compact.
+- [x] 2.8 Add SQLite WAL/foreign-key/busy-timeout and concurrent migration tests matching the shared storage convention; surface lock errors instead of treating them as misses.
 - [ ] 2.9 Add backend conformance tests proving local SQLite uses linked `user_requests` + `branch_tasks_v2`, while hosted Postgres co-locates stable `request_id`/`branch_task_id` and lifecycle in one `request_inbox` row claimed by the existing narrow RPC with no second hosted dispatcher.
 
 ## 3. Identity and Grant Lifecycle
