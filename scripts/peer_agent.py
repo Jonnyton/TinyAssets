@@ -31,7 +31,6 @@ for a fresh result: the codex -o target is unlinked before dispatch.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import signal
@@ -155,54 +154,53 @@ def unsafe_cmd_argv(cmd: list[str]) -> str | None:
     return None
 
 
-def _wait_for_process_group_exit(pgid: int, *, timeout: float = 10.0) -> None:
-    deadline = time.monotonic() + timeout
-    while True:
+def _ensure_own_process_group() -> None:
+    """Make this wrapper the stable POSIX group leader before provider launch."""
+    if sys.platform == "win32":
+        return
+    pid = os.getpid()
+    if os.getpgrp() != pid:
+        os.setpgid(0, 0)
+    if os.getpgrp() != pid:
+        raise PeerCleanupError(
+            f"peer wrapper {pid} could not establish its own process group"
+        )
+
+
+def _terminate_own_process_group() -> None:
+    """Flush diagnostics, then terminate wrapper and provider together."""
+    for stream in (sys.stdout, sys.stderr):
         try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return
-        except OSError as exc:
-            raise PeerCleanupError(
-                f"provider process group {pgid} could not be verified stopped: {exc}"
-            ) from exc
-        if time.monotonic() >= deadline:
-            raise PeerCleanupError(
-                f"provider process group {pgid} still exists after cleanup"
-            )
-        time.sleep(0.01)
+            stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
+    pgid = os.getpgrp()
+    os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))
+    raise PeerCleanupError(
+        f"process-group termination unexpectedly returned for peer wrapper {pgid}"
+    )
 
 
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill the whole process tree (Windows .cmd -> node grandchildren)."""
+    if sys.platform != "win32":
+        _terminate_own_process_group()
+        return
     cleanup_error: PeerCleanupError | None = None
-    if sys.platform == "win32":
-        try:
-            result = subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-            )
-        except OSError as exc:
-            cleanup_error = PeerCleanupError(
-                f"taskkill failed for provider process tree {proc.pid}: {exc}"
-            )
-        else:
-            if result.returncode != 0:
-                cleanup_error = PeerCleanupError(
-                    f"taskkill failed for provider process tree {proc.pid} "
-                    f"with exit code {result.returncode}"
-                )
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+        )
+    except OSError as exc:
+        cleanup_error = PeerCleanupError(
+            f"taskkill failed for provider process tree {proc.pid}: {exc}"
+        )
     else:
-        try:
-            os.killpg(
-                proc.pid,
-                getattr(signal, "SIGKILL", signal.SIGTERM),
-            )
-        except ProcessLookupError:
-            pass
-        except OSError as exc:
+        if result.returncode != 0:
             cleanup_error = PeerCleanupError(
-                f"process-group cleanup failed for provider {proc.pid}: {exc}"
+                f"taskkill failed for provider process tree {proc.pid} "
+                f"with exit code {result.returncode}"
             )
     try:
         proc.wait(timeout=10)
@@ -214,31 +212,8 @@ def kill_tree(proc: subprocess.Popen) -> None:
         raise PeerCleanupError(
             f"provider wrapper {proc.pid} could not be reaped: {exc}"
         ) from exc
-    if sys.platform != "win32":
-        _wait_for_process_group_exit(proc.pid)
     if cleanup_error:
         raise cleanup_error
-
-
-def _write_process_identity(path: Path, *, provider_pgid: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(
-                {
-                    "wrapper_pid": os.getpid(),
-                    "provider_pgid": provider_pgid,
-                },
-                stream,
-            )
-            stream.write("\n")
-        os.replace(temp_path, path)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -272,11 +247,6 @@ def main() -> int:
     p.add_argument(
         "--effort", default=None, help="Codex reasoning effort (minimal/low/medium/high/xhigh)."
     )
-    p.add_argument(
-        "--provider-pgid-file",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
     args = p.parse_args()
 
     # to_native_path BEFORE abspath: abspath("/c/Users/...") on Windows yields
@@ -287,11 +257,6 @@ def main() -> int:
         # not ours — a relative --out + --cwd combo breaks the write (os error 3).
         args.out = os.path.abspath(to_native_path(args.out))
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    if args.provider_pgid_file:
-        args.provider_pgid_file = os.path.abspath(
-            to_native_path(args.provider_pgid_file)
-        )
-
     owned_temp: str | None = None
     out_path = args.out
 
@@ -303,7 +268,7 @@ def main() -> int:
                 Path(out_path).write_text(full + "\n", encoding="utf-8")
             except OSError:
                 pass  # stderr still carries the message
-        print(full, file=sys.stderr)
+        print(full, file=sys.stderr, flush=True)
         return code
 
     if not Path(args.cwd).is_dir():
@@ -359,7 +324,11 @@ def main() -> int:
             "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         }
     else:
-        process_group = {"start_new_session": True}
+        try:
+            _ensure_own_process_group()
+        except (OSError, PeerCleanupError) as exc:
+            return fail(f"could not establish wrapper process group: {exc}", 125)
+        process_group = {}
     try:
         proc = subprocess.Popen(
             cmd,
@@ -378,31 +347,25 @@ def main() -> int:
             "(.cmd on Windows).",
             127,
         )
-    if args.provider_pgid_file:
-        try:
-            _write_process_identity(
-                Path(args.provider_pgid_file),
-                provider_pgid=proc.pid,
-            )
-        except OSError as exc:
-            try:
-                kill_tree(proc)
-            except PeerCleanupError as cleanup_exc:
-                return fail(
-                    f"{args.provider} provider identity could not be recorded ({exc}); "
-                    f"cleanup could not be verified: {cleanup_exc}",
-                    125,
-                )
-            return fail(
-                f"{args.provider} provider identity could not be recorded ({exc}); "
-                "process-tree cleanup verified.",
-                125,
-            )
     try:
         stdout_b, stderr_b = proc.communicate(
             input=prompt.encode("utf-8"), timeout=args.timeout
         )
     except subprocess.TimeoutExpired:
+        if sys.platform != "win32":
+            code = fail(
+                f"{args.provider} exceeded {args.timeout}s timeout — "
+                "terminating wrapper process group.",
+                124,
+            )
+            try:
+                _terminate_own_process_group()
+            except (OSError, PeerCleanupError) as exc:
+                return fail(
+                    f"{args.provider} cleanup could not be verified: {exc}",
+                    125,
+                )
+            return code
         try:
             kill_tree(proc)  # .cmd -> node grandchildren must die too
             proc.communicate()  # reap once pipe handles are gone
@@ -422,6 +385,21 @@ def main() -> int:
             124,
         )
     except OSError as exc:
+        if sys.platform != "win32":
+            fail(
+                f"{args.provider} communication failed after launch ({exc}); "
+                "terminating wrapper process group.",
+                126,
+            )
+            try:
+                _terminate_own_process_group()
+            except (OSError, PeerCleanupError) as cleanup_exc:
+                return fail(
+                    f"{args.provider} communication failed after launch ({exc}); "
+                    f"cleanup could not be verified: {cleanup_exc}",
+                    125,
+                )
+            return 126
         try:
             kill_tree(proc)
             proc.communicate()

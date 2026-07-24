@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import signal
 import threading
 import time
@@ -667,9 +666,7 @@ def test_post_spawn_communicate_oserror_cleans_up_before_it_is_surfaced(
     monkeypatch.setattr(
         collector,
         "_kill_peer_tree",
-        lambda proc, provider_pgid_file=None: (
-            events.append("cleanup") if proc is process else None
-        ),
+        lambda proc: events.append("cleanup") if proc is process else None,
     )
 
     with pytest.raises(OSError, match="synthetic pipe failure"):
@@ -681,6 +678,24 @@ def test_post_spawn_communicate_oserror_cleans_up_before_it_is_surfaced(
         )
 
     assert events == ["communicate", "cleanup"]
+
+
+def test_peer_launch_oserror_is_operator_visible(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        collector.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("synthetic launch failure")
+        ),
+    )
+
+    with pytest.raises(OSError, match="synthetic launch failure"):
+        collector._run_peer(
+            ["missing-peer"],
+            cwd=tmp_path,
+            timeout=600,
+            env={},
+        )
 
 
 def test_windows_taskkill_failure_is_not_treated_as_verified_cleanup(
@@ -772,15 +787,10 @@ def test_windows_wrapper_fallback_kill_failure_is_dedicated_cleanup_failure(
         collector._kill_peer_tree(Process())
 
 
-def test_posix_cleanup_uses_reported_groups_when_wrapper_leader_is_gone(
-    tmp_path: Path, monkeypatch
+def test_posix_cleanup_targets_only_wrapper_owned_group(
+    monkeypatch
 ):
     events: list[tuple] = []
-    identity_path = tmp_path / "provider-process.json"
-    identity_path.write_text(
-        json.dumps({"wrapper_pid": 7104, "provider_pgid": 8104}),
-        encoding="utf-8",
-    )
 
     class Process:
         pid = 7104
@@ -789,27 +799,19 @@ def test_posix_cleanup_uses_reported_groups_when_wrapper_leader_is_gone(
             events.append(("wait", timeout))
             return 0
 
-    def leader_is_already_gone(pid):
-        raise ProcessLookupError(pid)
-
     def fake_killpg(pgid, sig):
         events.append(("killpg", pgid, sig))
         if sig == 0:
             raise ProcessLookupError(pgid)
 
     monkeypatch.setattr(collector.os, "name", "posix")
-    monkeypatch.setattr(
-        collector.os, "getpgid", leader_is_already_gone, raising=False
-    )
     monkeypatch.setattr(collector.os, "killpg", fake_killpg, raising=False)
 
-    collector._kill_peer_tree(Process(), identity_path)
+    collector._kill_peer_tree(Process())
 
     kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
     assert ("killpg", 7104, kill_signal) in events
-    assert ("killpg", 8104, kill_signal) in events
     assert ("killpg", 7104, 0) in events
-    assert ("killpg", 8104, 0) in events
     assert ("wait", 10) in events
 
 
@@ -857,58 +859,34 @@ def test_posix_wrapper_wait_timeout_is_dedicated_cleanup_failure(
         collector._kill_peer_tree(Process())
 
 
-@pytest.mark.parametrize(
-    "identity_text",
-    [
-        None,
-        "not-json",
-        json.dumps({"wrapper_pid": 9999, "provider_pgid": 8106}),
-        json.dumps({"wrapper_pid": 7106, "provider_pgid": 7106}),
-    ],
-)
-def test_outer_cleanup_rejects_invalid_provider_identity_after_wrapper_timeout(
-    tmp_path: Path, monkeypatch, identity_text: str | None
+def test_outer_normal_exit_verifies_wrapper_group_absent(
+    tmp_path: Path, monkeypatch
 ):
     class Process:
         pid = 7106
-        returncode = None
-
-        def __init__(self):
-            self.communications = 0
+        returncode = 0
 
         def communicate(self, timeout=None):
-            self.communications += 1
-            if self.communications == 1:
-                raise collector.subprocess.TimeoutExpired("fake-peer", timeout)
-            return b"", b""
-
-        def wait(self, timeout=None):
-            return 0
+            return b"done", b""
 
     process = Process()
-    identity_path = tmp_path / "provider-process.json"
-    if identity_text is not None:
-        identity_path.write_text(identity_text, encoding="utf-8")
+    checks: list[tuple[int, int]] = []
     monkeypatch.setattr(collector.os, "name", "posix")
     monkeypatch.setattr(collector.subprocess, "Popen", lambda *args, **kwargs: process)
-    monkeypatch.setattr(
-        collector.os,
-        "killpg",
-        lambda pgid, sig: (
-            (_ for _ in ()).throw(ProcessLookupError(pgid))
-            if sig == 0
-            else None
-        ),
-        raising=False,
-    )
 
-    with pytest.raises(collector._PeerCleanupError, match="identity"):
-        collector._run_peer(
-            ["fake-peer", "--provider-pgid-file", str(identity_path)],
-            cwd=tmp_path,
-            timeout=600,
-            env={},
-        )
+    def absent_group(pgid, sig):
+        checks.append((pgid, sig))
+        raise ProcessLookupError(pgid)
+
+    monkeypatch.setattr(collector.os, "killpg", absent_group, raising=False)
+
+    assert collector._run_peer(
+        ["fake-peer"],
+        cwd=tmp_path,
+        timeout=600,
+        env={},
+    ) == "done"
+    assert checks == [(process.pid, 0)]
 
 
 def test_unverified_cleanup_keeps_talk_capacity_reserved(
@@ -938,14 +916,9 @@ def test_unverified_cleanup_keeps_talk_capacity_reserved(
     )
 
 
-def test_artifact_cleanup_error_cannot_mask_unverified_talk_cleanup(
-    tmp_path: Path, monkeypatch
+def test_artifact_unlink_failure_is_reported_without_masking_primary_cleanup(
+    tmp_path: Path, capsys
 ):
-    cfg, _ = _dispatch_setup(tmp_path, monkeypatch)
-    capacity = collector._DispatchCapacity()
-    monkeypatch.setattr(collector, "_DISPATCH_CAPACITY", capacity)
-    finished = threading.Event()
-
     class CleanupFails:
         def __str__(self):
             return str(tmp_path / "synthetic-artifact")
@@ -953,29 +926,69 @@ def test_artifact_cleanup_error_cannot_mask_unverified_talk_cleanup(
         def unlink(self, *, missing_ok=False):
             raise OSError("synthetic artifact unlink failure")
 
-    monkeypatch.setattr(
-        collector,
-        "_new_dispatch_artifact",
-        lambda *args, **kwargs: CleanupFails(),
-    )
-
-    def fail_cleanup(*args, **kwargs):
+    with pytest.raises(collector._PeerCleanupError) as caught:
         try:
             raise collector._PeerCleanupError(
                 "synthetic cleanup verification failure"
             )
         finally:
-            finished.set()
+            collector._remove_dispatch_artifacts(CleanupFails())
 
-    monkeypatch.setattr(collector, "_run_peer", fail_cleanup)
-
-    collector.talk(cfg, "agent:cleanup-mask", "do not mask cleanup failure")
-    assert finished.wait(timeout=3)
-    _join_village_threads()
-
-    assert not capacity.reserve(8), (
-        "artifact cleanup masked unverified process cleanup and released capacity"
+    assert "cleanup verification failure" in str(caught.value)
+    assert any(
+        "artifact unlink failure" in note
+        for note in getattr(caught.value, "__notes__", [])
     )
+    assert "artifact unlink failure" in capsys.readouterr().err
+
+
+def test_same_target_inbox_appends_are_serialized(
+    tmp_path: Path, monkeypatch
+):
+    inbox = tmp_path / "same-target.md"
+    real_open = Path.open
+    first_opened = threading.Event()
+    release_first = threading.Event()
+    second_opened = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def controlled_open(path, *args, **kwargs):
+        nonlocal calls
+        if path == inbox:
+            with calls_lock:
+                calls += 1
+                call = calls
+            if call == 1:
+                first_opened.set()
+                assert release_first.wait(timeout=3)
+            else:
+                second_opened.set()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", controlled_open)
+    first = threading.Thread(
+        target=collector._append_inbox,
+        args=(inbox, "alpha", "first"),
+    )
+    second = threading.Thread(
+        target=collector._append_inbox,
+        args=(inbox, "beta", "second"),
+    )
+    first.start()
+    assert first_opened.wait(timeout=3)
+    second.start()
+    try:
+        serialized = not second_opened.wait(timeout=0.1)
+    finally:
+        release_first.set()
+        first.join(timeout=3)
+        second.join(timeout=3)
+
+    assert serialized
+    assert second_opened.is_set()
+    assert not first.is_alive()
+    assert not second.is_alive()
 
 
 def test_unverified_cleanup_keeps_hire_capacity_reserved(
