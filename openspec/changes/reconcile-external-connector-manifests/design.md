@@ -132,11 +132,14 @@ Removal additionally requires the Registry current version to be published,
 every maintained OpenAI/Claude registration to point to `/mcp` or be explicitly
 removed/reclassified, and each external review state to be recorded. Vendor
 acceptance is launch evidence, not an unbounded route-retirement dependency.
-For a pending or unavailable review, a predeclared decision date plus explicit
-host disposition may authorize cutover. A predeclared telemetry window records
-its exact start, end, evidence source, and zero unexplained maintained callers.
-The host reviews that evidence and gives a final explicit cutover approval
-before route deletion.
+For a pending or unavailable review, a predeclared decision date records the
+registration as pending, unavailable, withdrawn, or unsupported and permits
+cutover without an unbounded wait. A predeclared telemetry window records its
+exact start, end, evidence source, and zero unexplained maintained callers.
+The 2026-07-24 host directive is standing authorization to delete the route
+once these objective gates pass. No second discretionary host approval is
+required; only a concrete newly discovered supported caller or safety failure
+recorded in `STATUS.md` may stop the cutover.
 
 ### Preserve history, supersede guidance
 
@@ -198,12 +201,12 @@ substitutes for the other.
 6. Migrate and re-prove maintained supported clients. Record unsupported hosts
    or read-only limitations rather than preserving anonymous mutation.
 7. Obtain rendered ChatGPT/Claude, Registry, concurrency, and post-change
-   evidence; record external review states and use a dated explicit host
+   evidence; record external review states and apply the predeclared dated
    disposition when a vendor is pending or unavailable; inspect old-route
    usage through a predeclared bounded telemetry window.
 8. Remove directory runtime, mounts, constants, catalogs, discovery text,
-   Worker routing, and current operational guidance in one reviewed slice only
-   after explicit final host cutover approval.
+   Worker routing, and current operational guidance in one reviewed slice as
+   soon as the objective migration gates pass.
 9. Prove `/mcp-directory*` is absent, `/mcp` remains healthy, and no supported
    registration points at the retired path.
 10. Sync canonical specs and archive this change only after all completed

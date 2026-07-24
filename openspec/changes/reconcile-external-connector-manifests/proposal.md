@@ -39,9 +39,10 @@ with local configuration and a different identity boundary.
 - Treat historical `/mcp-directory` proof as historical evidence; append
   superseding current proof instead of rewriting dated artifacts.
 - Require exact-seven, OAuth, redaction, maintained-client, Registry,
-  concurrency, bounded old-route telemetry, and explicit host cutover evidence
-  before route removal. External host review state is recorded, but an
-  unavailable or indefinitely pending vendor does not preserve the old route.
+  concurrency, and bounded old-route telemetry evidence before route removal.
+  The 2026-07-24 host directive is standing cutover authorization once those
+  objective gates pass; no second discretionary approval or indefinitely
+  pending vendor may preserve the old route.
 - Remove `directory_server`, directory catalog constants/mounts, versioned
   directory URLs, and Worker routing after migration proof. Old
   `/mcp-directory*` requests become absent/404; no redirect or compatibility

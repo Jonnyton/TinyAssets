@@ -1,7 +1,7 @@
 ## 1. Adapt The Authority Contract
 
 - [x] 1.1 Confirm the obsolete five-handle collapse change remains archived with `--skip-specs`.
-- [x] 1.2 Record the 2026-07-24 host directive: `TinyAssets` is the only user-facing name, `/mcp` is the sole remote product endpoint, and `/mcp-directory` retires promptly after safe migration.
+- [x] 1.2 Record the 2026-07-24 host directive: `TinyAssets` is the only user-facing name, `/mcp` is the sole remote product endpoint, `/mcp-directory` retires promptly after safe migration, and the directive is standing cutover authorization without a second discretionary approval.
 - [x] 1.3 Adapt proposal, design, delta specs, and tasks from three products to two: remote `/mcp` and local MCPB.
 - [x] 1.4 Obtain independent architecture, security, and coverage review of the adapted contract before runtime work.
 - [ ] 1.5 Coordinate PR #1522 so its useful naming/provenance corrections fold into this lane without restoring the retired directory-product premise.
@@ -44,17 +44,17 @@
 
 - [ ] 5.1 Prove canonical `/mcp` exact-seven enumeration, safe status projection, neutral instructions, metadata/runtime OAuth agreement, anonymous reads, and authenticated mutation without provider calls.
 - [ ] 5.2 Record rendered ChatGPT web/mobile and Claude connector conversations against `/mcp`, including OAuth and at least one safe read plus authorized write/converse path; any provider turn uses requester BYOC or an accepted-market grant, never maintainer credentials or personal limits.
-- [ ] 5.3 Submit canonical seven-tool metadata to OpenAI and Claude and record each accepted, published, pending, unavailable, rejected, or withdrawn state. Treat acceptance/publication as launch evidence; for a pending or unavailable review, set a predeclared decision date and require explicit host disposition rather than retaining `/mcp-directory` indefinitely.
+- [ ] 5.3 Submit canonical seven-tool metadata to OpenAI and Claude and record each accepted, published, pending, unavailable, rejected, or withdrawn state. Treat acceptance/publication as launch evidence; for a pending or unavailable review, set a predeclared decision date and then record the registration as pending, unavailable, withdrawn, or unsupported rather than retaining `/mcp-directory` indefinitely.
 - [ ] 5.4 Publish and verify the MCP Registry current version resolving to `/mcp`.
 - [ ] 5.5 Record supported Codex, Cursor, Open WebUI, LibreChat, Registry, and other maintained-client dispositions and proofs.
 - [ ] 5.6 Record first normal external-user discovery/install/use and matching server evidence, or leave an explicit watch item.
 - [ ] 5.7 Run a predeclared `/mcp-directory*` telemetry window with exact start/end/evidence source and zero unexplained maintained callers.
 - [ ] 5.8 Run §14 concurrent-user/load, duplicate/retry, auth-revocation, and cross-account/universe isolation proof on canonical `/mcp`; do not infer an organization-tenant boundary from an informational `org_id` claim.
-- [ ] 5.9 Present all migration, acceptance/publication, telemetry, and risk evidence for explicit final host cutover approval.
+- [ ] 5.9 Assemble a dated cutover record covering migration, acceptance/publication, telemetry, concurrency/isolation, and risks. The 2026-07-24 host directive is standing authorization to proceed when these objective gates pass; stop only for a concrete newly discovered supported caller or safety failure recorded in `STATUS.md`.
 
 ## 6. Remove `/mcp-directory`
 
-- [ ] 6.1 After Sections 3–5 pass and the host records explicit final cutover approval, remove `directory_server`, directory catalog constants, mounts, versioned catalog paths, and discovery metadata.
+- [ ] 6.1 As soon as Sections 3–5 pass under the standing 2026-07-24 cutover authorization, remove `directory_server`, directory catalog constants, mounts, versioned catalog paths, and discovery metadata.
 - [ ] 6.2 Remove `/mcp-directory*` Cloudflare routing and current operational guidance in the same reviewed slice.
 - [ ] 6.3 Regenerate the Claude plugin mirror and every derived artifact from canonical source.
 - [ ] 6.4 Add old-path rejection tests proving `/mcp-directory*` is absent and never redirects, proxies, or silently translates to `/mcp`.

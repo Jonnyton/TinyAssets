@@ -120,13 +120,13 @@ removed together. No redirect, proxy alias, or silent translation SHALL remain.
 #### Scenario: Supported consumers migrate before removal
 - **WHEN** route retirement is proposed
 - **THEN** the MCP Registry current version is published and resolves to `/mcp`
-- **AND** each maintained OpenAI and Claude registration points to canonical `/mcp`, or is removed/reclassified by explicit host disposition
+- **AND** each maintained OpenAI and Claude registration points to canonical `/mcp`, or is removed/reclassified by the predeclared dated disposition
 - **AND** each external review records its current accepted, published, pending, unavailable, rejected, or withdrawn state without making an unbounded vendor wait a route-retirement gate
-- **AND** a pending or unavailable review may proceed past the cutover gate only after a predeclared decision date and explicit host disposition
+- **AND** a pending or unavailable review proceeds past the cutover gate after its predeclared decision date records the registration as pending, unavailable, withdrawn, or unsupported
 - **AND** current Codex, Cursor, Open WebUI, LibreChat, and every other maintained supported configuration has a recorded `/mcp` disposition
 - **AND** supported consumers have current proof or are explicitly reclassified as read-only/unsupported
 - **AND** a predeclared telemetry window records start, end, evidence source, and zero unexplained maintained callers
-- **AND** the host gives an explicit final cutover approval after reviewing that evidence
+- **AND** the 2026-07-24 host directive supplies standing cutover authorization once these objective gates pass, without a second discretionary approval
 
 #### Scenario: Removed route is not a shim
 - **WHEN** retirement lands
