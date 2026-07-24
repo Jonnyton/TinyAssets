@@ -6,6 +6,12 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_backup:
+        description: Run and verify a fresh production backup after installation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,7 +30,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -400,3 +406,63 @@ jobs:
           sudo systemctl is-enabled --quiet github-app-token-refresher.timer
           sudo systemctl is-active --quiet github-app-token-refresher.timer
           REMOTE
+
+      - name: Exercise and verify two-tier backup
+        if: github.event_name == 'workflow_dispatch' && inputs.run_backup
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se" <<'BACKUP_EXERCISE'
+          set -euo pipefail
+          destination="spaces:workflow-backups-jonnyton-sfo3/workflow-backups"
+
+          latest_archive() {
+            prefix="$1"
+            sudo rclone lsf "${destination}/" --max-depth 1 --files-only 2>/dev/null \
+              | awk -v prefix="${prefix}" 'index($0, prefix) == 1 { print }' \
+              | sort \
+              | tail -n 1
+          }
+
+          before_brain="$(latest_archive "tinyassets-brain-")"
+          before_full="$(latest_archive "tinyassets-data-")"
+          sudo systemctl reset-failed tinyassets-backup.service || true
+          set +e
+          sudo systemctl start tinyassets-backup.service
+          service_rc=$?
+          set -e
+          invocation_id="$(
+            sudo systemctl show tinyassets-backup.service --property=InvocationID --value
+          )"
+          [[ "${invocation_id}" =~ ^[0-9a-f]{32}$ ]]
+          journal="$(
+            sudo journalctl "_SYSTEMD_INVOCATION_ID=${invocation_id}" \
+              --no-pager --output=cat
+          )"
+          printf '%s\n' "${journal}" \
+            | grep -E 'brain upload OK|  upload OK|gh-ship: \[backup-ship\] uploaded:|WARN:|ERROR:|backup complete[.]' \
+            || true
+
+          [[ "${service_rc}" -eq 0 ]]
+          result="$(
+            sudo systemctl show tinyassets-backup.service --property=Result --value
+          )"
+          [[ "${result}" == "success" ]]
+          after_brain="$(latest_archive "tinyassets-brain-")"
+          after_full="$(latest_archive "tinyassets-data-")"
+          [[ -n "${after_brain}" && "${after_brain}" != "${before_brain}" ]]
+          [[ -n "${after_full}" && "${after_full}" != "${before_full}" ]]
+          printf '%s\n' "${journal}" | grep -Fq "  brain upload OK"
+          printf '%s\n' "${journal}" | grep -Fq "  upload OK"
+          printf '%s\n' "${journal}" | grep -Fq "backup complete."
+          ! printf '%s\n' "${journal}" | grep -Fq "ERROR:"
+          gh_upload_count="$(
+            printf '%s\n' "${journal}" \
+              | grep -Fc "gh-ship: [backup-ship] uploaded:" \
+              || true
+          )"
+          [[ "${gh_upload_count}" -eq 2 ]]
+          printf 'Verified fresh backup: brain=%s full=%s github_assets=%s\n' \
+            "${after_brain}" "${after_full}" "${gh_upload_count}"
+          BACKUP_EXERCISE

@@ -11,6 +11,8 @@
 - [x] 2.4 Correct the mechanically renamed bucket identity to the existing immutable pre-rename provider resource.
 - [x] 2.5 Tolerate bounded provider key propagation without broadening authority or weakening rollback.
 - [x] 2.6 Remove the unnecessary S3 mkdir preflight so every data-plane request stays inside the bounded probe gate.
+- [x] 2.7 Add an explicit exact-source dispatch option that verifies fresh primary archives and both GitHub release assets.
+- [x] 2.8 Scope every backup evidence marker to the new systemd invocation ID rather than a time window.
 
 ## 3. Verification And Operations
 

@@ -136,6 +136,99 @@ def _backup_remote_install_script() -> str:
     return body.split(terminator, 1)[0]
 
 
+def _backup_exercise_script() -> str:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    backup_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Exercise and verify two-tier backup"
+    )
+    run = backup_step["run"]
+    marker = "<<'BACKUP_EXERCISE'\n"
+    assert marker in run
+    body = run.split(marker, 1)[1]
+    terminator = "\nBACKUP_EXERCISE\n"
+    assert terminator in body
+    return body.split(terminator, 1)[0]
+
+
+def _run_backup_exercise(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    if not _BASH:
+        pytest.skip("bash unavailable")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_sudo = fake_bin / "sudo"
+    harness = tmp_path / "backup-exercise.sh"
+    rclone_calls = tmp_path / "rclone-calls"
+    journal_query = tmp_path / "journal-query"
+    invocation_id = "0123456789abcdef0123456789abcdef"
+    fake_sudo.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  rclone)
+    count="$(cat "${{RCLONE_CALLS}}" 2>/dev/null || printf '0')"
+    count=$((count + 1))
+    printf '%s' "${{count}}" > "${{RCLONE_CALLS}}"
+    if [[ "${{count}}" -le 2 ]]; then
+      printf '%s\\n' \
+        tinyassets-brain-2026-07-22T00-00-00Z.tar.gz \
+        tinyassets-data-2026-07-22T00-00-00Z.tar.gz
+    else
+      printf '%s\\n' \
+        tinyassets-brain-2026-07-24T00-00-00Z.tar.gz \
+        tinyassets-data-2026-07-24T00-00-00Z.tar.gz
+    fi
+    ;;
+  systemctl)
+    if [[ "$*" == *"--property=Result"* ]]; then
+      printf 'success\\n'
+    elif [[ "$*" == *"--property=InvocationID"* ]]; then
+      printf '{invocation_id}\\n'
+    fi
+    ;;
+  journalctl)
+    printf '%s\\n' "$*" > "${{JOURNAL_QUERY}}"
+    [[ "$2" == "_SYSTEMD_INVOCATION_ID={invocation_id}" ]]
+    printf '%s\\n' \
+      '  brain upload OK' \
+      '  upload OK' \
+      '  gh-ship: [backup-ship] uploaded: brain-asset' \
+      '  gh-ship: [backup-ship] uploaded: full-asset' \
+      'backup complete.'
+    ;;
+  *)
+    exit 99
+    ;;
+esac
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    harness.write_text(
+        _backup_exercise_script(),
+        encoding="utf-8",
+        newline="\n",
+    )
+    command = " ".join(
+        (
+            f"chmod +x {shlex.quote(_bash_path(fake_sudo))} &&",
+            f"RCLONE_CALLS={shlex.quote(_bash_path(rclone_calls))}",
+            f"JOURNAL_QUERY={shlex.quote(_bash_path(journal_query))}",
+            f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin",
+            "bash",
+            shlex.quote(_bash_path(harness)),
+        )
+    )
+    return subprocess.run(
+        [_BASH, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
 def _run_backup_remote_install(
     tmp_path: Path,
     *,
@@ -1328,3 +1421,50 @@ def test_host_service_workflow_requires_backup_provisioning_authority():
     assert verify_step["env"]["DO_API_TOKEN"] == "${{ secrets.DO_API_TOKEN }}"
     assert '[ -z "$DO_API_TOKEN" ]' in run
     assert 'missing+=("DO_API_TOKEN")' in run
+
+
+def test_host_service_workflow_exercises_backup_only_on_explicit_dispatch():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    triggers = workflow.get("on") or workflow.get(True) or {}
+    dispatch = triggers.get("workflow_dispatch") or {}
+    run_backup = (dispatch.get("inputs") or {}).get("run_backup") or {}
+    assert run_backup.get("type") == "boolean"
+    assert run_backup.get("required") is False
+    assert run_backup.get("default") is False
+
+    job = workflow["jobs"]["install"]
+    assert job["timeout-minutes"] == 40
+    step = next(
+        item
+        for item in job["steps"]
+        if item.get("name") == "Exercise and verify two-tier backup"
+    )
+    assert step["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.run_backup"
+    )
+    run = step["run"]
+    assert "sudo systemctl start tinyassets-backup.service" in run
+    assert "systemctl show tinyassets-backup.service --property=Result" in run
+    assert "systemctl show tinyassets-backup.service --property=InvocationID" in run
+    assert '_SYSTEMD_INVOCATION_ID=${invocation_id}' in run
+    assert "--since" not in run
+    assert "tinyassets-brain-" in run
+    assert "tinyassets-data-" in run
+    assert '"${after_brain}" != "${before_brain}"' in run
+    assert '"${after_full}" != "${before_full}"' in run
+    assert "gh-ship: [backup-ship] uploaded:" in run
+    assert '"${gh_upload_count}" -eq 2' in run
+    assert "backup complete." in run
+
+
+def test_backup_exercise_scopes_evidence_to_new_systemd_invocation(tmp_path):
+    result = _run_backup_exercise(tmp_path)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    query = (tmp_path / "journal-query").read_text(encoding="utf-8").strip()
+    assert query == (
+        "journalctl "
+        "_SYSTEMD_INVOCATION_ID=0123456789abcdef0123456789abcdef "
+        "--no-pager --output=cat"
+    )
+    assert "Verified fresh backup:" in result.stdout
+    assert "github_assets=2" in result.stdout
