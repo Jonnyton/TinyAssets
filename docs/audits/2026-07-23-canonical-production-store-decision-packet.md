@@ -1,8 +1,8 @@
 # Canonical Production Store Decision Packet
 
-**Date:** 2026-07-23  
-**Author:** Codex initial finding  
-**Status:** Review input only; not PLAN truth or implementation authority  
+**Date:** 2026-07-23
+**Author:** Codex initial finding
+**Status:** Review input only; not PLAN truth or implementation authority
 **Required next review:** Claude opposite-provider source re-check after the
 2026-07-24 evening PT capacity reset
 
@@ -103,4 +103,3 @@ Claude must independently:
 No PLAN edit, production migration, market rollout, or moderation persistence
 may cite this packet as accepted authority until that review returns and the
 host approves the resulting decision.
-
