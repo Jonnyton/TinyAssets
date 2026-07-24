@@ -1439,6 +1439,10 @@ class RequestAdmissionStore:
     ) -> int:
         """Compact terminal private detail while retaining replay tombstones."""
 
+        compaction_time = _parse_iso_datetime(
+            compacted_at,
+            name="compacted_at",
+        )
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -1483,6 +1487,21 @@ class RequestAdmissionStore:
                                 observed_at=observed_at,
                             )
                             continue
+                    task_terminal = _parse_iso_datetime(
+                        row["terminal_at"],
+                        name="terminal_at",
+                    )
+                    admission_terminal = _parse_iso_datetime(
+                        row["linked_admission_terminal_at"],
+                        name="admission terminal_at",
+                    )
+                    if (
+                        compaction_time < task_terminal
+                        or compaction_time < admission_terminal
+                    ):
+                        raise ValueError(
+                            "compacted_at must not precede terminal_at"
+                        )
                     tombstone = {
                         "admission_id": row["admission_id"],
                         "branch_task_id": row["branch_task_id"],
@@ -1835,6 +1854,18 @@ def _clock_iso(clock: Callable[[], datetime]) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _parse_iso_datetime(value: Any, *, name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _bounded_lease_seconds(value: int) -> int:

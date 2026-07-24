@@ -1477,6 +1477,47 @@ def test_compaction_hard_caps_physical_rows_per_writer_transaction(
     assert (first, second) == (2, 1)
 
 
+def test_compaction_rejects_operation_time_before_terminal_without_mutation(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="compacted_at must not precede terminal_at",
+    ):
+        Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+            terminal_before="2026-07-25T00:00:00+00:00",
+            compacted_at="2026-07-24T08:00:00+00:00",
+        )
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        admission = conn.execute(
+            """
+            SELECT compacted_at FROM request_admissions
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+        request_text = conn.execute(
+            """
+            SELECT text FROM user_requests
+            WHERE request_id = ?
+            """,
+            (terminal["request_id"],),
+        ).fetchone()
+    assert admission == (None,)
+    assert request_text == ("repair the queue",)
+
+
 def test_compaction_quarantines_invalid_terminal_before_erasing_evidence(
     tmp_path: Path,
 ) -> None:
