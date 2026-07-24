@@ -1122,7 +1122,7 @@ Notes:
 - Branch: codex/distributed-execution-d0
 - Lane state: active implementation lane
 - Worktree: C:\Users\Jonathan\Projects\wf-distributed-execution-d0
-- STATUS/Issue/PR: claimed; PR pending
+- STATUS/Issue/PR: claimed; draft PR #1701
 - Scope: implement the dark fake/test-only signed-authority spine from `distributed-execution` tasks 1.1-1.16; no production wiring
 - Review gate: focused TDD plus independent security/diff review; opposite-provider review remains required before any real-provider path
 - Memory/implications: PR #1699; #1697 non-promotion invariant; stale PR extraction sources named in the OpenSpec design
