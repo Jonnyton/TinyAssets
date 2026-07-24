@@ -256,3 +256,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** make malformed Unicode, ACL loss between
   verdict and lookup, and lost-response replay part of the first red batch.
   Each catches a boundary that happy-path same-body replay does not exercise.
+
+## 2026-07-24 - epoch-2 queue adapter and pure selection
+
+- **What surprised me:** the existing v1 file queue already rejected the new
+  operator trigger tier, so isolation started stronger than expected. The
+  missing boundary was the inverse: giving v2 workers a typed path to both
+  epochs without ever giving v1 code a transactional-store handle.
+- **Pattern worth capturing:** selection, reservation, and execution authority
+  are three different operations. Cross-epoch selection stays read-only; each
+  epoch keeps its own conditional claimer; and a v2 claim remains inert for
+  external execution until the separate signed B2 authority is present.
+- **What I would do differently:** include expired-heartbeat revival and
+  cancel-requested worker loss in the first lease test matrix. Both expose
+  lifecycle wedges that a happy claim/finish test cannot see.

@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # Default tier weights for the dispatcher scoring contract.
 _DEFAULT_TIER_WEIGHTS: dict[str, float] = {
     "host_request": 100.0,
+    "operator_request": 100.0,
     "owner_queued": 80.0,
     "user_request": 60.0,
     "goal_pool": 40.0,
@@ -68,7 +69,11 @@ class DispatcherConfig:
     soul_affinity_term_cap: float = 8.0
 
     def tier_enabled(self, trigger_source: str) -> bool:
-        if trigger_source in {"host_request", "owner_queued"}:
+        if trigger_source in {
+            "host_request",
+            "operator_request",
+            "owner_queued",
+        }:
             return True
         if trigger_source == "user_request":
             return self.accept_external_requests
@@ -84,6 +89,7 @@ class DispatcherConfig:
         """Self-documenting status per tier."""
         return {
             "host_request": "live",
+            "operator_request": "live",
             "user_request": (
                 "live" if self.accept_external_requests else "disabled"
             ),
@@ -365,19 +371,34 @@ def select_next_task(
     *,
     config: DispatcherConfig,
     now_iso: str | None = None,
+    epoch2_adapter: Any | None = None,
 ) -> BranchTask | None:
-    """Read queue, filter to pending + tier-enabled, return top score.
+    """Read eligible v1/v2 queues and return the top task without mutation.
 
     Returns ``None`` on empty / no-eligible. Called event-driven at
-    graph-cycle boundaries. NOT a polling loop.
+    graph-cycle boundaries. Passing no epoch-2 adapter is the legacy-worker
+    boundary: that caller can read and claim v1 only.
     """
     queue = read_queue(universe_path)
+    if epoch2_adapter is not None:
+        queue.extend(
+            epoch2_adapter.list_candidates(
+                universe_id=Path(universe_path).name,
+            )
+        )
     if not queue:
         return None
     now = now_iso or datetime.now(timezone.utc).isoformat()
     eligible: list[tuple[float, BranchTask]] = []
     for task in queue:
         if task.status != "pending":
+            continue
+        queue_epoch = int(getattr(task, "queue_epoch", 1))
+        if task.trigger_source == "operator_request" and queue_epoch != 2:
+            continue
+        if queue_epoch == 2 and int(
+            getattr(task, "protocol_version", 0)
+        ) != 2:
             continue
         if not config.tier_enabled(task.trigger_source):
             continue
