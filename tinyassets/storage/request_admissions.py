@@ -687,11 +687,13 @@ class RequestAdmissionStore:
                 if row is None:
                     raise KeyError(branch_task_id)
                 snapshot = _task_row(row)
-                snapshot.pop("disabled", None)
-                snapshot.pop("quarantine_reason", None)
+                digest_snapshot = dict(snapshot)
+                digest_snapshot.pop("disabled", None)
+                digest_snapshot.pop("quarantine_reason", None)
                 digest = hashlib.sha256(
-                    _json(snapshot).encode("utf-8")
+                    _json(digest_snapshot).encode("utf-8")
                 ).hexdigest()
+                receipt_snapshot = _quarantine_receipt_snapshot(snapshot)
                 existing_receipt = conn.execute(
                     """
                     SELECT row_digest
@@ -715,7 +717,7 @@ class RequestAdmissionStore:
                         branch_task_id,
                         row["universe_id"],
                         _required(reason, "reason"),
-                        _json(snapshot),
+                        _json(receipt_snapshot),
                         observed_at,
                         observed_at,
                     ),
@@ -789,7 +791,8 @@ class RequestAdmissionStore:
                     conn.execute(
                         """
                         UPDATE user_requests
-                        SET text = '', metadata_json = ?
+                        SET text = '', preferred_author_id = NULL,
+                            metadata_json = ?
                         WHERE request_id = ?
                         """,
                         (
@@ -821,6 +824,23 @@ class RequestAdmissionStore:
                         WHERE admission_id = ?
                         """,
                         (row["admission_id"],),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE branch_tasks_v2
+                        SET inputs_json = '{}', detail_json = '{}',
+                            directed_daemon_id = '', claimed_by = ''
+                        WHERE branch_task_id = ?
+                        """,
+                        (row["branch_task_id"],),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE branch_tasks_v2_quarantine
+                        SET row_json = '{}'
+                        WHERE branch_task_id = ?
+                        """,
+                        (row["branch_task_id"],),
                     )
                 conn.commit()
                 return len(rows)
@@ -922,6 +942,22 @@ def _task_row(row: sqlite3.Row) -> dict[str, Any]:
     result["detail"] = json.loads(result.pop("detail_json"))
     result["disabled"] = bool(result["disabled"])
     return result
+
+
+def _quarantine_receipt_snapshot(
+    task: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Retain only non-private fields needed to diagnose queue compatibility."""
+
+    fields = (
+        "branch_task_id",
+        "universe_id",
+        "trigger_source",
+        "status",
+        "queue_epoch",
+        "protocol_version",
+    )
+    return {field: task[field] for field in fields}
 
 
 def _random_id(prefix: str) -> str:

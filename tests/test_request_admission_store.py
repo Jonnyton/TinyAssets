@@ -434,6 +434,31 @@ def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):
         at="2026-06-01T00:00:00Z",
         detail={"private": "remove me"},
     )
+    store.quarantine_task(
+        terminal["branch_task_id"],
+        reason="invalid_operator_admission",
+        observed_at="2026-06-01T00:01:00Z",
+    )
+
+    with _connect(tmp_path) as conn:
+        quarantine_snapshot = json.loads(
+            conn.execute(
+                """
+                SELECT row_json
+                FROM branch_tasks_v2_quarantine
+                WHERE branch_task_id = ?
+                """,
+                (terminal["branch_task_id"],),
+            ).fetchone()[0]
+        )
+        assert quarantine_snapshot == {
+            "branch_task_id": terminal["branch_task_id"],
+            "queue_epoch": 2,
+            "status": "succeeded",
+            "trigger_source": "operator_request",
+            "universe_id": "universe-a",
+            "protocol_version": 2,
+        }
 
     assert store.compact_terminal_details(
         terminal_before="2026-06-24T00:00:00Z",
@@ -442,7 +467,11 @@ def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):
 
     with _connect(tmp_path) as conn:
         terminal_request = conn.execute(
-            "SELECT text FROM user_requests WHERE request_id = ?",
+            """
+            SELECT text, preferred_author_id
+            FROM user_requests
+            WHERE request_id = ?
+            """,
             (terminal["request_id"],),
         ).fetchone()
         pending_request = conn.execute(
@@ -454,7 +483,25 @@ def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):
             "FROM request_admissions WHERE admission_id = ?",
             (terminal["admission_id"],),
         ).fetchone()
+        task = conn.execute(
+            """
+            SELECT
+                inputs_json, detail_json, directed_daemon_id, claimed_by
+            FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+        quarantine = conn.execute(
+            """
+            SELECT row_json
+            FROM branch_tasks_v2_quarantine
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
         assert terminal_request["text"] == ""
+        assert terminal_request["preferred_author_id"] is None
         assert pending_request["text"] == "keep pending detail"
         assert admission["body_digest"] == "sha256:body-a"
         assert admission["idempotency_key_hash"] == "hmac:scope-key-a"
@@ -466,6 +513,13 @@ def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):
             "universe_id": "universe-a",
         }
         assert admission["compacted_at"] == "2026-07-24T08:05:00Z"
+        assert dict(task) == {
+            "inputs_json": "{}",
+            "detail_json": "{}",
+            "directed_daemon_id": "",
+            "claimed_by": "",
+        }
+        assert quarantine["row_json"] == "{}"
 
 
 def test_sqlite_pragmas_and_concurrent_initialization(tmp_path):
