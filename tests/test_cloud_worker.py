@@ -9,8 +9,10 @@ without touching the OS process table.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +21,7 @@ if str(_WORKFLOW.parent) not in sys.path:
     sys.path.insert(0, str(_WORKFLOW.parent))
 
 import tinyassets.cloud_worker as cw  # noqa: E402
+from tinyassets import daemon_registry  # noqa: E402
 
 # ---- FakeProc: scripted subprocess stand-in ------------------------------
 
@@ -814,3 +817,211 @@ def test_terminate_child_for_stop_unconfirmed_returns_false():
     proc = _StopProc(["timeout", "timeout"])
     assert cw._terminate_child_for_stop(proc) is False
     assert proc.killed is True
+
+
+def _write_worker_release_state(
+    base_path: Path,
+    *,
+    build_sha: str = "a" * 40,
+    config_hash: str = "sha256:" + ("b" * 64),
+) -> None:
+    (base_path / "release-state.json").write_text(
+        json.dumps(
+            {
+                "git_sha": build_sha,
+                "config_hash": config_hash,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_worker_queue_descriptor_is_release_derived_and_boot_bound(
+    tmp_path,
+    monkeypatch,
+):
+    _write_worker_release_state(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setenv("TINYASSETS_QUEUE_PROTOCOL_VERSION", "999")
+    monkeypatch.setenv("TINYASSETS_WORKER_CAPABILITIES", "forged")
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    now = [datetime.fromisoformat("2026-07-24T08:00:00+00:00")]
+    monkeypatch.setattr(cw, "_utcnow", lambda: now[0])
+    universe = tmp_path / "universe-a"
+
+    first = cw._worker_queue_descriptor(
+        universe,
+        runtime_instance_id="runtime-a",
+    )
+
+    assert first == {
+        "queue_protocol_version": 2,
+        "capabilities": ["operator_request_v1"],
+        "worker_id": "worker-a",
+        "runtime_instance_id": "runtime-a",
+        "boot_id": first["boot_id"],
+        "build_sha": "a" * 40,
+        "config_hash": "sha256:" + ("b" * 64),
+        "universe_id": "universe-a",
+        "expires_at": "2026-07-24T08:01:30Z",
+    }
+    assert first["boot_id"]
+
+    _write_worker_release_state(
+        tmp_path,
+        build_sha="c" * 40,
+        config_hash="sha256:" + ("d" * 64),
+    )
+    now[0] = datetime.fromisoformat("2026-07-24T08:00:30+00:00")
+    refreshed = cw._worker_queue_descriptor(
+        universe,
+        runtime_instance_id="runtime-a",
+    )
+    assert refreshed["build_sha"] == "a" * 40
+    assert refreshed["config_hash"] == "sha256:" + ("b" * 64)
+    assert refreshed["boot_id"] == first["boot_id"]
+    assert refreshed["expires_at"] == "2026-07-24T08:02:00Z"
+
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    other_worker = cw._worker_queue_descriptor(
+        universe,
+        runtime_instance_id="runtime-b",
+    )
+    assert other_worker["build_sha"] == "c" * 40
+    assert other_worker["config_hash"] == "sha256:" + ("d" * 64)
+    assert other_worker["boot_id"] != first["boot_id"]
+
+
+def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
+    tmp_path,
+    monkeypatch,
+):
+    _write_worker_release_state(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
+    monkeypatch.setattr(cw, "_utcnow", lambda: now)
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Descriptor Runner",
+        created_by="host",
+        soul_text="Run descriptor-capable queue work.",
+    )
+
+    def runtime_for(worker_id: str) -> dict:
+        return daemon_registry.ensure_daemon_runtime(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            universe_id="universe-a",
+            provider_name="codex",
+            model_name="gpt-5",
+            created_by="cloud-droplet",
+            worker_id=worker_id,
+        )
+
+    runtime_a = runtime_for("worker-a")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime_a["runtime_instance_id"],
+    )
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+    worker_a_path = universe / ".worker_supervisor.worker-a.json"
+    worker_a = json.loads(worker_a_path.read_text(encoding="utf-8"))
+    descriptor_a = {
+        key: worker_a[key]
+        for key in cw.WORKER_QUEUE_DESCRIPTOR_FIELDS
+    }
+
+    runtime_a_after = daemon_registry.list_runtime_instances(
+        tmp_path,
+        universe_id="universe-a",
+    )[0]
+    assert (
+        runtime_a_after["metadata"]["queue_protocol_descriptor"]
+        == descriptor_a
+    )
+    assert descriptor_a["worker_id"] == "worker-a"
+    assert descriptor_a["runtime_instance_id"] == runtime_a[
+        "runtime_instance_id"
+    ]
+
+    runtime_b = runtime_for("worker-b")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime_b["runtime_instance_id"],
+    )
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+    worker_b = json.loads(
+        (universe / ".worker_supervisor.worker-b.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert json.loads(worker_a_path.read_text(encoding="utf-8")) == worker_a
+    assert worker_b["worker_id"] == "worker-b"
+    assert worker_b["runtime_instance_id"] == runtime_b[
+        "runtime_instance_id"
+    ]
+    assert worker_b["boot_id"] != worker_a["boot_id"]
+
+    (tmp_path / "release-state.json").unlink()
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime_a["runtime_instance_id"],
+    )
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=2,
+        phase="polling",
+    )
+    runtime_a_cleared = next(
+        runtime
+        for runtime in daemon_registry.list_runtime_instances(
+            tmp_path,
+            universe_id="universe-a",
+        )
+        if runtime["runtime_instance_id"] == runtime_a[
+            "runtime_instance_id"
+        ]
+    )
+    assert runtime_a_cleared["metadata"]["queue_protocol_descriptor"] is None
+    cleared_beat = json.loads(worker_a_path.read_text(encoding="utf-8"))
+    assert "queue_protocol_version" not in cleared_beat
+
+    _write_worker_release_state(tmp_path)
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime_a["runtime_instance_id"],
+    )
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=3,
+        phase="polling",
+    )
+    mismatched_beat = json.loads(
+        (universe / ".worker_supervisor.worker-b.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "queue_protocol_version" not in mismatched_beat

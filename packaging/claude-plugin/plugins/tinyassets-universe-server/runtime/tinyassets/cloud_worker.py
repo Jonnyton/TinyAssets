@@ -72,8 +72,10 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,19 @@ DEFAULT_WORKER_MODELS = {
     "codex": "gpt-5",
     "claude-code": "claude",
 }
+WORKER_QUEUE_DESCRIPTOR_TTL_SECONDS = 90
+WORKER_QUEUE_DESCRIPTOR_FIELDS = (
+    "queue_protocol_version",
+    "capabilities",
+    "worker_id",
+    "runtime_instance_id",
+    "boot_id",
+    "build_sha",
+    "config_hash",
+    "universe_id",
+    "expires_at",
+)
+_WORKER_PROTOCOL_IDENTITIES: dict[str, dict[str, str] | None] = {}
 
 
 def _resolve_universe_path() -> Path:
@@ -156,6 +171,121 @@ def _worker_id() -> str:
     return override or _cloud_host_user()
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _format_utc(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _worker_release_state_path() -> Path:
+    override = os.environ.get("TINYASSETS_RELEASE_STATE_PATH", "").strip()
+    if override:
+        return Path(override)
+    from tinyassets.storage import data_dir
+
+    return data_dir() / "release-state.json"
+
+
+def _load_worker_release_identity() -> dict[str, str] | None:
+    """Load fail-closed build/config identity from the deploy receipt."""
+    path = _worker_release_state_path()
+    try:
+        if not path.is_file() or path.stat().st_size > 65_536:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    build_sha = str(payload.get("git_sha") or "").strip()
+    config_hash = str(payload.get("config_hash") or "").strip()
+    if re.fullmatch(r"[0-9a-f]{40}", build_sha) is None:
+        return None
+    if re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", config_hash) is None:
+        return None
+    return {
+        "build_sha": build_sha,
+        "config_hash": config_hash,
+    }
+
+
+def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
+    """Bind release identity and a random boot ID once per worker process."""
+    if worker_id in _WORKER_PROTOCOL_IDENTITIES:
+        return _WORKER_PROTOCOL_IDENTITIES[worker_id]
+    release = _load_worker_release_identity()
+    if release is None:
+        _WORKER_PROTOCOL_IDENTITIES[worker_id] = None
+        return None
+    identity = {
+        **release,
+        "boot_id": uuid.uuid4().hex,
+    }
+    _WORKER_PROTOCOL_IDENTITIES[worker_id] = identity
+    return identity
+
+
+def _worker_queue_descriptor(
+    universe: Path,
+    *,
+    runtime_instance_id: str,
+    _now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Return trusted v2 evidence, or no evidence when any source is missing."""
+    worker_id = _worker_id()
+    runtime_id = str(runtime_instance_id or "").strip()
+    universe_id = universe.name.strip()
+    if not runtime_id or not universe_id:
+        return None
+    identity = _worker_protocol_identity(worker_id)
+    if identity is None:
+        return None
+    now = _now or _utcnow()
+    expires = now + timedelta(seconds=WORKER_QUEUE_DESCRIPTOR_TTL_SECONDS)
+    return {
+        "queue_protocol_version": 2,
+        "capabilities": ["operator_request_v1"],
+        "worker_id": worker_id,
+        "runtime_instance_id": runtime_id,
+        "boot_id": identity["boot_id"],
+        "build_sha": identity["build_sha"],
+        "config_hash": identity["config_hash"],
+        "universe_id": universe_id,
+        "expires_at": _format_utc(expires),
+    }
+
+
+def _persist_worker_queue_descriptor(
+    descriptor: dict[str, Any] | None,
+) -> bool:
+    runtime_instance_id = str(
+        (descriptor or {}).get("runtime_instance_id")
+        or os.environ.get("TINYASSETS_RUNTIME_INSTANCE_ID", "")
+    ).strip()
+    if not runtime_instance_id:
+        return descriptor is None
+    try:
+        from tinyassets.daemon_registry import set_worker_queue_descriptor
+        from tinyassets.storage import data_dir
+
+        set_worker_queue_descriptor(
+            data_dir(),
+            runtime_instance_id=runtime_instance_id,
+            descriptor=descriptor,
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "cloud_worker: queue descriptor persistence failed runtime=%s",
+            runtime_instance_id,
+        )
+        return False
+
+
 def _safe_worker_id(worker_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", worker_id.strip())
     return safe.strip(".-") or "default"
@@ -203,7 +333,10 @@ def _worker_model_for_provider(provider_name: str) -> str:
     if explicit:
         return explicit
     if provider_name == "codex":
-        return os.environ.get("TINYASSETS_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
+        return (
+            os.environ.get("TINYASSETS_CODEX_MODEL", "").strip()
+            or DEFAULT_WORKER_MODELS["codex"]
+        )
     if provider_name == "claude-code":
         return (
             os.environ.get("TINYASSETS_CLAUDE_MODEL", "").strip()
@@ -529,7 +662,7 @@ class SupervisorState:
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _format_utc(_utcnow())
 
 
 # Heartbeat file the supervisor writes into the universe dir. Liveness
@@ -557,8 +690,18 @@ def write_supervisor_heartbeat(
     A probe write must never take down the supervisor (the loop IS the
     uptime surface), so failures log loudly and return.
     """
+    now = _utcnow()
+    descriptor = _worker_queue_descriptor(
+        universe,
+        runtime_instance_id=os.environ.get(
+            "TINYASSETS_RUNTIME_INSTANCE_ID",
+            "",
+        ),
+        _now=now,
+    )
+    descriptor_persisted = _persist_worker_queue_descriptor(descriptor)
     beat = {
-        "ts": _utcnow_iso(),
+        "ts": _format_utc(now),
         "phase": phase,
         "iteration": iteration,
         "supervisor_started_at": state.started_at,
@@ -575,6 +718,8 @@ def write_supervisor_heartbeat(
             "TINYASSETS_RUNTIME_INSTANCE_ID", "",
         ).strip(),
     }
+    if descriptor is not None and descriptor_persisted:
+        beat.update(descriptor)
     filenames = [supervisor_heartbeat_filename(_worker_id())]
     if filenames[0] != SUPERVISOR_HEARTBEAT_FILENAME:
         filenames.append(SUPERVISOR_HEARTBEAT_FILENAME)

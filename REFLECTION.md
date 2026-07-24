@@ -283,3 +283,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** make a backdated stale claim, a backdated
   terminal transition, and a genuinely simultaneous two-writer claim the
   first red tests for any leased authority boundary.
+
+## 2026-07-24 - boot-bound worker protocol evidence
+
+- **What surprised me:** rereading the deployment receipt on every heartbeat
+  would let an old process advertise a newly deployed build SHA. Release
+  identity must be snapshotted at worker boot, not merely read from a trusted
+  file.
+- **Pattern worth capturing:** positive protocol evidence exists only when the
+  exact worker/runtime/universe tuple is durably recorded and the same
+  descriptor appears in that worker's named heartbeat. Persistence failure or
+  identity mismatch suppresses capability advertisement.
+- **What I would do differently:** start with the mid-process receipt-change
+  test and the worker/runtime mismatch test. They expose false-upgrade claims
+  that a complete-looking heartbeat fixture misses.
