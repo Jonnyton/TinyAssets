@@ -172,6 +172,23 @@ def operator_request_admission_verdict(
     )
 
 
+def operator_request_replay_verdict(
+    universe_id: str,
+) -> OperatorRequestAdmissionVerdict:
+    """Reauthorize replay visibility without reauthorizing past priority.
+
+    A replay can reveal committed history only while the current request
+    identity still has ordinary submit scope and write/admin ACL on the exact
+    universe. Passing zero deliberately skips the prospective priority-grant
+    leg: revocation or expiry blocks new priority work, not historical replay.
+    """
+
+    return operator_request_admission_verdict(
+        universe_id,
+        requested_priority_weight=0.0,
+    )
+
+
 def current_request_actor_id() -> str:
     """Return the authenticated request actor, ignoring env fallbacks."""
     try:

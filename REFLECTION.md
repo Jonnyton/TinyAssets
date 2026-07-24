@@ -228,3 +228,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** use a production-shaped opaque subject in
   the first authority test, then exercise host/environment labels only as
   adversarial non-authority inputs.
+
+## 2026-07-24 - operator-priority replay reauthorization
+
+- **What surprised me:** replay and new admission deliberately diverge after
+  priority revocation. Both must re-check current ordinary access, but only a
+  new effect may require the still-active elevation grant.
+- **Pattern worth capturing:** perform non-enumerating authorization before
+  idempotency lookup, then use a named replay verdict that skips only the
+  prospective elevation leg. This preserves committed truth without turning
+  historical possession of a key into ongoing universe access.
+- **What I would do differently:** start with a store spy that fails on lookup;
+  it makes the security-sensitive operation order executable rather than an
+  inference from a returned error.

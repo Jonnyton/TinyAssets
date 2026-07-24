@@ -1419,6 +1419,31 @@ def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -
     })
 
 
+def _lookup_operator_request_replay(
+    store: Any,
+    *,
+    universe_id: str,
+    idempotency_key_hash: str,
+    body_digest: str,
+    body_digest_version: str,
+) -> dict[str, Any] | None:
+    """Reauthorize ordinary access before consulting idempotency state."""
+
+    verdict = permissions.operator_request_replay_verdict(universe_id)
+    if not verdict.allowed:
+        # Reveal no stored identifier, digest, receipt, replay status, or
+        # key-existence evidence.
+        return {"error": "universe_access_denied"}
+    return store.lookup_replay(
+        tenant_id=verdict.tenant_id,
+        actor_id=verdict.actor_id,
+        universe_id=verdict.universe_id,
+        idempotency_key_hash=idempotency_key_hash,
+        body_digest=body_digest,
+        body_digest_version=body_digest_version,
+    )
+
+
 _SUBMIT_REQUEST_MAX_BYTES = 8192
 
 

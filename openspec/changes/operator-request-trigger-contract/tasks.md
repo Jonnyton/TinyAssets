@@ -24,7 +24,7 @@
 - [x] 3.3 Add trusted issue/revoke methods in `tinyassets/storage/accounts.py`; require both exact-universe admin ACL and `grant_capabilities`, make repeated revoke idempotent, and increment generation on regrant.
 - [x] 3.4 Replace `_env_actor_can` on request admission with one request-local verdict in `tinyassets/api/permissions.py` and `tinyassets/api/universe.py`; retain no environment or host fallback.
 - [x] 3.5 Prove weight zero is `user_request`/unboosted `owner_queued` even for a grant holder; prove positive weight without an active grant returns `priority_authorization_required` with zero persistence; prove a grant without ordinary authority persists nothing.
-- [ ] 3.6 Prove replay checks authentication, ordinary scope, and current ACL before lookup; ACL loss returns non-enumerating `universe_access_denied`, while priority-only revocation or expiry returns committed history and blocks new-key priority.
+- [x] 3.6 Prove replay checks authentication, ordinary scope, and current ACL before lookup; ACL loss returns non-enumerating `universe_access_denied`, while priority-only revocation or expiry returns committed history and blocks new-key priority.
 
 ## 4. Canonical Public Admission
 
