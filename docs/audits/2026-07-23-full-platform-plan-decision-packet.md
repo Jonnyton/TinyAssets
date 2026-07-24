@@ -31,6 +31,13 @@ The host approved the bundle's architectural direction with this refinement:
   settings page;
 - most higher-level behavior remains buildable, remixable, combinable, and
   copyable from primitives.
+- the user-facing product name is always `TinyAssets`; development, review, or
+  publication state belongs to host metadata rather than suffixes such as
+  `DEV`;
+- `https://tinyassets.io/mcp` is the single canonical product endpoint;
+  `/mcp-directory` is a temporary compatibility/review surface to retire
+  promptly, with registries, submissions, host proofs, privacy controls, and
+  the complete seven-handle experience converging on `/mcp`.
 
 This does not authorize the chatbot to invent legal applicability,
 certification, contractual eligibility, or user consent. It may propose a
