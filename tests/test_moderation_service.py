@@ -715,7 +715,6 @@ def test_accepted_plan_binds_exact_versioned_policy_and_threshold() -> None:
     result = _plan(policy=policy)
 
     assert isinstance(result, FlagAcceptedPlan)
-    assert result.policy is policy
     assert result.policy_ref == policy.policy_ref
     assert result.expected_policy_version == policy.policy_version
     assert result.soft_hide_threshold == policy.soft_hide_threshold
@@ -739,14 +738,15 @@ def test_flag_intake_policy_requires_stable_ref_and_positive_version(
 @pytest.mark.parametrize(
     "changes",
     [
-        {"policy_ref": "policy://other"},
-        {"expected_policy_version": 8},
-        {"soft_hide_threshold": 4},
+        {"policy_ref": ""},
+        {"policy_ref": "policy\x00ref"},
+        {"expected_policy_version": 0},
+        {"expected_policy_version": True},
         {"soft_hide_threshold": 1},
         {"soft_hide_threshold": True},
     ],
 )
-def test_accepted_plan_rejects_mismatched_policy_binding(
+def test_accepted_plan_rejects_noncanonical_flattened_policy_precondition(
     changes: dict[str, object],
 ) -> None:
     result = _plan()
@@ -775,3 +775,20 @@ def test_visible_plan_count_at_threshold_requires_under_review_transition() -> N
 
     with pytest.raises(PolicyError):
         replace(result, distinct_flagger_count=3)
+
+
+def test_visible_soft_hide_direct_plan_rejects_count_above_exact_threshold() -> None:
+    result = _plan(
+        snapshot=_snapshot(
+            flags=(
+                _open_flag("reporter-1"),
+                _open_flag("reporter-2"),
+            )
+        ),
+        policy=_policy(threshold=3),
+    )
+    assert isinstance(result, FlagAcceptedPlan)
+    assert result.transition_to_under_review is True
+
+    with pytest.raises(PolicyError):
+        replace(result, distinct_flagger_count=99)

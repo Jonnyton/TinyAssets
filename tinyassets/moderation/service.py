@@ -188,7 +188,6 @@ class FlagAcceptedPlan:
     rate_limit_bucket_id: str
     expected_rate_limit_version: int
     rate_limit_evidence_ref: str
-    policy: FlagIntakePolicy
     policy_ref: str
     expected_policy_version: int
     soft_hide_threshold: int
@@ -209,7 +208,6 @@ class FlagAcceptedPlan:
         if (
             type(self.expected_rate_limit_version) is not int
             or self.expected_rate_limit_version < 1
-            or not isinstance(self.policy, FlagIntakePolicy)
             or type(self.expected_policy_version) is not int
             or self.expected_policy_version < 1
             or type(self.soft_hide_threshold) is not int
@@ -222,17 +220,11 @@ class FlagAcceptedPlan:
             or type(self.transition_to_under_review) is not bool
         ):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
-        if (
-            self.policy_ref != self.policy.policy_ref
-            or self.expected_policy_version != self.policy.policy_version
-            or self.soft_hide_threshold != self.policy.soft_hide_threshold
-        ):
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
         valid_visible_transition = (
             self.expected_state is ModerationState.VISIBLE
             and self.resulting_state is ModerationState.UNDER_REVIEW
             and self.transition_to_under_review
-            and self.distinct_flagger_count >= self.soft_hide_threshold
+            and self.distinct_flagger_count == self.soft_hide_threshold
         )
         valid_visible_no_transition = (
             self.expected_state is ModerationState.VISIBLE
@@ -408,7 +400,6 @@ def plan_flag_intake(
         rate_limit_bucket_id=rate_limit.bucket_id,
         expected_rate_limit_version=rate_limit.bucket_version,
         rate_limit_evidence_ref=rate_limit.evidence_ref,
-        policy=policy,
         policy_ref=policy.policy_ref,
         expected_policy_version=policy.policy_version,
         soft_hide_threshold=policy.soft_hide_threshold,
