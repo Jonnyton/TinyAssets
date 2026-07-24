@@ -593,3 +593,85 @@ def test_failed_destroy_escalates_with_identity_then_forces_red():
     assert "always()" in str(terminal.get("if", ""))
     assert "steps.destroy.outcome == 'failure'" in str(terminal.get("if", ""))
     assert "exit 1" in terminal["run"]
+
+
+# 2026-07-23 — immutable runtime image on the fresh drill host
+
+
+def test_runtime_image_is_resolved_and_validated_before_provisioning():
+    steps = _steps(_load())
+    names = [step.get("name") for step in steps]
+    resolve_index = names.index("Resolve immutable production daemon image")
+    provision_index = names.index("Provision drill Droplet")
+    assert resolve_index < provision_index
+
+    step = steps[resolve_index]
+    assert step.get("id") == "runtime-image"
+    run = step["run"]
+    assert "grep -E '^TINYASSETS_IMAGE='" in run
+    assert "cat /etc/tinyassets/env" not in run
+    assert "scp" not in run
+    assert "re.fullmatch" in run
+    assert (
+        r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}"
+        in run
+    )
+    assert 'echo "image=${runtime_image}" >> "$GITHUB_OUTPUT"' in run
+
+
+def test_runtime_image_grammar_rejects_tags_and_output_injection():
+    run = _step("Resolve immutable production daemon image")["run"]
+    match = re.search(r're\.fullmatch\(r"([^"]+)", runtime_image\)', run)
+    assert match, "runtime image must use one full-string Python regex"
+    grammar = match.group(1)
+
+    def normalize(raw: str) -> str:
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+            return raw[1:-1]
+        return raw
+
+    assert "raw_runtime_image[0] == raw_runtime_image[-1]" in run
+    assert """raw_runtime_image[0] in {"'", '"'}""" in run
+    valid = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
+    for accepted in (valid, f"'{valid}'", f'"{valid}"'):
+        assert re.fullmatch(grammar, normalize(accepted))
+    for adversarial in (
+        "ghcr.io/jonnyton/tinyassets-daemon:latest",
+        "other.example/tinyassets-daemon@sha256:" + "a" * 64,
+        valid + "\nforged=value",
+        valid + "\rforged=value",
+        "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "A" * 64,
+        f'"{valid}\nforged=value"',
+        f"'{valid}\rforged=value'",
+        f'"{valid}\'',
+        f'""{valid}""',
+    ):
+        assert re.fullmatch(grammar, normalize(adversarial)) is None
+
+
+def test_compose_uses_runtime_image_ephemerally_with_fresh_env():
+    step = _step("Start compose on drill Droplet")
+    env_text = str(step.get("env", {}))
+    assert "steps.runtime-image.outputs.image" in env_text
+
+    run = step["run"]
+    assert "printf '%q'" in run
+    assert "TINYASSETS_IMAGE=${quoted_runtime_image}" in run
+    assert "--env-file /etc/tinyassets/env" in run
+    assert "install-tinyassets-env.sh" not in run
+    assert "sed -i" not in run
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    [
+        "Open dr-failed issue on failure",
+        "Append drill result to log",
+        "Escalate failed Droplet deletion",
+        "Summary",
+    ],
+)
+def test_terminal_evidence_distinguishes_runtime_image(step_name):
+    step = _step(step_name)
+    assert "steps.runtime-image.outputs.image" in str(step.get("env", {}))
+    assert "Runtime Image" in str(step)

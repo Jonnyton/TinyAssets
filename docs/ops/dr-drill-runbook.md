@@ -24,21 +24,26 @@ Inputs:
 
 1. Validates the selected primary backup's safe archive shape and records its
    archive + representative-member SHA-256 values.
-2. Resolves the newest public, available Debian x64 image serving `nyc3` across
+2. Reads only the primary host's final `TINYASSETS_IMAGE` assignment, removes
+   at most one matching pair of surrounding quotes, and requires the canonical
+   immutable `ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` form. It does
+   not copy the primary environment or any secrets.
+3. Resolves the newest public, available Debian x64 image serving `nyc3` across
    a bounded DigitalOcean distribution-catalog traversal. This first request
    verifies the token's required `image:read` scope before any mutation.
-3. Registers the deploy SSH key with the DO API (idempotent by fingerprint).
-4. Creates a `tinyassets-dr-drill` Droplet with the resolved Debian image and
+4. Registers the deploy SSH key with the DO API (idempotent by fingerprint).
+5. Creates a `tinyassets-dr-drill` Droplet with the resolved Debian image and
    requested size.
-5. Waits for the Droplet to get a public IP + SSH to become ready.
-6. Runs `deploy/hetzner-bootstrap.sh` on the drill Droplet (Docker, user,
+6. Waits for the Droplet to get a public IP + SSH to become ready.
+7. Runs `deploy/hetzner-bootstrap.sh` on the drill Droplet (Docker, user,
    systemd units, log rotation, swap).
-7. Streams the exact validated backup from primary to drill, then requires the
+8. Streams the exact validated backup from primary to drill, then requires the
    destination SHA-256 to match before restore.
-8. Runs `deploy/backup-restore.sh` with the exact transferred `BACKUP_FILE` and
+9. Runs `deploy/backup-restore.sh` with the exact transferred `BACKUP_FILE` and
    verifies the representative member at Docker's inspected volume mountpoint.
-9. Starts only the daemon compose service, waits 30s, opens an SSH port-forward
-   to loopback, and probes `http://localhost:8001/mcp` via
+10. Supplies the validated runtime image ephemerally, starts only the daemon
+   compose service with the fresh template environment, waits 30s, opens an
+   SSH port-forward to loopback, and probes `http://localhost:8001/mcp` via
    `scripts/mcp_probe.py status` (no Cloudflare tunnel required).
 
 ## Pass / fail criteria
@@ -48,7 +53,8 @@ Inputs:
 TinyAssets on pass:
 - Confirms destruction of the drill Droplet.
 - Appends and commits a timestamped `docs/ops/dr-drill-log.md` entry containing
-  the selected image plus archive/restored-state checksum evidence.
+  the Debian base image and daemon runtime image as distinct fields, plus
+  archive/restored-state checksum evidence.
 
 **Fail:** `mcp_probe.py` exits non-zero.
 
@@ -64,10 +70,14 @@ TinyAssets on fail:
 ssh root@<drill-ip>
 
 # Check compose status.
-docker compose -f /opt/tinyassets/deploy/compose.yml ps
+TINYASSETS_IMAGE='<runtime-image-from-run-evidence>' \
+  docker compose --env-file /etc/tinyassets/env \
+  -f /opt/tinyassets/deploy/compose.yml ps
 
 # Tail daemon logs.
-docker compose -f /opt/tinyassets/deploy/compose.yml logs daemon --tail 50
+TINYASSETS_IMAGE='<runtime-image-from-run-evidence>' \
+  docker compose --env-file /etc/tinyassets/env \
+  -f /opt/tinyassets/deploy/compose.yml logs daemon --tail 50
 
 # Probe locally.
 curl -s -X POST http://127.0.0.1:8001/mcp \
