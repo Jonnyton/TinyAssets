@@ -122,3 +122,20 @@ fresh-host rollback edges found later.
   deletion as explicit tested states in the first proposal, including request
   timeouts and adversarial output fields, instead of adding them after the
   happy path is sketched.
+
+## 2026-07-23 — PostgreSQL control-plane planning
+
+What surprised me: the host's database choice was already mostly present in
+PLAN, but one stale open tension, an older private-Supabase passage, and the
+existing WorkOS identity owner made “use Supabase” three distinct decisions
+rather than one.
+
+Pattern worth capturing: a shared persistence substrate should own only
+authority, migrations, isolation mechanics, cutover, exit, and foundation
+proof. Identity, visibility, domain transactions, uptime operations, and
+private-content policy stay with their own capabilities and become explicit
+dependencies.
+
+One thing I would do differently: map active OpenSpec owners before the first
+design draft. That would have prevented the temporary Supabase Auth overreach
+and placed the PostgreSQL uptime delta before the first-write gate immediately.
