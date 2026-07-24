@@ -23,6 +23,8 @@ After=tinyassets-daemon.service
 Type=oneshot
 User=tinyassets
 Group=tinyassets
+EnvironmentFile=/etc/tinyassets/env
+ExecCondition=/usr/bin/test -n "${TINYASSETS_IMAGE}"
 WorkingDirectory=/opt/tinyassets
 
 # /var/lib/tinyassets-watchdog needs to be writable by the tinyassets user.
@@ -48,7 +50,7 @@ LogsDirectoryMode=0750
 # scripts/watchdog.py calls `systemctl restart tinyassets-daemon.service`
 # when threshold is crossed. That command hits the sudoers allowlist.
 
-ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/watchdog.py
+ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/watchdog.py --canary-script /opt/tinyassets-host-uptime/current/scripts/mcp_public_canary.py
 
 # One-shot exit; timer handles cadence. Fail fast if script errors.
 TimeoutStartSec=60s

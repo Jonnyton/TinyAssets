@@ -78,3 +78,17 @@ primary deploy guide leaves a believable but unusable path.
 One thing I would do differently: start the contract test from the runtime's
 actual environment and enumerate every linked guide before drafting the
 write-set.
+
+## 2026-07-23 — convergent host uptime installation
+
+What surprised me: installing every unit was not sufficient for a fresh host;
+the disk-rotation import closure, disabled-timer repair, and backup destination
+guidance each had independent drift.
+
+Pattern worth capturing: a systemd installer should own units, executable
+assets, configuration names, activation state, and rollback as one versioned
+transaction. Existing content-addressed releases still need byte/mode checks.
+
+One thing I would do differently: make the first fake systemd reject missing
+units and inject a mid-stop failure, because permissive doubles hid the two
+fresh-host rollback edges found later.

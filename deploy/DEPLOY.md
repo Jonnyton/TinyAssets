@@ -287,34 +287,69 @@ cutover for the post-cutover playbook.
 
 ---
 
-## What this deploy does NOT include (future rows)
+## Host uptime services
+
+Bootstrap converges the complete host-uptime set through
+`deploy/install-host-uptime-services.sh`:
+
+- `tinyassets-watchdog.timer`
+- `daemon-watchdog.timer`
+- `tinyassets-backup.timer`
+- `tinyassets-prune.timer`
+- `tinyassets-disk-watch.timer`
+
+The installer validates its complete source manifest and scoped sudoers
+candidate before activation, stores runtime files under
+`/opt/tinyassets-host-uptime/releases/<content-hash>/`, atomically switches the
+`current` symlink, and enables, starts, and verifies every timer on every run.
+It pauses timers and waits boundedly for active oneshot services before
+changing installed files. Re-running bootstrap is therefore also the repair
+path for byte-current but disabled or inactive timers.
+
+Verify the converged set:
+
+```bash
+sudo systemctl is-enabled tinyassets-watchdog.timer daemon-watchdog.timer \
+  tinyassets-backup.timer tinyassets-prune.timer tinyassets-disk-watch.timer
+sudo systemctl is-active tinyassets-watchdog.timer daemon-watchdog.timer \
+  tinyassets-backup.timer tinyassets-prune.timer tinyassets-disk-watch.timer
+sudo systemctl list-timers 'tinyassets-*' 'daemon-watchdog.timer'
+readlink -f /opt/tinyassets-host-uptime/current
+```
+
+The `Install Host Services` workflow uses the same installer. Automatic runs
+checkout the successful triggering deploy's full source SHA; manual runs pin
+the dispatch's `github.sha`. The restart workflow's install option delegates
+to the same manifest. Both workflows checksum a unique private remote bundle
+before invoking the installer.
 
 ## Row L — Daemon watchdog (installed by bootstrap)
 
-`hetzner-bootstrap.sh` installs a watchdog alongside the daemon unit.
-Catches the failure systemd's `Restart=always` CAN'T see: daemon
-process alive, `/mcp` unresponsive (hung transaction, wedged thread,
-OOM-adjacent).
+The shared installer installs two complementary watchdogs alongside the
+daemon unit. They catch failures systemd's `Restart=always` cannot see:
+an alive but unresponsive `/mcp` process and a stale daemon/container
+heartbeat.
 
-- **Timer:** `tinyassets-watchdog.timer` fires every 2 min starting 60s after boot.
-- **Script:** `scripts/watchdog.py` probes `http://127.0.0.1:8001/mcp` via the canary. State persists at `/var/lib/tinyassets-watchdog/state.json` across ticks.
+- **Timer:** `tinyassets-watchdog.timer` fires every 30s starting 60s after boot.
+- **Local MCP watchdog:** `/opt/tinyassets-host-uptime/current/scripts/watchdog.py` probes `http://127.0.0.1:8001/mcp` via the installed canary. State persists at `/var/lib/tinyassets-watchdog/state.json` across ticks.
+- **Daemon watchdog:** `/opt/tinyassets-host-uptime/current/deploy/daemon-watchdog.sh` checks the systemd unit, compose containers, and freshest worker-supervisor heartbeat.
 - **Trigger:** 3 consecutive reds → `sudo systemctl restart tinyassets-daemon.service`.
 - **Rate limit:** min 10 min between restarts — blocks hot-loop on persistent-failure states.
 - **Logs:** `sudo journalctl -u tinyassets-watchdog -f`.
-- **Sudoers:** scoped rule at `/etc/sudoers.d/tinyassets-watchdog` — `workflow` user has NOPASSWD ONLY for the one restart command; no other sudo access.
+- **Sudoers:** scoped rule at `/etc/sudoers.d/tinyassets-watchdog` — `tinyassets` user has NOPASSWD ONLY for the one restart command; no other sudo access.
 
 Check next fire: `sudo systemctl list-timers tinyassets-watchdog.timer`.
 
 ## Row J — State backup (installed by bootstrap)
 
-`hetzner-bootstrap.sh` installs a nightly backup of the `tinyassets-data`
+The shared installer installs a nightly backup of the `tinyassets-data`
 named Docker volume to the configured remote destination. Bootstrap enables the
 timer unconditionally; if `BACKUP_DEST` is blank, `backup.sh`
 exits 1 with a clear message (so ops sees the wiring but can defer
 remote provisioning).
 
 - **Timer:** `tinyassets-backup.timer` fires nightly at 03:00 UTC.
-- **Script:** `deploy/backup.sh` creates strict brain and best-effort full-volume `.tar.gz` archives, then uploads them with `rclone`.
+- **Script:** `/opt/tinyassets-host-uptime/current/deploy/backup.sh` creates strict brain and best-effort full-volume `.tar.gz` archives, then uploads them with `rclone`.
 - **Retention:** 7 daily + 4 weekly + 6 monthly (override via `BACKUP_RETAIN_*` env vars).
 - **Host action needed:** configure an rclone remote as root, set its destination in `/etc/tinyassets/env` as `BACKUP_DEST=<remote>:<path>`, then manually run the backup service once.
 

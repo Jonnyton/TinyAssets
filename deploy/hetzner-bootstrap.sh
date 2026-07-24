@@ -30,7 +30,7 @@
 #   1. Fill /etc/tinyassets/env with real secrets (CLOUDFLARE_TUNNEL_TOKEN,
 #      SUPABASE_*, GITHUB_OAUTH_*).
 #   2. systemctl start tinyassets-daemon
-#   3. Verify: python3 /opt/tinyassets/scripts/mcp_public_canary.py
+#   3. Verify: python3 /opt/tinyassets-host-uptime/current/scripts/mcp_public_canary.py
 #      --url https://tinyassets.io/mcp --verbose
 
 set -euo pipefail
@@ -85,6 +85,8 @@ apt-get install -y -qq \
     python3-pip \
     jq \
     rclone \
+    sudo \
+    util-linux \
     zstd
 
 # ----- 2. Docker CE + compose plugin --------------------------------------
@@ -216,96 +218,12 @@ else
     log "tinyassets-daemon.service already current"
 fi
 
-# Row L — watchdog unit + timer. Enabled immediately because it's
-# idempotent even before the main daemon starts — it just records
-# reds + waits to cross threshold.
-WATCHDOG_UNIT="/etc/systemd/system/tinyassets-watchdog.service"
-WATCHDOG_TIMER="/etc/systemd/system/tinyassets-watchdog.timer"
-watchdog_changed=0
-if [[ ! -f "${WATCHDOG_UNIT}" ]] \
-   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.service" "${WATCHDOG_UNIT}"; then
-    cp "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.service" "${WATCHDOG_UNIT}"
-    watchdog_changed=1
-fi
-if [[ ! -f "${WATCHDOG_TIMER}" ]] \
-   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.timer" "${WATCHDOG_TIMER}"; then
-    cp "${TINYASSETS_HOME}/deploy/tinyassets-watchdog.timer" "${WATCHDOG_TIMER}"
-    watchdog_changed=1
-fi
-if [[ "${watchdog_changed}" -eq 1 ]]; then
-    log "installed tinyassets-watchdog service + timer"
-    systemctl daemon-reload
-    systemctl enable --now tinyassets-watchdog.timer
-else
-    log "tinyassets-watchdog service + timer already current"
-fi
-
-# Scoped sudoers rule — tinyassets user gets NOPASSWD ONLY for
-# `systemctl restart tinyassets-daemon.service`. Watchdog needs this when
-# threshold is crossed. No other sudo privileges granted.
-SUDOERS_FILE="/etc/sudoers.d/tinyassets-watchdog"
-SUDOERS_RULE="${TINYASSETS_USER} ALL=(root) NOPASSWD:/usr/bin/systemctl restart tinyassets-daemon.service"
-if [[ ! -f "${SUDOERS_FILE}" ]] || ! grep -qF "${SUDOERS_RULE}" "${SUDOERS_FILE}"; then
-    log "installing scoped sudoers rule for watchdog restart..."
-    echo "${SUDOERS_RULE}" > "${SUDOERS_FILE}"
-    chmod 0440 "${SUDOERS_FILE}"
-    if ! visudo -c -q; then
-        log "ERROR: sudoers syntax check failed; removing the rule"
-        rm -f "${SUDOERS_FILE}"
-        exit 1
-    fi
-else
-    log "sudoers rule already present"
-fi
-
-# Row J — backup service + timer. Enabled unconditionally — if
-# STORAGEBOX_* env is blank, backup.sh exits 1 with a clear message.
-# Enable-on-install gives ops a one-step "fill the creds and it
-# backs up tonight" flow instead of a forgotten-enable trap.
-BACKUP_UNIT="/etc/systemd/system/tinyassets-backup.service"
-BACKUP_TIMER="/etc/systemd/system/tinyassets-backup.timer"
-backup_changed=0
-if [[ ! -f "${BACKUP_UNIT}" ]] \
-   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-backup.service" "${BACKUP_UNIT}"; then
-    cp "${TINYASSETS_HOME}/deploy/tinyassets-backup.service" "${BACKUP_UNIT}"
-    backup_changed=1
-fi
-if [[ ! -f "${BACKUP_TIMER}" ]] \
-   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-backup.timer" "${BACKUP_TIMER}"; then
-    cp "${TINYASSETS_HOME}/deploy/tinyassets-backup.timer" "${BACKUP_TIMER}"
-    backup_changed=1
-fi
-if [[ "${backup_changed}" -eq 1 ]]; then
-    log "installed tinyassets-backup service + timer"
-    systemctl daemon-reload
-    systemctl enable --now tinyassets-backup.timer
-else
-    log "tinyassets-backup service + timer already current"
-fi
-
-# Weekly docker image prune — prevents disk fill from accumulated image
-# tags (each deploy pulls ~1.78 GB; without pruning 20 deploys fills
-# a 25 GB Droplet).
-PRUNE_UNIT="/etc/systemd/system/tinyassets-prune.service"
-PRUNE_TIMER="/etc/systemd/system/tinyassets-prune.timer"
-prune_changed=0
-if [[ ! -f "${PRUNE_UNIT}" ]] \
-   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-prune.service" "${PRUNE_UNIT}"; then
-    cp "${TINYASSETS_HOME}/deploy/tinyassets-prune.service" "${PRUNE_UNIT}"
-    prune_changed=1
-fi
-if [[ ! -f "${PRUNE_TIMER}" ]] \
-   || ! cmp -s "${TINYASSETS_HOME}/deploy/tinyassets-prune.timer" "${PRUNE_TIMER}"; then
-    cp "${TINYASSETS_HOME}/deploy/tinyassets-prune.timer" "${PRUNE_TIMER}"
-    prune_changed=1
-fi
-if [[ "${prune_changed}" -eq 1 ]]; then
-    log "installed tinyassets-prune service + timer"
-    systemctl daemon-reload
-    systemctl enable --now tinyassets-prune.timer
-else
-    log "tinyassets-prune service + timer already current"
-fi
+# Install both watchdogs plus backup, prune, and disk-pressure layers from one
+# manifest. The installer always repairs disabled/inactive timers even when
+# every file is already current.
+TINYASSETS_SOURCE_ROOT="${TINYASSETS_HOME}" \
+TINYASSETS_SOURCE_SHA="$(git -C "${TINYASSETS_HOME}" rev-parse HEAD)" \
+    bash "${TINYASSETS_HOME}/deploy/install-host-uptime-services.sh"
 
 # ----- 7. swap file -------------------------------------------------------
 
