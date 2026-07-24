@@ -16,9 +16,12 @@ treated as complete.
 - Add deterministic concurrent compile-and-invoke coverage proving that one
   origin lineage cannot exceed its cap while unrelated origins remain
   independently admissible.
+- Derive one stable, server-owned lineage origin for every trusted root run so
+  sibling enqueues cannot evade the lineage cap by minting child IDs.
+- Preserve lifetime lineage admission truth across queue garbage collection;
+  corrupt archive state fails closed instead of silently resetting that truth.
 - Correct stale test documentation that still describes the production flag as
   waiting to go live.
-- Make no runtime behavior change unless the boundary proof exposes a defect.
 
 ## Capabilities
 
@@ -29,10 +32,16 @@ None.
 ### Modified Capabilities
 
 - `graph-execution-substrate`: document the shipped in-node enqueue admission
-  and atomic shared-cap containment requirements.
+  contract, stable root lineage, and atomic shared-cap containment
+  requirements.
+- `daemon-runtime-and-dispatch`: make archived branch-task history
+  authoritative for lifetime lineage admission and fail closed when that
+  archive cannot be decoded.
 
 ## Impact
 
-The change affects the canonical graph execution substrate spec and
-`tests/test_node_enqueue_concurrency.py`. It introduces no API, storage,
-dependency, deployment, or production configuration change.
+The change affects synchronous run-context construction, file-locked
+branch-task admission and garbage collection, their packaged runtime mirrors,
+the two canonical capability specs, and focused tests. It introduces no public
+API, new storage file, dependency, deployment, or production configuration
+change.
