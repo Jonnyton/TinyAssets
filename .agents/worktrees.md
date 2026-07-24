@@ -1093,3 +1093,13 @@ Notes:
 - Verification: 47 focused post-archive checks; security review observed 120 related passes; strict OpenSpec 41/41; mirror parity; concurrency/storage and security/spec APPROVE
 - Post-fix live use: none yet; production-clean use must wait for deploy and observation
 - Ship/abandon: make PR ready after CI and final verifier approval; retire STATUS row only after merge
+
+## 2026-07-23 - landed finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: merged as PR #1672 at `7778eebf`; implementation claim retired
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: only the post-deploy organic-use watch remains
+- Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
+- Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
