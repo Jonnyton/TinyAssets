@@ -3,6 +3,7 @@
 **Date:** 2026-07-23
 **Author:** Codex initial finding
 **Status:** Review input only; not PLAN truth or implementation authority
+**Host direction:** Option 1 selected 2026-07-23; pending Claude source re-check
 **Required next review:** Claude opposite-provider source re-check after the
 2026-07-24 evening PT capacity reset
 
@@ -38,7 +39,18 @@ Until then:
 | What does active OpenSpec require? | `openspec/changes/paid-market-track-e-wave-2-transport/design.md:95-109,139-150` requires a read-only deployed inventory, host-approved baseline/home, production-native SQL, checksums/history, and no prototype promotion. `complete-independent-full-platform-targets/tasks.md:10-14` asks for a numbered migration without naming that home. | The production migration system must precede domain migrations. |
 | Why not dual-write? | `tinyassets/api/market.py:727-742,880-893` already has local SQLite state. Paid-market design/spec freezes v1 history and forbids dual money mutation. | Cutover may shadow-read, but exactly one store may authorize each mutation. |
 
-## Recommended host decision
+## Options considered
+
+| Option | BYOC and self-hostability | Zero-host uptime | Privacy | Reversibility |
+|---|---|---|---|---|
+| **1. Supabase-hosted PostgreSQL at launch with a stock-PostgreSQL exit path — host selected** | BYOC remains requester-owned compute/model authority; provider credentials never enter the control plane. Provider-neutral migrations, export/restore, and adapters around Supabase-specific services preserve a self-host exit. | Shortest path to keep shared authoring, discovery, collaboration, moderation, and market coordination online with zero daemon hosts. | PostgreSQL owns shared control-plane state only. Private universe/branch content remains host-only; RLS does not authorize uploading it. | Canonical IDs, migration history, audit, and accounting events become one-way after cutover. Vendor, region, sizing, pooling, and cache choices remain reversible. |
+| **2. TinyAssets-operated provider-neutral PostgreSQL from launch** | Strong direct portability, but every self-host deployment must also provide auth, realtime, object storage, backups, and upgrades. | Coherent but slower, with more independently operated uptime surfaces before recovery. | Same host-only private-content boundary; TinyAssets assumes all security, backup, residency, and incident-response duties. | Data authority and migration lineage are one-way; infrastructure provider is highly reversible. |
+| **3. Git/OKF public authority plus PostgreSQL transactional authority** | Strong public-data inspectability, but requires both a forge and PostgreSQL. | Cross-store moderation, collaboration, and accounting require reconciliation/outbox behavior and add failure modes. | Public data can live in Git/OKF; private content remains host-only; sensitive operational metadata lives in PostgreSQL. | The domain split and cross-store event semantics become expensive to reverse and contradict the current GitHub-export-only direction. |
+
+The deployed single-volume SQLite bridge is not a final option: it cannot meet
+shared multi-user concurrency or independent zero-host availability.
+
+## Host-selected direction pending Claude review
 
 > **Canonical production store and migration home.** TinyAssets' sole
 > canonical store for multi-user control-plane state is Supabase-hosted
@@ -61,13 +73,27 @@ Until then:
 This decision selects authority and migration mechanics. It does **not** decide:
 
 - which existing local artifacts or fields migrate;
-- private-instance storage placement;
 - field-level public/private classification;
+- private-content artifact formats, backup mechanics, or legal access controls;
 - retention, deletion, export, or legal-hold policy;
 - analytics or training access to user data.
 
 Those remain separate PLAN decisions and must not be inferred from selecting
 PostgreSQL.
+
+The host selected Option 1 on 2026-07-23. The durable approval meaning is:
+
+> I approve Supabase-hosted PostgreSQL as the sole canonical store at launch
+> for shared multi-user control-plane state, with provider-neutral migrations
+> in `db/postgres/migrations/` and a locked checksum-verified runner; GitHub
+> remains an export sink, prototype SQL remains fixture-only, local SQLite
+> remains host execution/cache state, separately specified OKF/artifact stores
+> retain their domain authority, private instance content remains host-only,
+> and a tested stock-PostgreSQL self-host exit is mandatory.
+
+This records host direction, not final implementation authority. Claude must
+still re-check the sources and return APPROVE or an adaptation that the host
+accepts before PLAN or production persistence changes.
 
 ## Rollout contract
 
