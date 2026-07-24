@@ -188,7 +188,9 @@ class AccountEligibilityPolicy:
     minimum_completed_interactions: int
 
     def __post_init__(self) -> None:
-        if self.minimum_account_age < timedelta(0):
+        if not isinstance(self.minimum_account_age, timedelta) or self.minimum_account_age < (
+            timedelta(0)
+        ):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
         _require_integer_at_least(self.minimum_completed_interactions, 0)
 
@@ -301,6 +303,8 @@ class ModerationCase:
     other_active_holds: bool | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.artifact, ArtifactRef):
+            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
         require_id(self.case_id)
         require_id(self.rubric_version)
         _require_integer_at_least(self.revision, 1)
@@ -339,7 +343,9 @@ class ReviewDecision:
     decided_at: datetime
 
     def __post_init__(self) -> None:
-        if not isinstance(self.action, ReviewAction):
+        if not isinstance(self.reviewer, ActorEvidence) or not isinstance(
+            self.action, ReviewAction
+        ):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
         for value in (
             self.decision_id,
@@ -380,12 +386,9 @@ class CouncilAuthorization:
     authorized_at: datetime
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.delete_decision_ids, tuple)
-            or not self.delete_decision_ids
-            or len(set(self.delete_decision_ids)) != len(self.delete_decision_ids)
-            or self.delete_decision_ids != tuple(sorted(self.delete_decision_ids))
-        ):
+        if not isinstance(self.actor, ActorEvidence):
+            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        if not isinstance(self.delete_decision_ids, tuple) or not self.delete_decision_ids:
             raise PolicyError(PolicyErrorCode.COUNCIL_BINDING_MISMATCH)
         for value in (
             self.authorization_id,
@@ -398,6 +401,10 @@ class CouncilAuthorization:
             *self.delete_decision_ids,
         ):
             require_id(value)
+        if len(set(self.delete_decision_ids)) != len(
+            self.delete_decision_ids
+        ) or self.delete_decision_ids != tuple(sorted(self.delete_decision_ids)):
+            raise PolicyError(PolicyErrorCode.COUNCIL_BINDING_MISMATCH)
         require_rationale(self.rationale)
         require_aware(self.authorized_at)
         _require_integer_at_least(self.revision, 1)
@@ -456,7 +463,10 @@ class AppealContext:
 class AppealParticipation:
     appeal_id: str
     actor_id: str
-    terminal_authority: bool = False
+
+    def __post_init__(self) -> None:
+        require_id(self.appeal_id)
+        require_id(self.actor_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,4 +478,23 @@ class ModerationResolution:
     actions: tuple[ReviewAction, ...]
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.state, ModerationState)
+            or not isinstance(self.authorizing_actor_ids, tuple)
+            or not isinstance(self.council_actor_ids, tuple)
+            or not isinstance(self.actions, tuple)
+            or any(not isinstance(action, ReviewAction) for action in self.actions)
+        ):
+            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        for actor_id in (*self.authorizing_actor_ids, *self.council_actor_ids):
+            require_id(actor_id)
+        if (
+            len(set(self.authorizing_actor_ids)) != len(self.authorizing_actor_ids)
+            or self.authorizing_actor_ids != tuple(sorted(self.authorizing_actor_ids))
+            or len(set(self.council_actor_ids)) != len(self.council_actor_ids)
+            or self.council_actor_ids != tuple(sorted(self.council_actor_ids))
+            or len(set(self.actions)) != len(self.actions)
+            or self.actions != tuple(sorted(self.actions, key=lambda action: action.value))
+        ):
+            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
         _require_integer_at_least(self.revision, 1)

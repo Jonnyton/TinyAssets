@@ -221,6 +221,19 @@ def test_account_eligibility_uses_authoritative_age_or_interactions(
     )
 
 
+@pytest.mark.parametrize("invalid_age", [True, "30 days", object()])
+def test_minimum_account_age_requires_timedelta_with_bounded_error(invalid_age):
+    contracts = moderation
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        contracts.AccountEligibilityPolicy(
+            minimum_account_age=invalid_age,
+            minimum_completed_interactions=20,
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.INVALID_POLICY
+
+
 def test_future_or_mismatched_account_evidence_fails_closed():
     contracts = moderation
     evidence = contracts.AccountEvidence(
@@ -622,6 +635,46 @@ def test_grant_rejects_malformed_runtime_enum_and_scope_values(field, value):
         replace(_grant("reviewer"), **{field: value})
 
 
+@pytest.mark.parametrize(
+    "build_invalid",
+    [
+        pytest.param(
+            lambda contracts: replace(_case(), artifact="not-an-artifact"),
+            id="case-artifact",
+        ),
+        pytest.param(
+            lambda contracts: replace(
+                _decision("reviewer", _grant("reviewer")),
+                reviewer="not-actor-evidence",
+            ),
+            id="decision-reviewer",
+        ),
+        pytest.param(
+            lambda contracts: replace(
+                _council_authorization(
+                    "council",
+                    _grant(
+                        "council",
+                        authority_class=contracts.AuthorityClass.COUNCIL,
+                    ),
+                ),
+                actor="not-actor-evidence",
+            ),
+            id="council-actor",
+        ),
+    ],
+)
+def test_nested_evidence_contracts_reject_wrong_runtime_types_before_dereference(
+    build_invalid,
+):
+    contracts = moderation
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        build_invalid(contracts)
+
+    assert caught.value.code is contracts.PolicyErrorCode.INVALID_POLICY
+
+
 @pytest.mark.parametrize("invalid_value", [True, "1"])
 @pytest.mark.parametrize(
     "build_invalid",
@@ -835,6 +888,31 @@ def test_expired_or_duplicate_council_authority_cannot_satisfy_quorum():
         )
 
 
+@pytest.mark.parametrize(
+    "invalid_ids",
+    [
+        ("decision-reviewer", 7),
+        ("decision-reviewer", ["nested"]),
+        ("decision-reviewer", ("nested",)),
+    ],
+)
+def test_council_delete_decision_ids_reject_nested_non_strings_boundedly(invalid_ids):
+    contracts = moderation
+    council_grant = _grant(
+        "council",
+        authority_class=contracts.AuthorityClass.COUNCIL,
+    )
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _council_authorization(
+            "council",
+            council_grant,
+            delete_decision_ids=invalid_ids,
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.INVALID_TEXT
+
+
 def test_quorum_is_policy_owned_not_an_arbitrary_resolver_argument():
     contracts = moderation
 
@@ -923,7 +1001,35 @@ def test_appeal_participation_uses_authoritative_context_and_recuses_originals()
         policy=_policy(),
         now=NOW,
     )
-    assert participation.terminal_authority is False
+    assert participation == contracts.AppealParticipation(
+        appeal_id=appeal.appeal_id,
+        actor_id="independent",
+    )
+
+
+def test_appeal_participation_has_no_terminal_authority_surface():
+    contracts = moderation
+
+    assert "terminal_authority" not in inspect.signature(contracts.AppealParticipation).parameters
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"appeal_id": ""},
+        {"actor_id": "bad\nactor"},
+        {"actor_id": object()},
+    ],
+)
+def test_appeal_participation_requires_bounded_ids(changes):
+    contracts = moderation
+    values = {"appeal_id": "appeal-1", "actor_id": "reviewer"}
+    values.update(changes)
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        contracts.AppealParticipation(**values)
+
+    assert caught.value.code is contracts.PolicyErrorCode.INVALID_TEXT
 
 
 def test_appeal_participant_api_cannot_accept_caller_decision_lists():
@@ -1017,3 +1123,82 @@ def test_action_and_state_vocabulary_remains_recoverable_only():
         "pending_delete",
         "recoverable_deleted",
     }
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected_code"),
+    [
+        ({"state": "under_review"}, moderation.PolicyErrorCode.INVALID_POLICY),
+        ({"authorizing_actor_ids": ["reviewer"]}, moderation.PolicyErrorCode.INVALID_POLICY),
+        (
+            {"authorizing_actor_ids": ("reviewer-2", "reviewer-1")},
+            moderation.PolicyErrorCode.INVALID_POLICY,
+        ),
+        (
+            {"authorizing_actor_ids": ("reviewer", "reviewer")},
+            moderation.PolicyErrorCode.INVALID_POLICY,
+        ),
+        (
+            {"authorizing_actor_ids": (["nested"],)},
+            moderation.PolicyErrorCode.INVALID_TEXT,
+        ),
+        ({"council_actor_ids": ["council"]}, moderation.PolicyErrorCode.INVALID_POLICY),
+        (
+            {"council_actor_ids": ("council-2", "council-1")},
+            moderation.PolicyErrorCode.INVALID_POLICY,
+        ),
+        (
+            {"council_actor_ids": ("council", "council")},
+            moderation.PolicyErrorCode.INVALID_POLICY,
+        ),
+        ({"council_actor_ids": (object(),)}, moderation.PolicyErrorCode.INVALID_TEXT),
+        (
+            {"actions": [moderation.ReviewAction.DISMISS]},
+            moderation.PolicyErrorCode.INVALID_POLICY,
+        ),
+        ({"actions": ("dismiss",)}, moderation.PolicyErrorCode.INVALID_POLICY),
+        (
+            {
+                "actions": (
+                    moderation.ReviewAction.PROPOSE_DELETE,
+                    moderation.ReviewAction.DISMISS,
+                )
+            },
+            moderation.PolicyErrorCode.INVALID_POLICY,
+        ),
+        (
+            {
+                "actions": (
+                    moderation.ReviewAction.DISMISS,
+                    moderation.ReviewAction.DISMISS,
+                )
+            },
+            moderation.PolicyErrorCode.INVALID_POLICY,
+        ),
+    ],
+)
+def test_moderation_resolution_requires_canonical_bounded_contract_shape(
+    changes,
+    expected_code,
+):
+    contracts = moderation
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        replace(_resolve(), **changes)
+
+    assert caught.value.code is expected_code
+
+
+def test_public_exports_include_expected_moderation_contract_subset():
+    expected = {
+        "ActorEvidence",
+        "AppealParticipation",
+        "CouncilAuthorization",
+        "ModerationCase",
+        "ModerationResolution",
+        "PolicyError",
+        "resolve_review_state",
+    }
+
+    assert expected <= set(moderation.__all__)
+    assert expected <= set(vars(moderation))
