@@ -1103,3 +1103,16 @@ Notes:
 - STATUS/Issue/PR: only the post-deploy organic-use watch remains
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
+
+## 2026-07-24 - create establish-public-capacity-envelope
+
+- Provider: codex-gpt56-capacity
+- Branch: codex/establish-public-capacity-envelope
+- Lane state: active planning-only OpenSpec; no runtime Files claimed
+- Worktree: C:\Users\Jonathan\Projects\wf-public-capacity-envelope
+- STATUS/Issue/PR: public capacity envelope contract; PR pending
+- PLAN refs: full-platform §14 scale audit; Forever Rule concurrency/load proof
+- Purpose: define a reusable adapter-based capacity/isolation harness and publish only verified current envelopes, starting with the single-origin/no-executor truth
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-public-capacity-envelope\_PURPOSE.md
+- Related implications: user-growth/concurrent-user research; draft PR #1670 PostgreSQL control plane; test identity; authority/market/domain-owned scenarios
+- Ship/abandon: planning PR only until fresh opposite-provider APPROVE/accepted ADAPT and exact implementation Files are released
