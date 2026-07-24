@@ -15,6 +15,7 @@ Containment (Codex enqueue review, 2026-05-30):
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 import tinyassets.api.helpers as helpers
 import tinyassets.branch_tasks as bt
 import tinyassets.daemon_server as ds
+import tinyassets.runs as runs
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -284,6 +286,41 @@ def test_enqueue_stamps_parent_and_origin(monkeypatch):
     assert task.origin_branch_task_id == "O1"  # propagated, not reset
 
 
+@pytest.mark.parametrize(
+    ("parent", "origin", "expected"),
+    [
+        ("", "", "run:run-123"),
+        ("parent-task", "", "parent-task"),
+        ("parent-task", "origin-task", "origin-task"),
+    ],
+)
+def test_execute_branch_derives_stable_root_origin_with_explicit_precedence(
+    tmp_path, monkeypatch, parent, origin, expected,
+):
+    captured = []
+    sentinel = object()
+    monkeypatch.setattr(runs, "_prepare_run", lambda *args, **kwargs: "run-123")
+
+    def _capture_invoke(*args, **kwargs):
+        captured.append(kwargs["enqueue_context"])
+        return sentinel
+
+    monkeypatch.setattr(runs, "_invoke_graph", _capture_invoke)
+    outcome = runs.execute_branch(
+        tmp_path,
+        branch=_branch(ENQUEUE_ONE, ["enqueue_branch_run"]),
+        inputs={},
+        _enqueue_universe_id="u",
+        _parent_branch_task_id=parent,
+        _origin_branch_task_id=origin,
+    )
+
+    assert outcome is sentinel
+    assert len(captured) == 1
+    assert captured[0].parent_branch_task_id == parent
+    assert captured[0].origin_branch_task_id == expected
+
+
 def test_enqueue_ignores_branch_authored_request_type(monkeypatch):
     # request_type steers scheduler class + privileged downstream handling
     # (e.g. bug_investigation direct-execution). A source node must NOT be able
@@ -368,3 +405,106 @@ def test_append_task_capped_per_origin_lineage_cap(tmp_path):
     # Different origin → still allowed (cap is per-origin, not global).
     bt.append_task_capped(tmp_path, _task("t3", origin="O2"), max_lineage=1)
     assert len(bt.read_queue(tmp_path)) == 2
+
+
+def _write_archive(universe_path: Path, tasks: list[bt.BranchTask]) -> None:
+    bt.archive_path(universe_path).write_text(
+        json.dumps([task.to_dict() for task in tasks]),
+        encoding="utf-8",
+    )
+
+
+def test_append_task_capped_counts_archived_lineage(tmp_path):
+    _write_archive(tmp_path, [_task("archived-1", origin="O", status="succeeded")])
+
+    with pytest.raises(bt.QueueCapExceeded) as exc:
+        bt.append_task_capped(
+            tmp_path,
+            _task("next", origin="O"),
+            max_active=10,
+            max_lineage=1,
+        )
+
+    assert "lineage" in str(exc.value)
+    assert bt.read_queue(tmp_path) == []
+
+
+def test_append_task_capped_keeps_unrelated_archived_origins_admissible(tmp_path):
+    _write_archive(
+        tmp_path,
+        [_task("other-1", origin="OTHER", status="succeeded")],
+    )
+
+    bt.append_task_capped(
+        tmp_path,
+        _task("ours-1", origin="OURS"),
+        max_active=10,
+        max_lineage=1,
+    )
+
+    assert [task.branch_task_id for task in bt.read_queue(tmp_path)] == ["ours-1"]
+
+
+def test_append_task_capped_global_cap_ignores_terminal_and_archived_rows(tmp_path):
+    bt.append_task(tmp_path, _task("terminal-live", origin="O", status="pending"))
+    queue_file = bt.queue_path(tmp_path)
+    raw = json.loads(queue_file.read_text(encoding="utf-8"))
+    raw[0]["status"] = "succeeded"
+    queue_file.write_text(json.dumps(raw), encoding="utf-8")
+    _write_archive(
+        tmp_path,
+        [_task("terminal-archived", origin="O", status="succeeded")],
+    )
+
+    bt.append_task_capped(
+        tmp_path,
+        _task("active-1", origin="OTHER"),
+        max_active=1,
+        max_lineage=10,
+    )
+    with pytest.raises(bt.QueueCapExceeded):
+        bt.append_task_capped(
+            tmp_path,
+            _task("active-2", origin="ANOTHER"),
+            max_active=1,
+            max_lineage=10,
+        )
+
+    assert {task.branch_task_id for task in bt.read_queue(tmp_path)} == {
+        "terminal-live",
+        "active-1",
+    }
+
+
+def test_append_task_capped_deduplicates_live_archive_task_id(tmp_path):
+    overlap = _task("overlap", origin="O", status="succeeded")
+    bt.append_task(tmp_path, overlap)
+    _write_archive(tmp_path, [overlap])
+
+    bt.append_task_capped(
+        tmp_path,
+        _task("next", origin="O"),
+        max_active=10,
+        max_lineage=2,
+    )
+
+    assert {task.branch_task_id for task in bt.read_queue(tmp_path)} == {
+        "overlap",
+        "next",
+    }
+
+
+def test_append_task_capped_corrupt_archive_fails_without_mutation(tmp_path):
+    archive = bt.archive_path(tmp_path)
+    archive.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        bt.append_task_capped(
+            tmp_path,
+            _task("next", origin="O"),
+            max_active=10,
+            max_lineage=2,
+        )
+
+    assert archive.read_text(encoding="utf-8") == "{not-json"
+    assert bt.read_queue(tmp_path) == []

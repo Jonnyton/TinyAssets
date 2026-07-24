@@ -1397,17 +1397,19 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
     # Paced ENQUEUE — append a run request to this universe's dispatcher queue.
     # NOT a synchronous spawn: the daemon's concurrency cap + per-provider
     # cooldown pace execution. Bounded by a spawn-depth cap + a per-run enqueue
-    # budget, and gated behind TINYASSETS_NODE_ENQUEUE_ENABLED (ships dark).
+    # budget, and gated behind TINYASSETS_NODE_ENQUEUE_ENABLED (fail-closed
+    # by default; the production deploy explicitly enables it).
     "enqueue_branch_run": ("dispatch", "enqueue"),
     "dispatch.enqueue": ("dispatch", "enqueue"),
 }
 
 
 def _node_enqueue_enabled() -> bool:
-    """Capability gate for the in-node enqueue verb (ships dark, default off).
+    """Fail-closed capability gate for the live in-node enqueue verb.
 
-    The first side-effecting in-node verb. Kept fail-closed until the
-    concurrency proof + opposite-provider review clear it for live use.
+    The first side-effecting in-node verb. Production enables it explicitly
+    after the hardening review; every other environment remains off by
+    default.
     """
     return os.environ.get(
         "TINYASSETS_NODE_ENQUEUE_ENABLED", ""
@@ -1497,7 +1499,7 @@ def _node_enqueue_branch_run(
 
     Not a synchronous spawn — the daemon's concurrency cap + cooldown pace
     execution. Containment (Codex enqueue review, 2026-05-30):
-      * capability flag (ships dark);
+      * fail-closed capability flag (explicitly enabled by production deploy);
       * spawn-depth cap (chain length) + per-run budget (branching factor);
       * trusted current-universe targeting — never a branch-named universe
         (Fix 1);

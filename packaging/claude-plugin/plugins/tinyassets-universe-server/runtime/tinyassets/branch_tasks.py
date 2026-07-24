@@ -273,6 +273,30 @@ class QueueCapExceeded(RuntimeError):
     exceeded. The task was NOT appended."""
 
 
+def _lineage_size(rows: list[dict], origin_branch_task_id: str) -> int:
+    """Count one origin's distinct identified tasks plus id-less rows.
+
+    A GC interruption may leave the same identified row in both the live
+    queue and archive. De-duplicating IDs prevents that safe overlap from
+    permanently consuming two lineage slots. Id-less legacy rows remain
+    conservative because they cannot be proven identical.
+    """
+    task_ids: set[str] = set()
+    idless = 0
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or row.get("origin_branch_task_id") != origin_branch_task_id
+        ):
+            continue
+        task_id = str(row.get("branch_task_id", "") or "").strip()
+        if task_id:
+            task_ids.add(task_id)
+        else:
+            idless += 1
+    return len(task_ids) + idless
+
+
 def append_task_capped(
     universe_path: Path,
     task: BranchTask,
@@ -311,10 +335,13 @@ def append_task_capped(
                     f"queue has {active} active task(s) (cap {max_active})"
                 )
         if max_lineage is not None and task.origin_branch_task_id:
-            lineage = sum(
-                1 for r in raw
-                if isinstance(r, dict)
-                and r.get("origin_branch_task_id") == task.origin_branch_task_id
+            # Terminal descendants remain cap-bearing after GC. Read the
+            # archive under this same universe lock so count/check/append is
+            # atomic against both enqueue and collection.
+            archived = _read_raw(archive_path(universe_path))
+            lineage = _lineage_size(
+                [*raw, *archived],
+                task.origin_branch_task_id,
             )
             if lineage >= max_lineage:
                 raise QueueCapExceeded(
@@ -756,26 +783,24 @@ def garbage_collect(
                     continue
             keep.append(row)
         if to_archive:
-            existing_archive: list[dict] = []
-            if ap.exists():
-                try:
-                    a_raw = ap.read_text(encoding="utf-8")
-                    if a_raw.strip():
-                        loaded = json.loads(a_raw)
-                        if isinstance(loaded, list):
-                            existing_archive = loaded
-                except (OSError, json.JSONDecodeError):
-                    logger.warning(
-                        "Corrupt archive at %s; starting fresh", ap,
-                    )
-            existing_archive.extend(to_archive)
-            ap.parent.mkdir(parents=True, exist_ok=True)
-            tmp = ap.with_suffix(ap.suffix + ".tmp")
-            tmp.write_text(
-                json.dumps(existing_archive, indent=2, default=str),
-                encoding="utf-8",
-            )
-            os.replace(tmp, ap)
+            # The archive is lifetime-lineage admission truth. Corruption must
+            # fail closed rather than silently resetting lineage budgets.
+            existing_archive = _read_raw(ap)
+            archived_ids = {
+                str(row.get("branch_task_id", "") or "").strip()
+                for row in existing_archive
+                if isinstance(row, dict)
+                and str(row.get("branch_task_id", "") or "").strip()
+            }
+            merged_archive = list(existing_archive)
+            for row in to_archive:
+                task_id = str(row.get("branch_task_id", "") or "").strip()
+                if task_id and task_id in archived_ids:
+                    continue
+                merged_archive.append(row)
+                if task_id:
+                    archived_ids.add(task_id)
+            _write_raw(ap, merged_archive)
             _write_raw(qp, keep)
             archived = len(to_archive)
     if archived:

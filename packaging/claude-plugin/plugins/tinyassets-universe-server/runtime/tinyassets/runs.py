@@ -2814,11 +2814,20 @@ def execute_branch(
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
     )
+    enqueue_origin = (
+        str(_origin_branch_task_id or "").strip()
+        or str(_parent_branch_task_id or "").strip()
+    )
+    if _enqueue_universe_id and not enqueue_origin:
+        # A trusted non-queue root (for example a universe soul loop) has no
+        # parent BranchTask. Derive its lineage once from the prepared run so
+        # every sibling enqueue competes for the same lifetime budget.
+        enqueue_origin = f"run:{run_id}"
     enqueue_context = NodeEnqueueContext(
         universe_id=_enqueue_universe_id,
         actor=actor,
         parent_branch_task_id=_parent_branch_task_id,
-        origin_branch_task_id=_origin_branch_task_id,
+        origin_branch_task_id=enqueue_origin,
     )
     return _invoke_graph(
         base_path,
