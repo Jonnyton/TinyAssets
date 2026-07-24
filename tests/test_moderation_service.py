@@ -1,8 +1,9 @@
 """Pure flag-intake planning tests.
 
 The planner consumes facts already loaded by a trusted service boundary.  It
-does not write them: persistence must compare-and-swap the exact snapshot and
-commit the flag plus any visibility transition atomically.
+does not write them: persistence must atomically compare both the exact
+artifact snapshot and rate-bucket version while consuming one token and
+committing the flag plus any visibility transition.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from tinyassets.moderation.service import (
     FlagRefusal,
     FlagRefusalCode,
     OpenFlagEvidence,
+    ProposedFlagFacts,
     plan_flag_intake,
 )
 
@@ -96,13 +98,15 @@ def _open_flag(actor_id: str, *, flag_id: str | None = None) -> OpenFlagEvidence
 
 def _snapshot(
     *,
+    snapshot_ref: str = "snapshot://artifact-1/revision-7",
+    artifact: ArtifactRef | None = None,
     state: ModerationState = ModerationState.VISIBLE,
     flags: tuple[OpenFlagEvidence, ...] = (),
 ) -> FlagIntakeSnapshot:
     return FlagIntakeSnapshot(
-        snapshot_ref="snapshot://artifact-1/revision-7",
+        snapshot_ref=snapshot_ref,
         captured_at=NOW - timedelta(seconds=1),
-        artifact=_artifact(),
+        artifact=artifact or _artifact(),
         state=state,
         open_flags=flags,
     )
@@ -110,6 +114,8 @@ def _snapshot(
 
 def _rate_limit(*, remaining: int = 3) -> FlagRateLimitEvidence:
     return FlagRateLimitEvidence(
+        bucket_id="flag-bucket://tenant-a/reporter-3",
+        bucket_version=11,
         tenant_id="tenant-a",
         actor_id="reporter-3",
         observed_at=NOW - timedelta(seconds=1),
@@ -137,7 +143,7 @@ def _plan(
     artifact: ArtifactRef | None = None,
     snapshot: FlagIntakeSnapshot | None = None,
     rate_limit: FlagRateLimitEvidence | None = None,
-    policy: FlagIntakePolicy | None = None,
+    policy: object | None = None,
     reason: object = "unsafe instructions",
     detail: object = "Contains a credential-harvesting workflow.",
 ) -> object:
@@ -149,7 +155,7 @@ def _plan(
         artifact=artifact or _artifact(),
         snapshot=snapshot or _snapshot(),
         rate_limit=rate_limit or _rate_limit(),
-        policy=policy or _policy(),
+        policy=policy or _policy(),  # type: ignore[arg-type]
         reason=reason,  # type: ignore[arg-type]
         detail=detail,  # type: ignore[arg-type]
     )
@@ -240,7 +246,6 @@ def test_scope_mismatch_precedes_duplicate_without_identifier_leak(
 
     assert result == FlagRefusal(
         code=FlagRefusalCode.SCOPE_MISMATCH,
-        message="flag scope does not match authoritative state",
     )
     assert "secret" not in repr(result)
     assert result.evidence_refs == ()
@@ -256,7 +261,6 @@ def test_ineligible_account_refuses_with_only_authoritative_eligibility_evidence
 
     assert result == FlagRefusal(
         code=FlagRefusalCode.ACCOUNT_INELIGIBLE,
-        message="account is not yet eligible to flag",
         evidence_refs=("account-evidence://reporter-3",),
     )
 
@@ -266,7 +270,6 @@ def test_exhausted_rate_bucket_refuses_with_retry_and_evidence() -> None:
 
     assert result == FlagRefusal(
         code=FlagRefusalCode.RATE_LIMITED,
-        message="flag rate limit reached",
         retry_at=NOW + timedelta(minutes=5),
         evidence_refs=("rate-evidence://reporter-3/window-4",),
     )
@@ -365,7 +368,6 @@ def test_reason_and_detail_are_bounded_without_reflecting_bad_input(
 
     assert result == FlagRefusal(
         code=FlagRefusalCode.INVALID_TEXT,
-        message="flag reason or detail is invalid",
     )
 
 
@@ -416,3 +418,235 @@ def test_accepted_plan_contains_no_terminal_or_authority_operation() -> None:
             "route",
         }
     )
+
+
+def test_accepted_plan_binds_exact_rate_bucket_precondition_and_one_token() -> None:
+    rate_limit = _rate_limit(remaining=1)
+
+    result = _plan(rate_limit=rate_limit)
+
+    assert isinstance(result, FlagAcceptedPlan)
+    assert result.rate_limit_bucket_id == rate_limit.bucket_id
+    assert result.expected_rate_limit_version == rate_limit.bucket_version
+    assert result.rate_limit_evidence_ref == rate_limit.evidence_ref
+    assert result.rate_limit_tokens_to_consume == 1
+    assert result.committed is False
+    assert result.requires_atomic_commit is True
+
+
+def test_last_token_reuse_across_artifacts_has_one_conflicting_precondition() -> None:
+    rate_limit = _rate_limit(remaining=1)
+    artifact_two = _artifact(artifact_id="artifact-2")
+    snapshot_two = _snapshot(
+        snapshot_ref="snapshot://artifact-2/revision-4",
+        artifact=artifact_two,
+    )
+
+    first = _plan(rate_limit=rate_limit)
+    second = _plan(
+        artifact=artifact_two,
+        snapshot=snapshot_two,
+        rate_limit=rate_limit,
+    )
+
+    assert isinstance(first, FlagAcceptedPlan)
+    assert isinstance(second, FlagAcceptedPlan)
+    assert first.expected_snapshot_ref != second.expected_snapshot_ref
+    assert (
+        first.rate_limit_bucket_id,
+        first.expected_rate_limit_version,
+        first.rate_limit_evidence_ref,
+        first.rate_limit_tokens_to_consume,
+    ) == (
+        second.rate_limit_bucket_id,
+        second.expected_rate_limit_version,
+        second.rate_limit_evidence_ref,
+        second.rate_limit_tokens_to_consume,
+    )
+    assert first.committed is second.committed is False
+
+
+def test_existing_flag_plan_consumes_no_rate_token() -> None:
+    result = _plan(
+        snapshot=_snapshot(flags=(_open_flag("reporter-3"),)),
+        rate_limit=_rate_limit(remaining=1),
+    )
+
+    assert isinstance(result, ExistingFlagPlan)
+    assert result.rate_limit_tokens_to_consume == 0
+    assert result.requires_atomic_commit is False
+
+
+def test_flag_later_than_snapshot_is_bounded_future_evidence() -> None:
+    snapshot = _snapshot(
+        flags=(
+            replace(
+                _open_flag("reporter-1"),
+                opened_at=NOW - timedelta(milliseconds=500),
+            ),
+        )
+    )
+
+    result = _plan(snapshot=snapshot)
+
+    assert isinstance(result, FlagRefusal)
+    assert result.code is FlagRefusalCode.INVALID_TIME
+    assert result.evidence_refs == ()
+
+
+def test_malformed_policy_refuses_boundedly_instead_of_dereferencing() -> None:
+    result = _plan(policy=object())
+
+    assert isinstance(result, FlagRefusal)
+    assert result.code is FlagRefusalCode.INVALID_POLICY
+    assert result.evidence_refs == ()
+
+
+def test_exact_scope_refusal_precedes_malformed_policy_without_id_leak() -> None:
+    result = _plan(
+        artifact=_artifact(artifact_id="secret-artifact-id"),
+        policy=object(),
+    )
+
+    assert isinstance(result, FlagRefusal)
+    assert result.code is FlagRefusalCode.SCOPE_MISMATCH
+    assert result.evidence_refs == ()
+    assert "secret-artifact-id" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"flag_id": ""}, "invalid bounded text"),
+        ({"actor_id": "actor\x00"}, "invalid bounded text"),
+        ({"reason": ""}, "invalid bounded text"),
+        ({"detail": ""}, "invalid bounded text"),
+        ({"opened_at": NOW.replace(tzinfo=None)}, "timezone-aware time required"),
+    ],
+)
+def test_proposed_flag_facts_reject_invalid_direct_construction(
+    changes: dict[str, object],
+    message: str,
+) -> None:
+    valid = ProposedFlagFacts(
+        flag_id="flag-1",
+        tenant_id="tenant-a",
+        artifact_id="artifact-1",
+        artifact_kind="universe",
+        actor_id="reporter-3",
+        reason="policy violation",
+        detail=None,
+        opened_at=NOW,
+    )
+
+    with pytest.raises(PolicyError, match=message):
+        replace(valid, **changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"expected_snapshot_ref": ""},
+        {"rate_limit_bucket_id": ""},
+        {"expected_rate_limit_version": 0},
+        {"expected_rate_limit_version": True},
+        {"rate_limit_evidence_ref": ""},
+        {"proposed_flag": object()},
+        {"distinct_flagger_count": 0},
+        {"distinct_flagger_count": True},
+        {"expected_state": "visible"},
+        {"resulting_state": ModerationState.RECOVERABLE_DELETED},
+        {"transition_to_under_review": 1},
+        {
+            "expected_state": ModerationState.VISIBLE,
+            "resulting_state": ModerationState.VISIBLE,
+            "transition_to_under_review": True,
+        },
+        {
+            "expected_state": ModerationState.UNDER_REVIEW,
+            "resulting_state": ModerationState.VISIBLE,
+            "transition_to_under_review": False,
+        },
+        {
+            "expected_state": ModerationState.UNDER_REVIEW,
+            "resulting_state": ModerationState.UNDER_REVIEW,
+            "transition_to_under_review": True,
+        },
+    ],
+)
+def test_accepted_plan_rejects_noncanonical_direct_construction(
+    changes: dict[str, object],
+) -> None:
+    valid = _plan()
+    assert isinstance(valid, FlagAcceptedPlan)
+
+    with pytest.raises(PolicyError):
+        replace(valid, **changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"expected_snapshot_ref": ""},
+        {"existing_flag": object()},
+        {"distinct_flagger_count": 0},
+        {"distinct_flagger_count": True},
+        {"resulting_state": ModerationState.RECOVERABLE_DELETED},
+        {"resulting_state": "visible"},
+    ],
+)
+def test_existing_plan_rejects_noncanonical_direct_construction(
+    changes: dict[str, object],
+) -> None:
+    valid = _plan(snapshot=_snapshot(flags=(_open_flag("reporter-3"),)))
+    assert isinstance(valid, ExistingFlagPlan)
+
+    with pytest.raises(PolicyError):
+        replace(valid, **changes)
+
+
+def test_refusal_message_is_derived_only_from_typed_code() -> None:
+    refusal = FlagRefusal(code=FlagRefusalCode.INVALID_TEXT)
+
+    assert refusal.message == "flag reason or detail is invalid"
+    with pytest.raises(TypeError):
+        FlagRefusal(  # type: ignore[call-arg]
+            code=FlagRefusalCode.INVALID_TEXT,
+            message="caller-controlled message",
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"code": "invalid_text"},
+        {"retry_at": NOW.replace(tzinfo=None)},
+        {"retry_at": NOW + timedelta(minutes=1)},
+        {"evidence_refs": ["evidence://one"]},
+        {"evidence_refs": ("evidence://two", "evidence://one")},
+        {"evidence_refs": ("evidence://one", "evidence://one")},
+        {"evidence_refs": ("",)},
+    ],
+)
+def test_refusal_rejects_noncanonical_direct_construction(
+    changes: dict[str, object],
+) -> None:
+    valid = FlagRefusal(code=FlagRefusalCode.INVALID_TEXT)
+
+    with pytest.raises(PolicyError):
+        replace(valid, **changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"bucket_id": ""},
+        {"bucket_version": 0},
+        {"bucket_version": True},
+    ],
+)
+def test_rate_limit_evidence_requires_exact_bucket_identity_and_version(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(PolicyError):
+        replace(_rate_limit(), **changes)
