@@ -9,8 +9,10 @@ Spec source: PR #206 (docs/specs/daemon-liveness-watchdog.md).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
+from tinyassets import cloud_worker as cw
 from tinyassets.api.status import (
     _HEARTBEAT_STALE_THRESHOLD_S,
     _STUCK_PENDING_THRESHOLD_S,
@@ -459,3 +461,106 @@ def test_get_status_supervisor_liveness_reflects_stuck_pending(tmp_path, monkeyp
     assert sl["queue_state"]["pending"] == 1
     assert sl["queue_state"]["stuck_pending_max_age_s"] >= 300
     assert any("stuck_pending" in w for w in sl["warnings"])
+
+
+def test_supervisor_descriptor_has_exact_90_second_validity(
+    tmp_path,
+    monkeypatch,
+):
+    image_ref = (
+        "ghcr.io/tinyassets/tinyassets@sha256:" + ("e" * 64)
+    )
+    (tmp_path / "release-state.json").write_text(
+        json.dumps(
+            {
+                "release_state_version": 2,
+                "outcome": "deployed",
+                "active_identity_status": "agreed",
+                "canary_bundle_status": "passed",
+                "configured_image_ref": image_ref,
+                "running_image_ref": image_ref,
+                "active_image_ref": image_ref,
+                "active_image_digest": image_ref,
+                "image_ref": image_ref,
+                "image_digest": image_ref,
+                "git_sha": "a" * 40,
+                "active_git_sha": "a" * 40,
+                "config_hash": "sha256:" + ("b" * 64),
+                "config_version": "tinyassets-env-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime-a")
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
+    monkeypatch.setattr(cw, "_utcnow", lambda: now)
+    cw._snapshot_worker_protocol_identity_at_boot()
+    monkeypatch.setattr(
+        cw,
+        "_persist_worker_queue_descriptor",
+        lambda _descriptor: True,
+    )
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+
+    beat = json.loads(
+        (universe / ".worker_supervisor.worker-a.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    observed = datetime.fromisoformat(beat["ts"].replace("Z", "+00:00"))
+    expires = datetime.fromisoformat(
+        beat["expires_at"].replace("Z", "+00:00")
+    )
+    assert expires - observed == timedelta(seconds=90)
+    assert beat["queue_protocol_version"] == 2
+    assert beat["capabilities"] == ["operator_request_v1"]
+
+
+def test_supervisor_does_not_advertise_v2_without_runtime_release_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID", raising=False)
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setattr(
+        cw,
+        "_persist_worker_queue_descriptor",
+        lambda _descriptor: True,
+    )
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+
+    beat = json.loads(
+        (universe / ".worker_supervisor.worker-a.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert not {
+        "queue_protocol_version",
+        "capabilities",
+        "boot_id",
+        "build_sha",
+        "config_hash",
+        "universe_id",
+        "expires_at",
+    }.intersection(beat)

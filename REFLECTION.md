@@ -283,3 +283,25 @@ fresh-host rollback edges found later.
 - **What I would do differently:** make a backdated stale claim, a backdated
   terminal transition, and a genuinely simultaneous two-writer claim the
   first red tests for any leased authority boundary.
+
+## 2026-07-24 - boot-bound worker protocol evidence
+
+- **What surprised me:** moving release reads into a memoized helper was still
+  too late: registration-delay and auth-quarantine paths could reach a new
+  receipt before first publication. The snapshot must happen at supervisor
+  entry, and only a terminal-proof version-2 receipt is positive evidence.
+- **Pattern worth capturing:** positive protocol evidence exists only when the
+  exact worker/runtime/universe tuple is durably recorded and the same
+  descriptor appears in that worker's named heartbeat. Metadata publication
+  must preserve concurrent runtime control, and loss of runtime identity must
+  clear the process's last durable descriptor.
+- **What I would do differently:** start with registration-delayed receipt
+  replacement, partial legacy receipts, concurrent pause/retire, and runtime-ID
+  loss. Those four negative tests expose false-upgrade and stale-authority
+  paths that a complete-looking heartbeat fixture misses. Also exercise the
+  full retired-A to replacement-B path: it exposed both stale cleanup blocking
+  publication and an older registry path that resurrected retired slots. A
+  status check before a metadata write is not control-safe; reuse must be one
+  atomic “still provisioned” operation. The worker-ID choice belongs in that
+  same transaction too: otherwise different workers can steal one unassigned
+  slot and identical concurrent starts can create duplicates.

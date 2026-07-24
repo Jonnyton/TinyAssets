@@ -9,11 +9,18 @@ move later without changing the caller contract.
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
+from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from tinyassets import daemon_server
+from tinyassets.storage.request_admissions import (
+    OPERATOR_CAPABILITY,
+    QUEUE_PROTOCOL_VERSION,
+)
 
 SOULLESS_SOUL_TEXT = "Default soulless daemon. Uses the platform dispatcher policy."
 VALID_SOUL_MODES = {"soul", "soulless"}
@@ -340,62 +347,125 @@ def ensure_daemon_runtime(
     clean_worker_id = worker_id.strip()
     if not clean_worker_id:
         raise ValueError("worker_id is required")
+    daemon = get_daemon(base_path, daemon_id=daemon_id)
+    allowed_models = _daemon_model_binding(daemon)
+    if allowed_models and model_name not in allowed_models:
+        raise ValueError(
+            "daemon model identity mismatch: this daemon is bound to "
+            f"{', '.join(allowed_models)}; use a borrowed-role executor, "
+            "renamed fork, or update the active soul version before changing models",
+        )
     merged_metadata = dict(metadata or {})
+    merged_metadata.setdefault("owner_user_id", daemon["owner_user_id"])
+    merged_metadata.setdefault("tenant_id", daemon["tenant_id"])
     merged_metadata.update({
         "worker_id": clean_worker_id,
         "runtime_registration": "cloud_worker",
+        "daemon_id": daemon["daemon_id"],
+        "daemon_soul_hash": daemon["soul_hash"],
+        "daemon_soul_mode": daemon["soul_mode"],
+        "domain_claims": daemon["domain_claims"],
     })
-    adoptable_runtime: dict[str, Any] | None = None
-    for runtime in list_runtime_instances(base_path, universe_id=universe_id):
-        runtime_meta = runtime.get("metadata")
-        if not isinstance(runtime_meta, dict):
-            runtime_meta = {}
-        if (
-            runtime.get("daemon_id") == daemon_id
-            and runtime.get("provider_name") == provider_name
-            and runtime.get("model_name") == model_name
-            and runtime.get("status") != "retired"
-            and not runtime_meta.get("worker_id")
-            and adoptable_runtime is None
-        ):
-            adoptable_runtime = runtime
-        if runtime_meta.get("worker_id") != clean_worker_id:
-            continue
-        if runtime.get("daemon_id") != daemon_id:
-            continue
-        if runtime.get("provider_name") != provider_name:
-            continue
-        if runtime.get("model_name") != model_name:
-            continue
-        row = daemon_server.update_runtime_instance_status(
-            base_path,
-            instance_id=runtime["runtime_instance_id"],
-            status="provisioned",
-            metadata_patch=merged_metadata,
-        )
-        daemon = get_daemon(base_path, daemon_id=daemon_id)
-        return _runtime_from_author_runtime(row, daemon=daemon)
-
-    if adoptable_runtime is not None:
-        row = daemon_server.update_runtime_instance_status(
-            base_path,
-            instance_id=adoptable_runtime["runtime_instance_id"],
-            status="provisioned",
-            metadata_patch=merged_metadata,
-        )
-        daemon = get_daemon(base_path, daemon_id=daemon_id)
-        return _runtime_from_author_runtime(row, daemon=daemon)
-
-    return summon_daemon(
+    row = daemon_server.ensure_worker_runtime_instance(
         base_path,
-        daemon_id=daemon_id,
         universe_id=universe_id,
+        author_id=daemon["legacy_author_id"],
         provider_name=provider_name,
         model_name=model_name,
         branch_id=branch_id,
         created_by=created_by,
+        worker_id=clean_worker_id,
         metadata=merged_metadata,
     )
+    return _runtime_from_author_runtime(row, daemon=daemon)
+
+
+def set_worker_queue_descriptor(
+    base_path: str | Path,
+    *,
+    runtime_instance_id: str,
+    descriptor: Mapping[str, Any] | None,
+    expected_worker_id: str = "",
+) -> dict[str, Any]:
+    """Persist vetted worker protocol evidence on its exact runtime slot."""
+    raw = daemon_server.get_runtime_instance(
+        base_path,
+        instance_id=runtime_instance_id,
+    )
+    runtime = _runtime_from_author_runtime(raw)
+    runtime_worker = str(
+        runtime.get("metadata", {}).get("worker_id") or ""
+    ).strip()
+    if expected_worker_id and runtime_worker != expected_worker_id:
+        raise ValueError("queue_worker_id_mismatch")
+    normalized: dict[str, Any] | None = None
+    if descriptor is not None:
+        capabilities = sorted({
+            str(value).strip()
+            for value in descriptor.get("capabilities", [])
+            if str(value).strip()
+        })
+        normalized = {
+            "queue_protocol_version": int(
+                descriptor.get("queue_protocol_version", 0)
+            ),
+            "capabilities": capabilities,
+            "worker_id": str(descriptor.get("worker_id") or "").strip(),
+            "runtime_instance_id": str(
+                descriptor.get("runtime_instance_id") or ""
+            ).strip(),
+            "boot_id": str(descriptor.get("boot_id") or "").strip(),
+            "build_sha": str(descriptor.get("build_sha") or "").strip(),
+            "config_hash": str(
+                descriptor.get("config_hash") or ""
+            ).strip(),
+            "universe_id": str(
+                descriptor.get("universe_id") or ""
+            ).strip(),
+            "expires_at": str(
+                descriptor.get("expires_at") or ""
+            ).strip(),
+        }
+        if normalized["queue_protocol_version"] != QUEUE_PROTOCOL_VERSION:
+            raise ValueError("queue_protocol_version_mismatch")
+        if OPERATOR_CAPABILITY not in capabilities:
+            raise ValueError("queue_capability_missing")
+        if normalized["worker_id"] != runtime_worker:
+            raise ValueError("queue_worker_id_mismatch")
+        if normalized["runtime_instance_id"] != runtime_instance_id:
+            raise ValueError("queue_runtime_instance_id_mismatch")
+        if normalized["universe_id"] != runtime["universe_id"]:
+            raise ValueError("queue_universe_id_mismatch")
+        if not normalized["boot_id"]:
+            raise ValueError("queue_boot_id_missing")
+        if re.fullmatch(r"[0-9a-f]{40}", normalized["build_sha"]) is None:
+            raise ValueError("queue_build_sha_invalid")
+        if (
+            re.fullmatch(
+                r"sha256:[0-9a-f]{64}",
+                normalized["config_hash"],
+            )
+            is None
+        ):
+            raise ValueError("queue_config_hash_invalid")
+        try:
+            expires = datetime.fromisoformat(
+                normalized["expires_at"].replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise ValueError("queue_expires_at_invalid") from exc
+        if expires.tzinfo is None:
+            raise ValueError("queue_expires_at_invalid")
+        if runtime["status"] == "retired":
+            raise ValueError("queue_runtime_retired")
+
+    updated = daemon_server.update_runtime_instance_metadata(
+        base_path,
+        instance_id=runtime_instance_id,
+        metadata_patch={"queue_protocol_descriptor": normalized},
+        forbidden_statuses=("retired",) if normalized is not None else (),
+    )
+    return _runtime_from_author_runtime(updated)
 
 
 def _authority_scope(
