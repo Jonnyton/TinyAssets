@@ -1070,3 +1070,14 @@ Notes:
 - Related implications: community-flagged policy; appeals; two-reviewer destructive action; load admission and queue recovery
 - Idea feed refs: none
 - Ship/abandon: land only after focused TDD, §14 proof, independent security/code review, strict OpenSpec, and rendered/live gates
+
+## 2026-07-23 - publish moderation-abuse-runtime draft
+
+- Provider: codex-gpt5-desktop-moderation
+- Branch: codex/moderation-abuse-runtime
+- Lane state: parked draft with an independently approved authority-contract checkpoint
+- Worktree: C:\Users\Jonathan\Projects\wf-moderation-abuse-runtime
+- STATUS/Issue/PR: draft PR #1662; authority checkpoint `e330e014`
+- Verification: 43 focused/regression tests; strict OpenSpec 41/41; independent specification and security APPROVE
+- Remaining gates: Claude/host canonical-store decision; persistence/service/API/discovery; §14; rendered/live evidence
+- Ship/abandon: keep draft until all moderation task-2 gates are green, or split only the approved contract with OpenSpec truth preserved
