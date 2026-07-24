@@ -88,7 +88,6 @@ from tinyassets.universe_soul import (
 logger = logging.getLogger("universe_server.universe")
 
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
-ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
 ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
 LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
@@ -1476,8 +1475,10 @@ def _action_submit_request(
     if request_type not in valid_types:
         request_type = "general"
 
-    # Invariant 9: priority_weight cap. Negative values reject for all
-    # actors. Non-host clamped to 0 silently (preflight §4.3 #9).
+    # The canonical public surface adds exact JSON-number and [0, 100]
+    # validation in its own lane. This legacy writer still rejects negatives,
+    # then delegates all identity/ACL/elevation decisions to one request-local
+    # verdict. It must never silently demote positive priority.
     try:
         pw = float(priority_weight)
     except (TypeError, ValueError):
@@ -1486,13 +1487,25 @@ def _action_submit_request(
         return json.dumps({
             "error": "priority_weight must be >= 0.",
         })
-    source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    can_prioritize = _env_actor_can(
-        ACTION_SUBMIT_PRIORITY_REQUEST,
-        universe_id=uid,
+    admission_verdict = permissions.operator_request_admission_verdict(
+        uid,
+        requested_priority_weight=pw,
+        directed=bool(directed_daemon_id.strip()),
     )
-    if not can_prioritize:
-        pw = 0.0
+    if not admission_verdict.allowed:
+        return json.dumps({
+            "error": admission_verdict.error_code,
+            "universe_id": uid,
+        })
+    if pw > 0:
+        # Positive priority is valid only through the not-yet-enabled epoch-2
+        # transactional writer. The legacy split writer cannot safely persist
+        # it, so fail without mutation instead of stranding or demoting work.
+        return json.dumps({
+            "error": "operator_priority_unavailable",
+            "universe_id": uid,
+        })
+    source = admission_verdict.actor_id
 
     request_id = f"req_{int(time.time())}_{os.urandom(4).hex()}"
     incentive = normalize_patch_request_incentive(
@@ -1522,7 +1535,7 @@ def _action_submit_request(
         text=text,
         request_type=request_type,
         requester_id=source,
-        priority_authorized=can_prioritize,
+        priority_authorized=False,
         directed_daemon=requester_directed_daemon is not None,
     )
     request_obj = {
@@ -1581,9 +1594,9 @@ def _action_submit_request(
             trigger_source=(
                 "owner_queued"
                 if requester_directed_daemon is not None
-                else "operator_request" if can_prioritize else "user_request"
+                else admission_verdict.trigger_source
             ),
-            priority_weight=pw,
+            priority_weight=admission_verdict.accepted_priority_weight,
             pickup_signal_weight=float(incentive.get("pickup_signal_weight") or 0.0),
             directed_daemon_id=(
                 str(requester_directed_daemon.get("daemon_id", ""))

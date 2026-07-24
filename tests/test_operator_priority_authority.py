@@ -10,6 +10,9 @@ from pathlib import Path
 import pytest
 
 import tinyassets.storage.accounts as accounts_store
+from tinyassets.api import permissions as permissions_api
+from tinyassets.auth.provider import Identity
+from tinyassets.branch_tasks import read_queue
 from tinyassets.daemon_server import (
     ensure_universe_registered,
     grant_universe_access,
@@ -94,6 +97,27 @@ def _authorized_fixture(
         universe_id=universe_id,
     )
     return issuer_id, subject_id
+
+
+def _authenticate_request(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    base_path: Path,
+    actor_id: str,
+    capabilities: list[str],
+    tenant_id: str = "tenant-a",
+) -> None:
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base_path))
+    identity = Identity(
+        user_id=actor_id,
+        username=actor_id,
+        capabilities=capabilities,
+        metadata={"org_id": tenant_id},
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
 
 
 def test_pretraffic_migration_preserves_legacy_capability_row(
@@ -193,6 +217,97 @@ def test_exact_admin_and_capability_issue_generation(
         universe_id="universe-a",
         evaluated_at=issued_at,
     ) == grant
+
+
+def test_trusted_issue_binds_opaque_request_subject_without_ordinary_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+) -> None:
+    initialize_author_server(tmp_path)
+    _create_universe(tmp_path, "universe-a")
+    issuer_id = "user_workos_01J4MCPADMIN"
+    request_subject = "user_workos_01J4MCPFOUNDER"
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=issuer_id,
+        permission="admin",
+        granted_by=issuer_id,
+    )
+    grant_capabilities(
+        tmp_path,
+        user_id=issuer_id,
+        capabilities=[CAP_GRANT_CAPABILITIES],
+        granted_by=issuer_id,
+        universe_id="universe-a",
+    )
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=request_subject,
+        permission="write",
+        granted_by=issuer_id,
+    )
+    evaluated_at = time.time() + 1
+    server_clock(evaluated_at)
+
+    grant = issue_priority_grant(
+        tmp_path,
+        subject_id=request_subject,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    account = get_account(tmp_path, user_id=request_subject)
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id=request_subject,
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: evaluated_at,
+        raising=False,
+    )
+    verdict = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=1.0,
+    )
+
+    assert grant["user_id"] == request_subject
+    assert account is not None
+    assert account["user_id"] == request_subject
+    assert list_capabilities(
+        tmp_path,
+        user_id=request_subject,
+        universe_id="universe-a",
+    ) == [PRIORITY_REQUEST_CAPABILITY]
+    assert verdict.allowed is True
+    assert verdict.actor_id == request_subject
+    assert verdict.grant_generation == grant["generation"]
+
+
+def test_unauthorized_issue_does_not_provision_opaque_subject(
+    tmp_path: Path,
+    server_clock: Callable[[float], None],
+) -> None:
+    initialize_author_server(tmp_path)
+    _create_universe(tmp_path, "universe-a")
+    issuer_id = _create_actor(tmp_path, "issuer")
+    request_subject = "user_workos_untrusted_target"
+    server_clock(time.time() + 1)
+
+    with pytest.raises(CapabilityGrantAuthorizationError):
+        issue_priority_grant(
+            tmp_path,
+            subject_id=request_subject,
+            universe_id="universe-a",
+            issuer_id=issuer_id,
+        )
+
+    assert get_account(tmp_path, user_id=request_subject) is None
 
 
 @pytest.mark.parametrize(
@@ -756,3 +871,445 @@ def test_admission_callback_rereads_current_grant_in_write_transaction(
             """,
             (first["request_id"],),
         ).fetchone() is not None
+
+
+@pytest.mark.parametrize(
+    ("ordinary_capabilities", "acl_permission"),
+    [
+        (["write"], "write"),
+        (["tinyassets.universe.write"], "admin"),
+    ],
+)
+def test_request_local_verdict_composes_exact_priority_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+    ordinary_capabilities: list[str],
+    acl_permission: str,
+) -> None:
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=subject_id,
+        permission=acl_permission,
+        granted_by=issuer_id,
+    )
+    evaluated_at = time.time() + 1
+    server_clock(evaluated_at)
+    grant = issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id=subject_id,
+        capabilities=ordinary_capabilities,
+    )
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: evaluated_at,
+        raising=False,
+    )
+
+    verdict = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=37.5,
+    )
+
+    assert verdict.allowed is True
+    assert verdict.error_code == ""
+    assert verdict.actor_id == subject_id
+    assert verdict.tenant_id == "tenant-a"
+    assert verdict.universe_id == "universe-a"
+    assert verdict.trigger_source == "operator_request"
+    assert verdict.accepted_priority_weight == 37.5
+    assert verdict.grant_generation == grant["generation"]
+    assert verdict.priority_policy_version == "operator-priority-v1"
+
+
+def test_zero_weight_is_ordinary_even_with_priority_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+) -> None:
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=subject_id,
+        permission="admin",
+        granted_by=issuer_id,
+    )
+    evaluated_at = time.time() + 1
+    server_clock(evaluated_at)
+    issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id=subject_id,
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: evaluated_at,
+        raising=False,
+    )
+
+    ordinary = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=0.0,
+    )
+    directed = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=0.0,
+        directed=True,
+    )
+
+    assert ordinary.allowed is True
+    assert ordinary.trigger_source == "user_request"
+    assert ordinary.accepted_priority_weight == 0.0
+    assert ordinary.grant_generation is None
+    assert directed.allowed is True
+    assert directed.trigger_source == "owner_queued"
+    assert directed.accepted_priority_weight == 0.0
+    assert directed.grant_generation is None
+
+
+def test_priority_verdict_rejects_missing_wildcard_and_cross_universe_grants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+) -> None:
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    _create_universe(tmp_path, "universe-b")
+    for universe_id in ("universe-a", "universe-b"):
+        grant_universe_access(
+            tmp_path,
+            universe_id=universe_id,
+            actor_id=subject_id,
+            permission="write",
+            granted_by=issuer_id,
+        )
+    evaluated_at = time.time() + 1
+    server_clock(evaluated_at)
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id=subject_id,
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: evaluated_at,
+        raising=False,
+    )
+
+    missing = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=1.0,
+    )
+    with _connect(tmp_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO capability_grants (
+                user_id, capability, scope, granted_by, created_at,
+                expires_at, revoked_at, generation
+            ) VALUES (?, ?, '*', ?, ?, NULL, NULL, 1)
+            """,
+            (
+                subject_id,
+                PRIORITY_REQUEST_CAPABILITY,
+                issuer_id,
+                evaluated_at,
+            ),
+        )
+    wildcard = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=1.0,
+    )
+    issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    cross_universe = permissions_api.operator_request_admission_verdict(
+        "universe-b",
+        requested_priority_weight=1.0,
+    )
+
+    for verdict in (missing, wildcard, cross_universe):
+        assert verdict.allowed is False
+        assert verdict.error_code == "priority_authorization_required"
+        assert verdict.grant_generation is None
+
+
+def test_priority_expiry_is_exclusive_at_server_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+) -> None:
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=subject_id,
+        permission="write",
+        granted_by=issuer_id,
+    )
+    issued_at = time.time() + 1
+    expires_at = issued_at + 10
+    server_clock(issued_at)
+    issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+        expires_at=expires_at,
+    )
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id=subject_id,
+        capabilities=["write"],
+    )
+    current = [expires_at - 1]
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: current[0],
+        raising=False,
+    )
+
+    before = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=1.0,
+    )
+    current[0] = expires_at
+    at_boundary = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=1.0,
+    )
+    current[0] = expires_at + 1
+    after = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=1.0,
+    )
+
+    assert before.allowed is True
+    assert at_boundary.allowed is False
+    assert at_boundary.error_code == "priority_authorization_required"
+    assert after.allowed is False
+    assert after.error_code == "priority_authorization_required"
+
+
+def test_priority_grant_without_ordinary_authority_is_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+) -> None:
+    from tinyassets.api.universe import _action_submit_request
+    from tinyassets.work_targets import REQUESTS_FILENAME
+
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    (tmp_path / "universe-a" / "PROGRAM.md").write_text(
+        "Legacy fixture with an explicit compatibility Loop.",
+        encoding="utf-8",
+    )
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=subject_id,
+        permission="admin",
+        granted_by=issuer_id,
+    )
+    evaluated_at = time.time() + 1
+    server_clock(evaluated_at)
+    issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id=subject_id,
+        capabilities=[],
+    )
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: evaluated_at,
+        raising=False,
+    )
+
+    verdict = permissions_api.operator_request_admission_verdict(
+        "universe-a",
+        requested_priority_weight=1.0,
+    )
+
+    assert verdict.allowed is False
+    assert verdict.error_code == "universe_access_denied"
+    assert verdict.grant_generation is None
+    response = _action_submit_request(
+        universe_id="universe-a",
+        text="a priority grant is not ordinary write authority",
+        priority_weight=1.0,
+    )
+    assert '"error": "universe_access_denied"' in response
+    universe_dir = tmp_path / "universe-a"
+    assert not (universe_dir / REQUESTS_FILENAME).exists()
+    assert read_queue(universe_dir) == []
+
+
+def test_host_environment_cannot_substitute_for_request_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+) -> None:
+    from tinyassets.api.universe import _action_submit_request
+    from tinyassets.work_targets import REQUESTS_FILENAME
+
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    (tmp_path / "universe-a" / "PROGRAM.md").write_text(
+        "Legacy fixture with an explicit compatibility Loop.",
+        encoding="utf-8",
+    )
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=subject_id,
+        permission="admin",
+        granted_by=issuer_id,
+    )
+    evaluated_at = time.time() + 1
+    server_clock(evaluated_at)
+    issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id="anonymous",
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: evaluated_at,
+        raising=False,
+    )
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", subject_id)
+    monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", subject_id)
+    monkeypatch.setenv(
+        "UNIVERSE_SERVER_CAPABILITIES",
+        PRIORITY_REQUEST_CAPABILITY,
+    )
+    universe_dir = tmp_path / "universe-a"
+
+    response = _action_submit_request(
+        universe_id="universe-a",
+        text="environment identity is not request identity",
+        priority_weight=1.0,
+    )
+
+    assert '"error": "universe_access_denied"' in response
+    assert not (universe_dir / REQUESTS_FILENAME).exists()
+    assert read_queue(universe_dir) == []
+
+
+def test_submit_request_uses_request_identity_and_persists_no_denial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_clock: Callable[[float], None],
+) -> None:
+    from tinyassets.api.universe import _action_submit_request
+    from tinyassets.work_targets import REQUESTS_FILENAME
+
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    (tmp_path / "universe-a" / "PROGRAM.md").write_text(
+        "Legacy fixture with an explicit compatibility Loop.",
+        encoding="utf-8",
+    )
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id=subject_id,
+        permission="admin",
+        granted_by=issuer_id,
+    )
+    evaluated_at = time.time() + 1
+    server_clock(evaluated_at)
+    _authenticate_request(
+        monkeypatch,
+        base_path=tmp_path,
+        actor_id=subject_id,
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        permissions_api,
+        "_now",
+        lambda: evaluated_at,
+        raising=False,
+    )
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+    monkeypatch.setenv(
+        "UNIVERSE_SERVER_CAPABILITIES",
+        PRIORITY_REQUEST_CAPABILITY,
+    )
+    universe_dir = tmp_path / "universe-a"
+
+    missing_grant = _action_submit_request(
+        universe_id="universe-a",
+        text="must not be silently demoted",
+        priority_weight=25.0,
+    )
+    assert '"error": "priority_authorization_required"' in missing_grant
+    assert not (universe_dir / REQUESTS_FILENAME).exists()
+    assert read_queue(universe_dir) == []
+
+    issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    writer_off = _action_submit_request(
+        universe_id="universe-a",
+        text="must wait for the v2 writer",
+        priority_weight=25.0,
+    )
+    assert '"error": "operator_priority_unavailable"' in writer_off
+    assert not (universe_dir / REQUESTS_FILENAME).exists()
+    assert read_queue(universe_dir) == []
+
+    ordinary = _action_submit_request(
+        universe_id="universe-a",
+        text="explicit ordinary opt-out",
+        priority_weight=0.0,
+    )
+    assert '"error"' not in ordinary
+    queue = read_queue(universe_dir)
+    assert len(queue) == 1
+    assert queue[0].trigger_source == "user_request"
+    assert queue[0].priority_weight == 0.0
+    requests = (universe_dir / REQUESTS_FILENAME).read_text(encoding="utf-8")
+    assert f'"source": "{subject_id}"' in requests
+    assert '"source": "host"' not in requests

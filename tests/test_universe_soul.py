@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tinyassets.auth.provider import Identity
+from tinyassets.daemon_server import grant_universe_access
 from tinyassets.universe_soul import read_pinned_universe_soul
 
 
@@ -14,6 +16,15 @@ def us(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    identity = Identity(
+        user_id="soul-test-user",
+        username="soul-test-user",
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
     import tinyassets.api.universe as module
 
     importlib.reload(module)
@@ -235,6 +246,13 @@ def test_submit_request_rejects_soulless_universe_without_legacy_marker(us):
 def test_submit_request_legacy_program_no_soul_keeps_named_compat_loop(us):
     base = Path(us._base_path())
     legacy = _mkuniverse(base, "legacy-uni")
+    grant_universe_access(
+        base,
+        universe_id="legacy-uni",
+        actor_id="soul-test-user",
+        permission="write",
+        granted_by="soul-test-user",
+    )
     (legacy / "PROGRAM.md").write_text("A legacy fantasy premise.", encoding="utf-8")
     assert not (legacy / "soul.md").exists()
 

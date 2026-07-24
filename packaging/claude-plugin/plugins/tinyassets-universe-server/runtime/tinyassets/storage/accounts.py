@@ -18,6 +18,7 @@ split is in flight. Remove once ``initialize_author_server`` migrates to
 
 from __future__ import annotations
 
+import hashlib
 import math
 import secrets
 import sqlite3
@@ -296,15 +297,23 @@ def grant_capabilities(
     normalized = _ordinary_capabilities(capabilities)
     if not normalized:
         return
+    subject = str(user_id or "").strip()
+    if not subject or subject == "anonymous":
+        raise ValueError("capability grant requires an authenticated subject")
     initialize_author_server(base_path)
     scope = universe_id or "*"
     with _connect(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         now = float(_now())
+        _ensure_capability_subject_account(
+            conn,
+            subject,
+            created_at=now,
+        )
         for capability in normalized:
             active = _active_grant_row(
                 conn,
-                user_id=user_id,
+                user_id=subject,
                 capability=capability,
                 scope=scope,
                 evaluated_at=now,
@@ -313,7 +322,7 @@ def grant_capabilities(
                 continue
             generation = _next_grant_generation(
                 conn,
-                user_id=user_id,
+                user_id=subject,
                 capability=capability,
                 scope=scope,
             )
@@ -325,7 +334,7 @@ def grant_capabilities(
                 ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)
                 """,
                 (
-                    user_id,
+                    subject,
                     capability,
                     scope,
                     granted_by,
@@ -374,7 +383,11 @@ def issue_priority_grant(
             universe_id=universe,
             evaluated_at=now,
         )
-        _require_account(conn, subject)
+        _ensure_capability_subject_account(
+            conn,
+            subject,
+            created_at=now,
+        )
         latest = _latest_grant_row(
             conn,
             user_id=subject,
@@ -689,13 +702,39 @@ def _next_grant_generation(
     return int(row[0])
 
 
-def _require_account(conn: sqlite3.Connection, user_id: str) -> None:
+def _ensure_capability_subject_account(
+    conn: sqlite3.Connection,
+    user_id: str,
+    *,
+    created_at: float,
+) -> None:
+    """Provision an opaque authenticated subject without granting authority."""
+
+    if user_id == "anonymous":
+        raise ValueError("capability subject must be authenticated")
     row = conn.execute(
         "SELECT 1 FROM user_accounts WHERE user_id = ?",
         (user_id,),
     ).fetchone()
-    if row is None:
-        raise ValueError(f"unknown capability subject: {user_id}")
+    if row is not None:
+        return
+    subject_digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+    username = f"identity::{subject_digest}"
+    conn.execute(
+        """
+        INSERT INTO user_accounts (
+            user_id, username, display_name, is_active,
+            created_at, updated_at, metadata_json
+        ) VALUES (?, ?, 'Authenticated subject', 1, ?, ?, ?)
+        """,
+        (
+            user_id,
+            username,
+            created_at,
+            created_at,
+            _json_dumps({"opaque_request_subject": True}),
+        ),
+    )
 
 
 def _ordinary_capabilities(
