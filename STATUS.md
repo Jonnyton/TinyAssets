@@ -43,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| **Monitor dynamic-image DR drill #3** — exact landed dispatch must prove `image:read`, selected slug, Debian 13 bootstrap, checksum/restored state, and deletion | docs/ops/dr-drill-log.md; production workflow/issue evidence | image-selection PR must land before re-dispatch | monitoring |
+| **Fix bootstrap source-SHA ownership boundary** — run 30062890166 selected Debian 13 and installed Docker, then root Git rejected the service-user-owned checkout; cleanup deleted Droplet 587154181 | deploy/hetzner-bootstrap.sh; tests/test_bootstrap_script.py; openspec/changes/fix-bootstrap-source-sha-ownership/; openspec/specs/uptime-and-alarms/spec.md; REFLECTION.md; STATUS.md | exact landed rerun must prove bootstrap, checksum/restore, representative state, MCP probe, and deletion | claimed:codex-gpt5-desktop-dr ACTIVE 2026-07-23 |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
