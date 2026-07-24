@@ -43,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| **Monitor bootstrap-ownership DR rerun** — #1664 owner-matches fresh/repeat Git and validates the installer SHA; run 30062890166 cleanup deleted Droplet 587154181 | docs/ops/dr-drill-log.md; production workflow/issue evidence | merge #1664, then exact-landed rerun proves bootstrap, checksum/restore, representative state, MCP probe, deletion | monitoring |
+| **Pin DR daemon to the immutable production image** — run 30064143475 proved Debian 13 bootstrap, transfer, restore, and state SHA, then Compose rejected empty `TINYASSETS_IMAGE`; cleanup deleted Droplet 587158984 | .github/workflows/dr-drill.yml; tests/test_dr_drill_workflow.py; openspec/changes/pin-dr-drill-runtime-image/; openspec/specs/uptime-and-alarms/spec.md; REFLECTION.md; STATUS.md | exact-landed rerun must prove daemon start, MCP probe, and deletion | claimed:codex-gpt5-desktop-dr ACTIVE 2026-07-23 |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
