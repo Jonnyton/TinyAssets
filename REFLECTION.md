@@ -159,3 +159,14 @@ fresh-host rollback edges found later.
 - **What I would do differently:** test failed-step `if: always()` semantics
   and container-visible environment separately from Compose model validation
   before the first live drill.
+
+## 2026-07-23 — shared in-node enqueue caps
+
+- **What surprised me:** boundary tests aimed at lock correctness also exposed
+  authority bugs in run scope, universe identity, private visibility, and
+  corrupt-history handling.
+- **Pattern worth capturing:** concurrency proof must test the authority used
+  to choose the lock, budget, and target—not only the atomicity of the lock.
+- **What I would do differently:** map cap scope, physical storage identity,
+  and request authority before the first implementation pass, then make those
+  boundaries the first independent security-review checklist.
