@@ -81,15 +81,21 @@ def test_restore_does_not_call_systemctl_start():
     )
 
 
-def test_restore_still_stops_daemon_before_extract():
-    """The pre-extract `docker stop` is still load-bearing — overwriting
-    the volume while the daemon has files open would corrupt the restored
-    state. Only the post-extract start is removed."""
+def test_restore_stops_every_running_volume_consumer_before_swap():
+    """The pre-swap stop must cover every running container mounting the volume."""
     code = _restore_code()
-    assert "docker stop tinyassets-daemon" in code, (
-        "pre-extract `docker stop tinyassets-daemon` is required for safe "
-        "volume overwrite; do not remove alongside the start-coupling fix"
+    assert 'docker ps -q --filter "volume=${BACKUP_VOLUME}"' in code, (
+        "restore must discover every running container mounting the target volume"
     )
+    assert 'docker stop "${containers[@]}"' in code, (
+        "restore must stop all discovered running consumers before the swap"
+    )
+
+
+def test_restore_uses_docker_inspected_mountpoint_not_derived_path():
+    code = _restore_code()
+    assert "docker volume inspect --format" in code
+    assert '/var/lib/docker/volumes/${BACKUP_VOLUME}/_data' not in code
 
 
 def test_restore_exits_zero_after_extract():
@@ -154,7 +160,7 @@ def test_drill_start_compose_scopes_to_daemon_service():
     secrets, causing the step to abort before the probe ever runs.
     """
     run = _start_compose_step()["run"]
-    assert "compose -f /opt/tinyassets/deploy/compose.yml up -d daemon" in run, (
+    assert "-f /opt/tinyassets/deploy/compose.yml up -d daemon" in run, (
         "drill's compose-up must scope to `daemon` service only; a bare "
         "`up -d` would also try to start cloudflared + vector and fail"
     )

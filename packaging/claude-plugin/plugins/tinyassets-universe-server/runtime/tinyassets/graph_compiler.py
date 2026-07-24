@@ -1397,17 +1397,19 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
     # Paced ENQUEUE — append a run request to this universe's dispatcher queue.
     # NOT a synchronous spawn: the daemon's concurrency cap + per-provider
     # cooldown pace execution. Bounded by a spawn-depth cap + a per-run enqueue
-    # budget, and gated behind TINYASSETS_NODE_ENQUEUE_ENABLED (ships dark).
+    # budget, and gated behind TINYASSETS_NODE_ENQUEUE_ENABLED (fail-closed
+    # by default; the production deploy explicitly enables it).
     "enqueue_branch_run": ("dispatch", "enqueue"),
     "dispatch.enqueue": ("dispatch", "enqueue"),
 }
 
 
 def _node_enqueue_enabled() -> bool:
-    """Capability gate for the in-node enqueue verb (ships dark, default off).
+    """Fail-closed capability gate for the live in-node enqueue verb.
 
-    The first side-effecting in-node verb. Kept fail-closed until the
-    concurrency proof + opposite-provider review clear it for live use.
+    The first side-effecting in-node verb. Production enables it explicitly
+    after the hardening review; every other environment remains off by
+    default.
     """
     return os.environ.get(
         "TINYASSETS_NODE_ENQUEUE_ENABLED", ""
@@ -1471,11 +1473,10 @@ def _node_enqueue_max_lineage() -> int:
 class NodeEnqueueContext:
     """Trusted, server-set execution context for the in-node enqueue verb.
 
-    Carries the *current run's* universe, actor, and spawn lineage from the
-    dispatcher down to the enqueue helper. None of it is branch-authored — a
-    node controls its ``inputs``, never this context — so it is the trusted
-    basis for universe targeting (Fix 1), branch authority (Fix 3), and the
-    per-origin lineage cap (Fix 2).
+    Carries the *current run's* universe and spawn lineage from the dispatcher
+    down to the enqueue helper. None of it is branch-authored. ``actor`` is
+    retained for context compatibility but is not request-scoped authority;
+    epoch-1 enqueue therefore accepts public target branches only.
     """
 
     universe_id: str = ""
@@ -1484,10 +1485,32 @@ class NodeEnqueueContext:
     origin_branch_task_id: str = ""
 
 
+class NodeEnqueueBudget:
+    """One atomic successful-enqueue budget shared by a compiled run."""
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._lock = threading.Lock()
+
+    def reserve(self, limit: int) -> tuple[bool, int]:
+        """Reserve one slot, returning ``(reserved, prior_count)``."""
+        with self._lock:
+            prior = self._count
+            if prior >= limit:
+                return False, prior
+            self._count += 1
+            return True, prior
+
+    def release(self) -> None:
+        """Return a reservation after the queue append fails."""
+        with self._lock:
+            self._count -= 1
+
+
 def _node_enqueue_branch_run(
     node: "NodeDefinition",
     invocation_depth: int,
-    enqueued_count: list[int],
+    enqueue_budget: "NodeEnqueueBudget",
     kwargs: dict[str, Any],
     *,
     base_path: str | Path | None = None,
@@ -1497,13 +1520,13 @@ def _node_enqueue_branch_run(
 
     Not a synchronous spawn — the daemon's concurrency cap + cooldown pace
     execution. Containment (Codex enqueue review, 2026-05-30):
-      * capability flag (ships dark);
+      * fail-closed capability flag (explicitly enabled by production deploy);
       * spawn-depth cap (chain length) + per-run budget (branching factor);
       * trusted current-universe targeting — never a branch-named universe
         (Fix 1);
       * global active-queue cap + per-origin spawn-lineage cap (Fix 2);
-      * target branch must exist and be runnable by the actor under the
-        existing public/private visibility model (Fix 3).
+      * target branch must exist and be public; private authority waits for a
+        request-scoped epoch-2 receipt.
     Returns a JSON string so the caller's standard parse step applies.
     """
     ctx = context or NodeEnqueueContext()
@@ -1521,14 +1544,6 @@ def _node_enqueue_branch_run(
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: spawn depth {next_depth} "
             f"exceeds cap {cap} (TINYASSETS_NODE_ENQUEUE_MAX_DEPTH)."
-        )
-
-    # Guard 2 — per-run budget bounds branching factor (one run can't flood).
-    budget = _node_enqueue_budget()
-    if enqueued_count[0] >= budget:
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: this run already enqueued "
-            f"{enqueued_count[0]} task(s) (budget {budget})."
         )
 
     target = str(kwargs.get("branch_def_id", "")).strip()
@@ -1570,10 +1585,10 @@ def _node_enqueue_branch_run(
         new_task_id,
     )
 
-    # Fix 3 — target branch authority. Reuse the existing visibility model
-    # (no new policy): the branch must exist, and a private branch is runnable
-    # only by its author. Public branches: any actor. Existence is validated
-    # BEFORE append so an unknown id can't land a doomed task.
+    # Target branch authority. Epoch-1 queue rows carry no request-scoped
+    # authenticated actor receipt, so process identity cannot safely authorize
+    # private targets. Public branches only until epoch-2 carries authority.
+    # Existence is validated BEFORE append so unknown IDs cannot land.
     if base_path is None:
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: no run context available "
@@ -1589,12 +1604,11 @@ def _node_enqueue_branch_run(
             f"does not exist."
         ) from None
     visibility = str(target_meta.get("visibility", "public") or "public").strip().lower()
-    target_author = str(target_meta.get("author", "") or "")
-    actor = str(ctx.actor or "").strip()
-    if visibility == "private" and target_author != actor:
+    if visibility != "public":
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: target branch '{target}' "
-            f"is private; only its owner may run it."
+            f"is private; epoch-1 enqueue has no request-scoped actor "
+            f"authority and may target public branches only."
         )
 
     # Fix 2 — lineage. parent = the current run's task; origin = the root of
@@ -1624,6 +1638,17 @@ def _node_enqueue_branch_run(
         parent_branch_task_id=parent,
         origin_branch_task_id=origin,
     )
+    # Guard 2 — one atomic successful-enqueue budget is shared across every
+    # source node in this compiled run. Reserve immediately before append and
+    # release on failure so refused writes do not consume budget.
+    budget = _node_enqueue_budget()
+    reserved, prior_count = enqueue_budget.reserve(budget)
+    if not reserved:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: this run already enqueued "
+            f"{prior_count} task(s) (budget {budget})."
+        )
+
     # Fix 2 — global active-queue cap + per-origin lineage cap, enforced
     # atomically under one lock (no read-then-append race).
     try:
@@ -1634,10 +1659,13 @@ def _node_enqueue_branch_run(
             max_lineage=_node_enqueue_max_lineage(),
         )
     except QueueCapExceeded as exc:
+        enqueue_budget.release()
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: {exc}."
         ) from exc
-    enqueued_count[0] += 1
+    except BaseException:
+        enqueue_budget.release()
+        raise
     return json.dumps({
         "status": "enqueued",
         "branch_task_id": new_id,
@@ -1655,11 +1683,10 @@ def _build_node_mcp_invoker(
     invocation_depth: int = 0,
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    enqueue_budget: "NodeEnqueueBudget | None" = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
-    # Per-run enqueue budget (mutable closure cell) — bounds branching factor:
-    # one branch run may enqueue at most _node_enqueue_budget() tasks total.
-    enqueued_count = [0]
+    shared_enqueue_budget = enqueue_budget or NodeEnqueueBudget()
 
     def _invoke_mcp_action(action_name: str, **kwargs: Any) -> dict[str, Any]:
         requested = str(action_name or "").strip()
@@ -1719,7 +1746,7 @@ def _build_node_mcp_invoker(
             raw = wiki(action=action, **kwargs)
         elif tool_name == "dispatch":
             raw = _node_enqueue_branch_run(
-                node, invocation_depth, enqueued_count, kwargs,
+                node, invocation_depth, shared_enqueue_budget, kwargs,
                 base_path=base_path, context=enqueue_context,
             )
         else:  # pragma: no cover - mapping owns the dispatch domains.
@@ -1752,6 +1779,7 @@ def _build_source_code_node(
     invocation_depth: int = 0,
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    enqueue_budget: "NodeEnqueueBudget | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that exec()s the approved source_code.
 
@@ -1765,6 +1793,7 @@ def _build_source_code_node(
     invoke_mcp_action = _build_node_mcp_invoker(
         node, event_sink=event_sink, invocation_depth=invocation_depth,
         base_path=base_path, enqueue_context=enqueue_context,
+        enqueue_budget=enqueue_budget,
     )
 
     # BUG-112: exec into a SINGLE namespace (globals == locals). With split
@@ -2563,6 +2592,7 @@ def _build_node(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    enqueue_budget: "NodeEnqueueBudget | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2591,6 +2621,7 @@ def _build_node(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
             invocation_depth=invocation_depth,
             base_path=base_path, enqueue_context=enqueue_context,
+            enqueue_budget=enqueue_budget,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if has_template:
@@ -2827,6 +2858,9 @@ def compile_branch(
     concurrency_tracker: ConcurrencyTracker | None = (
         ConcurrencyTracker(effective_budget) if effective_budget is not None else None
     )
+    # Production compiles once per run. Every source-node invoker built below
+    # shares this lock-protected successful-enqueue budget.
+    enqueue_budget = NodeEnqueueBudget()
 
     node_by_id: dict[str, NodeDefinition] = {
         n.node_id: n for n in branch.node_defs
@@ -2863,6 +2897,7 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            enqueue_budget=enqueue_budget,
         )
         fn = _guard_single_writer_merge_outputs(
             fn,

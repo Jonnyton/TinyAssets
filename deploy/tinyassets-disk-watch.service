@@ -5,9 +5,9 @@
 #   2. rotate_run_transcripts — gzip + archive old run artifacts.
 #   3. disk_autoprune.py — docker image prune -af if root ≥ DISK_AUTOPRUNE_PCT.
 #
-# Each step is oneshot + independent — step N failing does not block N+1.
-# The rotation + autoprune steps tolerate missing binaries / paths, so
-# the service never fails loudly on a host without docker installed.
+# The ExecStart commands run sequentially. Status 1 is accepted because
+# disk_watch.py intentionally returns it under pressure; other statuses fail
+# the unit. Rotation and auto-prune handle their documented optional paths.
 #
 # Environment variables sourced from /etc/tinyassets/env:
 #   GITHUB_TOKEN       — fine-grained PAT with issues:write
@@ -32,18 +32,20 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+SuccessExitStatus=1
 EnvironmentFile=/etc/tinyassets/env
-# Step 1 — legacy disk_watch GH-issue alarm. Runs first so its exit
-# status doesn't mask subsequent steps.
-ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_watch.py
+WorkingDirectory=/opt/tinyassets-host-uptime/current
+# Step 1 — legacy disk_watch GH-issue alarm. Its intentional pressure status
+# 1 is accepted above so rotation and auto-prune can still run.
+ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_watch.py
 # Step 2 — rotate run transcripts older than retention into archived/.
 ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts
 # Step 3 matches p0-outage disk_full cleanup: Docker system/builder
 # prune plus journal vacuum, without Docker volumes.
 # Step 3 — auto-prune docker images if root volume is pressured.
-ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_autoprune.py
-# Each ExecStart runs sequentially; Type=oneshot treats all three as
-# a single unit of work for the timer's OnUnitActiveSec window.
+ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py
+# Accepted ExecStart statuses continue in order; an unexpected status stops
+# later commands. Type=oneshot treats the sequence as one timer activation.
 TimeoutStartSec=180s
 StandardOutput=journal
 StandardError=journal

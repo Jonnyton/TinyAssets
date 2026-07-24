@@ -14,9 +14,9 @@
 #      to grant via root than extend the tinyassets user's docker-group
 #      membership across every ops primitive.
 #
-# Backup credentials live in /etc/tinyassets/env (the same env file the
-# daemon uses). systemd sources it via EnvironmentFile; backup.sh
-# reads STORAGEBOX_* from the process env.
+# Backup destination and retention settings live in /etc/tinyassets/env (the
+# same env file the daemon uses). systemd sources it via EnvironmentFile;
+# destination credentials live in root's rclone configuration.
 
 [Unit]
 Description=TinyAssets daemon state backup (nightly two-tier snapshot to BACKUP_DEST + GH releases)
@@ -27,12 +27,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/tinyassets/env
-ExecStart=/bin/bash /opt/tinyassets/deploy/backup.sh
+ExecStart=/bin/bash /opt/tinyassets-host-uptime/current/deploy/backup.sh
 TimeoutStartSec=30min
 # Don't kill mid-upload — backup.sh handles its own timeouts.
 
-# PrivateTmp=yes so the rclone config written to $HOME is wiped
-# on exit (defense-in-depth; backup.sh also shreds it).
+# Isolate temporary archives from other services. Root's persistent rclone
+# configuration remains outside PrivateTmp at /root/.config/rclone/.
 PrivateTmp=yes
 
 StandardOutput=journal

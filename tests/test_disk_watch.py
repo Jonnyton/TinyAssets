@@ -190,6 +190,31 @@ def test_disk_watch_service_sources_env_file():
     assert "EnvironmentFile=/etc/tinyassets/env" in text
 
 
+def test_disk_watch_service_accepts_alert_exit_and_preserves_remediation_order():
+    text = DISK_WATCH_SERVICE.read_text(encoding="utf-8")
+    directives = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert [
+        line for line in directives if line.startswith("SuccessExitStatus=")
+    ] == ["SuccessExitStatus=1"]
+    assert "WorkingDirectory=/opt/tinyassets-host-uptime/current" in directives
+    assert [line for line in directives if line.startswith("ExecStart=")] == [
+        (
+            "ExecStart=/usr/bin/python3 "
+            "/opt/tinyassets-host-uptime/current/scripts/disk_watch.py"
+        ),
+        "ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts",
+        (
+            "ExecStart=/usr/bin/python3 "
+            "/opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py"
+        ),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Sentinel: tinyassets-disk-watch.timer
 # ---------------------------------------------------------------------------

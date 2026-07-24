@@ -6,6 +6,12 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_backup:
+        description: Run and verify a fresh production backup after installation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,16 +30,21 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Verify secrets present
+        env:
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
         run: |
           missing=()
           [ -z "$DO_DROPLET_HOST" ] && missing+=("DO_DROPLET_HOST")
           [ -z "$DO_SSH_USER" ] && missing+=("DO_SSH_USER")
           [ -z "${{ secrets.DO_SSH_KEY }}" ] && missing+=("DO_SSH_KEY")
+          [ -z "$DO_API_TOKEN" ] && missing+=("DO_API_TOKEN")
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets: ${missing[*]}"
             exit 1
@@ -48,30 +59,413 @@ jobs:
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Upload host service files
+      - name: Ensure off-host backup configuration
+        env:
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
         run: |
+          set -euo pipefail
+          # This external Space predates the product rename and cannot be renamed.
+          destination="spaces:workflow-backups-jonnyton-sfo3/workflow-backups"
+          bucket="workflow-backups-jonnyton-sfo3"
+          endpoint="sfo3.digitaloceanspaces.com"
+          key_name="tinyassets-backup-shipper-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          remote_state="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash -s -- $(printf '%q' "${destination}")" <<'BACKUP_STATE'
+          set -euo pipefail
+          expected_destination="$1"
+          env_file="${2:-/etc/tinyassets/env}"
+          config="${3:-/root/.config/rclone/rclone.conf}"
+          rclone_bin="${4:-rclone}"
+          expected_config_identity="${5:-root:root 600}"
+          assignment_count="$(
+            awk -F= '$1 == "BACKUP_DEST" { count++ } END { print count + 0 }' \
+              "${env_file}" 2>/dev/null || printf '0\n'
+          )"
+          configured_destination="$(
+            awk -F= '
+              $1 == "BACKUP_DEST" {
+                value = substr($0, index($0, "=") + 1)
+              }
+              END { print value }
+            ' "${env_file}" 2>/dev/null || true
+          )"
+          config_identity="$(stat -c '%U:%G %a' "${config}" 2>/dev/null || true)"
+          if [[ "${assignment_count}" == "1" &&
+            "${configured_destination}" == "${expected_destination}" &&
+            -f "${config}" && ! -L "${config}" &&
+            "${config_identity}" == "${expected_config_identity}"
+          ]]; then
+            if "${rclone_bin}" lsf "${expected_destination}" --max-depth 1 >/dev/null 2>&1; then
+              printf 'configured_ready\n'
+            else
+              printf 'partial_or_invalid\n'
+            fi
+          elif [[ "${assignment_count}" == "0" &&
+            ! -e "${config}" && ! -L "${config}"
+          ]]; then
+            printf 'completely_absent\n'
+          else
+            printf 'partial_or_invalid\n'
+          fi
+          BACKUP_STATE
+          )"
+
+          case "${remote_state}" in
+            configured_ready)
+              echo "Off-host backup configuration is already verified."
+              exit 0
+              ;;
+            completely_absent)
+              echo "Off-host backup configuration is absent; converging it."
+              ;;
+            partial_or_invalid)
+              echo "::error::Off-host backup configuration is partial or its destination probe failed; refusing automatic rotation."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected backup configuration state."
+              exit 1
+              ;;
+          esac
+
+          response_file="$(mktemp)"
+          credentials_file="$(mktemp)"
+          rclone_file="$(mktemp)"
+          api_header_file="$(mktemp)"
+          chmod 600 \
+            "${response_file}" "${credentials_file}" "${rclone_file}" \
+            "${api_header_file}"
+          printf 'Authorization: Bearer %s\n' "${DO_API_TOKEN}" \
+            > "${api_header_file}"
+          remote_stage=""
+          created_access_key=""
+          cleanup() {
+            rc=$?
+            cleanup_failed=0
+            set +e
+            if [[ "${rc}" -ne 0 && -n "${created_access_key}" ]]; then
+              if [[ -n "${remote_stage}" ]]; then
+                if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                    "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                    "sudo rm -f /root/.config/rclone/rclone.conf; sudo bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_DEST" \
+                    >/dev/null 2>&1
+                then
+                  echo "::error::Remote backup configuration rollback failed."
+                  cleanup_failed=1
+                fi
+              fi
+              delete_http_status="$(
+                curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                  -H @"${api_header_file}" \
+                  "https://api.digitalocean.com/v2/spaces/keys/${created_access_key}"
+              )"
+              delete_transport_rc=$?
+              if [[ "${delete_transport_rc}" -ne 0 ]]; then
+                echo "::error::Spaces key rollback failed with a transport error."
+                cleanup_failed=1
+              elif [[ "${delete_http_status}" != "204" ]]; then
+                echo "::error::Spaces key rollback failed with HTTP ${delete_http_status}."
+                cleanup_failed=1
+              else
+                echo "Rolled back the newly created Spaces key."
+              fi
+            fi
+            if [[ -n "${remote_stage}" ]]; then
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "rm -rf -- $(printf '%q' "${remote_stage}")" \
+                  >/dev/null 2>&1 || true
+            fi
+            rm -f -- \
+              "${response_file}" "${credentials_file}" "${rclone_file}" \
+              "${api_header_file}"
+            if [[ "${cleanup_failed}" -ne 0 ]]; then
+              exit 1
+            fi
+            exit "${rc}"
+          }
+          trap cleanup EXIT
+
+          payload="$(
+            printf '{"name":"%s","grants":[{"bucket":"%s","permission":"readwrite"}]}' \
+              "${key_name}" "${bucket}"
+          )"
+          http_status="$(
+            curl -sS --max-filesize 4096 \
+              -o "${response_file}" -w '%{http_code}' -X POST \
+              -H @"${api_header_file}" \
+              -H "Content-Type: application/json" \
+              --data-binary "${payload}" \
+              "https://api.digitalocean.com/v2/spaces/keys"
+          )"
+          if [[ "${http_status}" != "201" ]]; then
+            provider_error="$(
+              python - "${response_file}" <<'DIAGNOSTIC_PY'
+          import json
+          import re
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  payload = json.load(handle)
+          except (OSError, UnicodeError, json.JSONDecodeError):
+              print("unparseable provider error")
+              raise SystemExit
+          if not isinstance(payload, dict):
+              print("malformed provider error")
+              raise SystemExit
+          error_id = payload.get("id")
+          message = payload.get("message")
+          if not isinstance(error_id, str) or not isinstance(message, str):
+              print("malformed provider error")
+              raise SystemExit
+          known_ids = {
+              "bad_request",
+              "forbidden",
+              "not_found",
+              "server_error",
+              "too_many_requests",
+              "unauthorized",
+          }
+          safe_id = error_id if error_id in known_ids else "redacted"
+          normalized = re.sub(r"[\x00-\x1f\x7f]+", " ", message).lower()
+          if any(
+              term in normalized
+              for term in (
+                  "scope",
+                  "permission",
+                  "authorization",
+                  "unauthorized",
+                  "forbidden",
+                  "credential",
+                  "token",
+              )
+          ):
+              category = "authorization_or_scope"
+          elif any(term in normalized for term in ("bucket", "grant")):
+              category = "bucket_or_grant"
+          else:
+              category = "other"
+          print(f"id={safe_id} category={category}")
+          DIAGNOSTIC_PY
+            )"
+            echo "::error::DigitalOcean Spaces key creation failed with HTTP ${http_status} (${provider_error})."
+            exit 1
+          fi
+
+          python - "${response_file}" > "${credentials_file}" <<'PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          key = payload.get("key")
+          if not isinstance(key, dict):
+              raise SystemExit("Spaces key response omitted key")
+          access_key = key.get("access_key")
+          secret_key = key.get("secret_key")
+          if not isinstance(access_key, str) or not re.fullmatch(r"[A-Za-z0-9]{8,128}", access_key):
+              raise SystemExit("Spaces key response contained invalid access key")
+          if not isinstance(secret_key, str) or not re.fullmatch(r"[A-Za-z0-9+/=_-]{16,256}", secret_key):
+              raise SystemExit("Spaces key response contained invalid secret key")
+          print(access_key)
+          print(secret_key)
+          PY
+          mapfile -t credentials < "${credentials_file}"
+          [[ "${#credentials[@]}" -eq 2 ]]
+          created_access_key="${credentials[0]}"
+          secret_key="${credentials[1]}"
+          echo "::add-mask::${created_access_key}"
+          echo "::add-mask::${secret_key}"
+
+          printf '%s\n' \
+            '[spaces]' \
+            'type = s3' \
+            'provider = DigitalOcean' \
+            "access_key_id = ${created_access_key}" \
+            "secret_access_key = ${secret_key}" \
+            "endpoint = ${endpoint}" \
+            'acl = private' \
+            > "${rclone_file}"
+
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "mktemp -d /tmp/tinyassets-backup-config.XXXXXX"
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-backup-config[.][A-Za-z0-9]+$ ]]
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/daemon-watchdog.sh \
-              deploy/daemon-watchdog.service \
-              deploy/daemon-watchdog.timer \
+              "${rclone_file}" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/rclone.conf"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
+
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${destination}")" <<'BACKUP_REMOTE'
+          set -euo pipefail
+          remote_stage="$1"
+          destination="$2"
+          sudo install -d -m 0700 -o root -g root /root/.config/rclone
+          sudo install -m 0600 -o root -g root \
+              "${remote_stage}/rclone.conf" \
+              /root/.config/rclone/rclone.conf
+          printf '%s\n' "${destination}" \
+            | sudo bash "${remote_stage}/install-tinyassets-env.sh" set BACKUP_DEST
+          probe_ready=0
+          for delay in 0 5 10 20 30; do
+            if [[ "${delay}" -gt 0 ]]; then
+              sleep "${delay}"
+            fi
+            if timeout --kill-after=1s 5s sudo rclone lsf "${destination}" --max-depth 1 --retries 1 --low-level-retries 1 >/dev/null 2>&1; then
+              probe_ready=1
+              break
+            fi
+          done
+          if [[ "${probe_ready}" -ne 1 ]]; then
+            echo "Spaces key did not become usable within the propagation window." >&2
+            exit 1
+          fi
+          BACKUP_REMOTE
+          echo "Off-host backup configuration installed and verified."
+
+      - name: Install exact uptime bundle and token refresher
+        env:
+          REQUESTED_SOURCE_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${source_sha}" == "${REQUESTED_SOURCE_REF}" ]]
+          echo "Resolved requested source ${REQUESTED_SOURCE_REF} to ${source_sha}"
+          bundle="/tmp/tinyassets-host-uptime-${source_sha}.tar.gz"
+          checksum="${bundle}.sha256"
+          mapfile -t uptime_files < <(
+            TINYASSETS_PRINT_MANIFEST=1 \
+              bash deploy/install-host-uptime-services.sh
+          )
+          git archive --format=tar HEAD -- \
+              "${uptime_files[@]}" \
               deploy/github-app-token-refresher.service \
               deploy/github-app-token-refresher.timer \
               scripts/github-app-token-refresher.py \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
+              | gzip -n > "${bundle}"
+          (
+            cd /tmp
+            sha256sum "$(basename "${bundle}")" > "$(basename "${checksum}")"
+          )
 
-      - name: Install and enable host services
-        run: |
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" <<'SH'
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "mktemp -d /tmp/tinyassets-host-uptime.XXXXXX"
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-host-uptime[.][A-Za-z0-9]+$ ]]
+          cleanup() {
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "rm -rf -- '${remote_stage}'" || true
+          }
+          trap cleanup EXIT
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${bundle}" "${checksum}" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
+
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
           set -euo pipefail
-          sudo mkdir -p /opt/tinyassets/deploy /opt/tinyassets/scripts
-          sudo install -m 0755 -o root -g root /tmp/daemon-watchdog.sh /opt/tinyassets/deploy/daemon-watchdog.sh
-          sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.service /etc/systemd/system/daemon-watchdog.service
-          sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.timer /etc/systemd/system/daemon-watchdog.timer
-          sudo install -m 0755 -o root -g root /tmp/github-app-token-refresher.py /opt/tinyassets/scripts/github-app-token-refresher.py
-          sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.service /etc/systemd/system/github-app-token-refresher.service
-          sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.timer /etc/systemd/system/github-app-token-refresher.timer
+          remote_stage="$1"
+          source_sha="$2"
+          bundle_name="$3"
+          checksum_name="$4"
+          cd "${remote_stage}"
+          sha256sum -c "${checksum_name}"
+          mkdir source
+          tar -xzf "${bundle_name}" -C source
+          sudo env TINYASSETS_SOURCE_ROOT="${remote_stage}/source" \
+              TINYASSETS_SOURCE_SHA="${source_sha}" \
+              bash "${remote_stage}/source/deploy/install-host-uptime-services.sh"
+          sudo mkdir -p /opt/tinyassets/scripts
+          sudo install -m 0755 -o root -g root \
+              "${remote_stage}/source/scripts/github-app-token-refresher.py" \
+              /opt/tinyassets/scripts/github-app-token-refresher.py
+          sudo install -m 0644 -o root -g root \
+              "${remote_stage}/source/deploy/github-app-token-refresher.service" \
+              /etc/systemd/system/github-app-token-refresher.service
+          sudo install -m 0644 -o root -g root \
+              "${remote_stage}/source/deploy/github-app-token-refresher.timer" \
+              /etc/systemd/system/github-app-token-refresher.timer
           sudo systemctl daemon-reload
-          sudo systemctl enable --now daemon-watchdog.timer
           sudo systemctl enable --now github-app-token-refresher.timer
-          sudo systemctl list-timers --no-pager daemon-watchdog.timer github-app-token-refresher.timer || true
-          SH
+          sudo systemctl is-enabled --quiet github-app-token-refresher.timer
+          sudo systemctl is-active --quiet github-app-token-refresher.timer
+          REMOTE
+
+      - name: Exercise and verify two-tier backup
+        if: github.event_name == 'workflow_dispatch' && inputs.run_backup
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se" <<'BACKUP_EXERCISE'
+          set -euo pipefail
+          destination="spaces:workflow-backups-jonnyton-sfo3/workflow-backups"
+
+          latest_archive() {
+            prefix="$1"
+            sudo rclone lsf "${destination}/" --max-depth 1 --files-only 2>/dev/null \
+              | awk -v prefix="${prefix}" 'index($0, prefix) == 1 { print }' \
+              | sort \
+              | tail -n 1
+          }
+
+          before_brain="$(latest_archive "tinyassets-brain-")"
+          before_full="$(latest_archive "tinyassets-data-")"
+          sudo systemctl reset-failed tinyassets-backup.service || true
+          set +e
+          sudo systemctl start tinyassets-backup.service
+          service_rc=$?
+          set -e
+          invocation_id="$(
+            sudo systemctl show tinyassets-backup.service --property=InvocationID --value
+          )"
+          [[ "${invocation_id}" =~ ^[0-9a-f]{32}$ ]]
+          journal="$(
+            sudo journalctl "_SYSTEMD_INVOCATION_ID=${invocation_id}" \
+              --no-pager --output=cat
+          )"
+          printf '%s\n' "${journal}" \
+            | grep -E 'brain upload OK|  upload OK|gh-ship: \[backup-ship\] uploaded:|WARN:|ERROR:|backup complete[.]' \
+            || true
+
+          [[ "${service_rc}" -eq 0 ]]
+          result="$(
+            sudo systemctl show tinyassets-backup.service --property=Result --value
+          )"
+          [[ "${result}" == "success" ]]
+          after_brain="$(latest_archive "tinyassets-brain-")"
+          after_full="$(latest_archive "tinyassets-data-")"
+          [[ -n "${after_brain}" && "${after_brain}" != "${before_brain}" ]]
+          [[ -n "${after_full}" && "${after_full}" != "${before_full}" ]]
+          printf '%s\n' "${journal}" | grep -Fq "  brain upload OK"
+          printf '%s\n' "${journal}" | grep -Fq "  upload OK"
+          printf '%s\n' "${journal}" | grep -Fq "backup complete."
+          if printf '%s\n' "${journal}" | grep -Eq 'WARN:|ERROR:'; then
+            echo "Backup invocation emitted a warning or error." >&2
+            exit 1
+          fi
+          gh_upload_count="$(
+            printf '%s\n' "${journal}" \
+              | grep -Fc "gh-ship: [backup-ship] uploaded:" \
+              || true
+          )"
+          [[ "${gh_upload_count}" -eq 2 ]]
+          printf 'Verified fresh backup: brain=%s full=%s github_assets=%s\n' \
+            "${after_brain}" "${after_full}" "${gh_upload_count}"
+          BACKUP_EXERCISE

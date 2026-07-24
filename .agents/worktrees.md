@@ -748,6 +748,21 @@ Notes:
 - Idea feed refs: none
 - Ship/abandon: reviewed spec-only PR; implementation remains a later separately claimed lane
 
+## 2026-07-23 - create backfill-graph-run-coordination-contracts
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/backfill-graph-run-coordination
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination
+- STATUS/Issue/PR: Backfill graph-run coordination contracts
+- PLAN refs: Engine & Domains; API & MCP Interface; State & Artifacts
+- Purpose: backfill shipped run evidence receipts and installation/data-root-local teammate mailbox behavior missed by the full-coverage audit
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-backfill-graph-run-coordination\_PURPOSE.md
+- Memory refs: 2026-07-22 full-coverage audit and grounding batches; three focused Codex semantic reviews
+- Related implications: active distributed-execution remains read-only; full-coverage audit must stop claiming these two stores were canonical
+- Idea feed refs: none
+- Ship/abandon: ship reviewed spec-only backfill; runtime remains unchanged
+
 ## 2026-07-22 - remove test-identity-reset-spec
 
 - Provider: codex-gpt5-desktop-2
@@ -895,4 +910,211 @@ Notes:
 - Memory refs: `docs/audits/2026-07-22-openspec-full-coverage-audit.md`
 - Related implications: `complete-independent-full-platform-targets`; `build-forward-platform-capabilities`; `universe-visibility`; `brain-okf-canonical-store`
 - Idea feed refs: user compute-market, Zapier-parity, organization-brain, regulated-industry, and concurrency direction
-- Ship/abandon: coordination claim may publish; research packet remains local until host approval and Claude opposite-provider review
+- Ship/abandon: coordination claim may publish; host direction received 2026-07-24; research packet and PLAN changes remain gated on Claude opposite-provider review
+
+## 2026-07-23 - create credential-backfill-coordination
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/credential-backfill-coordination
+- Lane state: Active coordination-only correction
+- Worktree: C:\Users\Jonathan\Projects\wf-credential-backfill-coordination
+- STATUS/Issue/PR: `Backfill remaining credential-vault shipped contracts`; PR after review
+- PLAN refs: Brain; Providers; State & Artifacts
+- Purpose: replace the stale #1606 canonical-owner dependency with the landed #1607 owner and current semantic/file blockers
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-credential-backfill-coordination\_PURPOSE.md
+- Memory refs: PRs #1606, #1607, #1626; full-coverage audit
+- Related implications: fail-closed provider auth overlay; R2-1a/R2-1b
+- Idea feed refs: none
+- Ship/abandon: land only the coordination correction; no OpenSpec or runtime edits
+
+## 2026-07-23 - create uptime-alarm-concurrency-proof-coord
+
+- Provider: codex-gpt56-spec-5
+- Branch: codex/uptime-alarm-concurrency-proof-coord
+- Lane state: Blocked coordination lane
+- Worktree: C:\Users\Jonathan\Projects\wf-uptime-alarm-concurrency-proof-coord
+- STATUS/Issue/PR: `Prove uptime alarm §14 concurrency after #1638/#1639`; coordination PR after review
+- PLAN refs: Uptime & Alarms; Cross-Cutting Principles
+- Purpose: restore the mandatory queued-trigger and incident-order concurrency proof omitted from #1638
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-uptime-alarm-concurrency-proof-coord\_PURPOSE.md
+- Memory refs: PRs #1638/#1639; post-merge independent ADAPT review
+- Related implications: active wiki-canary OAuth-challenge lane owns overlapping uptime files
+- Idea feed refs: none
+- Ship/abandon: publish the pending row now; build only after the active owner releases the workflow/spec
+
+## 2026-07-23 - create mcpb-catalog-parity
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/mcpb-catalog-parity
+- Lane state: Active implementation lane
+- Worktree: C:\Users\Jonathan\Projects\wf-mcpb-catalog-parity
+- STATUS/Issue/PR: `MCPB staged catalog parity`; PR after independent review
+- PLAN refs: Distribution & Discoverability; API & MCP Interface
+- Purpose: make MCPB manifest tool metadata equal the staged middleware’s canonical seven-handle catalog and make packaging fail closed on future drift
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-mcpb-catalog-parity\_PURPOSE.md
+- Memory refs: PR #1600; archived `collapse-live-mcp-surface-to-5-handles`
+- Related implications: `reconcile-external-connector-manifests` tasks 1.1 and 2.1–2.5
+- Idea feed refs: none
+- Ship/abandon: land only the deterministic MCPB parity slice; defer Polsia handoff, directory acceptance, and host-rendered proof
+
+## 2026-07-23 - create uptime-proof-p0-blocker-coord
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/uptime-proof-p0-blocker-coord
+- Lane state: Coordination-only dependency correction
+- Worktree: C:\Users\Jonathan\Projects\wf-uptime-proof-blocker-coord2
+- STATUS/Issue/PR: `Prove uptime alarm §14 concurrency after #1638/#1639`; PR after focused review
+- PLAN refs: Uptime & Alarms; Cross-Cutting Principles
+- Purpose: preserve the active P0-triage lane’s canonical uptime-spec ownership after #1641/#1642 released the prior wiki-canary blocker
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-uptime-proof-blocker-coord2\_PURPOSE.md
+- Memory refs: PRs #1640–#1643; local `codex/fix-p0-triage-failure-escalation` claim
+- Related implications: exact-script concurrency proof design prepared; implementation waits for canonical spec release
+- Idea feed refs: none
+- Ship/abandon: publish only the dependency edge; remove it when the P0-triage lane lands and releases the spec
+
+## 2026-07-23 - create archive-1574-research
+
+- Provider: codex-gpt5-desktop
+- Branch: docs/archive-1574-research
+- Lane state: Active archival documentation lane
+- Worktree: C:\Users\Jonathan\Projects\wf-1574-research-archive
+- STATUS/Issue/PR: `Archive PR #1574 research without design-truth foldback`; parent review before push
+- PLAN refs: Scoping Rules; Commons-first architecture; Providers; no PLAN edits authorized
+- Purpose: preserve nine dated research/review artifacts and gated idea pointers without landing stale PLAN or coordination truth from draft PR #1574
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-1574-research-archive\_PURPOSE.md
+- Memory refs: draft PR #1574; current-main paid-market source-context approval
+- Related implications: `paid-market-live-price-discovery`; R2-1a/R2-1b; target-spec PLAN host decision
+- Idea feed refs: compute/model/task/fabrication markets; Zapier-equivalent automation; concurrency/scale; organizational universes; regulated-industry profiles
+- Ship/abandon: local commit only until parent review; land docs, refreshed pointers, and task reflection, never #1574 PLAN/runtime/OpenSpec/stale coordination edits
+
+## 2026-07-23 - create supersede-pr1574-references
+
+- Provider: codex-gpt5-desktop
+- Branch: docs/supersede-pr1574-references
+- Lane state: Active reference-freshness cleanup
+- Worktree: C:\Users\Jonathan\Projects\wf-supersede-pr1574-references
+- STATUS/Issue/PR: supersede stale #1574 references after archival successor #1648
+- PLAN refs: Providers; paid-market target remains host-PLAN gated
+- Purpose: point active paid-market context at durable archived research, remove #1574 as a live dependency, and preserve the source review as dated evidence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-supersede-pr1574-references\_PURPOSE.md
+- Memory refs: PRs #1574/#1648; paid-market source-context review
+- Related implications: `paid-market-live-price-discovery`; `paid-market-track-e-wave-2-transport`; target-spec PLAN conflict
+- Idea feed refs: archived compute/model/task/fabrication market research
+- Ship/abandon: land reference-only edits, then close #1574 as superseded
+
+## 2026-07-23 - create provider-attempt-receipts
+
+- Provider: codex-provider-receipts
+- Branch: codex/provider-attempt-receipts
+- Lane state: Active spec-only lane; apply blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-attempt-receipts
+- STATUS/Issue/PR: `R2-1b provider-attempt receipts (spec only)`; local commit pending root review
+- PLAN refs: Providers; Cross-Cutting Principles; State & Artifacts; Brain
+- Purpose: specify result-local provider-attempt evidence for reply and learning calls without runtime or canonical-spec edits
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-attempt-receipts\_PURPOSE.md
+- Memory refs: `.claude/agent-memory/dev-2/reference_plan_md_provider_invariants.md`; PR #1606; R2-1a STATUS row
+- Related implications: fail-closed provider auth overlay; credential-vault backfill; both `converse` writer calls
+- Idea feed refs: none
+- Ship/abandon: strict-validate and commit locally; apply waits for #1606/R2-1a, and no push/PR occurs before root review
+
+## 2026-07-23 - create disk-watch-remediation-continuity
+
+- Provider: codex-gpt5-desktop-disk
+- Branch: fix/disk-watch-remediation-continuity
+- Lane state: Active OpenSpec + TDD uptime repair
+- Worktree: C:\Users\Jonathan\Projects\wf-disk-watch-remediation
+- STATUS/Issue/PR: P1 disk-watch stop-on-pressure seam; PR pending
+- PLAN refs: Uptime & Alarms
+- Purpose: keep the intentional disk-pressure alert failure visible while guaranteeing later transcript rotation and disposable-host reclamation commands are attempted in order
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-disk-watch-remediation\_PURPOSE.md
+- Memory refs: canonical `uptime-and-alarms` disk-pressure stop-seam requirement
+- Related implications: P0 disk-full triage; deploy unit installation convergence
+- Idea feed refs: none
+- Ship/abandon: land one reviewed OpenSpec/TDD repair with focused tests; no host-install claim without live evidence
+
+## 2026-07-23 - refresh operator-request-trigger-spec
+
+- Provider: codex-refresh-operator-spec
+- Branch: codex/operator-request-trigger-spec
+- Lane state: Planning-only draft PR; refreshed locally for root review
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-request-trigger-spec
+- STATUS/Issue/PR: live P1 `operator_request` concern; draft PR #1628; no spec-only Work claim
+- PLAN refs: Daemon Platform; API & MCP Interface; Uptime & Alarms
+- Purpose: rebase the reviewed admission contract without implying that runtime is fixed
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-request-trigger-spec\_PURPOSE.md
+- Memory refs: `docs/audits/2026-07-22-openspec-full-coverage-audit.md`; PR #1628 review record
+- Related implications: rebase audit found only STATUS/worktree coordination conflicts; runtime P1 remains live
+- Idea feed refs: none
+- Ship/abandon: root review before push; merge as planning authority only, then claim exact runtime/test files in a separate lane after blockers clear
+
+## 2026-07-23 - create deploy-rollback-receipt-truth
+
+- Provider: codex-gpt5-desktop-rollback
+- Branch: fix/deploy-rollback-receipt-truth
+- Lane state: Active OpenSpec + TDD uptime repair
+- Worktree: C:\Users\Jonathan\Projects\wf-deploy-rollback-receipt
+- STATUS/Issue/PR: P1 rollback-scope truth residual; PR pending
+- PLAN refs: Uptime & Alarms; API & MCP Interface release-state contract
+- Purpose: ensure deploy failures and rollbacks publish terminal machine-readable truth instead of leaving a stale success receipt or unconditional “rolled back” claim
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-deploy-rollback-receipt\_PURPOSE.md
+- Memory refs: `audit/audit-release-chain` P2-10; current `deploy-prod.yml`
+- Related implications: release reconcile; `get_status.release_state`; P0 image-pull recovery; DR evidence
+- Idea feed refs: none
+- Ship/abandon: land one reviewed OpenSpec/TDD repair; do not claim live rollout until workflow evidence exists
+
+## 2026-07-23 - ready deploy-rollback-receipt-truth
+
+- Provider: codex-gpt5-desktop-rollback
+- Branch: fix/deploy-rollback-receipt-truth
+- Lane state: OpenSpec archived; repository implementation independently approved; PR-ready
+- Worktree: C:\Users\Jonathan\Projects\wf-deploy-rollback-receipt
+- STATUS/Issue/PR: implementation row retired; P1 live-failure-exercise watch retained; PR pending
+- Verification: 240 focused checks; pinned actionlint 1.7.7; strict OpenSpec 42/42; three independent approvals
+- Ship/abandon: merge through PR; do not claim operational proof until both production-safe failure exercises pass
+
+## 2026-07-23 - create finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: Active OpenSpec + concurrency-proof lane
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: `Prove shared in-node enqueue caps`; PR pending
+- PLAN refs: Module Engine & Domains; Module Daemon Platform; §14 concurrency/load-test proof
+- Purpose: backfill the approved live enqueue contract and prove exact shared-cap behavior under contention
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-finish-node-enqueue\_PURPOSE.md
+- Memory refs: `docs/audits/2026-05-30-in-node-enqueue-codex-review.md`; `docs/audits/2026-06-02-in-node-enqueue-adapt-rereview.md`
+- Related implications: production flag is already on; no runtime behavior change unless the proof exposes a defect
+- Idea feed refs: none
+- Ship/abandon: merge through a reviewed PR after strict OpenSpec and focused concurrency evidence
+
+## 2026-07-23 - broaden finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: Active OpenSpec + TDD production repair
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: broadened claimed row; PR pending
+- Purpose: repair stable-root and lifetime-lineage bypasses exposed by the cap proof, then prove thread/process boundaries
+- Related implications: production activation is proven; the previous no-runtime-change assumption no longer holds
+- Ship/abandon: independent review is mandatory before merge because this now changes live queue admission
+
+## 2026-07-23 - ready finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: OpenSpec archived; implementation independently approved; PR-ready
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: claimed until merge; PR #1672
+- Verification: 47 focused post-archive checks; security review observed 120 related passes; strict OpenSpec 41/41; mirror parity; concurrency/storage and security/spec APPROVE
+- Post-fix live use: none yet; production-clean use must wait for deploy and observation
+- Ship/abandon: make PR ready after CI and final verifier approval; retire STATUS row only after merge
+
+## 2026-07-23 - landed finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: merged as PR #1672 at `7778eebf`; implementation claim retired
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: only the post-deploy organic-use watch remains
+- Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
+- Ship/abandon: observe production use after deployment; do not infer clean use from repository proof

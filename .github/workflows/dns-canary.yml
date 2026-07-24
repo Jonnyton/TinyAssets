@@ -71,6 +71,15 @@ jobs:
           echo "$output"
           exit $code
 
+      - name: Propagate red probe result
+        env:
+          OVERALL: ${{ steps.dns.outputs.overall }}
+        run: |
+          if [ "$OVERALL" = "red" ]; then
+            echo "DNS canary published red; failing the probe job."
+            exit 1
+          fi
+
   alarm-sink:
     needs: dns-check
     if: always()

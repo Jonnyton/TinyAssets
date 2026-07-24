@@ -1,5 +1,11 @@
 # Paid-market live-price source-context review
 
+**Archival follow-up (2026-07-23):** PR #1648 preserved the reviewed research
+and its direct ADAPT review as dated evidence; draft PR #1574 was superseded
+without merging its PLAN or coordination edits. This review's APPROVE verdict
+remains limited to the corrected paid-market consumer described below and does
+not ratify the archived report, its PLAN proposal, or general implementation.
+
 - **Date/environment:** 2026-07-22 PT / 2026-07-23 UTC, Windows worktree `codex/paid-market-track-e-wave2-spec`
 - **Reviewer:** Claude Sonnet, foreground-only and read-only
 - **Source lane:** draft research PR #1574, `codex/compute-market-frontier-research`

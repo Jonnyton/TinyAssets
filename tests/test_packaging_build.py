@@ -18,13 +18,18 @@ These are smoke tests — actual ``--validate`` / ``--pack`` requires
 """
 from __future__ import annotations
 
+import importlib.util
+import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MCPB_BUILD = REPO_ROOT / "packaging" / "mcpb" / "build_bundle.py"
+MCPB_MANIFEST = REPO_ROOT / "packaging" / "mcpb" / "manifest.json"
 PLUGIN_BUILD = REPO_ROOT / "packaging" / "claude-plugin" / "build_plugin.py"
 DIST_STAGE = (
     REPO_ROOT / "packaging" / "dist" / "tinyassets-universe-server-src"
@@ -37,6 +42,15 @@ PLUGIN_RUNTIME = (
     / "tinyassets-universe-server"
     / "runtime"
 )
+CANONICAL_MCPB_TOOLS = {
+    "converse",
+    "get_status",
+    "read_graph",
+    "read_page",
+    "run_graph",
+    "write_graph",
+    "write_page",
+}
 
 
 def _run(script: Path, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -44,6 +58,17 @@ def _run(script: Path, args: list[str] | None = None) -> subprocess.CompletedPro
     return subprocess.run(
         cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False,
     )
+
+
+def _load_mcpb_build_module():
+    spec = importlib.util.spec_from_file_location(
+        "tinyassets_mcpb_build_bundle_test",
+        MCPB_BUILD,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # ─── build_bundle.py ─────────────────────────────────────────────────
@@ -67,6 +92,110 @@ def test_build_bundle_stages_tinyassets_package(tmp_path):
         "fantasy_author/ shim path must not be in the staged bundle"
     )
     assert "probe-ok" in result.stdout
+
+
+def test_mcpb_manifest_declares_canonical_catalog():
+    manifest = json.loads(MCPB_MANIFEST.read_text(encoding="utf-8"))
+
+    assert {tool["name"] for tool in manifest["tools"]} == CANONICAL_MCPB_TOOLS
+
+
+def test_build_bundle_probes_staged_catalog():
+    result = _run(MCPB_BUILD)
+
+    assert result.returncode == 0, (
+        f"build_bundle.py failed:\nstdout={result.stdout}\n"
+        f"stderr={result.stderr}"
+    )
+    assert (
+        "Catalog parity: "
+        + ", ".join(sorted(CANONICAL_MCPB_TOOLS))
+    ) in result.stdout
+
+
+def test_build_bundle_rejects_manifest_runtime_catalog_drift(
+    tmp_path,
+    monkeypatch,
+):
+    build = _load_mcpb_build_module()
+    monkeypatch.setattr(build, "STAGE_ROOT", tmp_path / "stage")
+    stage_bundle = build._stage_bundle
+
+    def _stage_with_drift():
+        stage = stage_bundle()
+        manifest_path = stage / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["tools"] = [
+            {
+                "name": "manifest_only",
+                "description": "Synthetic parity regression fixture.",
+            },
+        ]
+        manifest_path.write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+        return stage
+
+    monkeypatch.setattr(build, "_stage_bundle", _stage_with_drift)
+    monkeypatch.setattr(build, "_probe_import", lambda _stage: None)
+    monkeypatch.setattr(sys, "argv", ["build_bundle.py"])
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build.main()
+
+    message = str(exc_info.value)
+    assert "missing_from_manifest" in message
+    assert "extra_in_manifest" in message
+    assert "read_graph" in message
+    assert "manifest_only" in message
+
+
+def test_build_bundle_rejects_staged_catalog_import_failure(
+    tmp_path,
+    monkeypatch,
+):
+    build = _load_mcpb_build_module()
+    monkeypatch.setattr(build, "STAGE_ROOT", tmp_path / "stage")
+    stage_bundle = build._stage_bundle
+
+    def _stage_with_broken_runtime():
+        stage = stage_bundle()
+        (stage / "tinyassets" / "universe_server.py").write_text(
+            "this is not valid python !!!",
+            encoding="utf-8",
+        )
+        return stage
+
+    monkeypatch.setattr(build, "_stage_bundle", _stage_with_broken_runtime)
+    monkeypatch.setattr(build, "_probe_import", lambda _stage: None)
+    monkeypatch.setattr(sys, "argv", ["build_bundle.py"])
+
+    with pytest.raises(
+        RuntimeError,
+        match="Staged bundle catalog probe failed",
+    ):
+        build.main()
+
+
+def test_schema_validation_cannot_skip_semantic_catalog_probe(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    build = _load_mcpb_build_module()
+    monkeypatch.setattr(build, "_stage_bundle", lambda: tmp_path)
+    monkeypatch.setattr(build, "_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build_bundle.py", "--validate", "--skip-probe"],
+    )
+
+    with pytest.raises(SystemExit):
+        build.main()
+
+    assert "--skip-probe cannot be combined" in capsys.readouterr().err
 
 
 def test_build_bundle_excludes_pycache_and_dbs(tmp_path):
