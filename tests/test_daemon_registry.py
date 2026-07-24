@@ -124,7 +124,9 @@ def test_summon_and_banish_daemon_wrap_runtime_instance(tmp_path):
     assert retired["status"] == "retired"
 
 
-def test_ensure_daemon_runtime_reuses_worker_slot(tmp_path):
+def test_ensure_daemon_runtime_reuses_live_but_not_retired_worker_slot(
+    tmp_path,
+):
     daemon = daemon_registry.create_daemon(
         tmp_path,
         display_name="Fleet Runner",
@@ -161,6 +163,31 @@ def test_ensure_daemon_runtime_reuses_worker_slot(tmp_path):
     assert [r["runtime_instance_id"] for r in runtimes] == [
         first["runtime_instance_id"],
     ]
+
+    daemon_registry.banish_daemon(
+        tmp_path,
+        runtime_instance_id=first["runtime_instance_id"],
+    )
+    replacement = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet-codex-1",
+        worker_id="codex-1",
+    )
+
+    assert replacement["runtime_instance_id"] != first["runtime_instance_id"]
+    by_id = {
+        runtime["runtime_instance_id"]: runtime
+        for runtime in daemon_registry.list_runtime_instances(
+            tmp_path,
+            universe_id="patch-loop-live",
+        )
+    }
+    assert by_id[first["runtime_instance_id"]]["status"] == "retired"
+    assert by_id[replacement["runtime_instance_id"]]["status"] == "provisioned"
 
 
 def test_ensure_daemon_runtime_adopts_unassigned_matching_slot(tmp_path):
@@ -283,6 +310,22 @@ def test_queue_descriptor_metadata_patch_preserves_concurrent_pause(
         worker_id="worker-a",
     )
     runtime_id = runtime["runtime_instance_id"]
+    descriptor = {
+        "queue_protocol_version": 2,
+        "capabilities": ["operator_request_v1"],
+        "worker_id": "worker-a",
+        "runtime_instance_id": runtime_id,
+        "boot_id": "boot-old",
+        "build_sha": "a" * 40,
+        "config_hash": "sha256:" + ("b" * 64),
+        "universe_id": "universe-a",
+        "expires_at": "2026-07-24T08:01:30Z",
+    }
+    daemon_registry.set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=runtime_id,
+        descriptor=descriptor,
+    )
     real_get = daemon_server.get_runtime_instance
     raced = False
 
@@ -347,6 +390,21 @@ def test_queue_descriptor_metadata_patch_rejects_concurrent_retirement(
         worker_id="worker-a",
     )
     runtime_id = runtime["runtime_instance_id"]
+    daemon_registry.set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=runtime_id,
+        descriptor={
+            "queue_protocol_version": 2,
+            "capabilities": ["operator_request_v1"],
+            "worker_id": "worker-a",
+            "runtime_instance_id": runtime_id,
+            "boot_id": "boot-old",
+            "build_sha": "a" * 40,
+            "config_hash": "sha256:" + ("b" * 64),
+            "universe_id": "universe-a",
+            "expires_at": "2026-07-24T08:01:30Z",
+        },
+    )
     real_get = daemon_server.get_runtime_instance
     raced = False
 
@@ -389,7 +447,19 @@ def test_queue_descriptor_metadata_patch_rejects_concurrent_retirement(
 
     retired = real_get(tmp_path, instance_id=runtime_id)
     assert retired["status"] == "retired"
-    assert "queue_protocol_descriptor" not in retired["metadata"]
+    assert (
+        retired["metadata"]["queue_protocol_descriptor"]["boot_id"]
+        == "boot-old"
+    )
+
+    cleared = daemon_registry.set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=runtime_id,
+        descriptor=None,
+        expected_worker_id="worker-a",
+    )
+    assert cleared["status"] == "retired"
+    assert cleared["metadata"]["queue_protocol_descriptor"] is None
 
 
 def test_update_daemon_behavior_records_versioned_policy(tmp_path):

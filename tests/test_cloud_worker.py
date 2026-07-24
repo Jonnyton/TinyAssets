@@ -1167,3 +1167,127 @@ def test_run_supervisor_snapshots_protocol_identity_before_polling(
     cw.run_supervisor(tmp_path, max_iterations=0)
 
     assert snapshots == ["boot"]
+
+
+def test_runtime_switch_ignores_absent_prior_slot_and_publishes_new_one(
+    monkeypatch,
+    tmp_path,
+):
+    descriptor = {
+        "runtime_instance_id": "runtime-new",
+        "worker_id": "worker-a",
+    }
+    calls = []
+
+    def persist(_base_path, *, runtime_instance_id, descriptor, **_kwargs):
+        calls.append((runtime_instance_id, descriptor))
+        if runtime_instance_id == "runtime-gone":
+            raise KeyError(runtime_instance_id)
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime-new")
+    monkeypatch.setattr(
+        cw,
+        "_WORKER_RUNTIME_INSTANCE_IDS",
+        {"worker-a": "runtime-gone"},
+    )
+    monkeypatch.setattr(
+        daemon_registry,
+        "set_worker_queue_descriptor",
+        persist,
+    )
+
+    assert cw._persist_worker_queue_descriptor(descriptor) is True
+    assert calls == [
+        ("runtime-gone", None),
+        ("runtime-new", descriptor),
+    ]
+    assert cw._WORKER_RUNTIME_INSTANCE_IDS["worker-a"] == "runtime-new"
+
+
+def test_runtime_switch_clears_retired_slot_and_publishes_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    _write_worker_release_state(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setattr(cw, "_WORKER_RUNTIME_INSTANCE_IDS", {})
+    cw._snapshot_worker_protocol_identity_at_boot()
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Switching Descriptor Runner",
+        created_by="host",
+        soul_text="Move only between trusted runtime slots.",
+    )
+
+    def new_runtime() -> dict:
+        return daemon_registry.ensure_daemon_runtime(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            universe_id="universe-a",
+            provider_name="codex",
+            model_name="gpt-5",
+            created_by="cloud-droplet",
+            worker_id="worker-a",
+        )
+
+    runtime_a = new_runtime()
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime_a["runtime_instance_id"],
+    )
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+    daemon_registry.banish_daemon(
+        tmp_path,
+        runtime_instance_id=runtime_a["runtime_instance_id"],
+    )
+    runtime_b = new_runtime()
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime_b["runtime_instance_id"],
+    )
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=2,
+        phase="polling",
+    )
+
+    runtimes = {
+        runtime["runtime_instance_id"]: runtime
+        for runtime in daemon_registry.list_runtime_instances(
+            tmp_path,
+            universe_id="universe-a",
+        )
+    }
+    assert runtimes[runtime_a["runtime_instance_id"]]["status"] == "retired"
+    assert (
+        runtimes[runtime_a["runtime_instance_id"]]["metadata"][
+            "queue_protocol_descriptor"
+        ]
+        is None
+    )
+    descriptor_b = runtimes[runtime_b["runtime_instance_id"]]["metadata"][
+        "queue_protocol_descriptor"
+    ]
+    assert descriptor_b["runtime_instance_id"] == runtime_b[
+        "runtime_instance_id"
+    ]
+    beat = json.loads(
+        (universe / ".worker_supervisor.worker-a.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert beat["runtime_instance_id"] == runtime_b["runtime_instance_id"]
+    assert beat["boot_id"] == descriptor_b["boot_id"]

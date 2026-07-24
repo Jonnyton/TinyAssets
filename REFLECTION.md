@@ -298,4 +298,6 @@ fresh-host rollback edges found later.
 - **What I would do differently:** start with registration-delayed receipt
   replacement, partial legacy receipts, concurrent pause/retire, and runtime-ID
   loss. Those four negative tests expose false-upgrade and stale-authority
-  paths that a complete-looking heartbeat fixture misses.
+  paths that a complete-looking heartbeat fixture misses. Also exercise the
+  full retired-A to replacement-B path: it exposed both stale cleanup blocking
+  publication and an older registry path that resurrected retired slots.

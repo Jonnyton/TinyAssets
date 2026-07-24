@@ -366,6 +366,8 @@ def ensure_daemon_runtime(
             and adoptable_runtime is None
         ):
             adoptable_runtime = runtime
+        if runtime.get("status") == "retired":
+            continue
         if runtime_meta.get("worker_id") != clean_worker_id:
             continue
         if runtime.get("daemon_id") != daemon_id:
@@ -488,7 +490,7 @@ def set_worker_queue_descriptor(
         base_path,
         instance_id=runtime_instance_id,
         metadata_patch={"queue_protocol_descriptor": normalized},
-        forbidden_statuses=("retired",),
+        forbidden_statuses=("retired",) if normalized is not None else (),
     )
     return _runtime_from_author_runtime(updated)
 

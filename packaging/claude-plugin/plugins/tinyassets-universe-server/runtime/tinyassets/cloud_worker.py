@@ -336,12 +336,29 @@ def _persist_worker_queue_descriptor(
                 if runtime_instance_id == descriptor_runtime_id
                 else None
             )
-            set_worker_queue_descriptor(
-                data_dir(),
-                runtime_instance_id=runtime_instance_id,
-                descriptor=value,
-                expected_worker_id=worker_id,
-            )
+            try:
+                set_worker_queue_descriptor(
+                    data_dir(),
+                    runtime_instance_id=runtime_instance_id,
+                    descriptor=value,
+                    expected_worker_id=worker_id,
+                )
+            except KeyError:
+                if value is not None:
+                    raise
+                logger.info(
+                    "cloud_worker: prior queue runtime already absent runtime=%s",
+                    runtime_instance_id,
+                )
+            except ValueError as exc:
+                if value is not None or str(exc) != "queue_worker_id_mismatch":
+                    raise
+                logger.warning(
+                    "cloud_worker: prior queue runtime no longer belongs to "
+                    "worker runtime=%s worker=%s",
+                    runtime_instance_id,
+                    worker_id,
+                )
         if descriptor is None:
             _WORKER_RUNTIME_INSTANCE_IDS.pop(worker_id, None)
         else:
