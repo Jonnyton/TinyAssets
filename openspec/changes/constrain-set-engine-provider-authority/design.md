@@ -154,9 +154,9 @@ vault are separate resources and can otherwise describe different assignments.
 
 ### 5. Intersect fresh assignment and immutable request authority
 
-Every universe-originated call carries a typed provider-execution scope whose
-universe variant contains the already-authorized universe directory and a
-reference/view derived from the accepted immutable request authority contract.
+Every universe-originated call carries a typed provider-destination call scope
+whose universe variant contains the already-authorized universe directory and
+a reference/view derived from the accepted immutable request authority contract.
 If PR #1617's `RequestExecutionAuthority` is retained after the #1660 review,
 this change MUST consume it rather than define a second request-eligibility
 type. Persisted `allowed_providers` remains separate. Effective provider
@@ -183,6 +183,12 @@ already-resolved eligible-provider view/reference. It cannot rediscover grants,
 credentials, offers, budgets, or ambient host resources. Omitted scope is never
 host-local: `None`, booleans, enums, strings, caller-created lookalikes,
 ambient `TINYASSETS_UNIVERSE`, or a legacy global fallback authorize nothing.
+The landed #1692 `OperatorRequestAdmissionVerdict`, its priority grant, and its
+queued v1 `BranchTask` are admission and ordering artifacts only. Neither
+those landed artifacts nor any current or future admission receipt or
+scheduling claim can populate the typed request eligible-provider set or
+authorize provider access, credentials, compute, market purchase, execution
+lease, settlement, or spending.
 
 The accepted #1660 opposite-provider verdict must first settle requester
 authority semantics in the current `universe-creation` owner and disposition

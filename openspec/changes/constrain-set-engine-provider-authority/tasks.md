@@ -10,8 +10,11 @@
   `api/universe.py`; wait for #1623's prerequisite stack to land or for #1623
   to be rebased/retargeted and release the canonical provider-routing spec;
   wait for the provider-auth overlay to land or partition exact ownership;
-  disposition the unpublished operator-priority admission branch if it claims
-  `api/universe.py`; then rebase this lane.
+  treat merged #1692 request-local operator admission as a landed,
+  non-provider baseline in canonical and packaged `api/universe.py`; then
+  rebase this lane without treating its landed verdict, grant, or queued v1
+  `BranchTask`—or any current/future admission receipt or scheduling
+  claim—as provider-destination authority.
 - [ ] 1.3 Re-check active provider-auth, universe-creation, receipts, and
   paid-market lanes; update their dependency notes so none implements a second
   provider-authority boundary. Fold
@@ -82,8 +85,13 @@
   through any MCP/API/JSON/environment/node/universe input, a caller-created
   lookalike, or any universe/user/request lineage. Prove maintainer credentials,
   quota, accounts, local models, and local hardware remain inaccessible.
-- [ ] 2.11 Add intersection tests proving request eligibility can narrow but
-  never replace or widen the fresh persistent assignment ceiling.
+- [ ] 2.11 Add intersection and scheduling-non-authority tests proving request
+  eligibility can narrow but never replace or widen the fresh persistent
+  assignment ceiling. Prove an `OperatorRequestAdmissionVerdict`, priority
+  grant, admission receipt, `BranchTask`, or scheduling claim cannot populate
+  the typed request eligible-provider set or authorize provider access,
+  credentials, compute, market purchase, lease, settlement, or spending;
+  supplying only those artifacts fails held with zero external access.
 - [ ] 2.12 Add parity tests for every CLI/local/HTTP/in-process provider:
   `start()` consumes only `ProviderInvocation`, post-launch vault/env/auth/config
   mutation cannot alter the attempt, and direct/caller-created/removed

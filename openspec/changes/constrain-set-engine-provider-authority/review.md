@@ -1,7 +1,7 @@
 # Independent review — 2026-07-24
 
 Environment: Windows, branch `codex/constrain-engine-providers`, based on
-`origin/main` `412a876add4a1df914dea7017cd94f924e4aa30d`.
+`origin/main` `129a68f728a0bcb9a7bfaeddd396993178f42189`.
 
 This is a planning-only OpenSpec review. No runtime, test, deployment, or
 packaging files are changed by this lane.
@@ -65,3 +65,37 @@ the unrelated runtime test or lint baselines are green.
 Implementation remains entirely unchecked and gated on the dependencies in
 `tasks.md`, especially the opposite-provider verdict on #1660 and the accepted
 requester-authority fold into `universe-creation`.
+
+## Current-main refresh review — 2026-07-24
+
+The lane was rebased onto `origin/main`
+`129a68f728a0bcb9a7bfaeddd396993178f42189` after PR #1692 landed
+request-local operator admission. The refresh:
+
+- treats #1692's verdict, priority grant, and queued v1 `BranchTask` as
+  admission/ordering artifacts, never provider, compute, market, lease,
+  settlement, or spending authority;
+- separately denies provider authority to any current or future admission
+  receipt or scheduling claim;
+- calls the provider-layer carrier a provider-destination call scope so it
+  does not imply ownership of requester or distributed-execution authority;
+- removes the landed operator-priority row from `STATUS.md`; and
+- leaves every runtime task unchecked.
+
+The independent reviewer first returned `ADAPT` because the draft implied
+#1692 had landed a future transactional admission receipt. The wording was
+corrected to distinguish #1692's landed artifacts from current/future
+admission artifacts. Focused re-review returned `APPROVE` with no remaining
+blocking or important findings.
+
+Fresh Windows verification on 2026-07-24:
+
+- targeted strict OpenSpec validation: 1/1 valid;
+- full strict OpenSpec validation: 42/42 valid;
+- `git diff --check origin/main`: exit 0;
+- implementation tasks: 0/41 checked;
+- exact branch scope: planning/coordination only, with no runtime, test,
+  packaging, deployment, website, or script files.
+
+The verifier returned `SHIP` for publishing this planning refresh. Runtime
+implementation remains gated by `tasks.md`.

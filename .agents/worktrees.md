@@ -1128,3 +1128,14 @@ Notes:
 - STATUS/Issue/PR: draft PR #1691
 - Verification: targeted strict 1/1; full strict 42/42; scoped verifier SHIP; independent security/architecture APPROVE
 - Ship/abandon: keep draft until #1660 verdict and every `tasks.md` owner/dependency gate is satisfied
+
+## 2026-07-24 - refresh constrain-engine-providers after PR #1692
+
+- Provider: codex-gpt56-desktop
+- Branch: codex/constrain-engine-providers
+- Lane state: rebased onto `origin/main` `129a68f7`; planning only; runtime blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-constrain-engine-providers
+- STATUS/Issue/PR: draft PR #1691
+- Verification: targeted strict 1/1; full strict 42/42; diff check clean; verifier SHIP; independent ADAPT resolved to APPROVE
+- Related implications: #1692 admission verdict/grant/v1 task and any current/future receipt or scheduling claim grant no provider, compute, market, lease, settlement, or spending authority
+- Ship/abandon: publish refresh with force-with-lease; keep draft until #1660 verdict and every `tasks.md` gate is satisfied

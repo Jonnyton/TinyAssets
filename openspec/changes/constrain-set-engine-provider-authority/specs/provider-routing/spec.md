@@ -232,7 +232,7 @@ model, universe, endpoint, credential/auth provenance and material, plus an
 identity-validated, router-minted launch token. It MUST be non-serializable and
 MUST NOT be constructible from public request data. `UniverseContext` carries
 optional non-authorizing preferences.
-Every universe-originated call MUST carry a typed provider-execution scope
+Every universe-originated call MUST carry a typed provider-destination call scope
 whose universe variant contains the already-authorized universe directory and
 a reference/view derived from the accepted immutable request-authority
 contract. If `RequestExecutionAuthority` is retained by its owning change, the
@@ -247,6 +247,10 @@ credential-vault contract, secret-custody contract, or receipt. The provider
 layer consumes only the immutable already-resolved universe authority
 view/reference. It MUST NOT rediscover grants, credentials, market offers,
 budgets, or ambient host resources.
+An `OperatorRequestAdmissionVerdict`, priority grant, admission receipt,
+`BranchTask`, or scheduling claim MUST NOT populate the typed request
+eligible-provider set and MUST NOT authorize provider access, credentials,
+compute, market purchase, execution lease, settlement, or spending.
 Every provider attempt MUST obtain fresh persistent assignment and journal
 state under shared-reader/exclusive-writer admission and compute:
 
@@ -347,8 +351,18 @@ carries text, provider, model, family, latency, and degraded state.
 - **AND** a host-local capability can authorize only its enumerated
   non-request-reachable host operation, never this universe work
 
+#### Scenario: request admission and scheduling artifacts grant no provider authority
+- **WHEN** a caller supplies only an `OperatorRequestAdmissionVerdict`,
+  priority grant, admission receipt, `BranchTask`, or scheduling claim
+- **THEN** routing raises `ProviderAuthorityHeldError` before reading provider,
+  credential, auth-health, quota, market, lease, settlement, or spending state
+- **AND** none of those artifacts populates the typed request
+  eligible-provider set or authorizes provider access, credentials, compute,
+  market purchase, execution lease, settlement, or spending
+
 #### Scenario: ambient state cannot become host-local authority
-- **WHEN** a provider call omits its typed execution scope while process state,
+- **WHEN** a provider call omits its typed provider-destination call scope while
+  process state,
   `TINYASSETS_UNIVERSE`, a legacy global router, or an optional
   `UniverseContext` happens to identify a universe or host configuration
 - **THEN** routing raises `ProviderAuthorityHeldError` before reading provider,
@@ -365,8 +379,9 @@ carries text, provider, model, family, latency, and degraded state.
 - **AND** no provider, credential, auth-health, quota, or lease path is accessed
 
 #### Scenario: host-local and universe authority are exclusive
-- **WHEN** a call supplies both the accepted universe provider-execution scope
-  and the genuine `HostLocalProviderCapability`
+- **WHEN** a call supplies both the accepted universe
+  provider-destination call scope and the genuine
+  `HostLocalProviderCapability`
 - **THEN** routing rejects the ambiguous scope before authority resolution
 - **AND** approved host-local callers remain limited to the reviewed bootstrap
   inventory
