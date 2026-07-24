@@ -146,7 +146,12 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
         scope TEXT NOT NULL DEFAULT '*',
         granted_by TEXT NOT NULL,
         created_at REAL NOT NULL,
-        PRIMARY KEY(user_id, capability, scope),
+        expires_at REAL,
+        revoked_at REAL,
+        generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+        PRIMARY KEY(user_id, capability, scope, generation),
+        CHECK (expires_at IS NULL OR expires_at > created_at),
+        CHECK (revoked_at IS NULL OR revoked_at >= created_at),
         FOREIGN KEY(user_id) REFERENCES user_accounts(user_id) ON DELETE CASCADE
     );
 
@@ -439,10 +444,14 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
     """
     with _connect(base_path) as conn:
         conn.executescript(schema)
+        from tinyassets.storage.accounts import (
+            migrate_capability_grants_schema,
+        )
         from tinyassets.storage.request_admissions import (
             migrate_request_admission_schema,
         )
 
+        migrate_capability_grants_schema(conn)
         migrate_request_admission_schema(conn)
         # Phase 5 migration: branch_definitions.goal_id column. Older
         # installs predate Phase 5. SQLite lacks ADD COLUMN IF NOT EXISTS,
