@@ -1093,3 +1093,14 @@ Notes:
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-moderation-flag-planner\_PURPOSE.md
 - Related implications: flag eligibility, rate-limit evidence, exact artifact scope, single soft-hide transition
 - Ship/abandon: publish a stacked draft only after TDD and independent code/security review; no persistence/API/§14 claim
+
+## 2026-07-23 - publish moderation-flag-planner draft
+
+- Provider: codex-gpt5-desktop-moderation-flags
+- Branch: codex/moderation-flag-planner
+- Lane state: stacked draft with independently approved pure planner
+- Worktree: C:\Users\Jonathan\Projects\wf-moderation-flag-planner
+- STATUS/Issue/PR: draft PR #1667 stacked on draft PR #1662; planner checkpoint `e15f486e`
+- Verification: 88 service / 199 focused-regression tests; strict OpenSpec 41/41; independent specification and security APPROVE
+- Remaining gates: #1662; Claude/host canonical-store decision; real transaction/API/discovery; §14; rendered/live evidence
+- Ship/abandon: keep draft and stacked; retarget to main only after #1662 lands
