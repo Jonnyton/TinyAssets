@@ -586,6 +586,45 @@ def test_singleton_header_authenticates_with_constant_time_compare(
     _assert_security_headers(response, api=True)
 
 
+def test_arbitrary_unsupported_api_method_validates_host_then_authentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ledger = _install_collector_spies(monkeypatch)
+    cfg = _config(tmp_path)
+    cache = SpyCache()
+    with _running_village(cfg, cache=cache) as village:
+        invalid_host = _request(
+            village,
+            "PROPFIND",
+            "/api/state",
+            host="attacker.example",
+        )
+        missing_token = _request(village, "PROPFIND", "/api/state")
+        wrong_token = _request(
+            village,
+            "PROPFIND",
+            "/api/state",
+            headers=[("X-Village-Token", "wrong-but-long-enough-0123456789")],
+        )
+        authorized = _request(
+            village,
+            "PROPFIND",
+            "/api/state",
+            headers=[("X-Village-Token", TOKEN)],
+        )
+
+    assert invalid_host.status == 400
+    assert missing_token.status == 401
+    assert wrong_token.status == 401
+    assert authorized.status == 405
+    for response in (invalid_host, missing_token, wrong_token, authorized):
+        assert len(response.body) <= 4096
+        _assert_security_headers(response, api=True)
+    assert cache.calls == 0
+    assert ledger.calls == []
+
+
 @pytest.mark.parametrize(
     ("method", "path", "headers", "expected"),
     [
@@ -971,6 +1010,37 @@ def test_post_rejects_invalid_or_ambiguous_framing_and_closes(
     assert response.status == expected
     assert len(response.body) <= 4096
     assert ledger.calls == []
+
+
+def test_post_rejects_unbounded_decimal_content_length_without_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ledger = _install_collector_spies(monkeypatch)
+    cfg = _config(tmp_path)
+    cache = SpyCache()
+    body = b'{"target":"agent:x","message":"must not land"}'
+    raw_length = ("0" * (5000 - len(str(len(body))))) + str(len(body))
+    assert len(raw_length) == 5000
+    with _running_village(cfg, cache=cache) as village:
+        response = _request(
+            village,
+            "POST",
+            "/api/talk",
+            headers=_api_headers(
+                village,
+                origin=f"http://{village.authority}",
+                content_type="application/json",
+                content_length=raw_length,
+            ),
+            body=body,
+        )
+
+    assert response.status == 413
+    assert len(response.body) <= 4096
+    assert cache.calls == 0
+    assert ledger.calls == []
+    _assert_security_headers(response, api=True)
 
 
 def test_content_length_65536_is_framing_valid_but_65537_is_too_large(

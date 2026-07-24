@@ -155,6 +155,11 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
         def log_message(self, fmt: str, *args: object) -> None:
             pass
 
+        def __getattr__(self, name: str) -> object:
+            if name.startswith("do_"):
+                return self._unsupported
+            raise AttributeError(name)
+
         def end_headers(self) -> None:
             self.send_header("Content-Security-Policy", _CSP)
             self.send_header("Referrer-Policy", "no-referrer")
@@ -370,11 +375,19 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
                 self._send_json({"error": "invalid framing"}, 400)
                 return
             raw_length = lengths[0]
-            if not raw_length.isdecimal() or int(raw_length) < 1:
+            if not raw_length.isdecimal():
                 self.close_connection = True
                 self._send_json({"error": "invalid content length"}, 400)
                 return
+            if len(raw_length) > 5:
+                self.close_connection = True
+                self._send_json({"error": "request body too large"}, 413)
+                return
             length = int(raw_length)
+            if length < 1:
+                self.close_connection = True
+                self._send_json({"error": "invalid content length"}, 400)
+                return
             if length > 65536:
                 self.close_connection = True
                 self._send_json({"error": "request body too large"}, 413)
