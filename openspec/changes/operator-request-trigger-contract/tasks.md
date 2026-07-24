@@ -39,12 +39,12 @@
 
 ## 5. Epoch-2 Queue, Selection, and Claim
 
-- [ ] 5.1 Add failing `tests/test_branch_tasks_v2.py` coverage for v2 CRUD, conditional claim, lease, heartbeat, cancel, terminal sinks, recovery, random-ID uniqueness, and transaction rollback.
-- [ ] 5.2 Add the epoch-2 BranchTask adapter in `tinyassets/branch_tasks_v2.py` over `tinyassets.storage.request_admissions`; do not write v2 task IDs into `branch_tasks.json`.
-- [ ] 5.3 Extend `tinyassets/dispatcher.py` to merge eligible v1/v2 candidates for v2 workers, keep selection pure, add `operator_request=100/live`, preserve all other defaults, and never inherit a missing operator weight from host configuration.
-- [ ] 5.4 Under the epoch-2 claim transaction, re-check protocol capability and worker/runtime/boot/build/config identity before pending-to-running; test a stale or false descriptor cannot claim.
-- [ ] 5.5 Prove v1 code can drain v1 but cannot open or mutate epoch 2 even when given a v2 task ID; prove v2 workers can drain both epochs.
-- [ ] 5.6 Preserve directed assignments as `owner_queued`; retain bounded boost only with priority authority and test the chosen additive ordering against operator/user/host rows.
+- [x] 5.1 Add failing `tests/test_branch_tasks_v2.py` coverage for v2 CRUD, conditional claim, lease, heartbeat, cancel, terminal sinks, recovery, random-ID uniqueness, and transaction rollback.
+- [x] 5.2 Add the epoch-2 BranchTask adapter in `tinyassets/branch_tasks_v2.py` over `tinyassets.storage.request_admissions`; do not write v2 task IDs into `branch_tasks.json`.
+- [x] 5.3 Extend `tinyassets/dispatcher.py` to merge eligible v1/v2 candidates for v2 workers, keep selection pure, add `operator_request=100/live`, preserve all other defaults, and never inherit a missing operator weight from host configuration.
+- [x] 5.4 Under the epoch-2 claim transaction, re-check protocol capability and worker/runtime/boot/build/config identity before pending-to-running; test a stale or false descriptor cannot claim.
+- [x] 5.5 Prove v1 code can drain v1 but cannot open or mutate epoch 2 even when given a v2 task ID; prove v2 workers can drain both epochs.
+- [x] 5.6 Preserve directed assignments as `owner_queued`; retain bounded boost only with priority authority and test the chosen additive ordering against operator/user/host rows.
 - [ ] 5.7 Update request materialization in `tinyassets/work_targets.py` and restart registration in `fantasy_daemon/branch_registrations.py` to consume canonical v2 Request/task state without mutating or executing a v1 JSON projection.
 - [ ] 5.8 Update graph-cycle claim integration and lifecycle observers to route v2 tasks through the v2 adapter while retaining v1 historical behavior; treat that claim as scheduling reservation only and require the active `distributed-execution` B2 signed owner/daemon/job/capsule/lease/fence grant before external execution.
 - [ ] 5.9 Add integration tests proving a won epoch-2 scheduling claim without valid B2 signed authority cannot create an external lease, execute, or submit a result, and that queue/admission/heartbeat rows only narrow or reject B2 authority.

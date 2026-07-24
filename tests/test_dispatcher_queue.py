@@ -44,6 +44,8 @@ from tinyassets.branch_tasks import (
     read_queue,
     recover_claimed_tasks,
 )
+from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+from tinyassets.daemon_server import initialize_author_server
 from tinyassets.dispatcher import (
     DispatcherConfig,
     dispatcher_enabled,
@@ -52,6 +54,7 @@ from tinyassets.dispatcher import (
     select_next_task,
     soul_guided_dispatch_read,
 )
+from tinyassets.storage.request_admissions import RequestAdmissionStore
 
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -257,6 +260,72 @@ def test_dispatcher_determinism(universe_dir):
 def test_select_next_empty_queue_returns_none(universe_dir):
     cfg = DispatcherConfig()
     assert select_next_task(universe_dir, config=cfg) is None
+
+
+def test_legacy_queue_cannot_select_forged_operator_tier(universe_dir):
+    with pytest.raises(ValueError, match="Invalid trigger_source"):
+        append_task(
+            universe_dir,
+            _make_task(trigger_source="operator_request"),
+        )
+
+    assert select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+    ) is None
+
+
+def test_v2_selector_merges_epochs_without_mutating_either(tmp_path):
+    universe_dir = tmp_path / "universe-a"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    v1 = _make_task(
+        trigger_source="host_request",
+        priority_weight=0,
+        queued_at="2026-07-24T08:00:00+00:00",
+        branch_task_id="v1-host",
+    )
+    append_task(universe_dir, v1)
+    committed = RequestAdmissionStore(tmp_path).commit_admission(
+        tenant_id="tenant-a",
+        actor_id="actor-a",
+        universe_id="universe-a",
+        idempotency_key_hash="hmac:merged-selection",
+        body_digest="sha256:merged-selection",
+        body_digest_version="rfc8785-v1",
+        request_type="general",
+        text="operator work",
+        branch_id="",
+        branch_def_id="loop-branch",
+        trigger_source="operator_request",
+        accepted_priority_weight=5,
+        policy_version="operator-priority-v1",
+        grant_generation=1,
+        receipt={"authority": "request-local"},
+        directed_daemon_id="",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    legacy_selected = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:02+00:00",
+    )
+    v2_selected = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:02+00:00",
+        epoch2_adapter=adapter,
+    )
+
+    assert legacy_selected is not None
+    assert legacy_selected.branch_task_id == "v1-host"
+    assert v2_selected is not None
+    assert v2_selected.branch_task_id == committed["branch_task_id"]
+    assert getattr(v2_selected, "queue_epoch") == 2
+    assert read_queue(universe_dir)[0].status == "pending"
+    assert adapter.get(committed["branch_task_id"]).status == "pending"
 
 
 def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):
@@ -1039,6 +1108,8 @@ def test_tier_status_map_reflects_stubbed_vs_live():
     cfg = DispatcherConfig()
     tm = cfg.tier_status_map()
     assert tm["host_request"] == "live"
+    assert tm["operator_request"] == "live"
+    assert cfg.tier_weights["operator_request"] == 100.0
     assert tm["owner_queued"] == "live"
     assert tm["user_request"] == "live"  # default accept_external=True
     assert "stubbed" in tm["goal_pool"]
@@ -1078,6 +1149,33 @@ def test_load_dispatcher_config_reads_yaml_overrides(universe_dir):
     assert cfg.accept_external_requests is False
     assert cfg.accept_goal_pool is True
     assert cfg.tier_weights["host_request"] == 200.0
+    assert cfg.tier_weights["operator_request"] == 100.0
+
+
+def test_directed_owner_boost_is_additive_without_tier_relabel():
+    cfg = DispatcherConfig()
+    now = "2026-07-24T08:00:00+00:00"
+    directed = _make_task(
+        trigger_source="owner_queued",
+        priority_weight=25,
+        queued_at=now,
+    )
+    directed.directed_daemon_id = "daemon-a"
+    operator = _make_task(
+        trigger_source="operator_request",
+        priority_weight=0,
+        queued_at=now,
+    )
+    ordinary = _make_task(
+        trigger_source="user_request",
+        priority_weight=0,
+        queued_at=now,
+    )
+
+    assert directed.trigger_source == "owner_queued"
+    assert score_task(directed, now_iso=now, config=cfg) == 115.0
+    assert score_task(operator, now_iso=now, config=cfg) == 110.0
+    assert score_task(ordinary, now_iso=now, config=cfg) == 70.0
 
 
 def test_archive_after_days_override(universe_dir):

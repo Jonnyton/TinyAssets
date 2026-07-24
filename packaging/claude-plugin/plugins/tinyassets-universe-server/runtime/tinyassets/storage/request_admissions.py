@@ -16,6 +16,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ PRIORITY_WEIGHT_CAP = 100
 QUEUE_EPOCH = 2
 QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
+MAX_LEASE_SECONDS = 90
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
 
 # Fault-injection checkpoints across every precommit transaction phase.
@@ -111,6 +113,7 @@ CREATE TABLE IF NOT EXISTS branch_tasks_v2 (
     queued_at TEXT NOT NULL,
     claimed_at TEXT,
     heartbeat_at TEXT,
+    lease_expires_at TEXT,
     terminal_at TEXT,
     detail_json TEXT NOT NULL DEFAULT '{}',
     disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
@@ -201,10 +204,12 @@ class RequestAdmissionStore:
         *,
         id_factory: Callable[[str], str] | None = None,
         busy_timeout_ms: int = 30_000,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.base_path = Path(base_path)
         self._id_factory = id_factory or _random_id
         self._busy_timeout_ms = int(busy_timeout_ms)
+        self._clock = clock or _utc_now
         if self._busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
 
@@ -551,6 +556,14 @@ class RequestAdmissionStore:
             ).fetchall()
         return [_task_row(row) for row in rows]
 
+    def get_v2_task(self, branch_task_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM branch_tasks_v2 WHERE branch_task_id = ?",
+                (branch_task_id,),
+            ).fetchone()
+        return _task_row(row) if row is not None else None
+
     def claim_v2_task(
         self,
         branch_task_id: str,
@@ -558,15 +571,28 @@ class RequestAdmissionStore:
         worker_id: str,
         queue_protocol_version: int,
         capabilities: Iterable[str],
-        claimed_at: str,
+        lease_seconds: int = 90,
+        claim_check: (
+            Callable[
+                [sqlite3.Connection, Mapping[str, Any], str],
+                bool,
+            ]
+            | None
+        ) = None,
     ) -> dict[str, Any] | None:
         if queue_protocol_version != QUEUE_PROTOCOL_VERSION:
             return None
         if OPERATOR_CAPABILITY not in set(capabilities):
             return None
+        lease_seconds = _bounded_lease_seconds(lease_seconds)
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                claimed_at = _clock_iso(self._clock)
+                lease_expires_at = _add_seconds(
+                    claimed_at,
+                    lease_seconds,
+                )
                 row = conn.execute(
                     """
                     SELECT * FROM branch_tasks_v2
@@ -581,11 +607,22 @@ class RequestAdmissionStore:
                 if row is None:
                     conn.commit()
                     return None
+                if (
+                    claim_check is not None
+                    and not claim_check(
+                        conn,
+                        _task_row(row),
+                        claimed_at,
+                    )
+                ):
+                    conn.commit()
+                    return None
                 cursor = conn.execute(
                     """
                     UPDATE branch_tasks_v2
                     SET status = 'running', claimed_by = ?,
-                        claimed_at = ?, heartbeat_at = ?
+                        claimed_at = ?, heartbeat_at = ?,
+                        lease_expires_at = ?
                     WHERE branch_task_id = ?
                       AND status = 'pending' AND disabled = 0
                     """,
@@ -593,12 +630,21 @@ class RequestAdmissionStore:
                         _required(worker_id, "worker_id"),
                         claimed_at,
                         claimed_at,
+                        lease_expires_at or claimed_at,
                         branch_task_id,
                     ),
                 )
                 if cursor.rowcount != 1:
                     conn.rollback()
                     return None
+                conn.execute(
+                    """
+                    UPDATE user_requests
+                    SET status = 'running', updated_at = ?
+                    WHERE request_id = ?
+                    """,
+                    (_epoch_seconds(claimed_at), row["request_id"]),
+                )
                 self._append_task_event(
                     conn,
                     row,
@@ -617,14 +663,221 @@ class RequestAdmissionStore:
                 conn.rollback()
                 raise
 
+    def heartbeat_v2_task(
+        self,
+        branch_task_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: int = 90,
+    ) -> dict[str, Any] | None:
+        lease_seconds = _bounded_lease_seconds(lease_seconds)
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                at = _clock_iso(self._clock)
+                lease_expires_at = _add_seconds(at, lease_seconds)
+                cursor = conn.execute(
+                    """
+                    UPDATE branch_tasks_v2
+                    SET heartbeat_at = ?, lease_expires_at = ?
+                    WHERE branch_task_id = ?
+                      AND status IN ('running', 'cancel_requested')
+                      AND claimed_by = ? AND disabled = 0
+                      AND julianday(lease_expires_at) > julianday(?)
+                    """,
+                    (
+                        _required(at, "at"),
+                        _required(lease_expires_at, "lease_expires_at"),
+                        branch_task_id,
+                        _required(worker_id, "worker_id"),
+                        at,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.commit()
+                    return None
+                updated = conn.execute(
+                    "SELECT * FROM branch_tasks_v2 "
+                    "WHERE branch_task_id = ?",
+                    (branch_task_id,),
+                ).fetchone()
+                conn.commit()
+                return _task_row(updated)
+            except Exception:
+                conn.rollback()
+                raise
+
+    def request_v2_cancel(
+        self,
+        branch_task_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                at = _clock_iso(self._clock)
+                row = conn.execute(
+                    "SELECT * FROM branch_tasks_v2 "
+                    "WHERE branch_task_id = ?",
+                    (branch_task_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(branch_task_id)
+                if row["status"] in TERMINAL_STATUSES:
+                    conn.commit()
+                    return _task_row(row)
+                if row["status"] == "cancel_requested":
+                    conn.commit()
+                    return _task_row(row)
+                new_status = (
+                    "cancelled"
+                    if row["status"] == "pending"
+                    else "cancel_requested"
+                )
+                terminal_at = at if new_status == "cancelled" else None
+                conn.execute(
+                    """
+                    UPDATE branch_tasks_v2
+                    SET status = ?, terminal_at = COALESCE(?, terminal_at)
+                    WHERE branch_task_id = ?
+                    """,
+                    (new_status, terminal_at, branch_task_id),
+                )
+                if terminal_at is not None:
+                    conn.execute(
+                        """
+                        UPDATE request_admissions
+                        SET terminal_at = ?, updated_at = ?
+                        WHERE admission_id = ?
+                        """,
+                        (terminal_at, at, row["admission_id"]),
+                    )
+                conn.execute(
+                    """
+                    UPDATE user_requests
+                    SET status = ?, updated_at = ?
+                    WHERE request_id = ?
+                    """,
+                    (
+                        new_status,
+                        _epoch_seconds(at),
+                        row["request_id"],
+                    ),
+                )
+                self._append_task_event(
+                    conn,
+                    row,
+                    event_type=new_status,
+                    event_at=at,
+                    detail={},
+                )
+                updated = conn.execute(
+                    "SELECT * FROM branch_tasks_v2 "
+                    "WHERE branch_task_id = ?",
+                    (branch_task_id,),
+                ).fetchone()
+                conn.commit()
+                return _task_row(updated)
+            except Exception:
+                conn.rollback()
+                raise
+
+    def recover_expired_v2_tasks(
+        self,
+    ) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                now = _clock_iso(self._clock)
+                rows = conn.execute(
+                    """
+                    SELECT * FROM branch_tasks_v2
+                    WHERE status IN ('running', 'cancel_requested')
+                      AND disabled = 0
+                      AND lease_expires_at IS NOT NULL
+                      AND julianday(lease_expires_at) <= julianday(?)
+                    ORDER BY queued_at, branch_task_id
+                    """,
+                    (now,),
+                ).fetchall()
+                recovered: list[dict[str, Any]] = []
+                for row in rows:
+                    cancelled = row["status"] == "cancel_requested"
+                    new_status = "cancelled" if cancelled else "pending"
+                    cursor = conn.execute(
+                        """
+                        UPDATE branch_tasks_v2
+                        SET status = ?, claimed_by = '',
+                            claimed_at = NULL, heartbeat_at = NULL,
+                            lease_expires_at = NULL,
+                            terminal_at = COALESCE(?, terminal_at)
+                        WHERE branch_task_id = ? AND status = ?
+                        """,
+                        (
+                            new_status,
+                            now if cancelled else None,
+                            row["branch_task_id"],
+                            row["status"],
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        continue
+                    if cancelled:
+                        conn.execute(
+                            """
+                            UPDATE request_admissions
+                            SET terminal_at = ?, updated_at = ?
+                            WHERE admission_id = ?
+                            """,
+                            (now, now, row["admission_id"]),
+                        )
+                    conn.execute(
+                        """
+                        UPDATE user_requests
+                        SET status = ?, updated_at = ?
+                        WHERE request_id = ?
+                        """,
+                        (
+                            new_status,
+                            _epoch_seconds(now),
+                            row["request_id"],
+                        ),
+                    )
+                    self._append_task_event(
+                        conn,
+                        row,
+                        event_type=(
+                            "cancelled" if cancelled else "recovered"
+                        ),
+                        event_at=now,
+                        detail={
+                            "reason": (
+                                "lease_expired_after_cancel"
+                                if cancelled
+                                else "lease_expired"
+                            )
+                        },
+                    )
+                    updated = conn.execute(
+                        "SELECT * FROM branch_tasks_v2 "
+                        "WHERE branch_task_id = ?",
+                        (row["branch_task_id"],),
+                    ).fetchone()
+                    recovered.append(_task_row(updated))
+                conn.commit()
+                return recovered
+            except Exception:
+                conn.rollback()
+                raise
+
     def transition_task(
         self,
         branch_task_id: str,
         *,
         expected_statuses: set[str],
         new_status: str,
-        at: str,
+        at: str = "",
         detail: Mapping[str, Any] | None = None,
+        worker_id: str = "",
     ) -> dict[str, Any]:
         if not expected_statuses:
             raise ValueError("expected_statuses must not be empty")
@@ -640,6 +893,11 @@ class RequestAdmissionStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                effective_at = (
+                    _clock_iso(self._clock)
+                    if worker_id
+                    else _required(at, "at")
+                )
                 row = conn.execute(
                     "SELECT * FROM branch_tasks_v2 "
                     "WHERE branch_task_id = ?",
@@ -652,7 +910,18 @@ class RequestAdmissionStore:
                         f"expected {sorted(expected_statuses)}, "
                         f"found {row['status']}"
                     )
-                terminal_at = at if new_status in TERMINAL_STATUSES else None
+                if worker_id and row["claimed_by"] != worker_id:
+                    raise PermissionError("branch_task_claim_owner_mismatch")
+                if (
+                    worker_id
+                    and row["lease_expires_at"]
+                    and _epoch_seconds(effective_at)
+                    >= _epoch_seconds(row["lease_expires_at"])
+                ):
+                    raise PermissionError("branch_task_lease_expired")
+                terminal_at = (
+                    effective_at if new_status in TERMINAL_STATUSES else None
+                )
                 conn.execute(
                     """
                     UPDATE branch_tasks_v2
@@ -674,7 +943,7 @@ class RequestAdmissionStore:
                         SET terminal_at = ?, updated_at = ?
                         WHERE admission_id = ?
                         """,
-                        (terminal_at, at, row["admission_id"]),
+                        (terminal_at, effective_at, row["admission_id"]),
                     )
                     conn.execute(
                         """
@@ -682,13 +951,17 @@ class RequestAdmissionStore:
                         SET status = ?, updated_at = ?
                         WHERE request_id = ?
                         """,
-                        (new_status, _epoch_seconds(at), row["request_id"]),
+                        (
+                            new_status,
+                            _epoch_seconds(effective_at),
+                            row["request_id"],
+                        ),
                     )
                 self._append_task_event(
                     conn,
                     row,
                     event_type=new_status,
-                    event_at=at,
+                    event_at=effective_at,
                     detail=dict(detail or {}),
                 )
                 updated = conn.execute(
@@ -939,6 +1212,14 @@ def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:
     """Create the epoch-2 schema on the active pre-traffic DB connection."""
 
     conn.executescript(_SCHEMA)
+    task_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(branch_tasks_v2)")
+    }
+    if "lease_expires_at" not in task_columns:
+        conn.execute(
+            "ALTER TABLE branch_tasks_v2 ADD COLUMN lease_expires_at TEXT"
+        )
 
 
 def _public_result(
@@ -1014,10 +1295,35 @@ def _required(value: str, name: str) -> str:
     return normalized
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _clock_iso(clock: Callable[[], datetime]) -> str:
+    value = clock()
+    if not isinstance(value, datetime):
+        raise TypeError("clock must return datetime")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _bounded_lease_seconds(value: int) -> int:
+    seconds = int(value)
+    if not 1 <= seconds <= MAX_LEASE_SECONDS:
+        raise ValueError(
+            f"lease_seconds must be between 1 and {MAX_LEASE_SECONDS}"
+        )
+    return seconds
+
+
+def _add_seconds(value: str, seconds: int) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return (parsed + timedelta(seconds=seconds)).isoformat()
+
+
 def _epoch_seconds(timestamp: str) -> float:
     try:
-        from datetime import datetime
-
         return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
     except (TypeError, ValueError):
         return time.time()
