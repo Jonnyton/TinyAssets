@@ -1169,6 +1169,11 @@ def test_backup_key_rollback_requires_explicit_204(
             "bad id ABCDEFGHIJKLMNOPQRSTUVWXYZ",
         ),
         (
+            '{"id":"dop_v1_0123456789abcdefghijklmnopqrstuv","message":"forbidden"}',
+            "id=redacted category=authorization_or_scope",
+            "dop_v1_0123456789abcdefghijklmnopqrstuv",
+        ),
+        (
             "not-json",
             "unparseable provider error",
             "not-json",

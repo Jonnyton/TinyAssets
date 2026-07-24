@@ -215,11 +215,15 @@ jobs:
           if not isinstance(error_id, str) or not isinstance(message, str):
               print("malformed provider error")
               raise SystemExit
-          safe_id = (
-              error_id
-              if re.fullmatch(r"[a-z0-9_.-]{1,40}", error_id)
-              else "redacted"
-          )
+          known_ids = {
+              "bad_request",
+              "forbidden",
+              "not_found",
+              "server_error",
+              "too_many_requests",
+              "unauthorized",
+          }
+          safe_id = error_id if error_id in known_ids else "redacted"
           normalized = re.sub(r"[\x00-\x1f\x7f]+", " ", message).lower()
           if any(
               term in normalized
