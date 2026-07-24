@@ -19,6 +19,7 @@ Inputs:
 | `drill_droplet_size` | `s-2vcpu-2gb` | Minimum tested size for apt + Docker bootstrap; `s-1vcpu-1gb` OOMs. |
 | `backup_source` | (latest on primary) | Override with a specific path, e.g. `2026-04-01` tarball for point-in-time test. |
 | `destroy_on_failure` | `false` | Set `true` to auto-destroy on failure; default keeps the Droplet up for inspection. |
+| `cleanup_droplet_id` | (empty) | Cleanup-only mode: delete this retained positive-decimal Droplet ID and skip every drill/provisioning step. |
 
 ## What the workflow does
 
@@ -41,10 +42,11 @@ Inputs:
    destination SHA-256 to match before restore.
 9. Runs `deploy/backup-restore.sh` with the exact transferred `BACKUP_FILE` and
    verifies the representative member at Docker's inspected volume mountpoint.
-10. Supplies the validated runtime image ephemerally, starts only the daemon
-   compose service with the fresh template environment, waits 30s, opens an
-   SSH port-forward to loopback, and probes `http://localhost:8001/mcp` via
-   `scripts/mcp_probe.py status` (no Cloudflare tunnel required).
+10. Requires exactly one `TINYASSETS_IMAGE=` assignment in the fresh template
+   and writes only the validated public digest into it. It starts only the
+   daemon compose service, waits 30s, opens an SSH port-forward to loopback,
+   and probes `http://localhost:8001/mcp` via `scripts/mcp_probe.py status`
+   (no Cloudflare tunnel required).
 
 ## Pass / fail criteria
 
@@ -62,6 +64,7 @@ TinyAssets on fail:
 - Opens a `dr-failed` GitHub issue with the probe output + Droplet IP.
 - Leaves the drill Droplet **running** for inspection (SSH directly with the deploy key).
 - Does NOT destroy unless `destroy_on_failure=true`.
+- Finishes the workflow red after recording the issue and retention outcome.
 
 ## Inspecting a failed drill
 
@@ -70,13 +73,11 @@ TinyAssets on fail:
 ssh root@<drill-ip>
 
 # Check compose status.
-TINYASSETS_IMAGE='<runtime-image-from-run-evidence>' \
-  docker compose --env-file /etc/tinyassets/env \
+docker compose --env-file /etc/tinyassets/env \
   -f /opt/tinyassets/deploy/compose.yml ps
 
 # Tail daemon logs.
-TINYASSETS_IMAGE='<runtime-image-from-run-evidence>' \
-  docker compose --env-file /etc/tinyassets/env \
+docker compose --env-file /etc/tinyassets/env \
   -f /opt/tinyassets/deploy/compose.yml logs daemon --tail 50
 
 # Probe locally.
@@ -86,14 +87,24 @@ curl -s -X POST http://127.0.0.1:8001/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}'
 ```
 
-When done:
+When done, prefer the credential-scoped cleanup-only dispatch:
+
+1. GitHub → Actions → `DR drill` → Run workflow.
+2. Set `cleanup_droplet_id` to the retained ID and leave other inputs at their
+   defaults. The cleanup job validates the ID, requires the exact drill name
+   plus both drill tags, performs one bounded DELETE, and cannot provision a
+   replacement.
+
+An operator with an independently configured DigitalOcean CLI can instead run:
+
 ```bash
 doctl compute droplet delete <droplet-id> --force
 ```
 
 ## Required secrets
 
-Same set as `deploy-prod.yml`:
+The full drill uses the same set as `deploy-prod.yml`. Cleanup-only mode reads
+only `DIGITALOCEAN_TOKEN`.
 
 | Secret | Purpose |
 |---|---|

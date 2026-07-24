@@ -3,7 +3,8 @@
 Covers:
   (a) YAML parses without error
   (b) Only workflow_dispatch trigger (never auto-runs)
-  (c) Required inputs present (drill_droplet_size, backup_source, destroy_on_failure)
+  (c) Required inputs present (drill_droplet_size, backup_source,
+      destroy_on_failure, cleanup_droplet_id)
   (d) Required secrets referenced (DIGITALOCEAN_TOKEN, DO_SSH_KEY, DO_DROPLET_HOST, DO_SSH_USER)
   (e) Droplet provision step creates Droplet via DO API
   (f) Bootstrap step runs hetzner-bootstrap.sh
@@ -660,6 +661,70 @@ def test_compose_uses_runtime_image_ephemerally_with_fresh_env():
     assert "--env-file /etc/tinyassets/env" in run
     assert "install-tinyassets-env.sh" not in run
     assert "sed -i" not in run
+
+
+def test_validated_runtime_image_is_persisted_into_exactly_one_fresh_assignment():
+    step = _step("Persist validated runtime image in fresh env")
+    assert "steps.runtime-image.outputs.image" in str(step.get("env", {}))
+
+    run = step["run"]
+    assert "ghcr\\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}" in run
+    assert 'Path("/etc/tinyassets/env")' in run
+    assert "env_path.is_symlink()" in run
+    assert 'line.startswith("TINYASSETS_IMAGE=")' in run
+    assert "len(matches) != 1" in run
+    assert 'lines[index] = f"TINYASSETS_IMAGE={image}{newline}"' in run
+    assert 'env_path.write_text("".join(lines))' in run
+    assert "DO_DROPLET_HOST" not in run
+
+
+def test_cleanup_only_dispatch_is_identity_guarded_and_cannot_provision():
+    wf = _load()
+    inputs = _dispatch_inputs(wf)
+    assert inputs["cleanup_droplet_id"]["default"] == ""
+
+    jobs = wf["jobs"]
+    cleanup = jobs["cleanup_retained_droplet"]
+    assert cleanup["if"] == "inputs.cleanup_droplet_id != ''"
+    assert jobs["drill"]["if"] == "inputs.cleanup_droplet_id == ''"
+
+    steps = cleanup["steps"]
+    names = [step.get("name") for step in steps]
+    assert names.index("Verify retained drill Droplet identity") < names.index(
+        "Delete retained drill Droplet"
+    )
+    assert "Provision drill Droplet" not in names
+    assert "Install SSH key" not in names
+    assert "Validate selected backup on primary" not in names
+
+    identity = next(
+        step for step in steps
+        if step.get("name") == "Verify retained drill Droplet identity"
+    )["run"]
+    assert "--method GET" in identity
+    assert 'droplet.get("name") != "tinyassets-dr-drill"' in identity
+    assert '{"dr-drill", "tinyassets"}.issubset(tags)' in identity
+
+    deletion = next(
+        step for step in steps
+        if step.get("name") == "Delete retained drill Droplet"
+    )["run"]
+    assert "--method DELETE" in deletion
+    assert "--method POST" not in deletion
+    assert "/v2/droplets/${DROPLET_ID}" in deletion
+
+
+def test_red_probe_always_records_issue_then_fails_the_run():
+    probe = _step("Probe drill Droplet directly")
+    assert "color=red" in probe["run"]
+    assert "exit 98" in probe["run"]
+
+    issue = _step("Open dr-failed issue on failure")
+    assert issue["if"] == "always() && steps.drillprobe.outputs.color == 'red'"
+
+    fail = _step("Fail after red probe")
+    assert fail["if"] == "always() && steps.drillprobe.outputs.color == 'red'"
+    assert fail["run"] == "exit 1"
 
 
 @pytest.mark.parametrize(

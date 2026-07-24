@@ -145,3 +145,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** model Compose interpolation and the
   quoted/unquoted environment grammar in the first DR test matrix, and design
   the minimal nonsecret configuration transfer before the first live run.
+
+## 2026-07-23 — DR fresh-env startup truth
+
+- **What surprised me:** a successful Compose command and a green GitHub job
+  both concealed a red recovery outcome—the container restart-looped because
+  interpolation did not populate its env file, and the probe step emitted red
+  outputs before ending on a successful shell command.
+- **Pattern worth capturing:** recovery workflows need two truth checks:
+  resource/service evidence must reach the process boundary, and structured
+  red evidence must be followed by an explicit terminal failure. Cleanup tools
+  should verify resource identity, not trust a numeric ID alone.
+- **What I would do differently:** test failed-step `if: always()` semantics
+  and container-visible environment separately from Compose model validation
+  before the first live drill.
