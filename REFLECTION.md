@@ -122,3 +122,18 @@ fresh-host rollback edges found later.
   deletion as explicit tested states in the first proposal, including request
   timeouts and adversarial output fields, instead of adding them after the
   happy path is sketched.
+
+## 2026-07-23 — moderation flag-intake planning
+
+What surprised me: artifact-local compare-and-swap looked sufficient until two
+different artifacts reused the same account's final rate token. The resulting
+race is structurally the same as double-spending scarce market inventory.
+
+Pattern worth capturing: a mutation plan must bind every shared mutable
+precondition it consumes. For flag intake that means the artifact snapshot,
+rate-bucket identity/version and token, and moderation-policy version/threshold
+must commit together or all be replanned.
+
+One thing I would do differently: put the two-artifact/one-token adversarial
+case in the first RED batch, alongside the single-artifact threshold cases,
+instead of treating rate evidence as a passive observation.
