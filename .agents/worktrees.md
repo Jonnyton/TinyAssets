@@ -1093,3 +1093,14 @@ Notes:
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-plan\_PURPOSE.md
 - Related implications: all shared control-plane capabilities; no dual-write; private content host-only; stock-Postgres exit
 - Ship/abandon: publish planning-only stacked draft; no PLAN/runtime/migration work before Claude/host gate
+
+## 2026-07-23 - publish postgres-control-plane-plan
+
+- Provider: codex-gpt5-desktop-postgres-plan
+- Branch: codex/postgres-control-plane-plan
+- Lane state: parked review-blocked planning draft
+- Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-plan
+- STATUS/Issue/PR: draft PR #1670; approved planning checkpoint `49cb3de2`
+- Verification: OpenSpec 42/42 strict; independent ownership and security APPROVE
+- Remaining gates: Claude source/deployment recheck; host acceptance of adaptations; PLAN/privacy/tenant/uptime reconciliation before implementation
+- Ship/abandon: keep planning-only; no PLAN/SQL/runtime/deploy/production writes before every recorded gate
