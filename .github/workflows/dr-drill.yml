@@ -778,7 +778,7 @@ jobs:
           echo "$output"
 
       - name: Open dr-failed issue on failure
-        if: steps.drillprobe.outputs.color == 'red'
+        if: always() && steps.drillprobe.outputs.color == 'red'
         uses: actions/github-script@v7
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}

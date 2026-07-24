@@ -43,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| **Fix DR fresh-env runtime startup** — run 30065054549 proved Debian 13/bootstrap/restore; daemon restarted because digest reached Compose interpolation but not container env; retained host repro passed after persisting only public digest | .github/workflows/dr-drill.yml; docs/ops/dr-drill-runbook.md; openspec/changes/persist-dr-drill-runtime-image/; STATUS.md; REFLECTION.md | #1668; exact-landed rerun must prove MCP probe + deletion | claimed:codex-gpt5-desktop ACTIVE 2026-07-23 |
+| **Fix DR fresh-env runtime startup** — run 30065054549 proved Debian 13/bootstrap/restore; daemon restarted because digest reached Compose interpolation but not container env; retained host repro passed after persisting only public digest | .github/workflows/dr-drill.yml; tests/test_dr_drill_workflow.py; docs/ops/dr-drill-runbook.md; openspec/changes/persist-dr-drill-runtime-image/; STATUS.md; REFLECTION.md | #1668; exact-landed rerun must prove MCP probe + deletion | claimed:codex-gpt5-desktop ACTIVE 2026-07-23 |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
