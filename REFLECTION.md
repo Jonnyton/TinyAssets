@@ -132,3 +132,16 @@ fresh-host rollback edges found later.
   interrupted-repeat ownership states before drafting the first design, and
   treat a security guard failure as a boundary signal rather than an obstacle
   to bypass.
+
+## 2026-07-23 — DR runtime-image pin
+
+- **What surprised me:** a daemon-only Compose start still validates required
+  image interpolation across the complete compose model, while the fresh-host
+  template correctly leaves that image empty.
+- **Pattern worth capturing:** recovery inputs need distinct authorities and
+  evidence names. The provider base image comes from bounded live inventory;
+  the daemon runtime image comes from validated immutable production
+  configuration; neither should be conflated or sourced from a mutable tag.
+- **What I would do differently:** model Compose interpolation and the
+  quoted/unquoted environment grammar in the first DR test matrix, and design
+  the minimal nonsecret configuration transfer before the first live run.
