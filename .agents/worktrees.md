@@ -1110,7 +1110,7 @@ Notes:
 - Branch: codex/distributed-execution-current-main-design
 - Lane state: active planning lane
 - Worktree: C:\Users\Jonathan\Projects\wf-distributed-execution-current-main
-- STATUS/Issue/PR: claimed; draft PR expected after OpenSpec review
+- STATUS/Issue/PR: claimed; draft PR #1699
 - Scope: complete distributed-execution design and publish a current-main extraction manifest; no runtime or live authority activation
 - Review gate: independent security/design review now; opposite-provider review before live apply/deploy
 - Memory/implications: PR #1475 handoff; PRs #1472/#1477/#1479/#1481/#1487/#1491; `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`
