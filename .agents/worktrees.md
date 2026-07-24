@@ -1115,4 +1115,6 @@ Notes:
 - Purpose: give inference, training, task, and fabrication supply one deterministic substitutability identity without enabling execution
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-market-capability-descriptors\_PURPOSE.md
 - Related implications: paid-market live-price discovery; Track E Wave 2; compute-market frontier research; BYOC-only execution authority
-- Ship/abandon: land only pure I/O-free logic and focused proof; no SQL, credentials, routing, pricing, or execution
+- Review update: adversarial descriptor review returned ADAPT on v1 canonical grammar, lane completeness, correlated facets, range direction, and digest privacy/domain separation
+- Review update: amended contract separates exact supply identity, normalized public market class, and quote-bound landed scope; two final Codex blocker reviews APPROVE
+- Ship/abandon: amend OpenSpec first and obtain opposite-provider confirmation; only then land pure I/O-free logic and proof, with no SQL, credentials, routing, pricing, or execution

@@ -1,25 +1,115 @@
 ## ADDED Requirements
 
 ### Requirement: Capability descriptors define substitutability without defining execution
-The market SHALL bind every demand intent, native offer, and quote to a versioned capability descriptor whose canonical digest identifies stable supply/output identity, immutable resource/runtime revisions, unit semantics, and policy/evidence classes required to decide substitutability. Inference descriptors SHALL cover model revision, runtime, quantization, context capability, modalities, structured/tool support, token categories, latency/throughput class, region coverage, privacy, and reliability class. Training descriptors SHALL cover accelerator class/memory, supported topology/interconnect, container/runtime support, interruption class, region coverage, privacy, and attestation class. Fabrication descriptors SHALL cover supported process/material families, tolerance/size capabilities, inspection/certification class, and service-region coverage. Exact request quantity, dimensions, destination, requested window, gang size/count/topology, deadline, lead time, checkpoint cadence, restart terms, and similar demand-specific values SHALL remain in the existing demand intent digest; offers SHALL declare compatible ranges/sets, and the firm quote SHALL hash the resolved demand/offer terms. Domain owners SHALL validate their facets; the descriptor SHALL NOT replace their execution, acceptance, or settlement protocols.
+The market SHALL bind every demand intent, native offer, and quote to a public versioned capability descriptor that classifies one atomic correlated supply tuple without granting price, execution, or settlement authority. The derived `capability_id` SHALL be exact validated supply-content identity and SHALL NOT be treated as price-index equivalence or demand identity. V1 SHALL NOT contain caller-supplied `profile_id`, `capability_id`, or `profiles[]`. An offer supporting multiple capability combinations SHALL reference multiple independently validated and hashed descriptors; matching SHALL NOT combine fields from different descriptors. Every point and cross-field combination admitted by one descriptor's ranges and sets SHALL be independently supportable at the same time; otherwise those combinations SHALL be separate descriptors.
+
+The trusted library SHALL build an envelope containing exactly `domain="tinyassets.capability-descriptor"`, `schema_version="capability-descriptor/v1"`, and `descriptor`. `descriptor` SHALL contain exactly `lane`, `profile_schema_revision`, `unit_semantics`, `region`, `privacy_class`, `reliability_class`, and one `profile`. `lane` SHALL be exactly `inference`, `training`, `task`, or `fabrication`; `unit_semantics` SHALL contain exactly `delivered_unit` and integer `scale >= 1`.
+
+The exact required inference-profile keys SHALL be `model_revision`, `runtime_revision`, `quantization`, `context_tokens`, `latency_ms`, `throughput_tokens_per_second`, `modalities`, `structured_output_classes`, `tool_classes`, and `token_categories`. Training SHALL require exactly `resource_revision`, `accelerator_memory_bytes`, `topology_classes`, `interconnect_revisions`, `runtime_revisions`, `container_formats`, `interruption_classes`, and `attestation_classes`. Generic task SHALL require exactly `task_protocol_revision`, `sandbox_revision`, `environment_revision`, `input_media_types`, `output_media_types`, `machine_gate_classes`, `cancellation_classes`, and `retry_classes`. Fabrication SHALL require exactly `process_revision`, `material_spec_revisions`, `build_x`, `build_y`, `build_z`, `tolerance`, `inspection_classes`, `certification_classes`, and `service_regions`. No other V1 profile key SHALL be accepted. Generic task describes bounded artifact-in/artifact-out and machine-verification capability and SHALL NOT create another execution protocol.
+
+Every numeric profile field SHALL use exactly `{"min":Integer,"max":Integer,"unit":Identifier}` with `min <= max`; the interval SHALL be closed and inclusive. Every set field SHALL use exactly `{"unit":Identifier,"values":[Identifier,...]}` with non-empty, sorted, duplicate-free same-domain values. A required set with no supported member SHALL use explicit same-domain `none`, not an empty array.
+
+Comparison direction SHALL be fixed by the lane field schema and SHALL NOT be caller data. An exact demand for `context_tokens`, `accelerator_memory_bytes`, `build_x`, `build_y`, or `build_z` SHALL lie inclusively inside the offered range. Offered `throughput_tokens_per_second.min` SHALL be greater than or equal to the demand minimum. Offered `latency_ms.max` and fabrication `tolerance.max` SHALL be less than or equal to the demand maximum. For every V1 set field, the canonical non-empty demand `required_values` SHALL be a subset of the offer's `values`; scalar selection SHALL use a singleton required subset. Units SHALL match the field schema before comparison. V1 SHALL reject any `direction`, `min_inclusive`, or `max_inclusive` member.
+
+`region`, `privacy_class`, and `reliability_class` SHALL be exact schema-owned descriptor fields, SHALL participate in the capability id, and SHALL require exact equality for substitutability. The trusted constructor SHALL materialize absent inputs as `region="unspecified"`, `privacy_class="public_only"`, and `reliability_class="best_effort_unverified"`. `unspecified` matches only explicitly permitted `unspecified`; `public_only` permits public-data workloads only; and `best_effort_unverified` asserts no availability, durability, or verified-reliability floor. Omission SHALL NOT mean “any”.
+
+`profile_schema_revision` SHALL be a globally immutable content-addressed identifier of the closed profile grammar, allowed units, comparison rules, market-class threshold/projection rules, and validator contract. The injected validator SHALL attest that exact revision and SHALL fail closed on any revision mismatch.
+
+The trusted structured constructor SHALL accept a typed descriptor body, validate it, sort semantic set values, reject duplicates, build the exact envelope, and compute canonical bytes as `json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")`. It SHALL derive `capability_id` exactly as `"sha256:" + hashlib.sha256(canonical_bytes).hexdigest()`, where the suffix is 64 lowercase hexadecimal characters.
+
+A separate canonical-byte decoder/verifier SHALL reject untrusted input longer than 65,536 bytes and any non-ASCII byte before parsing or materializing an object. It SHALL then use a guarded JSON parser that enforces the depth, member, array, and scalar-node limits while parsing, detects duplicate keys, and maps parser recursion/depth/node exhaustion to `limit_exceeded`. Only after those gates SHALL it perform exact domain/version checks, invoke the structured constructor on the parsed descriptor, regenerate canonical bytes, and byte-compare them to the input. Only this decoder/verifier SHALL emit `not_canonical`; the structured constructor SHALL NOT. No alternate serializer, caller-provided canonical bytes/id, Unicode normalization, numeric coercion, or unknown envelope field SHALL be accepted.
+
+V1 SHALL be ASCII-only. Canonical bytes SHALL not exceed 65,536 bytes; nesting depth 8; 64 members per object; 64 values per set/array; or 1,024 scalar leaves. Keys SHALL be fixed schema keys and semantic identifiers SHALL match `[a-z0-9][a-z0-9._:/+-]{0,127}`. Free text and non-ASCII strings SHALL be rejected. Numbers SHALL be JSON integers in `0..9007199254740991`; V1 has no Boolean fields. Fractions, exponents, negative zero, integer-valued floats, infinities/NaN, duplicate keys, `null`, unknown keys/facets, empty required values, `min > max`, and out-of-bound structures SHALL fail before hashing.
+
+After common validation and before hashing, every validation or match call SHALL receive an explicitly injected owning-domain validator selected by exact `(schema_version, lane, profile_schema_revision)`, never a process-global or mutable registry. The validator SHALL be synchronous, pure, deterministic, bounded, non-rewriting, perform no I/O, consult no clock, randomness, prices, credentials, or mutable execution state, and attest the exact content-addressed revision. Missing validator SHALL return `domain_validator_unavailable`; unknown revision SHALL return `unsupported_profile_schema_revision`; attested-revision mismatch SHALL return `domain_validator_revision_mismatch`; exception or semantic refusal SHALL return `domain_validation_failed`. Every failure SHALL return no capability id or quote, and the price index SHALL provide no fallback.
+
+Validation SHALL return exactly `{"status":"valid","capability_id":...}` or `{"status":"invalid","code":Code,"path":JsonPointer}`. Matching SHALL return exactly `{"status":"compatible","capability_id":...}` or `{"status":"incompatible","code":Code,"path":JsonPointer}`. V1 `Code` SHALL be `malformed_descriptor`, `not_canonical`, `unsupported_schema_version`, `unsupported_profile_schema_revision`, `unknown_field`, `missing_field`, `invalid_type`, `invalid_identifier`, `duplicate_value`, `invalid_range`, `limit_exceeded`, `domain_validator_unavailable`, `domain_validator_revision_mismatch`, `domain_validation_failed`, `unit_mismatch`, `facet_missing`, `facet_not_in_set`, `range_below_min`, `range_above_max`, `region_mismatch`, `privacy_mismatch`, or `reliability_mismatch`. Decoder precedence SHALL be: raw byte-length bound; ASCII encoding; guarded JSON parsing with in-parser depth/member/array/scalar limits and duplicate-key detection; root; exact domain then schema version; missing fields in declared schema order; unknown fields in ASCII-sorted order; types, identifiers, numbers, ranges, and sets in schema depth-first order; remaining structural bounds; canonical byte comparison; validator availability/revision/semantics; compatibility in lane-field order; and public market-class projection last. Structured-constructor precedence SHALL begin at its typed-root/schema checks and otherwise follow the same order without decoder-only steps. Messages SHALL be fixed by code. JSON Pointers SHALL contain only known schema keys and bounded numeric indices; unknown caller keys SHALL be represented by their known parent plus `<?>`. Results and logs SHALL NOT echo caller values, canonical bytes, private commitments, or exception text.
+
+Exact quantity, prompt, dataset, CAD/work-order payload, requested-item dimensions, destination, requested window, gang size/count/topology, deadline, lead time, checkpoint cadence, restart terms, acceptance payload, budget, and requester policy/weights SHALL remain exclusively in demand intent. A descriptor SHALL contain no tenant/user/universe identity, private demand commitment, prompt/artifact digest, offer/seller/capacity identity, endpoint, credential/secret reference, price/fee/currency, reservation/lease/fence, execution state, quote authority, or settlement fact. Stable public ranges/sets SHALL live in its one hashed profile. Offers SHALL carry commercial, availability, seller, and capacity terms separately. Private/low-entropy demand equality SHALL use a separate tenant-keyed purpose-separated HMAC. The descriptor SHALL NOT replace domain execution, acceptance, or settlement protocols.
+
+After one validated descriptor is compatible with demand, a trusted pure lane projection owned by `profile_schema_revision` SHALL derive a separate public `market_class_id`; capability identity SHALL NOT be reused as aggregation identity. Its trusted library-built envelope SHALL contain exactly `domain="tinyassets.market-class"`, `schema_version="market-class/v1"`, and `descriptor`. That descriptor SHALL contain exactly `descriptor_schema_version`, `lane`, `profile_schema_revision`, `unit_semantics`, `region_class`, `privacy_class`, `reliability_class`, and `public_requirements`.
+
+`public_requirements` SHALL be a sorted canonical array with unique fields whose members are exactly one of: `{"field":Identifier,"kind":"exact","value":Identifier}`, `{"bucket":Identifier,"field":Identifier,"kind":"threshold","unit":Identifier}`, or `{"field":Identifier,"kind":"required_subset","unit":Identifier,"values":[Identifier,...]}`. Numeric demand SHALL map through explicit immutable threshold buckets defined by `profile_schema_revision`, never raw values or dynamic/statistical buckets. Set demand SHALL contribute only its canonical sorted required subset; scalar set selection SHALL be a singleton. Extra supply values, wider ranges, and range headroom SHALL NOT enter the projection. Region, privacy, and reliability SHALL map only through the revision's coarse privacy-safe public class tables. A public ask or reference without private requester demand SHALL match an explicit revision-owned public demand-class template and SHALL NOT infer its market class from supply headroom.
+
+The market-class library SHALL apply the same ASCII bounds and exact `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")` plus `"sha256:" + hashlib.sha256(canonical_bytes).hexdigest()` derivation. It SHALL return exactly `{"status":"classified","market_class_id":...}` or `{"status":"unclassified","code":"market_class_unavailable"}`. If projection is not deterministic, total for supported input, or privacy-safe, it SHALL emit no public class, quote, ask, external reference, or settlement observation. Firm quotes and accepted settlement evidence SHALL bind both exact `capability_id` and derived `market_class_id`.
 
 #### Scenario: incompatible supply is not substituted
 - **WHEN** an offer differs from a hard descriptor facet such as model revision, topology, region, privacy class, material, or tolerance
 - **THEN** the offer is ineligible for that demand intent
-- **AND** the router records the exact mismatch instead of treating a lower price as substitutable
+- **AND** the router records the stable mismatch code and JSON Pointer without echoing a private demand value or treating a lower price as substitutable
 
 #### Scenario: unsupported descriptor version fails loud
 - **WHEN** a reader cannot validate the descriptor schema version or required lane facets
-- **THEN** it returns an unsupported-descriptor result
+- **THEN** it returns the stable invalid result and exact `unsupported_schema_version`, `unsupported_profile_schema_revision`, or domain-validation code
 - **AND** it publishes no executable quote or route for that descriptor
 
 #### Scenario: demand terms resolve against supply ranges
-- **WHEN** exact requested quantity, location, window, topology, or lead time falls inside an offer's declared compatible range or set
+- **WHEN** an exact requested public region, topology, quantity, window, or lead time satisfies its descriptor or offer-term constraint
 - **THEN** compatibility is evaluated without creating a new capability identity for every request
-- **AND** the resolved terms are bound into the firm quote and demand digest
+- **AND** the resolved terms are bound into the firm quote and tenant-keyed demand commitment
+
+#### Scenario: offer capabilities cannot be cross-combined
+- **WHEN** no one descriptor satisfies every requested facet but individual facets could be collected from two or more descriptors on the same offer
+- **THEN** each descriptor is independently incompatible
+- **AND** matching does not manufacture a synthetic capability id or compatible tuple
+
+#### Scenario: one descriptor cannot imply unsupported Cartesian combinations
+- **WHEN** an offer can support each advertised range endpoint or set member separately but cannot support every admitted cross-field combination simultaneously
+- **THEN** the combined descriptor is invalid
+- **AND** the offer must publish separately supportable combinations as separate capability descriptors
+
+#### Scenario: omitted policy defaults deny broader use
+- **WHEN** descriptor-constructor input omits region, privacy, and reliability and a demand requires a named region, private-data handling, or a verified reliability floor
+- **THEN** the trusted constructor materializes exact `unspecified`, `public_only`, and `best_effort_unverified` fields before hashing
+- **AND** matching returns the applicable region, privacy, or reliability mismatch
+
+#### Scenario: private demand does not enter the public capability id
+- **WHEN** two tenants request the same public capability with different quantities, prompts, destinations, budgets, or policy weights
+- **THEN** the public capability id remains the same for the same validated descriptor metadata
+- **AND** each private demand is bound only by its own tenant-keyed purpose-separated commitment and firm-quote resolved terms
+
+#### Scenario: unavailable domain validator fails closed
+- **WHEN** the exact lane/profile-schema-revision validator is not injected, throws, or refuses the profile
+- **THEN** validation returns `domain_validator_unavailable` or `domain_validation_failed` with no usable capability id
+- **AND** no public or executable quote is emitted through a fallback validator
+
+#### Scenario: caller direction and capability identity are refused
+- **WHEN** input contains `profile_id`, `capability_id`, `profiles`, `direction`, or range-inclusivity fields
+- **THEN** validation returns `unknown_field` with a non-echoing safe path
+- **AND** the library derives no capability id from the caller-controlled shape
+
+#### Scenario: set requirements use subset compatibility
+- **WHEN** a demand requires two modalities, artifact types, topology classes, or other V1 set values
+- **THEN** the descriptor is compatible only when both required values are members of the offer's same-unit set
+- **AND** a scalar requirement is represented as a one-value required subset
+
+#### Scenario: canonical bytes are verified separately from construction
+- **WHEN** untrusted descriptor bytes decode to valid structured content but differ from bytes regenerated by the trusted constructor
+- **THEN** only the byte decoder/verifier returns `not_canonical`
+- **AND** structured construction continues to emit canonical bytes without accepting caller serialization
+
+#### Scenario: validation failures have deterministic precedence
+- **WHEN** one descriptor violates multiple structural, bound, validator, and compatibility rules
+- **THEN** the first result follows the specified validation order and ASCII/schema field ordering
+- **AND** validator or compatibility results cannot mask an earlier structural failure
+
+#### Scenario: validator must attest the immutable profile revision
+- **WHEN** an injected validator claims a different profile-schema digest than the descriptor
+- **THEN** validation returns `domain_validator_revision_mismatch`
+- **AND** no capability or market class id is emitted
+
+#### Scenario: supply headroom does not fragment a market class
+- **WHEN** two different capability ids both satisfy the same normalized public demand requirements but expose different extra set members or range headroom
+- **THEN** the trusted projection derives the same market class id
+- **AND** neither extra supply support nor private demand detail enters the public class
+
+#### Scenario: unsafe demand cannot create a public class
+- **WHEN** the active lane revision cannot map compatible demand to a deterministic privacy-safe public class
+- **THEN** projection returns `market_class_unavailable`
+- **AND** no public quote, ask, reference, or settlement observation is emitted
 
 ### Requirement: Settlement records normalized delivery evidence
-The price index SHALL consume immutable accepted settlement observations emitted jointly by the `paid-market-economy` logical-accounting owner, the required wallet/chain-effect successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, and the domain execution owners; it SHALL NOT create or mutate settlement truth. A paid settlement SHALL NOT become an accepted price observation until its logical-accounting result, domain acceptance evidence, and independently verified wallet/chain receipt from that successor agree on the same tenant/universe-scoped settlement identity, `job_id:lease_fence:accepted_result_sha256`, parties, currency/token/chain, and gross/net/fee amounts, with the receipt accepted under that successor's finality and reorg policy. A new-version inference observation SHALL carry integer `tokens_in`, integer `tokens_out`, applicable integer cached-token counts, integer `unit_price_micros_per_mtok`, the capability descriptor digest, accepted evidence digest, verified chain-receipt digest, and canonical fee schedule/version. Existing v1 settlement records SHALL remain byte-for-byte unchanged, and any new observation shape SHALL use a schema-version bump. Training, task, and fabrication observations SHALL retain their domain-native delivered units and accepted evidence digest rather than translating them into tokens. Missing, mismatched, or implausible delivery evidence SHALL fail loud or enter the domain dispute path. Missing, mismatched, invalid, non-final, or reorg-affected wallet/chain evidence SHALL remain rejected and route only through that successor's reconciliation/finality process. Neither failure class SHALL silently produce a final paid price observation.
+The price index SHALL consume immutable accepted settlement observations emitted jointly by the `paid-market-economy` logical-accounting owner, the required wallet/chain-effect successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, and the domain execution owners; it SHALL NOT create or mutate settlement truth. A paid settlement SHALL NOT become an accepted price observation until its logical-accounting result, domain acceptance evidence, and independently verified wallet/chain receipt from that successor agree on the same tenant/universe-scoped settlement identity, `job_id:lease_fence:accepted_result_sha256`, parties, currency/token/chain, gross/net/fee amounts, exact `capability_id`, derived `market_class_id`, `market_scope_revision`, and canonical `public_scope_dimensions`, with the receipt accepted under that successor's finality and reorg policy. Scope SHALL be derived before execution from resolved quote/domain terms and re-derived against accepted settlement evidence; an aggregator SHALL NOT post-hoc bucket an observation. A new-version inference observation SHALL carry integer `tokens_in`, integer `tokens_out`, applicable integer cached-token counts, integer `unit_price_micros_per_mtok`, both capability and market-class ids, scope revision/dimensions, accepted evidence digest, verified chain-receipt digest, and canonical fee schedule/version. Existing v1 settlement records SHALL remain byte-for-byte unchanged, and any new observation shape SHALL use a schema-version bump. Training, task, and fabrication observations SHALL retain their domain-native delivered units and accepted evidence digest rather than translating them into tokens. Missing, mismatched, or implausible delivery evidence SHALL fail loud or enter the domain dispute path. Missing, mismatched, invalid, non-final, or reorg-affected wallet/chain evidence SHALL remain rejected and route only through that successor's reconciliation/finality process. Neither failure class SHALL silently produce a final paid price observation.
 
 #### Scenario: inference completion without counts is rejected
 - **WHEN** an inference completion omits required normalized token evidence
@@ -41,8 +131,13 @@ The price index SHALL consume immutable accepted settlement observations emitted
 - **THEN** the index rejects paid-settlement ingestion
 - **AND** no paid-market price, volume, breadth, or confidence evidence is created
 
+#### Scenario: settlement scope mismatch cannot be rebucketed
+- **WHEN** accepted settlement evidence does not revalidate the quote-bound market class or scope revision/dimensions
+- **THEN** the index rejects observation ingestion
+- **AND** no aggregator may replace them with a post-hoc public key
+
 ### Requirement: Quote provenance distinguishes indicative references from executable firm offers
-Every quote SHALL identify its quote id, capability descriptor digest/version, resolved demand digest, authority class, issuer, origin adapter, unit semantics, settlement currency, every priced component, component-coverage/missing-fields state, canonical fee schedule/version, landed monetary total, verified eligibility-fact digest, region/policy result, terms digest, issued/observed time, and expiry. An indicative quote SHALL be explicitly nonbinding. A native firm quote SHALL additionally bind authenticated issuer and tenant, nonce, signature domain, offer version, exact quantity, and an immutable capacity grant containing tenant, demand, quote, descriptor, offer version, quantity, expiry, and fence. A versioned domain-separated canonical encoding SHALL reject unknown/unclassified fields and SHALL be signed by an enrolled revocable issuer key whose algorithm, key id, validity, rotation, and revocation are verified through the shared record-verifier pattern. The server SHALL recompute all derived totals and canonical bytes. Mutable database state MAY narrow or prove current non-consumption but SHALL NOT grant positive authority. Only a verified, unexpired native firm quote whose aggregate capacity is conserved and whose capacity grant is unconsumed for the requested quantity SHALL be marked executable.
+Every quote SHALL identify its quote id, exact `capability_id`, derived `market_class_id`, descriptor schema version, resolved demand digest, `market_scope_revision`, canonical `public_scope_dimensions`, authority class, issuer, origin adapter, unit semantics, settlement currency, every priced component, component-coverage/missing-fields state, canonical fee schedule/version, landed monetary total, verified eligibility-fact digest, region/policy result, terms digest, issued/observed time, and expiry. The scope revision/dimensions SHALL be derived before execution from resolved quote/domain terms. An indicative quote SHALL be explicitly nonbinding. A native firm quote SHALL additionally bind authenticated issuer and tenant, nonce, signature domain, offer version, exact quantity, and an immutable capacity grant containing tenant, demand, quote, descriptor, offer version, quantity, expiry, and fence. A versioned domain-separated canonical encoding SHALL reject unknown/unclassified fields and SHALL be signed by an enrolled revocable issuer key whose algorithm, key id, validity, rotation, and revocation are verified through the shared record-verifier pattern. The server SHALL recompute all derived totals and canonical bytes. Mutable database state MAY narrow or prove current non-consumption but SHALL NOT grant positive authority. Only a verified, unexpired native firm quote whose aggregate capacity is conserved and whose capacity grant is unconsumed for the requested quantity SHALL be marked executable.
 
 #### Scenario: catalog listing cannot become executable
 - **WHEN** a listing or indicative observation has no verified native issuer signature and capacity lock
@@ -55,7 +150,7 @@ Every quote SHALL identify its quote id, capability descriptor digest/version, r
 - **AND** no reservation, claim, or settlement is attempted from it
 
 #### Scenario: signature covers every authority-bearing field
-- **WHEN** any quote identity, descriptor, demand, unit, price, fee, total, currency, eligibility, terms, quantity, tenant, issue/expiry, offer-version, or capacity field changes after signing
+- **WHEN** any quote identity, capability id, market class id, scope revision/dimensions, descriptor, demand, unit, price, fee, total, currency, eligibility, terms, quantity, tenant, issue/expiry, offer-version, or capacity field changes after signing
 - **THEN** canonical record verification fails before ranking
 - **AND** a caller cannot preserve authority by supplying an old signature or hash
 
@@ -78,7 +173,31 @@ The router SHALL intersect workload, tenant/organization, contract, jurisdiction
 - **AND** the evaluation receipt records the failed eligibility class without exposing protected data
 
 ### Requirement: Price surfaces are field-fresh and scoped to one substitutability class
-For each exact capability descriptor class, the live price service SHALL publish separate raw dispute-cleared settled VWAP, lowest executable native ask, external hosted-provider reference/ceiling, and canonical composite-index fields. Every field SHALL carry its own source set, `observed_at`, `valid_until`, sample count, distinct verified economic-principal count, component coverage, and confidence/manipulation state. An external field SHALL be called an all-in ceiling only when every mandatory component for the demand envelope is covered; otherwise it SHALL be labeled partial/incomparable with missing components. Missing, unsupported, zero-volume, and stale values SHALL remain explicit null or stale states; freshness of one field SHALL NOT refresh another. External references SHALL NOT mutate raw native settlement truth or enter executable ranking. When and only when a complete, current, valid all-in ceiling exists, the canonical composite-index price SHALL equal the lesser of raw native VWAP and that ceiling and SHALL identify the clamp; an incomplete, stale, or invalid reference SHALL NOT clamp any field. The system SHALL NOT publish one global compute scalar or a midpoint that is not executable.
+The live price service SHALL key every public aggregate by `(market_class_id, market_scope_revision, public_scope_dimensions)`, never exact supply `capability_id`. `market_scope_revision` SHALL be a globally immutable content-addressed projection contract that derives one bounded canonical ASCII object of allowlisted coarse public dimensions from resolved quote/domain terms before execution, such as an execution-region/SLO bucket or approved fabrication origin/destination/shipping-service bucket. The trusted scope projector SHALL sort semantic sets and construct the dimensions using the same bounded `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")` method; those canonical object bytes are what records bind. Every quote, native ask, external reference, and settlement observation SHALL bind the revision and canonical dimensions before publication or execution; settlement ingestion SHALL re-derive and revalidate them against accepted evidence. The aggregator SHALL only group identical bound keys and SHALL NOT create or rewrite a post-hoc bucket.
+
+A scope revision SHALL NOT duplicate, override, or reclassify descriptor or market-class facets unless that revision defines a single canonical projection from the already-bound facet. Exact destination, tenant policy, private demand, seller identity, and identifying or low-entropy terms SHALL NOT enter the public key. Firm quotes SHALL remain authoritative for exact resolved terms.
+
+For each exact public key, the live price service SHALL publish separate raw dispute-cleared settled VWAP, lowest executable native ask, external hosted-provider reference/ceiling, and canonical composite-index fields. Every field SHALL carry its own source set, `observed_at`, `valid_until`, sample count, distinct verified economic-principal count, component coverage, and confidence/manipulation state. An external field SHALL be called an all-in ceiling only when every mandatory component for the demand envelope is covered; otherwise it SHALL be labeled partial/incomparable with missing components. Missing, unsupported, zero-volume, and stale values SHALL remain explicit null or stale states; freshness of one field SHALL NOT refresh another. External references SHALL NOT mutate raw native settlement truth or enter executable ranking. When and only when a complete, current, valid all-in ceiling exists, the canonical composite-index price SHALL equal the lesser of raw native VWAP and that ceiling and SHALL identify the clamp; an incomplete, stale, or invalid reference SHALL NOT clamp any field. The system SHALL NOT publish one global compute scalar or a midpoint that is not executable.
+
+#### Scenario: unlike landed terms do not share one public aggregate
+- **WHEN** two observations have the same market class id but differ in a public scope dimension under the active market-scope revision
+- **THEN** they are published in separate aggregate keys
+- **AND** neither exact private demand nor exact destination is exposed to create that separation
+
+#### Scenario: compatible supply headroom shares one demand class
+- **WHEN** different exact capability ids satisfy the same market class and bind the same scope revision/dimensions
+- **THEN** their eligible observations may contribute to the same public aggregate
+- **AND** the aggregate still retains each source's exact capability id as evidence
+
+#### Scenario: aggregator cannot invent scope after settlement
+- **WHEN** a quote or accepted settlement lacks bound scope revision/dimensions or settlement evidence does not revalidate them
+- **THEN** public observation ingestion fails
+- **AND** the aggregator cannot choose a convenient bucket after seeing price or delivery
+
+#### Scenario: scope cannot silently reclassify a market facet
+- **WHEN** a scope rule tries to duplicate or alter descriptor or market-class region, privacy, reliability, unit, or public-requirement semantics without its declared canonical projection
+- **THEN** scope derivation fails
+- **AND** the observation cannot enter a second equivalence class by scope alone
 
 #### Scenario: zero volume stays honest
 - **WHEN** no sufficient dispute-cleared settlement window exists but a fresh external ceiling or native ask exists
@@ -163,7 +282,7 @@ The system SHALL present free queue, requester-owned/BYOC, and paid-market fulfi
 - **AND** the Wave 2 workflow records a separate request-bound bid/match receipt before any atomic claim
 
 ### Requirement: External hosted-provider adapters are reference-only
-External hosted-provider adapters SHALL be credential-blind, read-only price sources in this phase. They SHALL publish exact source, terms, resource envelope, settlement currency, component coverage/missing fields, region, discounts/minimum assumptions, mode, and freshness and SHALL NOT execute, reserve, claim, settle, accept an upstream credential, or return an executable route. A complete comparable price may appear only as an external reference ceiling alongside native executable supply; incomplete prices remain partial references. Requester-owned upstream execution and seller-bundled resale SHALL require separate approved authority and legal contracts.
+External hosted-provider adapters SHALL be credential-blind, read-only price sources in this phase. They SHALL publish exact source, terms, resource envelope, settlement currency, component coverage/missing fields, region, discounts/minimum assumptions, mode, freshness, `market_class_id`, `market_scope_revision`, and canonical `public_scope_dimensions`, all derived before publication under the same trusted projection rules as native asks. They SHALL NOT post-hoc bucket, execute, reserve, claim, settle, accept an upstream credential, or return an executable route. A complete comparable price may appear only as an external reference ceiling beside native supply under the identical public aggregate key; a classifiable but price-component-incomplete value remains a partial reference in that key. An unclassifiable value SHALL NOT become a public reference. Requester-owned upstream execution and seller-bundled resale SHALL require separate approved authority and legal contracts.
 
 #### Scenario: external price can inform but not execute
 - **WHEN** a fresh external hosted-provider price is lower than every native executable ask
@@ -225,7 +344,7 @@ Every private quote, evaluation receipt, capacity grant, reservation, idempotenc
 - **AND** stale cached authority cannot create a reservation or receipt
 
 ### Requirement: Public quote reads are bounded, cached, and connector-safe
-The system SHALL expose unauthenticated CDN-cacheable public aggregate reads equivalent to `GET /v1/price/{capability_id}`, `GET /v1/prices?model=<llm_model>`, and `GET /v1/curve/{capability_id}` with a 60-second TTL and bounded pagination/result limits, plus an approved MCP quote read without adding an unreviewed public handle. Public output SHALL include units, landed monetary total/currency, priced-component coverage, authority class, executability, freshness, source type, confidence, and caveats in primary protocol text and SHALL contain no tenant-private receipt, demand, policy, candidate, or capacity identity. A public MCP/HTTP surface SHALL pass security review, concurrency/load proof, live canary, and rendered-chatbot acceptance before advertisement. Firm-quote eligibility SHALL be revalidated against current authority, expiry, offer version, and capacity grant rather than trusted from a cache.
+The system SHALL expose unauthenticated CDN-cacheable public aggregate reads equivalent to `GET /v1/price/{market_class_id}`, `GET /v1/prices?model=<llm_model>`, and `GET /v1/curve/{market_class_id}` with required bounded scope-revision/dimension selection, a 60-second TTL, and bounded pagination/result limits, plus an approved MCP quote read without adding an unreviewed public handle. Cache identity SHALL be the complete `(market_class_id, market_scope_revision, public_scope_dimensions)` key. Public output SHALL include units, landed monetary total/currency, priced-component coverage, authority class, executability, freshness, source type, confidence, and caveats in primary protocol text and SHALL contain no tenant-private receipt, demand, policy, candidate, or capacity identity. A public MCP/HTTP surface SHALL pass security review, concurrency/load proof, live canary, and rendered-chatbot acceptance before advertisement. Firm-quote eligibility SHALL be revalidated against current authority, expiry, offer version, and capacity grant rather than trusted from a cache.
 
 #### Scenario: cached indicative quote cannot bypass firm revalidation
 - **WHEN** a cached public surface names a formerly executable native ask
