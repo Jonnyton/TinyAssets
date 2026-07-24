@@ -1142,6 +1142,120 @@ def spawn_runtime_instance(
     return get_runtime_instance(base_path, instance_id=instance_id)
 
 
+def ensure_worker_runtime_instance(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    author_id: str,
+    provider_name: str,
+    model_name: str,
+    created_by: str,
+    worker_id: str,
+    branch_id: str | None = None,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically reuse, adopt, or create one stable worker runtime slot."""
+    if not worker_id or metadata.get("worker_id") != worker_id:
+        raise ValueError("worker_id metadata mismatch")
+    with _connect(base_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            """
+            SELECT * FROM author_runtime_instances
+            WHERE universe_id = ?
+              AND author_id = ?
+              AND provider_name = ?
+              AND model_name = ?
+            ORDER BY created_at DESC
+            """,
+            (universe_id, author_id, provider_name, model_name),
+        ).fetchall()
+        provisioned_match: sqlite3.Row | None = None
+        controlled_match: sqlite3.Row | None = None
+        adoptable: sqlite3.Row | None = None
+        for row in rows:
+            row_metadata = _json_loads(row["metadata_json"], {})
+            if not isinstance(row_metadata, dict):
+                row_metadata = {}
+            row_worker = str(row_metadata.get("worker_id") or "")
+            if row_worker == worker_id:
+                if row["status"] == "provisioned":
+                    provisioned_match = row
+                    break
+                if row["status"] != "retired" and controlled_match is None:
+                    controlled_match = row
+            elif (
+                not row_worker
+                and row["status"] == "provisioned"
+                and adoptable is None
+            ):
+                adoptable = row
+
+        if provisioned_match is None and controlled_match is not None:
+            raise ValueError(
+                f"worker_runtime_not_provisioned:{controlled_match['status']}"
+            )
+        selected = provisioned_match or adoptable
+        if selected is not None:
+            selected_metadata = _json_loads(selected["metadata_json"], {})
+            if not isinstance(selected_metadata, dict):
+                selected_metadata = {}
+            selected_metadata.update(metadata)
+            conn.execute(
+                """
+                UPDATE author_runtime_instances
+                SET updated_at = ?, metadata_json = ?
+                WHERE instance_id = ?
+                """,
+                (
+                    _now(),
+                    _json_dumps(selected_metadata),
+                    selected["instance_id"],
+                ),
+            )
+            result = conn.execute(
+                """
+                SELECT * FROM author_runtime_instances
+                WHERE instance_id = ?
+                """,
+                (selected["instance_id"],),
+            ).fetchone()
+        else:
+            instance_id = f"runtime::{uuid.uuid4().hex}"
+            now = _now()
+            conn.execute(
+                """
+                INSERT INTO author_runtime_instances (
+                    instance_id, universe_id, author_id, provider_name,
+                    model_name, branch_id, status, created_by, created_at,
+                    updated_at, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, 'provisioned', ?, ?, ?, ?)
+                """,
+                (
+                    instance_id,
+                    universe_id,
+                    author_id,
+                    provider_name,
+                    model_name,
+                    branch_id,
+                    created_by,
+                    now,
+                    now,
+                    _json_dumps(metadata),
+                ),
+            )
+            result = conn.execute(
+                """
+                SELECT * FROM author_runtime_instances
+                WHERE instance_id = ?
+                """,
+                (instance_id,),
+            ).fetchone()
+    if result is None:  # pragma: no cover - guarded by the transaction writes
+        raise RuntimeError("runtime_registration_missing_result")
+    return _runtime_from_row(result)
+
+
 def retire_runtime_instance(
     base_path: str | Path,
     *,
@@ -1193,7 +1307,6 @@ def update_runtime_instance_metadata(
     instance_id: str,
     metadata_patch: dict[str, Any],
     forbidden_statuses: tuple[str, ...] = (),
-    required_statuses: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Atomically merge runtime metadata without changing its control status."""
     with _connect(base_path) as conn:
@@ -1211,10 +1324,6 @@ def update_runtime_instance_metadata(
         if row["status"] in forbidden_statuses:
             raise ValueError(
                 f"runtime_status_forbids_metadata_update:{row['status']}"
-            )
-        if required_statuses and row["status"] not in required_statuses:
-            raise ValueError(
-                f"runtime_status_not_allowed:{row['status']}"
             )
         metadata = _json_loads(row["metadata_json"], {})
         metadata.update(metadata_patch)

@@ -302,4 +302,6 @@ fresh-host rollback edges found later.
   full retired-A to replacement-B path: it exposed both stale cleanup blocking
   publication and an older registry path that resurrected retired slots. A
   status check before a metadata write is not control-safe; reuse must be one
-  atomic “still provisioned” operation, with reselection after a lost race.
+  atomic “still provisioned” operation. The worker-ID choice belongs in that
+  same transaction too: otherwise different workers can steal one unassigned
+  slot and identical concurrent starts can create duplicates.

@@ -347,84 +347,37 @@ def ensure_daemon_runtime(
     clean_worker_id = worker_id.strip()
     if not clean_worker_id:
         raise ValueError("worker_id is required")
+    daemon = get_daemon(base_path, daemon_id=daemon_id)
+    allowed_models = _daemon_model_binding(daemon)
+    if allowed_models and model_name not in allowed_models:
+        raise ValueError(
+            "daemon model identity mismatch: this daemon is bound to "
+            f"{', '.join(allowed_models)}; use a borrowed-role executor, "
+            "renamed fork, or update the active soul version before changing models",
+        )
     merged_metadata = dict(metadata or {})
+    merged_metadata.setdefault("owner_user_id", daemon["owner_user_id"])
+    merged_metadata.setdefault("tenant_id", daemon["tenant_id"])
     merged_metadata.update({
         "worker_id": clean_worker_id,
         "runtime_registration": "cloud_worker",
+        "daemon_id": daemon["daemon_id"],
+        "daemon_soul_hash": daemon["soul_hash"],
+        "daemon_soul_mode": daemon["soul_mode"],
+        "domain_claims": daemon["domain_claims"],
     })
-    for _attempt in range(3):
-        adoptable_runtime: dict[str, Any] | None = None
-        retry_selection = False
-        for runtime in list_runtime_instances(
-            base_path,
-            universe_id=universe_id,
-        ):
-            runtime_meta = runtime.get("metadata")
-            if not isinstance(runtime_meta, dict):
-                runtime_meta = {}
-            same_identity = (
-                runtime.get("daemon_id") == daemon_id
-                and runtime.get("provider_name") == provider_name
-                and runtime.get("model_name") == model_name
-            )
-            if not same_identity:
-                continue
-            status = str(runtime.get("status") or "")
-            runtime_worker = str(runtime_meta.get("worker_id") or "")
-            if runtime_worker == clean_worker_id:
-                if status == "retired":
-                    continue
-                if status != "provisioned":
-                    raise ValueError(
-                        f"worker_runtime_not_provisioned:{status}"
-                    )
-                try:
-                    row = daemon_server.update_runtime_instance_metadata(
-                        base_path,
-                        instance_id=runtime["runtime_instance_id"],
-                        metadata_patch=merged_metadata,
-                        required_statuses=("provisioned",),
-                    )
-                except ValueError as exc:
-                    if str(exc).startswith("runtime_status_not_allowed:"):
-                        retry_selection = True
-                        break
-                    raise
-                daemon = get_daemon(base_path, daemon_id=daemon_id)
-                return _runtime_from_author_runtime(row, daemon=daemon)
-            if (
-                status == "provisioned"
-                and not runtime_worker
-                and adoptable_runtime is None
-            ):
-                adoptable_runtime = runtime
-        if retry_selection:
-            continue
-        if adoptable_runtime is not None:
-            try:
-                row = daemon_server.update_runtime_instance_metadata(
-                    base_path,
-                    instance_id=adoptable_runtime["runtime_instance_id"],
-                    metadata_patch=merged_metadata,
-                    required_statuses=("provisioned",),
-                )
-            except ValueError as exc:
-                if str(exc).startswith("runtime_status_not_allowed:"):
-                    continue
-                raise
-            daemon = get_daemon(base_path, daemon_id=daemon_id)
-            return _runtime_from_author_runtime(row, daemon=daemon)
-        return summon_daemon(
-            base_path,
-            daemon_id=daemon_id,
-            universe_id=universe_id,
-            provider_name=provider_name,
-            model_name=model_name,
-            branch_id=branch_id,
-            created_by=created_by,
-            metadata=merged_metadata,
-        )
-    raise RuntimeError("runtime_registration_race_exhausted")
+    row = daemon_server.ensure_worker_runtime_instance(
+        base_path,
+        universe_id=universe_id,
+        author_id=daemon["legacy_author_id"],
+        provider_name=provider_name,
+        model_name=model_name,
+        branch_id=branch_id,
+        created_by=created_by,
+        worker_id=clean_worker_id,
+        metadata=merged_metadata,
+    )
+    return _runtime_from_author_runtime(row, daemon=daemon)
 
 
 def set_worker_queue_descriptor(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from tinyassets import daemon_registry, daemon_server
@@ -215,6 +218,14 @@ def test_ensure_daemon_runtime_does_not_revive_controlled_worker_slot(
         instance_id=runtime["runtime_instance_id"],
         status=status,
     )
+    unassigned = daemon_registry.summon_daemon(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="host",
+    )
 
     with pytest.raises(
         ValueError,
@@ -234,14 +245,18 @@ def test_ensure_daemon_runtime_does_not_revive_controlled_worker_slot(
         tmp_path,
         universe_id="patch-loop-live",
     )
-    assert len(observed) == 1
-    assert observed[0]["status"] == status
+    assert len(observed) == 2
+    by_id = {
+        item["runtime_instance_id"]: item
+        for item in observed
+    }
+    assert by_id[runtime["runtime_instance_id"]]["status"] == status
+    assert "worker_id" not in by_id[unassigned["runtime_instance_id"]][
+        "metadata"
+    ]
 
 
-def test_ensure_daemon_runtime_reselects_after_concurrent_retirement(
-    tmp_path,
-    monkeypatch,
-):
+def test_ensure_daemon_runtime_replaces_retired_slot(tmp_path):
     daemon = daemon_registry.create_daemon(
         tmp_path,
         display_name="Racing Fleet Runner",
@@ -257,23 +272,9 @@ def test_ensure_daemon_runtime_reselects_after_concurrent_retirement(
         created_by="cloud-droplet-codex-1",
         worker_id="codex-1",
     )
-    real_update = daemon_server.update_runtime_instance_metadata
-    raced = False
-
-    def retire_then_update(base_path, *, instance_id, **kwargs):
-        nonlocal raced
-        if not raced:
-            raced = True
-            daemon_server.retire_runtime_instance(
-                base_path,
-                instance_id=instance_id,
-            )
-        return real_update(base_path, instance_id=instance_id, **kwargs)
-
-    monkeypatch.setattr(
-        daemon_registry.daemon_server,
-        "update_runtime_instance_metadata",
-        retire_then_update,
+    daemon_server.retire_runtime_instance(
+        tmp_path,
+        instance_id=first["runtime_instance_id"],
     )
 
     replacement = daemon_registry.ensure_daemon_runtime(
@@ -296,6 +297,87 @@ def test_ensure_daemon_runtime_reselects_after_concurrent_retirement(
     }
     assert by_id[first["runtime_instance_id"]]["status"] == "retired"
     assert by_id[replacement["runtime_instance_id"]]["status"] == "provisioned"
+
+
+def test_concurrent_workers_cannot_steal_one_unassigned_runtime(tmp_path):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Contended Fleet Runner",
+        created_by="host",
+        soul_text="Assign every runtime slot to exactly one worker.",
+    )
+    unassigned = daemon_registry.summon_daemon(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="host",
+    )
+    barrier = threading.Barrier(2)
+
+    def ensure(worker_id):
+        barrier.wait()
+        return daemon_registry.ensure_daemon_runtime(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            universe_id="patch-loop-live",
+            provider_name="codex",
+            model_name="gpt-5",
+            created_by="cloud-droplet",
+            worker_id=worker_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(ensure, ["worker-a", "worker-b"]))
+
+    assert len({result["runtime_instance_id"] for result in results}) == 2
+    runtimes = daemon_registry.list_runtime_instances(
+        tmp_path,
+        universe_id="patch-loop-live",
+    )
+    assert len(runtimes) == 2
+    assert {runtime["metadata"]["worker_id"] for runtime in runtimes} == {
+        "worker-a",
+        "worker-b",
+    }
+    assert unassigned["runtime_instance_id"] in {
+        result["runtime_instance_id"] for result in results
+    }
+
+
+def test_concurrent_same_worker_start_creates_one_runtime(tmp_path):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Stable Fleet Runner",
+        created_by="host",
+        soul_text="Keep one stable runtime per worker process.",
+    )
+    contenders = 8
+    barrier = threading.Barrier(contenders)
+
+    def ensure(_index):
+        barrier.wait()
+        return daemon_registry.ensure_daemon_runtime(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            universe_id="patch-loop-live",
+            provider_name="codex",
+            model_name="gpt-5",
+            created_by="cloud-droplet",
+            worker_id="worker-a",
+        )
+
+    with ThreadPoolExecutor(max_workers=contenders) as pool:
+        results = list(pool.map(ensure, range(contenders)))
+
+    assert len({result["runtime_instance_id"] for result in results}) == 1
+    runtimes = daemon_registry.list_runtime_instances(
+        tmp_path,
+        universe_id="patch-loop-live",
+    )
+    assert len(runtimes) == 1
+    assert runtimes[0]["metadata"]["worker_id"] == "worker-a"
 
 
 def test_ensure_daemon_runtime_adopts_unassigned_matching_slot(tmp_path):
