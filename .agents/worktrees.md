@@ -1103,3 +1103,19 @@ Notes:
 - STATUS/Issue/PR: only the post-deploy organic-use watch remains
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
+
+## 2026-07-23 - create market-capability-descriptors
+
+- Provider: codex-gpt5-desktop-market-descriptors
+- Branch: codex/market-capability-descriptors
+- Lane state: Active pure capability identity/digest/compatibility slice
+- Worktree: C:\Users\Jonathan\Projects\wf-market-capability-descriptors
+- STATUS/Issue/PR: `Build pure market capability descriptors`; PR pending
+- PLAN refs: Module Providers; Reference Full-Platform Architecture; paid-market economy target
+- Purpose: give inference, training, task, and fabrication supply one deterministic substitutability identity without enabling execution
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-market-capability-descriptors\_PURPOSE.md
+- Related implications: paid-market live-price discovery; Track E Wave 2; compute-market frontier research; BYOC-only execution authority
+- Review update: adversarial descriptor review returned ADAPT on v1 canonical grammar, lane completeness, correlated facets, range direction, and digest privacy/domain separation
+- Review update: amended contract separates exact supply identity, normalized public market class, and quote-bound landed scope; two final Codex blocker reviews APPROVE
+- Publish: draft PR #1679; opposite-provider Claude review remains the readiness/implementation gate
+- Ship/abandon: amend OpenSpec first and obtain opposite-provider confirmation; only then land pure I/O-free logic and proof, with no SQL, credentials, routing, pricing, or execution
