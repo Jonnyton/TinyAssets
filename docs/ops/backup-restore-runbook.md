@@ -59,7 +59,10 @@ root's rclone file. Releases after the preservation repair keep
 `BACKUP_DEST`; the exact-source host-service workflow treats a working
 destination as a no-op, transactionally creates a bucket-scoped `readwrite`
 key when both configuration halves are absent, and fails closed on partial or
-invalid existing configuration.
+invalid existing configuration. Newly created credentials receive a bounded
+95-second worst-case data-plane propagation window before transactional
+rollback. That bound includes 65 seconds of backoff plus five probes hard-capped
+at five seconds with one second of kill grace each.
 
 The Space is an external resource created before the product rename. Its
 provider identity remains `workflow-backups-jonnyton-sfo3`; Spaces buckets
@@ -68,6 +71,13 @@ nonexistent `tinyassets-backups-jonnyton-sfo3` name. Read-only provider probes
 on 2026-07-23 returned HTTP 403 for the private pre-rename bucket and HTTP 404
 for the nonexistent renamed bucket. Do not rename external resource
 identifiers during product terminology migrations.
+
+Exact-merge installer run `30070438676` on 2026-07-23 proved the corrected
+bucket accepts scoped key creation. Its immediate object-list probe returned
+HTTP 403, after which the workflow removed the temporary host configuration and
+deleted the new key. This is treated as provider credential propagation unless
+the bounded retry window also expires; it is not authority to use a full-access
+key.
 
 The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
 (secondary)**.

@@ -27,6 +27,7 @@ credential configuration are absent.
 - **AND** targets the existing immutable external destination `spaces:workflow-backups-jonnyton-sfo3/workflow-backups`
 - **AND** installs its credentials only at `/root/.config/rclone/rclone.conf` with root ownership and mode `0600`
 - **AND** sets the nonsecret destination through the atomic TinyAssets environment installer
+- **AND** retries the non-mutating destination probe within a bounded propagation window
 - **AND** verifies the destination before enabling the backup timer
 
 #### Scenario: Backup configuration is partial or invalid
@@ -40,6 +41,13 @@ credential configuration are absent.
 - **THEN** failure cleanup removes any newly written destination/configuration and requests deletion of that exact new key
 - **AND** no API token, Spaces secret, or provider response body reaches logs, outputs, artifacts, or the daemon environment
 - **AND** provider failures expose only the HTTP or transport class plus an allowlisted error identifier/category derived without printing provider message text
+
+#### Scenario: New credential has not propagated to the data plane
+
+- **WHEN** the provider creates the scoped key but the destination probe initially returns access denied
+- **THEN** the installer retries that same credential with bounded backoff
+- **AND** does not create another key, broaden the grant, or enable the backup timer
+- **AND** rolls back the key and host configuration if the propagation window expires
 
 #### Scenario: Product rename does not rename external backup infrastructure
 
