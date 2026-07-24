@@ -1103,3 +1103,15 @@ Notes:
 - STATUS/Issue/PR: only the post-deploy organic-use watch remains
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
+
+## 2026-07-24 - created distributed-execution-current-main-design
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/distributed-execution-current-main-design
+- Lane state: active planning lane
+- Worktree: C:\Users\Jonathan\Projects\wf-distributed-execution-current-main
+- STATUS/Issue/PR: claimed; draft PR #1699
+- Scope: complete distributed-execution design and publish a current-main extraction manifest; no runtime or live authority activation
+- Review gate: independent security/design review now; opposite-provider review before live apply/deploy
+- Memory/implications: PR #1475 handoff; PRs #1472/#1477/#1479/#1481/#1487/#1491; `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`
+- Ship/abandon: ship when OpenSpec is strict-valid and current-main staged authority boundaries are independently approved; abandon only for a newer explicit successor
