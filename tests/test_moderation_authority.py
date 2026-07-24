@@ -1,311 +1,675 @@
 from __future__ import annotations
 
+import inspect
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
 from itertools import permutations
-from types import SimpleNamespace
 
 import pytest
 
+import tinyassets.moderation as moderation
+
 NOW = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+RUBRIC = "rubric-v2"
+
+REQUIRED_CONTRACTS = {
+    "AccountEligibilityPolicy",
+    "AccountEvidence",
+    "ActorEvidence",
+    "AllArtifactKinds",
+    "AppealContext",
+    "ArtifactRef",
+    "AuthorityClass",
+    "AuthorityPurpose",
+    "CouncilAuthorization",
+    "ExactArtifactKind",
+    "ModerationCase",
+    "ModerationPolicy",
+    "ModerationState",
+    "PolicyError",
+    "PolicyErrorCode",
+    "ReviewAction",
+    "ReviewDecision",
+    "ReviewerGrant",
+    "authorize_appeal_reviewer_participation",
+    "authorize_appeal_submission",
+    "authorize_reviewer",
+    "require_account_eligible",
+    "resolve_review_state",
+}
 
 
-def _contracts() -> SimpleNamespace:
-    try:
-        from tinyassets.moderation import (
-            AccountEligibilityPolicy,
-            AccountEvidence,
-            ArtifactRef,
-            ModerationState,
-            PolicyError,
-            PolicyErrorCode,
-            ReviewAction,
-            ReviewDecision,
-            ReviewerGrant,
-            authorize_reviewer,
-            require_account_eligible,
-            require_authenticated_actor,
-            resolve_review_state,
-        )
-    except (ImportError, ModuleNotFoundError) as exc:
-        pytest.fail(f"moderation authority contract unavailable: {exc}", pytrace=False)
-
-    return SimpleNamespace(
-        AccountEligibilityPolicy=AccountEligibilityPolicy,
-        AccountEvidence=AccountEvidence,
-        ArtifactRef=ArtifactRef,
-        ModerationState=ModerationState,
-        PolicyError=PolicyError,
-        PolicyErrorCode=PolicyErrorCode,
-        ReviewAction=ReviewAction,
-        ReviewDecision=ReviewDecision,
-        ReviewerGrant=ReviewerGrant,
-        authorize_reviewer=authorize_reviewer,
-        require_account_eligible=require_account_eligible,
-        require_authenticated_actor=require_authenticated_actor,
-        resolve_review_state=resolve_review_state,
-    )
+def _contracts():
+    missing = sorted(REQUIRED_CONTRACTS - set(vars(moderation)))
+    assert not missing, f"hardened moderation contracts unavailable: {missing}"
+    return moderation
 
 
-def _appeal_contracts() -> SimpleNamespace:
+def _actor(actor_id: str, *, tenant_id: str = "tenant-a", authenticated_at=None):
     contracts = _contracts()
-    try:
-        from tinyassets.moderation import authorize_appeal, authorize_appeal_reviewer
-    except ImportError as exc:
-        pytest.fail(f"moderation appeal contract unavailable: {exc}", pytrace=False)
-    contracts.authorize_appeal = authorize_appeal
-    contracts.authorize_appeal_reviewer = authorize_appeal_reviewer
-    return contracts
-
-
-def _actor(contracts: SimpleNamespace, actor_id: str, tenant_id: str = "tenant-a"):
-    return contracts.require_authenticated_actor(
-        actor_id=actor_id,
+    return contracts.ActorEvidence(
         tenant_id=tenant_id,
+        actor_id=actor_id,
         authentication_id=f"authn-{actor_id}",
-        authenticated_at=NOW - timedelta(minutes=5),
+        authenticated_at=authenticated_at or NOW - timedelta(hours=1),
+        issuer_ref="issuer:workos-production",
+        evidence_ref=f"auth-event:{actor_id}",
     )
 
 
-def _artifact(contracts: SimpleNamespace):
+def _artifact(*, artifact_kind: str = "node"):
+    contracts = _contracts()
     return contracts.ArtifactRef(
         tenant_id="tenant-a",
         artifact_id="artifact-1",
+        artifact_kind=artifact_kind,
         owner_actor_id="owner",
-        artifact_kind="node",
+    )
+
+
+def _case(
+    *,
+    artifact_kind: str = "node",
+    revision: int = 3,
+    other_active_holds: bool | None = None,
+):
+    contracts = _contracts()
+    return contracts.ModerationCase(
+        case_id="case-1",
+        artifact=_artifact(artifact_kind=artifact_kind),
+        revision=revision,
+        rubric_version=RUBRIC,
+        other_active_holds=other_active_holds,
+    )
+
+
+def _policy(*, council_quorum: int = 2):
+    contracts = _contracts()
+    return contracts.ModerationPolicy(
+        current_rubric_version=RUBRIC,
+        council_quorum=council_quorum,
     )
 
 
 def _grant(
-    contracts: SimpleNamespace,
     actor_id: str,
     *,
-    tenant_id: str = "tenant-a",
-    rubric_version: str = "rubric-v2",
-    revoked_at: datetime | None = None,
+    grant_id: str | None = None,
+    generation: int = 1,
+    authority_class=None,
+    purpose=None,
+    artifact_kind: str = "node",
+    all_kinds: bool = False,
+    rubric_version: str = RUBRIC,
+    granted_at=None,
+    expires_at=None,
+    revoked_at=None,
 ):
+    contracts = _contracts()
+    authority_class = authority_class or contracts.AuthorityClass.REVIEWER
+    if purpose is None:
+        purpose = (
+            contracts.AuthorityPurpose.TERMINAL_MODERATION
+            if authority_class is contracts.AuthorityClass.COUNCIL
+            else contracts.AuthorityPurpose.REVIEW_DECISION
+        )
+    scope = (
+        contracts.AllArtifactKinds()
+        if all_kinds
+        else contracts.ExactArtifactKind(artifact_kind=artifact_kind)
+    )
     return contracts.ReviewerGrant(
-        tenant_id=tenant_id,
+        grant_id=grant_id or f"grant-{actor_id}",
+        generation=generation,
+        tenant_id="tenant-a",
         actor_id=actor_id,
+        authority_class=authority_class,
+        purpose=purpose,
+        artifact_scope=scope,
         rubric_version=rubric_version,
-        grant_source="earned-reliability",
-        granted_at=NOW - timedelta(days=10),
-        expires_at=NOW + timedelta(days=30),
+        issuer_ref="moderation-authority:v1",
+        eligibility_evidence_ref=f"eligibility:{actor_id}",
+        rubric_accepted_at=NOW - timedelta(days=20),
+        granted_at=granted_at or NOW - timedelta(days=10),
+        expires_at=expires_at or NOW + timedelta(days=10),
         revoked_at=revoked_at,
     )
 
 
-def test_anonymous_actor_is_rejected_with_a_stable_bounded_code():
+def _decision(
+    actor_id: str,
+    grant,
+    *,
+    action=None,
+    decision_id: str | None = None,
+    case=None,
+    revision: int | None = None,
+    decided_at=None,
+    authenticated_at=None,
+):
     contracts = _contracts()
+    case = case or _case()
+    return contracts.ReviewDecision(
+        decision_id=decision_id or f"decision-{actor_id}",
+        case_id=case.case_id,
+        tenant_id=case.artifact.tenant_id,
+        artifact_id=case.artifact.artifact_id,
+        artifact_kind=case.artifact.artifact_kind,
+        revision=revision or case.revision,
+        reviewer=_actor(actor_id, authenticated_at=authenticated_at),
+        grant_id=grant.grant_id,
+        grant_generation=grant.generation,
+        rubric_version=grant.rubric_version,
+        action=action or contracts.ReviewAction.PROPOSE_DELETE,
+        rationale="Independent review of the case evidence.",
+        decided_at=decided_at or NOW - timedelta(minutes=5),
+    )
 
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.require_authenticated_actor(
-            actor_id=None,
-            tenant_id="tenant-a",
-            authentication_id=None,
-            authenticated_at=NOW,
-        )
 
-    assert caught.value.code is contracts.PolicyErrorCode.UNAUTHENTICATED
-    assert str(caught.value) == "authenticated actor required"
-
-
-def test_artifact_authority_is_tenant_scoped():
+def _council_authorization(
+    actor_id: str,
+    grant,
+    *,
+    authorization_id: str | None = None,
+    case=None,
+    revision: int | None = None,
+    authorized_at=None,
+):
     contracts = _contracts()
-    actor = _actor(contracts, "reviewer", tenant_id="tenant-b")
+    case = case or _case()
+    return contracts.CouncilAuthorization(
+        authorization_id=authorization_id or f"council-{actor_id}",
+        case_id=case.case_id,
+        tenant_id=case.artifact.tenant_id,
+        artifact_id=case.artifact.artifact_id,
+        artifact_kind=case.artifact.artifact_kind,
+        revision=revision or case.revision,
+        actor=_actor(actor_id),
+        grant_id=grant.grant_id,
+        grant_generation=grant.generation,
+        rubric_version=grant.rubric_version,
+        rationale="Council authorization after independent review.",
+        authorized_at=authorized_at or NOW - timedelta(minutes=1),
+    )
 
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.authorize_reviewer(
-            actor=actor,
-            artifact=_artifact(contracts),
-            grant=_grant(contracts, "reviewer", tenant_id="tenant-b"),
-            current_rubric_version="rubric-v2",
-            now=NOW,
-        )
 
-    assert caught.value.code is contracts.PolicyErrorCode.CROSS_TENANT
+def _resolve(*, case=None, decisions=(), grants=(), council=(), recused=()):
+    contracts = _contracts()
+    return contracts.resolve_review_state(
+        case=case or _case(),
+        decisions=decisions,
+        grants=grants,
+        council_authorizations=council,
+        policy=_policy(),
+        now=NOW,
+        recused_actor_ids=recused,
+    )
+
+
+def test_models_are_frozen_evidence_shapes_not_authentication_factories():
+    contracts = _contracts()
+    actor = _actor("reviewer")
+
+    with pytest.raises(FrozenInstanceError):
+        actor.actor_id = "admin"
+
+    assert "require_authenticated_actor" not in vars(contracts)
+    assert "do not authenticate" in contracts.ActorEvidence.__doc__.lower()
 
 
 @pytest.mark.parametrize(
     ("account_created_at", "completed_interactions"),
     [
         (NOW - timedelta(days=31), 0),
-        (NOW - timedelta(hours=1), 25),
+        (NOW - timedelta(hours=1), 20),
     ],
 )
-def test_account_is_eligible_by_age_or_completed_interactions(
-    account_created_at: datetime,
-    completed_interactions: int,
+def test_account_eligibility_uses_authoritative_age_or_interactions(
+    account_created_at,
+    completed_interactions,
 ):
     contracts = _contracts()
-    actor = _actor(contracts, "flagger")
+    actor = _actor("flagger")
     evidence = contracts.AccountEvidence(
         tenant_id="tenant-a",
         actor_id="flagger",
         account_created_at=account_created_at,
         completed_interactions=completed_interactions,
-    )
-    policy = contracts.AccountEligibilityPolicy(
-        minimum_account_age=timedelta(days=30),
-        minimum_completed_interactions=20,
+        issuer_ref="account-store:v1",
+        evidence_ref="account:flagger:g7",
     )
 
     contracts.require_account_eligible(
         actor=actor,
         evidence=evidence,
-        policy=policy,
+        policy=contracts.AccountEligibilityPolicy(
+            minimum_account_age=timedelta(days=30),
+            minimum_completed_interactions=20,
+        ),
         now=NOW,
     )
 
 
-def test_young_low_interaction_account_is_ineligible():
+def test_future_or_mismatched_account_evidence_fails_closed():
     contracts = _contracts()
-    actor = _actor(contracts, "flagger")
     evidence = contracts.AccountEvidence(
         tenant_id="tenant-a",
-        actor_id="flagger",
-        account_created_at=NOW - timedelta(hours=1),
-        completed_interactions=19,
-    )
-    policy = contracts.AccountEligibilityPolicy(
-        minimum_account_age=timedelta(days=30),
-        minimum_completed_interactions=20,
+        actor_id="other",
+        account_created_at=NOW + timedelta(seconds=1),
+        completed_interactions=100,
+        issuer_ref="account-store:v1",
+        evidence_ref="account:other:g1",
     )
 
     with pytest.raises(contracts.PolicyError) as caught:
         contracts.require_account_eligible(
-            actor=actor,
+            actor=_actor("flagger"),
             evidence=evidence,
-            policy=policy,
+            policy=contracts.AccountEligibilityPolicy(timedelta(days=30), 20),
             now=NOW,
         )
 
-    assert caught.value.code is contracts.PolicyErrorCode.ACCOUNT_INELIGIBLE
+    assert caught.value.code in {
+        contracts.PolicyErrorCode.AUTHORITY_EVIDENCE_MISMATCH,
+        contracts.PolicyErrorCode.FUTURE_EVIDENCE,
+    }
+
+
+def test_reviewer_authority_requires_exact_current_scope_class_purpose_and_rubric():
+    contracts = _contracts()
+    case = _case(artifact_kind="outcome_claim")
+    wrong_scope = _grant("reviewer", artifact_kind="node")
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        contracts.authorize_reviewer(
+            actor=_actor("reviewer"),
+            case=case,
+            grant=wrong_scope,
+            policy=_policy(),
+            now=NOW,
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.ARTIFACT_SCOPE_MISMATCH
+
+
+def test_grant_rejects_impossible_chronology():
+    contracts = _contracts()
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _grant(
+            "reviewer",
+            granted_at=NOW,
+            expires_at=NOW + timedelta(days=1),
+            revoked_at=NOW - timedelta(seconds=1),
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.INVALID_CHRONOLOGY
+
+
+def test_decision_without_matching_grant_generation_cannot_authorize():
+    contracts = _contracts()
+    grant = _grant("reviewer", generation=1)
+    decision = replace(_decision("reviewer", grant), grant_generation=2)
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(decisions=(decision,), grants=(grant,))
+
+    assert caught.value.code is contracts.PolicyErrorCode.GRANT_BINDING_MISMATCH
+
+
+def test_decision_time_must_fit_actor_and_bound_grant_window():
+    contracts = _contracts()
+    grant = _grant(
+        "reviewer",
+        granted_at=NOW - timedelta(hours=2),
+        expires_at=NOW + timedelta(hours=2),
+        revoked_at=NOW - timedelta(minutes=10),
+    )
+    decision = _decision(
+        "reviewer",
+        grant,
+        decided_at=NOW - timedelta(minutes=5),
+    )
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(decisions=(decision,), grants=(grant,))
+
+    assert caught.value.code is contracts.PolicyErrorCode.GRANT_BINDING_MISMATCH
+
+
+def test_later_regrant_does_not_reactivate_old_generation_decision():
+    contracts = _contracts()
+    old = _grant(
+        "reviewer",
+        grant_id="review-grant",
+        generation=1,
+        revoked_at=NOW - timedelta(hours=2),
+    )
+    new = _grant(
+        "reviewer",
+        grant_id="review-grant",
+        generation=2,
+        granted_at=NOW - timedelta(hours=1),
+    )
+    invalid_old_decision = _decision(
+        "reviewer",
+        old,
+        decided_at=NOW - timedelta(minutes=30),
+    )
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(decisions=(invalid_old_decision,), grants=(old, new))
+
+    assert caught.value.code is contracts.PolicyErrorCode.GRANT_BINDING_MISMATCH
+
+
+def test_historical_decision_survives_later_expiry_and_revocation():
+    contracts = _contracts()
+    grant = _grant(
+        "reviewer",
+        granted_at=NOW - timedelta(days=10),
+        expires_at=NOW - timedelta(days=1),
+        revoked_at=NOW - timedelta(days=2),
+    )
+    decision = _decision(
+        "reviewer",
+        grant,
+        decided_at=NOW - timedelta(days=3),
+        authenticated_at=NOW - timedelta(days=4),
+    )
+
+    resolution = _resolve(decisions=(decision,), grants=(grant,))
+
+    assert resolution.state is contracts.ModerationState.PENDING_DELETE
+    assert resolution.revision == 3
+
+
+def test_future_decision_evidence_fails_closed():
+    contracts = _contracts()
+    grant = _grant("reviewer")
+    decision = _decision("reviewer", grant, decided_at=NOW + timedelta(seconds=1))
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(decisions=(decision,), grants=(grant,))
+
+    assert caught.value.code is contracts.PolicyErrorCode.FUTURE_EVIDENCE
+
+
+def test_resolution_rejects_mixed_revisions():
+    contracts = _contracts()
+    first = _grant("reviewer-1")
+    second = _grant("reviewer-2")
+    decisions = (
+        _decision("reviewer-1", first, revision=3),
+        _decision("reviewer-2", second, revision=4),
+    )
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(decisions=decisions, grants=(first, second))
+
+    assert caught.value.code is contracts.PolicyErrorCode.CASE_SCOPE_MISMATCH
+
+
+def test_exact_decision_replay_dedupes_but_conflicting_id_reuse_fails():
+    contracts = _contracts()
+    grant = _grant("reviewer")
+    decision = _decision("reviewer", grant, decision_id="stable-decision")
+
+    replay = _resolve(decisions=(decision, decision), grants=(grant,))
+    assert replay.authorizing_actor_ids == ("reviewer",)
+
+    conflicting = replace(
+        decision,
+        action=contracts.ReviewAction.DISMISS,
+        rationale="Conflicting payload under the same immutable id.",
+    )
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(decisions=(decision, conflicting), grants=(grant,))
+
+    assert caught.value.code is contracts.PolicyErrorCode.DUPLICATE_DECISION_ID
+
+
+def test_one_effective_decision_per_actor_and_conflicts_are_order_independent():
+    contracts = _contracts()
+    grant = _grant("reviewer")
+    dismiss = _decision(
+        "reviewer",
+        grant,
+        decision_id="dismiss",
+        action=contracts.ReviewAction.DISMISS,
+    )
+    delete = _decision(
+        "reviewer",
+        grant,
+        decision_id="delete",
+        action=contracts.ReviewAction.PROPOSE_DELETE,
+    )
+
+    resolutions = {
+        _resolve(decisions=order, grants=(grant,)) for order in permutations((dismiss, delete))
+    }
+
+    assert len(resolutions) == 1
+    resolution = resolutions.pop()
+    assert resolution.state is contracts.ModerationState.ESCALATED
+    assert resolution.authorizing_actor_ids == ("reviewer",)
+
+
+def test_ordinary_reviewers_can_only_propose_recoverable_delete():
+    contracts = _contracts()
+    grants = (_grant("reviewer-1"), _grant("reviewer-2"))
+    decisions = tuple(
+        _decision(actor_id, grant) for actor_id, grant in zip(("reviewer-1", "reviewer-2"), grants)
+    )
+
+    resolution = _resolve(decisions=decisions, grants=grants)
+
+    assert resolution.state is contracts.ModerationState.PENDING_DELETE
+    assert resolution.council_actor_ids == ()
+
+
+def test_distinct_current_council_quorum_authorizes_recoverable_delete():
+    contracts = _contracts()
+    reviewer_grant = _grant("reviewer")
+    reviewer_decision = _decision("reviewer", reviewer_grant)
+    council_grants = tuple(
+        _grant(
+            actor_id,
+            authority_class=contracts.AuthorityClass.COUNCIL,
+            purpose=contracts.AuthorityPurpose.TERMINAL_MODERATION,
+        )
+        for actor_id in ("council-1", "council-2")
+    )
+    council = tuple(
+        _council_authorization(actor_id, grant)
+        for actor_id, grant in zip(("council-1", "council-2"), council_grants)
+    )
+
+    resolution = _resolve(
+        decisions=(reviewer_decision,),
+        grants=(reviewer_grant, *council_grants),
+        council=council,
+    )
+
+    assert resolution.state is contracts.ModerationState.RECOVERABLE_DELETED
+    assert resolution.council_actor_ids == ("council-1", "council-2")
+    assert not hasattr(resolution, "physically_deleted")
+
+
+def test_expired_or_duplicate_council_authority_cannot_satisfy_quorum():
+    contracts = _contracts()
+    reviewer = _grant("reviewer")
+    council_grant = _grant(
+        "council-1",
+        authority_class=contracts.AuthorityClass.COUNCIL,
+        expires_at=NOW + timedelta(minutes=1),
+    )
+    authorization = _council_authorization("council-1", council_grant)
+
+    resolution = _resolve(
+        decisions=(_decision("reviewer", reviewer),),
+        grants=(reviewer, council_grant),
+        council=(authorization, replace(authorization, authorization_id="second-id")),
+    )
+    assert resolution.state is contracts.ModerationState.PENDING_DELETE
+
+    with pytest.raises(contracts.PolicyError):
+        _resolve(
+            decisions=(_decision("reviewer", reviewer),),
+            grants=(reviewer, replace(council_grant, expires_at=NOW)),
+            council=(authorization,),
+        )
+
+
+def test_quorum_is_policy_owned_not_an_arbitrary_resolver_argument():
+    contracts = _contracts()
+
+    assert "delete_quorum" not in inspect.signature(contracts.resolve_review_state).parameters
+    with pytest.raises(contracts.PolicyError):
+        contracts.ModerationPolicy(current_rubric_version=RUBRIC, council_quorum=1)
+
+
+def test_dismissal_requires_authoritative_no_other_holds_evidence():
+    contracts = _contracts()
+    grant = _grant("reviewer")
+    decision = _decision(
+        "reviewer",
+        grant,
+        action=contracts.ReviewAction.DISMISS,
+    )
+
+    unknown = _resolve(case=_case(), decisions=(decision,), grants=(grant,))
+    visible = _resolve(
+        case=_case(other_active_holds=False),
+        decisions=(decision,),
+        grants=(grant,),
+    )
+
+    assert unknown.state is contracts.ModerationState.UNDER_REVIEW
+    assert visible.state is contracts.ModerationState.VISIBLE
+
+
+def _appeal_context(*, original_reviewers=("original-reviewer",), revision=3):
+    contracts = _contracts()
+    case = _case(revision=revision)
+    return contracts.AppealContext(
+        appeal_id="appeal-1",
+        case_id=case.case_id,
+        tenant_id=case.artifact.tenant_id,
+        artifact_id=case.artifact.artifact_id,
+        artifact_kind=case.artifact.artifact_kind,
+        revision=revision,
+        appealed_decision_ids=("decision-original",),
+        original_reviewer_actor_ids=tuple(original_reviewers),
+        submitted_by_actor_id="owner",
+        submitted_at=NOW - timedelta(minutes=2),
+        issuer_ref="moderation-store:v1",
+        evidence_ref="appeal:appeal-1:g1",
+    )
+
+
+def test_only_owner_may_submit_appeal_for_exact_case():
+    contracts = _contracts()
+
+    contracts.authorize_appeal_submission(actor=_actor("owner"), case=_case(), now=NOW)
+    with pytest.raises(contracts.PolicyError) as caught:
+        contracts.authorize_appeal_submission(actor=_actor("other"), case=_case(), now=NOW)
+
+    assert caught.value.code is contracts.PolicyErrorCode.APPEAL_OWNER_REQUIRED
+
+
+def test_appeal_participation_uses_authoritative_context_and_recuses_originals():
+    contracts = _contracts()
+    appeal = _appeal_context()
+    original_grant = _grant(
+        "original-reviewer",
+        purpose=contracts.AuthorityPurpose.APPEAL_REVIEW,
+    )
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        contracts.authorize_appeal_reviewer_participation(
+            actor=_actor("original-reviewer"),
+            case=_case(),
+            grant=original_grant,
+            appeal=appeal,
+            policy=_policy(),
+            now=NOW,
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.DECISION_AUTHOR_RECUSED
+    independent_grant = _grant(
+        "independent",
+        purpose=contracts.AuthorityPurpose.APPEAL_REVIEW,
+    )
+    participation = contracts.authorize_appeal_reviewer_participation(
+        actor=_actor("independent"),
+        case=_case(),
+        grant=independent_grant,
+        appeal=appeal,
+        policy=_policy(),
+        now=NOW,
+    )
+    assert participation.terminal_authority is False
+
+
+def test_appeal_participant_api_cannot_accept_caller_decision_lists():
+    contracts = _contracts()
+    parameters = inspect.signature(contracts.authorize_appeal_reviewer_participation).parameters
+
+    assert "appealed_decisions" not in parameters
+    assert "appeal" in parameters
+
+
+def test_appeal_context_must_match_exact_case_revision():
+    contracts = _contracts()
+    grant = _grant("independent", purpose=contracts.AuthorityPurpose.APPEAL_REVIEW)
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        contracts.authorize_appeal_reviewer_participation(
+            actor=_actor("independent"),
+            case=_case(revision=3),
+            grant=grant,
+            appeal=_appeal_context(revision=4),
+            policy=_policy(),
+            now=NOW,
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.APPEAL_CONTEXT_MISMATCH
 
 
 @pytest.mark.parametrize(
-    ("grant", "expected_code"),
+    "invalid_value",
     [
-        ("stale", "RUBRIC_OUTDATED"),
-        ("expired", "REVIEWER_GRANT_EXPIRED"),
-        ("revoked", "REVIEWER_GRANT_REVOKED"),
+        "contains\ncontrol",
+        "x" * 129,
     ],
 )
-def test_review_grant_must_be_current_unexpired_and_unrevoked(
-    grant: str,
-    expected_code: str,
-):
+def test_ids_are_bounded_and_reject_control_characters(invalid_value):
     contracts = _contracts()
-    actor = _actor(contracts, "reviewer")
-    kwargs = {}
-    if grant == "stale":
-        kwargs["rubric_version"] = "rubric-v1"
-    elif grant == "revoked":
-        kwargs["revoked_at"] = NOW - timedelta(minutes=1)
-    reviewer_grant = _grant(contracts, "reviewer", **kwargs)
-    if grant == "expired":
-        reviewer_grant = contracts.ReviewerGrant(
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        contracts.ArtifactRef(
             tenant_id="tenant-a",
-            actor_id="reviewer",
-            rubric_version="rubric-v2",
-            grant_source="earned-reliability",
-            granted_at=NOW - timedelta(days=10),
-            expires_at=NOW - timedelta(seconds=1),
+            artifact_id=invalid_value,
+            artifact_kind="node",
+            owner_actor_id="owner",
         )
 
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.authorize_reviewer(
-            actor=actor,
-            artifact=_artifact(contracts),
-            grant=reviewer_grant,
-            current_rubric_version="rubric-v2",
-            now=NOW,
-        )
-
-    assert caught.value.code.name == expected_code
+    assert caught.value.code is contracts.PolicyErrorCode.INVALID_TEXT
 
 
-def test_reviewer_is_recused_from_own_artifact():
+def test_rationale_is_nonempty_bounded_and_control_character_free():
     contracts = _contracts()
-    owner = _actor(contracts, "owner")
+    grant = _grant("reviewer")
+    decision = _decision("reviewer", grant)
 
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.authorize_reviewer(
-            actor=owner,
-            artifact=_artifact(contracts),
-            grant=_grant(contracts, "owner"),
-            current_rubric_version="rubric-v2",
-            now=NOW,
-        )
-
-    assert caught.value.code is contracts.PolicyErrorCode.OWNER_RECUSED
+    for invalid in ("", "bad\x00rationale", "x" * 2001):
+        with pytest.raises(contracts.PolicyError) as caught:
+            replace(decision, rationale=invalid)
+        assert caught.value.code is contracts.PolicyErrorCode.RATIONALE_REQUIRED
 
 
-def test_one_reviewer_cannot_terminally_delete_and_distinct_current_quorum_can():
-    contracts = _contracts()
-    artifact = _artifact(contracts)
-    first = contracts.ReviewDecision(
-        decision_id="decision-1",
-        tenant_id="tenant-a",
-        artifact_id="artifact-1",
-        artifact_kind="node",
-        revision=1,
-        reviewer=_actor(contracts, "reviewer-1"),
-        action=contracts.ReviewAction.PROPOSE_DELETE,
-        rationale="The evidence confirms a policy violation.",
-        decided_at=NOW - timedelta(minutes=2),
-    )
-    duplicate_actor = contracts.ReviewDecision(
-        decision_id="decision-2",
-        tenant_id="tenant-a",
-        artifact_id="artifact-1",
-        artifact_kind="node",
-        revision=1,
-        reviewer=_actor(contracts, "reviewer-1"),
-        action=contracts.ReviewAction.PROPOSE_DELETE,
-        rationale="Duplicate concurrence by the same actor.",
-        decided_at=NOW - timedelta(minutes=1),
-    )
-    second = contracts.ReviewDecision(
-        decision_id="decision-3",
-        tenant_id="tenant-a",
-        artifact_id="artifact-1",
-        artifact_kind="node",
-        revision=1,
-        reviewer=_actor(contracts, "reviewer-2"),
-        action=contracts.ReviewAction.PROPOSE_DELETE,
-        rationale="Independent concurrence after reviewing the evidence.",
-        decided_at=NOW,
-    )
-    grants = (
-        _grant(contracts, "reviewer-1"),
-        _grant(contracts, "reviewer-2"),
-    )
-
-    one_actor = contracts.resolve_review_state(
-        artifact=artifact,
-        decisions=(first, duplicate_actor),
-        grants=grants,
-        current_rubric_version="rubric-v2",
-        now=NOW,
-        delete_quorum=2,
-    )
-    quorum = contracts.resolve_review_state(
-        artifact=artifact,
-        decisions=(first, second),
-        grants=grants,
-        current_rubric_version="rubric-v2",
-        now=NOW,
-        delete_quorum=2,
-    )
-
-    assert one_actor.state is contracts.ModerationState.PENDING_DELETE
-    assert one_actor.authorizing_actor_ids == ("reviewer-1",)
-    assert quorum.state is contracts.ModerationState.RECOVERABLE_DELETED
-    assert quorum.authorizing_actor_ids == ("reviewer-1", "reviewer-2")
-    assert not hasattr(quorum, "physically_deleted")
-
-
-def test_review_action_vocabulary_is_explicit_and_bounded():
+def test_action_and_state_vocabulary_remains_recoverable_only():
     contracts = _contracts()
 
     assert {action.value for action in contracts.ReviewAction} == {
@@ -314,199 +678,10 @@ def test_review_action_vocabulary_is_explicit_and_bounded():
         "escalate",
         "propose_delete",
     }
-
-
-def test_conflicting_recommendations_escalate_independent_of_arrival_order():
-    contracts = _contracts()
-    artifact = _artifact(contracts)
-    dismiss = contracts.ReviewDecision(
-        decision_id="decision-dismiss",
-        tenant_id="tenant-a",
-        artifact_id="artifact-1",
-        artifact_kind="node",
-        revision=1,
-        reviewer=_actor(contracts, "reviewer-1"),
-        action=contracts.ReviewAction.DISMISS,
-        rationale="The evidence does not support the flag.",
-        decided_at=NOW - timedelta(minutes=1),
-    )
-    propose_delete = contracts.ReviewDecision(
-        decision_id="decision-delete",
-        tenant_id="tenant-a",
-        artifact_id="artifact-1",
-        artifact_kind="node",
-        revision=1,
-        reviewer=_actor(contracts, "reviewer-2"),
-        action=contracts.ReviewAction.PROPOSE_DELETE,
-        rationale="The evidence supports recoverable removal.",
-        decided_at=NOW,
-    )
-    grants = (
-        _grant(contracts, "reviewer-1"),
-        _grant(contracts, "reviewer-2"),
-    )
-
-    results = [
-        contracts.resolve_review_state(
-            artifact=artifact,
-            decisions=ordering,
-            grants=grants,
-            current_rubric_version="rubric-v2",
-            now=NOW,
-            delete_quorum=2,
-        )
-        for ordering in permutations((dismiss, propose_delete))
-    ]
-
-    assert {result.state for result in results} == {contracts.ModerationState.ESCALATED}
-    assert len(set(results)) == 1
-
-
-def test_only_distinct_current_non_recused_reviewers_count_toward_quorum():
-    contracts = _contracts()
-    artifact = _artifact(contracts)
-    decisions = tuple(
-        contracts.ReviewDecision(
-            decision_id=f"decision-{actor_id}",
-            tenant_id="tenant-a",
-            artifact_id="artifact-1",
-            artifact_kind="node",
-            revision=1,
-            reviewer=_actor(contracts, actor_id),
-            action=contracts.ReviewAction.PROPOSE_DELETE,
-            rationale="Independent review of the evidence.",
-            decided_at=NOW,
-        )
-        for actor_id in ("current", "expired", "original-reviewer", "owner")
-    )
-    grants = (
-        _grant(contracts, "current"),
-        contracts.ReviewerGrant(
-            tenant_id="tenant-a",
-            actor_id="expired",
-            rubric_version="rubric-v2",
-            grant_source="earned-reliability",
-            granted_at=NOW - timedelta(days=10),
-            expires_at=NOW - timedelta(seconds=1),
-        ),
-        _grant(contracts, "original-reviewer"),
-        _grant(contracts, "owner"),
-    )
-
-    resolution = contracts.resolve_review_state(
-        artifact=artifact,
-        decisions=decisions,
-        grants=grants,
-        current_rubric_version="rubric-v2",
-        now=NOW,
-        delete_quorum=2,
-        recused_decision_authors=("original-reviewer",),
-    )
-
-    assert resolution.state is contracts.ModerationState.PENDING_DELETE
-    assert resolution.authorizing_actor_ids == ("current",)
-
-
-def test_only_authoritative_artifact_owner_may_submit_an_appeal():
-    contracts = _appeal_contracts()
-    artifact = _artifact(contracts)
-
-    contracts.authorize_appeal(actor=_actor(contracts, "owner"), artifact=artifact)
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.authorize_appeal(actor=_actor(contracts, "other"), artifact=artifact)
-
-    assert caught.value.code is contracts.PolicyErrorCode.APPEAL_OWNER_REQUIRED
-
-
-def test_original_decision_author_is_recused_from_appeal_review():
-    contracts = _appeal_contracts()
-    artifact = _artifact(contracts)
-    appealed_decision = contracts.ReviewDecision(
-        decision_id="decision-appealed",
-        tenant_id="tenant-a",
-        artifact_id="artifact-1",
-        artifact_kind="node",
-        revision=1,
-        reviewer=_actor(contracts, "original-reviewer"),
-        action=contracts.ReviewAction.CONTINUE_HIDE,
-        rationale="Continue hiding while evidence is reviewed.",
-        decided_at=NOW,
-    )
-
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.authorize_appeal_reviewer(
-            actor=_actor(contracts, "original-reviewer"),
-            artifact=artifact,
-            grant=_grant(contracts, "original-reviewer"),
-            appealed_decisions=(appealed_decision,),
-            current_rubric_version="rubric-v2",
-            now=NOW,
-        )
-
-    assert caught.value.code is contracts.PolicyErrorCode.DECISION_AUTHOR_RECUSED
-    contracts.authorize_appeal_reviewer(
-        actor=_actor(contracts, "independent-reviewer"),
-        artifact=artifact,
-        grant=_grant(contracts, "independent-reviewer"),
-        appealed_decisions=(appealed_decision,),
-        current_rubric_version="rubric-v2",
-        now=NOW,
-    )
-
-
-def test_timezone_naive_authority_evidence_fails_closed():
-    contracts = _contracts()
-
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.require_authenticated_actor(
-            actor_id="reviewer",
-            tenant_id="tenant-a",
-            authentication_id="authn-reviewer",
-            authenticated_at=datetime(2026, 7, 23, 12, 0),
-        )
-
-    assert caught.value.code is contracts.PolicyErrorCode.INVALID_TIME
-
-
-def test_decision_scope_cannot_collide_across_artifact_kinds():
-    contracts = _contracts()
-    decision = contracts.ReviewDecision(
-        decision_id="decision-wrong-kind",
-        tenant_id="tenant-a",
-        artifact_id="artifact-1",
-        artifact_kind="outcome_claim",
-        revision=1,
-        reviewer=_actor(contracts, "reviewer"),
-        action=contracts.ReviewAction.CONTINUE_HIDE,
-        rationale="This decision belongs to another artifact namespace.",
-        decided_at=NOW,
-    )
-
-    with pytest.raises(contracts.PolicyError) as caught:
-        contracts.resolve_review_state(
-            artifact=_artifact(contracts),
-            decisions=(decision,),
-            grants=(_grant(contracts, "reviewer"),),
-            current_rubric_version="rubric-v2",
-            now=NOW,
-            delete_quorum=2,
-        )
-
-    assert caught.value.code is contracts.PolicyErrorCode.DECISION_SCOPE_MISMATCH
-
-
-def test_decision_requires_authenticated_actor_evidence_not_a_claimed_reviewer_name():
-    contracts = _contracts()
-
-    with pytest.raises(TypeError):
-        contracts.ReviewDecision(
-            decision_id="decision-untrusted-reviewer",
-            tenant_id="tenant-a",
-            artifact_id="artifact-1",
-            artifact_kind="node",
-            revision=1,
-            reviewer_actor_id="self-asserted-admin",
-            action=contracts.ReviewAction.DISMISS,
-            rationale="A caller-supplied role must not create authority.",
-            decided_at=NOW,
-        )
+    assert {state.value for state in contracts.ModerationState} == {
+        "visible",
+        "under_review",
+        "escalated",
+        "pending_delete",
+        "recoverable_deleted",
+    }
