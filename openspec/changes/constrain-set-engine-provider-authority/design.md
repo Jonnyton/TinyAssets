@@ -22,7 +22,7 @@ Provider destination and credential source are separate authorities:
 
 - The destination ceiling answers which provider identities may receive work.
 - Credential isolation answers which account, key, OAuth store, home
-  directory, or market lease that provider may use.
+  directory, or requester-owned resource that provider may use.
 
 This change owns the first boundary. It may reuse independently reviewed pieces
 of #1606, but it does not claim the second boundary complete.
@@ -46,7 +46,8 @@ of #1606, but it does not claim the second boundary complete.
 
 - Proving that a selected CLI cannot inherit host credentials; the
   fail-closed auth-overlay successor owns that proof.
-- Activating self-hosted endpoints, market leases, or host daemons.
+- Activating self-hosted endpoints or host daemons, or routing accepted-market
+  work through the ordinary provider router.
 - Designing market matching, pricing, settlement, or provider receipts.
 - Adding a second router or moving R2-1a into `universe-creation`.
 - Keeping a runtime compatibility shim for unrestricted assignments.
@@ -104,9 +105,12 @@ intent but do not bind an executable provider grant. Each assignment therefore
 publishes `allowed_providers=[]`. Endpoint, market, daemon, provider, or writer
 fields remain non-authorizing hints.
 
-A later source-specific activation operation must validate the endpoint,
-accepted market grant, or daemon binding and replace `[]` with its reviewed
-provider set. It must not reinterpret the hint as authority implicitly.
+A later source-specific activation operation may validate a self-hosted
+endpoint or daemon binding and replace `[]` with its reviewed provider set. It
+must not reinterpret the hint as authority implicitly. `market_rented` is
+different: accepted-market execution remains `[]` in the ordinary provider
+router and runs only through the paid-market/distributed-execution owner's
+signed remote-executor path.
 
 Alternative considered: allowlist the supplied provider immediately. Rejected
 because registration or preference is not proof that compute was bound or
@@ -150,35 +154,53 @@ vault are separate resources and can otherwise describe different assignments.
 
 ### 5. Intersect fresh assignment and immutable request authority
 
-Every universe-originated call carries a typed
-`UniverseProviderAuthority(universe_dir, request_allowed_providers)`. It is
-separate from persisted `allowed_providers`. Effective provider authority is:
+Every universe-originated call carries a typed provider-execution scope whose
+universe variant contains the already-authorized universe directory and a
+reference/view derived from the accepted immutable request authority contract.
+If PR #1617's `RequestExecutionAuthority` is retained after the #1660 review,
+this change MUST consume it rather than define a second request-eligibility
+type. Persisted `allowed_providers` remains separate. Effective provider
+authority is:
 
 `fresh assignment ceiling INTERSECT request_allowed_providers INTERSECT narrower policy`
 
 Neither set may replace or widen the other. An omitted universe authority scope
-fails closed. Truly host-local work must supply a
+fails closed. Only an enumerated non-request-reachable host operation may
+supply a
 `HostLocalProviderCapability`: a process-internal, non-serializable,
 identity-validated token minted only by trusted daemon bootstrap after local
 operator configuration. It is mutually exclusive with universe authority and
 MUST NOT appear in MCP/API schemas, JSON, environment-derived request fields,
-node state, universe config, or any user-controlled constructor. A boolean,
-string, enum value, or caller-created lookalike is invalid. Approved
-host-local callers are inventoried and negative-tested.
+node state, universe config, any user-controlled constructor, or any
+user/request/universe lineage. A boolean, string, enum value, caller-created
+lookalike, or genuine token substituted for universe work is invalid. Approved
+host-local operations are inventoried and negative-tested.
 
-A separate `provider-authority-propagation` prerequisite change must land the
-typed union, host token boundary, and non-enforcing threading through every
-provider call site before R2-1a enforces it. This avoids the circular dependency
-that would result if later universe-creation market tasks owned propagation.
-The inventory includes graph run/resume/version/policy/judge plus RAPTOR,
-reflexion, agentic retrieval, and every other `call_provider` use.
+This change does not define, construct, resolve, persist, or widen requester
+authority, an execution grant, a market agreement, delegation, credential-vault
+truth, or a receipt. Its provider layer consumes only the immutable
+already-resolved eligible-provider view/reference. It cannot rediscover grants,
+credentials, offers, budgets, or ambient host resources. Omitted scope is never
+host-local: `None`, booleans, enums, strings, caller-created lookalikes,
+ambient `TINYASSETS_UNIVERSE`, or a legacy global fallback authorize nothing.
+
+The accepted #1660 opposite-provider verdict must first settle requester
+authority semantics in the current `universe-creation` owner and disposition
+PR #1617. Only then may a declared subordinate
+`provider-authority-propagation` prerequisite own the provider-layer transport
+gap: the universe-versus-host-local carrier union, host-token boundary, and
+exhaustive non-enforcing threading. It MUST reference the accepted requester
+authority, MUST NOT resolve requester/market authority itself, and MUST NOT
+create a second router, receipt, vault, market, or credential-isolation
+contract. The inventory includes graph run/resume/version/policy/judge plus
+RAPTOR, reflexion, agentic retrieval, and every other `call_provider` use.
 
 Immediately before each attempt, routing acquires a shared, nonblocking
 per-universe reader admission, validates fresh assignment and journal state,
 computes the intersection, and asks the landed auth-overlay boundary to resolve
 an immutable `ResolvedProviderAuthority` containing the admitted provider,
-exact credential/auth provenance and material reference, and any quota/market
-lease. The router then mints an immutable, non-serializable
+exact credential/auth provenance and material reference. The router then mints
+an immutable, non-serializable
 `ProviderInvocation` containing prompt/system/model inputs, universe identity,
 the resolved authority, and an identity-validated router launch token. Secret
 material is never journaled or logged.
@@ -194,57 +216,51 @@ compatibility shim, by:
 `start()` returns only after the authority handoff is irreversible:
 
 - CLI/local subprocess providers have spawned the child with fully materialized
-  env, stdin, cwd, endpoint, and lease inputs.
+  env, stdin, cwd, and endpoint inputs.
 - HTTP/in-process providers have copied fully materialized endpoint, headers,
-  body, client, and lease inputs into a transport-owned scheduled request.
+  body, and client inputs into a transport-owned scheduled request.
 
 Launch uses a monotonic `launch_timeout_seconds` separate from model completion
 timeout: default 5 seconds, configurable from 1 through 30 seconds. `start()` is
 cancellation-safe. Before creating any child/request it installs a cleanup
 guard and fsyncs a secret-free `provider_launch_pending` record with a unique
-launch/accounting id. The child process group or transport idempotency key
-carries that id. Successful start plus handle registration atomically advances
-the record to `provider_launch_active`; terminal accounting is recorded durably
+launch id. The child process group or transport idempotency key carries that
+id. Successful start plus handle registration atomically advances the record
+to `provider_launch_active`; terminal transport outcome is recorded durably
 before removal. Deadline, exception, or caller cancellation aborts the request
-or kills/reaps the process, and makes the cleanup guard finalize
-reservation/lease accounting exactly once: release a provably unconsumed
-reservation, otherwise commit consumed usage or record failed/unknown outcome.
-It proves terminal cleanup before the reader unlocks. When cleanup succeeds, a
-waiting assignment writer may proceed. If terminal cleanup cannot be proven
-within the same bounded cleanup deadline, routing releases the reader only
-after installing a durable
+or kills/reaps the process. The cleanup guard proves terminal cleanup before
+the reader unlocks. When cleanup succeeds, a waiting assignment writer may
+proceed. If terminal cleanup cannot be proven within the same bounded cleanup
+deadline, routing releases the reader only after installing a durable
 per-universe `provider_launch_cleanup_failed` fence; subsequent routing and
 assignment fail loud until operator recovery, rather than mutating authority
 around a possibly live launch.
 
 After `start()` returns, neither provider nor handle may read provider authority
-from universe files, vault, process env, auth homes, config, or quota/market
-state. Direct/bypass invocation without the router-minted launch token fails
+from universe files, vault, process env, auth homes, or config.
+Direct/bypass invocation without the router-minted launch token fails
 held. The router registers every returned handle before unlock and owns it in a
 structured `try/finally`; un-awaited handles are not exposed to callers.
 `result()` and `close()` share one atomic terminal state machine. Exactly one
-transition owns transport reaping and quota/market accounting across success,
-ordinary provider error, model timeout, caller cancellation, explicit close,
-and concurrent `result()`/`close()` calls; all other callers await and receive
-the cached terminal outcome. Success commits usage, provably unconsumed work
-releases its reservation, and consumed failures record failed usage exactly
-once. The reader is held through authority resolution and `start()`, then
-released; network completion may continue through the handle. Shared readers
-coexist. An attempt launched before a writer publishes `pending` may finish
-with its captured authority, while attempts reaching admission during or after
-quarantine fail held with zero provider access. The exclusive assignment
-writer waits for authority materialization and launch, not for network
-completion, and ordinary async execution never blocks on filesystem locks.
+transition owns transport completion or reaping across success, ordinary
+provider error, model timeout, caller cancellation, explicit close, and
+concurrent `result()`/`close()` calls; all other callers await and receive the
+cached terminal outcome. The reader is held through authority resolution and
+`start()`, then released; network completion may continue through the handle.
+Shared readers coexist. An attempt launched before a writer publishes
+`pending` may finish with its captured authority, while attempts reaching
+admission during or after quarantine fail held with zero provider access. The
+exclusive assignment writer waits for authority materialization and launch,
+not for network completion, and ordinary async execution never blocks on
+filesystem locks.
 
 Startup and assignment reconcile every leftover pending/active launch before
 routing or authority mutation. They locate and abort/reap a tagged child,
-query transport or market idempotency evidence where available, and finalize
-the durable accounting identity once. Pre-creation records release unconsumed
-reservations; consumed or uncertain outcomes record failed/unknown usage. If
-terminal state cannot be proven, the cleanup-failed fence remains and routing
-plus assignment fail loud. Crash injection covers pre-creation, post-creation
-before registration, post-registration before unlock, and post-completion
-before finalization.
+query transport idempotency evidence where available, and finalize the durable
+transport outcome once. If terminal state cannot be proven, the cleanup-failed
+fence remains and routing plus assignment fail loud. Crash injection covers
+pre-creation, post-creation before registration, post-registration before
+unlock, and post-completion before finalization.
 
 The rule covers ordinary role chains, policy attempts and fallback, judge
 ensembles, sync wrappers, hard pins, and every retry. A stale context may not
@@ -302,17 +318,19 @@ recorded durably.
   until the auth-overlay lane proves credential provenance.
 - **[PR #1606 contains valuable but over-coupled work]** -> Preserve reviewed
   commits selectively and independently re-review the reconciled diff.
-- **[Deny-all can strand market activation]** -> Require an explicit activation
-  primitive that replaces the ceiling after an accepted grant; document this
-  dependency in the paid-market change.
+- **[Market intent is mistaken for provider authority]** -> Keep
+  `market_rented` at `allowed_providers=[]`; accepted-market work uses only the
+  paid-market/distributed-execution signed remote-executor path and never the
+  ordinary provider router.
 - **[Old contexts or malformed config bypass authority]** -> Revalidate at each
   attempt and fail closed before auth, quota, health, or provider access.
 - **[Assignment changes between admission and auth resolution]** -> Hold the
-  shared reader through immutable auth/lease capture and provider launch; allow
+  shared reader through immutable auth capture and provider launch; allow
   only network completion outside the lock.
-- **[Host-local bypass becomes user-forgeable]** -> Use only the
-  identity-validated, non-serializable bootstrap token; inventory callers and
-  prove every public representation is rejected.
+- **[Host-local bypass becomes forgeable or a confused deputy]** -> Use only
+  the identity-validated, non-serializable bootstrap token bound to enumerated
+  non-request-reachable operations; inventory callers and prove every public
+  representation and every universe/user/request use is rejected.
 
 ## Migration Plan
 
@@ -324,11 +342,14 @@ recorded durably.
    #1623's prerequisite stack lands or #1623 is rebased/retargeted and releases
    the canonical provider-routing spec; and after the provider-auth overlay
    lands or partitions exact ownership.
-3. Land a prerequisite `provider-authority-propagation` change that introduces
-   the typed universe/host-local authority union, identity-validated bootstrap
-   token, and non-enforcing threading through every provider call site. It must
-   inventory graph/run/resume/version/policy/judge, RAPTOR, reflexion, agentic
-   retrieval, and all remaining `call_provider` uses.
+3. Obtain the required opposite-provider verdict on #1660, fold accepted
+   requester-authority semantics into the current `universe-creation` owner,
+   and explicitly disposition #1617. Then land a subordinate
+   `provider-authority-propagation` prerequisite that references the accepted
+   requester authority and owns only the typed universe/host-local carrier,
+   identity-validated bootstrap token, and exhaustive non-enforcing threading.
+   It must inventory graph/run/resume/version/policy/judge, RAPTOR, reflexion,
+   agentic retrieval, and all remaining `call_provider` uses.
 4. Implement new-universe, assignment lifecycle, shared-reader/exclusive-writer
    semantics, and deterministic fake-only tests.
 5. Adapt #1606's secret-free inventory into a reviewed platform-wide decision
@@ -351,8 +372,7 @@ recorded durably.
 - Which exact #1606 commits survive independent review after current-main
   reconciliation? The ownership decision is settled; the hashes remain to be
   selected.
-- Does `universe-creation` tasks 4.2–4.3 own accepted-market-grant activation,
-  or will a paid-market successor own the held-to-executable transition?
-- Will source-specific activation extend `set_engine` or use separate market,
-  endpoint, and daemon binding primitives? The authority transition must be
-  explicit either way.
+- Will source-specific activation extend `set_engine` or use separate endpoint
+  and daemon binding primitives? The authority transition must be explicit
+  either way. Accepted-market execution is excluded and remains on its signed
+  remote-executor path.

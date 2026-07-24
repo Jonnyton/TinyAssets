@@ -91,8 +91,11 @@ leak to a disallowed provider.
 
 - BYO `anthropic` SHALL publish `["claude-code"]`.
 - BYO `openai` SHALL publish `["codex"]`.
-- `self_hosted_endpoint`, `market_rented`, and `host_daemon` SHALL publish
-  `[]` until a separate source-specific activation binds executable authority.
+- `self_hosted_endpoint` and `host_daemon` SHALL publish `[]` until a separate
+  source-specific activation binds executable authority.
+- `market_rented` SHALL remain `[]` in the ordinary provider router even after
+  market acceptance; accepted-market work uses only the signed
+  paid-market/distributed-execution path.
 - Every new/unassigned, in-progress, held, or failed assignment SHALL retain
   `[]`.
 
@@ -225,12 +228,25 @@ one-phase `complete(...)` with async
 MUST expose async `result() -> ProviderResponse`.
 
 `ProviderInvocation` SHALL contain the fully materialized prompt, system,
-model, universe, endpoint, credential/auth provenance and material, and
-quota/market lease inputs plus an identity-validated, router-minted launch
-token. It MUST be non-serializable and MUST NOT be constructible from public
-request data. `UniverseContext` carries optional non-authorizing preferences.
-Every universe-originated call MUST carry
-`UniverseProviderAuthority(universe_dir, request_allowed_providers)`.
+model, universe, endpoint, credential/auth provenance and material, plus an
+identity-validated, router-minted launch token. It MUST be non-serializable and
+MUST NOT be constructible from public request data. `UniverseContext` carries
+optional non-authorizing preferences.
+Every universe-originated call MUST carry a typed provider-execution scope
+whose universe variant contains the already-authorized universe directory and
+a reference/view derived from the accepted immutable request-authority
+contract. If `RequestExecutionAuthority` is retained by its owning change, the
+provider layer MUST consume that exact contract and MUST NOT define a second
+request-eligibility type. The universe scope exposes its immutable eligible
+provider set to the provider layer without allowing that layer to mint, widen,
+or replace requester authority.
+
+This change SHALL NOT define, construct, resolve, persist, or widen a second
+request authority, execution grant, market agreement, delegation,
+credential-vault contract, secret-custody contract, or receipt. The provider
+layer consumes only the immutable already-resolved universe authority
+view/reference. It MUST NOT rediscover grants, credentials, market offers,
+budgets, or ambient host resources.
 Every provider attempt MUST obtain fresh persistent assignment and journal
 state under shared-reader/exclusive-writer admission and compute:
 
@@ -246,11 +262,11 @@ admission.
 
 While holding the shared reader, routing MUST resolve an immutable
 `ResolvedProviderAuthority` containing the admitted provider, exact
-credential/auth provenance and material reference, and any quota or market
-lease, mint `ProviderInvocation`, and await `BaseProvider.start(invocation)`.
+credential/auth provenance and material reference, mint
+`ProviderInvocation`, and await `BaseProvider.start(invocation)`.
 `start()` MUST return only after a CLI/local child is spawned with fully
-materialized env/stdin/cwd/endpoint/lease inputs, or after an HTTP/in-process
-transport has copied fully materialized endpoint/headers/body/client/lease
+materialized env/stdin/cwd/endpoint inputs, or after an HTTP/in-process
+transport has copied fully materialized endpoint/headers/body/client
 inputs into a scheduled request. The reader is released only after that launch
 barrier, and network completion then proceeds through
 `ProviderLaunchHandle.result()`.
@@ -259,52 +275,58 @@ Launch SHALL use a monotonic `launch_timeout_seconds`, separate from model
 completion timeout, defaulting to 5 seconds and bounded to 1 through 30
 seconds. Before any partial child/request creation, each provider MUST install
 a cleanup guard and durably fsync a secret-free `provider_launch_pending`
-record containing a unique launch/accounting id before external creation. The
+record containing a unique launch id before external creation. The
 child process group or transport idempotency key MUST carry that launch id.
 After start and handle registration, the record MUST atomically become
-`provider_launch_active`; terminal finalization MUST durably record its outcome
-before clearing it. Launch deadline, exception, or cancellation MUST
-abort/kill and reap the partial transport, and the cleanup guard MUST finalize
-quota/market accounting exactly once: release a provably unconsumed
-reservation, otherwise commit consumed usage or record its failed/unknown
-outcome. It MUST prove terminal cleanup before the reader unlocks. Successful
-cleanup permits a waiting assignment writer to proceed. If terminal cleanup
-cannot be proven within the bounded cleanup deadline, routing MUST install a
-durable per-universe
+`provider_launch_active`; terminal finalization MUST durably record its
+transport outcome before clearing it. Launch deadline, exception, or
+cancellation MUST abort/kill and reap the partial transport. The cleanup guard
+MUST prove terminal cleanup before the reader unlocks. Successful cleanup
+permits a waiting assignment writer to proceed. If terminal cleanup cannot be
+proven within the bounded cleanup deadline, routing MUST install a durable
+per-universe
 `provider_launch_cleanup_failed` fence before releasing the reader; subsequent
 routing and assignment MUST fail loud until operator recovery.
 
 After `start()` returns, provider and handle MUST NOT re-read authority from
-universe files, vault, process environment, auth homes, config, or quota/market
-state. A provider invocation without the exact router-minted launch-token
+universe files, vault, process environment, auth homes, or config. A provider
+invocation without the exact router-minted launch-token
 identity MUST fail held. The router MUST register every handle before unlock
 and own it through structured cleanup; callers MUST NOT receive an unowned
 handle. `result()` and `close()` SHALL share one atomic terminal state machine.
-Exactly one transition MUST own transport reaping and quota/market accounting
-across success, ordinary provider error, model timeout, caller cancellation,
-explicit close, and concurrent `result()`/`close()` calls; all other callers
-MUST await and receive the cached terminal outcome. Success commits usage,
-provably unconsumed work releases its reservation, and consumed failure records
-failed usage exactly once. Secret material MUST NOT enter the journal,
-diagnostics, or logs.
+Exactly one transition MUST own transport completion or reaping across success,
+ordinary provider error, model timeout, caller cancellation, explicit close,
+and concurrent `result()`/`close()` calls; all other callers MUST await and
+receive the cached terminal outcome. Secret material MUST NOT enter the
+journal, diagnostics, or logs.
 
 Startup and assignment MUST reconcile every leftover
 `provider_launch_pending` or `provider_launch_active` record before routing or
 authority mutation. Reconciliation SHALL locate/abort/reap a tagged child,
-query a transport or market idempotency key where supported, and finalize the
-durable lease/accounting record exactly once. A pre-creation record with no
-resource releases its reservation; a consumed or uncertain outcome records
-failed/unknown usage and remains fail-loud until resolved. If terminal state
-cannot be proven, reconciliation MUST retain
+query a transport idempotency key where supported, and finalize the durable
+transport outcome exactly once. If terminal state cannot be proven,
+reconciliation MUST retain
 `provider_launch_cleanup_failed`.
+
+`market_rented` SHALL remain `allowed_providers=[]` in this router. An accepted
+market agreement, remote executor, market lease, settlement, or economic
+accounting MUST NOT enter `ResolvedProviderAuthority`,
+`ProviderInvocation`, `ProviderLaunchHandle`, or this launch journal.
+Accepted-market work SHALL use only the paid-market/distributed-execution
+owner's signed remote-executor path.
 
 Trusted host-local work MUST carry `HostLocalProviderCapability`, a
 process-internal, non-serializable, identity-validated token minted only by
 trusted daemon bootstrap after local operator configuration. It MUST be
-mutually exclusive with universe authority and absent from every MCP/API
-schema, JSON/environment request field, node state, universe config, and
-user-controlled constructor. A boolean, string, enum, serialized token, or
-caller-created lookalike MUST fail held. Omitted scope is never permission. A
+bound to an enumerated non-request-reachable host operation, mutually exclusive
+with universe authority, and absent from every MCP/API schema,
+JSON/environment request field, node state, universe config, user-controlled
+constructor, and user/request/universe lineage. A boolean, string, enum,
+serialized token, or caller-created lookalike MUST fail held. Omitted scope is
+never permission. A `None` scope, ambient `TINYASSETS_UNIVERSE`, legacy global
+fallback, environment-derived universe selection, or internally supplied
+host-local capability on universe/user/request lineage MUST NOT authorize
+provider access. A
 ceiling from an older immutable context MUST NOT widen fresh authority. Model
 config carries timeout, token cap, temperature, reasoning effort,
 workspace-sandbox, allowed-tool, and disallowed-tool settings. Provider response
@@ -322,8 +344,17 @@ carries text, provider, model, family, latency, and degraded state.
 - **WHEN** universe-originated work supplies no authoritative universe
   directory or no typed request eligible set
 - **THEN** routing raises `ProviderAuthorityHeldError` with zero provider calls
-- **AND** only a trusted explicit host-local capability may authorize
-  non-universe provider work
+- **AND** a host-local capability can authorize only its enumerated
+  non-request-reachable host operation, never this universe work
+
+#### Scenario: ambient state cannot become host-local authority
+- **WHEN** a provider call omits its typed execution scope while process state,
+  `TINYASSETS_UNIVERSE`, a legacy global router, or an optional
+  `UniverseContext` happens to identify a universe or host configuration
+- **THEN** routing raises `ProviderAuthorityHeldError` before reading provider,
+  credential, auth-health, quota, market, or lease state
+- **AND** the caller must receive either the approved universe authority view
+  or the genuine bootstrap-minted `HostLocalProviderCapability` explicitly
 
 #### Scenario: public callers cannot forge host-local authority
 - **WHEN** MCP, API, JSON, environment-derived request data, node state,
@@ -334,11 +365,28 @@ carries text, provider, model, family, latency, and degraded state.
 - **AND** no provider, credential, auth-health, quota, or lease path is accessed
 
 #### Scenario: host-local and universe authority are exclusive
-- **WHEN** a call supplies both `UniverseProviderAuthority` and the genuine
-  `HostLocalProviderCapability`
+- **WHEN** a call supplies both the accepted universe provider-execution scope
+  and the genuine `HostLocalProviderCapability`
 - **THEN** routing rejects the ambiguous scope before authority resolution
 - **AND** approved host-local callers remain limited to the reviewed bootstrap
   inventory
+
+#### Scenario: host-local capability cannot rescue universe work
+- **WHEN** an internal caller supplies a genuine bootstrap-minted
+  `HostLocalProviderCapability` for a graph, run, resume, version, policy,
+  judge, extract, embed, first-contact, or any other user/request/universe
+  lineage
+- **THEN** routing rejects the operation with `ProviderAuthorityHeldError`
+- **AND** no maintainer credential, quota, account, local model, or local
+  hardware is accessed
+
+#### Scenario: accepted market work bypasses the ordinary provider router
+- **WHEN** a universe has accepted a paid-market agreement while its persistent
+  ordinary provider ceiling remains `[]`
+- **THEN** this router makes zero provider calls and does not construct a market
+  invocation, lease, settlement, or accounting record
+- **AND** only the paid-market/distributed-execution signed remote-executor
+  path may consume that accepted agreement
 
 #### Scenario: provider response carries model evidence
 - **WHEN** a provider completes a model call
@@ -361,28 +409,28 @@ carries text, provider, model, family, latency, and degraded state.
 #### Scenario: subprocess launch uses only captured authority
 - **WHEN** a CLI or local provider starts
 - **THEN** its child is spawned under the reader with env, stdin, cwd, endpoint,
-  and lease derived only from `ProviderInvocation`
+  and credential material derived only from `ProviderInvocation`
 - **AND** later vault, environment, config, or auth-home mutation cannot change
   the launched attempt
 
 #### Scenario: in-process launch uses only captured authority
 - **WHEN** an HTTP or in-process provider starts
-- **THEN** its transport copies endpoint, headers, body, client, and lease from
+- **THEN** its transport copies endpoint, headers, body, and client from
   `ProviderInvocation` into a scheduled request under the reader
-- **AND** later vault, environment, config, or market mutation cannot change
+- **AND** later vault, environment, or config mutation cannot change
   the launched attempt
 
 #### Scenario: direct provider bypass fails held
 - **WHEN** code calls a provider with a caller-created invocation, invokes the
   removed `complete(...)` path, or omits the router-minted launch-token identity
 - **THEN** the provider rejects the call with `ProviderAuthorityHeldError`
-- **AND** it does not resolve credentials, auth, quota, lease, or network state
+- **AND** it does not resolve credentials, auth, quota, or network state
 
 #### Scenario: hung launch cleans up before assignment proceeds
 - **WHEN** provider launch exceeds its bounded launch deadline after partially
   creating a child or request
 - **THEN** the provider aborts/kills and reaps the partial transport and
-  releases the unconsumed lease before the reader unlocks
+  proves terminal cleanup before the reader unlocks
 - **AND** after verified cleanup a waiting assignment writer may proceed
 
 #### Scenario: unprovable launch cleanup fences the universe
@@ -396,46 +444,39 @@ carries text, provider, model, family, latency, and degraded state.
 - **WHEN** model completion times out, its caller is cancelled, or the router
   closes the launch handle
 - **THEN** cancellation reaches the transport, the child/request is
-  aborted/reaped, and quota/market lease accounting finalizes exactly once
+  aborted/reaped, and one terminal transition owns cleanup
 - **AND** repeated `close()` or `result()` observes the same cached terminal
   outcome without repeated external effects
 
-#### Scenario: success and provider error finalize accounting exactly once
+#### Scenario: success and provider error finalize transport once
 - **WHEN** a launched provider succeeds or returns an ordinary provider error
-- **THEN** one terminal transition reaps resources and respectively commits
-  successful usage or records consumed failed usage exactly once
+- **THEN** one terminal transition owns completion or reaps transport resources
 - **AND** later result or close calls return the cached outcome without
-  repeating accounting
+  repeating transport effects
 
 #### Scenario: concurrent result and close have one terminal owner
 - **WHEN** concurrent `result()`/`result()` or `result()`/`close()` calls race
 - **THEN** one atomic transition owns completion or abort, resource reaping,
-  and quota/lease finalization
+  and terminal outcome publication
 - **AND** every other caller awaits and observes the same cached terminal
   outcome
-
-#### Scenario: partial consumed launch records failure once
-- **WHEN** `start()` fails after a reservation or lease has been consumed
-- **THEN** the cleanup guard records failed or unknown consumed usage exactly
-  once rather than releasing it as unconsumed
-- **AND** retry or cleanup cannot repeat or lose that accounting
 
 #### Scenario: launch journal survives creation crash windows
 - **WHEN** the daemon crashes before resource creation, after resource creation
   before handle registration, or after registration before reader unlock
 - **THEN** startup/assignment finds the durable pending or active launch id,
   locates and aborts/reaps the tagged resource or reconciles its transport
-  idempotency key, and finalizes accounting exactly once
+  idempotency key, and finalizes the transport outcome exactly once
 - **AND** routing and assignment remain held until reconciliation proves a
   terminal state
 
-#### Scenario: completion crash reconciles durable accounting
+#### Scenario: completion crash reconciles durable transport outcome
 - **WHEN** the daemon crashes after provider completion but before terminal
-  accounting finalization
-- **THEN** startup/assignment uses the durable launch/accounting id and provider
-  or market idempotency evidence to commit success, record failure/unknown, or
-  retain the cleanup-failed fence
-- **AND** it never releases consumed usage or finalizes the same launch twice
+  journal finalization
+- **THEN** startup/assignment uses the durable launch id and provider transport
+  evidence to record success, failure, unknown, or retain the cleanup-failed
+  fence
+- **AND** it never finalizes the same transport launch twice
 
 #### Scenario: router never abandons an unawaited handle
 - **WHEN** `start()` returns a `ProviderLaunchHandle`
@@ -468,7 +509,7 @@ carries text, provider, model, family, latency, and degraded state.
 #### Scenario: reader admission linearizes concurrent authority
 - **WHEN** two readers and one assignment writer overlap for one universe
 - **THEN** shared readers may concurrently validate assignment/journal state,
-  capture immutable provider/auth/credential/lease authority, and launch
+  capture immutable provider/auth/credential authority, and launch
 - **AND** an attempt launched before the writer publishes `pending` may finish
   with its captured authority, while attempts reaching admission during or
   after quarantine fail held with zero provider access
@@ -479,7 +520,7 @@ carries text, provider, model, family, latency, and degraded state.
 - **WHEN** an assignment writer starts after a reader admits a provider but
   before that attempt resolves auth or launches
 - **THEN** the writer waits while the reader captures the exact immutable
-  credential/auth provenance, material reference, and lease and launches
+  credential/auth provenance and material reference and launches
 - **AND** the attempt cannot combine the old provider ceiling with new or
   partial assignment credentials
 

@@ -3,13 +3,15 @@
 - [ ] 1.1 Record the #1606 split: select exact retained assignment-lock,
   transaction, migration, and deployment-fence commits; keep auth stripping
   with the provider-auth overlay; preserve request/assignment intersection
-  wording here; remove duplicate universe-creation ownership; name remaining
-  graph/credential owners; mark #1606 to close without merge after preservation.
+  wording here; preserve `universe-creation` as the current requester-authority
+  owner; name remaining graph/credential owners; mark #1606 to close without
+  merge after preservation.
 - [ ] 1.2 Wait for #1484 to release canonical and packaged
   `api/universe.py`; wait for #1623's prerequisite stack to land or for #1623
   to be rebased/retargeted and release the canonical provider-routing spec;
-  wait for the provider-auth overlay to land or partition exact ownership; then
-  rebase this lane.
+  wait for the provider-auth overlay to land or partition exact ownership;
+  disposition the unpublished operator-priority admission branch if it claims
+  `api/universe.py`; then rebase this lane.
 - [ ] 1.3 Re-check active provider-auth, universe-creation, receipts, and
   paid-market lanes; update their dependency notes so none implements a second
   provider-authority boundary. Fold
@@ -17,11 +19,16 @@
   into universe-creation tasks 3.1/4.3; receipts must retain a separate
   credential-isolation dependency and own call-local evidence; paid-market
   execution must name the accepted-grant activation owner.
-- [ ] 1.4 Propose and land a prerequisite
-  `provider-authority-propagation` change: introduce the typed universe/host
-  authority union and identity-validated, non-serializable bootstrap token;
-  thread it without enforcement through graph/run/resume/version/policy/judge,
-  RAPTOR, reflexion, agentic retrieval, and every other `call_provider` site.
+- [ ] 1.4 Obtain the required opposite-provider verdict on #1660; fold exact
+  accepted requester-authority semantics into the current
+  `universe-creation` owner; explicitly disposition #1617; then propose and
+  land a subordinate `provider-authority-propagation` change. It MUST reference
+  the accepted requester authority and own only the typed universe/host-local
+  carrier union, identity-validated non-serializable bootstrap token, and
+  exhaustive non-enforcing threading through
+  graph/run/resume/version/policy/judge, RAPTOR, reflexion, agentic retrieval,
+  and every other `call_provider` site. It MUST NOT create a second requester
+  authority, router, receipt, vault, market, or credential-isolation contract.
 - [ ] 1.5 Run the build-phase provider-context feed and collision guard, then
   broaden STATUS to the exact runtime, packaged mirror, focused tests, selected
   migration script/tests, and deployment/workflow files before editing any of
@@ -35,10 +42,13 @@
   byte-for-byte zero mutation on rejected input.
 - [ ] 2.2 Add reassignment tests proving replacement-not-union and final
   source, vault service, preference, and singleton ceiling coherence.
-- [ ] 2.3 Add source tests proving self-hosted, market-rented, and host-daemon
-  assignments persist `engine_assignment_state="held"` and `[]` until
+- [ ] 2.3 Add source tests proving self-hosted and host-daemon assignments
+  persist `engine_assignment_state="held"` and `[]` until their separate
   activation; prove new universes start
-  `engine_assignment_state="unassigned"` plus `[]`.
+  `engine_assignment_state="unassigned"` plus `[]`; and prove market-rented
+  intent remains `[]` in the ordinary provider router before and after market
+  acceptance while execution uses only the signed
+  paid-market/distributed-execution path.
 - [ ] 2.4 Add failure-injection tests at quarantine, vault, and final-config
   publication proving durable `pending -> failed` recovery, unrelated-vault
   preservation, no restored `None`/wider ceiling, and no secret in output.
@@ -55,20 +65,23 @@
   final assignment is coherent.
 - [ ] 2.8 Add the critical admission/auth race: start a writer after provider
   admission but before auth resolution; prove the reader captures exact
-  provider, credential/auth provenance and material reference, and quota/lease
-  into router-minted `ProviderInvocation`, awaits the provider launch barrier,
-  and permits `ProviderLaunchHandle.result()` after unlock with no
+  provider, credential/auth provenance and material reference into
+  router-minted `ProviderInvocation`, awaits the provider launch barrier, and
+  permits `ProviderLaunchHandle.result()` after unlock with no
   old-provider/new-vault mix.
 - [ ] 2.9 Add authority-propagation tests proving every universe graph, run,
   resume, version, policy, judge, extract, and embed path supplies universe dir
-  plus typed request eligibility; omitted scope fails closed unless an explicit
-  genuine host-local capability is supplied. Inventory RAPTOR, reflexion,
-  agentic retrieval, and every remaining call site too.
+  plus typed request eligibility; omitted scope always fails closed for
+  user/request/universe lineage even when an internal caller possesses a
+  genuine host-local capability. Inventory RAPTOR, reflexion, agentic
+  retrieval, and every remaining call site too.
 - [ ] 2.10 Add host-capability boundary tests proving it is minted only by
   trusted daemon bootstrap, is process-internal/non-serializable and
-  identity-validated, is mutually exclusive with universe scope, and cannot be
-  supplied through any MCP/API/JSON/environment/node/universe input or a
-  caller-created lookalike.
+  identity-validated, is bound to an enumerated non-request-reachable host
+  operation, is mutually exclusive with universe scope, and cannot be supplied
+  through any MCP/API/JSON/environment/node/universe input, a caller-created
+  lookalike, or any universe/user/request lineage. Prove maintainer credentials,
+  quota, accounts, local models, and local hardware remain inaccessible.
 - [ ] 2.11 Add intersection tests proving request eligibility can narrow but
   never replace or widen the fresh persistent assignment ceiling.
 - [ ] 2.12 Add parity tests for every CLI/local/HTTP/in-process provider:
@@ -76,17 +89,18 @@
   mutation cannot alter the attempt, and direct/caller-created/removed
   `complete(...)` bypasses fail held before external access.
 - [ ] 2.13 Add launch/handle lifecycle tests: distinct 1–30s launch deadline;
-  partial child/request abort and lease release before unlock; writer progress
+  partial child/request abort and terminal cleanup before unlock; writer progress
   after verified cleanup; durable fence on unprovable cleanup; completion
   timeout/cancellation propagation; process/request reaping; exactly-once
-  finalization for success/error/timeout/cancel/close/consumed-start failure;
-  concurrent result/result and result/close; idempotent cached outcome; no
-  abandoned handle.
+  transport finalization for success/error/timeout/cancel/close; concurrent
+  result/result and result/close; idempotent cached outcome; no abandoned
+  handle.
 - [ ] 2.14 Add process-death crash injection before resource creation, after
   creation before registration, after registration before unlock, and after
   completion before finalization. Prove durable pending/active launch identity,
-  tagged child or transport/market idempotency reconciliation, exactly-once
-  accounting, and retained fail-loud fence when terminal state is unprovable.
+  tagged child or transport idempotency reconciliation, single terminal
+  transport outcome, and retained fail-loud fence when terminal state is
+  unprovable.
 - [ ] 2.15 Capture the focused red-test evidence before implementation.
 
 ## 3. Implement provider-destination authority
@@ -105,7 +119,7 @@
 - [ ] 3.5 Refresh and validate assignment/journal state before every provider
   attempt under shared-reader/exclusive-writer admission; intersect it with
   immutable request eligibility; mint non-serializable `ProviderInvocation`
-  with exact auth/credential/lease authority; await
+  with exact auth/credential authority; await
   `BaseProvider.start() -> ProviderLaunchHandle` under the reader; await handle
   completion after unlock; forbid provider-side authority re-resolution; ensure
   pins, policy, retry, ensembles, local fallback, and every role cannot widen
@@ -114,10 +128,11 @@
   handle lifecycle: fsynced secret-free pending/active launch journal and
   tagged resource/idempotency key before creation; cleanup guard; verified
   abort/reap before unlock; durable cleanup-failed fence; startup/assignment
-  reconciliation; atomic terminal result/close ownership; exactly-once
-  accounting across every success/failure/cancel/crash outcome.
-- [ ] 3.7 Require explicit universe or genuine host-local authority at every
-  call site and implement exact held outcomes:
+  reconciliation; and atomic terminal result/close ownership across every
+  success/failure/cancel/crash outcome.
+- [ ] 3.7 Require explicit universe authority at every user/request/universe
+  call site and a genuine bootstrap-minted capability only for enumerated
+  non-request-reachable host operations. Implement exact held outcomes:
   `ProviderAuthorityHeldError` for single/policy/ensemble calls without
   fallback prose, reserve ordinary ensemble `[]` for non-empty authority with
   no healthy judge, and return typed `set_engine` ready, setup-required, or

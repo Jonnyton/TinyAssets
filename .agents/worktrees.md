@@ -1103,3 +1103,18 @@ Notes:
 - STATUS/Issue/PR: only the post-deploy organic-use watch remains
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
+
+## 2026-07-24 - create constrain-engine-providers
+
+- Provider: codex-gpt56-desktop
+- Branch: codex/constrain-engine-providers
+- Lane state: Active planning-only OpenSpec; durable independent re-review pending
+- Worktree: C:\Users\Jonathan\Projects\wf-constrain-engine-providers
+- STATUS/Issue/PR: R2-1a provider authority; remote branch pushed; PR creation blocked by GitHub Pull Requests outage
+- PLAN refs: Module Providers; Module API & MCP Interface; full-platform zero-maintainer-compute invariant
+- Purpose: own the persistent provider-assignment ceiling and launch transaction while consuming, not duplicating, the accepted requester-authority contract
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-constrain-engine-providers\_PURPOSE.md
+- Memory refs: PRs #1606, #1617, #1660; active `universe-creation`; provider-attempt-receipts
+- Related implications: newborn BYOC/market hold, ambient credential isolation, paid-market activation, organization authority, §14 tenant isolation
+- Idea feed refs: none
+- Ship/abandon: publish planning-only after durable re-review; no runtime claim until every recorded dependency and exact file partition is released
