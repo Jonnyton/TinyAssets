@@ -36,6 +36,11 @@ on:
         required: false
         default: 'false'
         type: string
+      cleanup_droplet_id:
+        description: 'Cleanup-only: delete this retained numeric Droplet ID and skip the drill'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -52,7 +57,130 @@ env:
   DRILL_REGION: nyc3
 
 jobs:
+  cleanup_retained_droplet:
+    if: inputs.cleanup_droplet_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate cleanup request
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DO_TOKEN}" ]; then
+            echo "::error::Missing required secret: DIGITALOCEAN_TOKEN"
+            exit 1
+          fi
+          if [[ ! "${DROPLET_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::cleanup_droplet_id must be a positive decimal Droplet ID"
+            exit 1
+          fi
+
+      - name: Verify retained drill Droplet identity
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+        run: |
+          set -euo pipefail
+          droplet_response=$(python3 scripts/do_api_request.py \
+            --method GET \
+            --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}")
+          python3 - "${DROPLET_ID}" "${droplet_response}" <<'PY'
+          import json
+          import sys
+
+          expected_id = int(sys.argv[1])
+          droplet = json.loads(sys.argv[2])["droplet"]
+          tags = set(droplet.get("tags", []))
+          if (
+              droplet.get("id") != expected_id
+              or droplet.get("name") != "tinyassets-dr-drill"
+              or not {"dr-drill", "tinyassets"}.issubset(tags)
+          ):
+              raise SystemExit(
+                  "cleanup target is not the expected tagged TinyAssets drill Droplet"
+              )
+          print(f"Verified retained drill Droplet identity: {expected_id}")
+          PY
+
+      - name: Delete retained drill Droplet
+        id: cleanup
+        continue-on-error: true
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+        run: |
+          diagnostic_file=$(mktemp)
+          set +e
+          python3 scripts/do_api_request.py \
+            --method DELETE \
+            --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" \
+            >/tmp/do-cleanup.out 2>"${diagnostic_file}"
+          delete_rc=$?
+          set -e
+          diagnostic=$(head -c 600 "${diagnostic_file}" | tr '\r\n' ' ')
+          {
+            echo "diagnostic<<EOF"
+            echo "${diagnostic}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          cat "${diagnostic_file}" >&2
+          rm -f "${diagnostic_file}" /tmp/do-cleanup.out
+          if [ "${delete_rc}" -ne 0 ]; then
+            echo "::error::Retained drill Droplet deletion failed"
+            exit "${delete_rc}"
+          fi
+          echo "Retained drill Droplet ${DROPLET_ID} destroyed."
+
+      - name: Escalate retained Droplet deletion failure
+        if: always() && steps.cleanup.outcome == 'failure'
+        uses: actions/github-script@v7
+        env:
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+          DELETE_DIAGNOSTIC: ${{ steps.cleanup.outputs.diagnostic }}
+        with:
+          script: |
+            const label = 'dr-failed';
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner, repo: context.repo.repo, name: label,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: label, color: 'b60205',
+                description: 'DR drill failed or left a Droplet requiring cleanup.',
+              });
+            }
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Retained DR Droplet deletion FAILED — ${new Date().toISOString()}`,
+              labels: [label],
+              body: [
+                `Cleanup-only deletion failed; this Droplet may still be billing.`,
+                ``,
+                `- **Droplet ID:** \`${process.env.DROPLET_ID}\``,
+                `- **Run:** ${runUrl}`,
+                `- **Bounded diagnostic:** \`${process.env.DELETE_DIAGNOSTIC || '(empty)'}\``,
+              ].join('\n'),
+            });
+
+      - name: Fail after retained Droplet deletion failure
+        if: always() && steps.cleanup.outcome == 'failure'
+        run: exit 1
+
   drill:
+    if: inputs.cleanup_droplet_id == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -519,6 +647,55 @@ jobs:
           )
           PY
 
+      - name: Persist validated runtime image in fresh env
+        env:
+          DRILL_IP: ${{ steps.drillip.outputs.ip }}
+          RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
+        run: |
+          set -euo pipefail
+          quoted_runtime_image=$(printf '%q' "${RUNTIME_IMAGE}")
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "root@${DRILL_IP}" \
+              "python3 - ${quoted_runtime_image}" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          image = sys.argv[1]
+          if re.fullmatch(
+              r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}",
+              image,
+          ) is None:
+              raise SystemExit("runtime image lost canonical digest validation")
+
+          env_path = Path("/etc/tinyassets/env")
+          if env_path.is_symlink() or not env_path.is_file():
+              raise SystemExit("fresh environment is missing or unsafe")
+          lines = env_path.read_text().splitlines(keepends=True)
+          matches = [
+              index
+              for index, line in enumerate(lines)
+              if line.startswith("TINYASSETS_IMAGE=")
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  "fresh environment must contain exactly one "
+                  "TINYASSETS_IMAGE assignment"
+              )
+          index = matches[0]
+          old_line = lines[index]
+          newline = (
+              "\r\n"
+              if old_line.endswith("\r\n")
+              else "\n"
+              if old_line.endswith("\n")
+              else ""
+          )
+          lines[index] = f"TINYASSETS_IMAGE={image}{newline}"
+          env_path.write_text("".join(lines))
+          print("Persisted validated runtime image in fresh environment.")
+          PY
+
       - name: Start compose on drill Droplet
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
@@ -780,6 +957,10 @@ jobs:
 
       - name: Fail after Droplet deletion failure
         if: always() && steps.destroy.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail after red probe
+        if: always() && steps.drillprobe.outputs.color == 'red'
         run: exit 1
 
       - name: Summary
