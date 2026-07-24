@@ -290,8 +290,10 @@ class RequestAdmissionStore:
         )
         _required(body_digest, "body_digest")
         _required(body_digest_version, "body_digest_version")
-        _required(branch_def_id, "branch_def_id")
+        clean_branch_def_id = _required(branch_def_id, "branch_def_id")
         _required(created_at, "created_at")
+        stored_receipt = dict(receipt)
+        stored_receipt["branch_def_id"] = clean_branch_def_id
         accepted_weight = float(accepted_priority_weight)
         if (
             not math.isfinite(accepted_weight)
@@ -366,6 +368,7 @@ class RequestAdmissionStore:
                                 "tenant_id": scope[0],
                                 "admission_id": admission_id,
                                 "queue_epoch": QUEUE_EPOCH,
+                                "branch_def_id": clean_branch_def_id,
                                 "pickup_incentive": pickup_incentive,
                                 "directed_daemon_instruction": (
                                     directed_daemon_instruction
@@ -405,7 +408,7 @@ class RequestAdmissionStore:
                             accepted_weight,
                             policy_version,
                             grant_generation,
-                            _json(dict(receipt)),
+                            _json(stored_receipt),
                             _json(result),
                             created_at,
                             created_at,
@@ -430,7 +433,7 @@ class RequestAdmissionStore:
                             admission_id,
                             request_id,
                             scope[2],
-                            branch_def_id,
+                            clean_branch_def_id,
                             _json({
                                 "request_id": request_id,
                                 "request_type": request_type,
@@ -594,6 +597,9 @@ class RequestAdmissionStore:
         branch_task_id: str = "",
         after_source_rowid: int = 0,
         through_source_rowid: int = 0,
+        terminal_before: str = "",
+        terminal_only: bool = False,
+        uncompacted_only: bool = False,
         limit: int | None = None,
         rowid_order: bool = False,
     ) -> sqlite3.Cursor:
@@ -613,6 +619,16 @@ class RequestAdmissionStore:
         if through_source_rowid:
             clauses.append("t.rowid <= ?")
             params.append(through_source_rowid)
+        if terminal_only:
+            clauses.append(
+                "t.status IN ('cancelled', 'succeeded', 'failed')"
+            )
+        if uncompacted_only:
+            clauses.append("a.compacted_at IS NULL")
+        if terminal_before:
+            clauses.append("a.terminal_at IS NOT NULL")
+            clauses.append("a.terminal_at < ?")
+            params.append(terminal_before)
         order = (
             "t.rowid ASC"
             if rowid_order
@@ -1418,28 +1434,55 @@ class RequestAdmissionStore:
         *,
         terminal_before: str,
         compacted_at: str,
+        classifier: Callable[[Mapping[str, Any]], str | None],
+        limit: int = MAX_QUARANTINE_SCAN_ROWS,
     ) -> int:
         """Compact terminal private detail while retaining replay tombstones."""
 
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                rows = conn.execute(
-                    """
-                    SELECT
-                        a.admission_id, a.request_id, a.branch_task_id,
-                        a.universe_id, t.status
-                    FROM request_admissions AS a
-                    JOIN branch_tasks_v2 AS t
-                      ON t.branch_task_id = a.branch_task_id
-                    WHERE a.compacted_at IS NULL
-                      AND a.terminal_at IS NOT NULL
-                      AND a.terminal_at < ?
-                      AND t.status IN ('cancelled', 'succeeded', 'failed')
-                    """,
-                    (terminal_before,),
+                rows = self._v2_integrity_cursor(
+                    conn,
+                    pending_only=False,
+                    include_disabled=True,
+                    terminal_before=terminal_before,
+                    terminal_only=True,
+                    uncompacted_only=True,
+                    limit=min(
+                        MAX_QUARANTINE_SCAN_ROWS,
+                        max(1, int(limit)),
+                    ),
+                    rowid_order=True,
                 ).fetchall()
+                compacted = 0
+                observed_at = _clock_iso(self._clock)
                 for row in rows:
+                    if not (
+                        row["disabled"]
+                        and row["linked_quarantine_receipt_exists"]
+                    ):
+                        reason = classifier(dict(row))
+                        if reason:
+                            source = conn.execute(
+                                """
+                                SELECT rowid AS source_rowid, *
+                                FROM branch_tasks_v2
+                                WHERE rowid = ?
+                                """,
+                                (row["source_rowid"],),
+                            ).fetchone()
+                            if source is None:  # pragma: no cover - same txn
+                                raise RuntimeError(
+                                    "compaction_source_missing"
+                                )
+                            self._quarantine_task_in_transaction(
+                                conn,
+                                source,
+                                reason=reason,
+                                observed_at=observed_at,
+                            )
+                            continue
                     tombstone = {
                         "admission_id": row["admission_id"],
                         "branch_task_id": row["branch_task_id"],
@@ -1501,8 +1544,9 @@ class RequestAdmissionStore:
                         """,
                         (row["branch_task_id"],),
                     )
+                    compacted += 1
                 conn.commit()
-                return len(rows)
+                return compacted
             except Exception:
                 conn.rollback()
                 raise

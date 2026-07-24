@@ -71,6 +71,13 @@ _DIRECTED_AUTHORITY_SCOPES = frozenset({
 })
 _TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
 _REQUEST_BODY_SCHEMA_VERSION = "request-admission-v2"
+_TASK_INPUT_KEYS = frozenset({
+    "branch_id",
+    "directed_daemon_instruction",
+    "pickup_incentive",
+    "request_id",
+    "request_type",
+})
 _BRANCH_TASK_ID_RE = re.compile(r"^bt2_[0-9a-f]{32}$")
 _ADMISSION_ID_RE = re.compile(r"^adm_[0-9a-f]{32}$")
 _REQUEST_ID_RE = re.compile(r"^req_[0-9a-f]{32}$")
@@ -256,6 +263,20 @@ class Epoch2BranchTaskAdapter:
             scanned=int(result["scanned"]),
             quarantined=len(receipts),
             receipts=receipts,
+        )
+
+    def compact_terminal_details(
+        self,
+        *,
+        terminal_before: str,
+        compacted_at: str,
+        limit: int = 1000,
+    ) -> int:
+        return self._store.compact_terminal_details(
+            terminal_before=terminal_before,
+            compacted_at=compacted_at,
+            classifier=_classify_epoch2_row,
+            limit=limit,
         )
 
     def delete_universe(self, universe_id: str) -> int:
@@ -455,6 +476,7 @@ def _classify_epoch2_row(
         == row["linked_admission_tenant_id"]
         and request_metadata.get("admission_id") == row["admission_id"]
         and request_metadata.get("queue_epoch") == QUEUE_EPOCH
+        and request_metadata.get("branch_def_id") == row["branch_def_id"]
     )
     if not metadata_matches or not _authority_receipt_matches(row, receipt):
         return "invalid_operator_admission"
@@ -499,14 +521,19 @@ def _compacted_terminal_matches(
         or row.get("linked_request_preferred_author_id") is not None
     ):
         return False
-    timestamps = (
-        row.get("terminal_at"),
-        row.get("linked_admission_terminal_at"),
-        row.get("linked_admission_compacted_at"),
+    task_terminal = _parse_timestamp(row.get("terminal_at"))
+    admission_terminal = _parse_timestamp(
+        row.get("linked_admission_terminal_at")
     )
-    if not all(
-        isinstance(value, str) and _parse_timestamp(value) is not None
-        for value in timestamps
+    compacted_at = _parse_timestamp(
+        row.get("linked_admission_compacted_at")
+    )
+    if (
+        task_terminal is None
+        or admission_terminal is None
+        or compacted_at is None
+        or task_terminal != admission_terminal
+        or compacted_at < task_terminal
     ):
         return False
     try:
@@ -548,6 +575,7 @@ def _canonical_request_body_matches(
         or not isinstance(directed_daemon_id, str)
         or not isinstance(pickup_incentive, str)
         or not isinstance(directed_instruction, str)
+        or set(inputs) != _TASK_INPUT_KEYS
         or inputs.get("request_id") != row.get("request_id")
         or inputs.get("request_type") != request_type
         or inputs.get("branch_id") != (request_branch_id or "")
@@ -615,6 +643,7 @@ def _authority_receipt_matches(
         directed_matches = directed == {}
     return bool(
         receipt.get("authority") == "request-local"
+        and receipt.get("branch_def_id") == row.get("branch_def_id")
         and type(receipt.get("grant_generation")) is int
         and receipt.get("grant_generation")
         == row["linked_admission_grant_generation"]

@@ -618,6 +618,7 @@ def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):
     assert store.compact_terminal_details(
         terminal_before="2026-06-24T00:00:00Z",
         compacted_at="2026-07-24T08:05:00Z",
+        classifier=lambda _row: None,
     ) == 1
 
     with _connect(tmp_path) as conn:

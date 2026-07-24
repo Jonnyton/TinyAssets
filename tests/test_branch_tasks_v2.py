@@ -919,6 +919,58 @@ def test_parseable_task_input_mutation_breaks_canonical_body_evidence(
     assert result.receipts[0].reason == "invalid_operator_admission"
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["branch_def_id", "unexpected_input"],
+)
+def test_unauthenticated_executable_task_inputs_are_inert_and_quarantined(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        if mutation == "branch_def_id":
+            conn.execute(
+                """
+                UPDATE branch_tasks_v2 SET branch_def_id = 'forged-branch-def'
+                WHERE branch_task_id = ?
+                """,
+                (invalid["branch_task_id"],),
+            )
+        else:
+            raw = conn.execute(
+                """
+                SELECT inputs_json FROM branch_tasks_v2
+                WHERE branch_task_id = ?
+                """,
+                (invalid["branch_task_id"],),
+            ).fetchone()[0]
+            inputs = json.loads(raw)
+            inputs["unexpected_executable_input"] = "forged"
+            conn.execute(
+                """
+                UPDATE branch_tasks_v2 SET inputs_json = ?
+                WHERE branch_task_id = ?
+                """,
+                (json.dumps(inputs), invalid["branch_task_id"]),
+            )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    descriptor = _descriptor()
+
+    assert adapter.list_candidates() == []
+    assert adapter.claim(
+        invalid["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    ) is None
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "invalid_operator_admission"
+
+
 def test_corrupt_admission_evidence_cannot_claim_before_maintenance(
     tmp_path: Path,
 ) -> None:
@@ -1371,7 +1423,7 @@ def test_compacted_terminal_row_is_not_reclassified_as_invalid(
         new_status="succeeded",
         at="2026-07-24T08:01:00+00:00",
     )
-    assert store.compact_terminal_details(
+    assert Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
         terminal_before="2026-07-25T00:00:00+00:00",
         compacted_at="2026-07-25T00:01:00+00:00",
     ) == 1
@@ -1384,6 +1436,133 @@ def test_compacted_terminal_row_is_not_reclassified_as_invalid(
         assert conn.execute(
             "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
         ).fetchone()[0] == 0
+
+
+def test_compaction_hard_caps_physical_rows_per_writer_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    for index in range(3):
+        terminal = _commit(
+            tmp_path,
+            key=f"hmac:compaction-cap-{index}",
+            created_at=f"2026-07-24T08:00:0{index}+00:00",
+        )
+        store.transition_task(
+            terminal["branch_task_id"],
+            expected_statuses={"pending"},
+            new_status="succeeded",
+            at=f"2026-07-24T08:01:0{index}+00:00",
+        )
+    monkeypatch.setattr(
+        request_admission_storage,
+        "MAX_QUARANTINE_SCAN_ROWS",
+        2,
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    first = adapter.compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+        limit=10_000,
+    )
+    second = adapter.compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:02:00+00:00",
+        limit=10_000,
+    )
+
+    assert (first, second) == (2, 1)
+
+
+def test_compaction_quarantines_invalid_terminal_before_erasing_evidence(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE request_admissions SET receipt_json = '{}'
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        )
+
+    compacted = Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+    )
+
+    assert compacted == 0
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        admission = conn.execute(
+            """
+            SELECT compacted_at FROM request_admissions
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+        quarantine = conn.execute(
+            """
+            SELECT reason FROM branch_tasks_v2_quarantine
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+    assert admission == (None,)
+    assert quarantine == ("invalid_operator_admission",)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("terminal_at", "2026-07-24T08:02:00+00:00"),
+        ("compacted_at", "2026-07-24T08:00:00+00:00"),
+    ],
+)
+def test_compacted_terminal_timestamps_must_match_and_be_ordered(
+    tmp_path: Path,
+    column: str,
+    value: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    assert Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+    ) == 1
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            f"""
+            UPDATE request_admissions
+            SET {column} = ?
+            WHERE branch_task_id = ?
+            """,
+            (value, terminal["branch_task_id"]),
+        )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "invalid_operator_admission"
 
 
 @pytest.mark.parametrize(

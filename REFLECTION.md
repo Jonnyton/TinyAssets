@@ -350,3 +350,20 @@ fresh-host rollback edges found later.
   metadata and soul. Terminal rows need two paths: full validation before
   compaction, or an exact compacted tombstone contract afterward. A status
   string alone is never permission to skip integrity.
+
+## 2026-07-24 - executable identity and pre-compaction integrity
+
+- **What surprised me:** a canonical request-body digest still left the
+  resolved `branch_def_id` and unexpected task-input keys outside the checked
+  execution envelope. Separately, a correct post-compaction tombstone checker
+  could not recover evidence that compaction had already erased.
+- **Pattern worth capturing:** bind every downstream executable input to at
+  least two authoritative aggregate records, reject surplus keys, and run the
+  same full classifier inside the compaction write transaction before private
+  evidence is replaced. Terminal timestamps are one state transition and must
+  agree across task/admission records before the compaction time can follow
+  them.
+- **What I would do differently:** enumerate the exact fields consumed by the
+  execution handoff and every evidence-destroying maintenance operation during
+  the first threat-model pass, then make each a red mutation test before the
+  initial review.
