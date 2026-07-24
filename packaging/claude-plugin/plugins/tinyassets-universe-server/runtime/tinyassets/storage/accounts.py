@@ -341,7 +341,6 @@ def issue_priority_grant(
     subject_id: str,
     universe_id: str,
     issuer_id: str,
-    issued_at: float | None = None,
     expires_at: float | None = None,
 ) -> dict[str, Any]:
     """Issue one exact-universe operator-priority generation.
@@ -357,21 +356,18 @@ def issue_priority_grant(
         universe_id=universe_id,
         issuer_id=issuer_id,
     )
-    now = _finite_timestamp(
-        _now() if issued_at is None else issued_at,
-        "issued_at",
-    )
     expiry = (
         None
         if expires_at is None
         else _finite_timestamp(expires_at, "expires_at")
     )
-    if expiry is not None and expiry <= now:
-        raise ValueError("expires_at must be strictly after issued_at")
 
     initialize_author_server(base_path)
     with _connect(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        now = _finite_timestamp(_now(), "server_time")
+        if expiry is not None and expiry <= now:
+            raise ValueError("expires_at must be strictly after issued_at")
         _require_priority_grant_administrator(
             conn,
             issuer_id=issuer,
@@ -450,7 +446,6 @@ def revoke_priority_grant(
     subject_id: str,
     universe_id: str,
     issuer_id: str,
-    revoked_at: float | None = None,
 ) -> dict[str, Any] | None:
     """Prospectively revoke the latest generation; repeated calls are stable."""
 
@@ -461,13 +456,10 @@ def revoke_priority_grant(
         universe_id=universe_id,
         issuer_id=issuer_id,
     )
-    now = _finite_timestamp(
-        _now() if revoked_at is None else revoked_at,
-        "revoked_at",
-    )
     initialize_author_server(base_path)
     with _connect(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        now = _finite_timestamp(_now(), "server_time")
         _require_priority_grant_administrator(
             conn,
             issuer_id=issuer,

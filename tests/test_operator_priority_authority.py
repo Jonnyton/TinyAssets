@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import inspect
 import sqlite3
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+import tinyassets.storage.accounts as accounts_store
 from tinyassets.daemon_server import (
     ensure_universe_registered,
     grant_universe_access,
@@ -27,6 +30,19 @@ from tinyassets.storage.accounts import (
     revoke_priority_grant,
 )
 from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+
+@pytest.fixture
+def server_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[float], None]:
+    current = [time.time()]
+    monkeypatch.setattr(accounts_store, "_now", lambda: current[0])
+
+    def set_time(timestamp: float) -> None:
+        current[0] = timestamp
+
+    return set_time
 
 
 def _connect(base_path: Path) -> sqlite3.Connection:
@@ -147,16 +163,17 @@ def test_pretraffic_migration_preserves_legacy_capability_row(
 
 def test_exact_admin_and_capability_issue_generation(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 1
+    server_clock(issued_at)
 
     grant = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=issued_at,
         expires_at=issued_at + 60,
     )
 
@@ -191,6 +208,7 @@ def test_issue_requires_exact_admin_and_exact_grant_capability(
     tmp_path: Path,
     admin: bool,
     capability_scope: str,
+    server_clock: Callable[[float], None],
 ) -> None:
     initialize_author_server(tmp_path)
     _create_universe(tmp_path, "universe-a")
@@ -215,6 +233,7 @@ def test_issue_requires_exact_admin_and_exact_grant_capability(
                 None if capability_scope == "*" else capability_scope
             ),
         )
+    server_clock(time.time() + 1)
 
     with pytest.raises(CapabilityGrantAuthorizationError):
         issue_priority_grant(
@@ -222,7 +241,6 @@ def test_issue_requires_exact_admin_and_exact_grant_capability(
             subject_id=subject_id,
             universe_id="universe-a",
             issuer_id=issuer_id,
-            issued_at=time.time() + 1,
         )
 
     assert list_capability_grant_history(
@@ -231,6 +249,72 @@ def test_issue_requires_exact_admin_and_exact_grant_capability(
         universe_id="universe-a",
         capability=PRIORITY_REQUEST_CAPABILITY,
     ) == []
+
+
+def test_revoked_issuer_cannot_backdate_issue_or_revoke(
+    tmp_path: Path,
+    server_clock: Callable[[float], None],
+) -> None:
+    issuer_id, subject_id = _authorized_fixture(tmp_path)
+    other_subject_id = _create_actor(tmp_path, "other-subject")
+    issued_at = time.time() + 1
+    server_clock(issued_at)
+    subject_grant = issue_priority_grant(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        issuer_id=issuer_id,
+    )
+    issuer_revoked_at = issued_at + 1
+    with _connect(tmp_path) as conn:
+        conn.execute(
+            """
+            UPDATE capability_grants
+            SET revoked_at = ?
+            WHERE user_id = ? AND capability = ? AND scope = ?
+            """,
+            (
+                issuer_revoked_at,
+                issuer_id,
+                CAP_GRANT_CAPABILITIES,
+                "universe-a",
+            ),
+        )
+
+    server_clock(issuer_revoked_at + 1)
+    with pytest.raises(CapabilityGrantAuthorizationError):
+        issue_priority_grant(
+            tmp_path,
+            subject_id=other_subject_id,
+            universe_id="universe-a",
+            issuer_id=issuer_id,
+        )
+    with pytest.raises(CapabilityGrantAuthorizationError):
+        revoke_priority_grant(
+            tmp_path,
+            subject_id=subject_id,
+            universe_id="universe-a",
+            issuer_id=issuer_id,
+        )
+
+    assert list_capability_grant_history(
+        tmp_path,
+        subject_id=other_subject_id,
+        universe_id="universe-a",
+        capability=PRIORITY_REQUEST_CAPABILITY,
+    ) == []
+    assert list_capability_grant_history(
+        tmp_path,
+        subject_id=subject_id,
+        universe_id="universe-a",
+        capability=PRIORITY_REQUEST_CAPABILITY,
+    ) == [subject_grant]
+    assert "issued_at" not in inspect.signature(
+        issue_priority_grant
+    ).parameters
+    assert "revoked_at" not in inspect.signature(
+        revoke_priority_grant
+    ).parameters
 
 
 def test_generic_grant_path_cannot_issue_operator_priority(
@@ -288,7 +372,6 @@ def test_wildcard_priority_target_is_rejected_without_mutation(
             subject_id=subject_id,
             universe_id="*",
             issuer_id=issuer_id,
-            issued_at=time.time() + 1,
         )
 
     assert list_capability_grant_history(
@@ -300,16 +383,17 @@ def test_wildcard_priority_target_is_rejected_without_mutation(
 
 def test_expiry_boundary_and_regrant_preserve_history(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 1
     expires_at = issued_at + 10
+    server_clock(issued_at)
     first = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=issued_at,
         expires_at=expires_at,
     )
 
@@ -332,12 +416,12 @@ def test_expiry_boundary_and_regrant_preserve_history(
         evaluated_at=expires_at + 1,
     ) is None
 
+    server_clock(expires_at + 1)
     second = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=expires_at + 1,
     )
     assert second["generation"] == 2
     assert [
@@ -353,25 +437,26 @@ def test_expiry_boundary_and_regrant_preserve_history(
 
 def test_repeat_issue_cannot_silently_change_active_expiry(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 1
+    server_clock(issued_at)
     first = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=issued_at,
         expires_at=issued_at + 60,
     )
 
+    server_clock(issued_at + 1)
     with pytest.raises(ValueError, match="different expiry"):
         issue_priority_grant(
             tmp_path,
             subject_id=subject_id,
             universe_id="universe-a",
             issuer_id=issuer_id,
-            issued_at=issued_at + 1,
             expires_at=issued_at + 120,
         )
 
@@ -385,24 +470,25 @@ def test_repeat_issue_cannot_silently_change_active_expiry(
 
 def test_issue_time_cannot_predate_existing_generation(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 10
+    server_clock(issued_at)
     first = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=issued_at,
     )
 
+    server_clock(issued_at - 1)
     with pytest.raises(ValueError, match="predate"):
         issue_priority_grant(
             tmp_path,
             subject_id=subject_id,
             universe_id="universe-a",
             issuer_id=issuer_id,
-            issued_at=issued_at - 1,
         )
 
     assert list_capability_grant_history(
@@ -417,24 +503,25 @@ def test_issue_time_cannot_predate_existing_generation(
 def test_nonfinite_issue_times_fail_without_mutation(
     tmp_path: Path,
     invalid_time: float,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
 
+    server_clock(invalid_time)
     with pytest.raises(ValueError, match="finite"):
         issue_priority_grant(
             tmp_path,
             subject_id=subject_id,
             universe_id="universe-a",
             issuer_id=issuer_id,
-            issued_at=invalid_time,
         )
+    server_clock(time.time() + 1)
     with pytest.raises(ValueError, match="finite"):
         issue_priority_grant(
             tmp_path,
             subject_id=subject_id,
             universe_id="universe-a",
             issuer_id=issuer_id,
-            issued_at=time.time() + 1,
             expires_at=invalid_time,
         )
     assert list_capability_grant_history(
@@ -447,31 +534,32 @@ def test_nonfinite_issue_times_fail_without_mutation(
 
 def test_revoke_is_exact_prospective_idempotent_and_regrant_increments(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 1
+    server_clock(issued_at)
     first = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=issued_at,
     )
     revoked_at = issued_at + 2
 
+    server_clock(revoked_at)
     revoked = revoke_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        revoked_at=revoked_at,
     )
+    server_clock(revoked_at + 1)
     repeated = revoke_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        revoked_at=revoked_at + 1,
     )
     assert revoked == repeated
     assert revoked["generation"] == first["generation"]
@@ -492,12 +580,12 @@ def test_revoke_is_exact_prospective_idempotent_and_regrant_increments(
         evaluated_at=revoked_at,
     ) is None
 
+    server_clock(revoked_at + 2)
     second = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=revoked_at + 2,
     )
     assert second["generation"] == 2
     history = list_capability_grant_history(
@@ -512,24 +600,25 @@ def test_revoke_is_exact_prospective_idempotent_and_regrant_increments(
 
 def test_revoke_cannot_predate_grant(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 10
+    server_clock(issued_at)
     first = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=issued_at,
     )
 
+    server_clock(issued_at - 1)
     with pytest.raises(ValueError, match="predate"):
         revoke_priority_grant(
             tmp_path,
             subject_id=subject_id,
             universe_id="universe-a",
             issuer_id=issuer_id,
-            revoked_at=issued_at - 1,
         )
 
     assert list_capability_grant_history(
@@ -542,9 +631,11 @@ def test_revoke_cannot_predate_grant(
 
 def test_concurrent_repeated_issue_creates_one_active_generation(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 1
+    server_clock(issued_at)
 
     def issue(_index: int) -> dict:
         return issue_priority_grant(
@@ -552,7 +643,6 @@ def test_concurrent_repeated_issue_creates_one_active_generation(
             subject_id=subject_id,
             universe_id="universe-a",
             issuer_id=issuer_id,
-            issued_at=issued_at,
         )
 
     with ThreadPoolExecutor(max_workers=12) as pool:
@@ -571,15 +661,16 @@ def test_concurrent_repeated_issue_creates_one_active_generation(
 
 def test_admission_callback_rereads_current_grant_in_write_transaction(
     tmp_path: Path,
+    server_clock: Callable[[float], None],
 ) -> None:
     issuer_id, subject_id = _authorized_fixture(tmp_path)
     issued_at = time.time() + 1
+    server_clock(issued_at)
     grant = issue_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        issued_at=issued_at,
     )
     store = RequestAdmissionStore(tmp_path)
 
@@ -620,12 +711,12 @@ def test_admission_callback_rereads_current_grant_in_write_transaction(
         authority_check=require_generation(issued_at),
     )
     revoked_at = issued_at + 2
+    server_clock(revoked_at)
     revoke_priority_grant(
         tmp_path,
         subject_id=subject_id,
         universe_id="universe-a",
         issuer_id=issuer_id,
-        revoked_at=revoked_at,
     )
 
     with pytest.raises(

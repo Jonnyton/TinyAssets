@@ -206,9 +206,11 @@ fresh-host rollback edges found later.
   key made revocation history impossible even though most existing read paths
   could remain unchanged once activity became a timestamped query.
 - **Pattern worth capturing:** elevation authority should be immutable
-  generations plus an exact-scope transactional reread. Wildcard or host
-  identity can remain useful for ordinary administration without becoming an
-  accidental substitute for the elevated grant.
+  generations plus an exact-scope transactional reread at a server-controlled
+  transaction timestamp. Wildcard or host identity can remain useful for
+  ordinary administration without becoming an accidental substitute for the
+  elevated grant, and caller-supplied audit time must never become an
+  authorization-time override.
 - **What I would do differently:** include mismatched-expiry replay and
-  non-finite timestamp tests in the first red batch; both catch ways an
+  revoked-issuer backdating tests in the first red batch; both catch ways an
   apparently idempotent admin API can silently widen authority.
