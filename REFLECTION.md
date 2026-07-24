@@ -335,3 +335,12 @@ fresh-host rollback edges found later.
   preserving strings, and authority integrity must bind canonical
   hash/version/policy formats, receipt generation, actor, tenant metadata, and
   Request lifecycle—not merely JSON shape.
+  Physical cursor progression and semantic classification are separate:
+  terminal tombstones still consume the bounded cursor budget but must not be
+  reclassified after legitimate compaction; disabled rows are skipped only
+  when a quarantine receipt already explains them, otherwise valid rows remain
+  policy-parked and invalid rows gain an audit receipt. Reuse the platform's
+  path-safe custom-universe contract for eligibility while applying a stricter
+  display-safe slug rule to receipts. Closed reason enums, allowed directed
+  scopes, canonical soul hashes, and a non-overridable scan ceiling belong at
+  the storage boundary.

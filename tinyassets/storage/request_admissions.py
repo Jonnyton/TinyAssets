@@ -28,7 +28,13 @@ QUEUE_EPOCH = 2
 QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
 MAX_LEASE_SECONDS = 90
+MAX_QUARANTINE_SCAN_ROWS = 1000
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
+QUARANTINE_REASONS = frozenset({
+    "unsupported_protocol",
+    "incomplete",
+    "invalid_operator_admission",
+})
 
 # Fault-injection checkpoints across every precommit transaction phase.
 COMMIT_STEPS = (
@@ -641,8 +647,14 @@ class RequestAdmissionStore:
                 r.request_id AS linked_request_id,
                 r.universe_id AS linked_request_universe_id,
                 r.user_id AS linked_request_user_id,
+                r.preferred_author_id AS linked_request_preferred_author_id,
                 r.status AS linked_request_status,
-                r.metadata_json AS linked_request_metadata_json
+                r.metadata_json AS linked_request_metadata_json,
+                EXISTS (
+                    SELECT 1
+                    FROM branch_tasks_v2_quarantine AS q
+                    WHERE q.branch_task_id IS t.branch_task_id
+                ) AS linked_quarantine_receipt_exists
             FROM branch_tasks_v2 AS t
             LEFT JOIN request_admissions AS a
                 ON a.admission_id = t.admission_id
@@ -1109,7 +1121,10 @@ class RequestAdmissionStore:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 observed_at = _clock_iso(self._clock)
-                scan_limit = max(1, int(limit))
+                scan_limit = min(
+                    MAX_QUARANTINE_SCAN_ROWS,
+                    max(1, int(limit)),
+                )
                 state = conn.execute(
                     """
                     SELECT last_source_rowid, cycle_high_rowid
@@ -1149,7 +1164,15 @@ class RequestAdmissionStore:
                 receipts: list[dict[str, Any]] = []
                 for integrity_row in rows:
                     scanned += 1
-                    if integrity_row["disabled"]:
+                    if (
+                        integrity_row["status"] in TERMINAL_STATUSES
+                        or (
+                            integrity_row["disabled"]
+                            and integrity_row[
+                                "linked_quarantine_receipt_exists"
+                            ]
+                        )
+                    ):
                         continue
                     reason = classifier(dict(integrity_row))
                     if not reason:
@@ -1216,6 +1239,9 @@ class RequestAdmissionStore:
         observed_at: str,
         fault_injector: Callable[[str, sqlite3.Connection], None] | None = None,
     ) -> dict[str, Any]:
+        clean_reason = _required(reason, "reason")
+        if clean_reason not in QUARANTINE_REASONS:
+            raise ValueError("unsupported quarantine reason")
         snapshot = dict(row)
         existing_for_source = None
         if snapshot.get("disabled") == 1:
@@ -1299,7 +1325,6 @@ class RequestAdmissionStore:
             """,
             (digest,),
         ).fetchone()
-        clean_reason = _required(reason, "reason")
         conn.execute(
             """
             INSERT INTO branch_tasks_v2_quarantine (
@@ -1591,7 +1616,7 @@ _BRANCH_TASK_ID_RE = re.compile(
 _ADMISSION_ID_RE = re.compile(r"^adm_[0-9a-f]{32}$")
 _REQUEST_ID_RE = re.compile(r"^req_[0-9a-f]{32}$")
 _UNIVERSE_ID_RE = re.compile(
-    r"^(?:u-[0-9a-hjkmnp-tv-z]{26}|universe-[a-z0-9][a-z0-9-]{0,63})$"
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 )
 _TRIGGER_SOURCES = frozenset({
     "operator_request",

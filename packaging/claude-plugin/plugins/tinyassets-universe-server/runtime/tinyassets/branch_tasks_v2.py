@@ -61,14 +61,17 @@ DESCRIPTOR_VALIDITY_SECONDS = 90
 logger = logging.getLogger(__name__)
 _IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 _BODY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SOUL_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _BODY_DIGEST_VERSION = "rfc8785-v1"
 _PRIORITY_POLICY_VERSION = "operator-priority-v1"
+_DIRECTED_AUTHORITY_SCOPES = frozenset({
+    "owner",
+    "delegated_host",
+    "local_host",
+})
 _BRANCH_TASK_ID_RE = re.compile(r"^bt2_[0-9a-f]{32}$")
 _ADMISSION_ID_RE = re.compile(r"^adm_[0-9a-f]{32}$")
 _REQUEST_ID_RE = re.compile(r"^req_[0-9a-f]{32}$")
-_UNIVERSE_ID_RE = re.compile(
-    r"^(?:u-[0-9a-hjkmnp-tv-z]{26}|universe-[a-z0-9][a-z0-9-]{0,63})$"
-)
 
 
 @dataclass(frozen=True)
@@ -332,7 +335,7 @@ def _classify_epoch2_row(
         _BRANCH_TASK_ID_RE.fullmatch(row["branch_task_id"]) is None
         or _ADMISSION_ID_RE.fullmatch(row["admission_id"]) is None
         or _REQUEST_ID_RE.fullmatch(row["request_id"]) is None
-        or _UNIVERSE_ID_RE.fullmatch(row["universe_id"]) is None
+        or not _is_path_safe_universe_id(row["universe_id"])
     ):
         return "incomplete"
     if _parse_timestamp(row["queued_at"]) is None:
@@ -393,6 +396,8 @@ def _classify_epoch2_row(
         and row.get("linked_request_universe_id") == row.get("universe_id")
         and row.get("linked_admission_actor_id")
         == row.get("linked_request_user_id")
+        and row.get("linked_request_preferred_author_id")
+        == (row.get("directed_daemon_id") or None)
         and row.get("linked_admission_state") == "committed"
         and row.get("linked_request_status") == row.get("status")
         and isinstance(key_hash, str)
@@ -412,6 +417,7 @@ def _classify_epoch2_row(
         )
         and type(linked_generation) is int
         and linked_generation >= 0
+        and (float(weight) == 0 or linked_generation > 0)
     )
     if not linkage_matches:
         return "invalid_operator_admission"
@@ -443,6 +449,21 @@ def _classify_epoch2_row(
     return None
 
 
+def _is_path_safe_universe_id(value: Any) -> bool:
+    """Match create-time existing/dev ID path safety without narrowing IDs."""
+
+    return bool(
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+        and len(value) <= 255
+        and not value.startswith(".")
+        and "/" not in value
+        and "\\" not in value
+        and "\x00" not in value
+    )
+
+
 def _authority_receipt_matches(
     row: Mapping[str, Any],
     receipt: Mapping[str, Any],
@@ -454,16 +475,17 @@ def _authority_receipt_matches(
     if directed_daemon_id:
         directed_matches = (
             directed.get("daemon_id") == directed_daemon_id
-            and all(
-                isinstance(directed.get(field), str)
-                and bool(directed[field].strip())
-                for field in ("daemon_soul_hash", "authority_scope")
-            )
+            and isinstance(directed.get("daemon_soul_hash"), str)
+            and _SOUL_HASH_RE.fullmatch(directed["daemon_soul_hash"])
+            is not None
+            and directed.get("authority_scope")
+            in _DIRECTED_AUTHORITY_SCOPES
         )
     else:
         directed_matches = directed == {}
     return bool(
         receipt.get("authority") == "request-local"
+        and type(receipt.get("grant_generation")) is int
         and receipt.get("grant_generation")
         == row["linked_admission_grant_generation"]
         and receipt.get("priority_policy_version")
