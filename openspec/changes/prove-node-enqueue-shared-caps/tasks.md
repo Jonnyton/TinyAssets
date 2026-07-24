@@ -19,6 +19,10 @@
 - [x] 3.2 Count distinct same-origin task IDs across live queue and valid archive within the capped append lock
 - [x] 3.3 Make garbage collection fail closed on invalid archives and de-duplicate identified rows during interrupted-move recovery
 - [x] 3.4 Refresh packaged runtime mirrors and verify canonical/mirror parity
+- [x] 3.5 Share one atomic successful-enqueue budget across all source nodes in a compiled run
+- [x] 3.6 Reject queue-row/physical-universe mismatches and pass only the physical universe into graph context
+- [x] 3.7 Refuse all epoch-1 private targets until request-scoped actor authority exists
+- [x] 3.8 Make existing blank or whitespace-only queue/archive history fail closed
 
 ## 4. Verification and foldback
 

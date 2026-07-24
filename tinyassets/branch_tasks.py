@@ -221,7 +221,9 @@ def _read_raw(qp: Path) -> list[dict]:
     except OSError as exc:
         raise RuntimeError(f"Failed to read {qp}: {exc}") from exc
     if not raw.strip():
-        return []
+        raise RuntimeError(
+            f"Corrupt queue/history at {qp}: blank, expected a JSON list"
+        )
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:

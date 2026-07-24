@@ -20,6 +20,14 @@ treated as complete.
   sibling enqueues cannot evade the lineage cap by minting child IDs.
 - Preserve lifetime lineage admission truth across queue garbage collection;
   corrupt archive state fails closed instead of silently resetting that truth.
+- Make the per-run enqueue budget atomic and shared across every source node in
+  the compiled run.
+- Bind the trusted enqueue universe to the physical queue being consumed and
+  reject mismatched persisted metadata before execution.
+- Keep epoch-1 in-node enqueue public-target-only until request-scoped actor
+  authority exists; process-global identity cannot authorize private targets.
+- Treat existing blank queue/archive files as corrupt persisted history rather
+  than empty state.
 - Correct stale test documentation that still describes the production flag as
   waiting to go live.
 
@@ -35,8 +43,8 @@ None.
   contract, stable root lineage, and atomic shared-cap containment
   requirements.
 - `daemon-runtime-and-dispatch`: make archived branch-task history
-  authoritative for lifetime lineage admission and fail closed when that
-  archive cannot be decoded.
+  authoritative for lifetime lineage admission, bind execution to the physical
+  queue universe, and fail closed when required history cannot be decoded.
 
 ## Impact
 

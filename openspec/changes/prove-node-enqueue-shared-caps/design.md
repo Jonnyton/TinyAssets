@@ -14,6 +14,12 @@ two separate lineage defects:
 2. the lineage count reads only the live queue, so garbage collection forgets
    terminal descendants after moving them to the archive.
 
+Independent security review then exposed four older containment gaps: the
+documented per-run budget was allocated per source node, the dispatcher trusted
+the queue row's mutable universe field instead of the physical queue, private
+target authorization inherited process-global identity, and an existing blank
+history file was treated as an empty list.
+
 The active `operator-request-trigger-contract` change designs a future queue
 epoch. This change repairs the production epoch-1 bridge and records invariants
 that any later queue migration must preserve; it does not decide that
@@ -30,6 +36,9 @@ migration.
 - Prove exact cap boundaries through compiled graph threads and the storage
   seam through spawned processes.
 - Fail loudly when persisted history cannot support a safe admission decision.
+- Share one atomic successful-enqueue budget across every source node in a run.
+- Bind enqueue universe authority to the physical queue consumed by dispatch.
+- Refuse private targets until request-scoped actor authority is durable.
 
 **Non-Goals:**
 
@@ -53,6 +62,30 @@ per-child fallback because every source node in the run receives the same
 trusted value. Requiring callers to invent a root task is rejected because the
 soul-loop path is a real run without a parent `BranchTask`.
 
+### Share one atomic budget across the compiled run
+
+`compile_branch` will allocate one small lock-protected budget object and pass it
+to every source-node MCP invoker. A contender reserves a slot immediately
+before the atomic queue append and releases it if append fails, so only
+successful enqueues consume the run budget. Compilation occurs once per
+production run, keeping the counter run-scoped rather than process-global.
+
+### Bind universe authority to the consumed queue
+
+The dispatcher will compare `claimed_task.universe_id` with the canonical name
+of the `universe_path` whose queue supplied the row. A mismatch fails before
+branch execution. After that check, the physical queue name—not row metadata—is
+passed as trusted enqueue context.
+
+### Keep epoch-1 private targets fail closed
+
+The current queue row does not carry request-scoped authenticated actor
+authority. Therefore epoch-1 in-node enqueue will accept only public target
+branches, even when the process-global actor string happens to match a private
+branch author. The active epoch-2 admission design owns durable tenant/actor
+evidence; private targets may be reconsidered only when that evidence is
+carried end to end.
+
 ### Count lifetime lineage across live queue and archive
 
 `append_task_capped` will read the live queue and, only when a lineage cap and
@@ -75,8 +108,10 @@ converges the archive without duplicating that task again.
 Once archived rows participate in admission truth, garbage collection cannot
 replace an unreadable archive with a fresh one. Both capped admission and
 collection will surface the decode/read failure without appending or
-overwriting. This aligns the queue path with the project's fail-loud storage
-rule and prevents silent lineage-budget reset.
+overwriting. Existing zero-byte or whitespace-only queue/archive files are
+invalid JSON and fail the same way; only a missing file means empty history.
+This aligns the queue path with the project's fail-loud storage rule and
+prevents silent budget reset.
 
 ### Prove both semantic and cross-process boundaries
 
@@ -98,8 +133,9 @@ writes.
 - **Spawn tests can be slow on Windows.** → Keep the cohort and cap small,
   enforce join timeouts, and terminate only test-owned processes on failure.
 - **The future queue-epoch change may touch the same semantics.** → Treat these
-  stable-root, lifetime-lineage, and fail-closed rules as required migration
-  invariants, not as an endorsement of the epoch-1 file layout.
+  stable-root, run-wide-budget, physical-universe, lifetime-lineage, and
+  fail-closed rules as required transactional migration invariants. In-node
+  enqueue remains epoch-1-only until v2 implements them.
 
 ## Migration Plan
 

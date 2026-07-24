@@ -678,6 +678,42 @@ def test_gc_corrupt_archive_fails_without_replacing_archive_or_live_queue(
     assert qp.read_bytes() == live_bytes
 
 
+@pytest.mark.parametrize("blank_content", ["", " \n\t"])
+def test_gc_blank_live_queue_fails_without_mutation(universe_dir, blank_content):
+    qp = queue_path(universe_dir)
+    qp.write_text(blank_content, encoding="utf-8")
+    before = qp.read_bytes()
+
+    with pytest.raises(RuntimeError, match="Corrupt queue"):
+        garbage_collect(universe_dir)
+
+    assert qp.read_bytes() == before
+    assert not archive_path(universe_dir).exists()
+
+
+@pytest.mark.parametrize("blank_content", ["", " \n\t"])
+def test_gc_blank_archive_fails_without_mutating_live_or_archive(
+    universe_dir, blank_content,
+):
+    old = datetime.now(timezone.utc) - timedelta(days=90)
+    terminal = _make_task(status="pending", queued_at=old.isoformat())
+    append_task(universe_dir, terminal)
+    qp = queue_path(universe_dir)
+    live = json.loads(qp.read_text(encoding="utf-8"))
+    live[0]["status"] = "succeeded"
+    qp.write_text(json.dumps(live), encoding="utf-8")
+    live_before = qp.read_bytes()
+    ap = archive_path(universe_dir)
+    ap.write_text(blank_content, encoding="utf-8")
+    archive_before = ap.read_bytes()
+
+    with pytest.raises(RuntimeError, match="Corrupt queue"):
+        garbage_collect(universe_dir)
+
+    assert qp.read_bytes() == live_before
+    assert ap.read_bytes() == archive_before
+
+
 def test_gc_interrupted_archive_first_move_converges_without_duplicate(
     universe_dir,
 ):
