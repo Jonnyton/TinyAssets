@@ -10,10 +10,10 @@
   `api/universe.py`; wait for #1623's prerequisite stack to land or for #1623
   to be rebased/retargeted and release the canonical provider-routing spec;
   wait for the provider-auth overlay to land or partition exact ownership;
-  treat merged #1692–#1696 request admission, replay visibility, transactional
-  receipt/result, pending epoch-2 task, and bounded internal queue
-  claim/lease as landed non-provider baselines in canonical and packaged
-  surfaces; then rebase this lane without treating any of them as
+  treat merged #1692, #1693, #1694, and #1696 request admission, replay
+  visibility, transactional receipt/result, pending epoch-2 task, and bounded
+  internal queue claim/lease as landed non-provider baselines in canonical and
+  packaged surfaces; then rebase this lane without treating any of them as
   provider-destination or external-execution authority.
 - [ ] 1.3 Re-check active provider-auth, universe-creation, receipts, and
   paid-market lanes; update their dependency notes so none implements a second

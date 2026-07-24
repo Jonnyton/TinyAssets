@@ -99,3 +99,48 @@ Fresh Windows verification on 2026-07-24:
 
 The verifier returned `SHIP` for publishing this planning refresh. Runtime
 implementation remains gated by `tasks.md`.
+
+## Superseding current-main refresh — 2026-07-24
+
+The lane was rebased again onto `origin/main`
+`0a82dbecdf11eb6f4a8a41060e5f26faf5d06662` after:
+
+- PR #1693 landed replay reauthorization;
+- PR #1694 landed canonical public request admission with one transactional
+  Request/admission receipt/public committed result/event/pending epoch-2 task;
+  and
+- PR #1696 landed epoch-2 queue lifecycle, pure cross-epoch selection, and a
+  bounded internal queue claim/lease.
+
+These are admission, replay visibility, persistence, and scheduling artifacts.
+The request-local receipt/result is distinct from the pending R2-1b
+provider-attempt receipt. The epoch-2 internal queue lease is a bounded
+scheduling reservation, not an external B2/market execution lease. None
+populates the typed request eligible-provider set or grants provider access,
+credentials, compute, market purchase, external execution, settlement, or
+spending.
+
+Operator-request tasks 5.7–5.9 and sections 6–8 remain unchecked, so work
+materialization, graph-cycle integration, B2 signed external-execution
+authority, worker protocol, rollout/cutover, and §14 load/zero-capacity proof
+are not landed.
+
+Independent review first returned `ADAPT` for two wording defects: an inclusive
+PR range accidentally swept in unrelated draft PR #1695, and one normative
+sentence used an ambiguous `None ... MUST` construction. The landed set now
+explicitly names #1692, #1693, #1694, and #1696, and the requirement says
+these artifacts `MUST NOT` authorize provider or external execution.
+Focused re-review returned `APPROVE`.
+
+The verifier returned `SHIP` after confirming:
+
+- targeted strict OpenSpec validation: 1/1 valid;
+- full strict OpenSpec validation: 42/42 valid;
+- `git diff --check origin/main`: exit 0;
+- implementation tasks: 0/41 checked;
+- exact nine-file planning/coordination scope with no runtime, test, packaging,
+  deployment, website, or script changes; and
+- zero conflict markers or high-confidence secret-like additions.
+
+Earlier APPROVE/SHIP verdicts remain historical evidence for their named bases;
+this section records the superseding `0a82dbec` review.

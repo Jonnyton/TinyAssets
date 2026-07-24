@@ -253,7 +253,7 @@ receipt/public committed result/event/pending `branch_tasks_v2` row, and
 #1696 claim MUST NOT populate the typed request eligible-provider set. The
 #1694 `receipt_json` label `authority="request-local"` and directed proposal
 metadata are request-admission evidence only. An epoch-2 claim MAY create only
-its bounded internal queue reservation/lease. None of these artifacts MUST
+its bounded internal queue reservation/lease. These artifacts MUST NOT
 authorize provider access, credentials, compute, market purchase, external
 execution, a B2/market lease, settlement, or spending.
 Every provider attempt MUST obtain fresh persistent assignment and journal

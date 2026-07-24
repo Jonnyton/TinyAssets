@@ -1139,3 +1139,14 @@ Notes:
 - Verification: targeted strict 1/1; full strict 42/42; diff check clean; verifier SHIP; independent ADAPT resolved to APPROVE
 - Related implications: #1692 admission verdict/grant/v1 task and any current/future receipt or scheduling claim grant no provider, compute, market, lease, settlement, or spending authority
 - Ship/abandon: publish refresh with force-with-lease; keep draft until #1660 verdict and every `tasks.md` gate is satisfied
+
+## 2026-07-24 - refresh constrain-engine-providers through PR #1696
+
+- Provider: codex-gpt56-desktop
+- Branch: codex/constrain-engine-providers
+- Lane state: rebased onto `origin/main` `0a82dbec`; planning only; runtime blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-constrain-engine-providers
+- STATUS/Issue/PR: draft PR #1691; current-main refresh independently approved
+- Verification: targeted strict 1/1; full strict 42/42; diff check clean; verifier SHIP; independent ADAPT resolved to APPROVE
+- Related implications: #1692 verdict/grant, #1693 replay, #1694 transactional admission receipt/result/task/event, and #1696 bounded internal queue lease grant no provider or external B2/market execution authority
+- Ship/abandon: publish only after independent review; keep draft until #1660 verdict and every `tasks.md` gate is satisfied
