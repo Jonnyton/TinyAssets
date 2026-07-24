@@ -214,3 +214,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include mismatched-expiry replay and
   revoked-issuer backdating tests in the first red batch; both catch ways an
   apparently idempotent admin API can silently widen authority.
+
+## 2026-07-24 — request-local operator-priority authority
+
+- **What surprised me:** replacing the environment check exposed a second
+  identity boundary: production WorkOS `sub` values are the founder key, while
+  the legacy account helper generated `user::...` aliases. A verdict could be
+  logically correct yet never find a real user's grant.
+- **Pattern worth capturing:** elevation must bind the opaque authenticated
+  subject end to end. Trusted provisioning may create its referential account
+  row, but it must not grant ordinary action scope or ACL authority; those
+  remain separate conjuncts in the request-local verdict.
+- **What I would do differently:** use a production-shaped opaque subject in
+  the first authority test, then exercise host/environment labels only as
+  adversarial non-authority inputs.

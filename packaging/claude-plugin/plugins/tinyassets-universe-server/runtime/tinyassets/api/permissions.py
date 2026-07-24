@@ -18,6 +18,8 @@ allowed on public universes and otherwise require a grant.
 from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass
 from typing import Any
 
 from tinyassets.api.helpers import _base_path
@@ -26,6 +28,148 @@ logger = logging.getLogger("universe_server.permissions")
 
 _READ_PERMISSIONS = frozenset({"read", "write", "admin"})
 _WRITE_PERMISSIONS = frozenset({"write", "admin"})
+_OPERATOR_PRIORITY_POLICY_VERSION = "operator-priority-v1"
+
+
+@dataclass(frozen=True)
+class OperatorRequestAdmissionVerdict:
+    """One request-local composition of ordinary and priority authority."""
+
+    allowed: bool
+    error_code: str
+    actor_id: str
+    tenant_id: str
+    universe_id: str
+    trigger_source: str
+    accepted_priority_weight: float
+    grant_generation: int | None
+    priority_policy_version: str = _OPERATOR_PRIORITY_POLICY_VERSION
+
+
+def _now() -> float:
+    return time.time()
+
+
+def operator_request_admission_verdict(
+    universe_id: str,
+    *,
+    requested_priority_weight: float,
+    directed: bool = False,
+) -> OperatorRequestAdmissionVerdict:
+    """Compose request identity, ordinary scope, ACL, and priority grant.
+
+    The caller supplies only the requested weight and target. Actor, tenant,
+    ordinary action authority, exact-universe ACL, grant generation, trigger
+    source, and evaluation time are server-derived. Environment identity and
+    wildcard grants are never consulted.
+    """
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.auth.provider import action_scope_for
+    from tinyassets.daemon_server import universe_access_permission
+    from tinyassets.storage.accounts import get_active_priority_grant
+
+    uid = (universe_id or "").strip()
+    identity = current_identity()
+    actor_id = (identity.user_id or "").strip()
+    authenticated = bool(actor_id and actor_id != "anonymous")
+    identity_metadata = identity.metadata or {}
+    tenant_id = str(
+        identity_metadata.get("org_id")
+        or identity_metadata.get("tenant_id")
+        or actor_id
+    ).strip()
+    trigger_source = "owner_queued" if directed else "user_request"
+
+    def verdict(
+        *,
+        allowed: bool,
+        error_code: str = "",
+        accepted_priority_weight: float = 0.0,
+        grant_generation: int | None = None,
+        priority_trigger: bool = False,
+    ) -> OperatorRequestAdmissionVerdict:
+        return OperatorRequestAdmissionVerdict(
+            allowed=allowed,
+            error_code=error_code,
+            actor_id=actor_id or "anonymous",
+            tenant_id=tenant_id or actor_id or "anonymous",
+            universe_id=uid,
+            trigger_source=(
+                "owner_queued"
+                if directed
+                else "operator_request" if priority_trigger
+                else trigger_source
+            ),
+            accepted_priority_weight=accepted_priority_weight,
+            grant_generation=grant_generation,
+        )
+
+    if not authenticated or not uid:
+        return verdict(allowed=False, error_code="universe_access_denied")
+
+    action_scope = action_scope_for("universe", "submit_request")
+    grants = {
+        str(capability).strip()
+        for capability in identity.capabilities
+        if str(capability).strip()
+    }
+    ordinary_authorized = bool(
+        action_scope
+        and (
+            action_scope.oauth_scope in grants
+            or action_scope.effect in grants
+        )
+    )
+    if not ordinary_authorized:
+        return verdict(allowed=False, error_code="universe_access_denied")
+
+    try:
+        acl_permission = universe_access_permission(
+            _base_path(),
+            universe_id=uid,
+            actor_id=actor_id,
+        )
+    except Exception:
+        logger.warning(
+            "operator request ACL evaluation failed closed for %r",
+            uid,
+            exc_info=True,
+        )
+        return verdict(allowed=False, error_code="universe_access_denied")
+    if acl_permission not in _WRITE_PERMISSIONS:
+        return verdict(allowed=False, error_code="universe_access_denied")
+
+    if requested_priority_weight == 0:
+        return verdict(allowed=True)
+
+    evaluated_at = _now()
+    try:
+        grant = get_active_priority_grant(
+            _base_path(),
+            subject_id=actor_id,
+            universe_id=uid,
+            evaluated_at=evaluated_at,
+        )
+    except Exception:
+        logger.warning(
+            "operator request priority evaluation failed closed for %r",
+            uid,
+            exc_info=True,
+        )
+        grant = None
+    if grant is None:
+        return verdict(
+            allowed=False,
+            error_code="priority_authorization_required",
+        )
+
+    return verdict(
+        allowed=True,
+        accepted_priority_weight=requested_priority_weight,
+        grant_generation=int(grant["generation"]),
+        priority_trigger=True,
+    )
 
 
 def current_request_actor_id() -> str:
