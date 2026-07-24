@@ -1070,3 +1070,13 @@ Notes:
 - Related implications: no maintainer quota for requester work; BYOC/accepted-market execution only; no runtime edits before opposite-provider approval
 - Idea feed refs: 2026-07-20 BYOC/federated market direction
 - Ship/abandon: publish review packet only; after Claude APPROVE, broaden the STATUS file claim before tests or runtime implementation
+
+## 2026-07-23 - ready first-contact-authority-review
+
+- Provider: codex-gpt5-desktop-byoc
+- Branch: codex/first-contact-authority-review
+- Lane state: packet independently Codex-approved; awaiting required Claude opposite-provider review
+- Worktree: C:\Users\Jonathan\Projects\wf-first-contact-authority-review
+- STATUS/Issue/PR: P0 #1582; draft PR #1660; stale overlapping draft #1617
+- Verification: strict OpenSpec 41/41; diff check clean; security/economy APPROVE; architecture/OpenSpec APPROVE
+- Ship/abandon: keep draft; accepted Claude verdict permits owning-spec fold-in only, not runtime implementation
