@@ -1103,6 +1103,7 @@ Notes:
 - STATUS/Issue/PR: only the post-deploy organic-use watch remains
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
+
 ## 2026-07-23 - create first-contact-authority-review
 
 - Provider: codex-gpt5-desktop-byoc
@@ -1126,3 +1127,14 @@ Notes:
 - STATUS/Issue/PR: P0 #1582; draft PR #1660; stale overlapping draft #1617
 - Verification: strict OpenSpec 41/41; diff check clean; security/economy APPROVE; architecture/OpenSpec APPROVE
 - Ship/abandon: keep draft; accepted Claude verdict permits owning-spec fold-in only, not runtime implementation
+
+## 2026-07-24 - refresh first-contact-authority-review
+
+- Provider: codex-gpt56-desktop
+- Branch: codex/first-contact-authority-review
+- Lane state: rebased onto `origin/main` `412a876a`; packet refreshed; awaiting opposite-provider verdict
+- Worktree: C:\Users\Jonathan\Projects\wf-first-contact-authority-review
+- STATUS/Issue/PR: draft PR #1660; runtime remains blocked
+- Verification: current-main-first conflict resolution; strict OpenSpec 41/41; independent packet ownership/freshness review APPROVE
+- Related implications: R2-1a successor `934340ca`; R2-1b planning #1650 merged; #1685/#1689 are admission/priority only
+- Ship/abandon: force-push only with the old remote `979e58db` lease; request Claude review after provider capacity resets

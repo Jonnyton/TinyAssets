@@ -3,10 +3,11 @@
 **Status:** review input only; not architecture, canonical spec truth, or
 implementation authority.
 
-**Freshness:** 2026-07-23 PT against `origin/main` `85c91087`, draft PRs
-[#1606](https://github.com/Jonnyton/TinyAssets/pull/1606) and
-[#1617](https://github.com/Jonnyton/TinyAssets/pull/1617), and the current
-OpenSpec tree.
+**Freshness:** refreshed 2026-07-24 PT against `origin/main`
+`412a876add4a1df914dea7017cd94f924e4aa30d`, open draft
+[#1617](https://github.com/Jonnyton/TinyAssets/pull/1617), the independently
+approved planning successor `codex/constrain-engine-providers` at
+`934340ca244e325774a128ac889a82c5a2a478ff`, and the current OpenSpec tree.
 
 **Required reviewer:** Claude, after its 2026-07-24 evening PT capacity reset.
 Codex authored the initial research. Per `AGENTS.md`, only an independent
@@ -51,26 +52,47 @@ test is authorized by this packet.
 5. Provider routing can use a persistent `allowed_providers` ceiling, but a
    ceiling is not positive per-request spending authority. `None` currently
    means the ordinary chain, including configured local/provider fallbacks.
-6. The current universe child-environment guard strips normal inherited
-   subscription homes when a newborn has no vault. Partial overlay or a
-   resolver/materialization exception can retain ambient host authority. The
-   current STATUS claim is branch `codex/fail-closed-provider-auth-overlay` at
-   `15fac0b4`; its former PR #1609 is closed, so the repaired seam is not
-   consumable until that branch is republished/merged or an accepted successor
-   is named.
+6. PR #1546 (`92dd60c5`) landed the host-credential half: the universe
+   child-environment guard strips normal inherited subscription homes when a
+   newborn has no vault. Partial overlay or a resolver/materialization
+   exception can still retain ambient host authority. Residual branch
+   `codex/fail-closed-provider-auth-overlay` is at `dd71fc1c`; its former PR
+   #1609 is closed, so that residual seam is not consumable until the branch is
+   republished/merged or an accepted successor is named.
 7. `set_engine` persists BYOC/self-hosted/market configuration, but no runtime
    accepted-market execution grant exists. A universe vault record also lacks
    sufficient resource-owner/delegation evidence to prove economic authority.
 8. Production evidence shows birth followed by provider exhaustion, not a
    speaking newborn. Existing first-contact reply tests replace the provider
    call with a fake before proving the reply path.
-9. Draft PR #1606 supplies part of the persistent provider ceiling and migration
-   fence, but its current independent review is `ADAPT`; it intentionally does
-   not own request-authority propagation or accepted-market grants.
-10. Active change `provider-attempt-receipts` owns the target race-safe provider
-    result/receipt seam (STATUS shorthand R2-1b); its runtime remains pending.
-    This lane must not create `_last_provider` or a second receipt system.
-11. `docs/design-notes/2026-04-18-full-platform-architecture.md` §20—not
+9. The independently approved planning successor
+   `codex/constrain-engine-providers` at `934340ca` proposes that draft PR
+   #1606 be superseded as the authority owner. The successor owns only
+   persistent provider-destination assignment, fail-closed
+   request/assignment intersection at routing time, and provider transport
+   launch lifecycle. It preserves `universe-creation` as requester/market
+   semantic-authority owner and explicitly excludes accepted-market
+   agreements, leases, settlement, and accounting from the ordinary router.
+   This disposition is not landed repository state: #1606 remains open/dirty,
+   and GitHub's Pull Requests service was in a major partial outage when this
+   refresh was prepared, so the pushed successor has no PR yet.
+10. PR #1650 (`c96e3d01`) merged the strict-valid
+    `provider-attempt-receipts` planning contract (STATUS shorthand R2-1b).
+    Runtime remains pending. This lane must not create `_last_provider` or a
+    second receipt system.
+11. PR #1685 (`c1fe0f85`) landed the transactional operator-request admission
+    storage seam, which remains unreachable from an activated public execution
+    route. PR #1689 (`5c64605a`) landed exact-universe operator-priority grant
+    lifecycle, not an activated public execution route. These are
+    queue-admission and priority seams only. They grant no provider, compute,
+    economic, model-access, or spending authority.
+12. PR #1617 remains open/dirty and currently claims the authority contract.
+    The reviewed successor proposal treats it as candidate detail only and
+    proposes that it not merge or remain an independent requester-authority
+    owner; after #1660's verdict is accepted, accepted findings fold into the
+    current `universe-creation` change. This disposition is not yet landed
+    repository state.
+13. `docs/design-notes/2026-04-18-full-platform-architecture.md` §20—not
     `PLAN.md`—defines BYOC/self-host and accepted-market fulfillment as peer
     user choices and rejects a guaranteed reference-host pool. The host has
     separately directed that the platform provides no compute and that user
@@ -120,9 +142,12 @@ correctly retain an empty persistent `allowed_providers` ceiling.
 | Concern | Owner / required seam | This lane may do |
 |---|---|---|
 | Founder-home birth and held first contact | active `universe-creation` | Integrate the authority result into first contact |
-| Persistent server-provider ceiling and fallback | STATUS R2-1a; draft PR #1606, unlanded and currently ADAPT | Consume the accepted successor's derived eligible-provider seam; do not build a router |
-| Ambient credential isolation | STATUS branch `codex/fail-closed-provider-auth-overlay` at `15fac0b4`; former PR #1609 closed | Owner unresolved until republished/merged or superseded; do not consume a hypothetical repair |
-| Result-local invocation receipt | active `provider-attempt-receipts`; runtime pending | Extend its accepted returned result with authority dimensions |
+| Persistent server-provider ceiling and fallback | independently approved planning successor `codex/constrain-engine-providers` at `934340ca`; PR publication blocked by GitHub outage | Consume its fresh assignment/request intersection; do not define requester authority or another router |
+| Requester and market semantic execution authority | active `universe-creation`, 6/33 complete; task 2.0 hard-gated on this verdict | Fold exact accepted findings into this owner; do not revive #1617 as a second owner |
+| Exhaustive provider-authority carrier/threading | future subordinate `provider-authority-propagation`, only after this verdict is accepted and folded into `universe-creation` | Carry the accepted authority; do not create a second requester authority, router, receipt, vault, market, or credential-isolation contract |
+| Ambient credential isolation | PR #1546 landed the host-credential half; residual branch `codex/fail-closed-provider-auth-overlay` at `dd71fc1c`; former PR #1609 closed | Residual owner unresolved until republished/merged or superseded; do not consume a hypothetical repair |
+| Result-local invocation receipt | PR #1650 merged the strict-valid `provider-attempt-receipts` contract; runtime pending | Extend its accepted returned result with authority dimensions |
+| Operator request admission and priority | PRs #1685 and #1689 landed | Queue admission/priority only; never treat as provider, compute, model-access, economic, or spending authority |
 | Market quote/ranking | active `paid-market-live-price-discovery` | Discovery only; never positive authority |
 | Request/bid/match/claim and logical accounting | active `paid-market-track-e-wave-2-transport` | Consume its accepted terminal handoff; do not duplicate transport |
 | Remote executor identity/lease/fence | active `distributed-execution` | Verify and bind its accepted signed result; do not invent a lease protocol |
@@ -353,8 +378,8 @@ secret custody.
 - Name and accept an encrypted-custody/scoped-lease owner and contract.
 - Only then enroll an admissible requester-owned API/project/service,
   enterprise noninteractive, or workload-identity resource out of band.
-- Route its eligible server-provider set through the accepted PR #1606/R2-1a
-  successor.
+- Route its eligible server-provider set through the accepted R2-1a successor;
+  do not revive PR #1606 as an authority owner.
 
 This slice is blocked and is not an implementation deliverable of this packet.
 
@@ -384,8 +409,9 @@ over the same authority grammar.
    `credential-vault`, `universe-personification-and-relay`,
    `paid-market-economy`, and `distributed-execution`.
 4. Treat PR #1617 as candidate detail, not current truth. In particular, do not
-   remove as-built credential-vault requirements before a reviewed encrypted
-   custody replacement exists.
+   merge it as an independent requester-authority owner or remove as-built
+   credential-vault requirements before a reviewed encrypted-custody
+   replacement exists. Accepted findings fold into `universe-creation`.
 5. Verify the adaptations in §5 close execution venue, budget, data scope,
    asynchronous state, receipt, and cross-capability conflicts.
 6. Leave the verdict in a durable artifact and on the review PR. If `ADAPT`,
@@ -401,3 +427,7 @@ over the same authority grammar.
   dependencies and ownership are clear.
 - Implementation begins with red fake-only tests and never uses maintainer
   resources as proof.
+
+Refresh evidence on 2026-07-24: `openspec validate --all --strict` passed
+41/41 on this planning branch, `git diff --check origin/main` passed, and
+`universe-creation` remained 6/33 complete with task 2.0 as the hard gate.
