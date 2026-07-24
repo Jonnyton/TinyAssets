@@ -107,6 +107,23 @@ transactional rollback path. The installer does not call `rclone mkdir` first:
 S3 has no empty directories, and rclone's nominal no-op still performs an
 unbounded data-plane request that would bypass the retry gate.
 
+### Exercise backup only by explicit dispatch
+
+Normal deploy-triggered and manual installer runs converge host services without
+starting a potentially long backup. The `workflow_dispatch` surface exposes a
+default-false boolean `run_backup`; only an explicit true value starts
+`tinyassets-backup.service` after exact-source installation.
+
+The exercise records the newest brain/full primary archive names before the
+service, requires `Result=success`, then requires both newest names to change.
+It captures the new service invocation's systemd `InvocationID` and queries
+only journal entries carrying that exact `_SYSTEMD_INVOCATION_ID`; a
+second-resolution time window could mix markers from a concurrent or immediately
+preceding run. Within that invocation it requires both primary upload markers,
+exactly two GitHub release asset upload markers, no backup error marker, and the
+terminal completion marker. It prints only archive names and counts, never the
+environment file, rclone configuration, or credentials.
+
 ## Risks / Trade-offs
 
 - **[DigitalOcean token lacks new Spaces-key scopes]** → The install run stays
@@ -128,7 +145,8 @@ unbounded data-plane request that would bypass the retry gate.
 1. Land the deploy preservation and convergent installer changes.
 2. Run the installer at the exact merge SHA. On the currently absent host, it
    creates and verifies one scoped Spaces key.
-3. Run the backup unit manually; verify both tiers exist in Spaces and GitHub.
+3. Dispatch the exact-source installer with `run_backup=true`; verify fresh
+   brain/full archives in Spaces and both GitHub release assets.
 4. Download a new full-tier artifact and run non-mutating archive validation.
 5. Dispatch a production deploy and confirm `BACKUP_DEST`, rclone access, and
    the backup timer remain healthy.

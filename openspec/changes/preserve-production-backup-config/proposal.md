@@ -15,6 +15,8 @@ failed before creating either tier.
   from being classified as stale runtime state again.
 - Preserve the pre-rename identity of the existing external Spaces bucket;
   product terminology changes do not rename provider resources.
+- Add an explicit exact-source dispatch option that runs the real backup and
+  verifies fresh primary archives plus both GitHub release assets.
 - Correct the runbook's historical "current droplet" claim and record fresh
   production backup evidence after configuration is restored.
 

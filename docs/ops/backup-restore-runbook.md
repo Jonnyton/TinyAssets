@@ -85,6 +85,19 @@ and received HTTP 403 before the bounded retry loop. Rollback again removed the
 host configuration and new key. The installer no longer calls `mkdir`; its
 bounded non-mutating list probe is the only data-plane gate.
 
+Exact-merge installer run `30071496671` completed successfully on 2026-07-23:
+the scoped key passed the bounded data-plane gate and the five uptime timers
+were converged from merge `37698cadd7c3ec7072120fe466e85436aec80386`.
+
+To collect fresh backup evidence without making every deploy run a backup,
+dispatch `install-host-services.yml` at an exact merge ref with
+`run_backup=true`. The default is false. The exercise requires a successful
+oneshot result, new brain/full archive names at the Spaces destination, exactly
+two GitHub release upload markers, and `backup complete.` All journal markers
+must carry the new service run's exact systemd invocation ID; time-window
+queries are insufficient because they can mix adjacent runs. The exercise never
+prints the environment file or rclone credentials.
+
 The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
 (secondary)**.
 Teardown/rollback: delete the Spaces key via DO API, repoint `BACKUP_DEST`,

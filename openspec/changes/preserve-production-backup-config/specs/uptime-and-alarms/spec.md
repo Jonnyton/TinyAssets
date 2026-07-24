@@ -54,3 +54,17 @@ credential configuration are absent.
 - **WHEN** product-facing source and documentation use the TinyAssets name
 - **THEN** the installer and runbook retain the provider identity of the existing pre-rename Spaces bucket
 - **AND** they do not silently substitute a similarly named bucket that has not been created and verified
+
+#### Scenario: Operator explicitly exercises a production backup
+
+- **WHEN** an exact-source manual host-service dispatch sets `run_backup` true
+- **THEN** the workflow starts the installed backup service after convergence
+- **AND** requires a successful service result and fresh brain/full archives at the primary destination
+- **AND** scopes journal evidence to the new service invocation's exact systemd invocation ID
+- **AND** requires two successful GitHub release asset uploads and the terminal backup completion marker from that invocation
+- **AND** emits no environment-file contents, rclone configuration, or credential values
+
+#### Scenario: Host-service installation does not request backup exercise
+
+- **WHEN** a deploy-triggered run or manual dispatch leaves `run_backup` false
+- **THEN** host services converge without starting the backup service
