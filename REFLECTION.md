@@ -118,3 +118,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include pagination, exact provider field
   semantics, permission prerequisites, and provenance in the first selector
   design instead of treating a large first page as the whole catalog.
+
+## 2026-07-23 — bootstrap checkout ownership
+
+- **What surprised me:** the obvious exact-path `safe.directory` fix still
+  granted root trust to a service-user-writable repository; independent review
+  also exposed the separate interrupted-clone rerun path.
+- **Pattern worth capturing:** privilege-sensitive convergence must model every
+  ownership state, including partial prior runs. Run repository tools as the
+  current owner instead of weakening their trust guard, then validate immutable
+  identity before a privileged installer consumes it.
+- **What I would do differently:** enumerate fresh, completed-repeat, and
+  interrupted-repeat ownership states before drafting the first design, and
+  treat a security guard failure as a boundary signal rather than an obstacle
+  to bypass.
