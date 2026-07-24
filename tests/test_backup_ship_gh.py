@@ -382,12 +382,53 @@ def test_api_timeout_uses_controlled_transport_error(monkeypatch) -> None:
 
 
 def test_retention_reconcile_budget_is_bounded_to_two_minutes() -> None:
-    worst_case_seconds = (
-        bsg.PRUNE_RECONCILE_ATTEMPTS * bsg.GH_API_TIMEOUT_SECONDS
-        + (bsg.PRUNE_RECONCILE_ATTEMPTS - 1)
-        * bsg.PRUNE_RECONCILE_DELAY_SECONDS
-    )
-    assert worst_case_seconds <= 120
+    assert bsg.PRUNE_RECONCILE_BUDGET_SECONDS <= 120
+
+
+def test_stale_victim_reconciliation_stops_at_wall_clock_budget(
+    monkeypatch,
+) -> None:
+    now = [0.0]
+    current = {
+        "id": 31,
+        "tag_name": "tinyassets-brain-2026-07-31T03-00-00Z",
+        "published_at": "2026-07-31T03:00:10Z",
+    }
+    listed = [
+        {
+            "id": index,
+            "tag_name": f"tinyassets-data-2026-07-{index:02d}T03-00-00Z",
+            "published_at": f"2026-07-{index:02d}T03:00:10Z",
+        }
+        for index in range(1, 31)
+    ] + [current]
+
+    def _list(*args, timeout_seconds, **kwargs):
+        now[0] += timeout_seconds
+        return list(listed)
+
+    def _delete(*args, deadline, monotonic_fn, **kwargs):
+        now[0] += min(
+            bsg.GH_API_TIMEOUT_SECONDS,
+            deadline - monotonic_fn(),
+        )
+        return False
+
+    def _sleep(seconds):
+        now[0] += seconds
+
+    monkeypatch.setattr(bsg, "list_releases", _list)
+    monkeypatch.setattr(bsg, "delete_release", _delete)
+    with pytest.raises(RuntimeError, match="budget"):
+        bsg.prune_releases(
+            "tok",
+            "o/r",
+            keep=30,
+            include_release=current,
+            sleep_fn=_sleep,
+            monotonic_fn=lambda: now[0],
+        )
+    assert now[0] <= bsg.PRUNE_RECONCILE_BUDGET_SECONDS
 
 
 # ── prune scoping (non-backup releases are permanent) ─────────────────

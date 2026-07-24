@@ -371,11 +371,12 @@ curl -sL -H "Authorization: Bearer $GH_TOKEN" \
 (`BACKUP_GH_RETAIN`). Retention waits boundedly until GitHub's list endpoint
 contains the just-created release; an already-deleted victim in a stale view
 forces another bounded reconciliation pass. Each API request has a 15-second
-transport timeout and the complete list-reconciliation budget is at most two
-minutes. The oldest recognized backup releases are then pruned after each
-successful upload. Unrecognized parked/audit releases are permanent and do
-not count toward this limit, so the repository's total release count can be
-higher.
+transport timeout, and one shared wall-clock budget across listing, release
+deletion, best-effort tag cleanup, and retry sleeps caps the complete
+reconciliation at two minutes. The oldest recognized backup releases are then
+pruned after each successful upload. Unrecognized parked/audit releases are
+permanent and do not count toward this limit, so the repository's total
+release count can be higher.
 
 **Setup:** create `Jonnyton/tinyassets-backups` as a private repo once (or let
 `backup_ship_gh.py` create it automatically on first run).  Add `GH_TOKEN` to

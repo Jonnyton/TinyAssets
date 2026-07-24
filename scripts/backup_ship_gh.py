@@ -49,12 +49,25 @@ DEFAULT_RETAIN = 30
 GH_API_TIMEOUT_SECONDS = 15
 PRUNE_RECONCILE_ATTEMPTS = 6
 PRUNE_RECONCILE_DELAY_SECONDS = 2
+PRUNE_RECONCILE_BUDGET_SECONDS = 120
 
 
 class GitHubAPIError(RuntimeError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
+
+
+def _remaining_request_timeout(
+    deadline: float | None,
+    monotonic_fn: Any,
+) -> float:
+    if deadline is None:
+        return GH_API_TIMEOUT_SECONDS
+    remaining = deadline - monotonic_fn()
+    if remaining <= 0:
+        raise RuntimeError("GitHub release retention budget exhausted")
+    return min(GH_API_TIMEOUT_SECONDS, remaining)
 
 
 def _token() -> str:
@@ -81,6 +94,7 @@ def _api(
     body: dict[str, Any] | None = None,
     *,
     post_fn: Any = None,
+    timeout_seconds: float = GH_API_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
@@ -97,7 +111,7 @@ def _api(
     try:
         with urllib.request.urlopen(
             req,
-            timeout=GH_API_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         ) as resp:
             raw = resp.read().decode()
             # Some endpoints (DELETE release → 204) return an empty body —
@@ -207,9 +221,16 @@ def list_releases(
     repo: str,
     *,
     post_fn: Any = None,
+    timeout_seconds: float = GH_API_TIMEOUT_SECONDS,
 ) -> list[dict[str, Any]]:
     url = f"{GH_API}/repos/{repo}/releases?per_page=100"
-    return _api(token, "GET", url, post_fn=post_fn)  # type: ignore[return-value]
+    return _api(  # type: ignore[return-value]
+        token,
+        "GET",
+        url,
+        post_fn=post_fn,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def delete_release(
@@ -219,10 +240,16 @@ def delete_release(
     tag: str,
     *,
     post_fn: Any = None,
+    deadline: float | None = None,
+    monotonic_fn: Any = time.monotonic,
 ) -> bool:
     try:
         _api(token, "DELETE", f"{GH_API}/repos/{repo}/releases/{release_id}",
-             post_fn=post_fn)
+             post_fn=post_fn,
+             timeout_seconds=_remaining_request_timeout(
+                 deadline,
+                 monotonic_fn,
+             ))
     except GitHubAPIError as exc:
         if exc.status == 404:
             return False
@@ -230,7 +257,11 @@ def delete_release(
     # Also delete the tag so the repo stays clean.
     try:
         _api(token, "DELETE", f"{GH_API}/repos/{repo}/git/refs/tags/{tag}",
-             post_fn=post_fn)
+             post_fn=post_fn,
+             timeout_seconds=_remaining_request_timeout(
+                 deadline,
+                 monotonic_fn,
+             ))
     except RuntimeError:
         pass  # tag deletion is best-effort
     return True
@@ -278,10 +309,27 @@ def prune_releases(
     include_release: dict[str, Any] | None = None,
     post_fn: Any = None,
     sleep_fn: Any = time.sleep,
+    monotonic_fn: Any = time.monotonic,
 ) -> int:
+    deadline = monotonic_fn() + PRUNE_RECONCILE_BUDGET_SECONDS
+
+    def wait_for_retry() -> None:
+        remaining = deadline - monotonic_fn()
+        if remaining <= 0:
+            raise RuntimeError("GitHub release retention budget exhausted")
+        sleep_fn(min(PRUNE_RECONCILE_DELAY_SECONDS, remaining))
+
     pruned = 0
     for attempt in range(PRUNE_RECONCILE_ATTEMPTS):
-        listed = list_releases(token, repo, post_fn=post_fn)
+        listed = list_releases(
+            token,
+            repo,
+            post_fn=post_fn,
+            timeout_seconds=_remaining_request_timeout(
+                deadline,
+                monotonic_fn,
+            ),
+        )
         if include_release is not None:
             listed_ids = {release.get("id") for release in listed}
             if include_release.get("id") not in listed_ids:
@@ -290,7 +338,7 @@ def prune_releases(
                         "GitHub release list did not converge on the "
                         "just-created backup release"
                     )
-                sleep_fn(PRUNE_RECONCILE_DELAY_SECONDS)
+                wait_for_retry()
                 continue
         releases = [
             release for release in listed
@@ -308,6 +356,8 @@ def prune_releases(
                 release["id"],
                 release.get("tag_name", ""),
                 post_fn=post_fn,
+                deadline=deadline,
+                monotonic_fn=monotonic_fn,
             )
             if deleted is False:
                 stale_victim = True
@@ -320,7 +370,7 @@ def prune_releases(
         if not stale_victim:
             return pruned
         if attempt + 1 < PRUNE_RECONCILE_ATTEMPTS:
-            sleep_fn(PRUNE_RECONCILE_DELAY_SECONDS)
+            wait_for_retry()
     raise RuntimeError("GitHub release retention view did not converge")
 
 

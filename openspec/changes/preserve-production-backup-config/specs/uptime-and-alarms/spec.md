@@ -74,7 +74,7 @@ credential configuration are absent.
 
 - **WHEN** a backup release and asset have been created successfully but the release-list endpoint has not yet returned that new release
 - **THEN** retention boundedly waits for a list view that includes the newly created release before evaluating the prunable set
-- **AND** each list request has an explicit transport timeout and the complete retry/sleep budget is at most two minutes
+- **AND** each API request has an explicit transport timeout and one shared wall-clock budget across listing, deletion, tag cleanup, and sleeps caps reconciliation at two minutes
 - **AND** an already-deleted victim returned by a stale list triggers bounded reconciliation rather than being counted as a successful deletion
 - **AND** it deletes only the oldest recognized backup releases needed to leave at most `BACKUP_GH_RETAIN` recognized releases
 - **AND** it never deletes an unrecognized parked or audit release
