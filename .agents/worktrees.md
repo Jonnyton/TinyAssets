@@ -1056,3 +1056,18 @@ Notes:
 - STATUS/Issue/PR: implementation row retired; P1 live-failure-exercise watch retained; PR pending
 - Verification: 240 focused checks; pinned actionlint 1.7.7; strict OpenSpec 42/42; three independent approvals
 - Ship/abandon: merge through PR; do not claim operational proof until both production-safe failure exercises pass
+
+## 2026-07-23 - create finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: Active OpenSpec + concurrency-proof lane
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: `Prove shared in-node enqueue caps`; PR pending
+- PLAN refs: Module Engine & Domains; Module Daemon Platform; §14 concurrency/load-test proof
+- Purpose: backfill the approved live enqueue contract and prove exact shared-cap behavior under contention
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-finish-node-enqueue\_PURPOSE.md
+- Memory refs: `docs/audits/2026-05-30-in-node-enqueue-codex-review.md`; `docs/audits/2026-06-02-in-node-enqueue-adapt-rereview.md`
+- Related implications: production flag is already on; no runtime behavior change unless the proof exposes a defect
+- Idea feed refs: none
+- Ship/abandon: merge through a reviewed PR after strict OpenSpec and focused concurrency evidence
