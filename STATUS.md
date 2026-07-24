@@ -22,6 +22,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **Distributed execution D0 dark authority spine** — sealed verification, signed records, durable fences/replay, fresh blob proof, fake-only composition; no production wiring | STATUS.md; .agents/worktrees.md; openspec/changes/distributed-execution/tasks.md; tinyassets/runtime/{__init__.py,verified.py,signed_records.py,authority_store.py,blob_refs.py}; tinyassets/testing/{__init__.py,d0_authority.py}; tests/test_d0_{signed_authority,authority_store,blob_refs,authority_spine}.py | #1699; #1697 read-only non-promotion invariant; independent D0 diff review | claimed:codex-gpt5-desktop ACTIVE 2026-07-24 |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Backfill remaining credential-vault shipped contracts** — canonical owner landed via #1607; alias/first-record selection remains; re-check fixed-temp truth after #1606 disposition | openspec/changes/backfill-credential-vault-shipped-contracts/ | fail-closed provider overlay releases `openspec/specs/credential-vault/spec.md`; #1606 or declared successor settles replacement semantics/disposition | pending |
@@ -42,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
+| Register the `TinyAssets` ChatGPT connector at `https://tinyassets.io/mcp` as workspace admin | OpenAI workspace admin | canonical `/mcp` live and `/mcp-directory*` absent | host-action |
 
 ## Live brain notes
 

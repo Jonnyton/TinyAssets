@@ -1115,3 +1115,15 @@ Notes:
 - Review gate: independent security/design review now; opposite-provider review before live apply/deploy
 - Memory/implications: PR #1475 handoff; PRs #1472/#1477/#1479/#1481/#1487/#1491; `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`
 - Ship/abandon: ship when OpenSpec is strict-valid and current-main staged authority boundaries are independently approved; abandon only for a newer explicit successor
+
+## 2026-07-24 - created distributed-execution-d0
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/distributed-execution-d0
+- Lane state: active implementation lane
+- Worktree: C:\Users\Jonathan\Projects\wf-distributed-execution-d0
+- STATUS/Issue/PR: claimed; PR pending
+- Scope: implement the dark fake/test-only signed-authority spine from `distributed-execution` tasks 1.1-1.16; no production wiring
+- Review gate: focused TDD plus independent security/diff review; opposite-provider review remains required before any real-provider path
+- Memory/implications: PR #1699; #1697 non-promotion invariant; stale PR extraction sources named in the OpenSpec design
+- Ship/abandon: ship only with the D0 focused path, mutation proof, full strict OpenSpec validation, and zero production imports/routes/adapters
