@@ -12,5 +12,5 @@
 ## 3. Verification And Handoff
 
 - [x] 3.1 Run focused workflow tests, actionlint, strict OpenSpec validation, Ruff, and diff checks.
-- [ ] 3.2 Obtain independent exact-SHA review, sync/archive the change, and publish the infra PR.
-- [ ] 3.3 Preserve the exact-landed DR rerun as the production monitoring handoff.
+- [x] 3.2 Obtain independent exact-SHA review, sync/archive the change, and publish the infra PR.
+- [x] 3.3 Preserve the exact-landed DR rerun as the production monitoring handoff.
