@@ -106,3 +106,15 @@ fresh-host rollback edges found later.
   deletion as explicit tested states in the first proposal, including request
   timeouts and adversarial output fields, instead of adding them after the
   happy path is sketched.
+
+## 2026-07-23 — provider-inventory DR selection
+
+- **What surprised me:** once API diagnostics became truthful, the next outage
+  was provider inventory drift rather than restore logic; a retired base-image
+  slug stopped the drill before it could test recovery.
+- **Pattern worth capturing:** provider inventory should be resolved from a
+  bounded, schema-validated catalog before any mutation, with pagination and
+  the resolved identity retained in terminal evidence.
+- **What I would do differently:** include pagination, exact provider field
+  semantics, permission prerequisites, and provenance in the first selector
+  design instead of treating a large first page as the whole catalog.
