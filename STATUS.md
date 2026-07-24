@@ -6,7 +6,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
-- **[P0 filed:2026-07-22 verified:2026-07-23]** Fresh hosts omit disk-watch and do not converge watchdog/backup/prune timers.
 - **[P1 filed:2026-07-22 verified:2026-07-23]** Runtime rejects authorized `operator_request`; dispatcher enables only `host_request`. #1628 is spec-only.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
@@ -24,6 +23,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
 | **Implement moderation and abuse response** — #1662 authority contract APPROVED at `e330e014`; persistence/service/API/discovery/§14 await canonical-store decision | tinyassets/moderation/; tinyassets/api/moderation.py; tests/test_moderation_{service,authority,concurrency}.py; docs/audits/2026-07-23-canonical-production-store-decision-packet.md; openspec/changes/complete-independent-full-platform-targets/tasks.md; STATUS.md; .agents/worktrees.md; REFLECTION.md | task 1.4 opposite-family APPROVE; host decision: canonical production store/migration home; then claim canonical read routers; no new MCP handle | in-flight PR #1662 |
+| **Monitor converged host uptime installation** — prove exact landed commit on disposable Debian plus real install workflow and watchdog/disk/backup/prune executions | docs/audits/2026-07-23-host-uptime-installer-concurrency-proof.md; production workflow/systemd evidence | post-merge exact SHA | monitoring |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Backfill remaining credential-vault shipped contracts** — canonical owner landed via #1607; alias/first-record selection remains; re-check fixed-temp truth after #1606 disposition | openspec/changes/backfill-credential-vault-shipped-contracts/ | fail-closed provider overlay releases `openspec/specs/credential-vault/spec.md`; #1606 or declared successor settles replacement semantics/disposition | pending |
@@ -44,7 +44,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| **Harden and fire DR drill #3** — validate archive input, prove transferred checksum + representative restored state, preserve red evidence | .github/workflows/dr-drill.yml; tests/test_dr_drill_workflow.py; docs/ops/dr-drill-log.md; openspec/changes/harden-dr-drill-evidence/; openspec/specs/uptime-and-alarms/spec.md | #1651; no live dispatch before code lands | pending |
+| **Monitor hardened DR drill #3** — dispatch exact landed SHA; record bounded provider result, checksum/restored-state proof, and deletion outcome | docs/ops/dr-drill-log.md; production workflow/issue evidence | hardening PR must land before re-dispatch | monitoring |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
