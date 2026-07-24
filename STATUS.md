@@ -43,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
-| **Harden and fire DR drill #3** — validate archive input, prove transferred checksum + representative restored state, preserve red evidence | .github/workflows/dr-drill.yml; tests/test_dr_drill_workflow.py; docs/ops/dr-drill-log.md; openspec/changes/harden-dr-drill-evidence/; openspec/specs/uptime-and-alarms/spec.md | #1651; no live dispatch before code lands | pending |
+| **Harden and fire DR drill #3** — run 30060401009 exposed opaque DO provisioning exit 22; add safe diagnostics, archive/checksum/state proof, preserve red evidence | .github/workflows/dr-drill.yml; tests/test_dr_drill_workflow.py; docs/ops/dr-drill-log.md; openspec/changes/harden-dr-drill-evidence/; openspec/specs/uptime-and-alarms/spec.md; STATUS.md; REFLECTION.md | #1651 landed; no re-dispatch before fix lands | claimed:codex-gpt56-sol ACTIVE 2026-07-23 |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
