@@ -8,7 +8,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P0 filed:2026-07-22 verified:2026-07-23]** Fresh hosts omit disk-watch and do not converge watchdog/backup/prune timers.
 - **[P1 filed:2026-07-22 verified:2026-07-23]** Runtime rejects authorized `operator_request`; dispatcher enables only `host_request`. #1628 is spec-only.
-- **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
 - [filed:2026-07-02 verified:2026-07-22] Reshape residuals: WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors.
@@ -23,6 +22,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **First-contact BYOC/market authority** — reconcile the current contract into an opposite-provider review packet before any execution work | docs/audits/2026-07-23-first-contact-authority-opposite-provider-review-packet.md; .agents/worktrees.md; STATUS.md | current `universe-creation`; #1617; R2-1a; R2-1b; Claude review after 2026-07-24 evening PT reset; no runtime edits before APPROVE | claimed:codex-gpt5-desktop-byoc ACTIVE 2026-07-23 |
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Backfill remaining credential-vault shipped contracts** — canonical owner landed via #1607; alias/first-record selection remains; re-check fixed-temp truth after #1606 disposition | openspec/changes/backfill-credential-vault-shipped-contracts/ | fail-closed provider overlay releases `openspec/specs/credential-vault/spec.md`; #1606 or declared successor settles replacement semantics/disposition | pending |
