@@ -425,7 +425,7 @@ def test_posix_timeout_kills_wrapper_provider_and_descendant(tmp_path: Path):
     wrapper_pid = wrapper.pid
     stdout, stderr = wrapper.communicate(timeout=10)
 
-    assert wrapper.returncode != 0, (stdout, stderr)
+    assert wrapper.returncode == -signal.SIGKILL, (stdout, stderr)
     assert "exceeded 1s timeout" in out_path.read_text(encoding="utf-8")
     provider_pid, child_pid = map(
         int, pid_path.read_text(encoding="utf-8").split()

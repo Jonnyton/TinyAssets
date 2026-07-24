@@ -19,9 +19,14 @@ Modes:
             point --cwd at a worktree, not the live checkout).
 
 Output contract: on success the --out file holds the peer's final message;
-on failure it holds a `[peer_agent] ERROR ...` block and the exit code is
-non-zero (2 provider/usage error, 124 timeout, 125 cleanup unverified,
-126 post-launch I/O failure, 127 CLI not launchable).
+on failure it holds a `[peer_agent] ERROR ...` block and the exit status is
+non-zero. Before launch, the statuses are 2 for provider/usage error and 127
+when the CLI is not launchable. After launch, Windows reports 124 for timeout,
+125 when cleanup cannot be verified, and 126 for an I/O failure. On POSIX,
+verified cleanup kills the wrapper-owned process group with SIGKILL, so the
+parent observes ``-SIGKILL`` through ``subprocess`` (normally 137 from a
+shell); the --out ERROR block is the authoritative failure detail. A POSIX
+cleanup failure may still return 125 before group termination.
 Argparse usage errors are the only failure that cannot write --out (the path
 is not known yet). The full result is also printed to stdout, so a background
 caller sees it in the task log. A pre-existing --out file is never mistaken
