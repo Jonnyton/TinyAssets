@@ -1031,9 +1031,9 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert 'cat "${response_file}"' not in run
     assert "provider_error=" in run
     assert "json.load(handle)" in run
-    assert 'r"(?:dop|doo|dor)_v1_[A-Za-z0-9]+"' in run
-    assert "secret_key" in run
-    assert "diagnostic[:240]" in run
+    assert "category = \"authorization_or_scope\"" in run
+    assert "category = \"bucket_or_grant\"" in run
+    assert "message=" not in run
     assert "GITHUB_OUTPUT" not in run
 
 
@@ -1143,13 +1143,30 @@ def test_backup_key_rollback_requires_explicit_204(
     (
         (
             '{"id":"forbidden","message":"token lacks spaces_key:create_credentials"}',
-            "id=forbidden message=token lacks spaces_key:create_credentials",
+            "id=forbidden category=authorization_or_scope",
             None,
         ),
         (
             '{"id":"forbidden","message":"dop_v1_0123456789ABCDEFGHIJ rejected"}',
-            "id=forbidden message=[redacted] rejected",
+            "id=forbidden category=other",
             "dop_v1_0123456789ABCDEFGHIJ",
+        ),
+        (
+            '{"id":"forbidden","message":"secret_key: '
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789"}',
+            "id=forbidden category=other",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789",
+        ),
+        (
+            '{"id":"forbidden","message":"Authorization: Bearer '
+            '0123456789abcdef0123456789abcdef"}',
+            "id=forbidden category=authorization_or_scope",
+            "0123456789abcdef0123456789abcdef",
+        ),
+        (
+            '{"id":"bad id ABCDEFGHIJKLMNOPQRSTUVWXYZ","message":"bucket grant rejected"}',
+            "id=redacted category=bucket_or_grant",
+            "bad id ABCDEFGHIJKLMNOPQRSTUVWXYZ",
         ),
         (
             "not-json",
@@ -1169,7 +1186,7 @@ def test_backup_provider_error_is_bounded_and_redacted(
     assert expected in result.stdout
     if forbidden is not None:
         assert forbidden not in result.stdout
-    assert len(result.stdout.strip()) <= 240
+    assert len(result.stdout.strip()) <= 80
 
 
 def test_host_service_workflow_requires_backup_provisioning_authority():
