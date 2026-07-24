@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from tinyassets.directory_server import (
     write_graph,
     write_page,
 )
+from tinyassets.storage import db_path
 
 # Coarse effect grants — resolve-always mode matches an action's effect
 # (read/write/costly/admin) across every tool (universe, wiki, extensions, …).
@@ -282,6 +284,10 @@ def test_directory_goal_write_and_search_round_trip(monkeypatch, tmp_path) -> No
 def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_path) -> None:
     """Guard the reviewed directory request write path without touching prod."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
+        "test-only-request-admission-secret-32-bytes",
+    )
 
     from tinyassets.catalog import invalidate_backend_cache
 
@@ -304,20 +310,41 @@ def test_directory_submit_request_queues_temp_universe_request(monkeypatch, tmp_
                 graph_id="directory-universe",
                 text="Summarize submission readiness blockers.",
                 request_type="general",
+                idempotency_key="directory-request-key-0001",
             )
         )
 
         assert result["universe_id"] == "directory-universe"
-        assert result["status"] == "pending"
-        assert result["request_id"].startswith("req_")
-        assert result["queue_position"] == 1
-        assert result["ahead_of_yours"] == 0
-        assert "what_happens_next" in result
+        assert result["admission_state"] == "committed"
+        assert result["request_status"] == "pending"
+        assert result["trigger_source"] == "user_request"
+        assert result["accepted_priority_weight"] == 0
+        assert result["idempotent_replay"] is False
+        assert "queue_position" not in result
+        assert "ahead_of_yours" not in result
+        assert "what_happens_next" not in result
+        assert not (universe_dir / "requests.json").exists()
 
-        requests = json.loads((universe_dir / "requests.json").read_text(encoding="utf-8"))
-        assert requests[0]["id"] == result["request_id"]
-        assert requests[0]["text"] == "Summarize submission readiness blockers."
-        assert requests[0]["type"] == "general"
+        with sqlite3.connect(db_path(tmp_path)) as conn:
+            request = conn.execute(
+                """
+                SELECT request_id, request_type, text, status
+                FROM user_requests
+                """
+            ).fetchone()
+            task = conn.execute(
+                """
+                SELECT branch_task_id, status, queue_epoch
+                FROM branch_tasks_v2
+                """
+            ).fetchone()
+        assert request == (
+            result["request_id"],
+            "general",
+            "Summarize submission readiness blockers.",
+            "pending",
+        )
+        assert task == (result["branch_task_id"], "pending", 2)
     finally:
         invalidate_backend_cache()
 

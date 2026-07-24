@@ -10,9 +10,9 @@
 - [x] 2.1 Add failing schema/migration tests in `tests/test_request_admission_store.py` for one-to-one Request/admission/task links, scoped key-hash uniqueness, finite `[0,100]` checks, event foreign keys, quarantine digest uniqueness, and upgrade from a pre-change `.tinyassets.db`.
 - [x] 2.2 Add the schema/migrator for `request_admissions`, `request_admission_events`, `branch_tasks_v2`, `branch_tasks_v2_quarantine`, and `request_admission_rollouts` in `tinyassets/storage/request_admissions.py`, then invoke it from the active pre-traffic `initialize_author_server` path in `tinyassets/daemon_server.py`; do not leave uncalled DDL in `tinyassets/storage/__init__.py` or lazy-ALTER on first request.
 - [x] 2.3 Add backend-neutral persistence methods in `tinyassets/storage/request_admissions.py`: `commit_admission`, `lookup_replay`, `list_v2_candidates`, `claim_v2_task`, lifecycle transitions, quarantine, compaction, and universe deletion.
-- [ ] 2.4 Reuse `user_requests` as the canonical Request row; update its store API rather than creating a second full request table or persisting raw idempotency keys.
-- [ ] 2.5 In one transaction, re-read stored ACL/grant state, allocate random IDs, insert Request/admission/v2 task/event, and commit; add fault injection at every statement and prove each precommit failure leaves zero aggregate rows.
-- [ ] 2.6 Store the exact successful public-result fields, then prove a postcommit serialization/delivery failure replays the original IDs without another task or mutation-ledger entry.
+- [x] 2.4 Reuse `user_requests` as the canonical Request row; update its store API rather than creating a second full request table or persisting raw idempotency keys.
+- [x] 2.5 In one transaction, re-read stored ACL/grant state, allocate random IDs, insert Request/admission/v2 task/event, and commit; add fault injection at every statement and prove each precommit failure leaves zero aggregate rows.
+- [x] 2.6 Store the exact successful public-result fields, then prove a postcommit serialization/delivery failure replays the original IDs without another task or mutation-ledger entry.
 - [x] 2.7 Implement 30-day terminal-detail compaction plus a minimal scoped key-hash/body-digest/ID/state tombstone retained until universe deletion; test pending rows never compact.
 - [x] 2.8 Add SQLite WAL/foreign-key/busy-timeout and concurrent migration tests matching the shared storage convention; surface lock errors instead of treating them as misses.
 - [ ] 2.9 Add backend conformance tests proving local SQLite uses linked `user_requests` + `branch_tasks_v2`, while hosted Postgres co-locates stable `request_id`/`branch_task_id` and lifecycle in one `request_inbox` row claimed by the existing narrow RPC with no second hosted dispatcher.
@@ -28,14 +28,14 @@
 
 ## 4. Canonical Public Admission
 
-- [ ] 4.1 Add failing schema/behavior tests in `tests/test_request_admission_surface.py` for `idempotency_key`, all request fields, exact success fields, and parity between `tinyassets/universe_server.py` and `tinyassets/directory_server.py`.
-- [ ] 4.2 Extend `write_graph` in both server modules with the one public `idempotency_key` name plus request incentive/direction/priority fields; reject unknown request-target fields and preserve handle-level `idempotentHint=false`.
+- [x] 4.1 Add failing schema/behavior tests in `tests/test_request_admission_surface.py` for `idempotency_key`, all request fields, exact success fields, and parity between `tinyassets/universe_server.py` and `tinyassets/directory_server.py`.
+- [x] 4.2 Extend `write_graph` in both server modules with the one public `idempotency_key` name plus request incentive/direction/priority fields; reject unknown request-target fields and preserve handle-level `idempotentHint=false`.
 - [ ] 4.3 Route `write_graph(target="request")` through the trusted transaction in `tinyassets/api/universe.py`; retire the public v1 request writer at per-universe v2 cutover instead of maintaining a second final path.
-- [ ] 4.4 Validate key length/regex and JSON-number `[0,100]` semantics before persistence; test `0`, `1e-9`, just below `100`, `100`, Boolean, string, NaN, infinities, negative, and over-cap.
-- [ ] 4.5 Implement SHA-256 over RFC 8785 canonical body fields with exact UTF-8 text and server-derived universe; test same-body replay, changed-body conflict, independent cross-scope raw keys, unknown fields, and no Unicode normalization drift.
-- [ ] 4.6 Return exactly the specified committed result fields and remove `queue_position`, `ahead_of_yours`, `what_happens_next`, evidence, and “next” language from main and directory results.
-- [ ] 4.7 Teach `_dispatch_with_ledger` that an idempotent replay is access-audit only and must not append another mutation-ledger row.
-- [ ] 4.8 Add dependency/parity coverage so retirement of the hidden legacy universe tool cannot remove the only priority-capable request path.
+- [x] 4.4 Validate key length/regex and JSON-number `[0,100]` semantics before persistence; test `0`, `1e-9`, just below `100`, `100`, Boolean, string, NaN, infinities, negative, and over-cap.
+- [x] 4.5 Implement SHA-256 over RFC 8785 canonical body fields with exact UTF-8 text and server-derived universe; test same-body replay, changed-body conflict, independent cross-scope raw keys, unknown fields, and no Unicode normalization drift.
+- [x] 4.6 Return exactly the specified committed result fields and remove `queue_position`, `ahead_of_yours`, `what_happens_next`, evidence, and “next” language from main and directory results.
+- [x] 4.7 Teach `_dispatch_with_ledger` that an idempotent replay is access-audit only and must not append another mutation-ledger row.
+- [x] 4.8 Add dependency/parity coverage so retirement of the hidden legacy universe tool cannot remove the only priority-capable request path.
 
 ## 5. Epoch-2 Queue, Selection, and Claim
 

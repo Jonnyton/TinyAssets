@@ -27,12 +27,17 @@ QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
 
-# Fault-injection checkpoints immediately after each aggregate mutation.
+# Fault-injection checkpoints across every precommit transaction phase.
 COMMIT_STEPS = (
+    "access_checked",
+    "replay_checked",
+    "authority_checked",
+    "ids_allocated",
     "request_inserted",
     "admission_inserted",
     "task_inserted",
     "event_inserted",
+    "before_commit",
 )
 
 _SCHEMA = """
@@ -247,6 +252,9 @@ class RequestAdmissionStore:
         receipt: Mapping[str, Any],
         directed_daemon_id: str,
         created_at: str,
+        pickup_incentive: str = "",
+        directed_daemon_instruction: str = "",
+        access_check: Callable[[sqlite3.Connection], Any] | None = None,
         authority_check: Callable[[sqlite3.Connection], Any] | None = None,
         fault_injector: (
             Callable[[str, sqlite3.Connection], Any] | None
@@ -278,8 +286,9 @@ class RequestAdmissionStore:
             with self.connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    if authority_check is not None:
-                        authority_check(conn)
+                    if access_check is not None:
+                        access_check(conn)
+                    _inject(fault_injector, "access_checked", conn)
 
                     replay = self._lookup_replay_conn(
                         conn,
@@ -290,14 +299,19 @@ class RequestAdmissionStore:
                         body_digest=body_digest,
                         body_digest_version=body_digest_version,
                     )
+                    _inject(fault_injector, "replay_checked", conn)
                     if replay is not None:
                         conn.commit()
                         return replay
+                    if authority_check is not None:
+                        authority_check(conn)
+                    _inject(fault_injector, "authority_checked", conn)
 
                     request_id = self._id_factory("req")
                     admission_id = self._id_factory("adm")
                     branch_task_id = self._id_factory("bt2")
                     event_id = self._id_factory("evt")
+                    _inject(fault_injector, "ids_allocated", conn)
                     result = _public_result(
                         universe_id=scope[2],
                         admission_id=admission_id,
@@ -332,6 +346,10 @@ class RequestAdmissionStore:
                                 "tenant_id": scope[0],
                                 "admission_id": admission_id,
                                 "queue_epoch": QUEUE_EPOCH,
+                                "pickup_incentive": pickup_incentive,
+                                "directed_daemon_instruction": (
+                                    directed_daemon_instruction
+                                ),
                             }),
                         ),
                     )
@@ -397,6 +415,10 @@ class RequestAdmissionStore:
                                 "request_id": request_id,
                                 "request_type": request_type,
                                 "branch_id": branch_id,
+                                "pickup_incentive": pickup_incentive,
+                                "directed_daemon_instruction": (
+                                    directed_daemon_instruction
+                                ),
                             }),
                             trigger_source,
                             accepted_weight,
@@ -426,6 +448,7 @@ class RequestAdmissionStore:
                         ),
                     )
                     _inject(fault_injector, "event_inserted", conn)
+                    _inject(fault_injector, "before_commit", conn)
                     conn.commit()
                     return result
                 except sqlite3.IntegrityError as exc:
@@ -447,17 +470,27 @@ class RequestAdmissionStore:
         idempotency_key_hash: str,
         body_digest: str,
         body_digest_version: str,
+        access_check: Callable[[sqlite3.Connection], Any] | None = None,
     ) -> dict[str, Any] | None:
         with self.connection() as conn:
-            return self._lookup_replay_conn(
-                conn,
-                tenant_id=tenant_id,
-                actor_id=actor_id,
-                universe_id=universe_id,
-                idempotency_key_hash=idempotency_key_hash,
-                body_digest=body_digest,
-                body_digest_version=body_digest_version,
-            )
+            conn.execute("BEGIN")
+            try:
+                if access_check is not None:
+                    access_check(conn)
+                replay = self._lookup_replay_conn(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_id=actor_id,
+                    universe_id=universe_id,
+                    idempotency_key_hash=idempotency_key_hash,
+                    body_digest=body_digest,
+                    body_digest_version=body_digest_version,
+                )
+                conn.commit()
+                return replay
+            except BaseException:
+                conn.rollback()
+                raise
 
     def _lookup_replay_conn(
         self,
