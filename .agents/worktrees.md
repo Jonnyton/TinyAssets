@@ -1081,3 +1081,15 @@ Notes:
 - Verification: 105 authority / 111 focused-regression tests; strict OpenSpec 41/41; independent specification and security APPROVE
 - Remaining gates: Claude/host canonical-store decision; persistence/service/API/discovery; §14; rendered/live evidence
 - Ship/abandon: keep draft until all moderation task-2 gates are green, or split only the approved contract with OpenSpec truth preserved
+
+## 2026-07-23 - create moderation-flag-planner
+
+- Provider: codex-gpt5-desktop-moderation-flags
+- Branch: codex/moderation-flag-planner
+- Lane state: active stacked OpenSpec/TDD slice
+- Worktree: C:\Users\Jonathan\Projects\wf-moderation-flag-planner
+- STATUS/Issue/PR: claimed STATUS row; stacked on draft PR #1662; PR pending
+- Purpose: plan duplicate-safe eligible flag intake and reversible soft-hide without claiming persistence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-moderation-flag-planner\_PURPOSE.md
+- Related implications: flag eligibility, rate-limit evidence, exact artifact scope, single soft-hide transition
+- Ship/abandon: publish a stacked draft only after TDD and independent code/security review; no persistence/API/§14 claim
