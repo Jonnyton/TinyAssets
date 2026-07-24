@@ -351,13 +351,43 @@ def test_api_tolerates_empty_body_204(monkeypatch) -> None:
     import io
     import urllib.request
 
+    seen_timeout = None
+
     @contextlib.contextmanager
-    def fake_urlopen(req):
+    def fake_urlopen(req, *, timeout):
+        nonlocal seen_timeout
+        seen_timeout = timeout
         yield io.BytesIO(b"")
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     result = bsg._api("tok", "DELETE", "https://api.github.invalid/x")
     assert result == {}
+    assert seen_timeout == bsg.GH_API_TIMEOUT_SECONDS
+
+
+def test_api_timeout_uses_controlled_transport_error(monkeypatch) -> None:
+    import urllib.request
+
+    seen_timeout = None
+
+    def _timeout(req, *, timeout):
+        nonlocal seen_timeout
+        seen_timeout = timeout
+        raise TimeoutError
+
+    monkeypatch.setattr(urllib.request, "urlopen", _timeout)
+    with pytest.raises(RuntimeError, match="transport error: TimeoutError"):
+        bsg._api("tok", "GET", "https://api.github.invalid/x")
+    assert seen_timeout == bsg.GH_API_TIMEOUT_SECONDS
+
+
+def test_retention_reconcile_budget_is_bounded_to_two_minutes() -> None:
+    worst_case_seconds = (
+        bsg.PRUNE_RECONCILE_ATTEMPTS * bsg.GH_API_TIMEOUT_SECONDS
+        + (bsg.PRUNE_RECONCILE_ATTEMPTS - 1)
+        * bsg.PRUNE_RECONCILE_DELAY_SECONDS
+    )
+    assert worst_case_seconds <= 120
 
 
 # ── prune scoping (non-backup releases are permanent) ─────────────────

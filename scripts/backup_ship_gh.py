@@ -46,6 +46,7 @@ GH_API = "https://api.github.com"
 GH_UPLOAD_API = "https://uploads.github.com"
 DEFAULT_REPO = "Jonnyton/tinyassets-backups"
 DEFAULT_RETAIN = 30
+GH_API_TIMEOUT_SECONDS = 15
 PRUNE_RECONCILE_ATTEMPTS = 6
 PRUNE_RECONCILE_DELAY_SECONDS = 2
 
@@ -94,7 +95,10 @@ def _api(
     if post_fn:
         return post_fn(req)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(
+            req,
+            timeout=GH_API_TIMEOUT_SECONDS,
+        ) as resp:
             raw = resp.read().decode()
             # Some endpoints (DELETE release → 204) return an empty body —
             # json.loads("") raised here and failed every nightly ship once
@@ -107,6 +111,11 @@ def _api(
         raise GitHubAPIError(
             exc.code,
             f"GitHub API {method} {url} → {exc.code}: {body_text}"
+        ) from exc
+    except (TimeoutError, urllib.error.URLError) as exc:
+        raise RuntimeError(
+            f"GitHub API {method} {url} transport error: "
+            f"{type(exc).__name__}"
         ) from exc
 
 
