@@ -21,7 +21,7 @@ from pydantic import Field
 from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import goals as _goals_impl
 from tinyassets.api.status import get_status as _get_status_impl
-from tinyassets.api.universe import _universe_impl
+from tinyassets.api.universe import _universe_impl, admit_request_v2
 from tinyassets.api.wiki import wiki as _wiki_impl
 from tinyassets.auth.middleware import write_gate_rejection
 from tinyassets.mcp_schema_utils import describe_signature
@@ -253,6 +253,11 @@ def write_graph(
     graph_id: str = "",
     request_type: str = "general",
     branch_id: str = "",
+    idempotency_key: str = "",
+    pickup_incentive: str = "",
+    directed_daemon_id: str = "",
+    directed_daemon_instruction: str = "",
+    priority_weight: int | float = 0.0,
 ) -> str:
     """Create or queue TinyAssets graph state.
 
@@ -266,6 +271,11 @@ def write_graph(
         graph_id: Optional target graph/universe identifier.
         request_type: TinyAssets request type.
         branch_id: Optional target branch identifier.
+        idempotency_key: Required 16-128 character request idempotency key.
+        pickup_incentive: Optional requester pickup incentive terms.
+        directed_daemon_id: Optional requester-owned daemon target.
+        directed_daemon_instruction: Optional direction for that daemon.
+        priority_weight: Requested numeric priority in inclusive range 0-100.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -280,12 +290,18 @@ def write_graph(
             visibility=visibility,
         )
     if normalized == "request":
-        return _universe_impl(
-            action="submit_request",
-            universe_id=graph_id,
+        if name or description or tags or visibility != "public":
+            return json.dumps({"error": "request_validation_error"})
+        return admit_request_v2(
+            idempotency_key=idempotency_key,
+            graph_id=graph_id,
             text=text,
             request_type=request_type,
             branch_id=branch_id,
+            pickup_incentive=pickup_incentive,
+            directed_daemon_id=directed_daemon_id,
+            directed_daemon_instruction=directed_daemon_instruction,
+            priority_weight=priority_weight,
         )
     return _unknown_target("write_graph", target, ("goal", "request"))
 

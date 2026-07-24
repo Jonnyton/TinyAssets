@@ -204,6 +204,35 @@ def test_submit_request_appends_ledger(
     )
 
 
+def test_idempotent_request_replay_is_access_only_not_a_second_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_calls = []
+    monkeypatch.setattr(
+        "tinyassets.api.engine_helpers._append_ledger",
+        lambda *args, **kwargs: ledger_calls.append((args, kwargs)),
+    )
+    result = {
+        "universe_id": "test-uni",
+        "request_id": "req_existing",
+        "idempotent_replay": True,
+    }
+
+    raw = us._dispatch_with_ledger(
+        "submit_request",
+        lambda **_kwargs: json.dumps(result),
+        {
+            "universe_id": "test-uni",
+            "text": "same request",
+            "request_type": "general",
+        },
+        scope_response=False,
+    )
+
+    assert json.loads(raw) == result
+    assert ledger_calls == []
+
+
 def test_add_canon_appends_ledger(universe: str) -> None:
     out = _call(
         "add_canon", filename="ref.md", text="# Reference\n",

@@ -27,6 +27,7 @@ delegate to plain callables in those submodules (Pattern A2).
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
@@ -47,7 +48,11 @@ from tinyassets.api.market import gates as _gates_impl
 from tinyassets.api.market import goals as _goals_impl
 from tinyassets.api.prompts import _CONTROL_STATION_PROMPT, _MEET_UNIVERSE_PROMPT  # noqa: F401
 from tinyassets.api.status import get_status as _get_status_impl
-from tinyassets.api.universe import _DAEMON_SCOPED_ACTIONS, _universe_impl
+from tinyassets.api.universe import (
+    _DAEMON_SCOPED_ACTIONS,
+    _universe_impl,
+    admit_request_v2,
+)
 from tinyassets.api.wiki import wiki as _wiki_impl
 from tinyassets.auth.middleware import write_gate_rejection
 from tinyassets.connector_catalog import (
@@ -520,6 +525,11 @@ def write_graph(
     graph_id: str = "",
     request_type: str = "general",
     branch_id: str = "",
+    idempotency_key: str = "",
+    pickup_incentive: str = "",
+    directed_daemon_id: str = "",
+    directed_daemon_instruction: str = "",
+    priority_weight: int | float = 0.0,
     changes_json: str = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
@@ -538,6 +548,11 @@ def write_graph(
         request_type: TinyAssets request type.
         branch_id: Target branch identifier; with target=branch it is the
             branch_def_id to patch.
+        idempotency_key: Required 16-128 character request idempotency key.
+        pickup_incentive: Optional requester pickup incentive terms.
+        directed_daemon_id: Optional requester-owned daemon target.
+        directed_daemon_instruction: Optional direction for that daemon.
+        priority_weight: Requested numeric priority in inclusive range 0-100.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
             only the branch's author can edit it.
@@ -601,12 +616,24 @@ def write_graph(
             visibility=visibility,
         )
     if normalized == "request":
-        return _universe_impl(
-            action="submit_request",
-            universe_id=graph_id,
+        if (
+            name
+            or description
+            or tags
+            or visibility != "public"
+            or changes_json
+        ):
+            return json.dumps({"error": "request_validation_error"})
+        return admit_request_v2(
+            idempotency_key=idempotency_key,
+            graph_id=graph_id,
             text=text,
             request_type=request_type,
             branch_id=branch_id,
+            pickup_incentive=pickup_incentive,
+            directed_daemon_id=directed_daemon_id,
+            directed_daemon_instruction=directed_daemon_instruction,
+            priority_weight=priority_weight,
         )
     if normalized == "branch":
         # PR-180 EDIT half: a founder patches their own branch graph via the

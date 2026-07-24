@@ -241,3 +241,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** start with a store spy that fails on lookup;
   it makes the security-sensitive operation order executable rather than an
   inference from a returned error.
+
+## 2026-07-24 - canonical public request admission
+
+- **What surprised me:** an ACL check immediately before replay lookup was
+  still too weak when it used a different database connection. The meaningful
+  boundary is the authorization read and idempotency read in one transaction.
+- **Pattern worth capturing:** idempotency is an authority-sensitive read
+  before it is a duplicate-write optimization. Validate exact UTF-8 input,
+  derive the scope server-side, HMAC the public key, bind the exact body with
+  RFC 8785, and re-check access inside the lookup transaction.
+- **What I would do differently:** make malformed Unicode, ACL loss between
+  verdict and lookup, and lost-response replay part of the first red batch.
+  Each catches a boundary that happy-path same-body replay does not exercise.

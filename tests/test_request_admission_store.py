@@ -155,6 +155,44 @@ def test_commit_links_request_admission_task_and_event(tmp_path):
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_commit_preserves_incentive_and_directed_instruction_privately(
+    tmp_path,
+):
+    initialize_author_server(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+
+    result = store.commit_admission(
+        **_commit_kwargs(directed_daemon_id="daemon-a"),
+        pickup_incentive="10 credits after verified delivery",
+        directed_daemon_instruction="Investigate only; do not merge.",
+    )
+
+    assert result["directed_daemon_id"] == "daemon-a"
+    with _connect(tmp_path) as conn:
+        request_metadata = json.loads(
+            conn.execute(
+                "SELECT metadata_json FROM user_requests"
+            ).fetchone()[0]
+        )
+        task_inputs = json.loads(
+            conn.execute(
+                "SELECT inputs_json FROM branch_tasks_v2"
+            ).fetchone()[0]
+        )
+    assert request_metadata["pickup_incentive"] == (
+        "10 credits after verified delivery"
+    )
+    assert request_metadata["directed_daemon_instruction"] == (
+        "Investigate only; do not merge."
+    )
+    assert task_inputs["pickup_incentive"] == (
+        "10 credits after verified delivery"
+    )
+    assert task_inputs["directed_daemon_instruction"] == (
+        "Investigate only; do not merge."
+    )
+
+
 def test_schema_rejects_out_of_range_weight_and_duplicate_links(tmp_path):
     initialize_author_server(tmp_path)
     store = RequestAdmissionStore(tmp_path)
@@ -251,6 +289,74 @@ def test_replay_returns_original_ids_without_new_rows_or_event(tmp_path):
     assert _table_count(tmp_path, "request_admissions") == 1
     assert _table_count(tmp_path, "branch_tasks_v2") == 1
     assert _table_count(tmp_path, "request_admission_events") == 1
+
+
+def test_access_precedes_lookup_and_priority_runs_only_after_replay_miss(
+    tmp_path,
+):
+    initialize_author_server(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    order = []
+
+    def access(_conn):
+        order.append("access")
+
+    def priority(_conn):
+        order.append("priority")
+
+    first = store.commit_admission(
+        **_commit_kwargs(),
+        access_check=access,
+        authority_check=priority,
+    )
+    assert order == ["access", "priority"]
+
+    order.clear()
+
+    def revoked_priority(_conn):
+        pytest.fail("historical replay rechecked prospective priority")
+
+    replay = store.commit_admission(
+        **_commit_kwargs(),
+        access_check=access,
+        authority_check=revoked_priority,
+    )
+    assert replay == {**first, "idempotent_replay": True}
+    assert order == ["access"]
+
+    order.clear()
+    lookup = store.lookup_replay(
+        tenant_id="tenant-a",
+        actor_id="alice",
+        universe_id="universe-a",
+        idempotency_key_hash="hmac:scope-key-a",
+        body_digest="sha256:body-a",
+        body_digest_version="rfc8785-v1",
+        access_check=access,
+    )
+    assert lookup == {**first, "idempotent_replay": True}
+    assert order == ["access"]
+
+    def lost_access(_conn):
+        raise PermissionError("universe_access_denied")
+
+    with pytest.raises(PermissionError, match="universe_access_denied"):
+        store.lookup_replay(
+            tenant_id="tenant-a",
+            actor_id="alice",
+            universe_id="universe-a",
+            idempotency_key_hash="hmac:scope-key-a",
+            body_digest="sha256:body-a",
+            body_digest_version="rfc8785-v1",
+            access_check=lost_access,
+        )
+
+    with pytest.raises(PermissionError, match="universe_access_denied"):
+        store.commit_admission(
+            **_commit_kwargs(),
+            access_check=lost_access,
+            authority_check=revoked_priority,
+        )
 
 
 def test_random_id_collision_retries_in_a_fresh_transaction(tmp_path):

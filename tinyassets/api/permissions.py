@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -187,6 +188,48 @@ def operator_request_replay_verdict(
         universe_id,
         requested_priority_weight=0.0,
     )
+
+
+def operator_request_transaction_checks(
+    verdict: OperatorRequestAdmissionVerdict,
+) -> tuple[Callable[[Any], None], Callable[[Any], None]]:
+    """Build exact ACL-before-lookup and priority-before-write checks."""
+
+    from tinyassets.storage.accounts import (
+        CapabilityGrantAuthorizationError,
+        active_priority_grant_from_connection,
+    )
+
+    def access_check(conn: Any) -> None:
+        row = conn.execute(
+            """
+            SELECT permission
+            FROM universe_acl
+            WHERE universe_id = ? AND actor_id = ?
+            """,
+            (verdict.universe_id, verdict.actor_id),
+        ).fetchone()
+        if row is None or str(row["permission"]) not in _WRITE_PERMISSIONS:
+            raise PermissionError("universe_access_denied")
+
+    def priority_check(conn: Any) -> None:
+        if verdict.accepted_priority_weight == 0:
+            return
+        grant = active_priority_grant_from_connection(
+            conn,
+            subject_id=verdict.actor_id,
+            universe_id=verdict.universe_id,
+            evaluated_at=_now(),
+        )
+        if (
+            grant is None
+            or int(grant["generation"]) != verdict.grant_generation
+        ):
+            raise CapabilityGrantAuthorizationError(
+                "priority_authorization_required"
+            )
+
+    return access_check, priority_check
 
 
 def current_request_actor_id() -> str:

@@ -247,6 +247,9 @@ class RequestAdmissionStore:
         receipt: Mapping[str, Any],
         directed_daemon_id: str,
         created_at: str,
+        pickup_incentive: str = "",
+        directed_daemon_instruction: str = "",
+        access_check: Callable[[sqlite3.Connection], Any] | None = None,
         authority_check: Callable[[sqlite3.Connection], Any] | None = None,
         fault_injector: (
             Callable[[str, sqlite3.Connection], Any] | None
@@ -278,8 +281,8 @@ class RequestAdmissionStore:
             with self.connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    if authority_check is not None:
-                        authority_check(conn)
+                    if access_check is not None:
+                        access_check(conn)
 
                     replay = self._lookup_replay_conn(
                         conn,
@@ -293,6 +296,8 @@ class RequestAdmissionStore:
                     if replay is not None:
                         conn.commit()
                         return replay
+                    if authority_check is not None:
+                        authority_check(conn)
 
                     request_id = self._id_factory("req")
                     admission_id = self._id_factory("adm")
@@ -332,6 +337,10 @@ class RequestAdmissionStore:
                                 "tenant_id": scope[0],
                                 "admission_id": admission_id,
                                 "queue_epoch": QUEUE_EPOCH,
+                                "pickup_incentive": pickup_incentive,
+                                "directed_daemon_instruction": (
+                                    directed_daemon_instruction
+                                ),
                             }),
                         ),
                     )
@@ -397,6 +406,10 @@ class RequestAdmissionStore:
                                 "request_id": request_id,
                                 "request_type": request_type,
                                 "branch_id": branch_id,
+                                "pickup_incentive": pickup_incentive,
+                                "directed_daemon_instruction": (
+                                    directed_daemon_instruction
+                                ),
                             }),
                             trigger_source,
                             accepted_weight,
@@ -447,17 +460,27 @@ class RequestAdmissionStore:
         idempotency_key_hash: str,
         body_digest: str,
         body_digest_version: str,
+        access_check: Callable[[sqlite3.Connection], Any] | None = None,
     ) -> dict[str, Any] | None:
         with self.connection() as conn:
-            return self._lookup_replay_conn(
-                conn,
-                tenant_id=tenant_id,
-                actor_id=actor_id,
-                universe_id=universe_id,
-                idempotency_key_hash=idempotency_key_hash,
-                body_digest=body_digest,
-                body_digest_version=body_digest_version,
-            )
+            conn.execute("BEGIN")
+            try:
+                if access_check is not None:
+                    access_check(conn)
+                replay = self._lookup_replay_conn(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_id=actor_id,
+                    universe_id=universe_id,
+                    idempotency_key_hash=idempotency_key_hash,
+                    body_digest=body_digest,
+                    body_digest_version=body_digest_version,
+                )
+                conn.commit()
+                return replay
+            except BaseException:
+                conn.rollback()
+                raise
 
     def _lookup_replay_conn(
         self,
