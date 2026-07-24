@@ -39,9 +39,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | External directory acceptance — registry metadata repaired; needs clean ChatGPT/Claude proof + first-user evidence | docs/ops/mcp-* | - | host-action |
 | OpenAI app submission hardening — `chatgpt-app-submission.json` on disk; submission docs/proof pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT proof | dev-ready |
 | Land #1484 — `_repo_root()` conflated `TINYASSETS_REPO_ROOT` (storage) with the bundled-source root, emptying deployed review context. The env is load-bearing; do NOT drop it | tinyassets/api/universe.py, deploy/compose.yml | - | host-review |
-| Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
-| Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
-| BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
+| **Specify least-privilege authenticated wiki write canary** — current probe proves anonymous rejection + old-marker read, not authenticated write/read; add scoped M2M identity before any secret | openspec/changes/authenticated-wiki-write-canary/; openspec/specs/{identity-auth-and-access-control,uptime-and-alarms}/spec.md; tinyassets/auth/workos_provider.py; tinyassets/api/permissions.py; scripts/wiki_canary.py; .github/workflows/uptime-canary.yml; docs/ops/acceptance-probe-catalog.md; tests/ | auth/permission review; anonymous gate remains separate | pending |
+| Provision production wiki-canary service principal and GitHub secret after scoped M2M support lands | WorkOS admin; GitHub Actions secrets | authenticated-wiki-write-canary implementation + review | host-action |
 | Re-register `TinyAssets DEV` ChatGPT connector as workspace admin | OpenAI workspace admin | - | host-action |
 
 ## Live brain notes
