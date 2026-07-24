@@ -586,6 +586,68 @@ def test_singleton_header_authenticates_with_constant_time_compare(
     _assert_security_headers(response, api=True)
 
 
+@pytest.mark.parametrize("fold_prefix", [b" ", b"\t"], ids=["space", "tab"])
+@pytest.mark.parametrize(
+    ("protected_header", "method", "continuation"),
+    [
+        ("Host", "GET", b"attacker.example"),
+        ("X-Village-Token", "GET", b"wrong-but-long-enough-0123456789"),
+        ("Origin", "POST", b"http://evil.example"),
+        ("Content-Type", "POST", b"text/plain"),
+        ("Content-Length", "POST", b"999"),
+        ("Transfer-Encoding", "POST", b"Transfer-Encoding: chunked"),
+    ],
+)
+def test_obsolete_header_folding_is_rejected_before_routing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fold_prefix: bytes,
+    protected_header: str,
+    method: str,
+    continuation: bytes,
+):
+    ledger = _install_collector_spies(monkeypatch)
+    cfg = _config(tmp_path)
+    cache = SpyCache()
+    body = b'{"target":"agent:x","message":"must not land"}' if method == "POST" else b""
+
+    with _running_village(cfg, cache=cache) as village:
+        header_lines = [
+            f"Host: {village.authority}".encode(),
+            f"X-Village-Token: {TOKEN}".encode(),
+        ]
+        if method == "POST":
+            header_lines.extend(
+                [
+                    f"Origin: http://{village.authority}".encode(),
+                    b"Content-Type: application/json",
+                    f"Content-Length: {len(body)}".encode(),
+                ]
+            )
+
+        anchor = "Content-Length" if protected_header == "Transfer-Encoding" else protected_header
+        folded_at = next(
+            index
+            for index, line in enumerate(header_lines)
+            if line.startswith(f"{anchor}:".encode())
+        )
+        header_lines.insert(folded_at + 1, fold_prefix + continuation)
+        header_lines.append(b"Connection: close")
+        request = (
+            f"{method} {'/api/talk' if method == 'POST' else '/api/state'} HTTP/1.1\r\n".encode()
+            + b"\r\n".join(header_lines)
+            + b"\r\n\r\n"
+            + body
+        )
+        response = _raw_exchange(village, request)
+
+    assert response.status == 400
+    assert len(response.body) <= 4096
+    assert cache.calls == 0
+    assert ledger.calls == []
+    _assert_security_headers(response, api=True)
+
+
 def test_arbitrary_unsupported_api_method_validates_host_then_authentication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

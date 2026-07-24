@@ -148,9 +148,16 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
             self._raw_header_lines = capture.lines
             self.rfile = capture
             try:
-                return super().parse_request()
+                parsed = super().parse_request()
             finally:
                 self.rfile = original
+            if parsed and any(
+                line.startswith((b" ", b"\t")) for line in self._raw_header_lines
+            ):
+                self.close_connection = True
+                self._send_json({"error": "obsolete header folding is not allowed"}, 400)
+                return False
+            return parsed
 
         def log_message(self, fmt: str, *args: object) -> None:
             pass
