@@ -1193,6 +1193,7 @@ def update_runtime_instance_metadata(
     instance_id: str,
     metadata_patch: dict[str, Any],
     forbidden_statuses: tuple[str, ...] = (),
+    required_statuses: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Atomically merge runtime metadata without changing its control status."""
     with _connect(base_path) as conn:
@@ -1210,6 +1211,10 @@ def update_runtime_instance_metadata(
         if row["status"] in forbidden_statuses:
             raise ValueError(
                 f"runtime_status_forbids_metadata_update:{row['status']}"
+            )
+        if required_statuses and row["status"] not in required_statuses:
+            raise ValueError(
+                f"runtime_status_not_allowed:{row['status']}"
             )
         metadata = _json_loads(row["metadata_json"], {})
         metadata.update(metadata_patch)

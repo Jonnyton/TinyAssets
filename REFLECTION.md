@@ -300,4 +300,6 @@ fresh-host rollback edges found later.
   loss. Those four negative tests expose false-upgrade and stale-authority
   paths that a complete-looking heartbeat fixture misses. Also exercise the
   full retired-A to replacement-B path: it exposed both stale cleanup blocking
-  publication and an older registry path that resurrected retired slots.
+  publication and an older registry path that resurrected retired slots. A
+  status check before a metadata write is not control-safe; reuse must be one
+  atomic “still provisioned” operation, with reselection after a lost race.

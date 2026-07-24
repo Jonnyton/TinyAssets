@@ -190,6 +190,114 @@ def test_ensure_daemon_runtime_reuses_live_but_not_retired_worker_slot(
     assert by_id[replacement["runtime_instance_id"]]["status"] == "provisioned"
 
 
+@pytest.mark.parametrize("status", ["paused", "restart_requested"])
+def test_ensure_daemon_runtime_does_not_revive_controlled_worker_slot(
+    tmp_path,
+    status,
+):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Controlled Fleet Runner",
+        created_by="host",
+        soul_text="Preserve explicit runtime control.",
+    )
+    runtime = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet-codex-1",
+        worker_id="codex-1",
+    )
+    daemon_server.update_runtime_instance_status(
+        tmp_path,
+        instance_id=runtime["runtime_instance_id"],
+        status=status,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"worker_runtime_not_provisioned:{status}",
+    ):
+        daemon_registry.ensure_daemon_runtime(
+            tmp_path,
+            daemon_id=daemon["daemon_id"],
+            universe_id="patch-loop-live",
+            provider_name="codex",
+            model_name="gpt-5",
+            created_by="cloud-droplet-codex-1",
+            worker_id="codex-1",
+        )
+
+    observed = daemon_registry.list_runtime_instances(
+        tmp_path,
+        universe_id="patch-loop-live",
+    )
+    assert len(observed) == 1
+    assert observed[0]["status"] == status
+
+
+def test_ensure_daemon_runtime_reselects_after_concurrent_retirement(
+    tmp_path,
+    monkeypatch,
+):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Racing Fleet Runner",
+        created_by="host",
+        soul_text="Never revive retired capacity.",
+    )
+    first = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet-codex-1",
+        worker_id="codex-1",
+    )
+    real_update = daemon_server.update_runtime_instance_metadata
+    raced = False
+
+    def retire_then_update(base_path, *, instance_id, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            daemon_server.retire_runtime_instance(
+                base_path,
+                instance_id=instance_id,
+            )
+        return real_update(base_path, instance_id=instance_id, **kwargs)
+
+    monkeypatch.setattr(
+        daemon_registry.daemon_server,
+        "update_runtime_instance_metadata",
+        retire_then_update,
+    )
+
+    replacement = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="patch-loop-live",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet-codex-1",
+        worker_id="codex-1",
+    )
+
+    assert replacement["runtime_instance_id"] != first["runtime_instance_id"]
+    by_id = {
+        runtime["runtime_instance_id"]: runtime
+        for runtime in daemon_registry.list_runtime_instances(
+            tmp_path,
+            universe_id="patch-loop-live",
+        )
+    }
+    assert by_id[first["runtime_instance_id"]]["status"] == "retired"
+    assert by_id[replacement["runtime_instance_id"]]["status"] == "provisioned"
+
+
 def test_ensure_daemon_runtime_adopts_unassigned_matching_slot(tmp_path):
     daemon = daemon_registry.create_daemon(
         tmp_path,
