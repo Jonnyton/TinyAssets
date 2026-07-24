@@ -5,6 +5,7 @@ import inspect
 import json
 import math
 import sqlite3
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -214,6 +215,30 @@ def test_main_and_directory_advertise_the_same_request_fields() -> None:
     assert directory_tool.annotations.idempotentHint is False
 
 
+def test_all_runtime_manifests_include_rfc8785() -> None:
+    root = Path(__file__).parents[1]
+    manifests = (
+        root / "pyproject.toml",
+        root / "packaging" / "mcpb" / "pyproject.toml",
+        root
+        / "packaging"
+        / "claude-plugin"
+        / "plugins"
+        / "tinyassets-universe-server"
+        / "runtime"
+        / "pyproject.toml",
+    )
+
+    for manifest in manifests:
+        dependencies = tomllib.loads(
+            manifest.read_text(encoding="utf-8")
+        )["project"]["dependencies"]
+        assert any(
+            dependency.startswith("rfc8785")
+            for dependency in dependencies
+        ), manifest
+
+
 def test_main_and_directory_use_one_transactional_result_contract(
     admission_context: dict[str, str | Path],
 ) -> None:
@@ -253,6 +278,7 @@ def test_main_and_directory_use_one_transactional_result_contract(
         ("request-key-0001", -math.inf),
         ("request-key-0001", -1),
         ("request-key-0001", 100.0000001),
+        ("request-key-0001", 10**400),
     ],
 )
 def test_invalid_key_or_numeric_shape_fails_before_persistence(
@@ -301,6 +327,11 @@ def test_acl_loss_at_transaction_start_denies_before_replay_lookup(
         "operator_request_transaction_checks",
         lambda _verdict: (lost_access, lambda _conn: None),
     )
+    monkeypatch.setattr(
+        universe_api,
+        "_universe_loop_dispatch",
+        lambda _udir: ("", {"error": "universe_loop_not_declared"}),
+    )
 
     result = json.loads(universe_server.write_graph(**_request()))
 
@@ -309,6 +340,33 @@ def test_acl_loss_at_transaction_start_denies_before_replay_lookup(
     assert _table_count(base_path, "request_admissions") == 0
     assert _table_count(base_path, "user_requests") == 0
     assert _table_count(base_path, "branch_tasks_v2") == 0
+
+
+def test_unauthorized_missing_universe_is_non_enumerating(
+    admission_context: dict[str, str | Path],
+) -> None:
+    request = _request()
+    request["graph_id"] = "missing-universe"
+
+    result = json.loads(universe_server.write_graph(**request))
+
+    assert result == {"error": "universe_access_denied"}
+
+
+def test_committed_replay_survives_later_loop_removal(
+    admission_context: dict[str, str | Path],
+    monkeypatch,
+) -> None:
+    first = json.loads(universe_server.write_graph(**_request()))
+    monkeypatch.setattr(
+        universe_api,
+        "_universe_loop_dispatch",
+        lambda _udir: ("", {"error": "universe_loop_not_declared"}),
+    )
+
+    replay = json.loads(directory_server.write_graph(**_request()))
+
+    assert replay == {**first, "idempotent_replay": True}
 
 
 @pytest.mark.parametrize(

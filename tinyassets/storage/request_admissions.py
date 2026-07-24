@@ -27,12 +27,17 @@ QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
 
-# Fault-injection checkpoints immediately after each aggregate mutation.
+# Fault-injection checkpoints across every precommit transaction phase.
 COMMIT_STEPS = (
+    "access_checked",
+    "replay_checked",
+    "authority_checked",
+    "ids_allocated",
     "request_inserted",
     "admission_inserted",
     "task_inserted",
     "event_inserted",
+    "before_commit",
 )
 
 _SCHEMA = """
@@ -283,6 +288,7 @@ class RequestAdmissionStore:
                 try:
                     if access_check is not None:
                         access_check(conn)
+                    _inject(fault_injector, "access_checked", conn)
 
                     replay = self._lookup_replay_conn(
                         conn,
@@ -293,16 +299,19 @@ class RequestAdmissionStore:
                         body_digest=body_digest,
                         body_digest_version=body_digest_version,
                     )
+                    _inject(fault_injector, "replay_checked", conn)
                     if replay is not None:
                         conn.commit()
                         return replay
                     if authority_check is not None:
                         authority_check(conn)
+                    _inject(fault_injector, "authority_checked", conn)
 
                     request_id = self._id_factory("req")
                     admission_id = self._id_factory("adm")
                     branch_task_id = self._id_factory("bt2")
                     event_id = self._id_factory("evt")
+                    _inject(fault_injector, "ids_allocated", conn)
                     result = _public_result(
                         universe_id=scope[2],
                         admission_id=admission_id,
@@ -439,6 +448,7 @@ class RequestAdmissionStore:
                         ),
                     )
                     _inject(fault_injector, "event_inserted", conn)
+                    _inject(fault_injector, "before_commit", conn)
                     conn.commit()
                     return result
                 except sqlite3.IntegrityError as exc:

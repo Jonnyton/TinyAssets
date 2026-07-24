@@ -250,7 +250,9 @@ fresh-host rollback edges found later.
 - **Pattern worth capturing:** idempotency is an authority-sensitive read
   before it is a duplicate-write optimization. Validate exact UTF-8 input,
   derive the scope server-side, HMAC the public key, bind the exact body with
-  RFC 8785, and re-check access inside the lookup transaction.
+  RFC 8785, and re-check access inside the lookup transaction. Authorized
+  replay also precedes mutable new-admission viability such as the current
+  Loop declaration; committed history does not disappear with later topology.
 - **What I would do differently:** make malformed Unicode, ACL loss between
   verdict and lookup, and lost-response replay part of the first red batch.
   Each catches a boundary that happy-path same-body replay does not exercise.

@@ -258,6 +258,12 @@ def test_precommit_fault_rolls_back_entire_aggregate(tmp_path, fault_step):
     initialize_author_server(tmp_path)
     store = RequestAdmissionStore(tmp_path)
 
+    def access_read(conn):
+        conn.execute("SELECT COUNT(*) FROM universe_acl").fetchone()
+
+    def authority_read(conn):
+        conn.execute("SELECT COUNT(*) FROM capability_grants").fetchone()
+
     def inject(step, _conn):
         if step == fault_step:
             raise RuntimeError(f"fault:{step}")
@@ -265,6 +271,8 @@ def test_precommit_fault_rolls_back_entire_aggregate(tmp_path, fault_step):
     with pytest.raises(RuntimeError, match=f"fault:{fault_step}"):
         store.commit_admission(
             **_commit_kwargs(),
+            access_check=access_read,
+            authority_check=authority_read,
             fault_injector=inject,
         )
 

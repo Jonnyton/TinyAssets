@@ -52,7 +52,6 @@ import hashlib
 import hmac
 import json
 import logging
-import math
 import os
 import re
 import time
@@ -1541,9 +1540,7 @@ def _action_admit_request_v2(
         or _REQUEST_IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key) is None
         or isinstance(priority_weight, bool)
         or not isinstance(priority_weight, (int, float))
-        or not math.isfinite(priority_weight)
-        or priority_weight < 0
-        or priority_weight > 100
+        or not 0 <= priority_weight <= 100
         or request_type not in _REQUEST_TYPES
     ):
         return _request_validation_error()
@@ -1555,16 +1552,6 @@ def _action_admit_request_v2(
         return _request_validation_error()
 
     uid = _request_universe(graph_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": "universe_not_found"})
-    loop_branch_def_id, _loop_dispatch = _universe_loop_dispatch(udir)
-    if not loop_branch_def_id:
-        return json.dumps({
-            "error": "universe_loop_not_declared",
-            "universe_id": uid,
-        })
-
     try:
         idempotency_key_hash = _request_idempotency_key_hash(
             idempotency_key
@@ -1603,6 +1590,16 @@ def _action_admit_request_v2(
         return json.dumps({"error": "universe_access_denied"})
     if replay is not None:
         return json.dumps(replay, default=str)
+
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": "universe_not_found"})
+    loop_branch_def_id, _loop_dispatch = _universe_loop_dispatch(udir)
+    if not loop_branch_def_id:
+        return json.dumps({
+            "error": "universe_loop_not_declared",
+            "universe_id": uid,
+        })
 
     verdict = permissions.operator_request_admission_verdict(
         uid,
