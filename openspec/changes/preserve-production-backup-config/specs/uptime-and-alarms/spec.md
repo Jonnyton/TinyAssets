@@ -38,3 +38,4 @@ credential configuration are absent.
 - **WHEN** a newly created key cannot be installed and verified
 - **THEN** failure cleanup removes any newly written destination/configuration and requests deletion of that exact new key
 - **AND** no API token, Spaces secret, or provider response body reaches logs, outputs, artifacts, or the daemon environment
+- **AND** provider failures expose only the HTTP or transport class plus a bounded, normalized, secret-redacted error identifier/message

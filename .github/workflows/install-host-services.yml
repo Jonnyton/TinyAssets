@@ -187,14 +187,51 @@ jobs:
               "${key_name}" "${bucket}"
           )"
           http_status="$(
-            curl -sS -o "${response_file}" -w '%{http_code}' -X POST \
+            curl -sS --max-filesize 4096 \
+              -o "${response_file}" -w '%{http_code}' -X POST \
               -H @"${api_header_file}" \
               -H "Content-Type: application/json" \
               --data-binary "${payload}" \
               "https://api.digitalocean.com/v2/spaces/keys"
           )"
           if [[ "${http_status}" != "201" ]]; then
-            echo "::error::DigitalOcean Spaces key creation failed with HTTP ${http_status}."
+            provider_error="$(
+              python - "${response_file}" <<'DIAGNOSTIC_PY'
+          import json
+          import re
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  payload = json.load(handle)
+          except (OSError, UnicodeError, json.JSONDecodeError):
+              print("unparseable provider error")
+              raise SystemExit
+          if not isinstance(payload, dict):
+              print("malformed provider error")
+              raise SystemExit
+          error_id = payload.get("id")
+          message = payload.get("message")
+          if not isinstance(error_id, str) or not isinstance(message, str):
+              print("malformed provider error")
+              raise SystemExit
+          diagnostic = f"id={error_id[:40]} message={message[:160]}"
+          diagnostic = re.sub(r"[\x00-\x1f\x7f]+", " ", diagnostic)
+          diagnostic = re.sub(
+              r"(?:dop|doo|dor)_v1_[A-Za-z0-9]+",
+              "[redacted]",
+              diagnostic,
+          )
+          diagnostic = re.sub(
+              r"(?i)\b(token|secret|access_key|secret_key)="
+              r"[A-Za-z0-9+/=_-]{16,}",
+              r"\1=[redacted]",
+              diagnostic,
+          )
+          print(diagnostic[:240])
+          DIAGNOSTIC_PY
+            )"
+            echo "::error::DigitalOcean Spaces key creation failed with HTTP ${http_status} (${provider_error})."
             exit 1
           fi
 
