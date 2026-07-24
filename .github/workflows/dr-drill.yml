@@ -7,7 +7,8 @@ name: DR drill
 # Docs: docs/ops/dr-drill-runbook.md
 #
 # Required secrets:
-#   DIGITALOCEAN_TOKEN   — DO API token (create/destroy Droplets)
+#   DIGITALOCEAN_TOKEN   — DO API token with image:read plus SSH-key and
+#                          Droplet create/read/delete permissions
 #   DO_SSH_KEY           — private key PEM (authorized on new Droplet via cloud-init)
 #   DO_DROPLET_HOST      — primary Droplet IP (for backup transfer)
 #   DO_SSH_USER          — SSH user on both Droplets
@@ -49,7 +50,6 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   CANARY_URL: https://tinyassets.io/mcp
   DRILL_REGION: nyc3
-  DRILL_IMAGE: debian-12-x64
 
 jobs:
   drill:
@@ -218,6 +218,13 @@ jobs:
           PUB_KEY: ${{ steps.pubkey.outputs.pub }}
         run: |
           set -euo pipefail
+          # Resolve current provider inventory before any mutating API request.
+          # This GET also verifies the required image:read token scope.
+          image_slug=$(python3 scripts/select_do_image.py \
+            --region "${DRILL_REGION}")
+          echo "image_slug=${image_slug}" >> "$GITHUB_OUTPUT"
+          echo "Selected drill image: ${image_slug}"
+
           # Register the SSH key with DO API (idempotent by fingerprint).
           fingerprint=$(ssh-keygen -E md5 -lf ~/.ssh/do_deploy | awk '{print $2}' | sed 's/MD5://')
           keys_response=$(python3 scripts/do_api_request.py \
@@ -269,7 +276,7 @@ jobs:
 
           # Create the drill Droplet.
           droplet_payload=$(python3 - \
-            "${key_id}" "${DRILL_REGION}" "${DRILL_SIZE}" "${DRILL_IMAGE}" \
+            "${key_id}" "${DRILL_REGION}" "${DRILL_SIZE}" "${image_slug}" \
             "${user_data}" <<'PY'
           import json
           import sys
@@ -561,6 +568,7 @@ jobs:
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
           PROBE_OUTPUT: ${{ steps.drillprobe.outputs.output }}
           BACKUP_PATH_B64: ${{ steps.backup.outputs.path_b64 }}
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
         with:
           script: |
             const label = 'dr-failed';
@@ -589,6 +597,7 @@ jobs:
                 `Auto-opened by the DR drill tinyassets.`,
                 ``,
                 `- **Backup:** \`${backupPath || '(unavailable)'}\``,
+                `- **Image:** \`${process.env.DRILL_IMAGE || '(unavailable)'}\``,
                 `- **Drill Droplet IP:** \`${process.env.DRILL_IP}\` (LEFT UP for inspection)`,
                 `- **Droplet ID:** \`${process.env.DROPLET_ID}\``,
                 `- **Run:** ${runUrl}`,
@@ -651,6 +660,7 @@ jobs:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
           BACKUP_PATH_B64: ${{ steps.backup.outputs.path_b64 }}
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
         run: |
           set -euo pipefail
           LOG_FILE="docs/ops/dr-drill-log.md"
@@ -670,6 +680,7 @@ jobs:
             echo "- **Representative member path (base64 UTF-8):** \`${sample_path_b64}\`"
             echo "- **Representative member SHA-256:** \`${sample_sha256}\`"
             echo "- **Drill Droplet:** ID \`${DROPLET_ID}\`, IP \`${DRILL_IP}\`"
+            echo "- **Image:** \`${DRILL_IMAGE}\`"
             echo "- **Size:** \`${{ inputs.drill_droplet_size }}\`"
             echo "- **Probe:** green (MCP status via SSH port-forward to localhost:8001)"
             echo "- **Cleanup:** Droplet DELETE confirmed before PASS publication"
@@ -686,6 +697,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           DELETE_DIAGNOSTIC: ${{ steps.destroy.outputs.diagnostic }}
         with:
@@ -712,6 +724,7 @@ jobs:
                 `Automatic cleanup failed; this Droplet may still be billing.`,
                 ``,
                 `- **Droplet ID:** \`${process.env.DROPLET_ID}\``,
+                `- **Image:** \`${process.env.DRILL_IMAGE || '(unavailable)'}\``,
                 `- **Run:** ${runUrl}`,
                 `- **Bounded diagnostic:** \`${process.env.DELETE_DIAGNOSTIC || '(empty)'}\``,
                 ``,
@@ -727,6 +740,7 @@ jobs:
         if: always()
         env:
           BACKUP_PATH_B64: ${{ steps.backup.outputs.path_b64 }}
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
         run: |
           backup_path=$(python3 -c \
             'import base64,os; print(base64.b64decode(os.environ.get("BACKUP_PATH_B64", "")).decode())')
@@ -736,5 +750,6 @@ jobs:
             echo "- **Drill Droplet ID:** \`${{ steps.droplet.outputs.droplet_id }}\`"
             echo "- **Drill Droplet IP:** \`${{ steps.drillip.outputs.ip }}\`"
             echo "- **Backup used:** \`${backup_path:-unavailable}\`"
+            echo "- **Image:** \`${DRILL_IMAGE:-unavailable}\`"
             echo "- **Probe result:** \`${{ steps.drillprobe.outputs.color }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

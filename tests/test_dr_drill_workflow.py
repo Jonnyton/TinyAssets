@@ -177,6 +177,47 @@ def test_provision_step_present():
     )
 
 
+def test_provision_resolves_current_region_compatible_debian_image():
+    provision = _step("Provision drill Droplet")
+    run = provision["run"]
+
+    assert "scripts/select_do_image.py" in run
+    assert '--region "${DRILL_REGION}"' in run
+    assert "image_slug=$(" in run
+    assert 'echo "image_slug=${image_slug}" >> "$GITHUB_OUTPUT"' in run
+    selector_index = run.index("scripts/select_do_image.py")
+    post_indexes = [
+        match.start()
+        for match in re.finditer(r"--method POST", run)
+    ]
+    assert post_indexes
+    assert all(selector_index < post_index for post_index in post_indexes)
+    assert "debian-12-x64" not in _text()
+
+
+def test_resolved_image_is_preserved_in_terminal_evidence():
+    image_output = "steps.droplet.outputs.image_slug"
+    probe_failure = _step("Open dr-failed issue on failure")
+    success_log = _step("Append drill result to log")
+    delete_failure = _step("Escalate failed Droplet deletion")
+    summary = _step("Summary")
+
+    for evidence_step in (
+        probe_failure,
+        success_log,
+        delete_failure,
+        summary,
+    ):
+        assert image_output in str(evidence_step)
+        assert "Image" in str(evidence_step)
+
+
+def test_runbook_requires_digitalocean_image_read_scope():
+    runbook = _RUNBOOK.read_text(encoding="utf-8")
+    assert "image:read" in runbook
+    assert "before any mutation" in runbook
+
+
 # ---------------------------------------------------------------------------
 # (f) Bootstrap runs hetzner-bootstrap.sh
 # ---------------------------------------------------------------------------

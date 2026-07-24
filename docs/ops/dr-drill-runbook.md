@@ -22,22 +22,33 @@ Inputs:
 
 ## What the workflow does
 
-1. Registers the deploy SSH key with the DO API (idempotent by fingerprint).
-2. Creates a `workflow-dr-drill` Droplet (Debian 12, specified size, `nyc3`).
-3. Waits for the Droplet to get a public IP + SSH to become ready.
-4. Runs `deploy/hetzner-bootstrap.sh` on the drill Droplet (Docker, user, systemd units, log-rotation, swap).
-5. Streams the backup tarball from the primary Droplet directly to the drill Droplet.
-6. Runs `deploy/backup-restore.sh` on the drill Droplet.
-7. Starts `docker compose up -d`, waits 30s.
-8. Opens an SSH port-forward to the drill Droplet's loopback port, then probes `http://localhost:8001/mcp` via `scripts/mcp_probe.py status` (no Cloudflare tunnel required).
+1. Validates the selected primary backup's safe archive shape and records its
+   archive + representative-member SHA-256 values.
+2. Resolves the newest public, available Debian x64 image serving `nyc3` across
+   a bounded DigitalOcean distribution-catalog traversal. This first request
+   verifies the token's required `image:read` scope before any mutation.
+3. Registers the deploy SSH key with the DO API (idempotent by fingerprint).
+4. Creates a `tinyassets-dr-drill` Droplet with the resolved Debian image and
+   requested size.
+5. Waits for the Droplet to get a public IP + SSH to become ready.
+6. Runs `deploy/hetzner-bootstrap.sh` on the drill Droplet (Docker, user,
+   systemd units, log rotation, swap).
+7. Streams the exact validated backup from primary to drill, then requires the
+   destination SHA-256 to match before restore.
+8. Runs `deploy/backup-restore.sh` with the exact transferred `BACKUP_FILE` and
+   verifies the representative member at Docker's inspected volume mountpoint.
+9. Starts only the daemon compose service, waits 30s, opens an SSH port-forward
+   to loopback, and probes `http://localhost:8001/mcp` via
+   `scripts/mcp_probe.py status` (no Cloudflare tunnel required).
 
 ## Pass / fail criteria
 
 **Pass:** `mcp_probe.py status` exits 0 (MCP initialize + session + `get_status` tool call succeeds).
 
 TinyAssets on pass:
-- Appends a timestamped entry to `docs/ops/dr-drill-log.md` + commits.
-- Destroys the drill Droplet.
+- Confirms destruction of the drill Droplet.
+- Appends and commits a timestamped `docs/ops/dr-drill-log.md` entry containing
+  the selected image plus archive/restored-state checksum evidence.
 
 **Fail:** `mcp_probe.py` exits non-zero.
 
@@ -76,7 +87,7 @@ Same set as `deploy-prod.yml`:
 
 | Secret | Purpose |
 |---|---|
-| `DIGITALOCEAN_TOKEN` | Create + destroy Droplets via DO API |
+| `DIGITALOCEAN_TOKEN` | Must include `image:read` plus SSH-key read/create and Droplet create/read/delete permissions. Missing catalog scope fails red before any mutation. |
 | `DO_SSH_KEY` | Private key PEM — must be in `authorized_keys` on drill Droplet (cloud-init adds it) |
 | `DO_DROPLET_HOST` | Primary Droplet IP — for streaming the backup |
 | `DO_SSH_USER` | SSH user on primary (typically `root`) |
