@@ -199,3 +199,18 @@ fresh-host rollback edges found later.
 - **What I would do differently:** write the quarantine-replay and lock-error
   tests in the first red batch. Both are small but distinguish genuinely
   transactional behavior from a store that only passes happy-path concurrency.
+
+## 2026-07-24 — exact-universe operator-priority grants
+
+- **What surprised me:** the legacy capability table's three-column primary
+  key made revocation history impossible even though most existing read paths
+  could remain unchanged once activity became a timestamped query.
+- **Pattern worth capturing:** elevation authority should be immutable
+  generations plus an exact-scope transactional reread at a server-controlled
+  transaction timestamp. Wildcard or host identity can remain useful for
+  ordinary administration without becoming an accidental substitute for the
+  elevated grant, and caller-supplied audit time must never become an
+  authorization-time override.
+- **What I would do differently:** include mismatched-expiry replay and
+  revoked-issuer backdating tests in the first red batch; both catch ways an
+  apparently idempotent admin API can silently widen authority.
