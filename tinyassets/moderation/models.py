@@ -82,8 +82,13 @@ class PolicyError(ValueError):
 
 
 def require_aware(value: datetime) -> None:
-    if value.tzinfo is None or value.utcoffset() is None:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise PolicyError(PolicyErrorCode.INVALID_TIME)
+
+
+def _require_integer_at_least(value: int, minimum: int) -> None:
+    if type(value) is not int or value < minimum:
+        raise PolicyError(PolicyErrorCode.INVALID_POLICY)
 
 
 def _has_control(value: str) -> bool:
@@ -174,8 +179,7 @@ class AccountEvidence:
         require_aware(self.account_created_at)
         require_reference(self.issuer_ref)
         require_reference(self.evidence_ref)
-        if self.completed_interactions < 0:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        _require_integer_at_least(self.completed_interactions, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,8 +190,7 @@ class AccountEligibilityPolicy:
     def __post_init__(self) -> None:
         if self.minimum_account_age < timedelta(0):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
-        if self.minimum_completed_interactions < 0:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        _require_integer_at_least(self.minimum_completed_interactions, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,8 +255,7 @@ class ReviewerGrant:
             require_aware(value)
         if self.revoked_at is not None:
             require_aware(self.revoked_at)
-        if self.generation < 1:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        _require_integer_at_least(self.generation, 1)
         if self.rubric_accepted_at > self.granted_at or self.expires_at <= self.granted_at:
             raise PolicyError(PolicyErrorCode.INVALID_CHRONOLOGY)
         if self.revoked_at is not None and self.revoked_at < self.granted_at:
@@ -301,7 +303,8 @@ class ModerationCase:
     def __post_init__(self) -> None:
         require_id(self.case_id)
         require_id(self.rubric_version)
-        if self.revision < 1:
+        _require_integer_at_least(self.revision, 1)
+        if self.other_active_holds is not None and type(self.other_active_holds) is not bool:
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
 
 
@@ -315,8 +318,8 @@ class ModerationPolicy:
 
     def __post_init__(self) -> None:
         require_id(self.current_rubric_version)
-        if self.council_quorum < 2 or self.reviewer_delete_quorum < 2:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        _require_integer_at_least(self.council_quorum, 2)
+        _require_integer_at_least(self.reviewer_delete_quorum, 2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,8 +353,8 @@ class ReviewDecision:
             require_id(value)
         require_rationale(self.rationale)
         require_aware(self.decided_at)
-        if self.revision < 1 or self.grant_generation < 1:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        _require_integer_at_least(self.revision, 1)
+        _require_integer_at_least(self.grant_generation, 1)
         if self.reviewer.tenant_id != self.tenant_id:
             raise PolicyError(PolicyErrorCode.AUTHORITY_EVIDENCE_MISMATCH)
 
@@ -397,8 +400,8 @@ class CouncilAuthorization:
             require_id(value)
         require_rationale(self.rationale)
         require_aware(self.authorized_at)
-        if self.revision < 1 or self.grant_generation < 1:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
+        _require_integer_at_least(self.revision, 1)
+        _require_integer_at_least(self.grant_generation, 1)
         if self.actor.tenant_id != self.tenant_id:
             raise PolicyError(PolicyErrorCode.AUTHORITY_EVIDENCE_MISMATCH)
 
@@ -421,6 +424,13 @@ class AppealContext:
     evidence_ref: str
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.appealed_decision_ids, tuple)
+            or not isinstance(self.original_reviewer_actor_ids, tuple)
+            or not self.appealed_decision_ids
+            or not self.original_reviewer_actor_ids
+        ):
+            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
         for value in (
             self.appeal_id,
             self.case_id,
@@ -435,11 +445,10 @@ class AppealContext:
         require_aware(self.submitted_at)
         require_reference(self.issuer_ref)
         require_reference(self.evidence_ref)
-        if self.revision < 1:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
-        if not self.appealed_decision_ids or not self.original_reviewer_actor_ids:
-            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
-        if len(set(self.appealed_decision_ids)) != len(self.appealed_decision_ids):
+        _require_integer_at_least(self.revision, 1)
+        if len(set(self.appealed_decision_ids)) != len(self.appealed_decision_ids) or len(
+            set(self.original_reviewer_actor_ids)
+        ) != len(self.original_reviewer_actor_ids):
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
 
 
@@ -457,3 +466,6 @@ class ModerationResolution:
     authorizing_actor_ids: tuple[str, ...]
     council_actor_ids: tuple[str, ...]
     actions: tuple[ReviewAction, ...]
+
+    def __post_init__(self) -> None:
+        _require_integer_at_least(self.revision, 1)
