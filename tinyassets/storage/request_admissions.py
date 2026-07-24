@@ -644,12 +644,19 @@ class RequestAdmissionStore:
                 a.grant_generation AS linked_admission_grant_generation,
                 a.receipt_json AS linked_admission_receipt_json,
                 a.result_json AS linked_admission_result_json,
+                a.terminal_at AS linked_admission_terminal_at,
+                a.compacted_at AS linked_admission_compacted_at,
                 r.request_id AS linked_request_id,
                 r.universe_id AS linked_request_universe_id,
+                r.branch_id AS linked_request_branch_id,
                 r.user_id AS linked_request_user_id,
+                r.request_type AS linked_request_type,
+                r.text AS linked_request_text,
                 r.preferred_author_id AS linked_request_preferred_author_id,
                 r.status AS linked_request_status,
                 r.metadata_json AS linked_request_metadata_json,
+                d.soul_hash AS linked_directed_daemon_soul_hash,
+                d.metadata_json AS linked_directed_daemon_metadata_json,
                 EXISTS (
                     SELECT 1
                     FROM branch_tasks_v2_quarantine AS q
@@ -660,6 +667,15 @@ class RequestAdmissionStore:
                 ON a.admission_id = t.admission_id
             LEFT JOIN user_requests AS r
                 ON r.request_id = t.request_id
+            LEFT JOIN author_definitions AS d
+                ON d.author_id = CASE
+                    WHEN t.directed_daemon_id LIKE 'daemon::%'
+                    THEN 'author::' || substr(
+                        t.directed_daemon_id,
+                        length('daemon::') + 1
+                    )
+                    ELSE t.directed_daemon_id
+                END
             WHERE
             """
             + (" AND ".join(clauses) if clauses else "1 = 1")
@@ -1165,13 +1181,10 @@ class RequestAdmissionStore:
                 for integrity_row in rows:
                     scanned += 1
                     if (
-                        integrity_row["status"] in TERMINAL_STATUSES
-                        or (
-                            integrity_row["disabled"]
-                            and integrity_row[
-                                "linked_quarantine_receipt_exists"
-                            ]
-                        )
+                        integrity_row["disabled"]
+                        and integrity_row[
+                            "linked_quarantine_receipt_exists"
+                        ]
                     ):
                         continue
                     reason = classifier(dict(integrity_row))

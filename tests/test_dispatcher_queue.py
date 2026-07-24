@@ -19,6 +19,7 @@ coverage.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -27,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import rfc8785
 
 from tinyassets import branch_tasks as bt_mod
 from tinyassets.auth.provider import Identity
@@ -286,12 +288,25 @@ def test_v2_selector_merges_epochs_without_mutating_either(tmp_path):
         branch_task_id="v1-host",
     )
     append_task(universe_dir, v1)
+    canonical_body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": "",
+        "directed_daemon_instruction": "",
+        "pickup_incentive": "",
+        "priority_weight": 5,
+        "request_type": "general",
+        "schema_version": "request-admission-v2",
+        "text": "operator work",
+        "universe_id": "universe-a",
+    })
     committed = RequestAdmissionStore(tmp_path).commit_admission(
         tenant_id="tenant-a",
         actor_id="actor-a",
         universe_id="universe-a",
         idempotency_key_hash="hmac-sha256:" + "a" * 64,
-        body_digest="sha256:" + "b" * 64,
+        body_digest=(
+            "sha256:" + hashlib.sha256(canonical_body).hexdigest()
+        ),
         body_digest_version="rfc8785-v1",
         request_type="general",
         text="operator work",

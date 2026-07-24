@@ -8,6 +8,7 @@ authority.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -67,8 +68,9 @@ _PRIORITY_POLICY_VERSION = "operator-priority-v1"
 _DIRECTED_AUTHORITY_SCOPES = frozenset({
     "owner",
     "delegated_host",
-    "local_host",
 })
+_TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
+_REQUEST_BODY_SCHEMA_VERSION = "request-admission-v2"
 _BRANCH_TASK_ID_RE = re.compile(r"^bt2_[0-9a-f]{32}$")
 _ADMISSION_ID_RE = re.compile(r"^adm_[0-9a-f]{32}$")
 _REQUEST_ID_RE = re.compile(r"^req_[0-9a-f]{32}$")
@@ -363,6 +365,7 @@ def _classify_epoch2_row(
         or not 0 <= float(weight) <= 100
     ):
         return "incomplete"
+    decoded_documents: dict[str, dict[str, Any]] = {}
     for raw_field, decoded_field in (
         ("inputs_json", "inputs"),
         ("detail_json", "detail"),
@@ -376,6 +379,7 @@ def _classify_epoch2_row(
             value = row.get(decoded_field)
         if not isinstance(value, dict):
             return "incomplete"
+        decoded_documents[decoded_field] = value
     linked_weight = row.get("linked_admission_priority_weight")
     linked_generation = row.get("linked_admission_grant_generation")
     key_hash = row.get("linked_admission_key_hash")
@@ -421,6 +425,16 @@ def _classify_epoch2_row(
     )
     if not linkage_matches:
         return "invalid_operator_admission"
+    if row.get("linked_admission_compacted_at") is not None:
+        return (
+            None
+            if _compacted_terminal_matches(
+                row,
+                inputs=decoded_documents["inputs"],
+                detail=decoded_documents["detail"],
+            )
+            else "invalid_operator_admission"
+        )
     try:
         receipt = json.loads(str(row.get("linked_admission_receipt_json")))
         result = json.loads(str(row.get("linked_admission_result_json")))
@@ -444,6 +458,11 @@ def _classify_epoch2_row(
     )
     if not metadata_matches or not _authority_receipt_matches(row, receipt):
         return "invalid_operator_admission"
+    if not _canonical_request_body_matches(
+        row,
+        inputs=decoded_documents["inputs"],
+    ):
+        return "invalid_operator_admission"
     if not _public_admission_result_matches(row, result):
         return "invalid_operator_admission"
     return None
@@ -464,6 +483,93 @@ def _is_path_safe_universe_id(value: Any) -> bool:
     )
 
 
+def _compacted_terminal_matches(
+    row: Mapping[str, Any],
+    *,
+    inputs: Mapping[str, Any],
+    detail: Mapping[str, Any],
+) -> bool:
+    if (
+        row.get("status") not in _TERMINAL_STATUSES
+        or inputs
+        or detail
+        or row.get("directed_daemon_id") != ""
+        or row.get("claimed_by") != ""
+        or row.get("linked_request_text") != ""
+        or row.get("linked_request_preferred_author_id") is not None
+    ):
+        return False
+    timestamps = (
+        row.get("terminal_at"),
+        row.get("linked_admission_terminal_at"),
+        row.get("linked_admission_compacted_at"),
+    )
+    if not all(
+        isinstance(value, str) and _parse_timestamp(value) is not None
+        for value in timestamps
+    ):
+        return False
+    try:
+        receipt = json.loads(str(row.get("linked_admission_receipt_json")))
+        result = json.loads(str(row.get("linked_admission_result_json")))
+        metadata = json.loads(str(row.get("linked_request_metadata_json")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    expected_result = {
+        "admission_id": row["admission_id"],
+        "branch_task_id": row["branch_task_id"],
+        "request_id": row["request_id"],
+        "request_status": row["status"],
+        "universe_id": row["universe_id"],
+    }
+    return bool(
+        receipt == {}
+        and result == expected_result
+        and metadata == {"compacted": True, "queue_epoch": QUEUE_EPOCH}
+    )
+
+
+def _canonical_request_body_matches(
+    row: Mapping[str, Any],
+    *,
+    inputs: Mapping[str, Any],
+) -> bool:
+    request_text = row.get("linked_request_text")
+    request_type = row.get("linked_request_type")
+    request_branch_id = row.get("linked_request_branch_id")
+    directed_daemon_id = row.get("directed_daemon_id")
+    pickup_incentive = inputs.get("pickup_incentive")
+    directed_instruction = inputs.get("directed_daemon_instruction")
+    if (
+        not isinstance(request_text, str)
+        or not isinstance(request_type, str)
+        or request_branch_id is not None
+        and not isinstance(request_branch_id, str)
+        or not isinstance(directed_daemon_id, str)
+        or not isinstance(pickup_incentive, str)
+        or not isinstance(directed_instruction, str)
+        or inputs.get("request_id") != row.get("request_id")
+        or inputs.get("request_type") != request_type
+        or inputs.get("branch_id") != (request_branch_id or "")
+    ):
+        return False
+    import rfc8785
+
+    canonical = rfc8785.dumps({
+        "branch_id": request_branch_id or "",
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": directed_instruction,
+        "pickup_incentive": pickup_incentive,
+        "priority_weight": row["priority_weight"],
+        "request_type": request_type,
+        "schema_version": _REQUEST_BODY_SCHEMA_VERSION,
+        "text": request_text,
+        "universe_id": row["universe_id"],
+    })
+    expected = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+    return row.get("linked_admission_body_digest") == expected
+
+
 def _authority_receipt_matches(
     row: Mapping[str, Any],
     receipt: Mapping[str, Any],
@@ -473,13 +579,37 @@ def _authority_receipt_matches(
     if not isinstance(directed, dict):
         return False
     if directed_daemon_id:
+        try:
+            daemon_metadata = json.loads(
+                str(row.get("linked_directed_daemon_metadata_json"))
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(daemon_metadata, dict):
+            return False
+        actor_id = row.get("linked_admission_actor_id")
+        owner_id = (
+            daemon_metadata.get("owner_user_id")
+            or daemon_metadata.get("created_by")
+            or "host"
+        )
+        delegated = daemon_metadata.get("delegated_hosts")
+        delegated_hosts = delegated if isinstance(delegated, list) else []
+        if actor_id == owner_id:
+            expected_scope = "owner"
+        elif actor_id in delegated_hosts:
+            expected_scope = "delegated_host"
+        else:
+            expected_scope = "none"
         directed_matches = (
             directed.get("daemon_id") == directed_daemon_id
             and isinstance(directed.get("daemon_soul_hash"), str)
             and _SOUL_HASH_RE.fullmatch(directed["daemon_soul_hash"])
             is not None
-            and directed.get("authority_scope")
-            in _DIRECTED_AUTHORITY_SCOPES
+            and directed["daemon_soul_hash"]
+            == row.get("linked_directed_daemon_soul_hash")
+            and directed.get("authority_scope") == expected_scope
+            and expected_scope in _DIRECTED_AUTHORITY_SCOPES
         )
     else:
         directed_matches = directed == {}

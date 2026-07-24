@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import rfc8785
 
 import tinyassets.storage.request_admissions as request_admission_storage
 from tinyassets.branch_tasks import (
@@ -22,6 +23,7 @@ from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTaskAdapter,
     WorkerClaimDescriptor,
 )
+from tinyassets.daemon_registry import create_daemon
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.storage import db_path
 from tinyassets.storage.request_admissions import (
@@ -49,13 +51,26 @@ def _commit(
     trigger_source: str = "operator_request",
     weight: float = 50.0,
     directed_daemon_id: str = "",
+    directed_soul_hash: str = "c" * 64,
+    directed_authority_scope: str = "owner",
     universe_id: str = "universe-a",
     created_at: str = "2026-07-24T08:00:00+00:00",
 ) -> dict:
     if not key.startswith("hmac-sha256:"):
         key = "hmac-sha256:" + hashlib.sha256(key.encode()).hexdigest()
-    if not body.startswith("sha256:") or len(body) != 71:
-        body = "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+    del body
+    canonical_body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": "",
+        "pickup_incentive": "",
+        "priority_weight": weight,
+        "request_type": "general",
+        "schema_version": "request-admission-v2",
+        "text": "repair the queue",
+        "universe_id": universe_id,
+    })
+    body = "sha256:" + hashlib.sha256(canonical_body).hexdigest()
     return RequestAdmissionStore(base_path).commit_admission(
         tenant_id="tenant-a",
         actor_id="actor-a",
@@ -78,8 +93,8 @@ def _commit(
             "directed_assignment": (
                 {
                     "daemon_id": directed_daemon_id,
-                    "daemon_soul_hash": "c" * 64,
-                    "authority_scope": "owner",
+                    "daemon_soul_hash": directed_soul_hash,
+                    "authority_scope": directed_authority_scope,
                 }
                 if directed_daemon_id
                 else {}
@@ -861,6 +876,49 @@ def test_malformed_json_is_incomplete_and_never_reaches_task_decoding(
     assert result.receipts[0].reason == "incomplete"
 
 
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("request_type", "revision"),
+        ("branch_id", "forged-branch"),
+        ("pickup_incentive", "forged-pickup"),
+        ("directed_daemon_instruction", "forged instruction"),
+    ],
+)
+def test_parseable_task_input_mutation_breaks_canonical_body_evidence(
+    tmp_path: Path,
+    field: str,
+    forged_value: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    invalid = _commit(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        raw = conn.execute(
+            """
+            SELECT inputs_json FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (invalid["branch_task_id"],),
+        ).fetchone()[0]
+        inputs = json.loads(raw)
+        inputs[field] = forged_value
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET inputs_json = ?
+            WHERE branch_task_id = ?
+            """,
+            (json.dumps(inputs), invalid["branch_task_id"]),
+        )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    assert adapter.list_candidates() == []
+    result = adapter.maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == "invalid_operator_admission"
+
+
 def test_corrupt_admission_evidence_cannot_claim_before_maintenance(
     tmp_path: Path,
 ) -> None:
@@ -981,6 +1039,9 @@ def test_parseable_forged_evidence_is_inert_and_quarantined(
     ("authority_scope", "soul_hash"),
     [
         ("none", "c" * 64),
+        ("local_host", "c" * 64),
+        ("delegated_host", "c" * 64),
+        ("owner", "d" * 64),
         ("owner", "not-a-canonical-soul-hash"),
     ],
 )
@@ -990,14 +1051,32 @@ def test_unauthorized_directed_receipt_is_inert(
     soul_hash: str,
 ) -> None:
     initialize_author_server(tmp_path)
-    invalid = _commit(tmp_path, directed_daemon_id="daemon-a")
+    daemon = create_daemon(
+        tmp_path,
+        display_name="Directed Test Daemon",
+        created_by="actor-a",
+        soul_mode="soul",
+        soul_text="A stable directed test soul.",
+    )
+    effective_soul_hash = (
+        daemon["soul_hash"] if soul_hash == "c" * 64 else soul_hash
+    )
+    invalid = _commit(
+        tmp_path,
+        directed_daemon_id=daemon["daemon_id"],
+        directed_soul_hash=daemon["soul_hash"],
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    assert [task.branch_task_id for task in adapter.list_candidates()] == [
+        invalid["branch_task_id"]
+    ]
     forged_receipt = {
         "authority": "request-local",
         "grant_generation": 3,
         "priority_policy_version": "operator-priority-v1",
         "directed_assignment": {
-            "daemon_id": "daemon-a",
-            "daemon_soul_hash": soul_hash,
+            "daemon_id": daemon["daemon_id"],
+            "daemon_soul_hash": effective_soul_hash,
             "authority_scope": authority_scope,
         },
     }
@@ -1010,7 +1089,6 @@ def test_unauthorized_directed_receipt_is_inert(
             (json.dumps(forged_receipt), invalid["branch_task_id"]),
         )
 
-    adapter = Epoch2BranchTaskAdapter(tmp_path)
     assert adapter.list_candidates() == []
     result = adapter.maintain_quarantine()
 
@@ -1306,6 +1384,47 @@ def test_compacted_terminal_row_is_not_reclassified_as_invalid(
         assert conn.execute(
             "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
         ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "reason"),
+    [
+        ("protocol_version", 99, "unsupported_protocol"),
+        ("receipt_json", "{}", "invalid_operator_admission"),
+    ],
+)
+def test_noncompacted_corrupt_terminal_row_is_quarantined(
+    tmp_path: Path,
+    column: str,
+    value: object,
+    reason: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    table = (
+        "branch_tasks_v2"
+        if column == "protocol_version"
+        else "request_admissions"
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            f"UPDATE {table} SET {column} = ? WHERE branch_task_id = ?",
+            (value, terminal["branch_task_id"]),
+        )
+
+    result = Epoch2BranchTaskAdapter(tmp_path).maintain_quarantine()
+
+    assert result.health == "green"
+    assert result.quarantined == 1
+    assert result.receipts[0].reason == reason
 
 
 def test_disabled_invalid_row_gets_receipt_but_valid_policy_row_does_not(

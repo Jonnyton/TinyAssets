@@ -344,3 +344,9 @@ fresh-host rollback edges found later.
   display-safe slug rule to receipts. Closed reason enums, allowed directed
   scopes, canonical soul hashes, and a non-overridable scan ceiling belong at
   the storage boundary.
+  Stored evidence is only meaningful when it binds the executable payload:
+  recompute the RFC 8785 body digest from the canonical Request plus task
+  inputs, and bind directed scope/hash to the actual daemon owner/delegation
+  metadata and soul. Terminal rows need two paths: full validation before
+  compaction, or an exact compacted tombstone contract afterward. A status
+  string alone is never permission to skip integrity.
