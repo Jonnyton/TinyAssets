@@ -319,3 +319,10 @@ fresh-host rollback edges found later.
 - **What I would do differently:** begin with malformed JSON, broken aggregate
   links, both precommit fault points, and concurrent maintenance. Those tests
   distinguish real quarantine isolation from merely having a quarantine table.
+  Treat every imported SQLite storage class as adversarial too: ordinary
+  `TEXT PRIMARY KEY` columns can contain NULL, TEXT-affinity columns can contain
+  BLOBs, and REAL values can be non-finite when constraints were bypassed.
+  Address corrupt sources by rowid, totalize their digest representation, and
+  bound maintenance by rows scanned—not receipts written—while persisting a
+  rotating cursor. Finally, validate the public result and lifecycle
+  semantically at both selection and claim; parseable evidence is not proof.

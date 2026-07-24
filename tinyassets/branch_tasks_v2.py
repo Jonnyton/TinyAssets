@@ -130,7 +130,7 @@ class Epoch2BranchTaskAdapter:
             task: Mapping[str, Any],
             transaction_at: str,
         ) -> bool:
-            if _classify_epoch2_row(task, require_linkage=False) is not None:
+            if _classify_epoch2_row(task) is not None:
                 return False
             if task["universe_id"] != descriptor.universe_id:
                 return False
@@ -296,8 +296,6 @@ def _parse_timestamp(value: str) -> datetime | None:
 
 def _classify_epoch2_row(
     row: Mapping[str, Any],
-    *,
-    require_linkage: bool = True,
 ) -> str | None:
     if (
         type(row.get("queue_epoch")) is not int
@@ -314,7 +312,12 @@ def _classify_epoch2_row(
         "branch_def_id",
         "queued_at",
     )
-    if not all(str(row.get(field) or "").strip() for field in required):
+    if not all(
+        isinstance(row.get(field), str) and bool(row[field].strip())
+        for field in required
+    ):
+        return "incomplete"
+    if _parse_timestamp(row["queued_at"]) is None:
         return "incomplete"
     if row.get("trigger_source") not in {
         "operator_request",
@@ -352,52 +355,84 @@ def _classify_epoch2_row(
             value = row.get(decoded_field)
         if not isinstance(value, dict):
             return "incomplete"
-    if require_linkage:
-        linked_weight = row.get("linked_admission_priority_weight")
-        linked_generation = row.get("linked_admission_grant_generation")
-        linkage_matches = (
-            row.get("linked_admission_id") == row.get("admission_id")
-            and row.get("linked_admission_request_id")
-            == row.get("request_id")
-            and row.get("linked_admission_task_id")
-            == row.get("branch_task_id")
-            and row.get("linked_admission_universe_id")
-            == row.get("universe_id")
-            and row.get("linked_admission_trigger_source")
-            == row.get("trigger_source")
-            and isinstance(linked_weight, (int, float))
-            and not isinstance(linked_weight, bool)
-            and float(linked_weight) == float(weight)
-            and row.get("linked_request_id") == row.get("request_id")
-            and row.get("linked_request_universe_id")
-            == row.get("universe_id")
-            and row.get("linked_admission_state") == "committed"
-            and all(
-                str(row.get(field) or "").strip()
-                for field in (
-                    "linked_admission_key_hash",
-                    "linked_admission_body_digest",
-                    "linked_admission_body_digest_version",
-                    "linked_admission_policy_version",
-                    "linked_request_status",
-                )
+    linked_weight = row.get("linked_admission_priority_weight")
+    linked_generation = row.get("linked_admission_grant_generation")
+    linkage_matches = (
+        row.get("linked_admission_id") == row.get("admission_id")
+        and row.get("linked_admission_request_id") == row.get("request_id")
+        and row.get("linked_admission_task_id") == row.get("branch_task_id")
+        and row.get("linked_admission_universe_id")
+        == row.get("universe_id")
+        and row.get("linked_admission_trigger_source")
+        == row.get("trigger_source")
+        and isinstance(linked_weight, (int, float))
+        and not isinstance(linked_weight, bool)
+        and math.isfinite(float(linked_weight))
+        and float(linked_weight) == float(weight)
+        and row.get("linked_request_id") == row.get("request_id")
+        and row.get("linked_request_universe_id") == row.get("universe_id")
+        and row.get("linked_admission_state") == "committed"
+        and row.get("linked_request_status") == row.get("status")
+        and all(
+            isinstance(row.get(field), str) and bool(row[field].strip())
+            for field in (
+                "linked_admission_key_hash",
+                "linked_admission_body_digest",
+                "linked_admission_body_digest_version",
+                "linked_admission_policy_version",
             )
-            and type(linked_generation) is int
-            and linked_generation >= 0
         )
-        if not linkage_matches:
-            return "invalid_operator_admission"
-        for field in (
-            "linked_admission_receipt_json",
-            "linked_admission_result_json",
-        ):
-            try:
-                evidence = json.loads(str(row.get(field)))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return "invalid_operator_admission"
-            if not isinstance(evidence, dict):
-                return "invalid_operator_admission"
+        and type(linked_generation) is int
+        and linked_generation >= 0
+    )
+    if not linkage_matches:
+        return "invalid_operator_admission"
+    try:
+        receipt = json.loads(str(row.get("linked_admission_receipt_json")))
+        result = json.loads(str(row.get("linked_admission_result_json")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "invalid_operator_admission"
+    if (
+        not isinstance(receipt, dict)
+        or not receipt
+        or not isinstance(result, dict)
+    ):
+        return "invalid_operator_admission"
+    if not _public_admission_result_matches(row, result):
+        return "invalid_operator_admission"
     return None
+
+
+def _public_admission_result_matches(
+    row: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> bool:
+    result_weight = result.get("accepted_priority_weight")
+    result_cap = result.get("priority_weight_cap")
+    if (
+        isinstance(result_weight, bool)
+        or not isinstance(result_weight, (int, float))
+        or not math.isfinite(float(result_weight))
+        or float(result_weight) != float(row["priority_weight"])
+        or isinstance(result_cap, bool)
+        or not isinstance(result_cap, (int, float))
+        or not math.isfinite(float(result_cap))
+        or float(result_cap) != 100.0
+    ):
+        return False
+    exact = {
+        "universe_id": row["universe_id"],
+        "admission_id": row["admission_id"],
+        "admission_state": "committed",
+        "request_id": row["request_id"],
+        "branch_task_id": row["branch_task_id"],
+        "request_status": "pending",
+        "trigger_source": row["trigger_source"],
+        "priority_policy_version": row["linked_admission_policy_version"],
+        "idempotent_replay": False,
+        "directed_daemon_id": row.get("directed_daemon_id") or "",
+    }
+    return all(result.get(field) == value for field, value in exact.items())
 
 
 def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:

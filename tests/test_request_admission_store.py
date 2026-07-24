@@ -465,7 +465,10 @@ def test_claim_transition_quarantine_and_universe_delete(tmp_path):
     )
     committed = store.commit_admission(**_commit_kwargs())
 
-    candidates = store.list_v2_candidates(universe_id="universe-a")
+    candidates = store.list_v2_candidates(
+        universe_id="universe-a",
+        integrity_check=lambda _row: True,
+    )
     assert [row["branch_task_id"] for row in candidates] == [
         committed["branch_task_id"]
     ]
@@ -475,6 +478,7 @@ def test_claim_transition_quarantine_and_universe_delete(tmp_path):
         worker_id="worker-1",
         queue_protocol_version=2,
         capabilities={"operator_request_v1"},
+        claim_check=lambda _conn, _row, _at: True,
     )
     assert claimed["status"] == "running"
     assert claimed["claimed_by"] == "worker-1"
@@ -483,6 +487,7 @@ def test_claim_transition_quarantine_and_universe_delete(tmp_path):
         worker_id="worker-2",
         queue_protocol_version=2,
         capabilities={"operator_request_v1"},
+        claim_check=lambda _conn, _row, _at: True,
     ) is None
 
     store.transition_task(
@@ -547,6 +552,7 @@ def test_worker_transition_ignores_backdated_at_and_uses_transaction_clock(
         queue_protocol_version=2,
         capabilities={"operator_request_v1"},
         lease_seconds=30,
+        claim_check=lambda _conn, _row, _at: True,
     )
     assert claimed is not None
 
