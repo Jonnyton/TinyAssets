@@ -186,3 +186,16 @@ fresh-host rollback edges found later.
   invocation-warning rejection part of the first executable production proof,
   then run independent review against the full two-upload sequence before the
   first live retention exercise.
+
+## 2026-07-24 — transactional operator-request storage
+
+- **What surprised me:** the legacy request tests were mostly failing because
+  their fixtures lacked a declared Loop, while the actual operator bug was a
+  swallowed split-write failure that persisted a Request without its task.
+- **Pattern worth capturing:** a durable admission is one aggregate—Request,
+  admission receipt, epoch-specific task, and event—and its idempotency,
+  authority recheck, random-ID allocation, and fault boundary belong inside
+  the same transaction.
+- **What I would do differently:** write the quarantine-replay and lock-error
+  tests in the first red batch. Both are small but distinguish genuinely
+  transactional behavior from a store that only passes happy-path concurrency.

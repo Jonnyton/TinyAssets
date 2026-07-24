@@ -50,6 +50,13 @@ def _read_requests(universe_dir):
     )
 
 
+def _declare_legacy_loop(universe_dir):
+    (universe_dir / "PROGRAM.md").write_text(
+        "Legacy fixture with an explicit compatibility Loop.",
+        encoding="utf-8",
+    )
+
+
 # ─── materialize_pending_requests ──────────────────────────────────────
 
 
@@ -209,7 +216,9 @@ def test_submit_request_rejects_oversize_text(tmp_path, monkeypatch):
 
     base = tmp_path / "output"
     base.mkdir()
-    (base / "test-universe").mkdir()
+    universe_dir = base / "test-universe"
+    universe_dir.mkdir()
+    _declare_legacy_loop(universe_dir)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     from tinyassets.api import universe as us
@@ -236,7 +245,9 @@ def test_submit_request_accepts_text_at_cap(tmp_path, monkeypatch):
 
     base = tmp_path / "output"
     base.mkdir()
-    (base / "test-universe").mkdir()
+    universe_dir = base / "test-universe"
+    universe_dir.mkdir()
+    _declare_legacy_loop(universe_dir)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     from tinyassets.api import universe as us
@@ -265,6 +276,7 @@ def test_submit_request_response_includes_queue_position(monkeypatch, tmp_path):
     base = tmp_path / "uni"
     universe_dir = base / "test-universe"
     universe_dir.mkdir(parents=True)
+    _declare_legacy_loop(universe_dir)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     from tinyassets.api import universe as us

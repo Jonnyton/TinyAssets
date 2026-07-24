@@ -23,7 +23,12 @@ def server_base(tmp_path: Path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
     uid = "test-uni"
-    (base / uid).mkdir()
+    udir = base / uid
+    udir.mkdir()
+    (udir / "PROGRAM.md").write_text(
+        "Legacy fixture with an explicit compatibility Loop.",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
