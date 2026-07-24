@@ -1103,3 +1103,16 @@ Notes:
 - STATUS/Issue/PR: only the post-deploy organic-use watch remains
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
+## 2026-07-23 - create first-contact-authority-review
+
+- Provider: codex-gpt5-desktop-byoc
+- Branch: codex/first-contact-authority-review
+- Lane state: opposite-provider review preparation; runtime blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-first-contact-authority-review
+- STATUS/Issue/PR: P0 newborn BYOC/market authority; Handoff #1582; PR pending
+- PLAN refs: Scoping Rules; Daemon Platform; Providers; API & MCP Interface; Uptime & Alarms; full-platform §§5-8 and §20
+- Purpose: reconcile PR #1617 research with current `universe-creation`, R2-1a/R2-1b, and paid-market authority so Claude can review one current packet after reset
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-first-contact-authority-review\_PURPOSE.md
+- Related implications: no maintainer quota for requester work; BYOC/accepted-market execution only; no runtime edits before opposite-provider approval
+- Idea feed refs: 2026-07-20 BYOC/federated market direction
+- Ship/abandon: publish review packet only; after Claude APPROVE, broaden the STATUS file claim before tests or runtime implementation
