@@ -140,10 +140,12 @@ def resolve_review_state(
     unique_decisions = _dedupe_decisions(decisions)
 
     action_by_actor: dict[str, ReviewAction] = {}
+    decision_id_by_actor: dict[str, str] = {}
     for decision in unique_decisions:
         _require_decision_scope(decision, case)
         grant = _bound_grant(
             grant_index,
+            tenant_id=case.artifact.tenant_id,
             grant_id=decision.grant_id,
             generation=decision.grant_generation,
         )
@@ -164,17 +166,33 @@ def resolve_review_state(
         prior = action_by_actor.get(actor_id)
         if prior is not None and prior is not decision.action:
             action_by_actor[actor_id] = ReviewAction.ESCALATE
+            decision_id_by_actor.pop(actor_id, None)
         else:
             action_by_actor[actor_id] = decision.action
+            decision_id_by_actor.setdefault(actor_id, decision.decision_id)
 
     actor_ids = tuple(sorted(action_by_actor))
     actions = tuple(sorted(set(action_by_actor.values()), key=lambda action: action.value))
+    effective_delete_decision_ids = tuple(
+        sorted(
+            decision_id_by_actor[actor_id]
+            for actor_id, action in action_by_actor.items()
+            if action is ReviewAction.PROPOSE_DELETE
+        )
+    )
+    decision_by_id = {decision.decision_id: decision for decision in unique_decisions}
+    latest_delete_decision_at = max(
+        (decision_by_id[decision_id].decided_at for decision_id in effective_delete_decision_ids),
+        default=None,
+    )
     council_actor_ids = _current_council_actors(
         authorizations=council_authorizations,
         grant_index=grant_index,
         case=case,
         now=now,
         recused=recused,
+        delete_decision_ids=effective_delete_decision_ids,
+        latest_delete_decision_at=latest_delete_decision_at,
     )
 
     if not actions:
@@ -189,7 +207,10 @@ def resolve_review_state(
         )
     elif actions[0] is ReviewAction.CONTINUE_HIDE:
         state = ModerationState.UNDER_REVIEW
-    elif len(council_actor_ids) >= policy.council_quorum:
+    elif (
+        len(effective_delete_decision_ids) >= policy.reviewer_delete_quorum
+        and len(council_actor_ids) >= policy.council_quorum
+    ):
         state = ModerationState.RECOVERABLE_DELETED
     else:
         state = ModerationState.PENDING_DELETE
@@ -302,10 +323,12 @@ def _require_current_grant(
     )
 
 
-def _index_grants(grants: Iterable[ReviewerGrant]) -> dict[tuple[str, int], ReviewerGrant]:
-    indexed: dict[tuple[str, int], ReviewerGrant] = {}
+def _index_grants(
+    grants: Iterable[ReviewerGrant],
+) -> dict[tuple[str, str, int], ReviewerGrant]:
+    indexed: dict[tuple[str, str, int], ReviewerGrant] = {}
     for grant in grants:
-        key = (grant.grant_id, grant.generation)
+        key = (grant.tenant_id, grant.grant_id, grant.generation)
         existing = indexed.get(key)
         if existing is not None and existing != grant:
             raise PolicyError(PolicyErrorCode.GRANT_BINDING_MISMATCH)
@@ -314,13 +337,14 @@ def _index_grants(grants: Iterable[ReviewerGrant]) -> dict[tuple[str, int], Revi
 
 
 def _bound_grant(
-    grants: dict[tuple[str, int], ReviewerGrant],
+    grants: dict[tuple[str, str, int], ReviewerGrant],
     *,
+    tenant_id: str,
     grant_id: str,
     generation: int,
 ) -> ReviewerGrant:
     try:
-        return grants[(grant_id, generation)]
+        return grants[(tenant_id, grant_id, generation)]
     except KeyError as exc:
         raise PolicyError(PolicyErrorCode.GRANT_BINDING_MISMATCH) from exc
 
@@ -350,10 +374,12 @@ def _dedupe_decisions(decisions: Iterable[ReviewDecision]) -> tuple[ReviewDecisi
 def _current_council_actors(
     *,
     authorizations: Iterable[CouncilAuthorization],
-    grant_index: dict[tuple[str, int], ReviewerGrant],
+    grant_index: dict[tuple[str, str, int], ReviewerGrant],
     case: ModerationCase,
     now: datetime,
     recused: frozenset[str] | set[str],
+    delete_decision_ids: tuple[str, ...],
+    latest_delete_decision_at: datetime | None,
 ) -> tuple[str, ...]:
     indexed: dict[str, CouncilAuthorization] = {}
     actor_ids: set[str] = set()
@@ -365,8 +391,15 @@ def _current_council_actors(
     for authorization_id in sorted(indexed):
         authorization = indexed[authorization_id]
         _require_council_scope(authorization, case)
+        if (
+            authorization.delete_decision_ids != delete_decision_ids
+            or latest_delete_decision_at is None
+            or authorization.authorized_at < latest_delete_decision_at
+        ):
+            raise PolicyError(PolicyErrorCode.COUNCIL_BINDING_MISMATCH)
         grant = _bound_grant(
             grant_index,
+            tenant_id=case.artifact.tenant_id,
             grant_id=authorization.grant_id,
             generation=authorization.grant_generation,
         )

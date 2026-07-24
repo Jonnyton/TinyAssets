@@ -83,11 +83,12 @@ def _case(
     )
 
 
-def _policy(*, council_quorum: int = 2):
+def _policy(*, council_quorum: int = 2, reviewer_delete_quorum: int = 2):
     contracts = _contracts()
     return contracts.ModerationPolicy(
         current_rubric_version=RUBRIC,
         council_quorum=council_quorum,
+        reviewer_delete_quorum=reviewer_delete_quorum,
     )
 
 
@@ -174,6 +175,7 @@ def _council_authorization(
     case=None,
     revision: int | None = None,
     authorized_at=None,
+    delete_decision_ids=("decision-reviewer",),
 ):
     contracts = _contracts()
     case = case or _case()
@@ -188,6 +190,7 @@ def _council_authorization(
         grant_id=grant.grant_id,
         grant_generation=grant.generation,
         rubric_version=grant.rubric_version,
+        delete_decision_ids=tuple(delete_decision_ids),
         rationale="Council authorization after independent review.",
         authorized_at=authorized_at or NOW - timedelta(minutes=1),
     )
@@ -468,7 +471,7 @@ def test_ordinary_reviewers_can_only_propose_recoverable_delete():
     assert resolution.council_actor_ids == ()
 
 
-def test_distinct_current_council_quorum_authorizes_recoverable_delete():
+def test_one_reviewer_plus_council_quorum_remains_pending_delete():
     contracts = _contracts()
     reviewer_grant = _grant("reviewer")
     reviewer_decision = _decision("reviewer", reviewer_grant)
@@ -491,9 +494,164 @@ def test_distinct_current_council_quorum_authorizes_recoverable_delete():
         council=council,
     )
 
-    assert resolution.state is contracts.ModerationState.RECOVERABLE_DELETED
+    assert resolution.state is contracts.ModerationState.PENDING_DELETE
     assert resolution.council_actor_ids == ("council-1", "council-2")
     assert not hasattr(resolution, "physically_deleted")
+
+
+def test_two_reviewers_plus_council_quorum_authorizes_recoverable_delete():
+    contracts = _contracts()
+    reviewer_grants = (_grant("reviewer-1"), _grant("reviewer-2"))
+    reviewer_decisions = tuple(
+        _decision(actor_id, grant)
+        for actor_id, grant in zip(("reviewer-1", "reviewer-2"), reviewer_grants)
+    )
+    council_grants = tuple(
+        _grant(
+            actor_id,
+            authority_class=contracts.AuthorityClass.COUNCIL,
+            purpose=contracts.AuthorityPurpose.TERMINAL_MODERATION,
+        )
+        for actor_id in ("council-1", "council-2")
+    )
+    council = tuple(
+        _council_authorization(
+            actor_id,
+            grant,
+            delete_decision_ids=("decision-reviewer-1", "decision-reviewer-2"),
+        )
+        for actor_id, grant in zip(("council-1", "council-2"), council_grants)
+    )
+
+    resolution = _resolve(
+        decisions=reviewer_decisions,
+        grants=(*reviewer_grants, *council_grants),
+        council=council,
+    )
+
+    assert resolution.state is contracts.ModerationState.RECOVERABLE_DELETED
+
+
+def test_reviewer_quorum_is_policy_owned_independently_of_council_quorum():
+    contracts = _contracts()
+
+    assert "reviewer_delete_quorum" in inspect.signature(contracts.ModerationPolicy).parameters
+
+
+def test_council_authorization_binds_effective_delete_decision_ids():
+    contracts = _contracts()
+
+    assert "delete_decision_ids" in inspect.signature(contracts.CouncilAuthorization).parameters
+
+
+def test_council_preauthorization_for_other_decisions_fails_closed():
+    contracts = _contracts()
+    reviewer_grants = (_grant("reviewer-1"), _grant("reviewer-2"))
+    reviewer_decisions = tuple(
+        _decision(actor_id, grant)
+        for actor_id, grant in zip(("reviewer-1", "reviewer-2"), reviewer_grants)
+    )
+    council_grants = tuple(
+        _grant(
+            actor_id,
+            authority_class=contracts.AuthorityClass.COUNCIL,
+            purpose=contracts.AuthorityPurpose.TERMINAL_MODERATION,
+        )
+        for actor_id in ("council-1", "council-2")
+    )
+    council = tuple(
+        _council_authorization(
+            actor_id,
+            grant,
+            delete_decision_ids=("unrelated-future-decision",),
+        )
+        for actor_id, grant in zip(("council-1", "council-2"), council_grants)
+    )
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(
+            decisions=reviewer_decisions,
+            grants=(*reviewer_grants, *council_grants),
+            council=council,
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.COUNCIL_BINDING_MISMATCH
+
+
+def test_council_authorization_cannot_predate_bound_delete_decisions():
+    contracts = _contracts()
+    reviewer_grants = (_grant("reviewer-1"), _grant("reviewer-2"))
+    reviewer_decisions = tuple(
+        _decision(actor_id, grant, decided_at=NOW - timedelta(minutes=5))
+        for actor_id, grant in zip(("reviewer-1", "reviewer-2"), reviewer_grants)
+    )
+    council_grants = tuple(
+        _grant(
+            actor_id,
+            authority_class=contracts.AuthorityClass.COUNCIL,
+            purpose=contracts.AuthorityPurpose.TERMINAL_MODERATION,
+        )
+        for actor_id in ("council-1", "council-2")
+    )
+    council = tuple(
+        _council_authorization(
+            actor_id,
+            grant,
+            delete_decision_ids=("decision-reviewer-1", "decision-reviewer-2"),
+            authorized_at=NOW - timedelta(minutes=10),
+        )
+        for actor_id, grant in zip(("council-1", "council-2"), council_grants)
+    )
+
+    with pytest.raises(contracts.PolicyError) as caught:
+        _resolve(
+            decisions=reviewer_decisions,
+            grants=(*reviewer_grants, *council_grants),
+            council=council,
+        )
+
+    assert caught.value.code is contracts.PolicyErrorCode.COUNCIL_BINDING_MISMATCH
+
+
+def test_same_grant_id_generation_in_another_tenant_cannot_block_case_grant():
+    contracts = _contracts()
+    grant = _grant("reviewer", grant_id="shared-grant", generation=4)
+    foreign_grant = replace(
+        grant,
+        tenant_id="tenant-b",
+        actor_id="foreign-reviewer",
+    )
+    decision = _decision("reviewer", grant)
+
+    resolution = _resolve(
+        decisions=(decision,),
+        grants=(foreign_grant, grant),
+    )
+
+    assert resolution.state is contracts.ModerationState.PENDING_DELETE
+
+
+def test_review_decision_rejects_string_action_at_construction():
+    contracts = _contracts()
+    grant = _grant("reviewer")
+
+    with pytest.raises(contracts.PolicyError):
+        replace(_decision("reviewer", grant), action="propose_delete")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("authority_class", "reviewer"),
+        ("purpose", "review_decision"),
+        ("artifact_scope", "node"),
+    ],
+)
+def test_grant_rejects_malformed_runtime_enum_and_scope_values(field, value):
+    contracts = _contracts()
+
+    with pytest.raises(contracts.PolicyError):
+        replace(_grant("reviewer"), **{field: value})
 
 
 def test_expired_or_duplicate_council_authority_cannot_satisfy_quorum():

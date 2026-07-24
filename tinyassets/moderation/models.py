@@ -41,6 +41,7 @@ class PolicyErrorCode(str, Enum):
     APPEAL_CONTEXT_MISMATCH = "appeal_context_mismatch"
     CASE_SCOPE_MISMATCH = "case_scope_mismatch"
     DUPLICATE_DECISION_ID = "duplicate_decision_id"
+    COUNCIL_BINDING_MISMATCH = "council_binding_mismatch"
     RATIONALE_REQUIRED = "rationale_required"
 
 
@@ -67,6 +68,7 @@ _ERROR_MESSAGES = {
     PolicyErrorCode.APPEAL_CONTEXT_MISMATCH: "appeal does not match case",
     PolicyErrorCode.CASE_SCOPE_MISMATCH: "record does not match exact case revision",
     PolicyErrorCode.DUPLICATE_DECISION_ID: "decision id has conflicting payloads",
+    PolicyErrorCode.COUNCIL_BINDING_MISMATCH: "council authorization binding is invalid",
     PolicyErrorCode.RATIONALE_REQUIRED: "bounded review rationale required",
 }
 
@@ -236,6 +238,12 @@ class ReviewerGrant:
     revoked_at: datetime | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.authority_class, AuthorityClass) or not isinstance(
+            self.purpose, AuthorityPurpose
+        ):
+            raise PolicyError(PolicyErrorCode.AUTHORITY_CLASS_MISMATCH)
+        if not isinstance(self.artifact_scope, (ExactArtifactKind, AllArtifactKinds)):
+            raise PolicyError(PolicyErrorCode.ARTIFACT_SCOPE_MISMATCH)
         for value in (self.grant_id, self.tenant_id, self.actor_id, self.rubric_version):
             require_id(value)
         require_reference(self.issuer_ref)
@@ -303,10 +311,11 @@ class ModerationPolicy:
 
     current_rubric_version: str
     council_quorum: int
+    reviewer_delete_quorum: int = 2
 
     def __post_init__(self) -> None:
         require_id(self.current_rubric_version)
-        if self.council_quorum < 2:
+        if self.council_quorum < 2 or self.reviewer_delete_quorum < 2:
             raise PolicyError(PolicyErrorCode.INVALID_POLICY)
 
 
@@ -327,6 +336,8 @@ class ReviewDecision:
     decided_at: datetime
 
     def __post_init__(self) -> None:
+        if not isinstance(self.action, ReviewAction):
+            raise PolicyError(PolicyErrorCode.INVALID_POLICY)
         for value in (
             self.decision_id,
             self.case_id,
@@ -361,10 +372,18 @@ class CouncilAuthorization:
     grant_id: str
     grant_generation: int
     rubric_version: str
+    delete_decision_ids: tuple[str, ...]
     rationale: str
     authorized_at: datetime
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.delete_decision_ids, tuple)
+            or not self.delete_decision_ids
+            or len(set(self.delete_decision_ids)) != len(self.delete_decision_ids)
+            or self.delete_decision_ids != tuple(sorted(self.delete_decision_ids))
+        ):
+            raise PolicyError(PolicyErrorCode.COUNCIL_BINDING_MISMATCH)
         for value in (
             self.authorization_id,
             self.case_id,
@@ -373,6 +392,7 @@ class CouncilAuthorization:
             self.artifact_kind,
             self.grant_id,
             self.rubric_version,
+            *self.delete_decision_ids,
         ):
             require_id(value)
         require_rationale(self.rationale)
