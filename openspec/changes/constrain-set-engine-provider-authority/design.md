@@ -183,12 +183,16 @@ already-resolved eligible-provider view/reference. It cannot rediscover grants,
 credentials, offers, budgets, or ambient host resources. Omitted scope is never
 host-local: `None`, booleans, enums, strings, caller-created lookalikes,
 ambient `TINYASSETS_UNIVERSE`, or a legacy global fallback authorize nothing.
-The landed #1692 `OperatorRequestAdmissionVerdict`, its priority grant, and its
-queued v1 `BranchTask` are admission and ordering artifacts only. Neither
-those landed artifacts nor any current or future admission receipt or
-scheduling claim can populate the typed request eligible-provider set or
-authorize provider access, credentials, compute, market purchase, execution
-lease, settlement, or spending.
+The landed #1692 `OperatorRequestAdmissionVerdict` and priority grant, #1693
+replay-visibility verdict, #1694 transactional Request/admission
+receipt/public committed result/event/pending `branch_tasks_v2` row, and
+#1696 claim are admission, replay visibility, persistence, and ordering
+artifacts only. The #1694 `receipt_json` label `authority="request-local"` and
+directed proposal metadata do not populate the typed request
+eligible-provider set. A #1696 claim may create only its bounded internal
+queue reservation/lease. None of these artifacts can authorize provider
+access, credentials, compute, market purchase, external execution, a
+B2/market lease, settlement, or spending.
 
 The accepted #1660 opposite-provider verdict must first settle requester
 authority semantics in the current `universe-creation` owner and disposition

@@ -247,10 +247,15 @@ credential-vault contract, secret-custody contract, or receipt. The provider
 layer consumes only the immutable already-resolved universe authority
 view/reference. It MUST NOT rediscover grants, credentials, market offers,
 budgets, or ambient host resources.
-An `OperatorRequestAdmissionVerdict`, priority grant, admission receipt,
-`BranchTask`, or scheduling claim MUST NOT populate the typed request
-eligible-provider set and MUST NOT authorize provider access, credentials,
-compute, market purchase, execution lease, settlement, or spending.
+The #1692 `OperatorRequestAdmissionVerdict` and priority grant, #1693
+replay-visibility verdict, #1694 transactional Request/admission
+receipt/public committed result/event/pending `branch_tasks_v2` row, and
+#1696 claim MUST NOT populate the typed request eligible-provider set. The
+#1694 `receipt_json` label `authority="request-local"` and directed proposal
+metadata are request-admission evidence only. An epoch-2 claim MAY create only
+its bounded internal queue reservation/lease. None of these artifacts MUST
+authorize provider access, credentials, compute, market purchase, external
+execution, a B2/market lease, settlement, or spending.
 Every provider attempt MUST obtain fresh persistent assignment and journal
 state under shared-reader/exclusive-writer admission and compute:
 
@@ -352,13 +357,18 @@ carries text, provider, model, family, latency, and degraded state.
   non-request-reachable host operation, never this universe work
 
 #### Scenario: request admission and scheduling artifacts grant no provider authority
-- **WHEN** a caller supplies only an `OperatorRequestAdmissionVerdict`,
-  priority grant, admission receipt, `BranchTask`, or scheduling claim
+- **WHEN** a caller supplies only a #1692 verdict/grant, #1693 replay verdict,
+  #1694 Request/admission receipt/public committed result/event/pending
+  `branch_tasks_v2` row, or #1696 claim
 - **THEN** routing raises `ProviderAuthorityHeldError` before reading provider,
-  credential, auth-health, quota, market, lease, settlement, or spending state
+  credential, auth-health, quota, market, external-execution lease, settlement,
+  or spending state
+- **AND** a #1696 claim can retain only its bounded internal queue
+  reservation/lease
 - **AND** none of those artifacts populates the typed request
   eligible-provider set or authorizes provider access, credentials, compute,
-  market purchase, execution lease, settlement, or spending
+  market purchase, external execution, a B2/market lease, settlement, or
+  spending
 
 #### Scenario: ambient state cannot become host-local authority
 - **WHEN** a provider call omits its typed provider-destination call scope while

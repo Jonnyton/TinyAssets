@@ -10,11 +10,11 @@
   `api/universe.py`; wait for #1623's prerequisite stack to land or for #1623
   to be rebased/retargeted and release the canonical provider-routing spec;
   wait for the provider-auth overlay to land or partition exact ownership;
-  treat merged #1692 request-local operator admission as a landed,
-  non-provider baseline in canonical and packaged `api/universe.py`; then
-  rebase this lane without treating its landed verdict, grant, or queued v1
-  `BranchTask`—or any current/future admission receipt or scheduling
-  claim—as provider-destination authority.
+  treat merged #1692–#1696 request admission, replay visibility, transactional
+  receipt/result, pending epoch-2 task, and bounded internal queue
+  claim/lease as landed non-provider baselines in canonical and packaged
+  surfaces; then rebase this lane without treating any of them as
+  provider-destination or external-execution authority.
 - [ ] 1.3 Re-check active provider-auth, universe-creation, receipts, and
   paid-market lanes; update their dependency notes so none implements a second
   provider-authority boundary. Fold
@@ -87,11 +87,14 @@
   quota, accounts, local models, and local hardware remain inaccessible.
 - [ ] 2.11 Add intersection and scheduling-non-authority tests proving request
   eligibility can narrow but never replace or widen the fresh persistent
-  assignment ceiling. Prove an `OperatorRequestAdmissionVerdict`, priority
-  grant, admission receipt, `BranchTask`, or scheduling claim cannot populate
-  the typed request eligible-provider set or authorize provider access,
-  credentials, compute, market purchase, lease, settlement, or spending;
-  supplying only those artifacts fails held with zero external access.
+  assignment ceiling. Cover the #1692 verdict/grant, #1693 replay verdict,
+  #1694 Request/admission receipt/public committed result/event/pending
+  `branch_tasks_v2` row, and #1696 claim. An epoch-2 claim may create only its
+  bounded internal queue reservation/lease; none of these artifacts can
+  populate the typed request eligible-provider set or authorize provider
+  access, credentials, compute, market purchase, external execution, a
+  B2/market lease, settlement, or spending. Supplying only these artifacts
+  fails held with zero external access.
 - [ ] 2.12 Add parity tests for every CLI/local/HTTP/in-process provider:
   `start()` consumes only `ProviderInvocation`, post-launch vault/env/auth/config
   mutation cannot alter the attempt, and direct/caller-created/removed
