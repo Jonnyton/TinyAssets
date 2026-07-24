@@ -1071,3 +1071,14 @@ Notes:
 - Related implications: production flag is already on; no runtime behavior change unless the proof exposes a defect
 - Idea feed refs: none
 - Ship/abandon: merge through a reviewed PR after strict OpenSpec and focused concurrency evidence
+
+## 2026-07-23 - broaden finish-node-enqueue
+
+- Provider: codex-gpt5-desktop-enqueue
+- Branch: codex/finish-node-enqueue
+- Lane state: Active OpenSpec + TDD production repair
+- Worktree: C:\Users\Jonathan\Projects\wf-finish-node-enqueue
+- STATUS/Issue/PR: broadened claimed row; PR pending
+- Purpose: repair stable-root and lifetime-lineage bypasses exposed by the cap proof, then prove thread/process boundaries
+- Related implications: production activation is proven; the previous no-runtime-change assumption no longer holds
+- Ship/abandon: independent review is mandatory before merge because this now changes live queue admission
