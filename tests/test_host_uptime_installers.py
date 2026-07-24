@@ -168,9 +168,6 @@ case "$1" in
     exit 0
     ;;
   rclone)
-    if [[ "$2" == "mkdir" ]]; then
-      exit 0
-    fi
     count="$(cat "${PROBE_COUNTER}" 2>/dev/null || printf '0')"
     count=$((count + 1))
     printf '%s' "${count}" > "${PROBE_COUNTER}"
@@ -1111,6 +1108,7 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert '-H @"${api_header_file}"' in run
     assert "/root/.config/rclone/rclone.conf" in run
     assert 'install-tinyassets-env.sh" set BACKUP_DEST' in run
+    assert 'rclone mkdir "${destination}"' not in run
     assert "for delay in 0 5 10 20 30" in run
     assert 'sleep "${delay}"' in run
     assert (

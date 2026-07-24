@@ -311,7 +311,6 @@ jobs:
               /root/.config/rclone/rclone.conf
           printf '%s\n' "${destination}" \
             | sudo bash "${remote_stage}/install-tinyassets-env.sh" set BACKUP_DEST
-          sudo rclone mkdir "${destination}"
           probe_ready=0
           for delay in 0 5 10 20 30; do
             if [[ "${delay}" -gt 0 ]]; then

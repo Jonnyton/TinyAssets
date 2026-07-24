@@ -103,7 +103,9 @@ bounded window: 65 seconds of inter-attempt backoff plus five probes hard-capped
 at five seconds with one second of kill grace each, for a 95-second worst case.
 It does not recreate the key, broaden its grant, or enable the timer until the
 same credential succeeds. Exhausting the window follows the ordinary
-transactional rollback path.
+transactional rollback path. The installer does not call `rclone mkdir` first:
+S3 has no empty directories, and rclone's nominal no-op still performs an
+unbounded data-plane request that would bypass the retry gate.
 
 ## Risks / Trade-offs
 

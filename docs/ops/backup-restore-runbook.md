@@ -79,6 +79,12 @@ deleted the new key. This is treated as provider credential propagation unless
 the bounded retry window also expires; it is not authority to use a full-access
 key.
 
+Exact-merge run `30071110351` then exposed an ordering bug: S3 has no empty
+directories, but the pre-probe `rclone mkdir` still made a data-plane request
+and received HTTP 403 before the bounded retry loop. Rollback again removed the
+host configuration and new key. The installer no longer calls `mkdir`; its
+bounded non-mutating list probe is the only data-plane gate.
+
 The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
 (secondary)**.
 Teardown/rollback: delete the Spaces key via DO API, repoint `BACKUP_DEST`,
