@@ -34,15 +34,16 @@ Wants=network-online.target
 Type=oneshot
 SuccessExitStatus=1
 EnvironmentFile=/etc/tinyassets/env
+WorkingDirectory=/opt/tinyassets-host-uptime/current
 # Step 1 — legacy disk_watch GH-issue alarm. Its intentional pressure status
 # 1 is accepted above so rotation and auto-prune can still run.
-ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_watch.py
+ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_watch.py
 # Step 2 — rotate run transcripts older than retention into archived/.
 ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts
 # Step 3 matches p0-outage disk_full cleanup: Docker system/builder
 # prune plus journal vacuum, without Docker volumes.
 # Step 3 — auto-prune docker images if root volume is pressured.
-ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_autoprune.py
+ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py
 # Accepted ExecStart statuses continue in order; an unexpected status stops
 # later commands. Type=oneshot treats the sequence as one timer activation.
 TimeoutStartSec=180s

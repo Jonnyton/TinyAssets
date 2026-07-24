@@ -27,6 +27,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Verify secrets present
         run: |
@@ -48,30 +50,75 @@ jobs:
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Upload host service files
+      - name: Install exact uptime bundle and token refresher
+        env:
+          REQUESTED_SOURCE_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/daemon-watchdog.sh \
-              deploy/daemon-watchdog.service \
-              deploy/daemon-watchdog.timer \
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${source_sha}" == "${REQUESTED_SOURCE_REF}" ]]
+          echo "Resolved requested source ${REQUESTED_SOURCE_REF} to ${source_sha}"
+          bundle="/tmp/tinyassets-host-uptime-${source_sha}.tar.gz"
+          checksum="${bundle}.sha256"
+          mapfile -t uptime_files < <(
+            TINYASSETS_PRINT_MANIFEST=1 \
+              bash deploy/install-host-uptime-services.sh
+          )
+          git archive --format=tar HEAD -- \
+              "${uptime_files[@]}" \
               deploy/github-app-token-refresher.service \
               deploy/github-app-token-refresher.timer \
               scripts/github-app-token-refresher.py \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
+              | gzip -n > "${bundle}"
+          (
+            cd /tmp
+            sha256sum "$(basename "${bundle}")" > "$(basename "${checksum}")"
+          )
 
-      - name: Install and enable host services
-        run: |
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" <<'SH'
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "mktemp -d /tmp/tinyassets-host-uptime.XXXXXX"
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-host-uptime[.][A-Za-z0-9]+$ ]]
+          cleanup() {
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "rm -rf -- '${remote_stage}'" || true
+          }
+          trap cleanup EXIT
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${bundle}" "${checksum}" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
+
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
           set -euo pipefail
-          sudo mkdir -p /opt/tinyassets/deploy /opt/tinyassets/scripts
-          sudo install -m 0755 -o root -g root /tmp/daemon-watchdog.sh /opt/tinyassets/deploy/daemon-watchdog.sh
-          sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.service /etc/systemd/system/daemon-watchdog.service
-          sudo install -m 0644 -o root -g root /tmp/daemon-watchdog.timer /etc/systemd/system/daemon-watchdog.timer
-          sudo install -m 0755 -o root -g root /tmp/github-app-token-refresher.py /opt/tinyassets/scripts/github-app-token-refresher.py
-          sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.service /etc/systemd/system/github-app-token-refresher.service
-          sudo install -m 0644 -o root -g root /tmp/github-app-token-refresher.timer /etc/systemd/system/github-app-token-refresher.timer
+          remote_stage="$1"
+          source_sha="$2"
+          bundle_name="$3"
+          checksum_name="$4"
+          cd "${remote_stage}"
+          sha256sum -c "${checksum_name}"
+          mkdir source
+          tar -xzf "${bundle_name}" -C source
+          sudo env TINYASSETS_SOURCE_ROOT="${remote_stage}/source" \
+              TINYASSETS_SOURCE_SHA="${source_sha}" \
+              bash "${remote_stage}/source/deploy/install-host-uptime-services.sh"
+          sudo mkdir -p /opt/tinyassets/scripts
+          sudo install -m 0755 -o root -g root \
+              "${remote_stage}/source/scripts/github-app-token-refresher.py" \
+              /opt/tinyassets/scripts/github-app-token-refresher.py
+          sudo install -m 0644 -o root -g root \
+              "${remote_stage}/source/deploy/github-app-token-refresher.service" \
+              /etc/systemd/system/github-app-token-refresher.service
+          sudo install -m 0644 -o root -g root \
+              "${remote_stage}/source/deploy/github-app-token-refresher.timer" \
+              /etc/systemd/system/github-app-token-refresher.timer
           sudo systemctl daemon-reload
-          sudo systemctl enable --now daemon-watchdog.timer
           sudo systemctl enable --now github-app-token-refresher.timer
-          sudo systemctl list-timers --no-pager daemon-watchdog.timer github-app-token-refresher.timer || true
-          SH
+          sudo systemctl is-enabled --quiet github-app-token-refresher.timer
+          sudo systemctl is-active --quiet github-app-token-refresher.timer
+          REMOTE

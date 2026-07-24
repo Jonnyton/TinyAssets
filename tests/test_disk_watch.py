@@ -201,10 +201,17 @@ def test_disk_watch_service_accepts_alert_exit_and_preserves_remediation_order()
     assert [
         line for line in directives if line.startswith("SuccessExitStatus=")
     ] == ["SuccessExitStatus=1"]
+    assert "WorkingDirectory=/opt/tinyassets-host-uptime/current" in directives
     assert [line for line in directives if line.startswith("ExecStart=")] == [
-        "ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_watch.py",
+        (
+            "ExecStart=/usr/bin/python3 "
+            "/opt/tinyassets-host-uptime/current/scripts/disk_watch.py"
+        ),
         "ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts",
-        "ExecStart=/usr/bin/python3 /opt/tinyassets/scripts/disk_autoprune.py",
+        (
+            "ExecStart=/usr/bin/python3 "
+            "/opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py"
+        ),
     ]
 
 
