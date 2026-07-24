@@ -469,6 +469,23 @@ The installed backup timer SHALL run nightly at 03:00 UTC and catch up after a m
 - **WHEN** `BACKUP_FILE` names an absolute readable non-symlink regular file containing a local full archive and no list or timestamp mode is requested
 - **THEN** restore uses that archive without rclone and does not delete it
 
+### Requirement: Fresh-host backup configuration matches the runtime contract
+
+The fresh-host environment template SHALL expose the canonical `BACKUP_DEST`
+consumed by the root-run backup service and SHALL NOT present unused
+`STORAGEBOX_*` fields as sufficient backup configuration. Active operator
+guidance SHALL direct operators to configure the named rclone remote as root,
+store its configuration at `/root/.config/rclone/rclone.conf` with root
+ownership and mode `0600`, and keep destination credentials out of the shared
+daemon environment file.
+
+#### Scenario: Operator follows fresh-host backup setup
+
+- **WHEN** an operator configures backup shipping from the fresh-host template and active runbook
+- **THEN** the service receives `BACKUP_DEST`
+- **AND** root's rclone lookup resolves the documented credential file
+- **AND** no unused `STORAGEBOX_*` value is presented as runtime configuration
+
 ### Requirement: DNS resolution canary reports probe state through a prior-conclusion alarm sink
 The system SHALL declare the DNS canary on GitHub-hosted infrastructure with a `*/15 * * * *` schedule, manual dispatch, and a `dns-canary` concurrency group whose `cancel-in-progress` value is false. That setting SHALL preserve an already running job, while GitHub's concurrency controller MAY replace an older pending same-group run when another run queues; neither the declared schedule nor the group SHALL promise actual dispatch latency or one execution per schedule tick. The probe SHALL call `socket.gethostbyname` once for `tinyassets.io` and once for `mcp.tinyassets.io`, report green only when both calls return without error, and report red otherwise. It SHALL NOT claim that the returned address is public, current across all resolvers, or reachable. The probe job SHALL publish its overall result and diagnostics from a tolerated probe step, then a final non-tolerated step SHALL fail if and only if the published overall result is red. The alarm sink, when the workflow executes, SHALL run regardless of probe-job success, consume the published current-run outputs, create the `dns-red` label if absent, open an issue only when the immediately preceding completed workflow run also failed, append later red evidence to an open issue, and comment recovery before closing an open issue on green.
 

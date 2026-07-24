@@ -65,3 +65,16 @@ What surprised me: structural workflow tests and actionlint both passed while an
 Pattern worth capturing: deployment truth needs one final-state invariant across shell outputs, the pure classifier, durable receipts, job exit status, and incident wording. Every dangerous path needs an executable cross-layer regression, not only syntax or token-order assertions.
 
 One thing I would do differently: read the entire rendered step body immediately after the first green structural run, then derive tests from each post-publication mutation and each boundary-crossing tuple before asking for review.
+
+## 2026-07-23 — fresh-host backup configuration
+
+What surprised me: three active guides named three different rclone locations,
+while the root-run unit never set the `HOME` override one guide relied on.
+
+Pattern worth capturing: configuration truth spans the consumer, its service
+identity, templates, and every runtime-linked runbook; checking only the
+primary deploy guide leaves a believable but unusable path.
+
+One thing I would do differently: start the contract test from the runtime's
+actual environment and enumerate every linked guide before drafting the
+write-set.
