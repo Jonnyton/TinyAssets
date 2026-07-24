@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 
 from . import __version__
 from .collector import Config
@@ -15,12 +14,15 @@ def main(argv: list[str] | None = None) -> None:
         prog="command_center",
         description=(
             "Agent Village — watch every AI agent working this repo as sprites "
-            "on a live village map, from your phone."
+            "on a loopback-only live village map."
         ),
     )
-    parser.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = LAN)")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="literal loopback bind host: 127.0.0.1 or ::1 (default 127.0.0.1)",
+    )
     parser.add_argument("--port", type=int, default=8787, help="bind port (default 8787)")
-    parser.add_argument("--token", default=None, help="optional shared token for ?token= access")
     parser.add_argument(
         "--dispatch",
         action="store_true",
@@ -45,14 +47,13 @@ def main(argv: list[str] | None = None) -> None:
         help="platform base URL for the world view + live universes "
         "(default https://tinyassets.io; '' disables)",
     )
-    parser.add_argument(
-        "--mcp-token",
-        default=os.environ.get("WORKFLOW_MCP_TOKEN"),
-        help="Bearer token for the platform MCP endpoint (or WORKFLOW_MCP_TOKEN env)",
-    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args(argv)
-    serve(Config.from_args(args))
+    try:
+        cfg = Config.from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    serve(cfg)
 
 
 if __name__ == "__main__":
