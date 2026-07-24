@@ -446,6 +446,8 @@ def _classify_epoch2_row(
     )
     if not linkage_matches:
         return "invalid_operator_admission"
+    if not _terminal_lifecycle_matches(row):
+        return "invalid_operator_admission"
     if row.get("linked_admission_compacted_at") is not None:
         return (
             None
@@ -502,6 +504,23 @@ def _is_path_safe_universe_id(value: Any) -> bool:
         and "/" not in value
         and "\\" not in value
         and "\x00" not in value
+    )
+
+
+def _terminal_lifecycle_matches(row: Mapping[str, Any]) -> bool:
+    task_terminal = _parse_timestamp(row.get("terminal_at"))
+    admission_terminal = _parse_timestamp(
+        row.get("linked_admission_terminal_at")
+    )
+    if row.get("status") in _TERMINAL_STATUSES:
+        return bool(
+            task_terminal is not None
+            and admission_terminal is not None
+            and task_terminal == admission_terminal
+        )
+    return (
+        row.get("terminal_at") is None
+        and row.get("linked_admission_terminal_at") is None
     )
 
 

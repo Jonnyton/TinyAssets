@@ -1518,6 +1518,61 @@ def test_compaction_rejects_operation_time_before_terminal_without_mutation(
     assert request_text == ("repair the queue",)
 
 
+@pytest.mark.parametrize(
+    ("table", "value"),
+    [
+        ("request_admissions", "2026-07-24T08:02:00+00:00"),
+        ("branch_tasks_v2", ""),
+    ],
+)
+def test_compaction_quarantines_inconsistent_persisted_terminal_time(
+    tmp_path: Path,
+    table: str,
+    value: str,
+) -> None:
+    initialize_author_server(tmp_path)
+    terminal = _commit(tmp_path)
+    store = RequestAdmissionStore(tmp_path)
+    store.transition_task(
+        terminal["branch_task_id"],
+        expected_statuses={"pending"},
+        new_status="succeeded",
+        at="2026-07-24T08:01:00+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            f"""
+            UPDATE {table} SET terminal_at = ?
+            WHERE branch_task_id = ?
+            """,
+            (value, terminal["branch_task_id"]),
+        )
+
+    compacted = Epoch2BranchTaskAdapter(tmp_path).compact_terminal_details(
+        terminal_before="2026-07-25T00:00:00+00:00",
+        compacted_at="2026-07-25T00:01:00+00:00",
+    )
+
+    assert compacted == 0
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        admission = conn.execute(
+            """
+            SELECT compacted_at FROM request_admissions
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+        quarantine = conn.execute(
+            """
+            SELECT reason FROM branch_tasks_v2_quarantine
+            WHERE branch_task_id = ?
+            """,
+            (terminal["branch_task_id"],),
+        ).fetchone()
+    assert admission == (None,)
+    assert quarantine == ("invalid_operator_admission",)
+
+
 def test_compaction_quarantines_invalid_terminal_before_erasing_evidence(
     tmp_path: Path,
 ) -> None:

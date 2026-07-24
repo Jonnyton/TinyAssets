@@ -1462,41 +1462,52 @@ class RequestAdmissionStore:
                 compacted = 0
                 observed_at = _clock_iso(self._clock)
                 for row in rows:
-                    if not (
+                    has_quarantine_receipt = bool(
                         row["disabled"]
                         and row["linked_quarantine_receipt_exists"]
-                    ):
+                    )
+                    reason = None
+                    if not has_quarantine_receipt:
                         reason = classifier(dict(row))
-                        if reason:
-                            source = conn.execute(
-                                """
-                                SELECT rowid AS source_rowid, *
-                                FROM branch_tasks_v2
-                                WHERE rowid = ?
-                                """,
-                                (row["source_rowid"],),
-                            ).fetchone()
-                            if source is None:  # pragma: no cover - same txn
-                                raise RuntimeError(
-                                    "compaction_source_missing"
-                                )
-                            self._quarantine_task_in_transaction(
-                                conn,
-                                source,
-                                reason=reason,
-                                observed_at=observed_at,
-                            )
-                            continue
-                    task_terminal = _parse_iso_datetime(
-                        row["terminal_at"],
-                        name="terminal_at",
-                    )
-                    admission_terminal = _parse_iso_datetime(
-                        row["linked_admission_terminal_at"],
-                        name="admission terminal_at",
-                    )
+                    try:
+                        task_terminal = _parse_iso_datetime(
+                            row["terminal_at"],
+                            name="terminal_at",
+                        )
+                        admission_terminal = _parse_iso_datetime(
+                            row["linked_admission_terminal_at"],
+                            name="admission terminal_at",
+                        )
+                    except ValueError:
+                        reason = reason or "invalid_operator_admission"
+                        task_terminal = admission_terminal = None
                     if (
-                        compaction_time < task_terminal
+                        reason is None
+                        and task_terminal != admission_terminal
+                    ):
+                        reason = "invalid_operator_admission"
+                    if reason:
+                        source = conn.execute(
+                            """
+                            SELECT rowid AS source_rowid, *
+                            FROM branch_tasks_v2
+                            WHERE rowid = ?
+                            """,
+                            (row["source_rowid"],),
+                        ).fetchone()
+                        if source is None:  # pragma: no cover - same txn
+                            raise RuntimeError("compaction_source_missing")
+                        self._quarantine_task_in_transaction(
+                            conn,
+                            source,
+                            reason=reason,
+                            observed_at=observed_at,
+                        )
+                        continue
+                    if (
+                        task_terminal is None
+                        or admission_terminal is None
+                        or compaction_time < task_terminal
                         or compaction_time < admission_terminal
                     ):
                         raise ValueError(
