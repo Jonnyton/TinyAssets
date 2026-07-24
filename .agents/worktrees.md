@@ -1127,3 +1127,13 @@ Notes:
 - Verification: targeted strict PASS; full strict 42/42; 36/36 tasks unchecked; independent planning review APPROVE
 - Review gate: fresh Claude opposite-provider source/deployment/ownership review remains required
 - Ship/abandon: publish as draft planning PR; no runtime Files or capacity claims until every gate is satisfied
+
+## 2026-07-24 - published establish-public-capacity-envelope
+
+- Provider: codex-gpt56-capacity
+- Branch: codex/establish-public-capacity-envelope
+- Lane state: independently approved planning-only OpenSpec; implementation and baseline execution blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-public-capacity-envelope
+- STATUS/Issue/PR: draft PR #1695
+- Verification: strict 42/42; 36/36 tasks unchecked; same-provider review APPROVE; Claude review pending
+- Ship/abandon: keep draft until opposite-provider review and every owner/file/authority gate is satisfied
