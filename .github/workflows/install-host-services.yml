@@ -69,22 +69,36 @@ jobs:
                 "sudo bash -s -- $(printf '%q' "${destination}")" <<'BACKUP_STATE'
           set -euo pipefail
           expected_destination="$1"
+          env_file="${2:-/etc/tinyassets/env}"
+          config="${3:-/root/.config/rclone/rclone.conf}"
+          rclone_bin="${4:-rclone}"
+          expected_config_identity="${5:-root:root 600}"
+          assignment_count="$(
+            awk -F= '$1 == "BACKUP_DEST" { count++ } END { print count + 0 }' \
+              "${env_file}" 2>/dev/null || printf '0\n'
+          )"
           configured_destination="$(
             awk -F= '
               $1 == "BACKUP_DEST" {
                 value = substr($0, index($0, "=") + 1)
               }
               END { print value }
-            ' /etc/tinyassets/env 2>/dev/null || true
+            ' "${env_file}" 2>/dev/null || true
           )"
-          config="/root/.config/rclone/rclone.conf"
-          if [[ "${configured_destination}" == "${expected_destination}" && -s "${config}" ]]; then
-            if rclone lsf "${expected_destination}" --max-depth 1 >/dev/null 2>&1; then
+          config_identity="$(stat -c '%U:%G %a' "${config}" 2>/dev/null || true)"
+          if [[ "${assignment_count}" == "1" &&
+            "${configured_destination}" == "${expected_destination}" &&
+            -f "${config}" && ! -L "${config}" &&
+            "${config_identity}" == "${expected_config_identity}"
+          ]]; then
+            if "${rclone_bin}" lsf "${expected_destination}" --max-depth 1 >/dev/null 2>&1; then
               printf 'configured_ready\n'
             else
               printf 'partial_or_invalid\n'
             fi
-          elif [[ -z "${configured_destination}" && ! -s "${config}" ]]; then
+          elif [[ "${assignment_count}" == "0" &&
+            ! -e "${config}" && ! -L "${config}"
+          ]]; then
             printf 'completely_absent\n'
           else
             printf 'partial_or_invalid\n'
@@ -123,18 +137,34 @@ jobs:
           created_access_key=""
           cleanup() {
             rc=$?
+            cleanup_failed=0
             set +e
             if [[ "${rc}" -ne 0 && -n "${created_access_key}" ]]; then
               if [[ -n "${remote_stage}" ]]; then
-                ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                     "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                     "sudo rm -f /root/.config/rclone/rclone.conf; sudo bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_DEST" \
-                    >/dev/null 2>&1 || true
+                    >/dev/null 2>&1
+                then
+                  echo "::error::Remote backup configuration rollback failed."
+                  cleanup_failed=1
+                fi
               fi
-              curl -sS -o /dev/null -X DELETE \
-                -H @"${api_header_file}" \
-                "https://api.digitalocean.com/v2/spaces/keys/${created_access_key}" \
-                || true
+              delete_http_status="$(
+                curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                  -H @"${api_header_file}" \
+                  "https://api.digitalocean.com/v2/spaces/keys/${created_access_key}"
+              )"
+              delete_transport_rc=$?
+              if [[ "${delete_transport_rc}" -ne 0 ]]; then
+                echo "::error::Spaces key rollback failed with a transport error."
+                cleanup_failed=1
+              elif [[ "${delete_http_status}" != "204" ]]; then
+                echo "::error::Spaces key rollback failed with HTTP ${delete_http_status}."
+                cleanup_failed=1
+              else
+                echo "Rolled back the newly created Spaces key."
+              fi
             fi
             if [[ -n "${remote_stage}" ]]; then
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -145,6 +175,9 @@ jobs:
             rm -f -- \
               "${response_file}" "${credentials_file}" "${rclone_file}" \
               "${api_header_file}"
+            if [[ "${cleanup_failed}" -ne 0 ]]; then
+              exit 1
+            fi
             exit "${rc}"
           }
           trap cleanup EXIT
