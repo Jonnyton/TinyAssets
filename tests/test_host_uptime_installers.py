@@ -740,8 +740,9 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "Resolved requested source ${REQUESTED_SOURCE_REF}" in workflow_text
     assert '[[ "${source_sha}" == "${REQUESTED_SOURCE_REF}" ]]' in workflow_text
     assert "install-host-uptime-services.sh" in workflow_text
-    assert workflow_text.count('"bash -se --') == 1
+    assert workflow_text.count('"bash -se --') == 2
     assert workflow_text.count("<<'REMOTE'") == 1
+    assert workflow_text.count("<<'BACKUP_REMOTE'") == 1
     assert 'remote_stage="$1"' in workflow_text
     assert manifest.returncode == 0, f"{manifest.stdout}\n{manifest.stderr}"
     assert manifest.stdout.splitlines() == [
@@ -760,3 +761,48 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert 'remote_stage="$1"' in restart_text
     assert "/tmp/daemon-watchdog" not in restart_text
     assert "systemctl enable --now daemon-watchdog.timer" not in restart_text
+
+
+def test_host_service_workflow_converges_backup_before_installing_timers():
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    steps = workflow["jobs"]["install"]["steps"]
+    names = [step.get("name") for step in steps]
+    backup_index = names.index("Ensure off-host backup configuration")
+    install_index = names.index("Install exact uptime bundle and token refresher")
+    assert backup_index < install_index
+
+    backup_step = steps[backup_index]
+    run = backup_step["run"]
+    assert backup_step["env"]["DO_API_TOKEN"] == "${{ secrets.DO_API_TOKEN }}"
+    assert "/v2/spaces/keys" in run
+    assert '"permission":"readwrite"' in run
+    assert 'bucket="tinyassets-backups-jonnyton-sfo3"' in run
+    assert '"bucket":"%s"' in run
+    assert "fullaccess" not in run
+    assert "::add-mask::" in run
+    assert "secret_key" in run
+    assert 'Authorization: Bearer ${DO_API_TOKEN}' not in run
+    assert '-H @"${api_header_file}"' in run
+    assert "/root/.config/rclone/rclone.conf" in run
+    assert 'install-tinyassets-env.sh" set BACKUP_DEST' in run
+    assert "rclone lsf" in run
+    assert "configured_ready" in run
+    assert "completely_absent" in run
+    assert "partial_or_invalid" in run
+    assert 'curl -sS -o /dev/null -X DELETE' in run
+    assert 'cat "${response_file}"' not in run
+    assert "GITHUB_OUTPUT" not in run
+
+
+def test_host_service_workflow_requires_backup_provisioning_authority():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    verify_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Verify secrets present"
+    )
+    run = verify_step["run"]
+    assert verify_step["env"]["DO_API_TOKEN"] == "${{ secrets.DO_API_TOKEN }}"
+    assert '[ -z "$DO_API_TOKEN" ]' in run
+    assert 'missing+=("DO_API_TOKEN")' in run

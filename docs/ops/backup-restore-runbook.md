@@ -41,22 +41,28 @@ indexes are rebuildable from canon, and run state is resumable. Retention is
 applied **per tier prefix** by `scripts/backup_prune.py`; unrecognized
 filenames at the destination are never pruned.
 
-### Current droplet reality (verified 2026-06-10, updated same day)
+### Production history and current contract
 
 Until 2026-06-10 the droplet had `BACKUP_DEST=/var/backups/workflow` — a
 local directory on the same disk as the data — and GitHub releases were the
-only true offsite copy. **Fixed 2026-06-10:** DO Spaces provisioned from the
-droplet's own `DO_API_TOKEN` (no human in the loop):
+only true offsite copy. On 2026-06-10, DO Spaces was provisioned as the primary:
 
 - `BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups`
-- Spaces key `tinyassets-backup-shipper-v3` (account-wide `fullaccess` grant —
-  keys created with `grants: []` or per-nonexistent-bucket grants get 403;
-  use `[{"permission": "fullaccess"}]` with no bucket field).
+- A dedicated Spaces access key.
 - rclone config at `/root/.config/rclone/rclone.conf` (the systemd unit runs
   as root and does not override `HOME`).
 - Verified end-to-end: `Result=success`, both tiers listed in the bucket.
 
-Offsite is now: **DO Spaces (primary) + GitHub releases (secondary)**.
+An exact-SHA production exercise on 2026-07-24 found that subsequent
+application deploys had deleted `BACKUP_DEST`, and the replacement host lacked
+root's rclone file. Releases after the preservation repair keep
+`BACKUP_DEST`; the exact-source host-service workflow treats a working
+destination as a no-op, transactionally creates a bucket-scoped `readwrite`
+key when both configuration halves are absent, and fails closed on partial or
+invalid existing configuration.
+
+The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
+(secondary)**.
 Teardown/rollback: delete the Spaces key via DO API, repoint `BACKUP_DEST`,
 remove the bucket. Cost: Spaces subscription ~$5/mo on the existing DO
 account. Local retention stays tight (`BACKUP_RETAIN_DAILY=3 / WEEKLY=2 /
@@ -80,6 +86,12 @@ deleted at the end of every run.
 ### 1. Configure rclone remote
 
 Install rclone on the Droplet and configure a named remote for your offsite target.
+
+For the canonical production host, dispatching `Install host services`
+performs this setup automatically only when both `BACKUP_DEST` and root's
+rclone configuration are absent. Operators must inspect and deliberately
+rotate partial or failing existing configuration; the workflow does not
+overwrite it.
 
 **DO Spaces (recommended — same provider, cheapest):**
 
