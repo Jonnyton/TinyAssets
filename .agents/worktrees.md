@@ -1118,3 +1118,13 @@ Notes:
 - Related implications: newborn BYOC/market hold, ambient credential isolation, paid-market activation, organization authority, §14 tenant isolation
 - Idea feed refs: none
 - Ship/abandon: publish planning-only after durable re-review; no runtime claim until every recorded dependency and exact file partition is released
+
+## 2026-07-24 - published constrain-engine-providers
+
+- Provider: codex-gpt56-desktop
+- Branch: codex/constrain-engine-providers
+- Lane state: independently approved planning-only OpenSpec; runtime blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-constrain-engine-providers
+- STATUS/Issue/PR: draft PR #1691
+- Verification: targeted strict 1/1; full strict 42/42; scoped verifier SHIP; independent security/architecture APPROVE
+- Ship/abandon: keep draft until #1660 verdict and every `tasks.md` owner/dependency gate is satisfied
