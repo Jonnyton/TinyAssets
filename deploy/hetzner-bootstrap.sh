@@ -50,6 +50,10 @@ REPO_REF="main"
 
 log() { echo "[bootstrap] $*"; }
 
+service_repo_git() {
+    sudo -u "${TINYASSETS_USER}" -- git -C "${TINYASSETS_HOME}" "$@"
+}
+
 # ----- 1. apt baseline ----------------------------------------------------
 
 # Fresh DO/Hetzner/Linode Droplets run cloud-init + unattended-upgrades
@@ -176,10 +180,20 @@ if [[ ! -d "${TINYASSETS_HOME}/.git" ]]; then
     # directory only exists if we just created it.
     rm -rf "${TINYASSETS_HOME}"
     git clone --branch "${REPO_REF}" --depth 1 "${REPO_URL}" "${TINYASSETS_HOME}"
+    TINYASSETS_CHECKOUT_SHA="$(git -C "${TINYASSETS_HOME}" rev-parse HEAD)"
 else
     log "repo already present at ${TINYASSETS_HOME}; fetching latest..."
-    git -C "${TINYASSETS_HOME}" fetch --depth 1 origin "${REPO_REF}"
-    git -C "${TINYASSETS_HOME}" reset --hard "origin/${REPO_REF}"
+    # A prior fresh run may have been interrupted after root cloned the
+    # checkout but before its final ownership transfer. Converge ownership
+    # before any repeat Git operation so Git always runs as the checkout owner.
+    chown -R "${TINYASSETS_USER}:${TINYASSETS_USER}" "${TINYASSETS_HOME}"
+    service_repo_git fetch --depth 1 origin "${REPO_REF}"
+    service_repo_git reset --hard "origin/${REPO_REF}"
+    TINYASSETS_CHECKOUT_SHA="$(service_repo_git rev-parse HEAD)"
+fi
+if [[ ! "${TINYASSETS_CHECKOUT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "bootstrap: checkout HEAD is not a full lowercase commit SHA" >&2
+    exit 1
 fi
 chown -R "${TINYASSETS_USER}:${TINYASSETS_USER}" "${TINYASSETS_HOME}"
 
@@ -222,7 +236,7 @@ fi
 # manifest. The installer always repairs disabled/inactive timers even when
 # every file is already current.
 TINYASSETS_SOURCE_ROOT="${TINYASSETS_HOME}" \
-TINYASSETS_SOURCE_SHA="$(git -C "${TINYASSETS_HOME}" rev-parse HEAD)" \
+TINYASSETS_SOURCE_SHA="${TINYASSETS_CHECKOUT_SHA}" \
     bash "${TINYASSETS_HOME}/deploy/install-host-uptime-services.sh"
 
 # ----- 7. swap file -------------------------------------------------------
