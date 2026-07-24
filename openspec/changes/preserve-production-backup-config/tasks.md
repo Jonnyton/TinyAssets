@@ -13,6 +13,7 @@
 - [x] 2.6 Remove the unnecessary S3 mkdir preflight so every data-plane request stays inside the bounded probe gate.
 - [x] 2.7 Add an explicit exact-source dispatch option that verifies fresh primary archives and both GitHub release assets.
 - [x] 2.8 Scope every backup evidence marker to the new systemd invocation ID rather than a time window.
+- [x] 2.9 Make GitHub retention include a just-created release even while the list endpoint is eventually consistent.
 
 ## 3. Verification And Operations
 

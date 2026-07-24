@@ -416,3 +416,62 @@ def test_prune_falls_back_to_tag_timestamp_without_published_at(monkeypatch) -> 
     )
     assert bsg.prune_releases("tok", "o/r", keep=1) == 1
     assert deleted == [1]
+
+
+def test_prune_counts_just_created_release_before_list_converges(
+    monkeypatch,
+) -> None:
+    """A successful create/upload can precede list-endpoint visibility.
+
+    Retention must count the release returned by create_release even when
+    list_releases still returns only the prior keep-sized set.
+    """
+    releases = [
+        {
+            "id": index,
+            "tag_name": f"tinyassets-data-2026-07-{index:02d}T03-00-00Z",
+            "published_at": f"2026-07-{index:02d}T03:00:10Z",
+        }
+        for index in range(1, 31)
+    ]
+    just_created = {
+        "id": 31,
+        "tag_name": "tinyassets-brain-2026-07-31T03-00-00Z",
+        "published_at": "2026-07-31T03:00:10Z",
+    }
+    deleted: list[int] = []
+    monkeypatch.setattr(bsg, "list_releases", lambda *a, **kw: list(releases))
+    monkeypatch.setattr(
+        bsg, "delete_release", lambda tok, repo, rid, tag, **kw: deleted.append(rid),
+    )
+
+    assert bsg.prune_releases(
+        "tok",
+        "o/r",
+        keep=30,
+        include_release=just_created,
+    ) == 1
+    assert deleted == [1]
+
+
+def test_prune_does_not_double_count_converged_created_release(
+    monkeypatch,
+) -> None:
+    release = {
+        "id": 31,
+        "tag_name": "tinyassets-brain-2026-07-31T03-00-00Z",
+        "published_at": "2026-07-31T03:00:10Z",
+    }
+    monkeypatch.setattr(bsg, "list_releases", lambda *a, **kw: [release])
+    deleted: list[int] = []
+    monkeypatch.setattr(
+        bsg, "delete_release", lambda tok, repo, rid, tag, **kw: deleted.append(rid),
+    )
+
+    assert bsg.prune_releases(
+        "tok",
+        "o/r",
+        keep=1,
+        include_release=dict(release),
+    ) == 0
+    assert deleted == []

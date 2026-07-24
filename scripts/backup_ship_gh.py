@@ -250,10 +250,16 @@ def prune_releases(
     repo: str,
     keep: int,
     *,
+    include_release: dict[str, Any] | None = None,
     post_fn: Any = None,
 ) -> int:
+    listed = list_releases(token, repo, post_fn=post_fn)
+    if include_release is not None:
+        listed_ids = {release.get("id") for release in listed}
+        if include_release.get("id") not in listed_ids:
+            listed.append(include_release)
     releases = [
-        r for r in list_releases(token, repo, post_fn=post_fn)
+        r for r in listed
         if str(r.get("tag_name", "")).startswith(PRUNABLE_TAG_PREFIXES)
     ]
     # Sort oldest-first; keep the newest `keep`.
@@ -304,7 +310,14 @@ def ship(
                               post_fn=post_fn)
         print(f"[backup-ship] uploaded: {asset.get('browser_download_url', asset.get('name'))}")
 
-        pruned = prune_releases(token, repo, retain, post_fn=post_fn)
+        release_for_retention = {**release, "tag_name": tag}
+        pruned = prune_releases(
+            token,
+            repo,
+            retain,
+            include_release=release_for_retention,
+            post_fn=post_fn,
+        )
         if pruned:
             print(f"[backup-ship] pruned {pruned} old release(s) (keep={retain})")
     except RuntimeError as exc:

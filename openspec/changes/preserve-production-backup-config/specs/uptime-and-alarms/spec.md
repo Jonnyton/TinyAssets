@@ -68,3 +68,10 @@ credential configuration are absent.
 
 - **WHEN** a deploy-triggered run or manual dispatch leaves `run_backup` false
 - **THEN** host services converge without starting the backup service
+
+#### Scenario: GitHub release listing lags a successful upload
+
+- **WHEN** a backup release and asset have been created successfully but the release-list endpoint has not yet returned that new release
+- **THEN** retention evaluation still includes the newly created release in the prunable set
+- **AND** it deletes only the oldest recognized backup releases needed to leave at most `BACKUP_GH_RETAIN` recognized releases
+- **AND** it never deletes an unrecognized parked or audit release

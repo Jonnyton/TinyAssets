@@ -367,8 +367,12 @@ curl -sL -H "Authorization: Bearer $GH_TOKEN" \
 # Then curl -L <url> > /tmp/backup.tar.gz
 ```
 
-**Retention:** 30 releases kept by default (`BACKUP_GH_RETAIN`). Oldest pruned
-on each successful upload.
+**Retention:** 30 recognized backup releases are kept by default
+(`BACKUP_GH_RETAIN`). The just-created release is counted even while GitHub's
+list endpoint is still converging, and the oldest recognized backup releases
+are pruned after each successful upload. Unrecognized parked/audit releases
+are permanent and do not count toward this limit, so the repository's total
+release count can be higher.
 
 **Setup:** create `Jonnyton/tinyassets-backups` as a private repo once (or let
 `backup_ship_gh.py` create it automatically on first run).  Add `GH_TOKEN` to
