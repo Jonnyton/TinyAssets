@@ -80,7 +80,8 @@ bodies.
 ## Risks / Trade-offs
 
 - **[DigitalOcean token lacks new Spaces-key scopes]** → The install run stays
-  red with the HTTP status; no host configuration changes.
+  red with the HTTP status plus an allowlisted identifier/category that never
+  prints provider message text; no host configuration changes.
 - **[Key created but runner dies before cleanup]** → A uniquely named orphan
   may remain; key-name/run-id evidence makes it discoverable without revealing
   credentials.

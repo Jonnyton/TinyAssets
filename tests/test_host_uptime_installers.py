@@ -104,6 +104,43 @@ def _backup_cleanup_function() -> str:
     return f"cleanup() {{\n{body.split(terminator, 1)[0]}"
 
 
+def _backup_diagnostic_script() -> str:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    backup_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Ensure off-host backup configuration"
+    )
+    run = backup_step["run"]
+    marker = "<<'DIAGNOSTIC_PY'\n"
+    assert marker in run
+    body = run.split(marker, 1)[1]
+    terminator = "\nDIAGNOSTIC_PY\n"
+    assert terminator in body
+    return body.split(terminator, 1)[0]
+
+
+def _run_backup_diagnostic(
+    tmp_path: Path,
+    response: str,
+) -> subprocess.CompletedProcess[str]:
+    script = tmp_path / "diagnostic.py"
+    response_file = tmp_path / "response.json"
+    script.write_text(
+        _backup_diagnostic_script(),
+        encoding="utf-8",
+        newline="\n",
+    )
+    response_file.write_text(response, encoding="utf-8", newline="\n")
+    return subprocess.run(
+        [sys.executable, str(script), str(response_file)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
 def _run_backup_cleanup(
     tmp_path: Path,
     *,
@@ -967,6 +1004,7 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     run = backup_step["run"]
     assert backup_step["env"]["DO_API_TOKEN"] == "${{ secrets.DO_API_TOKEN }}"
     assert "/v2/spaces/keys" in run
+    assert "--max-filesize 4096" in run
     assert '"permission":"readwrite"' in run
     assert 'bucket="tinyassets-backups-jonnyton-sfo3"' in run
     assert '"bucket":"%s"' in run
@@ -991,6 +1029,11 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert "Spaces key rollback failed with HTTP" in run
     assert 'curl -sS -o /dev/null -X DELETE' not in run
     assert 'cat "${response_file}"' not in run
+    assert "provider_error=" in run
+    assert "json.load(handle)" in run
+    assert "category = \"authorization_or_scope\"" in run
+    assert "category = \"bucket_or_grant\"" in run
+    assert "message=" not in run
     assert "GITHUB_OUTPUT" not in run
 
 
@@ -1093,6 +1136,62 @@ def test_backup_key_rollback_requires_explicit_204(
     assert expected_message in combined
     if delete_status != "204" or transport_rc != 0:
         assert "::error::" in combined
+
+
+@pytest.mark.parametrize(
+    ("response", "expected", "forbidden"),
+    (
+        (
+            '{"id":"forbidden","message":"token lacks spaces_key:create_credentials"}',
+            "id=forbidden category=authorization_or_scope",
+            None,
+        ),
+        (
+            '{"id":"forbidden","message":"dop_v1_0123456789ABCDEFGHIJ rejected"}',
+            "id=forbidden category=other",
+            "dop_v1_0123456789ABCDEFGHIJ",
+        ),
+        (
+            '{"id":"forbidden","message":"secret_key: '
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789"}',
+            "id=forbidden category=other",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789",
+        ),
+        (
+            '{"id":"forbidden","message":"Authorization: Bearer '
+            '0123456789abcdef0123456789abcdef"}',
+            "id=forbidden category=authorization_or_scope",
+            "0123456789abcdef0123456789abcdef",
+        ),
+        (
+            '{"id":"bad id ABCDEFGHIJKLMNOPQRSTUVWXYZ","message":"bucket grant rejected"}',
+            "id=redacted category=bucket_or_grant",
+            "bad id ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        ),
+        (
+            '{"id":"dop_v1_0123456789abcdefghijklmnopqrstuv","message":"forbidden"}',
+            "id=redacted category=authorization_or_scope",
+            "dop_v1_0123456789abcdefghijklmnopqrstuv",
+        ),
+        (
+            "not-json",
+            "unparseable provider error",
+            "not-json",
+        ),
+    ),
+)
+def test_backup_provider_error_is_bounded_and_redacted(
+    tmp_path,
+    response,
+    expected,
+    forbidden,
+):
+    result = _run_backup_diagnostic(tmp_path, response)
+    assert result.returncode == 0
+    assert expected in result.stdout
+    if forbidden is not None:
+        assert forbidden not in result.stdout
+    assert len(result.stdout.strip()) <= 80
 
 
 def test_host_service_workflow_requires_backup_provisioning_authority():

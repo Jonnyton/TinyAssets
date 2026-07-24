@@ -187,14 +187,65 @@ jobs:
               "${key_name}" "${bucket}"
           )"
           http_status="$(
-            curl -sS -o "${response_file}" -w '%{http_code}' -X POST \
+            curl -sS --max-filesize 4096 \
+              -o "${response_file}" -w '%{http_code}' -X POST \
               -H @"${api_header_file}" \
               -H "Content-Type: application/json" \
               --data-binary "${payload}" \
               "https://api.digitalocean.com/v2/spaces/keys"
           )"
           if [[ "${http_status}" != "201" ]]; then
-            echo "::error::DigitalOcean Spaces key creation failed with HTTP ${http_status}."
+            provider_error="$(
+              python - "${response_file}" <<'DIAGNOSTIC_PY'
+          import json
+          import re
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  payload = json.load(handle)
+          except (OSError, UnicodeError, json.JSONDecodeError):
+              print("unparseable provider error")
+              raise SystemExit
+          if not isinstance(payload, dict):
+              print("malformed provider error")
+              raise SystemExit
+          error_id = payload.get("id")
+          message = payload.get("message")
+          if not isinstance(error_id, str) or not isinstance(message, str):
+              print("malformed provider error")
+              raise SystemExit
+          known_ids = {
+              "bad_request",
+              "forbidden",
+              "not_found",
+              "server_error",
+              "too_many_requests",
+              "unauthorized",
+          }
+          safe_id = error_id if error_id in known_ids else "redacted"
+          normalized = re.sub(r"[\x00-\x1f\x7f]+", " ", message).lower()
+          if any(
+              term in normalized
+              for term in (
+                  "scope",
+                  "permission",
+                  "authorization",
+                  "unauthorized",
+                  "forbidden",
+                  "credential",
+                  "token",
+              )
+          ):
+              category = "authorization_or_scope"
+          elif any(term in normalized for term in ("bucket", "grant")):
+              category = "bucket_or_grant"
+          else:
+              category = "other"
+          print(f"id={safe_id} category={category}")
+          DIAGNOSTIC_PY
+            )"
+            echo "::error::DigitalOcean Spaces key creation failed with HTTP ${http_status} (${provider_error})."
             exit 1
           fi
 
