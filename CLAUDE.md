@@ -126,6 +126,33 @@ Discipline:
   not let cost talk you out of a qualifying dispatch. Independence is the goal;
   the spend is the price of it.
 
+### Calling Kimi Code via MCP [Claude Code only]
+
+Kimi Code CLI (Moonshot, model `kimi-k3`) is wired in as a **third model
+family**: `mcp__kimi__kimi` starts a session and returns a `session_id`,
+`mcp__kimi__kimi-reply` continues it. Kimi Code has no native MCP server mode,
+so a shim (`C:\Users\Jonathan\Projects\kimi-mcp\server.js`, registered
+user-level like `codex mcp-server`) wraps its non-interactive `kimi -p` /
+`kimi -r <session>` mode.
+
+Use it where a third independent perspective helps: tie-breaking when Claude
+and Codex disagree, an extra adversarial refuter on high-risk findings, or
+diverse-perspective judging panels. Scope note: per the host's dual-family
+approval rule, a Kimi verdict is **additional signal only** — it does not
+substitute for the Fable-5 + gpt-5.6-sol approval pair, and the Codex
+opposite-provider review gate still runs where required.
+
+Discipline:
+- `permission_mode` defaults to `manual`, which fails closed in prompt mode
+  (gated actions can't be approved) — correct for reviews / second opinions.
+  Use `auto`/`yolo` only when you deliberately want Kimi making changes, and
+  keep that in its own worktree/branch (no destructive git ops).
+- Hard timeout (default 600s) with guaranteed result — the shim tree-kills the
+  CLI on expiry and returns partial output, honoring the background contract.
+- Machine prerequisite: `npm i -g @moonshot-ai/kimi-code` + a platform API key
+  via `kimi` → `/login` (platform.kimi.ai; Kimi Code OAuth memberships were
+  sold out as of 2026-07-19 so the API-key route is the working one).
+
 ### Skills [Claude Code only]
 
 Project workflow skills live in `.claude/skills/`. When the right skill is not obvious, read `.claude/skills/using-agent-skills/SKILL.md` first, then open the matching skill.
