@@ -48,7 +48,7 @@
 - [x] 5.6 Preserve directed assignments as `owner_queued`; retain bounded boost only with priority authority and test the chosen additive ordering against operator/user/host rows.
 - [x] 5.7 Update request materialization in `tinyassets/work_targets.py` and restart registration in `fantasy_daemon/branch_registrations.py` to consume canonical v2 Request/task state without mutating or executing a v1 JSON projection.
 - [ ] 5.8 Update graph-cycle claim integration and lifecycle observers to route v2 tasks through the v2 adapter while retaining v1 historical behavior; reject a checkpoint-resumed `selected_target_id` unless `get_target` still resolves a live exact-worker claim, and make reader-surface WorkTarget reads (`_daemon_liveness.has_work` and `_action_inspect_universe.active_targets`) exclude epoch-2 targets without a live exact-worker claim; install the production expired/dead-peer lease-recovery owner before enabling `EPOCH2_QUEUE_CONSUMER_READY`; treat that claim as scheduling reservation only and require the active `distributed-execution` B2 signed owner/daemon/job/capsule/lease/fence grant before external execution.
-- [ ] 5.9 Add integration tests proving a won epoch-2 scheduling claim without valid B2 signed authority cannot create an external lease, execute, or submit a result, and that queue/admission/heartbeat rows only narrow or reject B2 authority.
+- [x] 5.9 Add integration tests proving a won epoch-2 scheduling claim without valid B2 signed authority cannot create an external lease, execute, or submit a result, and that queue/admission/heartbeat rows only narrow or reject B2 authority.
 
 ## 6. Worker Protocol Evidence and Operational Surfaces
 
@@ -61,8 +61,8 @@
 
 ## 7. Rollout and Mixed-Version Isolation
 
-- [ ] 7.1 Add failing `tests/test_operator_admission_rollout.py` coverage for manifest transitions, canary universes, allowed SHAs, expiry, per-admission reread, unknown-worker block, zero-worker allowance, and rollback within 60 seconds.
-- [ ] 7.2 Implement the deployment kill switch plus transactional per-universe rollout manifest in `tinyassets/request_admission_rollout.py`; default `TINYASSETS_OPERATOR_REQUEST_WRITES` off and never cache effective state across admissions.
+- [x] 7.1 Add failing `tests/test_operator_admission_rollout.py` coverage for manifest transitions, canary universes, allowed SHAs, expiry, per-admission reread, unknown-worker block, zero-worker allowance, and rollback within 60 seconds.
+- [x] 7.2 Implement the deployment kill switch plus transactional per-universe rollout manifest in `tinyassets/request_admission_rollout.py`; default `TINYASSETS_OPERATOR_REQUEST_WRITES` off and never cache effective state across admissions.
 - [ ] 7.3 Let weight zero follow ordinary admission without the elevation gate; return `priority_authorization_required` for positive weight without active authority and `operator_priority_unavailable` when a composed positive-priority verdict is blocked by the writer gate, both with zero persistence and no demotion. After a universe reaches enabled, reject/retire public v1 request writers.
 - [ ] 7.4 Inventory and pin safe legacy build SHAs proven to select/claim v1 only; unknown/partial online builds block canary-to-enabled but offline legacy installs are not falsely claimed upgraded.
 - [ ] 7.5 Store the cutover receipt with rollout/epoch/capability, reader/server/worker releases, mirror parity, evidence, approver, activation/expiry time, and zero unresolved invalid v2 rows.
@@ -70,7 +70,7 @@
 
 ## 8. Exact Concurrency and Zero-Capacity Proof
 
-- [ ] 8.1 Add `tests/load/operator_admission_v2.py` and fixture tooling that runs the real production queue/storage/lock substrate, emits raw timestamped events, and invokes no model/provider.
+- [x] 8.1 Add `tests/load/operator_admission_v2.py` and fixture tooling that runs the real production queue/storage/lock substrate, emits raw timestamped events, and invokes no model/provider.
 - [ ] 8.2 Warm 60 seconds, then hold 400 v2 plus 100 pinned v1 daemon processes concurrently alive for the full 300-second canonical window; fail if population drops.
 - [ ] 8.3 During that window, preseed 100 v1 host rows; admit exactly 500 operator, 300 ordinary, and 200 directed unique requests; keep compatible capacity continuously available for every request and direct all 200 to live v2 daemons; add 10% concurrent replays, out-of-count conflicts, 100 status readers at 1 Hz, and invalid v2 fixtures.
 - [ ] 8.4 Require exactly 1,000 aggregates and all 1,000 durable claims; zero loss, unclaimed requests, duplicate live claims, invalid execution, legacy/unauthorized v2 claims, corruption, or deadlock; compute `committed_at`-to-claim p99 below 3 seconds over the full 1,000-request denominator.
