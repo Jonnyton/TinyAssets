@@ -76,7 +76,7 @@ def test_get_status_returns_str_json(status_env):
 
 
 def test_get_status_returns_versioned_contract_keys(status_env):
-    """schema_version=1 contract — all top-level keys present."""
+    """schema_version=2 contract — all top-level keys present."""
     parsed = json.loads(get_status())
     expected_keys = {
         "schema_version",
@@ -86,6 +86,8 @@ def test_get_status_returns_versioned_contract_keys(status_env):
         "evidence_caveats",
         "caveats",
         "actionable_next_steps",
+        "identity_evidence",
+        "request_identity",
         "session_boundary",
         "storage_utilization",
         "per_provider_cooldown_remaining",
@@ -101,7 +103,7 @@ def test_get_status_returns_versioned_contract_keys(status_env):
     assert expected_keys <= set(parsed.keys()), (
         f"missing keys: {expected_keys - set(parsed.keys())}"
     )
-    assert parsed["schema_version"] == 1
+    assert parsed["schema_version"] == 2
 
 
 def test_get_status_active_host_shape(status_env):
@@ -215,10 +217,13 @@ def test_get_status_nonexistent_universe_marks_universe_exists_false(status_env)
     assert any("does not exist" in c for c in parsed["caveats"])
 
 
-def test_get_status_session_boundary_account_user_set(status_env):
+def test_get_status_session_boundary_uses_token_safe_fingerprint(status_env):
     parsed = json.loads(get_status())
     sb = parsed["session_boundary"]
-    assert sb["account_user"] == "test-user"
+    assert "account_user" not in sb
+    assert sb["principal_fingerprint"] == parsed["request_identity"][
+        "principal_fingerprint"
+    ]
     # No prior activity log → prior_session_context_available is False.
     assert sb["prior_session_context_available"] is False
 

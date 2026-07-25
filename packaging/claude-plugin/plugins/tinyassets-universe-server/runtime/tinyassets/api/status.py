@@ -19,8 +19,10 @@ storage.rotation) follow the pattern that was already in place pre-extraction.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,8 @@ from tinyassets.api.helpers import (
 )
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
+_STATUS_SCHEMA_VERSION = 2
+
 
 def _policy_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 of sorted-JSON policy payload.
@@ -42,6 +46,59 @@ def _policy_hash(payload: dict[str, Any]) -> str:
     """
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _request_identity_evidence() -> tuple[dict[str, object], dict[str, str]]:
+    """Return token-free, self-only identity evidence for this request."""
+    from tinyassets.auth.middleware import current_bearer_present, current_identity
+
+    bearer_present = current_bearer_present()
+    unavailable_identity = {
+        "bearer_present": bearer_present,
+        "principal_fingerprint": None,
+    }
+    raw_key = os.environ.get("TINYASSETS_IDENTITY_FINGERPRINT_KEY", "")
+    if not isinstance(raw_key, str):
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "key_invalid_type",
+        }
+    if not raw_key:
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "key_not_provisioned",
+        }
+    key = raw_key.encode()
+    if len(key) < 32:
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "key_too_short",
+        }
+
+    raw_version = os.environ.get("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
+    if not isinstance(raw_version, str):
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "version_invalid",
+        }
+    version = raw_version.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", version):
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "version_invalid",
+        }
+
+    subject = current_identity().user_id.strip() or "anonymous"
+    message = f"tinyassets:request-identity:{version}\0{subject}".encode()
+    digest = hmac.new(key, message, hashlib.sha256).hexdigest()
+    prefix = f"{version}:anonymous:" if subject == "anonymous" else f"{version}:"
+    return (
+        {
+            "bearer_present": bearer_present,
+            "principal_fingerprint": f"{prefix}{digest}",
+        },
+        {"status": "available"},
+    )
 
 
 # Heartbeat refresh interval observed in fantasy_daemon's BUG-011 Phase A
@@ -381,7 +438,12 @@ def _provider_auth_snapshot() -> dict[str, Any]:
         # never block on the codex live-probe subprocess (up to 120s).
         # Fast paths + cached verdicts only; the worker gate owns probing.
         health = subscription_auth_health(name, allow_probe=False)
-        writers[name] = {"status": health["status"], "detail": health["detail"]}
+        status = health["status"]
+        detail = {
+            "ok": "subscription auth available",
+            "not_logged_in": "subscription auth unavailable; reauthentication required",
+        }.get(status, "subscription auth state inconclusive")
+        writers[name] = {"status": status, "detail": detail}
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
     all_down = bool(known_states) and all(
@@ -903,6 +965,8 @@ def get_status(universe_id: str = "") -> str:
     This function is observational and idempotent. It never creates or repairs
     a universe, home binding, or soul bundle.
     """
+    request_identity, identity_evidence = _request_identity_evidence()
+
     uid, needs_birth = _resolve_entry_universe(universe_id)
     if needs_birth:
         _about = (
@@ -922,7 +986,9 @@ def get_status(universe_id: str = "") -> str:
             "next_step_for_user": (
                 "Start a conversation with your universe to meet it in its own voice."
             ),
-            "schema_version": 1,
+            "identity_evidence": identity_evidence,
+            "request_identity": request_identity,
+            "schema_version": _STATUS_SCHEMA_VERSION,
         })
     # Per-universe read gate: never expose a private universe's status / activity
     # tail to an anonymous or non-granted caller. Public universes (public_read
@@ -951,6 +1017,8 @@ def get_status(universe_id: str = "") -> str:
             "detail": str(exc),
             "universe_id": uid,
             "universe_exists": universe_exists,
+            "identity_evidence": identity_evidence,
+            "request_identity": request_identity,
         })
 
     served_llm_type = (cfg.served_llm_type or "").strip()
@@ -1046,6 +1114,11 @@ def get_status(universe_id: str = "") -> str:
     # Per-field caveats — chatbot cites only the degenerate keys instead
     # of wrapping every claim in the global caveat list.
     evidence_caveats: dict[str, list[str]] = {}
+    if identity_evidence["status"] == "unavailable":
+        evidence_caveats["request_identity"] = [
+            "identity_fingerprint_unavailable:"
+            f"{identity_evidence['reason']}"
+        ]
     if last_completed_llm == "unknown":
         evidence_caveats["last_completed_request_llm_used"] = [
             "Heuristic found no llm=/provider=/model= token in recent "
@@ -1193,9 +1266,9 @@ def get_status(universe_id: str = "") -> str:
     # Scans the activity.log for any entry within the last 30 days that
     # can be attributed to the current account user. Best-effort; never
     # raises so a log-read error doesn't break the status probe.
-    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.auth.middleware import current_identity
 
-    account_user = _current_actor()
+    account_user = current_identity().user_id.strip()
     prior_session_ts: str | None = None
     try:
         if activity_tail:
@@ -1209,25 +1282,38 @@ def get_status(universe_id: str = "") -> str:
     except Exception:  # noqa: BLE001
         pass
 
+    if account_user and account_user != "anonymous":
+        activity_tail = [
+            line.replace(account_user, "[request-principal]")
+            for line in activity_tail
+        ]
+        last_n_calls = [
+            {
+                key: (
+                    value.replace(account_user, "[request-principal]")
+                    if isinstance(value, str)
+                    else value
+                )
+                for key, value in call.items()
+            }
+            for call in last_n_calls
+        ]
+
     if prior_session_ts:
         session_boundary = {
             "prior_session_context_available": True,
-            "account_user": account_user,
+            "principal_fingerprint": request_identity["principal_fingerprint"],
             "last_session_ts": prior_session_ts,
-            "note": (
-                f"Activity log contains entries for account '{account_user}'. "
-                "Prior session context may be available in the log."
-            ),
+            "note": "Activity log contains entries for this request principal.",
         }
     else:
         session_boundary = {
             "prior_session_context_available": False,
-            "account_user": account_user,
+            "principal_fingerprint": request_identity["principal_fingerprint"],
             "last_session_ts": None,
             "note": (
-                f"No activity log entries found for account '{account_user}' "
-                "in this universe's log. Chatbot has no prior session record "
-                "to reference — do not assert prior session context."
+                "No activity log entries found for this request principal. "
+                "Do not assert prior session context."
             ),
         }
 
@@ -1313,7 +1399,7 @@ def get_status(universe_id: str = "") -> str:
     release_state = _load_release_state()
 
     response = {
-        "schema_version": 1,
+        "schema_version": _STATUS_SCHEMA_VERSION,
         "active_host": policy_payload["active_host"],
         "tier_routing_policy": tier_routing_policy,
         "evidence": {
@@ -1326,6 +1412,8 @@ def get_status(universe_id: str = "") -> str:
         "evidence_caveats": evidence_caveats,
         "caveats": caveats,
         "actionable_next_steps": actionable_next_steps,
+        "identity_evidence": identity_evidence,
+        "request_identity": request_identity,
         "session_boundary": session_boundary,
         "storage_utilization": storage_utilization,
         "per_provider_cooldown_remaining": per_provider_cooldown_remaining,

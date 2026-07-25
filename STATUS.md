@@ -50,6 +50,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
 | Register the `TinyAssets` ChatGPT connector at `https://tinyassets.io/mcp` as workspace admin | OpenAI workspace admin | canonical `/mcp` live and `/mcp-directory*` absent | host-action |
+| Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
 
 ## Next
 
