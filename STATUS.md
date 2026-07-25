@@ -19,10 +19,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - [filed:2026-07-24] PLAN still says one file-locked claimer; epoch-2 OpenSpec is transactional. Reconcile before claim integration/rollout.
 
 ## Work
-
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Slice A0 default-deny provider environment** — Opus5 ADAPT: land #1592 successor; isolate auth homes, fail loud, preserve canonical delta truth | openspec/changes/close-universe-host-subscription-fallback/; tinyassets/providers/base.py; packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1727 verdict; vault-clobber lane releases canonical credential-vault sync | dev-ready |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |
