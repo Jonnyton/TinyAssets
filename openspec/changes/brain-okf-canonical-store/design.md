@@ -81,9 +81,11 @@ depends on it yet.
 
 ## Dependent-lane contract
 
-Two active lanes carry `brain-okf-canonical-store` as a dependency, and this
-change is host-blocked indefinitely (see `tasks.md` lane disposition). Neither
-lane should wait on it. What a dependent may and may not rely on today:
+**Updated 2026-07-25 — this change is archived; the contract moves to
+`openspec/changes/build-brain-canonical-store/`, which is now the live owner of
+the target.** Cite the successor, not this archived change. Two active lanes
+carried `brain-okf-canonical-store` as a dependency; neither should wait on it,
+and neither is unblocked by the archive. What a dependent may and may not rely on:
 
 - **May rely on:** this change is the sole in-flight owner of the brain's
   canonical-store *target* — the OKF bundle as source of truth, the rebuildable
@@ -101,8 +103,12 @@ lane should wait on it. What a dependent may and may not rely on today:
   does this correctly (its 2.3 records the mechanism as REVERSED and relocates
   the intent here rather than blocking on it).
 - **MUST NOT rely on:** `openspec/specs/brain-canonical-store/` existing. It does
-  not, and will not until the host store decision unblocks task 4.1. A dependent
-  that needs a stable spec path must cite `openspec/changes/brain-okf-canonical-store/`.
+  not. The 2026-07-25 host store decision did **not** create it — that decision
+  resolved the PLAN gate, while the spec path stays blocked on the as-built gate
+  (`openspec/specs/` describes built behavior, and the brain store is unbuilt).
+  It will exist when `build-brain-canonical-store` ships the behavior and syncs.
+  A dependent that needs a stable path today cites
+  `openspec/changes/build-brain-canonical-store/`.
 
 ## Open Questions
 
