@@ -46,7 +46,10 @@ from tinyassets.branch_tasks import (
     read_queue,
     recover_claimed_tasks,
 )
-from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+from tinyassets.branch_tasks_v2 import (
+    Epoch2BranchTaskAdapter,
+    WorkerClaimDescriptor,
+)
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.dispatcher import (
     DispatcherConfig,
@@ -91,6 +94,56 @@ def _make_task(
         queued_at=queued_at or datetime.now(timezone.utc).isoformat(),
         status=status,
         claimed_by=extra.get("claimed_by", ""),
+    )
+
+
+def _commit_epoch2(
+    base_path: Path,
+    *,
+    key_suffix: str,
+    text: str,
+    created_at: str,
+    priority_weight: float = 5,
+) -> dict:
+    canonical_body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": "",
+        "directed_daemon_instruction": "",
+        "pickup_incentive": "",
+        "priority_weight": priority_weight,
+        "request_type": "general",
+        "schema_version": "request-admission-v2",
+        "text": text,
+        "universe_id": "universe-a",
+    })
+    return RequestAdmissionStore(base_path).commit_admission(
+        tenant_id="tenant-a",
+        actor_id="actor-a",
+        universe_id="universe-a",
+        idempotency_key_hash=(
+            "hmac-sha256:"
+            + hashlib.sha256(key_suffix.encode()).hexdigest()
+        ),
+        body_digest=(
+            "sha256:" + hashlib.sha256(canonical_body).hexdigest()
+        ),
+        body_digest_version="rfc8785-v1",
+        request_type="general",
+        text=text,
+        branch_id="",
+        branch_def_id="loop-branch",
+        trigger_source="operator_request",
+        accepted_priority_weight=priority_weight,
+        policy_version="operator-priority-v1",
+        grant_generation=1,
+        receipt={
+            "authority": "request-local",
+            "grant_generation": 1,
+            "priority_policy_version": "operator-priority-v1",
+            "directed_assignment": {},
+        },
+        directed_daemon_id="",
+        created_at=created_at,
     )
 
 
@@ -288,41 +341,10 @@ def test_v2_selector_merges_epochs_without_mutating_either(tmp_path):
         branch_task_id="v1-host",
     )
     append_task(universe_dir, v1)
-    canonical_body = rfc8785.dumps({
-        "branch_id": "",
-        "directed_daemon_id": "",
-        "directed_daemon_instruction": "",
-        "pickup_incentive": "",
-        "priority_weight": 5,
-        "request_type": "general",
-        "schema_version": "request-admission-v2",
-        "text": "operator work",
-        "universe_id": "universe-a",
-    })
-    committed = RequestAdmissionStore(tmp_path).commit_admission(
-        tenant_id="tenant-a",
-        actor_id="actor-a",
-        universe_id="universe-a",
-        idempotency_key_hash="hmac-sha256:" + "a" * 64,
-        body_digest=(
-            "sha256:" + hashlib.sha256(canonical_body).hexdigest()
-        ),
-        body_digest_version="rfc8785-v1",
-        request_type="general",
+    committed = _commit_epoch2(
+        tmp_path,
+        key_suffix="selector-merge",
         text="operator work",
-        branch_id="",
-        branch_def_id="loop-branch",
-        trigger_source="operator_request",
-        accepted_priority_weight=5,
-        policy_version="operator-priority-v1",
-        grant_generation=1,
-        receipt={
-            "authority": "request-local",
-            "grant_generation": 1,
-            "priority_policy_version": "operator-priority-v1",
-            "directed_assignment": {},
-        },
-        directed_daemon_id="",
         created_at="2026-07-24T08:00:01+00:00",
     )
     adapter = Epoch2BranchTaskAdapter(tmp_path)
@@ -346,6 +368,158 @@ def test_v2_selector_merges_epochs_without_mutating_either(tmp_path):
     assert getattr(v2_selected, "queue_epoch") == 2
     assert read_queue(universe_dir)[0].status == "pending"
     assert adapter.get(committed["branch_task_id"]).status == "pending"
+
+
+def test_mixed_invalid_epoch2_rows_never_execute_or_block_valid_epochs(
+    tmp_path: Path,
+) -> None:
+    universe_dir = tmp_path / "universe-a"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    append_task(
+        universe_dir,
+        _make_task(
+            trigger_source="host_request",
+            queued_at="2026-07-24T08:00:00+00:00",
+            branch_task_id="valid-v1",
+            universe_id="universe-a",
+        ),
+    )
+    valid_v2 = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-valid",
+        text="valid operator work",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    forged = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-forged",
+        text="forged operator work",
+        created_at="2026-07-24T08:00:02+00:00",
+    )
+    missing_receipt = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-missing-receipt",
+        text="missing receipt work",
+        created_at="2026-07-24T08:00:03+00:00",
+    )
+    unsupported = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-unsupported",
+        text="unsupported protocol work",
+        created_at="2026-07-24T08:00:04+00:00",
+    )
+    store = RequestAdmissionStore(tmp_path)
+    with store.connection() as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET branch_def_id = 'forged-branch'
+            WHERE branch_task_id = ?
+            """,
+            (forged["branch_task_id"],),
+        )
+        conn.execute(
+            """
+            UPDATE request_admissions SET receipt_json = '{}'
+            WHERE branch_task_id = ?
+            """,
+            (missing_receipt["branch_task_id"],),
+        )
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET protocol_version = 99
+            WHERE branch_task_id = ?
+            """,
+            (unsupported["branch_task_id"],),
+        )
+    transaction_at = datetime.fromisoformat(
+        "2026-07-24T08:00:30+00:00"
+    )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: transaction_at,
+    )
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=2,
+        capabilities=frozenset({"operator_request_v1"}),
+        worker_id="worker-v2",
+        runtime_instance_id="runtime-v2",
+        boot_id="boot-v2",
+        build_sha="a" * 40,
+        config_hash="b" * 64,
+        universe_id="universe-a",
+        expires_at="2026-07-24T08:01:30+00:00",
+    )
+    invalid = (forged, missing_receipt, unsupported)
+
+    selected_v2 = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:30+00:00",
+        epoch2_adapter=adapter,
+    )
+
+    assert selected_v2 is not None
+    assert selected_v2.branch_task_id == valid_v2["branch_task_id"]
+    with store.connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0] == 0
+    for row in invalid:
+        assert adapter.claim(
+            row["branch_task_id"],
+            descriptor=descriptor,
+            descriptor_reader=lambda _conn, _worker_id: descriptor,
+        ) is None
+    claimed_v2 = adapter.claim(
+        valid_v2["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
+    assert claimed_v2 is not None
+    assert claimed_v2.status == "running"
+
+    selected_v1 = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:31+00:00",
+        epoch2_adapter=adapter,
+    )
+    assert selected_v1 is not None
+    assert selected_v1.branch_task_id == "valid-v1"
+    claimed_v1 = claim_task(universe_dir, "valid-v1", "worker-v2")
+    assert claimed_v1 is not None
+    assert claimed_v1.status == "running"
+
+    maintenance = adapter.maintain_quarantine()
+
+    assert maintenance.health == "green"
+    assert maintenance.quarantined == 3
+    reasons = {
+        receipt.branch_task_id: receipt.reason
+        for receipt in maintenance.receipts
+    }
+    assert reasons == {
+        forged["branch_task_id"]: "invalid_operator_admission",
+        missing_receipt["branch_task_id"]: "invalid_operator_admission",
+        unsupported["branch_task_id"]: "unsupported_protocol",
+    }
+    with store.connection() as conn:
+        rows = {
+            row["branch_task_id"]: (row["status"], row["disabled"])
+            for row in conn.execute(
+                """
+                SELECT branch_task_id, status, disabled
+                FROM branch_tasks_v2
+                """
+            )
+        }
+    assert rows[valid_v2["branch_task_id"]] == ("running", 0)
+    assert all(
+        rows[row["branch_task_id"]] == ("pending", 1)
+        for row in invalid
+    )
 
 
 def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):

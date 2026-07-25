@@ -367,3 +367,16 @@ fresh-host rollback edges found later.
   execution handoff and every evidence-destroying maintenance operation during
   the first threat-model pass, then make each a red mutation test before the
   initial review.
+
+## 2026-07-24 - mixed epoch isolation proof
+
+- **What surprised me:** the full mixed valid/forged/missing-receipt/
+  unsupported-protocol scenario passed without another runtime change once
+  selection and claim shared the same aggregate classifier.
+- **Pattern worth capturing:** an isolation proof must advance both valid
+  epochs, not merely show that invalid rows are absent from one candidate
+  list. Claim valid v2, then prove valid v1 becomes selectable while invalid
+  v2 rows remain unclaimable and quarantine remains a separate mutation.
+- **What I would do differently:** design the first quarantine integration
+  test around the complete mixed queue. It exposes selector, claim, epoch
+  fallback, purity, and maintenance behavior in one production-shaped trace.
