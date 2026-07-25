@@ -39,6 +39,9 @@ Name: "{userstartup}\TinyAssets"; Filename: "{app}\TinyAssets.exe"; Tasks: autos
 [Run]
 Filename: "{app}\TinyAssets.exe"; Description: "Launch TinyAssets"; Flags: nowait postinstall skipifsilent
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{localappdata}\TinyAssets\updates"
+
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
 var

@@ -63,6 +63,9 @@ if (Test-Path -LiteralPath $tray) {
 if (Test-Path -LiteralPath $startup) {
     throw "uninstaller left the autostart entry behind"
 }
+if (Test-Path -LiteralPath (Join-Path $dataRoot "updates")) {
+    throw "uninstaller left updater program files behind"
+}
 if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
     throw "uninstaller deleted user-owned content"
 }
