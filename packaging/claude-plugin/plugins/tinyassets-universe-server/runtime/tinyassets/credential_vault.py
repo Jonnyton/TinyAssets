@@ -201,8 +201,11 @@ def write_credential_vault(
 ) -> dict[str, Any]:
     """Validate and write a per-universe credential vault.
 
-    A single record is upserted by logical key. Bulk and empty payloads replace
-    the stored list exactly, preserving ordered duplicate and explicit-clear use.
+    Against an existing valid vault, a single record is read-modify-write
+    upserted into its logical slot and all matching duplicates collapse at their
+    first position. Subscription fields merge; other credential types replace
+    the whole slot. Two-or-more records replace the stored list exactly, and an
+    empty payload clears it. A malformed existing vault blocks a single upsert.
     Returns a non-secret summary suitable for logs/status surfaces.
     """
     universe = Path(universe_dir)
