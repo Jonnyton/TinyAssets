@@ -103,6 +103,10 @@ def test_ledger_boundary_is_non_login_fixed_path_and_least_privilege(
             True,
             ["search_path=pg_catalog, market, pg_temp"],
         )
+        assert connection.execute(
+            "SELECT rolcanlogin FROM pg_roles "
+            "WHERE rolname = 'tinyassets_fixture_settlement'"
+        ).fetchone() == (False,)
 
         connection.execute("SET ROLE tinyassets_fixture_app")
         for statement in (
@@ -120,12 +124,33 @@ def test_ledger_boundary_is_non_login_fixed_path_and_least_privilege(
         connection.execute("RESET ROLE")
 
         connection.execute("SET ROLE tinyassets_fixture_settlement")
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            connection.execute(
-                "INSERT INTO market.balances(account, balance_micros) "
-                "VALUES ('user:forged', 1)"
-            )
-        connection.rollback()
+        for statement in (
+            "INSERT INTO market.balances(account, balance_micros) "
+            "VALUES ('user:forged', 1)",
+            "SELECT * FROM market.apply_tx("
+            "'tenant-a', 'forged', repeat('0', 64), '', '[]'::jsonb)",
+            "SELECT market.assert_drained('escrow:x')",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                connection.execute(statement)
+            connection.rollback()
+            connection.execute("SET ROLE tinyassets_fixture_settlement")
+
+        connection.execute(
+            "CREATE FUNCTION pg_temp.sha256(bytea) RETURNS bytea "
+            "LANGUAGE sql IMMUTABLE AS 'SELECT decode(repeat(''0'', 64), ''hex'')'"
+        )
+        body = _body(
+            "hostile-path",
+            [("escrow:path", -100), ("user:seller", 99), ("treasury", 1)],
+        )
+        connection.execute("RESET ROLE")
+        connection.execute(
+            "INSERT INTO market.balances(account, balance_micros) "
+            "VALUES ('escrow:path', 100)"
+        )
+        connection.execute("SET ROLE tinyassets_fixture_settlement")
+        assert _apply(connection, body)[0] == "applied"
 
 
 def test_canonical_hash_replay_conflict_and_bounds(market_database):
@@ -158,9 +183,26 @@ def test_canonical_hash_replay_conflict_and_bounds(market_database):
 
         invalid = (
             _body("x" * 129, [("escrow:1", -1), ("treasury", 1)]),
+            _body(
+                "memo",
+                [("escrow:1", -1), ("treasury", 1)],
+                memo="m" * 513,
+            ),
+            _body(
+                "account",
+                [("escrow:" + "x" * 250, -1), ("treasury", 1)],
+            ),
+            _body(
+                "postings",
+                [("escrow:1", -16)]
+                + [(f"user:{index}", 1) for index in range(16)]
+                + [("treasury", 0)],
+            ),
             _body("external", [("external:mint", -1), ("treasury", 1)]),
             _body("pool", [("pool:forged", -1), ("treasury", 1)]),
+            _body("treasury", [("escrow:1", -1), ("treasury:forged", 1)]),
             _body("no-fee", [("escrow:1", -1), ("user:seller", 1)]),
+            b"{" + b" " * 16384 + b"}",
         )
         for rejected in invalid:
             with pytest.raises(psycopg.errors.RaiseException):
