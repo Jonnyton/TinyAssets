@@ -994,10 +994,42 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "auth_scope_required": True,
         })
 
+    # Bind the interlocutor to a tier BEFORE the universe answers (relay task
+    # 6.6). This boundary is where the authenticated request state actually
+    # lives, so it resolves the tier rather than letting the in-process default
+    # stand in for it. Tighten-only: `authorize_conversation_turn` composes with
+    # the founder-only gate above and can only add refusals, never open one.
+    #
+    # The binding reads the ACL store, so a transient store failure must surface
+    # through this handle's honest error envelope rather than escaping as an
+    # unhandled exception (cross-family review finding 3, Codex 2026-07-25). Fail
+    # closed: no tier, no turn.
+    from tinyassets.api import interlocutor
+
+    try:
+        turn = interlocutor.authorize_conversation_turn(uid)
+    except Exception:
+        logger.warning(
+            "converse: interlocutor tier binding failed for %r", uid, exc_info=True
+        )
+        return json.dumps({
+            "error": "Your universe couldn't be reached right now.",
+        })
+    if not turn.permitted:
+        return json.dumps({
+            "error": "Only this universe's founder can talk with it.",
+            "auth_scope_required": True,
+        })
+
     from tinyassets.universe_intelligence import converse as _converse_impl
 
     try:
-        reply = _converse_impl(uid, message, actor_id=current_actor_id())
+        reply = _converse_impl(
+            uid,
+            message,
+            actor_id=current_actor_id(),
+            tier=turn.interlocutor.tier,
+        )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot
         # speak at all, and "All providers exhausted" is a dead end for the
