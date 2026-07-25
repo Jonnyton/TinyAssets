@@ -54,7 +54,11 @@ new private catalog or private-content policy decision.
 ### Each missing outcome receives one explicit target owner
 
 Four new capabilities separate moderation workflow, installation/distribution,
-authoring/optimization, and handoff/outcome lifecycle. Cross-capability
+authoring/optimization, and handoff/outcome lifecycle. **Moderation left this
+change on 2026-07-25** for `openspec/changes/moderation-and-abuse-response/`
+(task 6.3 discharge) once its implementation started on external draft PRs; the
+one-owner-per-outcome decision is unchanged, the owner simply lives in its own
+independently completable change. Three capabilities remain here. Cross-capability
 integration is expressed as a dependency on current canonical primitives,
 never by copying those primitives into a second owner.
 
@@ -108,10 +112,14 @@ distributed lease mechanism.
 
 ### Concurrency/load proof is part of implementation, not follow-up polish
 
-Each capability has a concrete §14 proof task: moderation flag/decision races,
-installer/update fleet behavior, authoring isolation and experiment leases, and
-handoff idempotency/provider-budget behavior. A feature is not done merely
-because its single-user happy path passes.
+Each capability has a concrete §14 proof task: installer/update fleet behavior,
+authoring isolation and experiment leases, and handoff idempotency/provider-budget
+behavior (moderation flag/decision races moved with the capability to its own
+change). A feature is not done merely because its single-user happy path passes.
+A *partial* proof does not check the task either: the authoring lane landed the
+concurrency/isolation clauses of its §14 task on 2026-07-25 and left task 4.6
+open because the experiment-lease clauses belong to the unbuilt optimization
+half.
 
 ## Risks / Trade-offs
 
