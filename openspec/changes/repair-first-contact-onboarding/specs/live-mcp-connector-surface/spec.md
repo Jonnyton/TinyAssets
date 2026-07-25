@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: First-contact branch onboarding composes through the canonical handles
-The live MCP connector SHALL support bounded branch discovery through `read_graph(target="branches")` and the closed create-patch-publish modes of `write_graph(target="branch")` without requiring a hidden, retired, compatibility, or additional tool. The new catalog and complete-definition create/publish modes plus their prompt guidance MUST remain unavailable in deployed and rendered surfaces until canonical `read_graph(target="branch")`, internal/legacy `get_branch`, `describe_branch`, and their shared related-wiki helper have visibility-safe exact projections that cannot disclose any item, path, title, summary, boolean, count, or existence evidence for a restricted page.
+The live MCP connector SHALL support bounded branch discovery through `read_graph(target="branches")` and the closed create-patch-publish modes of `write_graph(target="branch")` without requiring a hidden, retired, compatibility, or additional tool. The new catalog and complete-definition create/publish modes plus their prompt guidance MUST remain unavailable in deployed and rendered surfaces until canonical `read_graph(target="branch")`, internal/legacy `get_branch`, `describe_branch`, and every shared projection helper have visibility-safe exact projections that cannot disclose restricted-page metadata, a non-visible Goal identifier, Goal-derived gate claims, counts, booleans, or other existence evidence.
 
 #### Scenario: Branch discovery needs no opaque identifier
 - **WHEN** a newly connected client calls `read_graph(target="branches")`
@@ -16,12 +16,14 @@ The live MCP connector SHALL support bounded branch discovery through `read_grap
 - **THEN** the canonical handle mints one catalog-published version without a hidden `publish_version` action
 
 #### Scenario: Unsafe exact inspection blocks catalog rollout
-- **WHEN** exact branch inspection can still reveal metadata for a restricted wiki page
+- **WHEN** exact Branch inspection can still reveal metadata for a restricted wiki page or a non-visible Goal
 - **THEN** the catalog target returns `branch_catalog_unavailable`, create returns `branch_create_unavailable`, and publish returns `branch_publish_unavailable`
 - **AND** its first-contact prompt guidance, deployment acceptance, and rendered journey remain blocked
 
 ### Requirement: Registered onboarding prompts teach only canonical current behavior
-The registered `control_station`, `meet_universe`, `extension_guide`, and `branch_design_guide` prompts SHALL describe executable user journeys only through the canonical handles and supported targets. They MUST NOT instruct a chatbot to call `universe`, `community_change_context`, `extensions`, `goals`, `gates`, `wiki`, `/mcp-directory*`, or another hidden/retired tool or route. First contact SHALL begin through `converse`. First-contact branch authoring SHALL use the prompt-template-only V1 catalog/create/inspect/publish composition and MUST NOT teach source-code authoring, approval, fork/remix, Goal binding, or other excluded V1 shapes. Before any `run_graph` step, the guidance SHALL state that the requester must attach or authorize their own BYOC/market provider and that TinyAssets never uses maintainer/founder provider quota for the run. Any broader source-code guidance SHALL disclose that the current compiled path is not OS-isolated and SHALL NOT claim a canonical approval route until one exists.
+The registered `control_station`, `meet_universe`, `extension_guide`, and `branch_design_guide` prompts SHALL describe executable user journeys only through the canonical handles and supported targets. They MUST NOT instruct a chatbot to call `universe`, `community_change_context`, `extensions`, `goals`, `gates`, `wiki`, `/mcp-directory*`, or another hidden/retired tool or route. First contact SHALL begin through `converse`. First-contact branch authoring SHALL use the prompt-template-only V1 catalog/create/inspect/publish composition and MUST NOT teach source-code authoring, approval, fork/remix, Goal binding, or other excluded V1 shapes.
+
+Until `universe-creation` task 2.0 has an accepted opposite-provider security verdict and its requester BYOC/accepted-market resolver, immutable authority bundle, ambient-credential isolation, held/setup-required envelope, and race-safe authority receipt tasks 4.1–4.7 plus R2-1a/R2-1b have landed, first-contact prompts SHALL stop after browse/create/inspect/publish/rediscover and SHALL NOT present `run_graph` as an executable next step. After those owners land, an optional run step SHALL require a resolved requester-owned BYOC or accepted-market authority bundle, SHALL use only providers admitted by that bundle, and SHALL never select maintainer/founder/platform credentials or quota. Any broader source-code guidance SHALL disclose that the current compiled path is not OS-isolated and SHALL NOT claim a canonical approval route until one exists.
 
 #### Scenario: Prompt catalog contains no retired invocation
 - **WHEN** all four registered prompt bodies and docstrings are inspected
@@ -41,6 +43,11 @@ The registered `control_station`, `meet_universe`, `extension_guide`, and `branc
 - **THEN** it tells the user how to attach or authorize their own BYOC/market provider
 - **AND** it does not invoke a maintainer, founder, or ambient fallback provider
 
+#### Scenario: Guidance does not outrun execution authority
+- **WHEN** the accepted requester-authority bundle and isolation gate are not deployed
+- **THEN** every registered first-contact guide omits an executable `run_graph` journey and says execution setup is not yet available through this path
+- **AND** it does not imply that attaching a provider hint alone establishes authority
+
 #### Scenario: Extension guide does not overclaim sandbox isolation
 - **WHEN** a chatbot loads `extension_guide`
 - **THEN** the guide states the current source-code isolation limitation and does not claim OS sandboxing that the compiled path lacks
@@ -57,12 +64,19 @@ The system SHALL maintain an exact-path, lower-bound planning manifest for known
 - **THEN** the guarded write returns a conflict and no page content is overwritten
 
 ### Requirement: Legacy branch-tool retirement is replacement-first
-Any retirement of a hidden branch catalog/build/publication/approval action SHALL wait until its canonical equivalent is deployed where required, registered prompt consumers are migrated, and the affected rendered chatbot journey has passed. The legacy `publish_version` action MUST remain available only as a known-risk, time-bounded migration path for its inventoried existing write-scoped callers until canonical owner-authorized publish mode is deployed and its migration proof passes; no new caller SHALL be taught to use it, and its caller-supplied operational publisher label is never catalog authority. The legacy source-code approval action MUST remain available until a canonical approval route exists or source-code patching has been separately removed. When this delta and the legacy-retirement delta are implemented, their concurrent modifications to `Canonical Advertised Handle Set` SHALL be reconciled and synchronized together without dropping either change's surviving requirements.
+Any retirement of a hidden branch catalog/build/publication/approval/remix action SHALL wait until its canonical equivalent is deployed where required, registered prompt consumers are migrated, and the affected rendered chatbot journey has passed. The legacy `publish_version` action MUST remain available only as a known-risk, time-bounded migration path for its inventoried existing write-scoped callers until canonical owner-authorized publish mode is deployed and its migration proof passes; no new caller SHALL be taught to use it, and its caller-supplied operational publisher label is never catalog authority. The legacy source-code approval action MUST remain available until a canonical approval route exists or source-code patching has been separately removed.
+
+Removing the hidden `extensions` registration SHALL NOT remove the only reachable branch-remix or lineage path. Because first-contact V1 deliberately excludes fork/remix, retirement SHALL preserve the inventoried `extensions(action="fork_tree")` lineage path and every authorized `build_branch`/`fork_from` remix caller until a separately reviewed canonical-handle composition for both remix creation and lineage inspection is deployed, all callers are migrated, and a rendered chatbot proves public discovery through remix and attribution/lineage without the hidden tool. Preserving this migration seam does not make it a recommended first-contact API and does not permit new callers. When this delta and the legacy-retirement delta are implemented, their concurrent modifications to `Canonical Advertised Handle Set` SHALL be reconciled and synchronized together without dropping either change's surviving requirements.
 
 #### Scenario: Retirement cannot strand branch authors
 - **WHEN** canonical prompt-template catalog/create/publish is ready but source-code patch approval has no canonical route
 - **THEN** prompt-template onboarding may proceed
 - **AND** retirement of the legacy approval action remains blocked
+
+#### Scenario: Exact-seven retirement waits for remix replacement
+- **WHEN** canonical remix creation or lineage inspection, caller migration, or rendered attribution proof is absent
+- **THEN** the `extensions` registration remains callable for its inventoried authorized remix/lineage callers
+- **AND** exact-seven retirement remains blocked rather than deleting the PLAN-required public-forkable capability
 
 ### Requirement: Rendered chatbot acceptance proves the complete first-contact branch journey
 Final public acceptance SHALL use a real browser-rendered chatbot with the installed `TinyAssets` connector at `https://tinyassets.io/mcp`. The conversation MUST discover a published branch without a prior branch ID, create one complete public prompt-template V1 branch, inspect the returned ID through the visibility-safe exact projection, publish it deliberately, rediscover it through the catalog, and observe the canonical exact tool surface required by the base specification. If the acceptance journey runs the branch, it MUST use requester-owned BYOC/market authority and prove no maintainer/founder quota was selected. Direct MCP calls, local tests, DOM-only checks, and canaries SHALL remain supporting evidence rather than final user-surface proof.

@@ -14,7 +14,7 @@ The defect is both instructional and structural:
 4. The exact-seven surface has no deliberate branch publication path; ordinary patching currently mints snapshots that listing can mistake for publication.
 5. The internal list/build/publication seams are reusable only after authority, privacy, pagination, idempotency, explicit-publication, and error-projection hardening.
 
-Prompt cleanup alone cannot repair onboarding. The OpenSpec change therefore specifies a bounded `read_graph(target="branches")` catalog and closed, transactionally idempotent create/publish modes under `write_graph(target="branch")` without adding a tool. Catalog/create/publish remain unavailable until every exact branch projection filters restricted related-wiki metadata.
+Prompt cleanup alone cannot repair onboarding. The OpenSpec change therefore specifies a bounded `read_graph(target="branches")` catalog and closed, transactionally idempotent create/publish modes under `write_graph(target="branch")` without adding a tool. Hosted catalog authority is Postgres-canonical; legacy SQLite state is only one-way import input or a downstream execution projection. Catalog/create/publish remain unavailable until every exact Branch projection filters restricted related-wiki metadata and non-visible Goal data.
 
 ## Source-owned first-contact gaps
 
@@ -85,7 +85,7 @@ For each page independently:
 2. Prepare an exact, minimal `old_text` → `new_text` patch.
 3. Call `write_page` with the exact page, `expected_sha256`, and `dry_run=true`.
 4. Require exactly one match, inspect the preview and proposed new hash.
-5. Only after repository/runtime review gates pass and a separately reviewed serialized/locked single-writer boundary is active, call authenticated `write_page(..., dry_run=false)` for that one page.
+5. Only after repository/runtime review gates, the owned explicit commons route, and a separately reviewed serialized/locked single-writer boundary are active, call authenticated `write_page(scope="commons", ..., dry_run=false)` for that one page.
 6. Re-read and record the post-image SHA-256.
 7. Stop on any SHA mismatch, zero/multiple match, unexpected audience/authority result, or content drift.
 
@@ -94,9 +94,9 @@ The current wiki patch owner conflicts on SHA mismatch or when `old_text` does n
 ## Gates before any runtime or live write
 
 - Claude Opus 5 opposite-provider APPROVE or accepted ADAPT on the exact spec/evidence head.
-- Explicit accept/adapt from the active universe-creation, universe-visibility, and `control_station` prompt-truth owners, while preserving newborn-BYOC behavior landed in #1759. Retire-legacy caller inventory v4 landed in #1772; this packet adds the missing `publish_version` plus `approve_source_code` replacement-first gates as retire tasks 2.3a/4.0 and in STATUS, which any future retirement owner must accept before implementation. There is no current `broad-test` lane.
+- Explicit landed SHAs or file-specific handoffs from universe-creation, universe-visibility/shared-Goals, and `control_station`; accepted production Postgres migration/role/RLS/recovery baseline with an allocated exact migration filename; and the owned `scope=commons` wiki route. Preserve newborn-BYOC behavior from #1759 but omit executable run guidance until the full requester-authority/isolation gates land. Retire-legacy caller inventory v4 landed in #1772; retire tasks 2.3a/2.3b/4.0 preserve publish, approval, and remix/lineage until canonical replacements and rendered proofs exist.
 - Rotation-catalogued `TINYASSETS_BRANCH_CRYPTO_KEYRING` provisioned with no ephemeral/default-key fallback.
 - V1 remains public-commons-only and selects no private-data custody mode; private authoring needs a separate PLAN-approved change naming its chosen custody mode, trust boundaries, storage, and routing.
 - Failing tests precede implementation.
 - Exact-seven canary, 500-client load proof, packaged mirror parity, and real browser-rendered chatbot acceptance are required.
-- No founder/maintainer provider quota or compute is used by created/published branches; guidance requires requester BYOC/market authority before any run.
+- No founder/maintainer provider quota or compute is used by created/published branches; guidance stops at rediscovery until requester BYOC/accepted-market authority and isolation gates land, then permits only the resolved requester authority.

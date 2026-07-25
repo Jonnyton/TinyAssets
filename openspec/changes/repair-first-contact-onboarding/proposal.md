@@ -6,7 +6,7 @@ A newly connected chatbot can inspect a branch only after it somehow learns an o
 
 - Keep the advertised MCP surface at exactly seven handles and add a bounded, commons-only `read_graph(target="branches")` catalog target.
 - Extend `write_graph(target="branch")` with a closed create-patch-publish discriminator: a complete `definition_json` creates one atomically validated branch, `branch_id` plus `changes_json` preserves transactional patching, and explicit `publish=true` deliberately mints a catalog-published version.
-- Backfill the currently unspecced branch catalog and composite authoring contract, including verified-principal authorship/publication, V1 public-commons-only storage, atomic validation failure, versioned cryptographic keying, bounded results, and closed nested request/response shapes.
+- Backfill the currently unspecced branch catalog and composite authoring contract, including Postgres-canonical hosted authority, downstream-only SQLite execution projection, verified-principal authorship/publication, V1 public-commons-only storage, atomic validation failure, versioned cryptographic keying, bounded results, and closed nested request/response shapes.
 - Replace registered prompt instructions that name hidden legacy tools with compositions over the canonical handles.
 - Produce an exact-path, lower-bound repository/live-wiki planning manifest; prove exhaustiveness before apply, and do not treat the existing race-prone SHA precondition as atomic compare-and-swap.
 - Add no default branch, eighth tool, compatibility alias, provider/compute authority, or runtime implementation in this review lane.
@@ -23,6 +23,6 @@ A newly connected chatbot can inspect a branch only after it somehow learns an o
 
 ## Impact
 
-- Future runtime integration will touch the canonical MCP router and its packaging mirror, the existing branch list/build adapters, focused first-contact tests, and public MCP acceptance probes.
-- The active `universe-creation`, `universe-visibility`, and `control_station` prompt-truth owners remain read-only dependencies; newborn BYOC behavior is a landed read-only base from #1759. Retire-legacy caller inventory v4 landed in #1772; this packet now records the missing `publish_version` and `approve_source_code` replacement-first decisions directly in retire-legacy tasks 2.3a and 4.0 plus the pending STATUS row. Any future retirement owner must satisfy them before removing `extensions`. No current `broad-test` owner/lane exists.
+- Future runtime integration will touch the canonical MCP router and packaging mirror, an approved production Postgres migration/adapter, existing branch adapters as one-way import/downstream execution projections, focused Postgres/first-contact tests, and public MCP acceptance probes.
+- The active `universe-creation`, `universe-visibility`, shared-Goals, `control_station`, Postgres-baseline, and `scope=commons` owners remain read-only dependencies and require landed SHAs or explicit file releases. Newborn BYOC behavior is a landed read-only base from #1759, but executable run guidance remains blocked on the full requester-authority/isolation gates. Retire-legacy caller inventory v4 landed in #1772; this packet records replacement-first gates for `publish_version`, source approval, and remix/lineage as retire tasks 2.3a/2.3b/4.0. No current `broad-test` owner/lane exists.
 - This lane changes only OpenSpec artifacts, the evidence manifest, and coordination metadata. Claude Opus 5 opposite-provider review gates a draft spec PR and all runtime work.
