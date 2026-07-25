@@ -52,6 +52,12 @@ raw subject. The operator can precompute the expected fingerprint from restricte
 logs, third-party chatbot transcripts, screenshots, and committed artifacts therefore never need the
 raw stable subject.
 
+Fingerprint fail-closed semantics protect fingerprint integrity, not status
+availability. Missing, short, wrong-type, or otherwise invalid fingerprint
+configuration leaves `get_status` and `read_graph target=status` operational,
+returns no fingerprint, and exposes a fixed non-secret unavailable marker plus
+an evidence caveat. No default or weak key is ever substituted.
+
 Alternative rejected: an internal impersonation header or shared test bearer. It would prove a more
 privileged path than users receive and would turn the test harness into an auth bypass.
 
@@ -162,10 +168,15 @@ provider, maintainer, OAuth, and roster credentials and is never logged or expos
 includes a version prefix; rotation intentionally changes the fingerprint under a new version, and the
 operator precomputes the new expected value from restricted roster state before the old version retires.
 The shared status implementation returns
-`request_identity: {bearer_present, principal_fingerprint}` for authenticated, anonymous,
-first-contact, and normal read paths. Both `get_status` and `read_graph target=status` use that
-implementation so aliases cannot disagree. A present invalid bearer still fails at transport with
-`401` and never reaches the tool.
+`request_identity: {bearer_present, principal_fingerprint}` plus
+`identity_evidence: {status, reason?}` for authenticated, anonymous,
+first-contact, and normal read paths. Both `get_status` and
+`read_graph target=status` use that implementation so aliases cannot disagree.
+If fingerprint configuration is unavailable or invalid, the full observational
+status response remains available with `principal_fingerprint: null`, the
+explicit unavailable marker, and a fixed `evidence_caveats.request_identity`
+entry. A present invalid bearer still fails at transport with `401` and never
+reaches the tool.
 
 The response is self-only: callers cannot supply or query another subject. It exposes no raw subject,
 email, token, grant set, provider credential, ambient maintainer identity, or auth-home path.

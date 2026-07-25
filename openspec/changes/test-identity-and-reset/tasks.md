@@ -71,14 +71,19 @@
   raw-subject fallback, from the shared status implementation for first-contact, anonymous, and normal
   paths through both `get_status` and `read_graph target=status`.
   - **Premise: live; completed (2026-07-24).** Implemented in
-    `f9da52aa`; missing/short keys fail closed and the packaged runtime mirror
-    is identical.
+    `f9da52aa` and adapted after cross-family review: missing/invalid keys fail
+    closed for fingerprint integrity while the observational status surface
+    stays available with an explicit unavailable marker. The packaged runtime
+    mirror is identical.
 - [x] 3.2 Add regression coverage for authenticated/anonymous/invalid bearer behavior, alias parity,
   request-context cleanup, self-only semantics, no ambient host/maintainer identity fallback, and
   absence of tokens, grants, provider credentials, and auth-home paths.
   - **Premise: live; completed (2026-07-24).** Focused coverage proves
     authenticated, anonymous, first-contact, missing-key, alias-parity,
-    request-cleanup, and raw-subject redaction behavior without skips.
+    request-cleanup, raw-subject redaction, short/wrong-type key handling,
+    version validation, provisioned fingerprint output, and status-surface
+    availability without skips. The public canary calls `get_status` and
+    requires `active_host` plus `release_state`.
 - [ ] 3.3 Update the canonical `ui-test` workflow and rendered acceptance to assert resolved identity
   from status rather than browser cookies/UI inference, storing only aliases or deployment-scoped
   fingerprints; run the public canary, Claude.ai and ChatGPT rendered host matrix, required concurrency

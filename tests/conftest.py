@@ -26,6 +26,7 @@ def _identity_fingerprint_key(monkeypatch):
         "TINYASSETS_IDENTITY_FINGERPRINT_KEY",
         "pytest-only-identity-fingerprint-key-32-bytes",
     )
+    monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
 
 
 @pytest.fixture(autouse=True)

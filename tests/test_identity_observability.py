@@ -175,27 +175,118 @@ def test_status_alias_returns_identical_request_identity(
     assert alias["request_identity"] == direct["request_identity"]
 
 
-def test_missing_fingerprint_key_fails_closed(
+def test_missing_fingerprint_key_keeps_status_available_without_weak_fingerprint(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets.universe_server import get_status, read_graph
+
+    universe_id = _create_universe(tmp_path, monkeypatch)
+    set_provider(_StaticProvider())
+    auth_middleware(_BEARER)
+    monkeypatch.delenv("TINYASSETS_IDENTITY_FINGERPRINT_KEY")
+
+    payload = json.loads(get_status(universe_id))
+    alias = json.loads(read_graph(target="status", graph_id=universe_id))
+
+    assert "active_host" in payload
+    assert "release_state" in payload
+    assert "active_host" in alias
+    assert "release_state" in alias
+    assert payload["request_identity"] == {
+        "bearer_present": True,
+        "principal_fingerprint": None,
+    }
+    assert payload["identity_evidence"] == {
+        "status": "unavailable",
+        "reason": "key_not_provisioned",
+    }
+    assert alias["identity_evidence"] == payload["identity_evidence"]
+    assert alias["request_identity"] == payload["request_identity"]
+    assert payload["evidence_caveats"]["request_identity"] == [
+        "identity_fingerprint_unavailable:key_not_provisioned"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("key_value", "reason"),
+    [
+        ("k" * 31, "key_too_short"),
+        (object(), "key_invalid_type"),
+    ],
+)
+def test_invalid_fingerprint_key_keeps_status_available_without_weak_fingerprint(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    key_value: object,
+    reason: str,
+) -> None:
+    import tinyassets.api.status as status
+
+    universe_id = _create_universe(tmp_path, monkeypatch)
+    set_provider(_StaticProvider())
+    auth_middleware(_BEARER)
+    if isinstance(key_value, str):
+        monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_KEY", key_value)
+    else:
+        original_get = status.os.environ.get
+
+        def wrong_type_for_fingerprint_key(name: str, default=None):
+            if name == "TINYASSETS_IDENTITY_FINGERPRINT_KEY":
+                return key_value
+            return original_get(name, default)
+
+        monkeypatch.setattr(status.os.environ, "get", wrong_type_for_fingerprint_key)
+
+    payload = json.loads(status.get_status(universe_id))
+
+    assert "active_host" in payload
+    assert "release_state" in payload
+    assert payload["request_identity"]["principal_fingerprint"] is None
+    assert payload["identity_evidence"] == {
+        "status": "unavailable",
+        "reason": reason,
+    }
+    assert _SUBJECT not in json.dumps(payload, sort_keys=True)
+
+
+def test_invalid_fingerprint_version_keeps_status_available(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tinyassets.api.status import get_status
 
-    _create_universe(tmp_path, monkeypatch)
+    universe_id = _create_universe(tmp_path, monkeypatch)
     set_provider(_StaticProvider())
     auth_middleware(_BEARER)
-    monkeypatch.delenv("TINYASSETS_IDENTITY_FINGERPRINT_KEY")
+    monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1:anonymous")
 
-    payload = json.loads(get_status())
+    payload = json.loads(get_status(universe_id))
 
-    assert payload == {
-        "schema_version": 2,
-        "error": "identity_fingerprint_unavailable",
-        "request_identity": {
-            "bearer_present": True,
-            "principal_fingerprint": None,
-        },
+    assert "active_host" in payload
+    assert "release_state" in payload
+    assert payload["request_identity"]["principal_fingerprint"] is None
+    assert payload["identity_evidence"] == {
+        "status": "unavailable",
+        "reason": "version_invalid",
     }
+
+
+def test_provisioned_fingerprint_key_marks_identity_evidence_available(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets.api.status import get_status
+
+    universe_id = _create_universe(tmp_path, monkeypatch)
+    set_provider(_StaticProvider())
+    auth_middleware(_BEARER)
+
+    payload = json.loads(get_status(universe_id))
+
+    assert payload["request_identity"]["principal_fingerprint"].startswith("v1:")
+    assert payload["identity_evidence"] == {"status": "available"}
+    assert "request_identity" not in payload["evidence_caveats"]
 
 
 @pytest.mark.asyncio
