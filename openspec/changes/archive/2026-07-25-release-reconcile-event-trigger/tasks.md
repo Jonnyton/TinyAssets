@@ -42,12 +42,12 @@
 - [x] 4.3 Reproduce Opus 5's production-Python and repeated-deploy findings,
   make the exact scripts pass on Python 3.12, add a pinned CI contract, and cap
   failed same-SHA explicit retries before another build or deploy.
-- [ ] 4.4 Request a fresh Opus 5 review of the complete immutable diff, resolve
+- [x] 4.4 Request a fresh Opus 5 review of the complete immutable diff, resolve
   every blocking finding, and rerun affected checks.
 
 ## 5. Verification and Foldback
 
-- [ ] 5.1 Update `REFLECTION.md`, sync the uptime-and-alarms delta into the main
+- [x] 5.1 Update `REFLECTION.md`, sync the uptime-and-alarms delta into the main
   spec, archive the change, and rerun strict OpenSpec validation.
 - [ ] 5.2 Run the repository's required pre-merge gates, publish the PR, merge
   only after required checks are green, then remove the landed STATUS work row.
