@@ -6,7 +6,7 @@ The result is not only metadata exposure. A canonical `write_graph` request can 
 
 Branch-originated `related_wiki_pages` is also a wiki enumeration surface, but it bypasses the existing page-listing visibility predicate used by wiki search, changed-since, ambient feeds, and list. Restricted pages currently contribute paths, titles, summaries, match labels, ordering, cap displacement, and hidden counts.
 
-The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `tinyassets/api/wiki.py`, and its tests. This successor consumes those predicates; it does not redefine or edit them. Implementation also depends on the authenticated-subject authority work represented by #1691 and must not multiply the known `_current_actor()` environment fallback.
+The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `tinyassets/api/wiki.py`, and its tests. This successor consumes those predicates; it does not redefine or edit them. The as-built identity contract already provides `tinyassets.api.permissions.current_request_actor_id()`, which returns the credential-validated request subject or `anonymous` without an environment fallback. Implementation consumes that resolver directly and must not multiply the known `_current_actor()` environment fallback.
 
 ## Goals / Non-Goals
 
@@ -34,7 +34,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 
 ### 1. Authenticated subject is the only branch authority identity
 
-One branch-authority helper consumes the request-local subject established by validated credentials. It does not call an identity helper that can fall back to `UNIVERSE_SERVER_USER`, and it does not accept an actor, author, owner, or force value from action arguments.
+One branch-authority helper consumes `tinyassets.api.permissions.current_request_actor_id()`, the as-built request-local subject established by validated credentials. It treats `anonymous` as absent authority, does not call an identity helper that can fall back to `UNIVERSE_SERVER_USER`, and does not accept an actor, author, owner, or force value from action arguments.
 
 Branch creation and composite build paths persist the authenticated subject as `author`. A caller-supplied `author` cannot select or impersonate another owner. A creation or mutation that requires authorship fails closed when no authenticated subject is available.
 
@@ -100,7 +100,7 @@ The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/run
 ## Migration Plan
 
 1. Land this reviewed target OpenSpec active and unsynced.
-2. Wait for authenticated-subject authority and exact `tests/` claims to release; claim the implementation files explicitly.
+2. Reconfirm the as-built `current_request_actor_id()` no-fallback contract, wait for exact `tests/` claims to release, and claim the implementation files explicitly.
 3. Implement Wave 1 reads, wiki projections, and lineage with RED-first tests.
 4. Implement Wave 2 source reuse and clone gates with no-partial-copy tests.
 5. Coordinate action-scope migration, then implement Wave 3 mutation/deletion authority and force separation.
@@ -110,9 +110,9 @@ The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/run
 
 Rollback reverts the unactivated implementation commits. Once activated, rollback must not re-enable unauthorized reads, reuse, mutation, deletion, or execution; a forward fix or fail-closed disablement is required.
 
-## Open Questions
+## Resolved Questions
 
-- Which exact request-context API from #1691 will provide the non-fallback authenticated subject?
-- Does every branch creation surface currently require authentication, or must anonymous creation be explicitly retired in the implementation change?
-- Which universe context, if any, is authoritative for root-wiki related-page projections; if none, the page-level restriction must remain fail-closed for blank universe IDs.
-- Should `search_nodes` keep a cross-branch public search mode in addition to exact-branch not-found behavior?
+- Branch authority consumes `tinyassets.api.permissions.current_request_actor_id()`; PR #1691 is provider-destination authority and is not a dependency of this change.
+- Every branch creation surface covered here rejects `anonymous`; legacy anonymous or environment-attributed creation is intentionally retired rather than grandfathered.
+- Root-wiki related-page projections pass the same blank `universe_id=""` context as the root wiki surfaces. Task 2.2 keeps that grant behavior fail-closed before implementation.
+- Cross-branch `search_nodes` retains readable/public discovery through visibility-aware enumeration. Supplying an exact branch ID uses the byte-identical private-or-missing read boundary.

@@ -68,6 +68,8 @@ This review approves drafting a target-only change, not implementation. The comp
 
 ## Draft-artifact review state
 
-Three Opus 5 artifact-review attempts on 2026-07-25 exited after seven seconds with no stderr and no verdict. The Claude CLI itself remained available (`claude --version` returned `2.1.220`), while the local fleet floor state accumulated provider blocks. The third identical failure triggered the project retry-loop stop rule. This is provider/harness unavailability, not approval or rejection.
+Four Opus 5 artifact-review attempts on 2026-07-25 exited after seven seconds with no stderr and no verdict. The fourth was attempted after the host reported a rate-limit reset. A direct minimal diagnostic then exposed the hidden provider response: `You've hit your monthly spend limit`. Claude.ai independently rejected the same review with Opus 5 High selected, reporting a $0 monthly spend limit, no credits, and a plan-session reset at 4:00 PM PDT. Billing was not changed. The Claude CLI itself remained installed (`claude --version` returned `2.1.220`). The project retry-loop stop rule remains in force. This is provider-account unavailability, not approval or rejection.
 
 The drafted change passes strict OpenSpec validation and is published as draft PR #1778, but task 1.3 remains open. The branch is review-blocked planning state; it must not become ready, merge, authorize implementation, sync specs, or archive until a real opposite-provider artifact verdict is recorded and every Critical/Important finding is resolved.
+
+A 2026-07-25 dependency freshness check found that PR #1691 owns provider-destination authority, not request-subject resolution. The artifacts were corrected to consume the already-as-built `tinyassets.api.permissions.current_request_actor_id()` contract (`openspec/specs/identity-auth-and-access-control/spec.md`) and to keep `anonymous` fail-closed. PR #1691 is no longer named as an implementation dependency.

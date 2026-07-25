@@ -26,4 +26,4 @@ None.
 
 ## Impact
 
-The later implementation affects `tinyassets/api/branches.py` and new focused branch-authority tests. It reuses `tinyassets/api/visibility.py` and `tinyassets/api/wiki.py` without modifying them; any predicate change remains owned by `universe-visibility`. It depends on authenticated-subject authority, lockstep action-scope classification in `retire-legacy-live-mcp-tools`, and release of broad `tests/` claims. This proposal changes no runtime, MCP schema, deployment, canonical as-built spec, or Agent Village surface.
+The later implementation affects `tinyassets/api/branches.py` and new focused branch-authority tests. It consumes the as-built no-environment-fallback actor resolver in `tinyassets/api/permissions.py`, and reuses `tinyassets/api/visibility.py` and `tinyassets/api/wiki.py` without modifying them; any predicate change remains owned by `universe-visibility`. It depends on lockstep action-scope classification in `retire-legacy-live-mcp-tools` and release of broad `tests/` claims. This proposal changes no runtime, MCP schema, deployment, canonical as-built spec, or Agent Village surface.

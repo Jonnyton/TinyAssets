@@ -7,7 +7,7 @@
 
 ## 2. Dependency and claim gates
 
-- [ ] 2.1 Land or consume a request-local credential-validated subject seam from #1691 that cannot fall back to `UNIVERSE_SERVER_USER`; mutation-probe the absence and environment-only cases.
+- [ ] 2.1 Consume the as-built `tinyassets.api.permissions.current_request_actor_id()` seam, assert that `anonymous` carries no branch authority, and mutation-probe the absence and environment-only cases; PR #1691 is not a dependency.
 - [ ] 2.2 Have the `universe-visibility` owner make blank-universe page-grant evaluation explicitly fail closed, or record current-main evidence that the predicate contract already owns that invariant without changing `visibility.py` here.
 - [ ] 2.3 Coordinate `retire-legacy-live-mcp-tools` tasks 4.2/4.4 so every branch mutation and deletion stays non-read and missing metadata denies during registry migration.
 - [ ] 2.4 Wait for broad `tests/` claims to release, then claim `tinyassets/api/branches.py`, `tests/test_branch_read_authority.py`, `tests/test_related_wiki_visibility.py`, and `tests/test_branch_mutation_authority.py` before implementation.
