@@ -92,6 +92,20 @@
     `tests/test_first_contact.py` (rejects chosen id via both entry points;
     self-serializes without id; internal named-id accepted; first-contact
     still serial).
+  - ADAPT fold (2026-07-24, Codex review): `ensure_founder_home` threaded the
+    trust flag for `winner` from `claim_founder_home` without proving its
+    provenance. Because `claim_founder_home` does INSERT ... ON CONFLICT DO
+    NOTHING, a stale founder-influenced *descriptive* `founder_home` binding
+    (pre-boundary caller-selected creation) was returned verbatim and could be
+    materialized through the flag — defeating self-serialization at its own
+    seam. FIX: a fail-closed provenance gate trusts `winner` ONLY when it is the
+    fresh `candidate` just reserved OR itself passes the canonical
+    `is_universe_serial` validator; otherwise it logs loudly and returns "" —
+    never rebinding/migrating a stale descriptive home to a serial (that is
+    host-run migration, task 5.4). Added tests: stale descriptive binding is
+    rejected + not materialized + binding left intact; legitimate pre-existing
+    serial reservation materializes; a public-schema reachability lock asserting
+    the trust flag is absent from both public tool wrappers.
 - [x] 5.3 Add tests and implementation for the root universe index keyed by immutable id with learned-name projection from `identity.md`.
   - DONE (2026-07-24): the `universes` index is keyed by the immutable
     `universe_id` (PK / `ON CONFLICT(universe_id)`), and creation registers one

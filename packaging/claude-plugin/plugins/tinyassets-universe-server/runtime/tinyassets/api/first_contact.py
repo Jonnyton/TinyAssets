@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _HOME_MATERIALIZE_LOCK = threading.Lock()
 
@@ -44,10 +47,36 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     except PermissionError:
         return ""
 
-    from tinyassets.ids import new_universe_id
+    from tinyassets.ids import is_universe_serial, new_universe_id
 
-    winner = claim_founder_home(base, founder, new_universe_id())
+    candidate = new_universe_id()
+    winner = claim_founder_home(base, founder, candidate)
     if not winner:
+        return ""
+    # Provenance gate (universe-creation 5.2): the internal-trust flag may only
+    # materialize a platform-generated serial. ``winner`` is either the fresh
+    # ``candidate`` we just reserved this call, or whatever the ``founder_home``
+    # row already held — ``claim_founder_home`` runs INSERT ... ON CONFLICT DO
+    # NOTHING, so a pre-existing binding is returned verbatim. ``founder_home``
+    # has no serial-format constraint, so a stale, founder-influenced
+    # *descriptive* id (from historical caller-selected creation, before this
+    # boundary existed) can surface here. Materializing it through the trust
+    # flag would silently defeat self-serialization at the exact seam meant to
+    # protect it. Trust ``winner`` ONLY when it is the fresh candidate we just
+    # generated OR it itself passes the canonical serial validator (same
+    # ``is_universe_serial`` the generator round-trips, never a regex copy).
+    # Otherwise fail closed and LOUDLY — never silently rebind or migrate a
+    # stale descriptive home to a serial here; that is host-run migration
+    # behavior (universe-creation 5.4), not a first-contact side effect.
+    if winner != candidate and not is_universe_serial(winner):
+        logger.warning(
+            "first-contact refused to materialize founder %s home: bound "
+            "universe_id %r is neither the freshly reserved serial nor a valid "
+            "platform serial. Failing closed; serial migration must repair the "
+            "stale binding before this founder can birth a home.",
+            founder,
+            winner,
+        )
         return ""
     universe_dir = _home_dir(base, winner)
     if universe_dir is None:
@@ -66,10 +95,10 @@ def ensure_founder_home(base: Path, founder: str) -> str:
             except OSError:
                 pass
         try:
-            # ``winner`` is the serial this founder-home binding already
-            # reserved via ``claim_founder_home``; pass it through the trusted
-            # internal path so the public-birth boundary does not reject our own
-            # generated id.
+            # ``winner`` has passed the provenance gate above: it is either the
+            # serial we just reserved this call or an already-recorded valid
+            # platform serial. Only such a proven serial may cross the trusted
+            # internal path so the public-birth boundary accepts our own id.
             _universe_impl(
                 action="create_universe",
                 universe_id=winner,

@@ -755,3 +755,70 @@ def test_first_contact_birth_still_self_serializes(data_dir, monkeypatch):
     home = ensure_founder_home(data_dir, "founder-1")
     assert is_universe_serial(home)
     assert (data_dir / home / "soul.md").is_file()
+
+
+def test_stale_descriptive_binding_is_rejected_not_materialized(data_dir, monkeypatch):
+    """A poisoned pre-existing descriptive `founder_home` must fail closed.
+
+    universe-creation 5.2 provenance gate: `claim_founder_home` returns a
+    pre-existing binding verbatim (ON CONFLICT DO NOTHING). A stale,
+    founder-influenced *descriptive* id must NEVER cross the internal-trust flag
+    and become a materialized named universe — first-contact fails closed and
+    never rebinds it here.
+    """
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.daemon_server import get_founder_home, set_founder_home
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-legacy")
+    # Seed a stale descriptive binding with no complete directory.
+    set_founder_home(data_dir, founder_sub="founder-legacy", universe_id="chosen-name")
+
+    result = ensure_founder_home(data_dir, "founder-legacy")
+
+    assert result == ""                                  # fail closed
+    assert not (data_dir / "chosen-name").exists()       # never materialized
+    assert _universe_dirs(data_dir) == []                # no universe born at all
+    # The stale binding is left as-is for host-run migration — NOT rebound here.
+    assert get_founder_home(data_dir, "founder-legacy") == "chosen-name"
+
+
+def test_legitimate_reserved_serial_binding_materializes(data_dir, monkeypatch):
+    """An already-recorded *valid serial* binding (incomplete dir) materializes.
+
+    The provenance gate's second accepted case: a pre-existing binding that is
+    itself a valid platform serial (e.g. a prior reservation whose dir was
+    removed/never completed) is trusted and repaired to a complete serial home.
+    """
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.ids import new_universe_id
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-reserved")
+    reserved = new_universe_id()
+    set_founder_home(data_dir, founder_sub="founder-reserved", universe_id=reserved)
+
+    result = ensure_founder_home(data_dir, "founder-reserved")
+
+    assert result == reserved
+    assert is_universe_serial(result)
+    assert (data_dir / reserved / "soul.md").is_file()
+
+
+def test_public_tool_wrappers_omit_the_trust_flag():
+    """Reachability lock: the trust flag is absent from public MCP wrappers.
+
+    universe-creation 5.2: `allow_named_universe_id` must never appear on a
+    public MCP surface, or a caller could self-select an id. Both public birth
+    wrappers omit it (Codex also verified this against the live FastMCP schemas
+    with `mcp.call_tool` probes). This locks it at the signature level.
+    """
+    import inspect
+
+    from tinyassets.universe_server import universe, write_graph
+
+    for tool in (universe, write_graph):
+        assert "allow_named_universe_id" not in inspect.signature(tool).parameters
