@@ -114,5 +114,5 @@ Rollback reverts the unactivated implementation commits. Once activated, rollbac
 
 - Branch authority consumes `tinyassets.api.permissions.current_request_actor_id()`; PR #1691 is provider-destination authority and is not a dependency of this change.
 - Every branch creation surface covered here rejects `anonymous`; legacy anonymous or environment-attributed creation is intentionally retired rather than grandfathered.
-- Root-wiki related-page projections pass the same blank `universe_id=""` context as the root wiki surfaces. Task 2.2 keeps that grant behavior fail-closed before implementation.
+- Root-wiki related-page projections pass the same blank `universe_id=""` context as the root wiki surfaces. Current main is already fail-closed because `list_universe_acl` returns `[]` for a blank universe ID before storage access; a 2026-07-25 raw-DML forge probe confirmed even an injected empty-ID ACL row cannot grant root-page visibility.
 - Cross-branch `search_nodes` retains readable/public discovery through visibility-aware enumeration. Supplying an exact branch ID uses the byte-identical private-or-missing read boundary.
