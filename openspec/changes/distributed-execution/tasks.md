@@ -268,10 +268,12 @@ source PR/commit, and verify that unrelated current-main files are unchanged.
 
 ## 6. Queue and evidence non-promotion gates
 
-- [x] 6.1 Add an integration test where a valid admission receipt, exact live
+- [ ] 6.1 Add an integration test where a valid admission receipt, exact live
   #1697 descriptor, and won epoch-2 scheduling claim still cannot create an
   external lease, provider call, candidate, or terminal fact without a valid
-  B2 owner/daemon/job/capsule/lease/generation/fence grant.
+  B2 owner/daemon/job/capsule/lease/generation/fence grant. Closed-consumer
+  inertness is mutation-proven at the real materialization/restart seam, but
+  the production B2 handoff remains unwired behind 6.4.
 - [x] 6.2 Add type/domain tests proving admission receipts, internal scheduling
   leases, provider-attempt receipts, B2 grants, candidates, and terminal
   records cannot be wrapped or promoted into one another.

@@ -225,7 +225,7 @@ def evaluate_operator_admission_rollout(
     reader_sha: str,
     server_sha: str,
     current_config_hash: str,
-    online_workers: Sequence[OnlineWorkerEvidence] = (),
+    online_workers: Sequence[OnlineWorkerEvidence],
     environment: Mapping[str, str] | None = None,
     now: datetime | None = None,
 ) -> AdmissionRolloutDecision:

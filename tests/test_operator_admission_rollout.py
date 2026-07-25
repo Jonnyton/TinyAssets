@@ -375,6 +375,24 @@ def test_zero_online_workers_do_not_block_zero_host_admission(
     assert decision.reason == "rollout_enabled"
 
 
+def test_online_workers_must_be_supplied_at_evaluation_boundary(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    _advance_to_active(tmp_path)
+
+    with pytest.raises(TypeError, match="online_workers"):
+        evaluate_operator_admission_rollout(
+            tmp_path,
+            universe_id="universe-a",
+            reader_sha=_READER_SHA,
+            server_sha=_SERVER_SHA,
+            current_config_hash=_CONFIG_HASH,
+            environment=_WRITES_ON,
+            now=_NOW,
+        )
+
+
 @pytest.mark.parametrize(
     ("activated_at", "expires_at", "reason"),
     [

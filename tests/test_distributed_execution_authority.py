@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import rfc8785
@@ -31,9 +31,11 @@ from tinyassets.execution_authority import (
     RecordAuthorityError,
 )
 from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
-from tinyassets.providers.router import ProviderRouter
-from tinyassets.sandbox_runner import SandboxRunner
 from tinyassets.storage.request_admissions import RequestAdmissionStore
+from tinyassets.work_targets import (
+    list_selectable_targets,
+    materialize_pending_requests,
+)
 
 _NOW = "2026-07-24T08:01:00Z"
 _NOW_EPOCH = int(datetime.fromisoformat(_NOW.replace("Z", "+00:00")).timestamp())
@@ -198,51 +200,47 @@ def _signed_authority_records(root: AuthorityRoot):
     )
 
 
-def test_epoch2_claim_without_b2_grant_cannot_execute_or_submit_result(
+def test_epoch2_claim_remains_outside_execution_while_consumer_gate_is_closed(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from fantasy_daemon.branch_registrations import _restartable_work_exists
+
+    universe_path = tmp_path / "universe-a"
+    universe_path.mkdir()
     initialize_author_server(tmp_path)
     admission = _commit_admission(tmp_path)
-    descriptor = _descriptor()
-    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=_clock)
+    claim_time = datetime.now(timezone.utc)
+    descriptor = replace(
+        _descriptor(),
+        expires_at=(claim_time + timedelta(seconds=75)).isoformat(),
+    )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: claim_time,
+    )
 
-    with (
-        patch.object(SandboxRunner, "dispatch") as execute,
-        patch.object(ProviderRouter, "call") as call_provider,
-        patch.object(ProviderRouter, "call_sync") as call_provider_sync,
-        patch.object(AuthorityRoot, "allocate_lease") as create_lease,
-        patch.object(AuthorityRoot, "accept_candidate") as submit_result,
-        patch.object(AuthorityRoot, "complete") as submit_terminal,
-    ):
-        claimed = adapter.claim(
-            admission["branch_task_id"],
-            descriptor=descriptor,
-            descriptor_reader=lambda _conn, _worker_id: descriptor,
-        )
+    claimed = adapter.claim(
+        admission["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
 
     assert claimed is not None
     assert claimed.status == "running"
-    execute.assert_not_called()
-    call_provider.assert_not_called()
-    call_provider_sync.assert_not_called()
-    create_lease.assert_not_called()
-    submit_result.assert_not_called()
-    submit_terminal.assert_not_called()
+    heartbeat = adapter.heartbeat(
+        admission["branch_task_id"],
+        worker_id=descriptor.worker_id,
+    )
+    assert heartbeat is not None
+    assert heartbeat.heartbeat_at
 
-    root = _root(tmp_path / "d0-authority")
-    signed_capsule, _, signed_candidate, _ = _signed_authority_records(root)
-    with pytest.raises(
-        D0AuthorityError,
-        match="expected ExecutionGrantV1 authority record",
-    ):
-        root.accept_candidate(
-            capsule=signed_capsule,
-            grant=signed_capsule,
-            candidate=signed_candidate,
-            verified_at=_NOW_EPOCH,
-        )
-    assert root.replay_terminal("job-1", verified_at=_NOW_EPOCH) is None
-    root.close()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", descriptor.worker_id)
+
+    assert materialize_pending_requests(universe_path) == []
+    assert list_selectable_targets(universe_path) == []
+    assert _restartable_work_exists(universe_path) is False
 
 
 def test_signed_execution_record_domains_cannot_promote_into_one_another(
@@ -323,4 +321,34 @@ def test_queue_admission_and_provider_receipts_cannot_be_signed_as_b2_authority(
         ):
             root.sign(foreign_artifact)  # type: ignore[arg-type]
 
+    root.close()
+
+
+def test_epoch2_heartbeat_row_cannot_be_signed_as_b2_authority(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    admission = _commit_admission(tmp_path)
+    descriptor = _descriptor()
+    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=_clock)
+    claimed = adapter.claim(
+        admission["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
+    assert claimed is not None
+
+    heartbeat = adapter.heartbeat(
+        admission["branch_task_id"],
+        worker_id=descriptor.worker_id,
+    )
+    assert heartbeat is not None
+    assert heartbeat.heartbeat_at
+
+    root = _root(tmp_path / "d0-authority")
+    with pytest.raises(
+        RecordAuthorityError,
+        match="no immutable domain contract",
+    ):
+        root.sign(heartbeat)  # type: ignore[arg-type]
     root.close()
