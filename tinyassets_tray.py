@@ -52,11 +52,33 @@ TUNNEL_TOKEN_ENV = "CLOUDFLARE_TUNNEL_TOKEN"
 LEGACY_TUNNEL_TOKEN_ENV = "TUNNEL_TOKEN"
 TRUE_VALUES = {"1", "true", "yes", "on"}
 
-PROJECT_DIR = Path(__file__).resolve().parent
-LOG_DIR = PROJECT_DIR / "logs"
+
+def _packaged_data_dir() -> Path:
+    from tinyassets.storage import data_dir
+
+    return data_dir()
+
+
+def _runtime_paths() -> tuple[Path, Path]:
+    if getattr(sys, "frozen", False):
+        project_dir = Path(sys.executable).resolve().parent
+        return project_dir, _packaged_data_dir() / "logs"
+    project_dir = Path(__file__).resolve().parent
+    return project_dir, project_dir / "logs"
+
+
+PROJECT_DIR, LOG_DIR = _runtime_paths()
 SINGLETON_LOCK_PATH = LOG_DIR / ".tray.lock"
 
 _LOCAL_PROVIDER_SET = set(LOCAL_PROVIDERS)
+
+
+def _runtime_command(role: str, source_args: list[str]) -> list[str]:
+    """Resolve a child command for source Python or a frozen desktop bundle."""
+    if getattr(sys, "frozen", False):
+        forwarded = source_args[2:] if source_args[:1] == ["-m"] else []
+        return [sys.executable, "--packaged-role", role, *forwarded]
+    return [sys.executable, *source_args]
 
 
 def _env_truthy(name: str) -> bool:
@@ -382,12 +404,18 @@ class UniverseServerManager:
 
         try:
             proc = subprocess.Popen(
-                [
-                    sys.executable, "-m", "fantasy_author",
-                    "--universe", str(universe_path),
-                    "--provider", provider,
-                    "--no-tray",
-                ],
+                _runtime_command(
+                    "daemon",
+                    [
+                        "-m",
+                        "fantasy_daemon",
+                        "--universe",
+                        str(universe_path),
+                        "--provider",
+                        provider,
+                        "--no-tray",
+                    ],
+                ),
                 cwd=str(PROJECT_DIR),
                 env=env,
                 stdout=log,
@@ -419,11 +447,14 @@ class UniverseServerManager:
         log.flush()
 
         self.mcp_proc = subprocess.Popen(
-            [
-                sys.executable, "-c",
-                "from tinyassets.universe_server import mcp; "
-                f"mcp.run(transport='streamable-http', host='0.0.0.0', port={MCP_PORT})"
-            ],
+            _runtime_command(
+                "mcp",
+                [
+                    "-c",
+                    "from tinyassets.universe_server import mcp; "
+                    f"mcp.run(transport='streamable-http', host='0.0.0.0', port={MCP_PORT})",
+                ],
+            ),
             cwd=str(PROJECT_DIR),
             env=env,
             stdout=log,
