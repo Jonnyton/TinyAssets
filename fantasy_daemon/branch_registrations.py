@@ -37,6 +37,12 @@ from tinyassets.domain_registry import (
 
 logger = logging.getLogger(__name__)
 
+# This becomes true only in the same change that wires the daemon's graph-cycle
+# selector, claim, and lifecycle paths to Epoch2BranchTaskAdapter.  The cloud
+# supervisor uses it as release-derived capability truth, so staged queue
+# readers cannot advertise or wake work that the subprocess cannot consume.
+EPOCH2_QUEUE_CONSUMER_READY = False
+
 
 _BOUNDARY_FIELDS = (
     "universe_id",

@@ -758,6 +758,11 @@ def test_supervisor_descriptor_has_exact_90_second_validity(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
     image_ref = (
         "ghcr.io/tinyassets/tinyassets@sha256:" + ("e" * 64)
     )

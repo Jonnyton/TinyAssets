@@ -49,6 +49,19 @@ COALESCE(
 ) IS NULL
 """
 
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        LIMIT 1
+        """,
+        (table_name,),
+    ).fetchone() is not None
+
+
 # Fault-injection checkpoints across every precommit transaction phase.
 COMMIT_STEPS = (
     "access_checked",
@@ -610,22 +623,26 @@ class RequestAdmissionStore:
         clean_universe_id = _required(universe_id, "universe_id")
         clean_worker_id = _required(worker_id, "worker_id")
         with self.connection() as conn:
-            try:
-                row = conn.execute(
-                    """
-                    SELECT 1
-                    FROM branch_tasks_v2
-                    WHERE universe_id = ?
-                      AND claimed_by = ?
-                      AND status IN ('running', 'cancel_requested')
-                    LIMIT 1
-                    """,
-                    (clean_universe_id, clean_worker_id),
-                ).fetchone()
-            except sqlite3.OperationalError as exc:
-                if str(exc) != "no such table: branch_tasks_v2":
-                    raise
+            if not _table_exists(conn, "branch_tasks_v2"):
                 return False
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM branch_tasks_v2
+                WHERE universe_id = ?
+                  AND claimed_by = ?
+                  AND status IN ('running', 'cancel_requested')
+                  AND disabled = 0
+                  AND lease_expires_at IS NOT NULL
+                  AND julianday(lease_expires_at) > julianday(?)
+                LIMIT 1
+                """,
+                (
+                    clean_universe_id,
+                    clean_worker_id,
+                    _clock_iso(self._clock),
+                ),
+            ).fetchone()
         return row is not None
 
     def read_v2_operational_data(
@@ -1115,6 +1132,8 @@ class RequestAdmissionStore:
         self,
     ) -> list[dict[str, Any]]:
         with self.connection() as conn:
+            if not _table_exists(conn, "branch_tasks_v2"):
+                return []
             conn.execute("BEGIN IMMEDIATE")
             try:
                 now = _clock_iso(self._clock)

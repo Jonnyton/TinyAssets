@@ -293,6 +293,11 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
             worker_id="worker-b"
         ),
     ) is None
+    clock.set("2026-07-24T08:02:31+00:00")
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) is False
 
 
 def test_claim_uses_transaction_time_for_descriptor_freshness(

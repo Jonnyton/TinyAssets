@@ -447,6 +447,11 @@ def _seed_epoch2_worker_capacity(
     *,
     worker_id: str = "worker-a",
 ) -> tuple[Path, dict, dict]:
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
     _write_worker_release_state(base_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base_path))
     monkeypatch.setenv("TINYASSETS_WORKER_ID", worker_id)
@@ -509,6 +514,26 @@ def test_running_guard_treats_missing_epoch2_store_as_no_active_claim(
     universe.mkdir()
 
     assert cw._queue_has_running_branch_task(universe) is False
+
+
+def test_epoch2_wakeup_stays_inert_until_daemon_claim_consumer_exists(
+    tmp_path,
+    monkeypatch,
+):
+    from fantasy_daemon import branch_registrations
+
+    assert branch_registrations.EPOCH2_QUEUE_CONSUMER_READY is False
+    assert cw._epoch2_claim_consumer_ready() is False
+    _write_worker_release_state(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    cw._snapshot_worker_protocol_identity_at_boot()
+
+    assert cw._worker_queue_descriptor(
+        tmp_path / "universe-a",
+        runtime_instance_id="runtime-a",
+    ) is None
 
 
 def test_has_pickable_branch_task_detects_current_worker_epoch2_candidate(
@@ -709,6 +734,44 @@ def test_supervisor_restarts_for_current_worker_epoch2_candidate_after_grace(
     assert spawned[0].terminate_called is True
 
 
+def test_supervisor_does_not_restart_epoch2_before_claim_consumer_is_ready(
+    tmp_path,
+    monkeypatch,
+):
+    import itertools
+
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    _commit_epoch2_worker_task(tmp_path)
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: False,
+    )
+    times = itertools.chain([100.0, 100.0, 100.0], itertools.repeat(131.0))
+    monkeypatch.setattr(cw.time, "monotonic", lambda: next(times))
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    spawned: list[FakeProc] = []
+
+    def spawn(universe_path):
+        proc = FakeProc(returncode=0, steps_until_exit=1)
+        spawned.append(proc)
+        return proc
+
+    cw.run_supervisor(
+        universe,
+        producer_poll_interval=30.0,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert spawned[0].terminate_called is False
+
+
 def test_supervisor_does_not_restart_epoch2_work_without_compatible_capacity(
     tmp_path,
     monkeypatch,
@@ -746,6 +809,132 @@ def test_supervisor_does_not_restart_epoch2_work_without_compatible_capacity(
     )
     assert task is not None
     assert task.status == "pending"
+
+
+def test_running_guard_protects_active_v2_claim_without_runtime_env(
+    tmp_path,
+    monkeypatch,
+):
+    from tinyassets.branch_tasks_v2 import (
+        Epoch2BranchTaskAdapter,
+        WorkerClaimDescriptor,
+    )
+
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    running = _commit_epoch2_worker_task(tmp_path)
+    beat = json.loads(
+        (
+            universe / cw.supervisor_heartbeat_filename(cw._worker_id())
+        ).read_text(encoding="utf-8")
+    )
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=beat["queue_protocol_version"],
+        capabilities=frozenset(beat["capabilities"]),
+        worker_id=beat["worker_id"],
+        runtime_instance_id=beat["runtime_instance_id"],
+        boot_id=beat["boot_id"],
+        build_sha=beat["build_sha"],
+        config_hash=beat["config_hash"],
+        universe_id=beat["universe_id"],
+        expires_at=beat["expires_at"],
+    )
+    claimed = Epoch2BranchTaskAdapter(tmp_path).claim(
+        running["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
+    assert claimed is not None
+    monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID")
+
+    assert cw._queue_has_running_branch_task(universe) is True
+
+
+def test_supervisor_recovers_expired_v2_claim_before_wakeup_decision(
+    tmp_path,
+    monkeypatch,
+):
+    import itertools
+
+    from tinyassets.branch_tasks_v2 import (
+        Epoch2BranchTaskAdapter,
+        WorkerClaimDescriptor,
+    )
+
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    running = _commit_epoch2_worker_task(tmp_path)
+    beat = json.loads(
+        (
+            universe / cw.supervisor_heartbeat_filename(cw._worker_id())
+        ).read_text(encoding="utf-8")
+    )
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=beat["queue_protocol_version"],
+        capabilities=frozenset(beat["capabilities"]),
+        worker_id=beat["worker_id"],
+        runtime_instance_id=beat["runtime_instance_id"],
+        boot_id=beat["boot_id"],
+        build_sha=beat["build_sha"],
+        config_hash=beat["config_hash"],
+        universe_id=beat["universe_id"],
+        expires_at=beat["expires_at"],
+    )
+    claim_clock = datetime.now(timezone.utc)
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: claim_clock,
+    )
+    claimed = adapter.claim(
+        running["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+        lease_seconds=30,
+    )
+    assert claimed is not None
+    with adapter._store.connection() as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET lease_expires_at = ?
+            WHERE branch_task_id = ?
+            """,
+            (
+                (claim_clock - timedelta(minutes=1)).isoformat(),
+                running["branch_task_id"],
+            ),
+        )
+        conn.commit()
+
+    times = itertools.chain([100.0, 100.0, 100.0], itertools.repeat(131.0))
+    monkeypatch.setattr(cw.time, "monotonic", lambda: next(times))
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    spawned: list[FakeProc] = []
+
+    def spawn(universe_path):
+        proc = FakeProc(returncode=0, steps_until_exit=10)
+        spawned.append(proc)
+        return proc
+
+    cw.run_supervisor(
+        universe,
+        producer_poll_interval=30.0,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert spawned[0].terminate_called is True
+    recovered = Epoch2BranchTaskAdapter(tmp_path).get(
+        running["branch_task_id"],
+    )
+    assert recovered is not None
+    assert recovered.status == "pending"
 
 
 def test_supervisor_does_not_restart_while_current_worker_has_active_v2_claim(
@@ -1301,6 +1490,11 @@ def test_worker_queue_descriptor_is_release_derived_and_boot_bound(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
     _write_worker_release_state(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
@@ -1368,6 +1562,11 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
     _write_worker_release_state(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
@@ -1506,6 +1705,11 @@ def test_supervisor_clears_last_durable_descriptor_when_runtime_id_is_lost(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
     _write_worker_release_state(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
@@ -1619,6 +1823,11 @@ def test_runtime_switch_clears_retired_slot_and_publishes_replacement(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
     _write_worker_release_state(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")

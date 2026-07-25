@@ -269,6 +269,15 @@ def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
     return _WORKER_PROTOCOL_IDENTITIES.get(worker_id)
 
 
+def _epoch2_claim_consumer_ready() -> bool:
+    """Return code-owned truth that the supervised daemon can drain epoch 2."""
+    from fantasy_daemon.branch_registrations import (
+        EPOCH2_QUEUE_CONSUMER_READY,
+    )
+
+    return EPOCH2_QUEUE_CONSUMER_READY is True
+
+
 def _worker_queue_descriptor(
     universe: Path,
     *,
@@ -276,6 +285,8 @@ def _worker_queue_descriptor(
     _now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Return trusted v2 evidence, or no evidence when any source is missing."""
+    if not _epoch2_claim_consumer_ready():
+        return None
     worker_id = _worker_id()
     runtime_id = str(runtime_instance_id or "").strip()
     universe_id = universe.name.strip()
@@ -584,21 +595,18 @@ def _register_branch_task_producers_from_env() -> None:
 
 
 def _queue_has_running_branch_task(universe: Path) -> bool:
-    """Return True when interrupting the subprocess may abandon a claim."""
+    """Recover expired v2 leases, then protect claims a restart may abandon."""
     try:
         from tinyassets.branch_tasks import read_queue
 
         if any(task.status == "running" for task in read_queue(universe)):
             return True
-        runtime_instance_id = os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID",
-            "",
-        ).strip()
-        if not runtime_instance_id:
-            return False
         from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+        from tinyassets.storage import data_dir
 
-        return Epoch2BranchTaskAdapter(universe.parent).has_active_claim(
+        adapter = Epoch2BranchTaskAdapter(data_dir())
+        adapter.recover_expired()
+        return adapter.has_active_claim(
             universe_id=universe.name,
             worker_id=_worker_id(),
         )
@@ -611,6 +619,8 @@ def _current_worker_epoch2_capacity(
     universe: Path,
 ) -> tuple[Any, dict[str, str]] | None:
     """Return the epoch-2 adapter and trusted current-worker runtime."""
+    if not _epoch2_claim_consumer_ready():
+        return None
     worker_id = _worker_id()
     runtime_instance_id = os.environ.get(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
@@ -636,6 +646,7 @@ def _current_worker_epoch2_capacity(
     )
     from tinyassets.daemon_registry import _runtime_from_author_runtime
     from tinyassets.daemon_server import get_runtime_instance
+    from tinyassets.storage import data_dir
 
     try:
         capabilities = beat.get("capabilities")
@@ -654,7 +665,7 @@ def _current_worker_epoch2_capacity(
         )
         runtime = _runtime_from_author_runtime(
             get_runtime_instance(
-                universe.parent,
+                data_dir(),
                 instance_id=runtime_instance_id,
             )
         )
@@ -691,7 +702,7 @@ def _current_worker_epoch2_capacity(
     ):
         return None
 
-    return Epoch2BranchTaskAdapter(universe.parent), {
+    return Epoch2BranchTaskAdapter(data_dir()), {
         "worker_id": worker_id,
         "runtime_instance_id": runtime_instance_id,
         "daemon_id": runtime["daemon_id"],
@@ -733,9 +744,7 @@ def _has_pickable_branch_task(universe: Path) -> bool:
         if capacity is None:
             return False
         epoch2_adapter, worker = capacity
-        config.active_daemon_id = (
-            worker["daemon_id"] or f"worker:{worker['worker_id']}"
-        )
+        config.active_daemon_id = worker["daemon_id"]
         return select_next_task(
             universe,
             config=config,
