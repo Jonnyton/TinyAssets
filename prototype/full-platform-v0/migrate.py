@@ -14,7 +14,7 @@ from typing import NamedTuple
 _MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_(?P<name>[a-z0-9_]+)\.sql$")
 _LOCK_KEY = 7_293_461_550_848_602_031
 _FIXTURE_SCHEMA_SHA256 = (
-    "60d7c2eefdb40d13dc29038a8ee58409464c5063b754872b1478a4723db36f87"
+    "b8234852d42262960910c2d3239d75d861f87904556ebfb3ca8a1be8c4c53a4b"
 )
 
 
@@ -268,7 +268,10 @@ def _verify_existing_fixture(connection) -> None:
 def _fixture_schema_sha256(connection) -> str:
     """Hash the complete fixture-owned catalog surface deterministically."""
     query = """
-        WITH fixture_objects AS (
+        WITH runner AS (
+          SELECT oid FROM pg_roles WHERE rolname = current_user
+        ),
+        fixture_objects AS (
           SELECT 'extension'::text AS kind,
                  e.extname::text AS identity,
                  e.extname::text AS definition
@@ -294,7 +297,26 @@ def _fixture_schema_sha256(connection) -> str:
                      WHEN current_user THEN '<runner>'
                      ELSE pg_get_userbyid(n.nspowner)
                    END,
-                   coalesce(n.nspacl::text, '')
+                   coalesce((
+                     SELECT string_agg(item, ',' ORDER BY item)
+                     FROM (
+                       SELECT concat_ws(
+                                ':',
+                                CASE acl.grantee
+                                  WHEN 0 THEN 'PUBLIC'
+                                  WHEN (SELECT oid FROM runner) THEN '<runner>'
+                                  ELSE pg_get_userbyid(acl.grantee)
+                                END,
+                                CASE acl.grantor
+                                  WHEN (SELECT oid FROM runner) THEN '<runner>'
+                                  ELSE pg_get_userbyid(acl.grantor)
+                                END,
+                                acl.privilege_type,
+                                acl.is_grantable
+                              ) AS item
+                       FROM aclexplode(n.nspacl) AS acl
+                     ) AS normalized_acl
+                   ), '')
                  )
           FROM pg_namespace AS n
           WHERE n.nspname = ANY(ARRAY['public','auth','market'])
@@ -311,7 +333,26 @@ def _fixture_schema_sha256(connection) -> str:
                    END,
                    c.relrowsecurity,
                    c.relforcerowsecurity,
-                   coalesce(c.relacl::text, '')
+                   coalesce((
+                     SELECT string_agg(item, ',' ORDER BY item)
+                     FROM (
+                       SELECT concat_ws(
+                                ':',
+                                CASE acl.grantee
+                                  WHEN 0 THEN 'PUBLIC'
+                                  WHEN (SELECT oid FROM runner) THEN '<runner>'
+                                  ELSE pg_get_userbyid(acl.grantee)
+                                END,
+                                CASE acl.grantor
+                                  WHEN (SELECT oid FROM runner) THEN '<runner>'
+                                  ELSE pg_get_userbyid(acl.grantor)
+                                END,
+                                acl.privilege_type,
+                                acl.is_grantable
+                              ) AS item
+                       FROM aclexplode(c.relacl) AS acl
+                     ) AS normalized_acl
+                   ), '')
                  )
           FROM pg_class AS c
           JOIN pg_namespace AS n ON n.oid = c.relnamespace
@@ -393,7 +434,26 @@ def _fixture_schema_sha256(connection) -> str:
                    p.prosecdef,
                    p.provolatile,
                    coalesce(p.proconfig::text, ''),
-                   coalesce(p.proacl::text, ''),
+                   coalesce((
+                     SELECT string_agg(item, ',' ORDER BY item)
+                     FROM (
+                       SELECT concat_ws(
+                                ':',
+                                CASE acl.grantee
+                                  WHEN 0 THEN 'PUBLIC'
+                                  WHEN (SELECT oid FROM runner) THEN '<runner>'
+                                  ELSE pg_get_userbyid(acl.grantee)
+                                END,
+                                CASE acl.grantor
+                                  WHEN (SELECT oid FROM runner) THEN '<runner>'
+                                  ELSE pg_get_userbyid(acl.grantor)
+                                END,
+                                acl.privilege_type,
+                                acl.is_grantable
+                              ) AS item
+                       FROM aclexplode(p.proacl) AS acl
+                     ) AS normalized_acl
+                   ), ''),
                    pg_get_functiondef(p.oid)
                  )
           FROM pg_proc AS p

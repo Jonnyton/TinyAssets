@@ -179,6 +179,33 @@ def test_ledger_boundary_is_non_login_fixed_path_and_least_privilege(
         assert _apply(connection, body)[0] == "applied"
 
 
+@pytest.mark.parametrize(
+    ("idempotency_key", "postings_json"),
+    [
+        ("private-null", None),
+        ("private-empty", "[]"),
+    ],
+)
+def test_private_apply_tx_rejects_missing_postings(
+    market_database,
+    idempotency_key,
+    postings_json,
+):
+    psycopg, dsn = market_database
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        with pytest.raises(psycopg.errors.RaiseException, match="zero-sum"):
+            connection.execute(
+                "SELECT * FROM market.apply_tx("
+                "'tenant-a', %s, repeat('0', 64), '', %s::jsonb)",
+                (idempotency_key, postings_json),
+            )
+        assert connection.execute(
+            "SELECT count(*) FROM market.transactions "
+            "WHERE idempotency_key = %s",
+            (idempotency_key,),
+        ).fetchone() == (0,)
+
+
 def test_canonical_hash_replay_conflict_and_bounds(market_database):
     psycopg, dsn = market_database
     body = _body(

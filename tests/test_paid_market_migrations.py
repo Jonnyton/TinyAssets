@@ -179,6 +179,59 @@ def test_fresh_apply_replay_history_privileges_and_populated_baseline(
         connection.execute("RESET ROLE")
 
 
+def test_populated_baseline_is_independent_of_runner_role_name(
+    migrated_database,
+):
+    psycopg, dsn = migrated_database
+    runner = _load_runner()
+    role = f"wave2_alt_runner_{uuid.uuid4().hex}"
+    password = uuid.uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as admin:
+        session_user = admin.execute("SELECT session_user").fetchone()[0]
+        admin.execute(
+            psycopg.sql.SQL("CREATE ROLE {} SUPERUSER").format(
+                psycopg.sql.Identifier(role)
+            ) + psycopg.sql.SQL(" LOGIN PASSWORD {}").format(
+                psycopg.sql.Literal(password)
+            )
+        )
+    runner_dsn = psycopg.conninfo.make_conninfo(
+        dsn,
+        user=role,
+        password=password,
+    )
+    try:
+        with psycopg.connect(runner_dsn, autocommit=True) as connection:
+            runner.run_migrations(connection, MIGRATIONS)
+            connection.execute("DROP TABLE public.schema_migrations")
+            runner.run_migrations(
+                connection,
+                MIGRATIONS,
+                baseline_existing=True,
+            )
+            assert connection.execute(
+                "SELECT count(*) FROM public.schema_migrations"
+            ).fetchone() == (9,)
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            admin.execute(
+                psycopg.sql.SQL("REASSIGN OWNED BY {} TO {}").format(
+                    psycopg.sql.Identifier(role),
+                    psycopg.sql.Identifier(session_user),
+                )
+            )
+            admin.execute(
+                psycopg.sql.SQL("DROP OWNED BY {}").format(
+                    psycopg.sql.Identifier(role)
+                )
+            )
+            admin.execute(
+                psycopg.sql.SQL("DROP ROLE {}").format(
+                    psycopg.sql.Identifier(role)
+                )
+            )
+
+
 def test_failed_migration_rolls_back_and_resume_applies_once(
     migrated_database, tmp_path
 ):

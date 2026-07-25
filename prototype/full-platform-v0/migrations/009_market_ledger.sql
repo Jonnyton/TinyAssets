@@ -99,7 +99,7 @@ BEGIN
   SELECT sum((entry->>'delta_micros')::bigint)
     INTO v_sum
     FROM jsonb_array_elements(p_postings) AS entry;
-  IF v_sum <> 0 THEN
+  IF v_sum IS DISTINCT FROM 0 THEN
     RAISE EXCEPTION 'postings do not zero-sum (sum=%)', v_sum;
   END IF;
 
@@ -121,7 +121,8 @@ BEGIN
      ORDER BY b.account
      FOR UPDATE OF b
   LOOP
-    IF v_rec.balance_micros + v_rec.delta < 0 THEN
+    IF v_rec.balance_micros + v_rec.delta IS NULL
+       OR v_rec.balance_micros + v_rec.delta < 0 THEN
       RAISE EXCEPTION 'overdraft on % (balance %, delta %)',
         v_rec.account, v_rec.balance_micros, v_rec.delta;
     END IF;
