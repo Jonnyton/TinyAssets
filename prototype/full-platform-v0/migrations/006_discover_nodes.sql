@@ -178,3 +178,5 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.discover_nodes TO PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON public.artifact_field_visibility TO tinyassets_fixture_app;

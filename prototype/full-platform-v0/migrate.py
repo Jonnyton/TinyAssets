@@ -154,6 +154,66 @@ def _verify_existing_fixture(connection) -> None:
                 AND column_name = 'version' AND is_nullable = 'NO'
             )
         """,
+        "fixture auth helpers and role": """
+            SELECT EXISTS (
+                     SELECT 1 FROM pg_roles
+                     WHERE rolname = 'tinyassets_fixture_app'
+                       AND NOT rolcanlogin
+                   )
+               AND to_regprocedure(
+                     'auth.is_request_bidder(uuid)'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'auth.is_request_owner(uuid)'
+                   ) IS NOT NULL
+        """,
+        "discovery surface": """
+            SELECT to_regclass(
+                     'public.artifact_field_visibility'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'public.strip_private_fields(jsonb,uuid,text)'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'public.discover_nodes(text,vector,jsonb,jsonb,text,integer,boolean)'
+                   ) IS NOT NULL
+               AND EXISTS (
+                     SELECT 1
+                     FROM pg_attribute
+                     WHERE attrelid = 'public.nodes'::regclass
+                       AND attname = 'embedding'
+                       AND format_type(atttypid, atttypmod) = 'vector(16)'
+                   )
+        """,
+        "token normalization": """
+            SELECT (
+              SELECT count(*) = 2
+              FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'requests'
+                AND column_name = ANY(ARRAY['tokens_in','tokens_out'])
+            ) AND (
+              SELECT count(*) = 3
+              FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'ledger'
+                AND column_name = ANY(ARRAY[
+                  'tokens_in','tokens_out','unit_price_micros_per_mtok'
+                ])
+            )
+        """,
+        "post-RLS fixture grants": """
+            SELECT has_table_privilege(
+                     'tinyassets_fixture_app',
+                     'public.artifact_field_visibility',
+                     'SELECT'
+                   )
+               AND has_table_privilege(
+                     'tinyassets_fixture_app',
+                     'public.forwards',
+                     'SELECT'
+                   )
+        """,
         "market ledger": """
             SELECT to_regclass('market.transactions') IS NOT NULL
                AND to_regclass('market.postings') IS NOT NULL

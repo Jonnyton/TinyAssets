@@ -194,6 +194,31 @@ def test_failed_migration_rolls_back_and_resume_applies_once(
         ).fetchone() == (1,)
 
 
+def test_populated_baseline_rejects_missing_late_migration_objects(
+    migrated_database,
+):
+    psycopg, dsn = migrated_database
+    runner = _load_runner()
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        runner.run_migrations(connection, MIGRATIONS)
+        connection.execute("DROP TABLE public.schema_migrations")
+        connection.execute(
+            "DROP TABLE public.artifact_field_visibility CASCADE"
+        )
+        with pytest.raises(
+            runner.MigrationError,
+            match="exact baseline check: discovery surface",
+        ):
+            runner.run_migrations(
+                connection,
+                MIGRATIONS,
+                baseline_existing=True,
+            )
+        assert connection.execute(
+            "SELECT count(*) FROM public.schema_migrations"
+        ).fetchone() == (0,)
+
+
 def test_checksum_drift_lock_timeout_and_concurrent_runners(
     migrated_database, tmp_path
 ):
@@ -201,24 +226,6 @@ def test_checksum_drift_lock_timeout_and_concurrent_runners(
     runner = _load_runner()
     for migration in MIGRATIONS.glob("*.sql"):
         shutil.copy2(migration, tmp_path / migration.name)
-    with psycopg.connect(dsn, autocommit=True) as connection:
-        runner.run_migrations(connection, tmp_path)
-        first = tmp_path / "001_core_tables.sql"
-        first.write_bytes(first.read_bytes() + b"\n")
-        with pytest.raises(runner.MigrationError, match="checksum drift"):
-            runner.run_migrations(connection, tmp_path)
-        first.write_bytes(first.read_bytes()[:-1])
-
-    with (
-        psycopg.connect(dsn, autocommit=True) as lock_holder,
-        psycopg.connect(dsn, autocommit=True) as contender,
-    ):
-        lock_holder.execute("SELECT pg_advisory_lock(%s)", (runner._LOCK_KEY,))
-        with pytest.raises(runner.MigrationError, match="lock unavailable"):
-            runner.run_migrations(
-                contender, tmp_path, lock_timeout_seconds=0.05
-            )
-        lock_holder.execute("SELECT pg_advisory_unlock(%s)", (runner._LOCK_KEY,))
 
     barrier = threading.Barrier(2)
     errors: list[Exception] = []
@@ -237,3 +244,25 @@ def test_checksum_drift_lock_timeout_and_concurrent_runners(
     for thread in threads:
         thread.join(timeout=10)
     assert not errors
+
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        assert connection.execute(
+            "SELECT array_agg(version ORDER BY version) "
+            "FROM public.schema_migrations"
+        ).fetchone() == (list(range(1, 10)),)
+        first = tmp_path / "001_core_tables.sql"
+        first.write_bytes(first.read_bytes() + b"\n")
+        with pytest.raises(runner.MigrationError, match="checksum drift"):
+            runner.run_migrations(connection, tmp_path)
+        first.write_bytes(first.read_bytes()[:-1])
+
+    with (
+        psycopg.connect(dsn, autocommit=True) as lock_holder,
+        psycopg.connect(dsn, autocommit=True) as contender,
+    ):
+        lock_holder.execute("SELECT pg_advisory_lock(%s)", (runner._LOCK_KEY,))
+        with pytest.raises(runner.MigrationError, match="lock unavailable"):
+            runner.run_migrations(
+                contender, tmp_path, lock_timeout_seconds=0.05
+            )
+        lock_holder.execute("SELECT pg_advisory_unlock(%s)", (runner._LOCK_KEY,))

@@ -55,3 +55,7 @@ CREATE INDEX IF NOT EXISTS forwards_buyer
 CREATE INDEX IF NOT EXISTS forwards_settle_sweep
   ON public.forwards (bucket_start, state)
   WHERE state IN ('sold','delivering','delivered');
+
+-- 008 runs after the point-in-time ALL TABLES grant in 003.
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON public.forwards TO tinyassets_fixture_app;
