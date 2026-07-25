@@ -1,7 +1,7 @@
 ## 1. Review Gate and Baseline
 
 - [x] 1.1 Obtain opposite-provider review of this proposal/design, the complete realtime request/bid/match/claim/delivery plus transaction `paid-market-economy` delta, the quote→bid composition amendments in `paid-market-live-price-discovery`, and both task lists. Claude Sonnet approved the corrected contract on 2026-07-22; verdict and resolved blockers are recorded in `docs/audits/2026-07-22-paid-market-full-workflow-opposite-provider-review.md`.
-- [ ] 1.2 Run and record the pre-change baselines: `python -m pytest tests/test_paid_market_core.py tests/test_match_scale.py -q --noconftest`, `openspec validate --specs --strict`, and `openspec validate paid-market-track-e-wave-2-transport --strict`.
+- [x] 1.2 Run and record the pre-change baselines: `python -m pytest tests/test_paid_market_core.py tests/test_match_scale.py -q --noconftest`, `openspec validate --specs --strict`, and `openspec validate paid-market-track-e-wave-2-transport --strict`. Baseline 2026-07-24 PT on Windows: 180 tests passed in 2.15s; 26 specs passed strict validation; this change passed strict validation.
 
 ## 2. Fixture Replay and Production Baseline Gate
 
