@@ -1293,3 +1293,19 @@ Notes:
 - Related implications: final Opus 5 APPROVE in `docs/audits/2026-07-25-section14-production-load-evidence-opus5-review.md`
 - Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
 - Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
+
+## 2026-07-25 - restack-postgres-control-plane
+
+- Provider: codex-gpt56-postgres-restack
+- Branch: codex/restack-postgres-control-plane-20260725
+- Lane state: claimed; planning-only restack
+- Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-restack
+- STATUS/Issue/PR: STATUS Work row; supersedes stale stacked draft PR #1670 only after required review
+- PLAN refs: Canonical store is per-domain; Full-Platform Architecture; Uptime & Alarms
+- Purpose: preserve the PostgreSQL shared-authority target on current main without importing draft moderation runtime or obsolete packet truth.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-restack\_PURPOSE.md
+- Memory refs: PR #1670; PR #1662 packet provenance; PR #1761 PLAN foldback
+- Related implications: full product completion audit critical root 1B; production load evidence; paid-market transport
+- Idea feed refs: none
+- Ship/abandon: strict-valid current-main OpenSpec and restack audit; no push or implementation before literal Opus 5 review and host acceptance
+- Foldback: supersede or retarget #1670 only after review; otherwise leave this local and review-blocked

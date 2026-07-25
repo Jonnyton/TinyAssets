@@ -14,6 +14,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 ## Work
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **Restack PostgreSQL control-plane contract from #1670 onto current main** — preserve the target while removing moderation-stack and obsolete decision-packet dependencies; planning only | openspec/changes/establish-postgres-control-plane/**; docs/audits/2026-07-25-postgres-control-plane-restack-review.md; STATUS.md; .agents/worktrees.md | PR #1670 provenance; current PLAN/#1761; literal Opus 5 re-review + host acceptance before push/implementation; Supabase baseline decision | claimed:codex-gpt56-postgres-restack ACTIVE 2026-07-25 |
 | **Author harden-canonical-absolute-guarantees change** — the change dir does NOT exist yet (rows citing it as a dep are citing an unwritten spec); money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/ (new) | full-coverage audit; active paid/universe/relay lanes | pending |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |
