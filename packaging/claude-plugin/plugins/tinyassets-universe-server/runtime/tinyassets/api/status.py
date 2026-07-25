@@ -912,12 +912,15 @@ def get_status(universe_id: str = "") -> str:
             ),
             "schema_version": 1,
         })
-    # Per-universe read gate: never expose a private universe's status / activity
-    # tail to an anonymous or non-granted caller. Public universes (public_read
-    # default) stay readable; a founder reads their own universe via their grant.
-    from tinyassets.api import permissions
+    # Per-universe metadata gate: never expose a universe's status / activity
+    # tail (name, word count, activity dates, phase) to a reader the declared
+    # visibility level does not grant `read_metadata`. Metadata is a separately-
+    # granted capability: a content-only (`unlisted`) universe is discoverable
+    # by direct id yet withholds this describe surface. A founder reads their
+    # own universe via their grant regardless of level.
+    from tinyassets.api import permissions, visibility
 
-    if not permissions.universe_access_allows(uid, write=False):
+    if not visibility.visibility_permits(uid, "read_metadata"):
         return json.dumps(permissions.universe_access_error(
             universe_id=uid, write=False, action="get_status", surface="universe",
         ))

@@ -572,6 +572,23 @@ def _wiki_read(
     is_draft = _wiki_drafts_dir() in resolved.parents
     rel = _page_rel_path(resolved)
     meta, body = _parse_frontmatter(text)
+
+    # Per-page visibility narrows — never widens — the universe content grant:
+    # a page marked restrictive stays restricted from an anonymous reader even
+    # inside an openly-readable universe (spec Req 3).
+    from tinyassets.api import visibility
+
+    if not visibility.page_content_permitted(meta):
+        return json.dumps({
+            "error": "page_content_restricted",
+            "path": rel,
+            "required_permission": "read",
+            "detail": (
+                "This page's declared visibility withholds its content from an "
+                "unauthenticated reader."
+            ),
+        })
+
     updated_at = _page_updated_at(resolved, meta)
     content = _draft_read_content(text, is_draft=is_draft)
     source_read_proof = {
@@ -2495,7 +2512,18 @@ def wiki(
         )
 
         _wiki_write = action in WIKI_WRITE_ACTIONS
-        if not universe_access_allows(target_universe_id, write=_wiki_write):
+        if _wiki_write:
+            _wiki_allowed = universe_access_allows(target_universe_id, write=True)
+        else:
+            # Content is a separately-granted capability: a `metadata_only`
+            # universe is discoverable/describable yet withholds its page bodies
+            # from a non-granted reader.
+            from tinyassets.api import visibility
+
+            _wiki_allowed = visibility.visibility_permits(
+                target_universe_id, "read_content"
+            )
+        if not _wiki_allowed:
             return _stamp_universe_id(json.dumps(universe_access_error(
                 universe_id=target_universe_id,
                 write=_wiki_write,

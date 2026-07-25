@@ -1501,16 +1501,22 @@ def _action_list_universes(**_kwargs: Any) -> str:
             "note": f"Base directory unreadable ({base}): {exc}",
         })
 
+    from tinyassets.api import visibility
+
     universes = []
     for child in sorted(all_entries):
         if not _is_listable_universe_dir(child):
             continue
-        if not permissions.universe_access_allows(child.name):
+        # Existence is a privileged, separately-granted capability: a universe
+        # whose declared level withholds discovery (e.g. `unlisted`) is not
+        # enumerated even though its content may be readable by direct id.
+        if not visibility.visibility_permits(child.name, "discover_existence"):
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
         info: dict[str, Any] = {
             "id": child.name,
+            "visibility": visibility.declared_level_name(child.name),
             "has_premise": liveness["has_premise"],
             "has_soul": liveness["has_soul"],
             "word_count": liveness["word_count"],
@@ -1549,6 +1555,12 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         })
 
     result: dict[str, Any] = {"universe_id": uid}
+
+    # Declared visibility is observable to a permitted reader (spec Req 4): the
+    # boundary is stated, not inferred from its absence.
+    from tinyassets.api import visibility
+
+    result["visibility"] = visibility.declared_level_name(uid)
 
     # Daemon liveness block — always present, so downstream readers (humans
     # and chat clients) can always tell whether the daemon is alive, why
