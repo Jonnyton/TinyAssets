@@ -36,13 +36,19 @@
     resolved paths, blockers, and preservation scope. Empty state is a stable
     no-op; completed-plan receipt lookup is read-only and cannot touch
     replacement state.
-- [ ] 1.3 Only after 1.1-1.2 pass, implement apply with exact founder-home rather than ACL-derived
+- [x] 1.3 Only after 1.1-1.2 pass, implement apply with exact founder-home rather than ACL-derived
   ownership, lease/fencing, path containment, explicit cross-store actions, and deterministic crash
   recovery; prove every other principal and all preserved commons, history, audit/market, daemon, and
   credential state remain unchanged; expose no MCP or API route.
-  - **Premise: live but blocked (2026-07-24).** Its explicit 1.1-1.2 gate is
-    unmet. The existing global reset remains unchanged; no public or host-only
-    per-principal deletion surface was introduced.
+  - **Completed (2026-07-25).** Operator-only apply now revalidates the exact
+    founder-home plan under a process-shared exclusive barrier and durable
+    principal/home fence, stages the home by same-filesystem rename, deletes
+    only exact reviewed rows, and writes the commit witness with those deletes
+    in one SQLite transaction. Content-free journal recovery restores
+    pre-commit state or completes post-commit cleanup at every fault boundary;
+    completed replay returns its receipt without touching a replacement home.
+    All writer process entrypoints recover before traffic and hold shared
+    barriers. The global reset is unchanged and no MCP/API route was added.
 - [ ] 1.4 Add a CI-executable mutation/fault-injection proof that goes red when principal filtering is
   removed or widened and when either side of the filesystem/SQLite recovery boundary is broken.
   - **Premise: live but blocked (2026-07-24).** There is intentionally no
