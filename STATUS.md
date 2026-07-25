@@ -47,7 +47,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Live brain notes
 
-Provider capacity: Claude remains rate-limited until its Friday reset; use non-Claude capacity. Brain sweep: `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; in flight PR-129/131/139; universes Meridian Ashes / Etsy Printify v2 / Markovic.
+Provider capacity: Claude reset confirmed 2026-07-24; Opus 5 is available for opposite-provider review. Brain sweep: `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; in flight PR-129/131/139; universes Meridian Ashes / Etsy Printify v2 / Markovic.
 
 ## Next
 
