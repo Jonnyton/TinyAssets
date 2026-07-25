@@ -1186,3 +1186,33 @@ Notes:
 - Review gate: focused red/green tests, adjoining suite, strict OpenSpec, mirror/import checks, independent Opus 5 exact-head review
 - Memory/implications: 5.8 remains blocked by PLAN's file-lock versus transactional-claim conflict
 - Ship/abandon: publish reviewed prerequisite PR; keep EPOCH2_QUEUE_CONSUMER_READY false
+
+## 2026-07-24 23:10 - create wiki-discovery-scope
+
+- Provider: codex-gpt56-wiki-scope
+- Branch: codex/wiki-discovery-scope
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-wiki-discovery-scope
+- STATUS/Issue/PR: R2-4a wiki discovery scoping; #1550 closed source-only
+- PLAN refs: Module API & MCP Interface; composable primitive and visibility principles
+- Purpose: default user discovery excludes coordination history without resurrecting the retired directory server.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-wiki-discovery-scope\_PURPOSE.md
+- Memory refs: docs/audits/2026-07-21-wiki-discovery-contamination.md; PR #1550
+- Related implications: universe-visibility; canonical /mcp acceptance; universe-creation owns the public read_page seam
+- Idea feed refs: none
+- Ship/abandon: ship current-main OpenSpec/TDD successor through a reviewed PR; abandon if the behavior is already satisfied
+
+## 2026-07-24 23:10 - create secret-custody-spec
+
+- Provider: codex-gpt56-secret-custody
+- Branch: codex/secret-custody-spec
+- Lane state: Active review/spec-only lane
+- Worktree: C:\Users\Jonathan\Projects\wf-secret-custody-spec
+- STATUS/Issue/PR: Retire MCP provider-secret deposit
+- PLAN refs: Module Providers; Module API & MCP Interface; full-platform control-plane/BYOC boundaries
+- Purpose: replace raw MCP provider-secret deposit with requester-controlled OS custody and opaque authority references.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-secret-custody-spec\_PURPOSE.md
+- Memory refs: docs/audits/2026-07-24-first-contact-authority-opus5-verdict.md; PRs #1592, #1691, #1736
+- Related implications: Slice A0; provider-attempt receipts; universe-creation; complete-independent-full-platform-targets
+- Idea feed refs: #1469 remains optional source-only encrypted server custody unless separately approved
+- Ship/abandon: Opus APPROVE/ADAPT gates a strict spec PR; runtime remains blocked on listed owners
