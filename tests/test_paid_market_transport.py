@@ -25,6 +25,23 @@ class RecordingRpc:
         return {"status": "applied", "tx_id": 41}
 
 
+class RecordingAuthorityVerifier:
+    def __init__(self):
+        self.authorities = []
+
+    def verify(self, authority, *, now):
+        self.authorities.append((authority, now))
+        return authority
+
+
+def _enabled_transport(contract, rpc):
+    return contract.MarketTransport(
+        rpc,
+        enabled=True,
+        authority_verifier=RecordingAuthorityVerifier(),
+    )
+
+
 def _authority_and_grant():
     contract = _transport_contract()
     now = datetime.now(UTC)
@@ -84,7 +101,8 @@ def test_transport_serializes_pure_entries_unchanged_and_recomputes_hash():
     contract, authority, now = _authority_and_grant()
     rpc = RecordingRpc()
     command = _command(contract, authority)
-    result = contract.MarketTransport(rpc, enabled=True).settle(command, now=now)
+    transport = _enabled_transport(contract, rpc)
+    result = transport.settle(command, now=now)
     assert result.status == "applied"
     assert result.tx_id == 41
     assert len(rpc.commands) == 1
@@ -96,6 +114,15 @@ def test_transport_serializes_pure_entries_unchanged_and_recomputes_hash():
     assert serialized.authority.grant.grant_id == "grant-1"
     assert serialized.authority.subject_id == "host-actor"
     assert serialized.authority.requester_user_id == "buyer"
+    assert len(transport._authority_verifier.authorities) == 1
+
+
+def test_enabled_transport_requires_a_trusted_authority_verifier():
+    contract, authority, now = _authority_and_grant()
+    with pytest.raises(contract.MarketTransportError, match="authority verifier"):
+        contract.MarketTransport(RecordingRpc(), enabled=True).settle(
+            _command(contract, authority), now=now
+        )
 
 
 @pytest.mark.parametrize(
@@ -109,7 +136,7 @@ def test_transport_rejects_caller_selected_authority(mutation, message):
     contract, authority, now = _authority_and_grant()
     changed = replace(authority, **mutation)
     with pytest.raises(contract.MarketTransportError, match=message):
-        contract.MarketTransport(RecordingRpc(), enabled=True).settle(
+        _enabled_transport(contract, RecordingRpc()).settle(
             _command(contract, changed), now=now
         )
 
@@ -131,7 +158,7 @@ def test_transport_enforces_every_signed_grant_bound(grant_change, message):
     grant = replace(authority.grant, **grant_change)
     changed = replace(authority, grant=grant)
     with pytest.raises(contract.MarketTransportError, match=message):
-        contract.MarketTransport(RecordingRpc(), enabled=True).settle(
+        _enabled_transport(contract, RecordingRpc()).settle(
             _command(contract, changed), now=now
         )
 
@@ -144,7 +171,7 @@ def test_transport_rejects_non_integer_or_unbalanced_postings():
         (("escrow:req-1", -10_000.0), ("user:seller", 10_000.0)),
     ):
         with pytest.raises(contract.MarketTransportError):
-            contract.MarketTransport(RecordingRpc(), enabled=True).settle(
+            _enabled_transport(contract, RecordingRpc()).settle(
                 replace(base, postings=postings), now=now
             )
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Literal, Mapping, Protocol
 
@@ -80,22 +80,42 @@ class MarketLedgerRpc(Protocol):
         """Apply or replay one complete logical-accounting transaction."""
 
 
+class MarketAuthorityVerifier(Protocol):
+    def verify(
+        self, authority: VerifiedMarketAuthority, *, now: datetime
+    ) -> VerifiedMarketAuthority:
+        """Return authority verified from trusted identity/grant state."""
+
+
 class MarketTransport:
     """Validate and send settlements through the sole privileged RPC path."""
 
-    def __init__(self, rpc: MarketLedgerRpc, *, enabled: bool = False) -> None:
+    def __init__(
+        self,
+        rpc: MarketLedgerRpc,
+        *,
+        enabled: bool = False,
+        authority_verifier: MarketAuthorityVerifier | None = None,
+    ) -> None:
         self._rpc = rpc
         self._enabled = enabled
+        self._authority_verifier = authority_verifier
 
     def settle(
         self, command: SettlementCommand, *, now: datetime | None = None
     ) -> MarketTransportResult:
         if not self._enabled:
             return MarketTransportResult(status="not_available", tx_id=None)
+        if self._authority_verifier is None:
+            raise MarketTransportError("trusted authority verifier is required")
 
         effective_now = now or datetime.now(UTC)
-        _validate_command(command, effective_now)
-        serialized = _serialize(command)
+        verified_authority = self._authority_verifier.verify(
+            command.authority, now=effective_now
+        )
+        verified_command = replace(command, authority=verified_authority)
+        _validate_command(verified_command, effective_now)
+        serialized = _serialize(verified_command)
         raw_result = self._rpc.apply_settlement(serialized)
         status = raw_result.get("status")
         tx_id = raw_result.get("tx_id")
@@ -115,6 +135,10 @@ def _validate_command(command: SettlementCommand, now: datetime) -> None:
     ):
         if not value:
             raise MarketTransportError(f"{label} is required")
+    if len(command.idempotency_key.encode("utf-8")) > 128:
+        raise MarketTransportError("idempotency key exceeds 128 bytes")
+    if len(command.memo.encode("utf-8")) > 512:
+        raise MarketTransportError("memo exceeds 512 bytes")
     if not _is_int(command.expected_state_version) or command.expected_state_version < 0:
         raise MarketTransportError("expected state version must be a non-negative integer")
     if not _is_int(command.amount_micros) or command.amount_micros <= 0:
@@ -150,7 +174,10 @@ def _validate_command(command: SettlementCommand, now: datetime) -> None:
         if account == command.escrow_account
     ) != -command.amount_micros:
         raise MarketTransportError("escrow postings must debit the settlement amount")
-    if not any(account == "treasury" and delta >= 0 for account, delta in command.postings):
+    treasury_deltas = [
+        delta for account, delta in command.postings if account == "treasury"
+    ]
+    if not treasury_deltas or sum(treasury_deltas) < 0:
         raise MarketTransportError("every settlement must include the canonical fee posting")
 
 
@@ -169,6 +196,12 @@ def _validate_grant(command: SettlementCommand, now: datetime) -> None:
         raise MarketTransportError("grant does not allow this action")
     if command.amount_micros > grant.max_amount_micros:
         raise MarketTransportError("settlement amount exceeds grant")
+    if (
+        now.tzinfo is None
+        or grant.issued_at.tzinfo is None
+        or grant.expires_at.tzinfo is None
+    ):
+        raise MarketTransportError("grant timestamps must be timezone-aware")
     if grant.issued_at > now:
         raise MarketTransportError("grant is not yet valid")
     if grant.expires_at <= now:
