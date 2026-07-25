@@ -14,6 +14,8 @@ same-slot duplicates.
   shadowed token.
 - Preserve sibling fields when merging `llm_subscription` records.
 - Re-materialize changed Codex auth blobs after a partial subscription rotation.
+- Reject malformed Codex auth blobs before replacing the vault or materialized
+  auth file.
 - Collapse every matching duplicate during one-record upserts.
 - Report collapsed records and intentionally dropped VCS purpose slots in the
   non-secret write summary.
@@ -36,4 +38,5 @@ same-slot duplicates.
 The canonical and packaged runtime copies of `tinyassets/credential_vault.py`,
 credential-vault regression tests, and the existing `credential-vault`
 capability spec are affected. The write summary gains non-secret collapse/loss
-fields; no function signature or dependency changes.
+fields, and Codex auth bundle writes gain strict base64 and JSON validation; no
+function signature or dependency changes.

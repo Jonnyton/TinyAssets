@@ -105,6 +105,26 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
     return target
 
 
+def _decode_codex_auth_json(value: Any) -> bytes:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "credential auth_json_b64 must be a non-empty base64 string"
+        )
+    try:
+        decoded = base64.b64decode(value.strip(), validate=True)
+    except ValueError as exc:
+        raise ValueError("credential auth_json_b64 base64 decode failed") from exc
+    if not decoded:
+        raise ValueError("credential auth_json_b64 decoded content is empty")
+    try:
+        json.loads(decoded)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            "credential auth_json_b64 does not contain valid JSON"
+        ) from exc
+    return decoded
+
+
 def _normalize_record(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("credential entries must be JSON objects")
@@ -122,6 +142,13 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
     for key in ("service", "provider", "destination", "purpose"):
         if isinstance(record.get(key), str):
             record[key] = record[key].strip()
+    if (
+        normalized_type == "llm_subscription"
+        and str(record.get("service") or record.get("provider") or "").lower()
+        == "codex"
+        and "auth_json_b64" in record
+    ):
+        _decode_codex_auth_json(record["auth_json_b64"])
     return record
 
 
@@ -406,7 +433,7 @@ def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None
         auth_b64 = record.get("auth_json_b64")
         auth_file = home / "auth.json"
         if isinstance(auth_b64, str) and auth_b64.strip():
-            auth_bytes = base64.b64decode(auth_b64.strip())
+            auth_bytes = _decode_codex_auth_json(auth_b64)
             if not auth_file.exists() or auth_file.read_bytes() != auth_bytes:
                 tmp = auth_file.with_name("auth.json.tmp")
                 tmp.write_bytes(auth_bytes)

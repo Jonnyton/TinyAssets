@@ -448,6 +448,57 @@ def test_codex_subscription_auth_rotation_replaces_materialized_auth(tmp_path):
     )
 
 
+@pytest.mark.parametrize("malformed_auth_b64", ["!!!!", "e30=!!!!", ""])
+def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
+    tmp_path,
+    malformed_auth_b64,
+):
+    configured = tmp_path / "codex-home"
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "codex_home": "codex-home",
+        "auth_json_b64": "eyJ0b2tlbiI6IldPUktJTkMifQ==",
+    }])
+    assert ensure_codex_home_from_vault(tmp_path) == configured
+    working_auth = (configured / "auth.json").read_bytes()
+
+    (tmp_path / VAULT_FILENAME).write_text(
+        '{"schema_version":1,"credentials":[{"credential_type":'
+        '"llm_subscription","service":"codex","codex_home":"codex-home",'
+        f'"auth_json_b64":"{malformed_auth_b64}"}}]}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="auth_json_b64"):
+        ensure_codex_home_from_vault(tmp_path)
+
+    assert (configured / "auth.json").read_bytes() == working_auth
+
+
+def test_codex_auth_write_rejects_non_json_blob_and_preserves_vault(tmp_path):
+    configured = tmp_path / "codex-home"
+    existing = {
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "codex_home": "codex-home",
+        "auth_json_b64": "eyJ0b2tlbiI6IldPUktJTkMifQ==",
+    }
+    write_credential_vault(tmp_path, [existing])
+    assert ensure_codex_home_from_vault(tmp_path) == configured
+    working_auth = (configured / "auth.json").read_bytes()
+
+    with pytest.raises(ValueError, match="auth_json_b64"):
+        write_credential_vault(tmp_path, [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": "bm90LWpzb24=",
+        }])
+
+    assert load_credential_vault(tmp_path) == [existing]
+    assert (configured / "auth.json").read_bytes() == working_auth
+
+
 def test_codex_home_path_from_vault_is_resolved_without_env(tmp_path):
     configured = tmp_path / "durable-codex"
     write_credential_vault(

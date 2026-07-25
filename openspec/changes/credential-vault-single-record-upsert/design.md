@@ -41,9 +41,12 @@ sibling temporary path.
 - Malformed existing JSON fails the single-record write before the temporary
   file is written. This preserves fail-loud behavior rather than silently
   healing or discarding unreadable secret state.
-- A non-empty Codex `auth_json_b64` value is decoded and compared with the
-  materialized `auth.json`; differing bytes are replaced atomically even when a
-  partial upsert preserves the configured Codex home.
+- A Codex `auth_json_b64` value is rejected unless it is a non-empty,
+  strict-base64 encoding of valid JSON. The same validator guards vault writes
+  and materialization so malformed incoming or already-stored blobs fail before
+  either the vault or a working `auth.json` is replaced. Valid decoded bytes are
+  compared with the materialized file and differing bytes are replaced
+  atomically even when a partial upsert preserves the configured Codex home.
 - Every write summary includes a collapsed-record count and non-secret
   descriptors for VCS purpose selectors removed by an overlapping upsert.
 
