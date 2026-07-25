@@ -7,10 +7,10 @@
 
 ## 1. Connection resource ledger and grants
 
-- [ ] 1.1 Add connection-class and grant persistence with owning user, scope, provider, destination, per-universe binding, and revocation state, plus the next numbered storage migration.
-- [ ] 1.2 Resolve a scoped proxy for a node's declared connection class from the ledger, failing closed on absent, revoked, or ambiguous grants with no ambient or maintainer-credential fallback.
-- [ ] 1.3 Keep raw credential material out of graph state, artifacts, run snapshots, and error text; add an adversarial test that an adapter cannot recover a secret from state, environment, request metadata, or proxy errors.
-- [ ] 1.4 Make connector definitions and their MCP client configuration commons artifacts that carry attribution through remix.
+- [x] 1.1 Add connection-class and grant persistence with owning user, scope, provider, destination, per-universe binding, and revocation state, plus the next numbered storage migration.
+- [x] 1.2 Resolve a scoped proxy for a node's declared connection class from the ledger, failing closed on absent, revoked, or ambiguous grants with no ambient or maintainer-credential fallback.
+- [x] 1.3 Keep raw credential material out of graph state, artifacts, run snapshots, and error text; add an adversarial test that an adapter cannot recover a secret from state, environment, request metadata, or proxy errors.
+- [x] 1.4 Make connector definitions and their MCP client configuration commons artifacts that carry attribution through remix.
 
 ## 2. Action caps and held effects
 
