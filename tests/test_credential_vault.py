@@ -264,6 +264,46 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
     assert summary["credential_count"] == 2
 
 
+def test_two_record_write_replaces_existing_vault_exactly(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "social",
+        "service": "twitter",
+        "token": "old-social-token",
+    }])
+    replacement = [
+        {
+            "credential_type": "llm_api_key",
+            "service": "anthropic",
+            "api_key": "sk-replacement",
+        },
+        {
+            "credential_type": "vcs",
+            "service": "github",
+            "destination": "Jonnyton/TinyAssets",
+            "purpose": "write",
+            "token": "ghs-replacement",
+        },
+    ]
+
+    summary = write_credential_vault(tmp_path, replacement)
+
+    assert load_credential_vault(tmp_path) == replacement
+    assert summary["credential_count"] == 2
+
+
+def test_empty_write_clears_existing_vault(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "api_key": "sk-to-clear",
+    }])
+
+    summary = write_credential_vault(tmp_path, [])
+
+    assert load_credential_vault(tmp_path) == []
+    assert summary["credential_count"] == 0
+
+
 def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
     write_credential_vault(
         tmp_path,
