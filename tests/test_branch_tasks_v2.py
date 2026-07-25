@@ -209,6 +209,55 @@ def test_adapter_reads_canonical_epoch2_task_and_ids_are_unique(
     assert task.inputs["request_type"] == "general"
 
 
+def test_live_claimed_request_read_model_is_worker_bound_and_lease_bound(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+) -> None:
+    adapter, committed, clock = epoch2
+
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) == []
+
+    claimed = adapter.claim(
+        committed["branch_task_id"],
+        descriptor=_descriptor(),
+        descriptor_reader=lambda _conn, _worker_id: _descriptor(),
+        lease_seconds=90,
+    )
+    assert claimed is not None
+
+    records = adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    )
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.request_id == committed["request_id"]
+    assert record.admission_id == committed["admission_id"]
+    assert record.branch_task_id == committed["branch_task_id"]
+    assert record.universe_id == "universe-a"
+    assert record.request_type == "general"
+    assert record.text == "repair the queue"
+    assert record.branch_def_id == "loop-branch"
+    assert record.trigger_source == "operator_request"
+    assert record.accepted_priority_weight == 50.0
+    assert record.claimed_by == "worker-a"
+    assert record.claimed_at == "2026-07-24T08:01:00+00:00"
+    assert record.lease_expires_at == "2026-07-24T08:02:30+00:00"
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-b",
+    ) == []
+
+    clock.set("2026-07-24T08:02:30+00:00")
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) == []
+
+
 @pytest.mark.parametrize(
     "universe_id",
     ["fantasy", "default-universe", "patch-loop-live"],

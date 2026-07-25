@@ -128,6 +128,30 @@ class Epoch2OperationalRead:
     candidates: tuple[Epoch2BranchTask, ...]
 
 
+@dataclass(frozen=True)
+class Epoch2ClaimedRequest:
+    """Minimal private Request/task view bound to one live reservation."""
+
+    request_id: str
+    admission_id: str
+    branch_task_id: str
+    universe_id: str
+    branch_def_id: str
+    request_type: str
+    text: str
+    branch_id: str
+    actor_id: str
+    trigger_source: str
+    accepted_priority_weight: float
+    directed_daemon_id: str
+    pickup_incentive: str
+    directed_daemon_instruction: str
+    claimed_by: str
+    claimed_at: str
+    lease_expires_at: str
+    queued_at: str
+
+
 class Epoch2BranchTaskAdapter:
     """Typed lifecycle operations for the epoch-2 transactional queue."""
 
@@ -154,6 +178,49 @@ class Epoch2BranchTaskAdapter:
             _as_epoch2_task(row)
             for row in self._store.list_v2_candidates(
                 universe_id=universe_id,
+                limit=limit,
+                integrity_check=lambda row: (
+                    _classify_epoch2_row(row) is None
+                ),
+            )
+        ]
+
+    def list_live_claimed_requests(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+        limit: int = 10,
+    ) -> list[Epoch2ClaimedRequest]:
+        """Read only canonical requests reserved by this worker right now."""
+        return [
+            Epoch2ClaimedRequest(
+                request_id=str(row["request_id"]),
+                admission_id=str(row["admission_id"]),
+                branch_task_id=str(row["branch_task_id"]),
+                universe_id=str(row["universe_id"]),
+                branch_def_id=str(row["branch_def_id"]),
+                request_type=str(row["request_type"]),
+                text=str(row["text"]),
+                branch_id=str(row["branch_id"]),
+                actor_id=str(row["actor_id"]),
+                trigger_source=str(row["trigger_source"]),
+                accepted_priority_weight=float(
+                    row["accepted_priority_weight"]
+                ),
+                directed_daemon_id=str(row["directed_daemon_id"]),
+                pickup_incentive=str(row["pickup_incentive"]),
+                directed_daemon_instruction=str(
+                    row["directed_daemon_instruction"]
+                ),
+                claimed_by=str(row["claimed_by"]),
+                claimed_at=str(row["claimed_at"]),
+                lease_expires_at=str(row["lease_expires_at"]),
+                queued_at=str(row["queued_at"]),
+            )
+            for row in self._store.list_live_claimed_v2_requests(
+                universe_id=universe_id,
+                worker_id=worker_id,
                 limit=limit,
                 integrity_check=lambda row: (
                     _classify_epoch2_row(row) is None
@@ -982,6 +1049,7 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
 __all__ = [
     "Epoch2BranchTask",
     "Epoch2BranchTaskAdapter",
+    "Epoch2ClaimedRequest",
     "Epoch2OperationalRead",
     "QuarantineMaintenanceResult",
     "QuarantineReceipt",

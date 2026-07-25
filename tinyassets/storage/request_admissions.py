@@ -666,6 +666,63 @@ class RequestAdmissionStore:
                         break
         return candidates
 
+    def list_live_claimed_v2_requests(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+        limit: int = 10,
+        integrity_check: Callable[[Mapping[str, Any]], bool],
+    ) -> list[dict[str, Any]]:
+        """Return bounded canonical Request/task views for this live claim.
+
+        This is a read model only.  It cannot claim, renew, transition, or
+        project epoch-2 work into the legacy JSON queue.
+        """
+        clean_universe_id = _required(universe_id, "universe_id")
+        clean_worker_id = _required(worker_id, "worker_id")
+        requested = max(1, int(limit))
+        with self.connection() as conn:
+            rows = self._v2_integrity_cursor(
+                conn,
+                universe_id=clean_universe_id,
+                pending_only=False,
+                live_claimed_by=clean_worker_id,
+                live_claim_at=_clock_iso(self._clock),
+                include_linked_universe_scope=True,
+                limit=requested,
+            ).fetchall()
+
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            if not integrity_check(raw):
+                continue
+            inputs = json.loads(str(raw["inputs_json"]))
+            records.append({
+                "request_id": raw["request_id"],
+                "admission_id": raw["admission_id"],
+                "branch_task_id": raw["branch_task_id"],
+                "universe_id": raw["universe_id"],
+                "branch_def_id": raw["branch_def_id"],
+                "request_type": raw["linked_request_type"],
+                "text": raw["linked_request_text"],
+                "branch_id": raw["linked_request_branch_id"] or "",
+                "actor_id": raw["linked_admission_actor_id"],
+                "trigger_source": raw["trigger_source"],
+                "accepted_priority_weight": raw["priority_weight"],
+                "directed_daemon_id": raw["directed_daemon_id"] or "",
+                "pickup_incentive": inputs.get("pickup_incentive") or "",
+                "directed_daemon_instruction": (
+                    inputs.get("directed_daemon_instruction") or ""
+                ),
+                "claimed_by": raw["claimed_by"],
+                "claimed_at": raw["claimed_at"],
+                "lease_expires_at": raw["lease_expires_at"],
+                "queued_at": raw["queued_at"],
+            })
+        return records
+
     def has_active_v2_claim(
         self,
         *,
@@ -832,6 +889,8 @@ class RequestAdmissionStore:
         terminal_before: str = "",
         terminal_only: bool = False,
         uncompacted_only: bool = False,
+        live_claimed_by: str = "",
+        live_claim_at: str = "",
         limit: int | None = None,
         rowid_order: bool = False,
     ) -> sqlite3.Cursor:
@@ -865,6 +924,18 @@ class RequestAdmissionStore:
             )
         if uncompacted_only:
             clauses.append("a.compacted_at IS NULL")
+        if live_claimed_by:
+            if not live_claim_at:
+                raise ValueError(
+                    "live_claim_at is required with live_claimed_by"
+                )
+            clauses.extend([
+                "t.status = 'running'",
+                "t.claimed_by = ?",
+                "t.lease_expires_at IS NOT NULL",
+                "julianday(t.lease_expires_at) > julianday(?)",
+            ])
+            params.extend([live_claimed_by, live_claim_at])
         if terminal_before:
             clauses.append("a.terminal_at IS NOT NULL")
             clauses.append("a.terminal_at < ?")
