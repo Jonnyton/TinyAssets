@@ -22,8 +22,40 @@ embodies it and speaks in the first person. No server-side LLM rewriting.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from tinyassets.universe_soul import UniverseSoul
+
+#: Universe-side file holding the founder's forked persona *voice* — how their
+#: universe speaks, in its own words. Custody is first-party: this content is
+#: assembled into the universe intelligence's OWN system prompt and is NEVER
+#: shipped to a host chatbot through a tool result (see :meth:`Persona.summary`).
+#:
+#: No persona script is baked into the platform — absence of this file is the
+#: default, and the platform ships none. Forking a persona means writing
+#: universe-side voice content, not handing behavioral instructions to a
+#: third-party assistant, which the 2026-07-02 live falsification established
+#: hosts correctly refuse.
+#:
+#: Voice is *how* the universe speaks. It is not identity, authority, privacy
+#: tier, or the honesty floor — those are substrate floor properties a fork
+#: cannot move (proven in ``tests/test_persona_custody.py``).
+VOICE_FILENAME = "voice.md"
+
+
+def read_persona_voice(universe_dir: Path | str) -> str:
+    """Return the founder's forked voice content, or '' when unforked.
+
+    A missing or blank file means "no fork" — the platform default, not an
+    error. Unreadable content is likewise treated as unforked: a voice fork is
+    cosmetic, so a read failure must never break the universe's ability to speak.
+    """
+    try:
+        return (Path(universe_dir) / VOICE_FILENAME).read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        return ""
 
 
 @dataclass(frozen=True)
