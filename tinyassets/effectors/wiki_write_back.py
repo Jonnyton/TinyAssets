@@ -22,6 +22,12 @@ from tinyassets.effectors.authority import resolve_soul_effect_authority
 logger = logging.getLogger(__name__)
 
 EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK = "wiki_write_back"
+DESTINATION_RECONCILIATION = {
+    "supported": True,
+    "reason": (
+        "the resolved wiki page carries a deterministic system-effect marker"
+    ),
+}
 
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
@@ -64,14 +70,6 @@ def _destination(packet: dict[str, Any]) -> str:
     value = packet.get("destination") or packet.get("target_page")
     if isinstance(value, str):
         return value.strip().replace("\\", "/")
-    return ""
-
-
-def _idempotency_hint(packet: dict[str, Any]) -> str:
-    for key in ("idempotency_hint", "idempotency_key"):
-        value = packet.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
     return ""
 
 
@@ -240,6 +238,35 @@ def _render_section(*, packet: dict[str, Any], idem_hint: str) -> tuple[str, str
     )
 
 
+def _reconcile_page_marker(
+    *,
+    target: Path,
+    destination: str,
+    effect_key: str,
+) -> dict[str, Any]:
+    """Read the destination page and resolve a stale intent by its marker."""
+    marker = f"tinyassets-wiki-write-back:{effect_key}"
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return {"status": "unknown"}
+    if f"<!-- {marker} -->" not in text or f"<!-- /{marker} -->" not in text:
+        return {"status": "unknown"}
+    return {
+        "status": "succeeded",
+        "evidence": {
+            "destination": destination,
+            "path": destination,
+            "effect_marker": marker,
+            "reconciliation": "destination_marker_found",
+        },
+    }
+
+
+def _stale_replay_must_not_fire() -> None:
+    raise RuntimeError("stale wiki intent must reconcile before fire")
+
+
 def _append_or_update_section(path: Path, section: str, idem_hint: str) -> dict[str, Any]:
     from tinyassets.api.wiki import _append_wiki_log, _page_rel_path
 
@@ -298,7 +325,13 @@ def run_wiki_write_back_effector(
     destination = _destination(packet)
     universe_dir = _universe_dir(base_path)
     wiki_root = _wiki_root_for_universe(universe_dir)
-    idem_hint = _idempotency_hint(packet)
+    from tinyassets.idempotency import resolve_effector_identity
+
+    idem_hint = resolve_effector_identity(
+        packet,
+        sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+        universe_dir=universe_dir,
+    ).active_key
 
     if not destination:
         return {
@@ -440,9 +473,34 @@ def run_wiki_write_back_effector(
                 "reservation_created_at": held.get("created_at"),
                 "intent": packet,
             }
+        if status == "reconciliation_required":
+            from tinyassets.effectors.outbound_boundary import (
+                execute_replay_safe_effect,
+            )
+
+            reconciled = execute_replay_safe_effect(
+                universe_dir=universe_dir,
+                effect_key=idem_hint,
+                sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+                run_id=run_id,
+                invoke=_stale_replay_must_not_fire,
+                reconcile=lambda effect_key: _reconcile_page_marker(
+                    target=target,
+                    destination=destination,
+                    effect_key=effect_key,
+                ),
+            )
+            return {
+                **reconciled,
+                "dry_run": reconciled.get("status") != "succeeded",
+                "phase": "phase_2",
+                "destination": destination,
+                "idempotency_hint": idem_hint,
+                "matched_output_key": matched_key,
+                "intent": packet,
+            }
         if status not in (
             "reserved",
-            "reserved_after_stale",
             "reserved_after_failed",
         ):
             return {
@@ -481,7 +539,7 @@ def run_wiki_write_back_effector(
             "idempotency_hint": idem_hint,
             "recorded_at": time.time(),
         })
-        if status in ("reserved_after_stale", "reserved_after_failed"):
+        if status == "reserved_after_failed":
             evidence["reservation_origin"] = status
 
         if not _finalize_receipt(
@@ -490,7 +548,17 @@ def run_wiki_write_back_effector(
             evidence=evidence,
             run_id=run_id,
         ):
-            evidence["receipt_finalize_failed"] = True
+            from tinyassets.effectors.outbound_boundary import (
+                hold_receipt_finalization_failure,
+            )
+
+            evidence = hold_receipt_finalization_failure(
+                universe_dir=universe_dir,
+                effect_key=idem_hint,
+                sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+                run_id=run_id,
+                destination_evidence=evidence,
+            )
         return evidence
 
 

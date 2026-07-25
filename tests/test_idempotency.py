@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import importlib
+import inspect
+
 import pytest
 
 from tinyassets.idempotency import (
     _CHECKPOINT_MARKER_KEY,
     IdempotencyStore,
     checkpoint,
+    derive_effect_key,
     idempotent_by_step,
+    resolve_effector_identity,
+)
+from tinyassets.storage.external_write_receipts import (
+    STATUS_FAILED,
+    STATUS_SUCCEEDED,
+    finalize_receipt,
+    lookup_identity_alias,
+    lookup_receipt,
+    release_reservation,
+    try_reserve_receipt,
 )
 
 # ─── IdempotencyStore ──────────────────────────────────────────────────────────
@@ -76,6 +90,337 @@ class TestIdempotencyStore:
         store = IdempotencyStore(nested)
         store.set("r", "s", 1)
         assert store.get("r", "s") == 1
+
+
+def test_effect_key_is_derived_from_durable_goal_period_and_item_identity():
+    first = derive_effect_key(
+        goal_id="goal-1",
+        schedule_period="2026-07-25",
+        item_fingerprint="sha256:item-a",
+    )
+    replay = derive_effect_key(
+        goal_id="goal-1",
+        schedule_period="2026-07-25",
+        item_fingerprint="sha256:item-a",
+    )
+    different_period = derive_effect_key(
+        goal_id="goal-1",
+        schedule_period="2026-07-26",
+        item_fingerprint="sha256:item-a",
+    )
+
+    assert first == replay
+    assert first.startswith("effect:v1:")
+    assert len(first.removeprefix("effect:v1:")) == 64
+    assert different_period != first
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["goal_id", "schedule_period", "item_fingerprint"],
+)
+def test_effect_key_fails_loudly_when_durable_identity_is_missing(field):
+    identity = {
+        "goal_id": "goal-1",
+        "schedule_period": "2026-07-25",
+        "item_fingerprint": "sha256:item-a",
+    }
+    identity[field] = ""
+
+    with pytest.raises(ValueError, match=field):
+        derive_effect_key(**identity)
+
+
+def test_dual_identity_keeps_legacy_active_and_records_system_parity(tmp_path):
+    packet = {
+        "idempotency_hint": "legacy-hint",
+        "goal_id": "goal-1",
+        "schedule_period": "2026-07-25",
+        "item_fingerprint": "sha256:item-a",
+    }
+
+    identity = resolve_effector_identity(
+        packet,
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="dual",
+    )
+
+    assert identity.active_key == "legacy-hint"
+    assert identity.system_key == derive_effect_key(
+        goal_id="goal-1",
+        schedule_period="2026-07-25",
+        item_fingerprint="sha256:item-a",
+    )
+    assert identity.parity_recorded is True
+    assert lookup_identity_alias(
+        tmp_path,
+        caller_hint="legacy-hint",
+        sink="github_pull_request",
+    ) == identity.system_key
+
+
+def test_dual_identity_journal_is_written_and_finalized_under_both_keys(tmp_path):
+    identity = resolve_effector_identity(
+        {
+            "idempotency_hint": "legacy-hint",
+            "goal_id": "goal-1",
+            "schedule_period": "2026-07-25",
+            "item_fingerprint": "sha256:item-a",
+        },
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="dual",
+    )
+
+    reservation = try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=identity.active_key,
+        sink="github_pull_request",
+        run_id="run-1",
+    )
+    assert reservation["status"] == "reserved"
+    system_pending = lookup_receipt(
+        tmp_path,
+        idempotency_hint=identity.system_key,
+        sink="github_pull_request",
+    )
+    assert system_pending is not None
+    assert system_pending["run_id"] == "run-1"
+
+    evidence = {"remote_id": "pr-17"}
+    assert finalize_receipt(
+        tmp_path,
+        idempotency_hint=identity.active_key,
+        sink="github_pull_request",
+        evidence=evidence,
+        run_id="run-1",
+    )
+    legacy = lookup_receipt(
+        tmp_path,
+        idempotency_hint=identity.active_key,
+        sink="github_pull_request",
+    )
+    system = lookup_receipt(
+        tmp_path,
+        idempotency_hint=identity.system_key,
+        sink="github_pull_request",
+    )
+    assert legacy is not None and system is not None
+    assert legacy["status"] == system["status"] == STATUS_SUCCEEDED
+    assert legacy["evidence"] == system["evidence"] == evidence
+
+
+def test_dual_identity_failure_release_keeps_both_keys_in_parity(tmp_path):
+    identity = resolve_effector_identity(
+        {
+            "idempotency_hint": "legacy-failure",
+            "goal_id": "goal-1",
+            "schedule_period": "2026-07-25",
+            "item_fingerprint": "sha256:item-failure",
+        },
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="dual",
+    )
+    try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=identity.active_key,
+        sink="github_pull_request",
+        run_id="run-failed",
+    )
+
+    assert release_reservation(
+        tmp_path,
+        idempotency_hint=identity.active_key,
+        sink="github_pull_request",
+        run_id="run-failed",
+    )
+    for key in (identity.active_key, identity.system_key):
+        receipt = lookup_receipt(
+            tmp_path,
+            idempotency_hint=key,
+            sink="github_pull_request",
+        )
+        assert receipt is not None
+        assert receipt["status"] == STATUS_FAILED
+
+    retry = try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=identity.active_key,
+        sink="github_pull_request",
+        run_id="run-retry",
+    )
+    assert retry["status"] == "reserved_after_failed"
+    for key in (identity.active_key, identity.system_key):
+        receipt = lookup_receipt(
+            tmp_path,
+            idempotency_hint=key,
+            sink="github_pull_request",
+        )
+        assert receipt is not None
+        assert receipt["status"] == "pending"
+        assert receipt["run_id"] == "run-retry"
+
+
+def test_system_identity_mode_ignores_caller_hint_for_active_key(tmp_path):
+    packet = {
+        "idempotency_hint": "caller-controlled",
+        "goal_id": "goal-1",
+        "schedule_period": "2026-W30",
+        "item_fingerprint": "sha256:item-a",
+    }
+    dual = resolve_effector_identity(
+        packet,
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="dual",
+    )
+    try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=dual.active_key,
+        sink="github_pull_request",
+        run_id="run-parity",
+    )
+    assert finalize_receipt(
+        tmp_path,
+        idempotency_hint=dual.active_key,
+        sink="github_pull_request",
+        evidence={"remote_id": "pr-17"},
+        run_id="run-parity",
+    )
+
+    identity = resolve_effector_identity(
+        {
+            **packet,
+            "idempotency_hint": "new-caller-controlled",
+            "item_fingerprint": "sha256:item-new",
+        },
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="system",
+    )
+
+    assert identity.active_key == identity.system_key
+    assert identity.active_key != "new-caller-controlled"
+    assert identity.parity_recorded is True
+
+
+def test_system_identity_flag_cannot_flip_before_dual_parity(tmp_path):
+    packet = {
+        "idempotency_hint": "caller-controlled",
+        "goal_id": "goal-1",
+        "schedule_period": "2026-W30",
+        "item_fingerprint": "sha256:item-a",
+    }
+    resolve_effector_identity(
+        packet,
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="dual",
+    )
+
+    with pytest.raises(ValueError, match="proven dual-write parity"):
+        resolve_effector_identity(
+            packet,
+            sink="github_pull_request",
+            universe_dir=tmp_path,
+            mode="system",
+        )
+
+
+def test_system_identity_flag_requires_every_dual_alias_to_have_parity(tmp_path):
+    proven = {
+        "idempotency_hint": "proven",
+        "goal_id": "goal-1",
+        "schedule_period": "2026-W30",
+        "item_fingerprint": "sha256:proven",
+    }
+    proven_identity = resolve_effector_identity(
+        proven,
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="dual",
+    )
+    try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=proven_identity.active_key,
+        sink="github_pull_request",
+        run_id="run-proven",
+    )
+    finalize_receipt(
+        tmp_path,
+        idempotency_hint=proven_identity.active_key,
+        sink="github_pull_request",
+        evidence={"remote_id": "pr-17"},
+        run_id="run-proven",
+    )
+    pending = {
+        **proven,
+        "idempotency_hint": "pending",
+        "item_fingerprint": "sha256:pending",
+    }
+    pending_identity = resolve_effector_identity(
+        pending,
+        sink="github_pull_request",
+        universe_dir=tmp_path,
+        mode="dual",
+    )
+    try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=pending_identity.active_key,
+        sink="github_pull_request",
+        run_id="run-pending",
+    )
+
+    with pytest.raises(ValueError, match="proven dual-write parity"):
+        resolve_effector_identity(
+            {
+                **proven,
+                "idempotency_hint": "new",
+                "item_fingerprint": "sha256:new",
+            },
+            sink="github_pull_request",
+            universe_dir=tmp_path,
+            mode="system",
+        )
+
+
+def test_system_identity_mode_fails_loudly_without_durable_fields(tmp_path):
+    with pytest.raises(ValueError, match="goal_id"):
+        resolve_effector_identity(
+            {"idempotency_hint": "caller-controlled"},
+            sink="github_pull_request",
+            universe_dir=tmp_path,
+            mode="system",
+        )
+
+
+@pytest.mark.parametrize(
+    ("module_name", "reconciliation_supported"),
+    [
+        ("tinyassets.effectors.github_pr", False),
+        ("tinyassets.effectors.twitter_post", False),
+        ("tinyassets.effectors.wiki_write_back", True),
+        ("tinyassets.effectors.windows_desktop", False),
+    ],
+)
+def test_receipt_backed_effectors_are_wired_to_identity_migration(
+    module_name,
+    reconciliation_supported,
+):
+    module = importlib.import_module(module_name)
+    assert "resolve_effector_identity(" in inspect.getsource(module)
+    assert (
+        module.DESTINATION_RECONCILIATION["supported"]
+        is reconciliation_supported
+    )
+    if reconciliation_supported:
+        assert "_reconcile_page_marker(" in inspect.getsource(module)
+    else:
+        assert "system effect key" in module.DESTINATION_RECONCILIATION["reason"]
+        assert "hold_unreconciled_pending(" in inspect.getsource(module)
+    assert "hold_receipt_finalization_failure(" in inspect.getsource(module)
 
 
 # ─── @idempotent_by_step decorator ────────────────────────────────────────────

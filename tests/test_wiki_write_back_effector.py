@@ -19,6 +19,7 @@ from tinyassets.storage.effector_consents import grant_consent
 from tinyassets.storage.external_write_receipts import (
     STATUS_SUCCEEDED,
     lookup_receipt,
+    try_reserve_receipt,
 )
 
 
@@ -182,6 +183,50 @@ def test_wiki_write_back_idempotency_dedup_does_not_append_twice(tmp_path):
     assert second["idempotency_dedup_hit"] is True
     text = target.read_text(encoding="utf-8")
     assert text.count("## Loop result packet") == 1
+
+
+def test_stale_wiki_intent_reconciles_from_destination_marker(tmp_path):
+    target = _wiki_env(tmp_path)
+    grant_consent(
+        tmp_path,
+        sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+        destination="pages/patch-requests/pr-166-test.md",
+        granted_by="tester",
+    )
+    effect_key = "pr-166-loop-result-run-1"
+    try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=effect_key,
+        sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+        run_id="run-crashed",
+        now=0.0,
+    )
+    marker = f"tinyassets-wiki-write-back:{effect_key}"
+    target.write_text(
+        target.read_text(encoding="utf-8")
+        + f"\n<!-- {marker} -->\nalready written\n<!-- /{marker} -->\n",
+        encoding="utf-8",
+    )
+
+    result = run_wiki_write_back_effector(
+        node_id="publish",
+        output_keys=["packet"],
+        run_state={"packet": _packet()},
+        base_path=tmp_path,
+        run_id="run-replay",
+    )
+
+    assert result["status"] == STATUS_SUCCEEDED
+    assert result["reconciled"] is True
+    assert result["dry_run"] is False
+    receipt = lookup_receipt(
+        tmp_path,
+        idempotency_hint=effect_key,
+        sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+    )
+    assert receipt is not None
+    assert receipt["status"] == STATUS_SUCCEEDED
+    assert receipt["evidence"]["reconciliation"] == "destination_marker_found"
 
 
 def test_branch_dispatch_routes_wiki_write_back_sink(tmp_path):

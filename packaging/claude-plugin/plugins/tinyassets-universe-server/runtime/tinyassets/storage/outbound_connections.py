@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import multiprocessing
 import sqlite3
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -42,6 +46,8 @@ class ActionCap:
     def __post_init__(self) -> None:
         _required("cap name", self.name)
         _required("cap unit", self.unit)
+        if not math.isfinite(self.maximum):
+            raise ValueError("cap maximum must be finite")
         if self.maximum < 0:
             raise ValueError("cap maximum must be non-negative")
 
@@ -58,12 +64,14 @@ class CapDecision:
     status: str
     cap: ActionCap | None
     action_value: float
+    action_unit: str
 
     def as_dict(self) -> dict[str, object]:
         return {
             "status": self.status,
             "cap": self.cap.as_dict() if self.cap is not None else None,
             "action_value": self.action_value,
+            "action_unit": self.action_unit,
             "authorization_axis": "unprompted_action",
         }
 
@@ -87,6 +95,177 @@ class ProxyRequestError(RuntimeError):
     """A scoped proxy request failed without exposing destination internals."""
 
 
+class AmbiguousProxyOutcome(RuntimeError):
+    """The destination may have applied the request before transport failed."""
+
+
+_MAX_PROXY_FRAME_BYTES = 16 * 1024 * 1024
+
+
+def _send_message(channel: Any, value: object) -> None:
+    try:
+        payload = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ProxyRequestError(
+            "outbound proxy messages must use the redacted JSON contract"
+        ) from exc
+    if len(payload) > _MAX_PROXY_FRAME_BYTES:
+        raise ProxyRequestError("outbound proxy message exceeds the size limit")
+    channel.send_bytes(payload)
+
+
+def _receive_message(channel: Any) -> object:
+    try:
+        payload = channel.recv_bytes(_MAX_PROXY_FRAME_BYTES)
+        return json.loads(payload.decode("utf-8"))
+    except (EOFError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProxyRequestError("outbound proxy received an invalid message") from exc
+
+
+def _load_dispatch_factory(
+    factory_reference: str,
+    config: dict[str, Any],
+) -> Callable[[str, str, object], Any]:
+    factory = _TRUSTED_DISPATCH_FACTORIES.get(factory_reference)
+    if factory is None:
+        raise ValueError("dispatch factory is not in the trusted registry")
+    dispatch = factory(config)
+    if not callable(dispatch):
+        raise TypeError("dispatch factory must return a callable")
+    return dispatch
+
+
+def _run_proxy_worker(
+    channel: Any,
+    dispatch_factory: str,
+    dispatch_config: dict[str, Any],
+    grant_id: str,
+    scopes: tuple[str, ...],
+) -> None:
+    """Run the trusted dispatcher in a separate spawned process."""
+    try:
+        dispatch = _load_dispatch_factory(dispatch_factory, dispatch_config)
+    except Exception:
+        _send_message(
+            channel,
+            {"op": "startup_failed", "message": "trusted proxy failed to start"},
+        )
+        channel.close()
+        return
+    _send_message(channel, {"op": "ready"})
+    try:
+        while True:
+            message = _receive_message(channel)
+            if message == {"op": "close"}:
+                return
+            if not isinstance(message, dict) or message.get("op") != "request":
+                _send_message(
+                    channel,
+                    {
+                        "ok": False,
+                        "error_type": "ProxyRequestError",
+                        "message": "outbound proxy rejected an invalid request",
+                    },
+                )
+                continue
+            verb = message.get("verb")
+            if not isinstance(verb, str) or verb not in scopes:
+                _send_message(
+                    channel,
+                    {
+                        "ok": False,
+                        "error_type": "PermissionError",
+                        "message": "verb is outside the granted connection scope",
+                    },
+                )
+                continue
+            try:
+                result = dispatch(grant_id, verb, message.get("request"))
+            except (
+                AmbiguousProxyOutcome,
+                GrantResolutionError,
+                PermissionError,
+                ProxyRequestError,
+            ) as exc:
+                _send_message(
+                    channel,
+                    {
+                        "ok": False,
+                        "error_type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                )
+            except Exception:
+                _send_message(
+                    channel,
+                    {
+                        "ok": False,
+                        "error_type": "ProxyRequestError",
+                        "message": "outbound request failed",
+                    },
+                )
+            else:
+                _send_message(channel, {"ok": True, "result": result})
+    except (OSError, ProxyRequestError):
+        return
+    finally:
+        channel.close()
+
+
+class _ProxyChannel:
+    """Adapter-side transport; contains no dispatcher or credential material."""
+
+    __slots__ = ("_channel", "_closed", "_lock", "_process")
+
+    def __init__(self, channel: Any, process: Any) -> None:
+        self._channel = channel
+        self._closed = False
+        self._lock = threading.Lock()
+        self._process = process
+
+    def request(self, verb: str, request: object) -> Any:
+        with self._lock:
+            if self._closed:
+                raise ProxyRequestError("outbound proxy is closed")
+            _send_message(
+                self._channel,
+                {"op": "request", "verb": verb, "request": request},
+            )
+            response = _receive_message(self._channel)
+        if not isinstance(response, dict):
+            raise ProxyRequestError("outbound proxy returned an invalid response")
+        if response.get("ok") is True:
+            return response.get("result")
+        message = str(response.get("message") or "outbound request failed")
+        error_type = response.get("error_type")
+        if error_type == "PermissionError":
+            raise PermissionError(message)
+        if error_type == "GrantResolutionError":
+            raise GrantResolutionError(message)
+        if error_type == "AmbiguousProxyOutcome":
+            raise AmbiguousProxyOutcome(message)
+        raise ProxyRequestError(message)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                _send_message(self._channel, {"op": "close"})
+            except (OSError, ProxyRequestError):
+                pass
+            self._channel.close()
+        self._process.join(timeout=1.0)
+        if self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=1.0)
+
+
 @dataclass(frozen=True, slots=True)
 class ScopedConnectionProxy:
     """Credential-blind adapter surface bound to one exact grant."""
@@ -95,14 +274,17 @@ class ScopedConnectionProxy:
     provider: str
     destination: str
     scopes: tuple[str, ...]
-    _dispatch: Callable[[str, str, object], Any]
+    _channel: _ProxyChannel = field(repr=False, compare=False)
 
     def request(self, verb: str, request: object) -> Any:
         if verb not in self.scopes:
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
-        return self._dispatch(self.grant_id, verb, request)
+        return self._channel.request(verb, request)
+
+    def close(self) -> None:
+        self._channel.close()
 
 
 class CredentialBlindBroker:
@@ -131,7 +313,13 @@ class CredentialBlindBroker:
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
-        credential = self._resolve_credential(resource.credential_ref)
+        try:
+            credential = self._resolve_credential(resource.credential_ref)
+        except Exception:
+            self._record_error(resource, grant_id, verb, "credential unavailable")
+            raise ProxyRequestError(
+                "outbound request failed: credential unavailable"
+            ) from None
         if not credential:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
@@ -143,6 +331,14 @@ class CredentialBlindBroker:
                 verb=verb,
                 request=request,
             )
+        except AmbiguousProxyOutcome:
+            self._record_error(
+                resource,
+                grant_id,
+                verb,
+                "destination outcome ambiguous",
+            )
+            raise
         except Exception:
             self._record_error(
                 resource,
@@ -184,9 +380,138 @@ class CredentialBlindBroker:
         )
 
 
+class _TestFixtureCredentialResolver:
+    __slots__ = ("_allow_test_fixtures",)
+
+    def __init__(self, *, allow_test_fixtures: bool) -> None:
+        self._allow_test_fixtures = allow_test_fixtures
+
+    def __call__(self, credential_ref: str) -> str:
+        if not self._allow_test_fixtures:
+            raise RuntimeError("credential reference has no trusted resolver")
+        if credential_ref == "test-fixture://nonsecret":
+            return "trusted-child-fixture"
+        for prefix, fail in (
+            ("test-vault-file:", False),
+            ("test-vault-error:", True),
+        ):
+            if not credential_ref.startswith(prefix):
+                continue
+            path = Path(credential_ref.removeprefix(prefix))
+            if not path.is_absolute() or not path.is_file():
+                raise RuntimeError("trusted credential reference is unavailable")
+            credential = path.read_text(encoding="utf-8")
+            if fail:
+                raise RuntimeError(
+                    f"vault failed while loading {credential}"
+                )
+            return credential
+        raise RuntimeError("credential reference has no trusted resolver")
+
+
+class _TestFixtureNetworkDriver:
+    __slots__ = ("_allow_test_fixtures", "_path")
+
+    def __init__(
+        self,
+        runtime_root: Path,
+        *,
+        allow_test_fixtures: bool,
+    ) -> None:
+        self._path = runtime_root / "network.jsonl"
+        self._allow_test_fixtures = allow_test_fixtures
+
+    def __call__(
+        self,
+        *,
+        credential: str,
+        provider: str,
+        destination: str,
+        verb: str,
+        request: object,
+    ) -> dict[str, object]:
+        del credential
+        outcomes = {
+            "test-fixture.created": "created",
+            "test-fixture.issue": "issue",
+            "test-fixture.fail-once": "fail_once",
+            "test-fixture.ambiguous": "ambiguous",
+            "test-fixture.explode": "explode",
+        }
+        outcome = (
+            outcomes.get(provider)
+            if self._allow_test_fixtures
+            else None
+        )
+        if outcome is None:
+            raise ProxyRequestError(
+                "provider has no trusted outbound transport"
+            )
+        prior = self._path.exists()
+        with self._path.open("a", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(
+                    {
+                        "provider": provider,
+                        "destination": destination,
+                        "verb": verb,
+                        "request": request,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        if outcome == "explode":
+            raise RuntimeError("destination request failed")
+        if outcome == "fail_once" and not prior:
+            raise RuntimeError("destination rejected once")
+        if outcome == "ambiguous":
+            raise AmbiguousProxyOutcome("connection dropped after send")
+        if outcome == "created":
+            return {"status": "created"}
+        return {"issue_id": 17}
+
+
+class _JsonlAuditWriter:
+    __slots__ = ("_path",)
+
+    def __init__(self, path: str) -> None:
+        self._path = Path(path)
+
+    def __call__(self, record: dict[str, object]) -> None:
+        with self._path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _build_credential_broker_dispatch(
+    config: dict[str, Any],
+) -> Callable[[str, str, object], Any]:
+    runtime_root = Path(config["runtime_root"])
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    broker = CredentialBlindBroker(
+        ConnectionLedger(config["ledger_db_path"]),
+        resolve_credential=_TestFixtureCredentialResolver(
+            allow_test_fixtures=config["allow_test_fixtures"],
+        ),
+        network_request=_TestFixtureNetworkDriver(
+            runtime_root,
+            allow_test_fixtures=config["allow_test_fixtures"],
+        ),
+        audit=_JsonlAuditWriter(str(runtime_root / "audit.jsonl")),
+    )
+    return broker.dispatch
+
+
+_TRUSTED_DISPATCH_FACTORIES = {
+    "credential_broker_v1": _build_credential_broker_dispatch,
+}
+
+
 def _contains_secret(value: object, secret: str) -> bool:
     if isinstance(value, str):
         return secret in value
+    if isinstance(value, bytes):
+        return secret.encode("utf-8") in value
     if isinstance(value, dict):
         return any(
             _contains_secret(key, secret) or _contains_secret(item, secret)
@@ -279,8 +604,14 @@ def _reject_secret_material(value: object) -> None:
 class ConnectionLedger:
     """SQLite ledger for user-owned connections and universe grants."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        allow_test_fixtures: bool = False,
+    ) -> None:
         self._db_path = Path(db_path)
+        self._allow_test_fixtures = allow_test_fixtures
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
@@ -447,13 +778,31 @@ class ConnectionLedger:
             )
         return cursor.rowcount > 0
 
+    def revoke_connection(
+        self,
+        connection_id: str,
+        *,
+        revoked_at: float | None = None,
+    ) -> bool:
+        """Revoke a connection resource and thereby invalidate all of its grants."""
+        timestamp = time.time() if revoked_at is None else revoked_at
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE outbound_connections
+                   SET revoked_at = ?
+                 WHERE connection_id = ?
+                """,
+                (timestamp, connection_id),
+            )
+        return cursor.rowcount > 0
+
     def resolve_scoped_proxy(
         self,
         *,
         owner_user_id: str,
         universe_id: str,
         connection_class: str,
-        dispatch: Callable[[str, str, object], Any],
     ) -> ScopedConnectionProxy:
         """Resolve exactly one current grant; absent/revoked/ambiguous fail closed."""
         with self._connect() as connection:
@@ -490,12 +839,54 @@ class ConnectionLedger:
         if len(active) != 1:
             raise GrantResolutionError("ambiguous outbound connection grants")
         row = active[0]
+        factory_reference = "credential_broker_v1"
+        grant_runtime_id = hashlib.sha256(
+            row["grant_id"].encode("utf-8")
+        ).hexdigest()
+        factory_config = {
+            "allow_test_fixtures": self._allow_test_fixtures,
+            "ledger_db_path": str(self._db_path.resolve()),
+            "runtime_root": str(
+                (
+                    self._db_path.parent
+                    / ".outbound-proxy"
+                    / grant_runtime_id
+                ).resolve()
+            ),
+        }
+        context = multiprocessing.get_context("spawn")
+        client_channel, server_channel = context.Pipe(duplex=True)
+        worker = context.Process(
+            target=_run_proxy_worker,
+            args=(
+                server_channel,
+                factory_reference,
+                factory_config,
+                row["grant_id"],
+                tuple(json.loads(row["scopes_json"])),
+            ),
+            daemon=True,
+            name=f"outbound-proxy-{row['grant_id']}",
+        )
+        worker.start()
+        server_channel.close()
+        if not client_channel.poll(5.0):
+            client_channel.close()
+            worker.terminate()
+            worker.join(timeout=1.0)
+            raise ProxyRequestError("outbound proxy failed to start")
+        ready = _receive_message(client_channel)
+        if ready != {"op": "ready"}:
+            client_channel.close()
+            worker.terminate()
+            worker.join(timeout=1.0)
+            raise ProxyRequestError("outbound proxy failed to start")
         return ScopedConnectionProxy(
             grant_id=row["grant_id"],
             provider=row["provider"],
             destination=row["destination"],
             scopes=tuple(json.loads(row["scopes_json"])),
-            _dispatch=dispatch,
+            _channel=_ProxyChannel(client_channel, worker),
         )
 
     def _active_resource_for_grant(
@@ -528,27 +919,47 @@ class ConnectionLedger:
             revoked_at=row["revoked_at"],
         )
 
-    def evaluate_unprompted_action_cap(
-        self,
-        *,
-        grant_id: str,
-        action_value: float,
-    ) -> CapDecision:
-        """Evaluate only the unprompted-action axis; tool/spend gates are separate."""
-        if action_value < 0:
-            raise ValueError("action_value must be non-negative")
+    def require_active_grant(self, grant_id: str) -> ConnectionGrant:
+        """Return a grant only while both it and its connection are current."""
         grant = self.get_grant(grant_id)
         if grant is None:
             raise GrantResolutionError("absent outbound connection grant")
         if grant.revoked_at is not None:
             raise GrantResolutionError("revoked outbound connection grant")
+        if self._active_resource_for_grant(grant_id) is None:
+            raise GrantResolutionError("revoked outbound connection resource")
+        return grant
+
+    def evaluate_unprompted_action_cap(
+        self,
+        *,
+        grant_id: str,
+        action_value: float,
+        action_unit: str,
+    ) -> CapDecision:
+        """Evaluate only the unprompted-action axis; tool/spend gates are separate."""
+        if not math.isfinite(action_value):
+            raise ValueError("action_value must be finite")
+        if action_value < 0:
+            raise ValueError("action_value must be non-negative")
+        normalized_unit = _required("action_unit", action_unit)
+        grant = self.require_active_grant(grant_id)
         cap = grant.unprompted_action_cap
+        if cap is not None and normalized_unit != cap.unit:
+            raise ValueError(
+                f"action_unit {normalized_unit!r} does not match cap unit {cap.unit!r}"
+            )
         status = (
             "held"
             if cap is not None and action_value > cap.maximum
             else "automatic"
         )
-        return CapDecision(status=status, cap=cap, action_value=action_value)
+        return CapDecision(
+            status=status,
+            cap=cap,
+            action_value=action_value,
+            action_unit=normalized_unit,
+        )
 
     def create_connector_artifact(
         self,

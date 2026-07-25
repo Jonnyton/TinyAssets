@@ -20,11 +20,11 @@
 
 ## 3. Replay safety, reconciliation, and batches
 
-- [ ] 3.1 Derive the effect key from durable goal, schedule-period, and item-fingerprint identity; journal intent before firing and consult the journal on every replay.
-- [ ] 3.2 Reconcile ambiguous outcomes with the destination where the destination supports it, and persist a terminal result in every case.
-- [ ] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results. Do not claim rollback of already-terminal effects — test that the reported outcome distinguishes "nothing further fired" from "earlier effects reversed".
-- [ ] 3.5 Replace time-only pending-row reclamation with destination reconciliation, holding for remediation where the destination exposes no reconciliation interface.
-- [ ] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
+- [x] 3.1 Derive the effect key from durable goal, schedule-period, and item-fingerprint identity; journal intent before firing and consult the journal on every replay.
+- [x] 3.2 Reconcile ambiguous outcomes with the destination where the destination supports it, and persist a terminal result in every case.
+- [x] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results. Do not claim rollback of already-terminal effects — test that the reported outcome distinguishes "nothing further fired" from "earlier effects reversed".
+- [x] 3.5 Replace time-only pending-row reclamation with destination reconciliation, holding for remediation where the destination exposes no reconciliation interface.
+- [x] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
 
 ## 4. Inboxes and typed artifacts
 
