@@ -29,7 +29,8 @@ Every provider-attempt receipt SHALL distinguish `provider`, `model`, and `famil
 #### Scenario: Host authority is invalid for a universe-scoped remote success
 - **WHEN** an explicit universe is resolved for a successful remote provider call
 - **THEN** its receipt MUST NOT report `authority_class=host`
-- **AND** implementation of this invariant remains blocked until #1606 / R2-1a or its declared successor settles the fail-closed routing boundary
+- **AND** #1592's landed fail-closed credential isolation supplies the environment boundary for this invariant
+- **AND** receipt implementation remains blocked until R2-1a populates selected-engine `allowed_providers` and #1691 settles the call-local authority-class enum and evidence source
 
 #### Scenario: Local and synthetic classifications are not remote authority
 - **WHEN** a local provider succeeds
