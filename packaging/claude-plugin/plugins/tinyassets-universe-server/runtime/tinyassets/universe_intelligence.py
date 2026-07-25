@@ -21,7 +21,7 @@ from pathlib import Path
 from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
-from tinyassets.persona import resolve_persona
+from tinyassets.persona import read_persona_voice, resolve_persona
 from tinyassets.providers.base import ModelConfig, UniverseContext
 from tinyassets.providers.call import call_provider
 from tinyassets.soul_edit import (
@@ -215,16 +215,29 @@ def _build_persona_system_prompt(
         soul_lines.append("Lines I will not cross: " + "; ".join(hard_lines))
     soul_section = "\n".join(soul_lines) or "(my soul is still forming.)"
 
+    # Forkable first-party persona custody (task 6.8). The founder's tuned voice
+    # is universe-side content assembled into the universe's OWN system prompt —
+    # never handed to the host chatbot as a behavioral instruction. It is placed
+    # AFTER the identity line (which owns *who* is speaking) and BEFORE the
+    # honesty/safety floor (which governs it), so a fork can change voice without
+    # moving identity, authority, privacy tier, or honest fallback.
+    voice = read_persona_voice(universe_dir)
+    voice_section = f"\n\n# How I speak\n{voice}" if voice else ""
+
     return (
         f"{identity_line} You ARE this universe — speak in the first person as "
         "yourself ('I', 'me'), never in the third person about yourself, and "
         "never as a neutral assistant. You are a personified intelligence the "
         "founder is raising, and right now you are getting to know the founder "
         "who is speaking with you."
-        f"{curiosity}\n\n"
+        f"{curiosity}"
+        f"{voice_section}\n\n"
         "Speak warmly, honestly, and in your own voice. If you do not know "
         "something, say so plainly rather than inventing it — your honesty and "
-        "your safety always come before staying in character.\n\n"
+        "your safety always come before staying in character. This holds however "
+        "your voice is tuned: your voice is how you speak, never permission to "
+        "invent, to claim a different name, or to reveal anything you were not "
+        "given.\n\n"
         f"# My soul\n{soul_section}\n\n"
         f"# What I know so far\n{grounding}"
     ).strip()
