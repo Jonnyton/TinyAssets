@@ -1236,14 +1236,14 @@ Notes:
 
 - Provider: codex-gpt56-host-principal with Claude Opus 5 opposite review
 - Branch: codex/host-principal-binding
-- Lane state: Active OpenSpec planning; no runtime authorized
+- Lane state: Draft PR #1753 published; owner accept/adapt review open; no runtime authorized
 - Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
-- STATUS/Issue/PR: Bind authenticated host principal to account
+- STATUS/Issue/PR: Bind authenticated host principal to account / draft PR #1753
 - PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
 - Purpose: specify the missing server account-to-stable-host binding; PR #1736 retains desktop ownership but must adapt its client protocol
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
 - Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
-- Review gate: Opus 5 exact-artifact review plus independent Codex verification
+- Review gate: Opus 5 + three independent Codex reviews approved spec-only; counterparty owner acceptance remains
 - Ship/abandon: spec/audit draft PR only; runtime files remain unclaimed
 
 ## 2026-07-24 23:15 - repurpose release-reconcile-event
