@@ -156,6 +156,30 @@ def test_offline_registration_recovers_once_without_reinstall(tmp_path: Path) ->
     assert len(origin.registrations) == 1
 
 
+def test_expired_or_rejected_refresh_stops_online_advertising(tmp_path: Path) -> None:
+    onboarding = _onboarding_module()
+    service, origin, _ = _service(onboarding, tmp_path, register_offline=True)
+    attempt = service.begin_authorization()
+    origin.expected_nonce = attempt.nonce
+    service.complete_authorization(
+        state=attempt.state,
+        code="authorization-code",
+        redirect_uri="http://127.0.0.1:43119/callback",
+    )
+
+    def reject_refresh(_refresh_token: str):
+        raise onboarding.AuthorizationRejected("refresh expired")
+
+    origin.refresh = reject_refresh
+    result = service.recover_pending_registration()
+
+    assert result.status == "authorization_required"
+    assert result.advertise_online is False
+    assert json.loads((tmp_path / "onboarding.json").read_text())["host_id"] == (
+        attempt.host_id
+    )
+
+
 def test_each_clean_machine_gets_a_distinct_host_identity(tmp_path: Path) -> None:
     onboarding = _onboarding_module()
     first, _, _ = _service(onboarding, tmp_path / "first")
