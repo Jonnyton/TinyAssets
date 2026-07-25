@@ -3,7 +3,16 @@ title: 0xCodez agentic-pro patterns — TinyAssets implications
 date: 2026-07-25
 initial_provider: claude-code-opus5
 required_reviewer_provider: codex
-review_status: PENDING — no build authority flows from this document
+review_status: >
+  ADAPT (codex, 2026-07-25, against commit 1d8c9fc5) — findings folded, logged
+  as R1-R6 in section 11.2. Build authority is per-candidate only: see the
+  Status column of section 9. One candidate withdrawn (premise refuted), one
+  fold-in, one design-only, one later-content-experiment; two adapt with stated
+  preconditions. GAP-9 has no candidate and no authority.
+review_verdict: adapt
+review_rounds: >
+  round 1 = code-claim fact-check (4 confirmed / 3 refuted, section 11.1);
+  round 2 = skill section 8 opposite-provider research review (section 11.2)
 artifact_kind: external-research-implications
 source_reachability: reachable via public mirrors (X itself login-walled)
 load-bearing-question: >
@@ -14,15 +23,23 @@ load-bearing-question: >
 
 # 0xCodez agentic-pro patterns — TinyAssets implications
 
-> **NO BUILD AUTHORITY.** This is research. Nothing here is a licence to
-> implement, push, roll out live, or advance acceptance tests. Per
-> `AGENTS.md` §"Project Skills" and `.agents/skills/external-research-implications/SKILL.md`
-> §8, a research-derived finding made by Claude requires an **opposite-provider
-> (Codex) review** returning `approve` or `adapt` before any build work starts.
-> Initial provider: `claude-code-opus5`. Required reviewer: `codex`.
-> The Codex claim-refutation pass run alongside this draft (§11) is a
-> *fact-check of the code claims*, **not** the §8 research review — that review
-> is still owed.
+> **BUILD AUTHORITY IS PER-CANDIDATE — read §9's Status column before acting.**
+> The skill §8 opposite-provider review ran on 2026-07-25 and returned
+> **`adapt`** (initial provider `claude-code-opus5`; reviewer `codex`). That
+> unblocks the *gate*, not the *scope*: of the six candidates, one is
+> **withdrawn** (its premise was refuted), one is a **fold-in** to an existing
+> lane, one is **design-only with no implementation authority**, one is a
+> **later content experiment rather than a runtime change**, and the two
+> remaining are **`adapt`** with preconditions that must be met first
+> (creation semantics; server-bound schedule ownership). GAP-9, added *by* the
+> review, has **no candidate and no authority** — it needs its own review round.
+>
+> Two rounds of cross-provider verification are logged in §11, and **refuted
+> claims are preserved rather than deleted** (§11.1 R-round: 4 confirmed / 3
+> refuted; §11.2 R1–R6). The most consequential correction is **R1: the GAP-8
+> self-approval claim is withdrawn** — `approve_source_code` is gated upstream
+> by the `tinyassets.extensions.admin` action scope. Do not build against the
+> withdrawn version, which is preserved in §8 and §11.2 for the record only.
 
 ---
 
@@ -69,12 +86,22 @@ missing starter branch."*
 So the honest answers to the host's two headline questions:
 
 1. **"Can our users do all these things?"** — On the *substrate*: mostly yes,
-   with one genuine structural gap (parallel runtime-cardinality fan-out) and
-   one correctly out-of-scope one (own-model training). On the *live user
-   surface*: mostly **no**, not because the primitives are missing but because
-   the two surfaces disagree about what the connector is. This is a
-   **surface-coherence** problem — a much cheaper class of fix than a missing
-   primitive, and exactly the class the minimal-primitives principle arbitrates.
+   with **two** genuine structural gaps and one correctly out-of-scope item
+   (own-model training). The two structural gaps are parallel
+   runtime-cardinality fan-out (GAP-3) and — added on Codex research review,
+   §11.2 R2 — **ordinary nodes are not tool-using agents** (GAP-9): a
+   prompt-template node is text-in/text-out, `tools_allowed` is honored only
+   inside approved `source_code` (`graph_compiler.py:1793`), and even there the
+   alias set is selected goals/gates reads, wiki reads, and paced enqueue. The
+   official Anthropic primary defines the foundational building block as an
+   *augmented* LLM — retrieval, tools, memory — so a graph whose ordinary nodes
+   cannot reach a repo, CI, issues, an external API, or the web is not at parity
+   with the taught agent node, however good its state contracts are. On the
+   *live user surface*: mostly **no**, not because the primitives are missing
+   but because the two surfaces disagree about what the connector is. That half
+   is a **surface-coherence** problem — a much cheaper class of fix than a
+   missing primitive, and exactly the class the minimal-primitives principle
+   arbitrates.
 2. **"Would the hardcore pro actually want to use us?"** — Today, no. They would
    load the prompt, be told to call `extensions`, find no such tool, and leave.
    The draw we *do* have (MIT licence, remixable commons with real lineage, an
@@ -82,16 +109,29 @@ So the honest answers to the host's two headline questions:
    behind a surface that contradicts itself in the first thirty seconds.
 
 **A security finding surfaced during cross-provider verification** (§8, GAP-8)
-and is independent of the 0xCodez framing: `source_code` nodes `exec()` with
-full `__builtins__`, and `approve_source_code` records approval from
-`_current_actor()` with **no host-role and no author check**. It needs a
-`STATUS.md` Concern row raised by whoever folds this back — this branch does not
-edit `STATUS.md`, so the finding would otherwise stay invisible.
+and is independent of the 0xCodez framing — **but half of it was wrong and has
+been withdrawn** (Codex research review, §11.2 R1). What stands: `source_code`
+nodes `exec()` with full `__builtins__`, in-process, with **no OS sandbox**,
+fenced only by a substring denylist. That is the standing STATUS P1 "no OS
+engine sandbox" concern, restated with its customer-facing consequence, not a
+new finding. What is **withdrawn**: the claim that a merely signed-in user can
+self-approve their own code. `approve_source_code` is gated upstream by
+`_dispatch_scope_error("extensions", action)` (`api/extensions.py:399`) →
+`tinyassets.extensions.admin` (`auth/provider.py:410-418`), and WorkOS
+production founders receive `read`/`write`/`costly`/`submit_request`/`list` but
+**not** `admin` (`auth/workos_provider.py:29-40`, asserted by
+`tests/test_source_code_approval_action.py:118-124`). The missing handler-local
+author check does not establish a production self-approval path. `STATUS.md` was
+corrected accordingly on `origin/main` (#1758) after this artifact was first
+committed; the residual is regression coverage, not a new guard.
 
-The strategic reframe: **0xCodez's audience is our exact target customer, and
-they are graduating from "prompt an agent" to "author, verify, schedule, and
-compound an agent system."** TinyAssets already *is* that system. The gap is
-that we ship it with the authoring panel unbolted.
+The strategic reframe — **stated as a hypothesis to validate, not a conclusion
+this evidence establishes** (Codex research review, §11.2 R4): 0xCodez's audience
+is plausibly our exact target customer, and they are graduating from "prompt an
+agent" to "author, verify, schedule, and compound an agent system." TinyAssets
+already *is* that system on the substrate. The gap is that we ship it with the
+authoring panel unbolted — and, per GAP-9, with the nodes themselves unable to
+touch anything outside the graph.
 
 ---
 
@@ -124,11 +164,28 @@ workshop, a Google/OpenAI/IBM course, a Karpathy lecture) and compress it into a
 numbered 14-step breakdown with a memorable spine.
 
 **This matters for how we weight it.** The *patterns* are not 0xCodez's — they
-are Anthropic's, Google's, Karpathy's. What 0xCodez supplies is **the canonical
-vocabulary the target customer now thinks in**, and a reliable read on what that
-customer believes competence looks like this quarter. Treat the account as a
-**demand signal with high fidelity and zero implementation authority**. Do not
-cite it as a technical primary source; cite the artifacts it points at.
+are Anthropic's, Google's, Karpathy's. What 0xCodez supplies is **one fresh
+demand-language signal** — a readable sample of how a segment of this audience
+is currently phrasing competence. Treat the account as a **demand signal with
+zero implementation authority**. Do not cite it as a technical primary source;
+cite the artifacts it points at.
+
+**Calibration (Codex research review, §11.2 R5).** An earlier draft called this
+"the canonical vocabulary the target customer now thinks in" and said the market
+is standardizing on it. That overstates the sample: the mirror showed only tens
+to low hundreds of views on the relevant threads at fetch time, and the
+authoritative ideas predate the wording — Anthropic's
+[Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+already describes parallelization, orchestrator-workers, evaluator-optimizer
+loops, tools, memory, and programmatic workflows, and
+[How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system)
+documents parallel subagents and dynamic delegation. A targeted search surfaced
+no official Anthropic primary for the mirror's specific "Graph Engineering,"
+`parallel()`, `pipeline()`, `/workflows`, or `ultracode` product claims — those
+are usable as curator/audience evidence, **not** as verified product facts. The
+*decomposition* in §3.1 is separately corroborated by the
+[Loop Engineering mirror](https://hyper.ai/en/papers/Loop-Engineering-IEEE) and
+stands.
 
 **License/adoption constraints:** none. Nothing to vendor, nothing to attribute,
 no code to import. The entire integration surface is conceptual.
@@ -235,6 +292,7 @@ Every row verified against code in this checkout at
 | Outside module | TinyAssets equivalent | Evidence | Assessment |
 |---|---|---|---|
 | Node = unit of work with contract | `NodeDefinition` — `input_keys`, `output_keys`, `strict_input_isolation`, `prompt_template`, `timeout_seconds`, `retry_policy` | `tinyassets/branches.py:263` | **Stronger than taught.** Contracts are dataclass-validated with lossless JSON round-trip and a compile gate |
+| Node = **augmented LLM** (retrieval + tools + memory) — the foundational building block in the Anthropic primary | `NodeDefinition.tools_allowed` exists (`branches.py:307`) but `_build_node_mcp_invoker` has **exactly one call site** (`graph_compiler.py:1793`), inside the approved-`source_code` exec path. A prompt-template node is text-in/text-out and never sees `tools_allowed`. The alias set itself is two goals reads, two gates reads, wiki **reads**, and paced `dispatch.enqueue` | `graph_compiler.py:1375-1404,1679-1708,1793-1807`; `branches.py:307` | **GAP-9 — below the taught baseline.** No repo, CI, issue-tracker, external-API, or web access from any ordinary node; the only path is the `source_code` escape hatch |
 | Edge = data dependency | `EdgeDefinition` + `ConditionalEdge`, compiled onto a LangGraph `StateGraph` | `tinyassets/branches.py:577,599`; `tinyassets/graph_compiler.py:2912-2933` | **Parity** |
 | Validated structured output | JSON contract injection + coercion + `_extract_json_object` | `graph_compiler.py:836-960` | **Parity** |
 | Fan-in / barrier / reducers | `state_schema` with declared reducers; `append` concatenates, single-writer `merge` shallow-merges right-biased, **undeclared merge writes fail closed** | `openspec/specs/graph-execution-substrate/spec.md:42-65`; `graph_compiler.py:400-455` | **Stronger than taught.** 0xCodez's `parallel()` has no writer-conflict discipline at all |
@@ -246,7 +304,7 @@ Every row verified against code in this checkout at
 | Cycles with convergence | Cycles permitted; **a cycle with no exit fails validation**; default recursion limit 100, per-run override | spec:34,101 | **Stronger.** The convergence condition is compile-enforced, not conventional |
 | Model tiering | `model_hint`, `reasoning_effort`, `llm_policy` per node with branch-level `default_llm_policy` fallback | `branches.py:300-330,905`; `graph_compiler.py:2884` | **Stronger than taught** |
 | Sub-agent / isolated context | `invoke_branch_spec` (live blocking/async), `invoke_branch_version_spec` (frozen at a version), `await_run_spec`, `attach_existing_child_run`, depth cap | `branches.py:366-393`; spec:140-287 | **Substantially stronger.** Frozen-version child invocation has no analogue in the taught material |
-| **Discovery** (loop move 1) | `producers/` (`goal_pool`, `node_bid`, `branch_task`), `work_targets.py`, `idle_cycle.py`, `enrichment_signals.py` | module tree | **Substrate present; surface absent** |
+| **Discovery** (loop move 1) | `producers/` (`goal_pool`, `node_bid`, `branch_task`), `work_targets.py`, `idle_cycle.py`, `enrichment_signals.py` | module tree | **Daemon-internal only.** *Corrected per §11.2 R2:* this is the daemon producing its own tasks, **not** a user-authored node discovering work. A user's node can only discover via wiki reads inside approved `source_code` — so this row depends on GAP-9, not just on the surface |
 | **Handoff** (loop move 2) | Per-run checkpoint threads, `strict_input_isolation`, `node_sandbox.py`, per-universe dirs | spec:93-100 | **Parity**, different isolation model (state-scoped, not worktree) |
 | **Verification** (loop move 3) | `judge_run`, `evaluation/`, `NodeEvaluator` stats + transitions, `attest/verify/dispute_gate_event` | `node_eval.py:150`; `api/extensions.py:751` | **Stronger** — includes a dispute/retract path |
 | **Persistence** (loop move 4) | `SqliteSaver` checkpointing, `notes.json`, wiki commons, `project_memory_*`, `memory/` (episodic, archival, consolidation, temporal, versioning) | `checkpointing/sqlite_saver.py:37`; `tinyassets/memory/` | **Substantially stronger** |
@@ -259,7 +317,7 @@ Every row verified against code in this checkout at
 | KG **Assemble** | `add_entity` / `add_edge` / `add_facts` with `provenance`, `confidence`, `hardness`, `horizon`, `seeded_scene` columns | `knowledge/knowledge_graph.py:309,407,497`; schema at `:222` | **Stronger.** Provenance *and* a truth-value typing axis (`FactWithContext`, `AGENTS.md` hard rule #6) |
 | KG **Query** | `query_facts`, `hipporag_query`, `raptor_query`, Leiden communities, `get_epistemic_access` | `knowledge_graph.py:558,630,665,769` | **Substantially stronger** — HippoRAG + RAPTOR + community detection + epistemic access control |
 | KG as *shared* multi-agent memory | Constructed in only two places: `memory/archival.py`, `retrieval/agentic_search.py`. **No MCP path in or out** | grep `KnowledgeGraph(` | **GAP-4 — built, unreachable** |
-| Dynamic workflow script | `source_code` nodes — fail-closed on `approved` + `approved_source_hash == sha256(src)` + a substring denylist, then `exec()` **in-process with full `__builtins__`, no OS sandbox**; the approve handler applies **no host-role and no author check** | `graph_compiler.py:1318-1372,1805-1807`; `api/branches.py:514-531`; spec:77-92 | **GAP-8 — security, not a feature gap** |
+| Dynamic workflow script | `source_code` nodes — fail-closed on `approved` + `approved_source_hash == sha256(src)` + a substring denylist, then `exec()` **in-process with full `__builtins__`, no OS sandbox**. Approval is gated upstream by the `tinyassets.extensions.admin` action scope (*corrected per §11.2 R1* — an earlier draft claimed the handler was self-approvable; it is not) | `graph_compiler.py:1318-1372,1805-1807`; `api/extensions.py:399`; `auth/provider.py:410-418`; spec:77-92 | **GAP-8 — the standing OS-sandbox P1, restated with its commons consequence. Not a new authorization gap** |
 | Build-your-own-LLM | Nothing. `providers/router.py` routes to external providers; no training, no dataset export, no eval-set export | module tree | **GAP-5 — not expressible, and correctly so** |
 | Provenance / lineage / attribution | `fork_from`, `parent_def_id`, `record_remix`, `get_provenance`, `fork_tree`, `attribution/`, `contribution_events.py`, `quality_leaderboard`, `recommended_parent_for_fork` | `branches.py:868-870`; `api/market.py:898,1012`; `api/branches.py:3348` | **Unique. No analogue anywhere in the taught corpus** |
 | Paid work market | `write_graph target=request` with `pickup_incentive`, `priority_weight`, `directed_daemon_id` — **reachable on the canonical surface**; `escrow_*` and settlement are not | `universe_server.py:611-630`; `api/extensions.py:749` | **Unique. Partially reachable** |
@@ -339,7 +397,10 @@ the authoring-surface incoherence by asking their universe to build the graph
 for them. In-node MCP access is equally narrow:
 `_NODE_MCP_ACTION_ALIASES` (`graph_compiler.py:1375-1404`) permits two goals
 reads, two gates reads, wiki **reads only** (writes explicitly refused at
-`:1741-1745`), and `dispatch.enqueue` behind a fail-closed env gate.
+`:1741-1745`), and `dispatch.enqueue` behind a fail-closed env gate — and even
+*that* set is reachable only from an approved `source_code` node, because
+`_build_node_mcp_invoker` has a single call site inside the exec path
+(`:1793`). A prompt-template node has **no** tool access at all. See GAP-9.
 
 ---
 
@@ -393,30 +454,40 @@ hit it.
 | 7 | Model tiering per node | ✅ `model_hint`/`reasoning_effort`/`llm_policy` | ✅ | ❌ | **expressible-with-missing-primitive-#1** |
 | 8 | Sub-agent with isolated context | ✅ live/frozen/await/attach child invocation | ✅ | ❌ | **expressible-with-missing-primitive-#1** |
 | 9 | **Scheduling** — wake the loop on a timer | ✅ cron + subscriptions + pause | ✅ `schedule_branch` | ❌ no canonical verb | **expressible-with-missing-primitive: schedule on the canonical surface (GAP-2)** |
-| 10 | **Discovery** — the loop finds its own work | ✅ producers, work_targets, idle_cycle | ✅ | ❌ | **expressible-with-missing-primitive-#9** (schedule + wiki-read node ≈ discovery) |
+| 10 | **Discovery** — the loop finds its own work | ⚠️ producers/work_targets/idle_cycle are **daemon-internal**; a user's node discovers only via wiki reads inside approved `source_code` | ⚠️ | ❌ | **expressible-with-missing-primitives #9 *and* #20** — *corrected per §11.2 R2; the original row conflated daemon task production with user-authored node tool access* |
 | 11 | Handoff / isolation between parallel agents | ✅ state-scoped isolation + checkpoint threads | ✅ | ❌ | **expressible-with-missing-primitive-#1** |
 | 12 | Persistence across context death | ✅ checkpoints, notes, wiki, memory tiers | ✅ | ⚠️ `write_page` + `read_graph target=run` yes | **expressible-today (partially)** |
 | 13 | Memory that compounds → graduates into skills | ✅ promotion/consolidation/reflexion; skills inherit across forks | ✅ `add_skill`/`update_skill` patch ops | ❌ | **expressible-with-missing-primitive-#1 (GAP-6 closes with it)** |
 | 14 | Knowledge graph as shared agent memory (E/R/A/Q) | ✅ and stronger (provenance, HippoRAG, RAPTOR, Leiden, epistemic access) | ❌ no MCP path in or out | ❌ | **not-expressible as a platform KG — GAP-4 (composable as a commons pattern)** |
-| 15 | Arbitrary code as an orchestration node | ✅ full-builtins `exec` | ⚠️ self-approvable — see GAP-8 | ❌ | **expressible-but-unsafe — GAP-8 is a security finding, not a feature request** |
+| 15 | Arbitrary code as an orchestration node | ✅ full-builtins `exec`, **no OS sandbox** | ⚠️ approval requires the `extensions.admin` scope (*corrected §11.2 R1 — not self-approvable*) | ❌ | **expressible-but-unsafe — GAP-8. The unsafety is the missing OS sandbox (standing P1), not a missing approval role** |
 | 16 | Bring your own model / provider | ✅ credential vault + `set_engine` | ✅ (being retired) | ❌ | **expressible-with-missing-primitive — GAP-7 (owned elsewhere)** |
 | 17 | Train / fine-tune your own LLM | ❌ nothing | ❌ | ❌ | **not-expressible — GAP-5 (correctly out of scope)** |
 | 18 | Publish, fork, remix, and get attributed | ✅ full lineage + attribution ledger | ✅ `record_remix`/`get_provenance`/`fork_tree` | ⚠️ `read_graph target=branch` reads any public branch | **expressible-today (read); recording not discoverable** |
 | 19 | Hire the work out / get paid | ✅ market + escrow + settlement | ✅ | ⚠️ `write_graph target=request` reachable; escrow not | **expressible-today (partially)** |
+| 20 | **Node as a tool-using agent** — a node that can read a repo, query CI, file an issue, hit an external API, or search the web | ⚠️ `tools_allowed` exists but is honored only inside approved `source_code` (`graph_compiler.py:1793`); alias set is goals/gates reads, wiki reads, paced enqueue (`:1375-1404`). Prompt-template nodes: nothing | ⚠️ only via the `source_code` escape hatch | ❌ | **not-expressible for an ordinary node — GAP-9.** *Added on Codex research review (§11.2 R2); this row was missing from the original pass* |
 
-**Summary:** of 19 patterns, **2 discoverable today**, 3 partially, **1 genuinely
-not-expressible and correctly so** (#17), **1 unreachable by any path** (#14),
-**1 expressible-but-unsafe** (#15), and **11 blocked behind a surface that
-advertises the wrong tools**.
+**Summary:** of **20** patterns, **2 discoverable today**, 3 partially, **1
+genuinely not-expressible and correctly so** (#17), **1 unreachable by any path**
+(#14), **1 expressible-but-unsafe** (#15), **1 not expressible for an ordinary
+node** (#20), and **11 blocked behind a surface that advertises the wrong
+tools**.
 
-Two things follow, and they point in different directions:
+Three things follow, and they point in different directions:
 
-- **Eleven of nineteen unblock from one fix** — making the advertised surface
-  and the callable surface agree. That is the highest-leverage item on this
-  audit by a wide margin, and it is mostly not new code.
-- **The substrate is not the weak layer.** On raw capability TinyAssets is at or
-  ahead of everything 0xCodez teaches on 14 of 19 patterns. We are losing on
-  presentation, not on power.
+- **Eleven of twenty unblock from one fix** — making the advertised surface
+  and the callable surface agree. That is still the highest-leverage item on
+  this audit by a wide margin, and it is mostly not new code.
+- **The substrate is strong but not uniformly ahead.** *Corrected on Codex
+  research review (§11.2 R2).* The original claim was "at or ahead on **14 of
+  19**." That aggregate counted #10 Discovery as substrate-parity — it is
+  daemon-internal task production, not a user-authored node capability — and it
+  omitted the augmented-LLM node baseline entirely. Removing #10 from the parity
+  column and adding #20 as a non-parity row gives **13 of 20**. The direction of
+  the original claim survives; its size does not.
+- **Two of the three shortfalls are not presentation problems.** GAP-3 (parallel
+  fan-out) and GAP-9 (node tool access) are real substrate work. Only the
+  eleven-pattern block is a surface fix. An audit that says "we are losing on
+  presentation, not on power" is now too generous by exactly those two gaps.
 
 ---
 
@@ -475,22 +546,34 @@ runs their own loop, and reflexively distrusts platforms.
    surface at all** (`universe_intelligence.py:41-112,267-274`). It can
    remember and it can talk; it cannot do. A pro tests this in one prompt.
 4. **Arbitrary code runs in-process with full builtins behind a substring
-   denylist — and approval is self-service.** `exec(src, {"__builtins__":
-   __builtins__, …})` (`graph_compiler.py:1805-1807`), fenced only by
-   `if pattern in src` over `_DANGEROUS_PATTERNS` (`:1367-1372`), and
-   `approve_source_code` writes `approved=True` from `_current_actor()` with no
-   host-role check and no author check — an anonymous actor gets a *warning
-   string*, not a refusal (`api/branches.py:514-531`). A security-literate buyer
-   defeats a substring denylist in their head in ten seconds, and then will not
-   run anyone else's forked graph — **which disables the commons, the one thing
-   we're actually selling.** The STATUS P1 "no OS engine sandbox" concern is
-   customer-facing, not internal. See GAP-8.
-5. **No parallel dynamic fan-out.** The pro's default shape is
+   denylist.** `exec(src, {"__builtins__": __builtins__, …})`
+   (`graph_compiler.py:1805-1807`), fenced only by `if pattern in src` over
+   `_DANGEROUS_PATTERNS` (`:1367-1372`). A security-literate buyer defeats a
+   substring denylist in their head in ten seconds, and then will not run anyone
+   else's forked graph — **which disables the commons, the one thing we're
+   actually selling.** The STATUS P1 "no OS engine sandbox" concern is
+   customer-facing, not internal. See GAP-8. *Corrected per §11.2 R1:* an earlier
+   draft added "and approval is self-service." That is wrong — approval requires
+   the `tinyassets.extensions.admin` scope, which production founders do not
+   hold. The repellent is the sandbox, not the approval role, and it is the
+   weaker of the two arguments for it.
+5. **Ordinary nodes cannot touch anything outside the graph.** A node is a
+   prompt template with typed I/O; it cannot read the repo, query CI, file an
+   issue, call an external API, or search the web. `tools_allowed` exists on
+   `NodeDefinition` but is honored only inside approved `source_code`
+   (`graph_compiler.py:1793`), and the alias set there is selected goals/gates
+   reads, wiki reads, and paced enqueue (`:1375-1404`). This buyer's mental model
+   of "a node" is Anthropic's augmented LLM — retrieval, tools, memory — so the
+   first workflow they try to port hits it immediately, and the only way through
+   is the same `source_code` hatch item 4 just told them not to trust. **This is
+   the gap that makes items 4 and 6 load-bearing instead of theoretical.** See
+   GAP-9. *Added on Codex research review (§11.2 R2).*
+6. **No parallel dynamic fan-out.** The pro's default shape is
    `parallel(items.map(...))` where `items` came from the previous node. Ours
    requires the width at design time, or a sequential loop inside an approved
-   `source_code` node — which is exactly the escape hatch a security-conscious
-   buyer won't take. They hit this on their first real graph.
-6. **BYOC is being retired from the surface while the alternative isn't live.**
+   `source_code` node — the same escape hatch, and it needs an admin to open it.
+   They hit this on their first real graph.
+7. **BYOC is being retired from the surface while the alternative isn't live.**
    `set_engine` deposits a BYO key into the per-universe vault
    (`api/universe.py:5674`) but is fat-tool-only, and the active
    `retire-mcp-provider-secret-deposit` lane removes the MCP deposit path. Net
@@ -498,12 +581,12 @@ runs their own loop, and reflexively distrusts platforms.
    first question is *which model runs my node*, that is close to fatal.
    Whatever replaces it must land **before** the deposit path goes away, or the
    window where the honest answer is "you can't" becomes a permanent impression.
-7. **Their loop already works.** `.claude/`, a cron, a worktree script, a
+8. **Their loop already works.** `.claude/`, a cron, a worktree script, a
    verifier subagent — the harness is a weekend. We are not competing with
    nothing; we are competing with something they already own and trust. The only
    defensible pitch is what a *single* engineer structurally cannot build:
    **other people's verified, attributed, forkable graphs.** Not the runtime.
-8. **Forced shapes.** Universe/branch/node/goal is our vocabulary, not theirs
+9. **Forced shapes.** Universe/branch/node/goal is our vocabulary, not theirs
    (agent/tool/graph/task). Onboarding auto-creates a universe and binds a
    founder before they've decided they want one. A pro reads mandatory ceremony
    as a tax.
@@ -520,12 +603,28 @@ advertised surface true, give it a create route, then seed the commons with the
 patterns this audience already believes in** (diamond audit, verifier gate,
 loop-until-dry discovery, extract-resolve-assemble-query memory).
 
-**With GAP-1 closed, GAP-2 shipped, GAP-8 fixed, and four seeded reference
-graphs: plausibly yes** — for the commons and the ledger, never for the runtime.
-GAP-8 is load-bearing for that sentence, not incidental: a commons whose whole
-value is running *other people's* graphs cannot ship on self-approved,
-full-builtins, in-process `exec`. **We should stop pitching the runtime and
-start pitching the ledger.**
+**With GAP-1 closed, GAP-9 answered, GAP-2 shipped, GAP-8's sandbox residual
+addressed, and reference graphs seeded: plausibly yes** — for the commons and the
+ledger, never for the runtime. GAP-8 is load-bearing for that sentence, not
+incidental: a commons whose whole value is running *other people's* graphs
+cannot ship on full-builtins, in-process `exec` with no OS sandbox, regardless of
+who signed the approval. GAP-9 is load-bearing in the other direction: a commons
+of graphs whose nodes cannot touch a repo, CI, or the web is a commons of
+prompt chains, which is not what this audience wants to fork.
+
+**On "stop pitching the runtime, pitch the ledger" — reframed as a hypothesis
+(Codex research review, §11.2 R4).** The first half is supported: graph
+orchestration patterns are old, common, and available in tools this buyer may
+already own, so runtime features alone are a weak differentiator. The ledger is
+also real in the code. What this evidence does **not** show is that 0xCodez's
+audience values that ledger, would switch for it, or treats it as the primary
+purchase criterion — none of the sampled threads evaluates provenance markets,
+attribution, remix economics, or paid work. The ledger is also not yet coherently
+reachable from the canonical surface. So the defensible statement is:
+**differentiate on a verified, attributed, forkable commons, and validate that
+proposition with target users — do not claim the source proved it.** Pitching
+*only* the ledger before authoring, tool-using nodes, security, and
+discoverability are addressed would overrun both the evidence and the product.
 
 ---
 
@@ -540,11 +639,15 @@ shrink. **Nothing below adds a top-level handle.** Every proposal is a *target*
 or *field* on an existing handle, except where an irreducibility finding is
 explicitly claimed.
 
-Ranked by (unblocked patterns × customer-visibility) ÷ build cost.
+Ranked by (unblocked patterns × customer-visibility) ÷ build cost. **Ranks were
+revised on the Codex research review (§11.2 R2):** GAP-9 enters at rank 2 —
+ahead of scheduling and fan-out, because both of those presume the nodes inside
+the loop can *do* something — pushing GAP-2 to 3, GAP-3 to 4, and GAP-4 to 5.
+GAP numbers are discovery order, not rank; read the ⭐ marker.
 
 ### GAP-1 — the advertised surface and the callable surface disagree ⭐ rank 1
 
-*Blocks 11 of 19 patterns. Two halves: one is a doc fix, one is a missing route.*
+*Blocks 11 of 20 patterns. Two halves: one is a doc fix, one is a missing route.*
 
 **Half A — coherence (no new primitive at all, and this is the urgent half).**
 `control_station` must describe the surface the client was actually given.
@@ -578,7 +681,67 @@ author-gate semantics come for free.
 - **Also not this:** un-hiding the fat tools. That inverts PR-178 and would turn
   the hard-rule-#11 `--assert-handles` canary red.
 
-### GAP-2 — no scheduling / event subscription on the canonical surface ⭐ rank 2
+### GAP-9 — ordinary nodes are not tool-using agents ⭐ rank 2
+
+*Added on Codex research review (§11.2 R2). Missed entirely by the original pass,
+which is why it carries the highest re-ranking. Numbered 9 by discovery order;
+ranked 2 by impact.*
+
+The taught unit — and the unit in the official Anthropic primary
+([Building effective agents](https://www.anthropic.com/engineering/building-effective-agents))
+— is an **augmented LLM**: retrieval, tools, memory. Ours is a prompt template
+with excellent typed I/O and no hands.
+
+Three facts compose:
+
+1. `NodeDefinition.tools_allowed` exists (`branches.py:307`), round-trips
+   through the serializer (`catalog/serializer.py:224,265`), and is settable via
+   patch ops (`api/branches.py:2039-2045`).
+2. `_build_node_mcp_invoker` — the thing that reads `tools_allowed` and turns it
+   into a callable — has **exactly one call site**, `graph_compiler.py:1793`,
+   inside `_compile_source_code_node`. A prompt-template node never receives an
+   invoker, so its `tools_allowed` is inert configuration.
+3. Even inside `source_code`, `_NODE_MCP_ACTION_ALIASES` (`:1375-1404`) is two
+   goals reads, two gates reads, five wiki **reads**, and `dispatch.enqueue`
+   behind a fail-closed env gate. No repository, no CI, no issue tracker, no
+   external API, no web.
+
+**Consequence, and why it outranks scheduling and fan-out.** A pro's first real
+workflow is something like *read the failing CI job → find the offending diff →
+draft a fix → open a PR*. Every one of those verbs is a tool call. Today the
+only way to make any of them happen is to write a `source_code` node and get an
+admin to approve it — i.e. the escape hatch GAP-8 exists to warn about. So the
+platform's answer to its most common intended use is "use the unsandboxed
+path." Scheduling a loop (GAP-2) and widening its fan-out (GAP-3) both presume
+the nodes inside the loop can *do* something; this gap is upstream of both.
+
+**Smallest primitive — NOT determined, deliberately.** Two candidate shapes,
+which differ in kind and must not be collapsed:
+
+- *(a) Mechanical:* honor `tools_allowed` on prompt-template nodes by wiring the
+  existing invoker into the prompt path and exposing it to the model as a tool
+  schema. Reuses the alias registry, the per-node allowlist, and the event sink
+  unchanged. Cheap; changes no security boundary.
+- *(b) Substantive:* widen `_NODE_MCP_ACTION_ALIASES` beyond the current
+  read-mostly set. This is a security-boundary decision, not a mechanical one —
+  every alias added is a new capability reachable from an LLM-authored node, and
+  the SSRF/egress residual in the standing reshape Concern applies directly.
+
+- **T1/T2/T3: NOT RUN.** This gap arrived *from* the review, so it has not been
+  through the project's own three tests with an opposite-provider verdict on the
+  result. **It therefore grants no build authority of any kind** — including for
+  shape (a), which looks cheap and is the exact profile of a change that
+  smuggles a capability widening past a gate. It needs its own review round.
+- **Cross-check owed:** whether the deliberate narrowness is a recorded design
+  decision rather than an omission. `graph_compiler.py:1380-1386` carries an
+  explicit comment refusing in-node wiki *writes* ("a node that needs to publish
+  goes through an effect, not `invoke_mcp_action`"), which reads as intentional
+  scoping. If the read-mostly boundary is likewise deliberate, GAP-9 is a
+  *product-positioning* finding, not a defect — and the honest fix may be
+  documenting the boundary rather than widening it. **Answer this before
+  proposing anything.**
+
+### GAP-2 — no scheduling / event subscription on the canonical surface ⭐ rank 3
 
 *Blocks the loop discipline entirely. Without a timer there is no loop.*
 
@@ -589,22 +752,55 @@ author-gate semantics come for free.
 
 - **T1:** PRIMITIVE-GAP. A chatbot cannot compose a timer; there is no
   primitive that produces one.
-- **T2:** ✅ schedules are per-branch, per-author.
+- **T2:** ⚠️ **conditional fail until ownership is server-bound** — see the
+  prerequisite below. The original "schedules are per-branch, per-author" pass
+  was wrong: the author is whatever string the client sent.
 - **T3:** ✅ **this is the browser-only user's only path to a loop** — a
   local-app user can cron it themselves. Highest T3 value of any proposal here.
-- **Risk:** runaway schedules. Bound as the compiler already bounds cycles
-  (min interval, max active schedules, auto-pause on N consecutive failures)
-  and cite [arXiv 2607.01641] as the reason. **Do not ship the timer without
-  the bound.**
+
+**PREREQUISITE — server-bind schedule ownership before any exposure.** Found on
+Codex research review (§11.2 R3) and independently verified against the code;
+now also a STATUS P2 Concern on `origin/main` (#1758). The legacy scheduling
+actions trust a **client-supplied** actor:
+
+- `_action_schedule_branch` reads `owner_actor` straight out of `kwargs`,
+  defaults it to the literal `"anonymous"`, and never calls `_current_actor()`,
+  never checks that the caller can see or owns `branch_def_id`
+  (`api/runtime_ops.py:350-392`).
+- `_action_unschedule_branch` passes that same client string to
+  `unregister_schedule(..., requesting_actor=owner_actor)` (`:398-411`) — so the
+  authorization check is performed against a value the caller chose.
+- `_action_list_schedules` accepts a blank owner filter and enumerates
+  everything (`:414-423`).
+
+The `extensions.admin` scope gates `pause_schedule` / `unpause_schedule` /
+`unschedule_branch` (`auth/provider.py:410-418`), but `schedule_branch` and
+`subscribe_branch` sit in the *costly* tier — so an ordinary authenticated
+founder can register a schedule attributed to someone else. **Bind
+`owner_actor` to `_current_actor()` server-side, scope list/pause/remove to the
+authenticated actor or an explicit admin, and validate target-branch authority
+— all before a canonical route exists.** This is a prerequisite to exposure, not
+a later hardening pass: publishing `write_graph target=schedule` over the
+current backend would promote a legacy-surface defect onto the canonical one.
+
+- **Separable, not required for slice 1:** the runaway-schedule bound. Minimum
+  interval and max-active are already implemented in `scheduler.py` and are
+  reusable as-is; a **new** consecutive-failure counter with auto-pause is
+  plausible operational hygiene ([arXiv 2607.01641] is the failure class) but it
+  is *not* needed to prove the primitive and should be justified on its own
+  rather than bundled into the first exposure slice. *Corrected per §11.2 R3 — an
+  earlier draft said "do not ship the timer without the bound," which conflated
+  the reusable existing bounds with new failure-policy state.*
 - Deliberately excludes event subscriptions in slice 1 — cron is the
   irreducible half; subscriptions are a second, separately-justified finding.
 
-### GAP-3 — no *parallel* dynamic (runtime-cardinality) fan-out ⭐ rank 3
+### GAP-3 — no *parallel* dynamic (runtime-cardinality) fan-out ⭐ rank 4
 
 *The pro's default shape. Narrowed by the Codex cross-check: a `source_code`
 node `exec()`s with full builtins, so a runtime-N **sequential** map already
 works inside one node. What is missing is the parallel form — and the
-sequential escape hatch runs through GAP-8, so it is not a safe answer.*
+sequential escape hatch runs through GAP-8's unsandboxed `exec` and needs an
+admin to open it, so it is not a safe answer or an available one.*
 
 **Smallest primitive:** one field on `NodeDefinition` —
 `fan_out_over: "<state_key>"` — meaning "run this node once per element of that
@@ -612,8 +808,11 @@ list state key, appending into the declared `append` reducer." Implemented over
 LangGraph's `Send`, which the compiler does not currently use. It reuses the
 reducer contract that already exists rather than inventing a barrier concept.
 
-- **T1:** PRIMITIVE-GAP, and this one is a **genuine irreducibility finding** —
-  no arrangement of static edges expresses an unknown-at-design-time width.
+- **T1:** PRIMITIVE-GAP, and this one *looks* like a **genuine irreducibility
+  finding** — no arrangement of static edges expresses an unknown-at-design-time
+  width. **But the comparison is unfinished** (§11.2 R6), which is why §9 lists
+  this as **design-only with no implementation authority**. An unfinished
+  irreducibility test is not a passed one.
 - **T2:** ✅ no storage-shape change.
 - **T3:** ✅.
 - **Risk:** the highest-risk proposal here. Fan-out width × concurrency ×
@@ -622,11 +821,15 @@ reducer contract that already exists rather than inventing a barrier concept.
   be differential-tested against the static-edge path per `AGENTS.md`
   §Testing.
 - **Cheaper alternative to price first:** `enqueue_branch_run` +
-  `await_run_spec` already approximates this asynchronously. If a design note
-  shows the async shape is sufficient, GAP-3 drops to `Defer` and we save the
-  riskiest change on the list. **Price this before scoping the `Send` work.**
+  `await_run_spec` approximates this asynchronously. **Do not presume
+  equivalence** (§11.2 R6): `enqueue_branch_run` is paced asynchronous dispatch
+  returning a *branch-task identity*, not a joined child-run result, so any
+  claim that it substitutes for an in-graph dynamic map must supply the join
+  and the barrier, not just the fan-out. If a design note shows the async shape
+  is genuinely sufficient, GAP-3 drops to `Defer` and we save the riskiest
+  change on the list. **Price this before scoping the `Send` work.**
 
-### GAP-4 — knowledge graph is unreachable ⭐ rank 4
+### GAP-4 — knowledge graph is unreachable ⭐ rank 5
 
 *We have the best-in-class version of 0xCodez's flagship pattern and no door.*
 
@@ -683,13 +886,14 @@ question for the target buyer.** Any window where the answer is "you can't"
 should be treated as a customer-visible outage, not an internal transition.
 Route this observation into the existing lane; do not open a new one.
 
-### GAP-8 — self-approvable arbitrary code execution ⭐ security, ranks above everything
+### GAP-8 — unsandboxed in-process code execution ⭐ security, largely already known
 
-*Not a 0xCodez pattern. Surfaced by the Codex cross-check (§11 MISSED) while
-verifying GAP-3, and independently confirmed against the code. Recorded here
-because it materially changes both the §7.2 answer and the commons thesis.*
+*Not a 0xCodez pattern. Surfaced by the Codex claim-refutation cross-check (§11
+MISSED) while verifying GAP-3. **Rewritten after the Codex research review
+(§11.2 R1) refuted half of it.** The original heading was "self-approvable
+arbitrary code execution"; that framing is withdrawn.*
 
-Three facts compose:
+#### What stands
 
 1. `source_code` nodes execute via `exec(src, {"__builtins__": __builtins__,
    "invoke_mcp_action": …})` — **full builtins, in-process, no OS sandbox**
@@ -697,37 +901,86 @@ Three facts compose:
 2. The only content fence is a substring denylist, `if pattern in src` over
    `_DANGEROUS_PATTERNS` (`:1367-1372`) — trivially defeated by
    `getattr`/`__import__` string construction.
-3. `_ext_branch_approve_source_code` sets `approved=True`, `approved_by =
-   _current_actor()`, and `approved_source_hash` **with no host-role check and
-   no branch-author check** in the handler; an anonymous actor receives a
-   *warning string in the response*, not a refusal (`api/branches.py:514-531`).
-   `_BRANCH_WRITE_ACTIONS` gates this as an OAuth write **scope**
-   (`auth/provider.py:553`) and for ledger logging (`branches.py:318`) — neither
-   is a role.
 
-The runtime docstring states *"host approval is the primary line of defense"*
-(`graph_compiler.py:1318-1323`). The approval path does not implement a host
-role, so the primary defense is a self-signed assertion and the secondary one is
-a substring match.
+Those two are the **standing STATUS P1 "no OS engine sandbox" Concern**, not a
+new finding. What this audit adds is the *commons* consequence: a platform whose
+value proposition is running other people's forked graphs cannot rest its
+isolation story on a substring match, whoever signed the approval. That makes
+the P1 customer-facing rather than internal, and it is the correct thing to
+carry forward from GAP-8.
 
-**Smallest fix — a check, not a primitive:** require a host/owner role in
-`_ext_branch_approve_source_code` before writing `approved`, and fail closed on
-an anonymous actor instead of warning. That is a guard on an existing handler.
-The OS sandbox (the standing STATUS P1) remains the durable fix and is not
-displaced by this.
+#### What is withdrawn — the approval-authority claim
 
-- **T1:** not a primitive question — a missing authorization check.
-- **Verification owed before acting:** (a) whether a signed-in non-author can
-  reach *another* author's branch through this handler — the handler shows no
-  author gate but `get_branch_definition`'s visibility scoping was not traced;
-  (b) whether any production auth mode already blocks it upstream. **Do not file
-  a severity until both are answered.**
-- **Cross-check against known-stale-row risk:** confirm this is not already
-  covered by the `#1485` fail-closed-seam or the "no OS engine sandbox" Concern
-  before opening anything. The residual claimed here is the *approval role*,
-  which is narrower than either.
-- **This branch does not edit `STATUS.md`.** Whoever folds this back must raise
-  the Concern row, or the finding dies with this artifact.
+The original GAP-8 asserted that a merely signed-in user could self-approve
+their own code, because `_ext_branch_approve_source_code` applies no
+handler-local host-role or author check (`api/branches.py:514-531`). **The
+handler observation is true and the conclusion drawn from it is false.** The
+gate is upstream, one frame out:
+
+| Link | Evidence | Verified |
+|---|---|---|
+| Every `extensions` action is scope-checked *before* dispatch | `_extensions_impl` calls `_dispatch_scope_error("extensions", action)` at `api/extensions.py:399`, before the `if action == …` chain | ✅ read in this checkout |
+| `_dispatch_scope_error` raises through `require_action_scope` | `api/extensions.py:243-260` | ✅ |
+| `approve_source_code` is an **admin** action | `_EXTENSIONS_ADMIN_ACTIONS` at `auth/provider.py:410-418` → `tinyassets.extensions.admin` | ✅ |
+| Production founders do **not** hold `admin` | `_AUTHENTICATED_BASE_CAPABILITIES = ("read", "write", "costly", "submit_request", "list")`, with an explicit comment that `admin` "is NOT implicit; it stays RBAC-gated via the token's `permissions` claim" (`auth/workos_provider.py:29-40`) | ✅ |
+| A test already asserts exactly this | `tests/test_source_code_approval_action.py:118-124` asserts `oauth_scope == "tinyassets.extensions.admin"` and `effect == "admin"` | ✅ |
+
+So the anonymous *warning string* is a dev/optional-auth artifact — in that mode
+scope enforcement is intentionally bypassed — not a production hole. A platform
+admin approving another author's code is plausibly by design. **I concede the
+refutation in full**; I traced each link above rather than accepting the
+reviewer's citation, and the code says what the reviewer said it says. The
+original claim's error was structural and worth naming: I read one handler and
+concluded from the absence of a check *in that frame* that no check existed,
+without walking one frame outward to the dispatcher. §12 Q3 had flagged
+"does any production auth mode block it upstream?" as an unanswered severity
+input — and the finding was nonetheless written up as though the answer were no.
+That is the defect, not the missing grep.
+
+#### Residual — regression coverage, not a new guard
+
+The reviewer's own residual, adopted here as the replacement for the withdrawn
+candidate: **prove that every dispatch path to `approve_source_code` reaches the
+admin gate, and keep proving it.** The existing test asserts the *mapping*
+(action → scope) but nothing asserts the *funnel* (that no route reaches the
+handler without passing `_dispatch_scope_error`).
+
+Today the funnel does hold, and I traced it rather than assuming it:
+`_BRANCH_ACTIONS` is defined at `api/branches.py:3331` and has exactly one
+runtime dispatch consumer, `api/extensions.py:458` — inside `_extensions_impl`,
+59 lines *after* the `_dispatch_scope_error` call at `:399`. Its only other
+references are the `action_scope_audit` surface (`auth/provider.py:488,536`) and
+two parity tests. Every canonical route into `_extensions_impl`
+(`universe_server.py:469,474,488,634,676,1435`) therefore passes the gate.
+
+That is a property a newly added route can silently break with nothing going
+red — which is the whole argument for the test. Note also that
+`packaging/claude-plugin/.../runtime/tinyassets/` carries a full mirror of both
+modules; the canonical-tree test plus the existing pre-commit mirror-parity
+guardrail (`AGENTS.md` §Testing) is the right division of labor, not a second
+test.
+
+- **T1:** not a primitive question, and no longer an authorization question
+  either — a **test-coverage** question.
+- **Cost:** small. One test that enumerates callers/dispatch tables and asserts
+  the gate is upstream of all of them.
+- **Not displaced:** the OS sandbox remains the durable fix for the half that
+  stands, and this coverage does nothing about it.
+
+#### STATUS state
+
+`STATUS.md` on `origin/main` already carries both corrections, filed after this
+artifact's first commit — **no action owed from a folder-back**:
+
+- #1757 filed GAP-8 as a P1 Concern as originally written.
+- #1758 downgraded it to *"contradicted: GAP-8 self-approval refuted by Codex
+  (extensions.admin scope gates it upstream, provider.py:410); residual =
+  regression-cover every dispatch path reaches that gate. OS-sandbox P1
+  unchanged"* — and filed the GAP-2 scheduler `owner_actor` defect as a separate
+  P2.
+
+The earlier instruction in §10 to "raise the Concern row" is therefore
+**discharged**, and re-raising it would duplicate a corrected row.
 
 ### Deliberately not proposed
 
@@ -742,17 +995,31 @@ displaced by this.
 
 ## 9. OpenSpec change candidates
 
-All `pending`. **None may be proposed, scoped, or implemented until the §8
-Codex research review returns `approve` or `adapt`.**
+**This section proposed SIX candidates, not four, and they do not share a
+status.** An earlier framing (and the lane report's Q3 summary) said "four
+OpenSpec change candidates," which was a miscount that invited a blanket
+approval across rows needing different dispositions — flagged by the Codex
+research review (§11.2 R6) and corrected here. The design-first row and the
+commons-seed row are not runtime changes at all, and one row is withdrawn
+outright.
 
-| Candidate | Scope (one para) |
-|---|---|
-| `canonical-surface-prompt-reconciliation` | **Highest urgency, lowest cost, no runtime change.** Rewrite the `control_station` prompt's tool catalog and intent→action routing table so it describes the seven canonical handles instead of the five `tools/list`-stripped fat tools it names today (`api/prompts.py:212-298`). Includes an invariant test asserting the prompt names only tools present in `tools/list`, so the two surfaces cannot drift apart again — the drift, not the wording, is the defect. Almost certainly the root cause of the "stale commands" half of `repair-first-contact-onboarding`; check for overlap and fold rather than compete. Closes GAP-1 Half A. |
-| `canonical-surface-graph-authoring` | Make `write_graph target=branch` with an empty `branch_id` create a branch from an ordered `changes_json` patch-op list, reusing the existing transactional, author-gated `patch_branch` machinery. Covers the op vocabulary needed for a usable create — node defs, edges, conditional edges, state fields with reducers, entry point, and `skills` — so a user can author a complete runnable graph without any new handle. Explicitly does not un-hide the legacy fat tools and does not change `CANONICAL_HANDLES`. Closes GAP-1 Half B and GAP-6; with the prompt fix, unblocks 11 of 19 audited patterns. Requires `--assert-handles` canary + rendered `ui-test` before acceptance. |
-| `source-code-approval-authority` | Security, not a feature. Require a host/owner role in `_ext_branch_approve_source_code` before it writes `approved`/`approved_source_hash`, and fail closed on an anonymous actor rather than returning a warning string (`api/branches.py:514-531`). Scope-gates the path from "signed-in user" to "full-builtins in-process `exec`" (`graph_compiler.py:1805-1807`). Must first answer whether a non-author can reach another author's branch here, and whether production auth already blocks it upstream; must be checked against the existing `#1485` seam and the standing OS-sandbox Concern so it does not duplicate them. Closes GAP-8. Does not replace the OS sandbox. |
-| `canonical-surface-branch-scheduling` | Add `write_graph target=schedule` (cron expr + `branch_id` + pause/unpause) and `read_graph target=schedules` over the shipped `tinyassets/scheduler.py` registry. Ships **with** its bounds, not after: minimum interval, max active schedules per author, and auto-pause after N consecutive failed runs, citing the infinite-agentic-loop failure class. This is the browser-only user's only path to a loop, so it is the highest user-capability-axis item on the list. Depends on `canonical-surface-graph-authoring` (scheduling a branch you cannot author is inert). Closes GAP-2. |
-| `graph-runtime-fan-out-over-state` | Design-first change: price whether `enqueue_branch_run` + `await_run_spec` already satisfies runtime-cardinality fan-out before committing to a `NodeDefinition.fan_out_over` field over LangGraph's `Send`. If the async path suffices, the change closes as `no new primitive` and documents the composition. If not, it specifies the field with a hard width cap, `concurrency_budget` participation, recursion/enqueue-budget interaction, and differential tests against the static-edge path per the hot-path-rewrite rule. Closes GAP-3. Highest technical risk on this list. |
-| `commons-reference-graph-patterns` | Not a code change — a commons seed. Publish four canonical reference branches as public, forkable, attributed graphs: diamond audit (split → parallel → reduce → synthesize), adversarial verifier gate, loop-until-dry discovery, and extract-resolve-assemble-query memory over `read_page`. These are the patterns the target audience already believes in, expressed as runnable artifacts instead of prose, and they are what makes the commons non-empty on the day authoring ships. Depends on `canonical-surface-graph-authoring`. Closes GAP-4 the principle-correct way — a composition pattern, not a verb. |
+**Eight rows below:** the six reviewed candidates, each with the reviewer's
+disposition in its own Status cell; plus the replacement for the withdrawn one;
+plus an explicit *no-candidate* row for GAP-9, so its absence reads as a
+decision rather than an oversight.
+
+**No row grants implementation authority beyond what its own Status cell says.**
+
+| Candidate | Status after review | Scope (one para) |
+|---|---|---|
+| `canonical-surface-prompt-reconciliation` | **FOLD-IN — do not create a competing change.** Belongs to the reserved `repair-first-contact-onboarding` lane, which already owns the "stale commands" symptom. | **Highest urgency, lowest cost, no runtime change.** Rewrite the `control_station` prompt's tool catalog and intent→action routing table so it describes the seven canonical handles instead of the five `tools/list`-stripped fat tools it names today (`api/prompts.py:212-298`). The durable artifact is an **invariant test asserting the prompt names only tools present in `tools/list`** — the drift, not the wording, is the defect, and the wording will drift again without it. Closes GAP-1 Half A. |
+| `canonical-surface-graph-authoring` | **ADAPT — creation semantics must be specified before scoping.** Approve the problem statement, not the scope as written. | Make `write_graph target=branch` with an empty `branch_id` create a branch from an ordered `changes_json` patch-op list. **The correction (§11.2 R6): create does *not* inherit patch's pre/post-snapshot and author-gate behavior "for free"** — patch operates on a branch that already exists and already has an owner, so every one of those properties must be *established*, not *inherited*. The change must specify, explicitly: (i) **blank-branch staging** — what object the ops apply to before the branch exists; (ii) **author binding** — the created branch's author bound server-side from the authenticated actor, never from a client field; (iii) **idempotency** — what a retried create does, so a client that times out mid-create does not produce two branches; (iv) **visibility and storage** — created private-by-default, host-resident private data preserved, and public/publish/remix semantics stated rather than assumed from "visibility exists"; (v) **validation** — whether a create may land structurally invalid and be repaired by later patches, or must validate atomically; (vi) **first version** — whether create publishes v1 or leaves the branch unversioned; (vii) **publication** — the explicit act that moves it into the commons. Covers node defs, edges, conditional edges, state fields with reducers, entry point, and `skills`. Explicitly does not un-hide the legacy fat tools and does not change `CANONICAL_HANDLES`. Closes GAP-1 Half B and GAP-6. Requires `--assert-handles` canary + rendered `ui-test` before acceptance. |
+| ~~`source-code-approval-authority`~~ | **WITHDRAWN — premise refuted (§11.2 R1).** Not "deferred": the thing it proposed to add already exists. | Withdrawn in full. It proposed requiring a host/owner role in `_ext_branch_approve_source_code`; the `tinyassets.extensions.admin` action scope already supplies exactly that authority one frame upstream (`api/extensions.py:399` → `auth/provider.py:410-418`), and production founders do not hold it (`auth/workos_provider.py:29-40`). Building it would have duplicated an existing authority boundary and, worse, implied that boundary was absent. |
+| `source-code-approval-gate-regression-coverage` | **REPLACEMENT for the withdrawn row — small, and the only thing GAP-8 actually owes.** Needs a proposal; needs no design round. | The reviewer's residual. Add regression coverage asserting that **every** dispatch path to `approve_source_code` passes `_dispatch_scope_error` before reaching the handler. The action→scope mapping is already tested (`tests/test_source_code_approval_action.py:118-124`); the *funnel* is not. It holds today — `_BRANCH_ACTIONS` (`api/branches.py:3331`) has exactly one runtime dispatch consumer, `api/extensions.py:458`, which sits 59 lines after the `_dispatch_scope_error` call at `:399` — which is precisely the kind of property a newly added route breaks silently, with nothing going red. Does not touch the OS-sandbox residual, which stays with the standing P1. |
+| `canonical-surface-branch-scheduling` | **ADAPT — server-bind ownership first; that part is a prerequisite, not a later hardening pass.** | Add `write_graph target=schedule` (cron expr + `branch_id` + pause/unpause) and `read_graph target=schedules` over the shipped `tinyassets/scheduler.py` registry. **Blocking prerequisite (§11.2 R3, now STATUS P2 via #1758):** bind `owner_actor` to `_current_actor()` server-side, scope list/pause/remove to the authenticated actor or an explicit admin, and validate target-branch authority — the legacy actions today accept a client-supplied owner string, default it to `"anonymous"`, and check `unregister_schedule` authorization *against that same client-chosen value* (`api/runtime_ops.py:350-423`). Exposing the current backend canonically would promote a legacy-surface defect onto the user surface. **Separable, and not required for slice 1:** the existing min-interval and max-active bounds are reusable as-is; a *new* consecutive-failure counter with auto-pause is operational hygiene to justify on its own, not a gate on proving the primitive. Depends on `canonical-surface-graph-authoring` (scheduling a branch you cannot author is inert). Closes GAP-2. |
+| `graph-runtime-fan-out-over-state` | **DESIGN-ONLY — explicitly no implementation authority.** The artifact leaves its own irreducibility comparison unfinished, so it cannot grant any. | Price whether `enqueue_branch_run` + `await_run_spec` already satisfies runtime-cardinality fan-out before committing to a `NodeDefinition.fan_out_over` field over LangGraph's `Send`. Note the asymmetry that makes this non-obvious: `enqueue_branch_run` is *paced asynchronous dispatch* returning a branch-task identity, **not** a joined child-run result, so it is not equivalent to an in-graph dynamic map/barrier without a join story. If the async path suffices, the change closes as `no new primitive` and documents the composition. If not, it specifies the field with a hard width cap, `concurrency_budget` participation, recursion/enqueue-budget interaction, and differential tests against the static-edge path per the hot-path-rewrite rule. Closes GAP-3. Highest technical risk on this list. |
+| `commons-reference-graph-patterns` | **LATER CONTENT EXPERIMENT — not an OpenSpec runtime change, and never privileged platform policy.** | Publish reference branches as public, forkable, **ordinary attributed commons content**: diamond audit (split → parallel → reduce → synthesize), adversarial verifier gate, loop-until-dry discovery, and extract-resolve-assemble-query memory over `read_page`. **Correction (§11.2 R6): they get no privileged "canonical" status.** Preselected graphs blessed by the platform are exactly the prebuilt complexity the minimal-primitives rule exists to prevent, and blessing them pre-empts the commons ranking (`quality_leaderboard`, `recommended_parent_for_fork`) that is supposed to decide which patterns win. Seed them, attribute them, let them rank like anyone else's. Depends on `canonical-surface-graph-authoring` and, for anything touching a repo/CI/web, on GAP-9. Closes GAP-4 the principle-correct way — a composition pattern, not a verb. |
+| *(GAP-9 — node tool access)* | **NO CANDIDATE, BY DESIGN.** Surfaced *by* the review, so it has never been through T1/T2/T3 with an opposite-provider verdict on the result. | Deliberately not written up as a candidate. §8 GAP-9 states two candidate shapes — mechanical (honor `tools_allowed` on prompt-template nodes) and substantive (widen `_NODE_MCP_ACTION_ALIASES`) — that differ in *kind*, and the cheap-looking one is the exact profile of a change that carries a capability widening past a gate. It may also not be a defect: the in-node wiki-write refusal at `graph_compiler.py:1380-1386` reads as deliberate scoping, and if the read-mostly boundary is likewise deliberate, the honest output is documentation rather than widening. **Needs its own review round before any candidate is named.** |
 
 **Not proposed as changes:** GAP-5 (own-model training — `Avoid`; the export
 half belongs to the existing PLAN-gated portability target) and GAP-7 (BYOC —
@@ -775,19 +1042,33 @@ onboarding surface. If you are working on any of these, read §4.1 first — the
 surface boundary is the load-bearing fact.
 
 **Next home:** `ideas/PIPELINE.md` Active Promotions (not a `STATUS.md` Work row
-yet — build is review-blocked and STATUS is at its 60-line budget). **Exact next
-action:** Codex research review per skill §8.
+yet — build is review-blocked and STATUS is at its 60-line budget).
 
-**Two things must not wait for that review:**
+**Review status: the skill §8 Codex research review is COMPLETE and returned
+`adapt`** (2026-07-25, against commit `1d8c9fc5`). Its findings are folded
+throughout this artifact and logged as R1–R6 in §11. Build authority now flows
+**per §9 Status cell only** — three rows are fold-in / withdrawn / design-only,
+and none of them is a licence to implement the others as originally scoped.
 
-1. **GAP-8 needs a `STATUS.md` Concern row.** It is a security finding, not a
-   research implication, and the review gate does not apply to raising a
-   concern. This branch deliberately does not edit `STATUS.md` (it is not
-   merging), so the finding is invisible until someone files it. Answer the §12
-   Q3 severity inputs first.
-2. **GAP-1 Half A (`control_station` reconciliation) is a prompt fix**, not a
-   research-derived design. If the `repair-first-contact-onboarding` lane owns
-   the "stale commands" symptom, this belongs there now.
+**Discharged — do not redo:**
+
+1. ~~GAP-8 needs a `STATUS.md` Concern row.~~ **Filed and then corrected on
+   `origin/main` without this branch: #1757 filed it as P1 as originally
+   written; #1758 downgraded it to `contradicted:` after the Codex refutation
+   and separately filed the GAP-2 scheduler `owner_actor` defect as a P2.** Both
+   rows are live. Re-raising either would duplicate a corrected row. The §12 Q3
+   severity inputs are answered (§11.2 R1) — the answer is that the upstream
+   production gate exists.
+
+**Still owed:**
+
+1. **GAP-1 Half A (`control_station` reconciliation) is a prompt fix**, not a
+   research-derived design, and per §9 it is a **fold-in** to
+   `repair-first-contact-onboarding` — not a new lane. Do not open a competing
+   change.
+2. **GAP-9 (node tool access) needs its own review round** before any candidate
+   is named for it. It arrived from the review, so it has never been through
+   T1/T2/T3 with a verdict on the result.
 
 **Overlap check before any lane is materialized:**
 
@@ -797,8 +1078,10 @@ action:** Codex research review per skill §8.
   lane's root cause. Do not open a competing lane; fold in or add a `Depends`
   edge.
 - The standing "no OS engine sandbox" P1 Concern and the `#1485` fail-closed
-  seam — GAP-8 must be checked against both before it is filed as new. Its
-  residual is narrower than either: the missing *approval role*.
+  seam — **checked; GAP-8 is not new.** Its surviving half *is* the OS-sandbox
+  P1. Its only genuinely new residual is regression coverage of the admin-gate
+  funnel (§9, `source-code-approval-gate-regression-coverage`); the "missing
+  approval role" residual claimed in the first draft does not exist (§11.2 R1).
 - `openspec/changes/brain-okf-canonical-store/` — owns store shape; GAP-4's
   reference branch must not presuppose a different one.
 - `retire-mcp-provider-secret-deposit` + `#1691`/R2-1a — own GAP-7 entirely.
@@ -813,7 +1096,7 @@ review-blocked and the host scoped this session to research):
 | Branch | `claude/canonical-surface-graph-authoring` |
 | Worktree | `../wf-canonical-surface-graph-authoring` (via `python scripts/wt.py new`) |
 | Base | `origin/main` |
-| Depends | this artifact + a Codex review verdict of `approve`/`adapt`; overlap resolution with `repair-first-contact-onboarding` |
+| Depends | this artifact; **Codex research review returned `adapt` 2026-07-25 — satisfied (§11.2 R1–R6)**; overlap resolution with `repair-first-contact-onboarding`; **plus the §9 `adapt` conditions: creation semantics (i)–(vii) specified before scoping** |
 | Write-set (STATUS Files cell) | `openspec/changes/canonical-surface-graph-authoring/`, `tinyassets/universe_server.py`, `tinyassets/api/branches.py`, `tests/` |
 | Read deps to recheck | `scripts/mcp_public_canary.py:72`, `openspec/specs/live-mcp-connector-surface/spec.md`, `openspec/specs/graph-execution-substrate/spec.md` |
 | PLAN modules to review | `PLAN.md:27` (minimal primitives), the five-permissioned-handles module |
@@ -821,13 +1104,20 @@ review-blocked and the host scoped this session to research):
 | Related implications | `docs/audits/2026-04-28-commons-first-tool-surface-audit.md` (T1/T2/T3), `docs/audits/2026-04-26-user-capability-axis-implications.md`, `docs/audits/2026-07-21-zapier-automation-platform-implications.md` |
 | First slice | The OpenSpec proposal only — no runtime code |
 | Gates: pre-commit | `pytest` (targeted) + `ruff check` |
-| Gates: pre-push | Codex review `approve`/`adapt` recorded in a durable artifact |
+| Gates: pre-push | ~~Codex review `approve`/`adapt`~~ **satisfied** — verdict `adapt`, folded here, logged §11.2 R1–R6. Remaining pre-push gate: the §9 creation-semantics spec exists and has been read by the reviewing provider |
 | Gates: pre-acceptance | `mcp_public_canary.py --assert-handles` (hard rule #11 — the handle set must be **unchanged**) **and** a rendered chatbot `ui-test` proving a user can author and run a graph end-to-end |
 | Fold-back | Draft PR while review-blocked; ready PR only after gates; retire the row on land; sync delta specs + archive in the same lane |
 
 ---
 
 ## 11. Cross-provider verification of the code claims
+
+**Two rounds ran, and they are different things.** Round 1 (§11.1) was a
+*fact-check of code claims*, dispatched by the author while drafting. Round 2
+(§11.2) is the **skill §8 opposite-provider research review** — the gate that
+governs build authority. Both are logged; refuted claims are preserved in both.
+
+### 11.1 Round 1 — code-claim fact-check (refute-by-default)
 
 The seven load-bearing code claims in §4 were dispatched to Codex
 (`codex exec`, read-only, this checkout) framed as **refute-by-default** with a
@@ -859,7 +1149,14 @@ seven claims were designed to test:
 > host-role check (`tinyassets/api/branches.py:514-520`), then obtain full
 > in-process Python execution."*
 
-Independently verified and promoted to **GAP-8** (§8).
+Promoted to **GAP-8** (§8) — **and the "approve code without a host-role check"
+half of it was subsequently refuted by round 2 (§11.2 R1).** Quoted verbatim
+above because that is the record; do not read it as current. Note what happened:
+I recorded this as "independently verified," and what I actually verified was
+the handler's *contents*, not the *reachability* of the handler. The quote is
+accurate about `api/branches.py:514-520` and wrong about the system. A
+cross-family reviewer's finding is a lead to run down, not a verdict to inherit
+— the same standing rule this project applies to its own findings.
 
 **Method note for future dispatches:** framing the ask as *refute-by-default*
 with a hard output contract is what produced this. A "please review" framing
@@ -867,9 +1164,41 @@ would very likely have returned agreement with all seven claims, three of which
 were wrong. Consistent with the `codex-review-script-assumes-pr-review` and
 `silent-failure-dispatch-and-tests` memory patterns.
 
-> **This is a fact-check of code claims only.** It does **not** satisfy the
-> skill §8 research review — that review must re-check the primary sources and
-> the TinyAssets framing, and is still owed before any build work.
+> **Round 1 was a fact-check of code claims only.** It did **not** satisfy the
+> skill §8 research review. That review has since been run — see below.
+
+### 11.2 Round 2 — the skill §8 Codex research review (verdict: `adapt`)
+
+**Run 2026-07-25 against commit `1d8c9fc5`; the 932-line artifact was read in
+full.** This is the opposite-provider review the `external-research-implications`
+skill §8 requires for a Claude-originated finding, and it re-checked the primary
+sources *and* the TinyAssets code, not just the internal consistency of the
+draft. **Verdict: `adapt`** — the surface, creation, scheduling, and fan-out
+observations are directionally sound; GAP-8 was misdiagnosed; the candidate set
+needs consolidated statuses; and a ranked gap was missing.
+
+Same preservation rule as round 1: **refuted claims are kept here, not deleted.**
+
+| # | Original claim | Verdict | What replaced it |
+|---|---|---|---|
+| **R1** | GAP-8: a merely signed-in user can self-approve their own `source_code`, because `_ext_branch_approve_source_code` applies no host-role and no author check (`api/branches.py:514-531`) | **REFUTED — conceded in full** | The gate is one frame upstream, not in the handler: `_extensions_impl` → `_dispatch_scope_error("extensions", action)` (`api/extensions.py:399`) → `_EXTENSIONS_ADMIN_ACTIONS` → `tinyassets.extensions.admin` (`auth/provider.py:410-418`); production founders hold `read`/`write`/`costly`/`submit_request`/`list` but **not** `admin` (`auth/workos_provider.py:29-40`), and `tests/test_source_code_approval_action.py:118-124` already asserts it. Each link re-verified in this checkout before conceding. The anonymous *warning string* is a dev/optional-auth artifact. **Rewrote §8 GAP-8; withdrew the `source-code-approval-authority` candidate; replaced it with the reviewer's residual (funnel regression coverage).** `STATUS.md` had already been corrected on `origin/main` by #1758. |
+| **R2** | *(omission)* The ranked gap list runs GAP-1 → GAP-2 → GAP-3 → GAP-4, and the substrate is "at or ahead on 14 of 19" | **MISSED FINDING — accepted** | `NodeDefinition.tools_allowed` exists (`branches.py:307`) but `_build_node_mcp_invoker` has one call site, inside approved `source_code` (`graph_compiler.py:1793`) — prompt-template nodes are text-in/text-out with no tool access, and even the `source_code` alias set is selected goals/gates reads, wiki reads, and paced enqueue (`:1375-1404`). Against the Anthropic primary's *augmented LLM* baseline that is below parity. Verified independently. **Added as GAP-9, ranked 2 (ahead of scheduling and fan-out); added §6 pattern #20; corrected §6 #10 Discovery, which had conflated daemon-internal task production with user-authored node tool access; the parity claim drops from 14-of-19 to 13-of-20.** |
+| **R3** | GAP-2: expose scheduling over the shipped registry, and "do not ship the timer without the bound" (min interval, max active, auto-pause on N failures) | **ADAPT — accepted** | The candidate missed a live authorization defect: `_action_schedule_branch` takes a **client-supplied** `owner_actor`, defaults it to `"anonymous"`, and never binds `_current_actor()` or checks branch authority (`api/runtime_ops.py:350-392`); `_action_unschedule_branch` then checks authorization *against that same client-chosen string* (`:398-411`); `list_schedules` accepts a blank owner filter (`:414-423`). Verified. **Server-binding is now a stated prerequisite to exposure.** Separately: the bound was over-bundled — min-interval/max-active already exist and are reusable, while a *new* consecutive-failure/auto-pause policy is separable and needs its own justification. Now also STATUS P2 via #1758. |
+| **R4** | "Stop pitching the runtime, pitch the ledger" (§1, §7.3) | **ADAPT — accepted** | The first half is supported (orchestration patterns are commodity); the second is not established by this evidence — none of the sampled threads evaluates provenance markets, attribution, remix economics, or paid work, and the ledger is not yet coherently reachable from the canonical surface. **Reframed as a hypothesis to validate with target users, not a conclusion**, and noted that pitching only the ledger before authoring, node tool access, security, and discoverability would overrun the evidence. |
+| **R5** | §2: 0xCodez supplies "the canonical vocabulary the target customer now thinks in," and the market is standardizing on it | **OVERSTATED — accepted** | The mirror showed only tens to low hundreds of views at fetch time, and the authoritative ideas predate the wording (Anthropic's *Building effective agents* and *How we built our multi-agent research system*). No official primary was found for the mirror's specific `parallel()` / `pipeline()` / `/workflows` / `ultracode` product claims — curator evidence, not verified product facts. **Downgraded to "one fresh demand-language signal" with the calibration stated inline in §2.** Scope note: §5's separate claim that *"loop engineering"* is a converged term rests on independent sourcing (Steinberger, Cherny, Osmani via the hyper.ai mirror), not on this account, and is unaffected. The "curator, not builder" classification and §3.1's five-move decomposition both stand. |
+| **R6** | §9 presents "four OpenSpec change candidates," all `pending` | **AMBIGUOUS — accepted** | There were six rows sharing one status, which invited blanket approval across rows needing different dispositions. **Rewritten with per-row Status cells:** fold-in / adapt / withdrawn / replacement / adapt / design-only / later-content-experiment, plus an explicit no-candidate row for GAP-9. Two substantive scope corrections came with it: branch *create* does not inherit patch's snapshot and author-gate behavior for free (seven creation semantics now enumerated), and the four reference graphs must be ordinary attributed commons content, never privileged platform policy. |
+
+**What this round cost, and why it was worth it.** Two of the six findings (R1,
+R2) would each have produced wasted or misdirected build work: R1 an OpenSpec
+change to add an authority boundary that already exists, and R2 a roadmap that
+ships a scheduler and a fan-out primitive for nodes that cannot call anything.
+R3 would have promoted a live authorization defect onto the canonical user
+surface. **The pattern common to R1 and R3 is the same one:** reading a single
+handler and drawing a conclusion about the system's authorization posture
+without walking one frame outward — in R1 that produced a false positive (the
+gate was upstream), in R3 a false negative (the gate was upstream but coarse).
+The generalizable rule: *an authorization claim about a handler is not verified
+until the dispatcher above it has been read.*
 
 ---
 
@@ -883,12 +1212,18 @@ were wrong. Consistent with the `codex-review-script-assumes-pr-review` and
 2. **Does GAP-1 duplicate `repair-first-contact-onboarding`?** Must be answered
    before any lane opens. Strong suspicion: the "stale commands" symptom in that
    row *is* the `control_station` drift.
-3. **GAP-8 severity inputs, unanswered:** (a) can a signed-in non-author reach
-   another author's branch through `_ext_branch_approve_source_code`? The
-   handler shows no author gate, but `get_branch_definition`'s visibility
-   scoping was not traced. (b) Does any production auth mode block it upstream?
-   (c) Is the residual already covered by `#1485` or the standing OS-sandbox
-   Concern? **Answer all three before filing a severity.**
+3. ~~**GAP-8 severity inputs, unanswered.**~~ **ANSWERED — §11.2 R1.** (a) A
+   signed-in non-author cannot reach the handler at all without the
+   `tinyassets.extensions.admin` scope, which production founders do not hold;
+   the branch-visibility sub-question is moot for the severity call, though it
+   remains open for an admin acting across authors (plausibly by design).
+   (b) **Yes** — `_dispatch_scope_error` at `api/extensions.py:399` blocks it
+   upstream in every auth-enabled mode. (c) **Yes** — the surviving half *is*
+   the standing OS-sandbox P1. The severity was filed (#1757) and then corrected
+   to `contradicted:` (#1758). *Meta-lesson worth keeping: this question was
+   written down as unanswered, and the finding was published anyway as though
+   the answer were "no." An unanswered severity input should block the claim,
+   not just annotate it.*
 4. **Does the existing patch-op vocabulary cover node defs, edges, conditional
    edges, state fields, entry point, and skills?** GAP-1 Half B's scope and
    GAP-6's free closure both depend on it. `control_station` advertises
@@ -899,12 +1234,32 @@ were wrong. Consistent with the `codex-review-script-assumes-pr-review` and
    fan-out?** If yes, GAP-3 drops off and we avoid the riskiest change.
    Answerable by design analysis alone — do it before scoping any `Send` work.
 6. **Does the OS-sandbox residual gate the commons itself?** GAP-8 sharpens
-   this: if users run each other's forked graphs, self-approvable full-builtins
-   `exec` is a commons-wide risk, not an engine-local one. Not analyzed here.
+   this: if users run each other's forked graphs, full-builtins in-process
+   `exec` behind a substring denylist is a commons-wide risk, not an
+   engine-local one — **and the admin approval gate does not resolve it**, since
+   an admin approving a graph is not the same as that graph being safe to run on
+   someone else's host. Not analyzed here. *(Rephrased per §11.2 R1; the original
+   said "self-approvable," which was the withdrawn claim.)*
 7. **Unreached primary sources:** the two Anthropic PDFs (loop engineering,
    graph engineering) were read only through secondary excerpts; both mirror
    URLs 404'd. If a reviewer can reach them, re-verify §3.1 and §3.3 against the
-   originals.
+   originals. **Round 2 did not reach them either** — the reviewer corroborated
+   §3.1 through the same hyper.ai mirror, so this gap is unchanged.
+8. **Is GAP-9's narrowness deliberate?** *(New — §11.2 R2.)* The in-node wiki-write
+   refusal at `graph_compiler.py:1380-1386` is explicitly commented as a design
+   choice ("a node that needs to publish goes through an effect"). If the
+   read-mostly alias boundary is likewise a recorded decision, GAP-9 is a
+   product-positioning finding and the honest response is documenting the
+   boundary; if it is an omission, it is a capability gap. **Answer before
+   naming any candidate for it.** Nothing in the roadmap should assume the
+   widening is approved.
+9. **Would this audience actually pay for the ledger?** *(New — §11.2 R4.)* §7.3's
+   reframe makes this the load-bearing commercial question, and **no evidence in
+   this study answers it** — none of the sampled threads evaluates provenance,
+   attribution, remix economics, or paid work. Answerable only by talking to
+   target users, not by more code reading or more source mirrors. Until it is
+   answered, "differentiate on the commons" is a direction to test, not a
+   strategy to build a roadmap around.
 
 ---
 
