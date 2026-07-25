@@ -1,4 +1,4 @@
--- 010 - Fixture-only dark paid-request workflow and accounting CAS.
+-- 013 - Fixture-only dark paid-request workflow and accounting CAS.
 -- FOUNDER-GATED: this prototype migration is not production authority.
 --
 -- Durable rows own the request/bid/match/claim spine. Notifications are

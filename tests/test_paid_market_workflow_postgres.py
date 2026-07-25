@@ -15,7 +15,7 @@ from tinyassets.paid_market.ledger import spot_settlement_entries
 ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = ROOT / "prototype" / "full-platform-v0"
 MIGRATIONS = PROTOTYPE / "migrations"
-WORKFLOW_MIGRATION = MIGRATIONS / "010_paid_market_workflow.sql"
+WORKFLOW_MIGRATION = MIGRATIONS / "013_paid_market_workflow.sql"
 RUNNER_PATH = PROTOTYPE / "migrate.py"
 
 

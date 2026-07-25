@@ -10,7 +10,7 @@ Push: `origin/codex/osx-market-workflow`
 
 - Added `tinyassets/payments/market_workflow.py`: immutable commands/results, injected store/realtime/delivery/ledger boundaries, a thread-safe reference store, body-bound replay, append-only lifecycle history, requester-authorized early close, cap/window/deadline enforcement, runtime transition-table enforcement, selected-host claim authority, capacity/version fences, and bounded three-attempt oracle recomputation.
 - Added `tinyassets/payments/market_realtime.py`: privacy-minimal announcements, subscribe/buffer/snapshot/watermark/outbox reconciliation, bounded multi-page catch-up, compaction/retry-exhaustion fallback, dedupe/coalescing, and fair bounded output.
-- Added fixture-only `prototype/full-platform-v0/migrations/010_paid_market_workflow.sql`: dark workflow tables, command log, exact-result replay metadata, durable outbox, RLS, non-login command ownership, logical settlement wrapper, and zero-host status.
+- Added fixture-only `prototype/full-platform-v0/migrations/013_paid_market_workflow.sql`: dark workflow tables, command log, exact-result replay metadata, durable outbox, RLS, non-login command ownership, logical settlement wrapper, and zero-host status.
 - Extended the fixture migration runner's exact baseline verification and catalog fingerprint.
 - Rebuilt the Claude plugin runtime mirror.
 - Did not create `market_delivery.py`; did not add delivery receipt, acceptance, or dispute tables; did not add `lease_fence` or `accepted_result_sha256`.
@@ -22,7 +22,7 @@ Push: `origin/codex/osx-market-workflow`
 - 3.7 — partial, left unchecked. Tenant/actor derivation, mixed-tenant rejection, signed/account/amount/time/generation-bound and revoked grants, server hashes, composite keys, coalescing, and fee invariance are covered. A production-shaped global cross-family lock/deadlock proof was not available.
 - 4.1 — partial, left unchecked. The complete delta-spec graph, body-bound request replay, forbidden edges, authority, cancellation/claim races, fan-out bounds, original-result replay, and append-only history are covered. Canonical API-router delegation and fence-dependent later transition implementations remain absent.
 - 4.2 — partial, left unchecked. Immutable non-delivery commands/results and all four requested injection protocols exist without psycopg/Supabase imports. A delivery command was not stubbed because its fence/hash authority is externally owned.
-- 4.3 — partial, left unchecked. Migration 010 contains request, bid, match, match-bid, fan-out-slot, claim, event, outbox, grant, and command-log rows with denial/RLS/ownership/search-path proofs. Delivery receipt, dispute, and acceptance rows are intentionally absent.
+- 4.3 — partial, left unchecked. Migration 013 contains request, bid, match, match-bid, fan-out-slot, claim, event, outbox, grant, and command-log rows with denial/RLS/ownership/search-path proofs. Delivery receipt, dispute, and acceptance rows are intentionally absent.
 - 4.4 — complete. Realtime tests cover atomic outbox append, post-commit announcement, cancellation tombstones, privacy-minimal envelopes, eligibility errors, snapshot/watermark/catch-up/buffer merge, multi-page replay, exhaustion refusal, compacted-watermark fallback, duplicate/out-of-order frames, coalescing, bounds, fairness, and degraded freshness without global polling.
 - 4.5 — complete. Bid tests cover exact host/grant authority, immutable monotonic versions, quote id/version/digest binding, one bid to one landed `BookOffer`, replacement/cancellation/expiry/revocation, capacity fences, deterministic oracle selection, requester-only early close, host matching only after the window and within spend cap, hard request deadline, bounded rejection receipts, persisted match decisions, and cross-request capacity exclusion.
 - 4.6 — complete for the buildable dark spine. Claims use landed `best_execution`, canonical request/slot/bid lock identity, exact version/capacity/cap/window/deadline rechecks, requester early-close receipts, selected-host authority, the canonical runtime transition guard, stale atomic rejection, three bounded attempts with jitter, and honest insufficient/contention results. Cross-owner aggregate claims fail closed pending independently fenced host slots.
@@ -34,7 +34,7 @@ Push: `origin/codex/osx-market-workflow`
 ## Red/green evidence
 
 - Initial RED: workflow, bid, claim, realtime, fault, and PostgreSQL tests failed on missing modules/migration and missing command behavior.
-- PostgreSQL RED included missing migration 010, hostile-path/runtime errors, absent grant/account bounds, and absent settlement rollback/binding behavior.
+- PostgreSQL RED included missing paid-market workflow migration, hostile-path/runtime errors, absent grant/account bounds, and absent settlement rollback/binding behavior.
 - Independent-review RED regressions reproduced one-page catch-up, mutable replay meaning, missing cancellation invalidation, requester-owned claims, cross-request capacity double-sell, tenant-wide RLS reads, and settlement amount under-binding.
 - Final regression RED reproduced retry-budget partial convergence, cross-owner aggregate claiming, and spend-cap-versus-match-total confusion.
 - GREEN: `406 passed in 15.73s` across all 15 `tests/test_paid_market_*.py` files using local PostgreSQL 15 (`pgvector/pgvector:pg15`) on 2026-07-25 PT.
@@ -69,8 +69,8 @@ Push: `origin/codex/osx-market-workflow`
 
 ### Task 3.5 - settlement role retained the raw ledger grant
 
-- RED: migration 010 contained no revoke, and live PostgreSQL reported `(True, True)` for raw `market.apply_settlement` privilege on the settlement role and workflow owner.
-- FIX: migration 010 revokes raw execution from `tinyassets_fixture_settlement` and leaves it only with `tinyassets_fixture_workflow_owner`, the bounded wrapper's non-login definer. Raw-ledger tests execute under that owner; settlement-role tests require an actual PostgreSQL privilege error.
+- RED: migration 013 contained no revoke, and live PostgreSQL reported `(True, True)` for raw `market.apply_settlement` privilege on the settlement role and workflow owner.
+- FIX: migration 013 revokes raw execution from `tinyassets_fixture_settlement` and leaves it only with `tinyassets_fixture_workflow_owner`, the bounded wrapper's non-login definer. Raw-ledger tests execute under that owner; settlement-role tests require an actual PostgreSQL privilege error.
 - GREEN: source and live-role tests pass; the live privilege tuple is `(False, True)`, direct raw invocation as the settlement role is denied, and fee-bearing wrapper settlement remains green.
 - MUTATION: temporarily removing the revoke made both the source assertion and live privilege repro fail (`2 failed`), restoring the bypass exactly.
 
@@ -100,4 +100,31 @@ Every other ordered pair among the declared states is rejected by `allowed_trans
 - 2.5, 2.6, 5.3, 5.4, 6.4, 4.7, and 5.7 were not touched.
 - No PR was opened.
 
-LANE_RESULT: done - all Opus 5 manipulation/enforcement findings folded with red, green, and mutation evidence; branch remains dark and unadvertised
+## Migration renumber closeout
+
+### Files touched
+
+- The paid-market workflow migration was renamed with `git mv` from 010 to `prototype/full-platform-v0/migrations/013_paid_market_workflow.sql`; its header now says 013.
+- `prototype/full-platform-v0/migrate.py` reserves the absent outbound-boundary 010, accepts that reservation both absent now and present later, and carries the recomputed catalog fingerprint.
+- `prototype/full-platform-v0/migrations/011_goal_canonicals.sql` conditionally backfills from the parallel 010-owned `public.goals`, allowing the required partial chain to apply cleanly before outbound 010 lands.
+- `tests/test_paid_market_migrations.py`, `tests/test_paid_market_workflow_postgres.py`, and `tests/test_goal_canonicals_migration.py` cover the exact filename/order/history, future 010 presence, conditional 011 backfill, and PostgreSQL workflow migration.
+- `openspec/changes/paid-market-track-e-wave-2-transport/tasks.md` and `openspec/changes/paid-market-live-price-discovery/tasks.md` now reference migration 013.
+- `LANE_REPORT.md` records this closeout.
+
+### Fingerprint and ordering evidence
+
+- Catalog SHA-256 was recomputed from a fresh PostgreSQL 15 apply: `7e73321e15701fdee8d29c0d8788994afee2bff3f1698833148cb9e86c42dc0d` → `56937c99d9467b10b7862a50601ddd2c199529901283da83bd37825504f0b473`.
+- Independent clean-database probe returned `ORDER=001,002,003,004,005,006,007,008,009,011,012,013`; `public.schema_migrations` recorded those exact versions and names; computed and expected fingerprints both returned `56937c99d9467b10b7862a50601ddd2c199529901283da83bd37825504f0b473`.
+- Exactly one migration occupies 013. No stale paid-market 010 filename reference remains. Generic migration-010 references remain only where they explicitly identify the outbound-boundary lane.
+
+### Renumber verification
+
+- GREEN: `13 passed in 3.01s` for `tests/test_paid_market_migrations.py` with PostgreSQL enabled.
+- GREEN: `407 passed in 13.09s` across all 15 `tests/test_paid_market_*.py` files with PostgreSQL enabled.
+- GREEN: `9 passed in 3.56s` for the goal-canonical static contract plus paid-workflow PostgreSQL tests.
+- GREEN: Ruff on every touched Python file; `git diff --check`; strict OpenSpec validation for both touched paid-market changes.
+- GREEN: canonical/plugin runtime mirror parity, all 280 paired files matched.
+- Independent review: no code-correctness findings after stale-reference and future-010 regression fixes.
+- Repository-wide baseline is not green independently of this diff: fail-fast stopped at `tests/test_attribution_calc.py::TestComputePayoutShares::test_distributable_remainder_after_fee` after `784 passed, 1 skipped`; both the failing test and `tinyassets/attribution/calc.py` are identical to `origin/main`. Repository-wide Ruff likewise reports 120 existing E501 failures, none in the renumber-touched Python files.
+
+LANE_RESULT: done - paid-market workflow renumbered 010->013, fingerprint regenerated, and all migration/paid-market gates green

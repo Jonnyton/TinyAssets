@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 _MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_(?P<name>[a-z0-9_]+)\.sql$")
+_RESERVED_MIGRATION_VERSIONS = frozenset({10})
 _LOCK_KEY = 7_293_461_550_848_602_031
 _FIXTURE_SCHEMA_SHA256 = (
-    "7e73321e15701fdee8d29c0d8788994afee2bff3f1698833148cb9e86c42dc0d"
+    "56937c99d9467b10b7862a50601ddd2c199529901283da83bd37825504f0b473"
 )
 
 
@@ -61,11 +62,16 @@ def discover_migrations(directory: Path) -> tuple[Migration, ...]:
             )
         )
 
-    expected = list(range(1, len(migrations) + 1))
     actual = [migration.version for migration in migrations]
+    expected = [
+        version
+        for version in range(1, (actual[-1] if actual else 0) + 1)
+        if version not in _RESERVED_MIGRATION_VERSIONS or version in versions
+    ]
     if actual != expected:
         raise MigrationError(
-            f"migration versions must be gap-free from 001: got {actual}"
+            "migration versions must be gap-free from 001 except reserved "
+            f"versions {sorted(_RESERVED_MIGRATION_VERSIONS)}: got {actual}"
         )
     return tuple(migrations)
 
