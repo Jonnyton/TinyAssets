@@ -13,16 +13,19 @@ Review the exact current working-tree artifacts:
 - current code seams in `tinyassets/universe_server.py` and `tinyassets/api/branches.py`
 - active changes `universe-creation`, `universe-visibility`, and `retire-legacy-live-mcp-tools`
 
+The first Opus 5 review in `opus5-review.md` returned ADAPT against the pre-hardening draft. Re-check every C1-C3, I1-I9, and M1-M3 against the current rebased head; do not assume the claimed fixes are sufficient.
+
 Check:
 
 - domain fit and minimal-primitives alignment;
 - exact-seven invariant and first-contact usability;
 - closed/versioned DTO consistency and unambiguous parameter ownership;
 - verified authority, author/approval spoof resistance, visibility and non-enumeration;
-- private-storage PLAN alignment and public-commons independence;
-- fork-source safety;
-- actor-scoped body-bound idempotency and atomicity claims;
-- bounded stable pagination and cursor semantics;
+- V1 commons-only alignment with PLAN and clean exclusion of private/fork/Goal/source-code shapes;
+- protected-field safety across both create and existing patch modes;
+- actor-scoped body-bound idempotency, rolling-key rotation, transaction, outbox, crash, and expiry claims;
+- bounded catalog projection, authoritative publication verification, encrypted cursor, mutation, scan-window, and read-only semantics;
+- visibility-safe composition across catalog/create and every exact branch alias/helper;
 - minimal non-secret results/errors;
 - concurrency/load proof;
 - registered-guide and live-wiki correction safety;
