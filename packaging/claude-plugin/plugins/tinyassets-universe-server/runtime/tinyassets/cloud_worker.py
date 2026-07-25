@@ -588,7 +588,20 @@ def _queue_has_running_branch_task(universe: Path) -> bool:
     try:
         from tinyassets.branch_tasks import read_queue
 
-        return any(task.status == "running" for task in read_queue(universe))
+        if any(task.status == "running" for task in read_queue(universe)):
+            return True
+        runtime_instance_id = os.environ.get(
+            "TINYASSETS_RUNTIME_INSTANCE_ID",
+            "",
+        ).strip()
+        if not runtime_instance_id:
+            return False
+        from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+
+        return Epoch2BranchTaskAdapter(universe.parent).has_active_claim(
+            universe_id=universe.name,
+            worker_id=_worker_id(),
+        )
     except Exception:  # noqa: BLE001
         logger.exception("cloud_worker: queue status check failed")
         return True
@@ -621,6 +634,7 @@ def _current_worker_epoch2_capacity(
         WorkerClaimDescriptor,
         _descriptor_is_live,
     )
+    from tinyassets.daemon_registry import _runtime_from_author_runtime
     from tinyassets.daemon_server import get_runtime_instance
 
     try:
@@ -638,9 +652,11 @@ def _current_worker_epoch2_capacity(
             universe_id=str(beat.get("universe_id") or ""),
             expires_at=str(beat.get("expires_at") or ""),
         )
-        runtime = get_runtime_instance(
-            universe.parent,
-            instance_id=runtime_instance_id,
+        runtime = _runtime_from_author_runtime(
+            get_runtime_instance(
+                universe.parent,
+                instance_id=runtime_instance_id,
+            )
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -661,8 +677,8 @@ def _current_worker_epoch2_capacity(
         "expires_at": descriptor.expires_at,
     }
     if (
-        runtime.get("status") != "provisioned"
-        or runtime.get("universe_id") != universe.name
+        runtime["status"] != "provisioned"
+        or runtime["universe_id"] != universe.name
         or metadata.get("worker_id") != worker_id
         or descriptor.worker_id != worker_id
         or descriptor.runtime_instance_id != runtime_instance_id
@@ -678,9 +694,9 @@ def _current_worker_epoch2_capacity(
     return Epoch2BranchTaskAdapter(universe.parent), {
         "worker_id": worker_id,
         "runtime_instance_id": runtime_instance_id,
-        "daemon_id": str(metadata.get("daemon_id") or ""),
-        "provider_name": str(runtime.get("provider_name") or ""),
-        "model_name": str(runtime.get("model_name") or ""),
+        "daemon_id": runtime["daemon_id"],
+        "provider_name": runtime["provider_name"],
+        "model_name": runtime["model_name"],
     }
 
 

@@ -600,6 +600,34 @@ class RequestAdmissionStore:
                         break
         return candidates
 
+    def has_active_v2_claim(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+    ) -> bool:
+        """Return whether this worker owns running epoch-2 lifecycle work."""
+        clean_universe_id = _required(universe_id, "universe_id")
+        clean_worker_id = _required(worker_id, "worker_id")
+        with self.connection() as conn:
+            try:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM branch_tasks_v2
+                    WHERE universe_id = ?
+                      AND claimed_by = ?
+                      AND status IN ('running', 'cancel_requested')
+                    LIMIT 1
+                    """,
+                    (clean_universe_id, clean_worker_id),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if str(exc) != "no such table: branch_tasks_v2":
+                    raise
+                return False
+        return row is not None
+
     def read_v2_operational_data(
         self,
         *,

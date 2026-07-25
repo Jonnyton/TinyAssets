@@ -383,6 +383,7 @@ def _commit_epoch2_worker_task(
     universe_id: str = "universe-a",
     directed_daemon_id: str = "",
     directed_soul_hash: str = "",
+    key_suffix: str = "default",
 ) -> dict:
     from tinyassets.daemon_server import initialize_author_server
     from tinyassets.storage.request_admissions import RequestAdmissionStore
@@ -406,7 +407,7 @@ def _commit_epoch2_worker_task(
         universe_id=universe_id,
         idempotency_key_hash=(
             "hmac-sha256:" + hashlib.sha256(
-                f"{universe_id}:{directed_daemon_id}".encode()
+                f"{universe_id}:{directed_daemon_id}:{key_suffix}".encode()
             ).hexdigest()
         ),
         body_digest="sha256:" + hashlib.sha256(canonical_body).hexdigest(),
@@ -499,6 +500,17 @@ def test_has_pickable_branch_task_detects_pending_dispatcher_row(tmp_path):
     assert cw._has_pickable_branch_task(tmp_path) is True
 
 
+def test_running_guard_treats_missing_epoch2_store_as_no_active_claim(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime-a")
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    assert cw._queue_has_running_branch_task(universe) is False
+
+
 def test_has_pickable_branch_task_detects_current_worker_epoch2_candidate(
     tmp_path,
     monkeypatch,
@@ -558,6 +570,36 @@ def test_has_pickable_branch_task_leaves_other_daemon_epoch2_work_pending(
         display_name="Other Worker",
         created_by="actor-a",
         soul_text="Own different directed work.",
+    )
+    _commit_epoch2_worker_task(
+        tmp_path,
+        directed_daemon_id=other_daemon["daemon_id"],
+        directed_soul_hash=other_daemon["soul_hash"],
+    )
+
+    assert cw._has_pickable_branch_task(universe) is False
+
+
+def test_has_pickable_branch_task_ignores_mutable_runtime_daemon_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    from tinyassets.daemon_server import update_runtime_instance_metadata
+
+    universe, _daemon, runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    other_daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Forged Metadata Daemon",
+        created_by="actor-a",
+        soul_text="Must not inherit another runtime's capacity.",
+    )
+    update_runtime_instance_metadata(
+        tmp_path,
+        instance_id=runtime["runtime_instance_id"],
+        metadata_patch={"daemon_id": other_daemon["daemon_id"]},
     )
     _commit_epoch2_worker_task(
         tmp_path,
@@ -704,6 +746,77 @@ def test_supervisor_does_not_restart_epoch2_work_without_compatible_capacity(
     )
     assert task is not None
     assert task.status == "pending"
+
+
+def test_supervisor_does_not_restart_while_current_worker_has_active_v2_claim(
+    tmp_path,
+    monkeypatch,
+):
+    import itertools
+
+    from tinyassets.branch_tasks_v2 import (
+        Epoch2BranchTaskAdapter,
+        WorkerClaimDescriptor,
+    )
+
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    running = _commit_epoch2_worker_task(
+        tmp_path,
+        key_suffix="running",
+    )
+    _commit_epoch2_worker_task(
+        tmp_path,
+        key_suffix="pending",
+    )
+    beat = json.loads(
+        (
+            universe / cw.supervisor_heartbeat_filename(cw._worker_id())
+        ).read_text(encoding="utf-8")
+    )
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=beat["queue_protocol_version"],
+        capabilities=frozenset(beat["capabilities"]),
+        worker_id=beat["worker_id"],
+        runtime_instance_id=beat["runtime_instance_id"],
+        boot_id=beat["boot_id"],
+        build_sha=beat["build_sha"],
+        config_hash=beat["config_hash"],
+        universe_id=beat["universe_id"],
+        expires_at=beat["expires_at"],
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    claimed = adapter.claim(
+        running["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
+    assert claimed is not None
+    assert claimed.status == "running"
+
+    times = itertools.chain([100.0, 100.0, 100.0], itertools.repeat(131.0))
+    monkeypatch.setattr(cw.time, "monotonic", lambda: next(times))
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    spawned: list[FakeProc] = []
+
+    def spawn(universe_path):
+        proc = FakeProc(returncode=0, steps_until_exit=10)
+        spawned.append(proc)
+        return proc
+
+    state = cw.run_supervisor(
+        universe,
+        producer_poll_interval=30.0,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 1
+    assert spawned[0].terminate_called is False
 
 
 def test_supervisor_does_not_restart_pending_task_before_claim_grace(

@@ -235,6 +235,10 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
     adapter, committed, clock = epoch2
     observed: list[bool] = []
 
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) is False
     trusted_descriptor = _descriptor()
 
     def trusted(conn, _worker_id):
@@ -269,6 +273,14 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
     assert claimed.claimed_by == "worker-a"
     assert claimed.lease_expires_at == "2026-07-24T08:02:30+00:00"
     assert observed == [True, True]
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) is True
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-b",
+    ) is False
     assert _request_status(
         adapter.base_path,
         committed["request_id"],

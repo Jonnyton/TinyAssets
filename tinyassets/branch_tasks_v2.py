@@ -156,6 +156,18 @@ class Epoch2BranchTaskAdapter:
             )
         ]
 
+    def has_active_claim(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+    ) -> bool:
+        """Return whether this worker owns running epoch-2 lifecycle work."""
+        return self._store.has_active_v2_claim(
+            universe_id=universe_id,
+            worker_id=worker_id,
+        )
+
     def get(self, branch_task_id: str) -> Epoch2BranchTask | None:
         row = self._store.get_v2_task(branch_task_id)
         return _as_epoch2_task(row) if row is not None else None
