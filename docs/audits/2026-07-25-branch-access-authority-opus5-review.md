@@ -78,6 +78,16 @@ Every Important finding was applied before re-review:
 - the nonexistent exact-branch `search_nodes` claim was removed; and
 - universe-loop receipt atomicity is owned solely by the successor's `.runs.db` authority record, never `soul.md`.
 
+## Opus 5 approval — 16:19 PDT
+
+The narrow read-only re-review completed successfully in 345 seconds and returned `VERDICT: approve`, with:
+
+- `CRITICAL: none`
+- `IMPORTANT: none`
+- `REQUIRED-EDITS: none`
+
+The full local verdict is `.codex-branch-auth-opus5-rereview.md`. Its non-blocking Minor notes were also folded in: the load-protocol dependency name and `scenario_version`, exact outcome/event capability ownership, non-normative successor wording, branch-module scope qualification, Tier-3 real local-credential acceptance, and action-scope regression labeling.
+
 The drafted change additionally records that branch create/build paths accept caller-supplied author values. Server-bound authorship is required because a stored author selected by the caller would undermine every later author check.
 
 ## Required ownership boundary
