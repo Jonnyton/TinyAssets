@@ -609,6 +609,15 @@ def test_rollback_and_terminal_receipt_are_ordered_under_always():
     )
 
 
+def test_daemon_deploy_owns_exact_public_server_name_assertion():
+    wf = _load()
+    canary_step = _step_named(wf, "Post-deploy canary — canonical URL only")
+    run_script = canary_step.get("run", "") or ""
+
+    assert "scripts/mcp_public_canary.py" in run_script
+    assert "--assert-name TinyAssets" in run_script
+
+
 def test_terminal_receipt_keys_to_production_marker():
     wf = _load()
     scrub_step = _step_named(wf, "Scrub stale cloud env overrides")

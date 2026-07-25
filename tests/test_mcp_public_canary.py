@@ -51,14 +51,14 @@ _CANONICAL_PLUS_STATUS = [
 def test_assert_handles_passes_on_exact_surface(monkeypatch):
     monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
     # No exception == green.
-    canary.assert_five_handles("https://example/mcp", 5.0)
+    canary.assert_canonical_handles("https://example/mcp", 5.0)
 
 
 def test_assert_handles_fails_on_legacy_leak(monkeypatch):
     leaky = _CANONICAL_PLUS_STATUS + ["universe", "extensions"]
     monkeypatch.setattr(canary, "_post", _scripted_post(leaky))
     with pytest.raises(canary.CanaryError) as exc:
-        canary.assert_five_handles("https://example/mcp", 5.0)
+        canary.assert_canonical_handles("https://example/mcp", 5.0)
     assert exc.value.code == 4
     assert "universe" in exc.value.msg
 
@@ -67,9 +67,18 @@ def test_assert_handles_fails_on_missing_handle(monkeypatch):
     short = [n for n in _CANONICAL_PLUS_STATUS if n != "run_graph"]
     monkeypatch.setattr(canary, "_post", _scripted_post(short))
     with pytest.raises(canary.CanaryError) as exc:
-        canary.assert_five_handles("https://example/mcp", 5.0)
+        canary.assert_canonical_handles("https://example/mcp", 5.0)
     assert exc.value.code == 4
     assert "run_graph" in exc.value.msg
+
+
+def test_assert_handles_fails_when_get_status_is_missing(monkeypatch):
+    short = [n for n in _CANONICAL_PLUS_STATUS if n != "get_status"]
+    monkeypatch.setattr(canary, "_post", _scripted_post(short))
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_canonical_handles("https://example/mcp", 5.0)
+    assert exc.value.code == 4
+    assert "get_status" in exc.value.msg
 
 
 def test_advertised_tool_names_round_trips(monkeypatch):
@@ -92,7 +101,7 @@ def test_retry_recovers_from_transient_blip(monkeypatch):
 
     monkeypatch.setattr(canary, "_post", flaky)
     # Should pass on the 2nd attempt; no real sleeping.
-    canary.assert_five_handles_with_retry(
+    canary.assert_canonical_handles_with_retry(
         "https://example/mcp", 5.0, retries=3, delay=0.0, _sleep=lambda _: None
     )
 
@@ -103,7 +112,7 @@ def test_retry_propagates_persistent_drift(monkeypatch):
         canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS + ["universe"])
     )
     with pytest.raises(canary.CanaryError) as exc:
-        canary.assert_five_handles_with_retry(
+        canary.assert_canonical_handles_with_retry(
             "https://example/mcp", 5.0, retries=3, delay=0.0, _sleep=lambda _: None
         )
     assert exc.value.code == 4

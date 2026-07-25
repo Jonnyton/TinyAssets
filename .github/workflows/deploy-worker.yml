@@ -138,8 +138,7 @@ jobs:
           # Allow up to 60s for edge propagation before probing.
           for i in $(seq 1 12); do
             if python scripts/mcp_public_canary.py \
-                 --url https://tinyassets.io/mcp --timeout 10 \
-                 --assert-name TinyAssets >/dev/null 2>&1; then
+                 --url https://tinyassets.io/mcp --timeout 10 >/dev/null 2>&1; then
               echo "canary green after ${i} poll(s)"
               break
             fi

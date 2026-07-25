@@ -44,6 +44,7 @@ def _observe(
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
             "MCP-Protocol-Version": "2025-03-26",
+            "User-Agent": "tinyassets-retired-route-probe/1.0",
         },
     )
     try:
