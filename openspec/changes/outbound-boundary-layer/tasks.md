@@ -22,7 +22,8 @@
 
 - [ ] 3.1 Derive the effect key from durable goal, schedule-period, and item-fingerprint identity; journal intent before firing and consult the journal on every replay.
 - [ ] 3.2 Reconcile ambiguous outcomes with the destination where the destination supports it, and persist a terminal result in every case.
-- [ ] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results.
+- [ ] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results. Do not claim rollback of already-terminal effects — test that the reported outcome distinguishes "nothing further fired" from "earlier effects reversed".
+- [ ] 3.5 Replace time-only pending-row reclamation with destination reconciliation, holding for remediation where the destination exposes no reconciliation interface.
 - [ ] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
 
 ## 4. Inboxes and typed artifacts
@@ -42,6 +43,6 @@
 
 - [ ] 6.1 Run focused unit/integration/security tests for grants, caps, credential blindness, replay identity, reconciliation, batch hold, inbox admission, and compile-time typing.
 - [ ] 6.2 Run the §14 concurrency/load matrix: concurrent replays of one effect key, crash between effect and finalization, batch failure under contention, duplicate inbox delivery, and grant revocation racing an in-flight effect.
-- [ ] 6.3 In the same lane that syncs this change, modify the superseded `Receipt guarantees are per effect and caller-supplied, not batch atomicity` requirement in `openspec/specs/external-effect-receipts/spec.md`. A synced `boundary-layer` beside an unmodified as-built limitation is spec drift.
+- [ ] 6.3 Sync the `external-effect-receipts` and `external-effect-adapters` modified deltas in the same operation as `boundary-layer`, never `boundary-layer` alone; then confirm no as-built limitation requirement about caller-supplied hints or time-only reclamation survives in canonical specs.
 - [ ] 6.4 For any public surface exposed here, run the live connector canary with `--assert-handles`, complete a rendered chatbot conversation, and record freshness-stamped post-fix clean-use evidence before claiming acceptance.
 - [ ] 6.5 Obtain independent opposite-family review of the implementation diff, then sync and archive.

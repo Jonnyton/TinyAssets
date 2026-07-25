@@ -36,7 +36,11 @@ Secret resolution, network execution, cap enforcement, and receipt writing live 
 
 The effect key SHALL be derived by the system from durable goal, schedule-period, and item-fingerprint identity rather than supplied by the caller. This directly contradicts the shipped requirement "Receipt guarantees are per effect and caller-supplied, not batch atomicity" in `openspec/specs/external-effect-receipts/spec.md`, which is currently a true statement about `main` and names this change as the future owner.
 
-The contradiction is therefore deliberate and time-ordered, not a conflict to resolve now: while this change is unimplemented, the canonical as-built requirement stays true and stays canonical. The obligation is that the landing lane which syncs this change MUST modify that canonical requirement in the same lane — a synced `boundary-layer` sitting beside an unmodified as-built limitation is spec drift of exactly the kind `reclassify-forward-vision-specs` was created to remove. Task 6.3 carries this obligation.
+The contradiction is deliberate and time-ordered, and it is carried as RENAMED + MODIFIED deltas against `external-effect-receipts` and against the two `external-effect-adapters` requirements that currently let an omitted hint proceed unreceipted. A delta in an active change describes post-change behavior; it does not alter canonical truth until sync. So while this change is unimplemented the as-built requirements remain true and remain canonical, and the deltas are the mechanism that makes the supersession enforceable rather than a note someone must remember.
+
+Two consequences follow. First, `boundary-layer` SHALL NOT sync without those modified deltas — a synced boundary beside an unmodified as-built limitation is exactly the drift `reclassify-forward-vision-specs` was created to remove (task 6.3). Second, the modified text preserves a distinction the target must not overstate: whole-batch hold is not rollback. An already-terminal external effect may be irreversible at its destination, so the guarantee is explicit reporting and no further firing, not reversal of completed work.
+
+An earlier draft of this design postponed the deltas on the theory that writing them now would assert something untrue about `main`. That inverted OpenSpec's delta semantics, and the cross-family review on 2026-07-24 corrected it.
 
 ### B4 — A batch holds as a whole; partial-silent success is prohibited
 

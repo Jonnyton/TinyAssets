@@ -19,7 +19,7 @@ The shipped surface is deliberately narrower than the target. `openspec/specs/ex
 - **Consumes, does not redefine:** `credential-vault` (secret custody and per-universe overlay), `identity-auth-and-access-control` (authenticated actor and visibility/ownership axes), `external-effect-adapters` and `external-effect-receipts` (landed effect dispatch and receipt lifecycle), `graph-execution-substrate` (compilation and run state).
 - **Delegates money:** every value-moving boundary effect settles through the single authenticated transaction transport owned by `paid-market-track-e-wave-2-transport`. This change SHALL NOT create a second accounting path.
 - **Delegates price:** quote construction, indicative-versus-firm provenance, ranking, freshness, and executable totals belong to `paid-market-live-price-discovery`. This change carries none of them.
-- **Supersession, not silent divergence:** implementing the replay-safety requirement supersedes the named as-built limitation requirement in `openspec/specs/external-effect-receipts/spec.md`. That canonical requirement MUST be modified in the same landing lane that syncs this change; leaving both is spec drift.
+- **Supersession is carried as deltas, not as a promise:** the replay-safety requirement contradicts shipped behavior in `external-effect-receipts` (caller-supplied or omitted hints, time-only reclamation, no batch guarantee) and in two `external-effect-adapters` requirements that let an omitted hint proceed unreceipted. Those contradictions are carried here as RENAMED + MODIFIED deltas. An active change's delta describes post-change behavior and does not alter canonical truth until sync, so the deltas are safe to hold now and are what keeps the supersession from being a promise nobody is obliged to keep.
 
 ## Capabilities
 
@@ -29,7 +29,12 @@ The shipped surface is deliberately narrower than the target. `openspec/specs/ex
 
 ### Modified Capabilities
 
-- None yet. The `external-effect-receipts` supersession is recorded as a landing-lane obligation in `tasks.md` rather than a pre-written delta, because the as-built requirement is currently true and this change is unimplemented.
+- `external-effect-receipts`: reservation keyed by system-derived effect identity instead of a caller hint, reclamation that reconciles with the destination instead of trusting elapsed time, and explicit whole-batch hold. The renamed requirement `Receipt identity is system-derived and batch outcomes are explicit` replaces the as-built limitation requirement.
+- `external-effect-adapters`: the GitHub pull-request and Windows desktop requirements no longer permit an omitted hint to proceed unreceipted, and a finalize failure enqueues destination reconciliation.
+
+Both are unsynced targets. Canonical truth stays as-built until this change is implemented and synced, and `boundary-layer` SHALL NOT sync without them — a synced boundary beside an unmodified as-built limitation is the exact drift the archived `reclassify-forward-vision-specs` change removed.
+
+Deliberately preserved: whole-batch hold is **not** rollback. An already-terminal external effect may be irreversible at its destination, so the guarantee is that failures are reported and nothing further fires — never that completed effects were reversed.
 
 ## Impact
 
