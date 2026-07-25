@@ -124,8 +124,8 @@ def _read_bundle_body(universe_dir: Path, filename: str) -> str:
 def _build_persona_system_prompt(
     universe_dir: Path,
     *,
-    tier: str = interlocutor.FOUNDER,
-    universe_id: str = "",
+    universe_id: str,
+    tier: str,
 ) -> str:
     """Assemble the first-party, first-person system prompt for one turn.
 
@@ -136,9 +136,11 @@ def _build_persona_system_prompt(
     embodiment.
 
     ``tier`` is the bound :mod:`~tinyassets.api.interlocutor` tier of the party
-    being answered. It defaults to ``FOUNDER`` because that is the landed
-    in-process contract — the only production caller of :func:`converse` is the
-    founder-gated `converse` MCP handle.
+    being answered, and is REQUIRED — there is deliberately no default. A default
+    of ``FOUNDER`` would be a fail-OPEN default, the exact shape the cross-family
+    review caught one layer up in :func:`converse` (Codex REJECT 2026-07-25,
+    finding 2): "no caller omits it today" does not license a default that
+    discloses. Every caller states whose turn it is assembling.
 
     ``universe_id`` is REQUIRED for every tier. Disclosure is the intersection of
     the tier and the universe's declared visibility, so without the universe the
@@ -156,6 +158,26 @@ def _build_persona_system_prompt(
             f"universe_id is required to assemble a {tier} persona prompt: "
             "disclosure is the intersection of tier and the universe's declared "
             "visibility, and cannot be evaluated without the universe"
+        )
+
+    # Cross-family review finding 1 (Codex REJECT 2026-07-25): the learned name,
+    # the self-model's open questions, and the pinned soul are ALSO disclosure —
+    # filtering only the OKF grounding files let a visitor on a private universe
+    # receive its identity and secret purpose. Decide content disclosure once,
+    # before anything about the universe is read.
+    #
+    # With no authorized content there is nothing for the universe to speak from.
+    # A hollow prompt would have to either lie ("you are newly born" about a
+    # mature universe — Hard Rule 8) or carry a withhold instruction, which this
+    # change's own spec rejects as a non-boundary. So refuse, and keep the
+    # refusal free of the very content being withheld.
+    if not interlocutor.disclosure_permits(
+        universe_id, "read_content", tier=tier
+    ):
+        raise PermissionError(
+            f"no authorized content to assemble a persona prompt for tier {tier} "
+            "on this universe: its declared visibility withholds content from "
+            "this interlocutor"
         )
     try:
         persona = resolve_persona(
@@ -485,7 +507,15 @@ def converse(
     if not udir.is_dir():
         raise ValueError(f"Universe {uid!r} not found")
 
-    bound_tier = interlocutor.FOUNDER if tier is None else tier
+    # Cross-family review finding 2 (Codex REJECT 2026-07-25): an omitted tier
+    # used to default to FOUNDER on the grounds that the only production caller
+    # is the founder-gated MCP handle. That is a fail-OPEN default — Codex
+    # reproduced a T1 visitor calling this directly and pulling `founder.md` into
+    # the prompt. Resolve the real tier instead; "no caller does that today" does
+    # not license a default that discloses.
+    bound_tier = (
+        interlocutor.resolve_interlocutor_tier(uid).tier if tier is None else tier
+    )
     ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid

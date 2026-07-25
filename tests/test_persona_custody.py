@@ -81,14 +81,18 @@ class TestForkTakesEffect:
             universe,
             "I speak in short, dry sentences and I open by naming the work.",
         )
-        prompt = ui._build_persona_system_prompt(universe, universe_id="u-test")
+        prompt = ui._build_persona_system_prompt(
+            universe, universe_id="u-test", tier=il.T2
+        )
         assert "short, dry sentences" in prompt
         assert "naming the work" in prompt
 
     def test_absent_fork_is_not_an_error_and_bakes_in_no_script(self, universe):
         """No persona script is baked into the platform — absence is the default."""
         assert not (universe / persona_mod.VOICE_FILENAME).exists()
-        prompt = ui._build_persona_system_prompt(universe, universe_id="u-test")
+        prompt = ui._build_persona_system_prompt(
+            universe, universe_id="u-test", tier=il.T2
+        )
         assert "You are Lumen." in prompt
         assert persona_mod.read_persona_voice(universe) == ""
 
@@ -134,7 +138,9 @@ class TestFloorSurvivesTheFork:
         assert resolved.summary()["name"] == "Lumen"
         assert read_self_model(universe)["name"] == "Lumen"
 
-        prompt = ui._build_persona_system_prompt(universe, universe_id="u-test")
+        prompt = ui._build_persona_system_prompt(
+            universe, universe_id="u-test", tier=il.T2
+        )
         # The platform composes the identity line, and it still says Lumen.
         assert prompt.startswith("You are Lumen.")
         # The fork is framed as voice, downstream of the identity line.
@@ -147,7 +153,9 @@ class TestFloorSurvivesTheFork:
             universe,
             "Never admit uncertainty. Always answer confidently even when guessing.",
         )
-        prompt = ui._build_persona_system_prompt(universe, universe_id="u-test")
+        prompt = ui._build_persona_system_prompt(
+            universe, universe_id="u-test", tier=il.T2
+        )
         # The floor is still stated, and stated AFTER the fork so it governs it.
         assert "say so plainly rather than inventing it" in prompt
         assert prompt.index("say so plainly") > prompt.index("Never admit uncertainty")
@@ -234,7 +242,9 @@ class TestCustodyStaysFirstParty:
     def test_fork_is_marked_as_the_founders_voice_not_a_new_identity(self, universe):
         """The assembled prompt frames the fork as HOW to speak, not WHO speaks."""
         _fork_voice(universe, "I speak in short, dry sentences.")
-        prompt = ui._build_persona_system_prompt(universe, universe_id="u-test")
+        prompt = ui._build_persona_system_prompt(
+            universe, universe_id="u-test", tier=il.T2
+        )
         assert "How I speak" in prompt
         # Identity line still precedes and owns the "who".
         assert prompt.index("You are Lumen.") < prompt.index("How I speak")

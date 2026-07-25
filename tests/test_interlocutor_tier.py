@@ -349,14 +349,44 @@ class TestAssemblyDisclosure:
         assert "withhold" not in prompt.lower()
         assert "do not reveal" not in prompt.lower()
 
-    def test_private_universe_yields_no_grounding_for_a_visitor(self, base):
+    def test_private_universe_refuses_assembly_for_a_visitor(self, base):
+        """Cross-family review finding 1+4 (Codex REJECT, 2026-07-25).
+
+        The first cut filtered only the OKF grounding files, while the learned
+        name, the self-model's open questions, and the pinned soul (purpose, why,
+        hard lines) were read unconditionally — so a T1 visitor on a *private*
+        universe still received its identity and secret purpose in the assembled
+        prompt while ``visibility_permits(..., "read_content")`` was False. The
+        original test passed because it only asserted on two grounding strings.
+
+        With no authorized content there is nothing for the universe to speak
+        from, and a hollow prompt would have to either lie ("you are newly born")
+        or carry a withhold instruction, which is not a boundary. So assembly
+        refuses outright.
+        """
         udir = _make_universe(base, "u-priv", level="private")
-        _authenticate("visitor-1")
-        prompt = ui._build_persona_system_prompt(
-            udir, tier=il.T1, universe_id="u-priv"
+        (udir / "identity.md").write_text(
+            "---\nname: Lumen\nstatus: learned\n---\n\n# Identity\nI am Lumen.",
+            encoding="utf-8",
         )
-        assert FOUNDER_FACT not in prompt
-        assert "small workshop of public tools" not in prompt
+        _authenticate("visitor-1")
+        with pytest.raises(PermissionError, match="no authorized content"):
+            ui._build_persona_system_prompt(udir, tier=il.T1, universe_id="u-priv")
+
+    def test_withheld_universe_leaks_nothing_through_the_raised_error(self, base):
+        """The refusal itself must not become the disclosure channel."""
+        udir = _make_universe(base, "u-priv", level="private")
+        (udir / "identity.md").write_text(
+            "---\nname: Lumen\nstatus: learned\n---\n\n# Identity\nI am Lumen.",
+            encoding="utf-8",
+        )
+        _authenticate("visitor-1")
+        with pytest.raises(PermissionError) as exc:
+            ui._build_persona_system_prompt(udir, tier=il.T1, universe_id="u-priv")
+        message = str(exc.value)
+        assert "Lumen" not in message
+        assert FOUNDER_FACT not in message
+        assert "bring their projects to life" not in message
 
     def test_non_founder_tier_without_a_universe_id_fails_loudly(self, base):
         """No silent fallback: disclosure cannot be evaluated without a target."""
@@ -474,6 +504,63 @@ class TestEntrypointBindsTier:
         out = json.loads(us.converse(message="hi", graph_id="u-own"))
         assert out["reply"] == "hello back"
         assert seen["tier"] == il.T2, "the entrypoint must bind a resolved tier"
+
+    def test_converse_without_an_explicit_tier_resolves_it(self, base, monkeypatch):
+        """Cross-family review finding 2 (Codex REJECT, 2026-07-25).
+
+        The first cut defaulted an omitted ``tier`` to FOUNDER on the grounds that
+        the only production caller is the founder-gated MCP handle. Codex
+        reproduced the hole directly: a T1 visitor calling
+        ``universe_intelligence.converse("u", "hi")`` got ``founder.md`` into the
+        persona prompt. A fail-OPEN default is not licensed by "no caller does
+        that today" — the default must resolve the real tier and fail closed.
+        """
+        udir = _make_universe(base, "u-pub", level="public")
+        _authenticate("visitor-1")  # T1: authenticated, no grant on u-pub
+        monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-pub")
+        monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
+
+        seen: list[str] = []
+
+        def _fake_provider(prompt, system="", **_kw):
+            seen.append(system)
+            return "{}" if "strict JSON" in system else "hello"
+
+        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        ui.converse("u-pub", "hi")  # tier omitted — the exploited path
+
+        assert seen, "provider was never called"
+        assert FOUNDER_FACT not in seen[0]
+
+    def test_entrypoint_store_failure_is_an_honest_error_not_an_unhandled_raise(
+        self, base, monkeypatch
+    ):
+        """Cross-family review finding 3 (Codex REJECT, 2026-07-25).
+
+        Tier binding adds a second ACL read at the entrypoint. A transient store
+        failure there must surface through the same honest error envelope the
+        handle already uses, not escape as an unhandled exception.
+        """
+        import json
+
+        import tinyassets.universe_server as us
+        from tinyassets.api import helpers
+
+        _make_universe(base, "u-own", level="public")
+        _authenticate("founder-1")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="founder-1", permission="admin"
+        )
+        monkeypatch.setattr(helpers, "_request_universe", lambda gid="": "u-own")
+
+        def _boom(universe_id):
+            raise RuntimeError("universe_acl store unavailable")
+
+        monkeypatch.setattr(il, "authorize_conversation_turn", _boom)
+        out = json.loads(us.converse(message="hi", graph_id="u-own"))
+        assert "reply" not in out  # never fakes a reply (Hard Rule 8)
+        assert "error" in out
+        assert "universe_acl store unavailable" not in json.dumps(out)
 
     def test_mcp_converse_still_refuses_a_non_founder(self, base, monkeypatch):
         """The tier layer composes with — never replaces — the landed floor."""

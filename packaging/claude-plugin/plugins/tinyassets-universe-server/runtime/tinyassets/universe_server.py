@@ -999,9 +999,22 @@ def converse(message: str = "", graph_id: str = "") -> str:
     # lives, so it resolves the tier rather than letting the in-process default
     # stand in for it. Tighten-only: `authorize_conversation_turn` composes with
     # the founder-only gate above and can only add refusals, never open one.
+    #
+    # The binding reads the ACL store, so a transient store failure must surface
+    # through this handle's honest error envelope rather than escaping as an
+    # unhandled exception (cross-family review finding 3, Codex 2026-07-25). Fail
+    # closed: no tier, no turn.
     from tinyassets.api import interlocutor
 
-    turn = interlocutor.authorize_conversation_turn(uid)
+    try:
+        turn = interlocutor.authorize_conversation_turn(uid)
+    except Exception:
+        logger.warning(
+            "converse: interlocutor tier binding failed for %r", uid, exc_info=True
+        )
+        return json.dumps({
+            "error": "Your universe couldn't be reached right now.",
+        })
     if not turn.permitted:
         return json.dumps({
             "error": "Only this universe's founder can talk with it.",
