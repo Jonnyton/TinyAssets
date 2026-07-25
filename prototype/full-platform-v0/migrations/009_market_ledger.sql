@@ -86,6 +86,9 @@ BEGIN
      WHERE t.tenant_id = p_tenant_id
        AND t.idempotency_key = p_idempotency_key
      FOR SHARE;
+    IF v_tx_id IS NULL THEN
+      RAISE EXCEPTION 'idempotency contention: existing row is not visible';
+    END IF;
     IF v_existing_sha256 <> p_request_sha256 THEN
       RAISE EXCEPTION 'idempotency conflict';
     END IF;
@@ -160,6 +163,15 @@ DECLARE
   v_idempotency_key text;
   v_memo text;
   v_postings jsonb;
+  v_action text;
+  v_business_reference text;
+  v_escrow_account text;
+  v_host_owner_user_id text;
+  v_expected_state_version bigint;
+  v_amount_micros bigint;
+  v_escrow_delta bigint;
+  v_seller_delta bigint;
+  v_expected_fee bigint;
   v_bad_account boolean;
   v_fee bigint;
 BEGIN
@@ -188,6 +200,10 @@ BEGIN
   v_idempotency_key := v_body->>'idempotency_key';
   v_memo := coalesce(v_body->>'memo', '');
   v_postings := v_body->'postings';
+  v_action := v_body->>'action';
+  v_business_reference := v_body->>'business_reference';
+  v_escrow_account := v_body->>'escrow_account';
+  v_host_owner_user_id := v_body->'authority'->>'host_owner_user_id';
   IF v_tenant_id IS NULL OR v_tenant_id = ''
      OR octet_length(v_tenant_id) > 128 THEN
     RAISE EXCEPTION 'tenant_id is required and bounded';
@@ -199,6 +215,34 @@ BEGIN
   IF octet_length(v_memo) > 512 THEN
     RAISE EXCEPTION 'memo exceeds 512 bytes';
   END IF;
+  IF v_action <> 'settle' THEN
+    RAISE EXCEPTION 'unsupported settlement action';
+  END IF;
+  IF v_business_reference IS NULL OR v_business_reference = ''
+     OR octet_length(v_business_reference) > 256 THEN
+    RAISE EXCEPTION 'business_reference is required and bounded';
+  END IF;
+  IF v_escrow_account IS NULL
+     OR v_escrow_account !~ '^escrow:[^\s]+$'
+     OR octet_length(v_escrow_account) > 256 THEN
+    RAISE EXCEPTION 'escrow_account is required and bounded';
+  END IF;
+  IF v_host_owner_user_id IS NULL OR v_host_owner_user_id = '' THEN
+    RAISE EXCEPTION 'host owner authority is required';
+  END IF;
+  IF jsonb_typeof(v_body->'expected_state_version') <> 'number'
+     OR (v_body->>'expected_state_version') !~ '^[0-9]+$'
+     OR jsonb_typeof(v_body->'amount_micros') <> 'number'
+     OR (v_body->>'amount_micros') !~ '^[1-9][0-9]*$' THEN
+    RAISE EXCEPTION 'state version and amount must be bounded integers';
+  END IF;
+  BEGIN
+    v_expected_state_version := (v_body->>'expected_state_version')::bigint;
+    v_amount_micros := (v_body->>'amount_micros')::bigint;
+  EXCEPTION
+    WHEN numeric_value_out_of_range THEN
+      RAISE EXCEPTION 'state version or amount exceeds bigint';
+  END;
   IF jsonb_typeof(v_postings) <> 'array'
      OR jsonb_array_length(v_postings) < 2
      OR jsonb_array_length(v_postings) > 16 THEN
@@ -229,15 +273,31 @@ BEGIN
   IF coalesce(v_bad_account, true) THEN
     RAISE EXCEPTION 'posting account or integer delta is invalid';
   END IF;
-  IF v_fee < 0 THEN
-    RAISE EXCEPTION 'canonical treasury fee is invalid';
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM jsonb_array_elements(v_postings) AS entry
-     WHERE entry->>'account' = 'treasury'
-  ) THEN
-    RAISE EXCEPTION 'every settlement requires the canonical treasury fee';
+  SELECT coalesce(sum((entry->>'delta_micros')::bigint), 0)
+    INTO v_escrow_delta
+    FROM jsonb_array_elements(v_postings) AS entry
+   WHERE entry->>'account' = v_escrow_account;
+  SELECT coalesce(sum((entry->>'delta_micros')::bigint), 0)
+    INTO v_seller_delta
+    FROM jsonb_array_elements(v_postings) AS entry
+   WHERE entry->>'account' = 'user:' || v_host_owner_user_id;
+  v_expected_fee := greatest(
+    1,
+    floor((v_amount_micros::numeric * 10000) / 1000000)::bigint
+  );
+  IF v_fee <> v_expected_fee
+     OR v_escrow_delta <> -v_amount_micros
+     OR v_seller_delta <> v_amount_micros - v_expected_fee
+     OR EXISTS (
+       SELECT 1
+         FROM jsonb_array_elements(v_postings) AS entry
+        WHERE entry->>'account' NOT IN (
+          v_escrow_account,
+          'user:' || v_host_owner_user_id,
+          'treasury'
+        )
+     ) THEN
+    RAISE EXCEPTION 'postings do not match the canonical spot adapter';
   END IF;
 
   RETURN QUERY

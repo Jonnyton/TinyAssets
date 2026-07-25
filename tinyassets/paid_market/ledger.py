@@ -135,7 +135,7 @@ def spot_settlement_entries(
         raise LedgerError("gross_micros must be int")
     if gross_micros <= 0:
         raise LedgerError("gross_micros must be > 0")
-    treasury_fee = (gross_micros * FEE_PPM) // PPM
+    treasury_fee = max(1, (gross_micros * FEE_PPM) // PPM)
     return [
         (escrow_account, -gross_micros),
         (seller_account, gross_micros - treasury_fee),

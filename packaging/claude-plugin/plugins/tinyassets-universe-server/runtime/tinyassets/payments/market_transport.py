@@ -14,10 +14,13 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Literal, Mapping, Protocol
 
+from tinyassets.paid_market.ledger import spot_settlement_entries
+
 SettlementStatus = Literal[
     "applied", "replayed", "conflict", "contention", "not_available"
 ]
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ACCOUNT_RE = re.compile(r"^(?:treasury|(?:user|escrow|collateral):\S+)$")
 
 
 class MarketTransportError(ValueError):
@@ -116,6 +119,8 @@ class MarketTransport:
         verified_command = replace(command, authority=verified_authority)
         _validate_command(verified_command, effective_now)
         serialized = _serialize(verified_command)
+        if len(serialized.canonical_body) > 16_384:
+            raise MarketTransportError("canonical body exceeds 16384 bytes")
         raw_result = self._rpc.apply_settlement(serialized)
         status = raw_result.get("status")
         tx_id = raw_result.get("tx_id")
@@ -123,6 +128,8 @@ class MarketTransport:
             raise MarketTransportError("settlement RPC returned an invalid status")
         if tx_id is not None and (not isinstance(tx_id, int) or isinstance(tx_id, bool)):
             raise MarketTransportError("settlement RPC returned an invalid tx_id")
+        if status in {"applied", "replayed"} and tx_id is None:
+            raise MarketTransportError("settlement RPC omitted the transaction identity")
         return MarketTransportResult(status=status, tx_id=tx_id)  # type: ignore[arg-type]
 
 
@@ -137,6 +144,8 @@ def _validate_command(command: SettlementCommand, now: datetime) -> None:
             raise MarketTransportError(f"{label} is required")
     if len(command.idempotency_key.encode("utf-8")) > 128:
         raise MarketTransportError("idempotency key exceeds 128 bytes")
+    if len(command.business_reference.encode("utf-8")) > 256:
+        raise MarketTransportError("business reference exceeds 256 bytes")
     if len(command.memo.encode("utf-8")) > 512:
         raise MarketTransportError("memo exceeds 512 bytes")
     if not _is_int(command.expected_state_version) or command.expected_state_version < 0:
@@ -153,15 +162,18 @@ def _validate_command(command: SettlementCommand, now: datetime) -> None:
     ):
         if not value:
             raise MarketTransportError(f"{label} is required")
+    if len(authority.tenant_id.encode("utf-8")) > 128:
+        raise MarketTransportError("tenant exceeds 128 bytes")
 
     if authority.subject_id != authority.requester_user_id:
         _validate_grant(command, now)
 
-    if not command.postings or len(command.postings) > 16:
-        raise MarketTransportError("postings must contain between 1 and 16 entries")
+    if len(command.postings) < 2 or len(command.postings) > 16:
+        raise MarketTransportError("postings must contain between 2 and 16 entries")
     if any(
         not account
         or len(account.encode("utf-8")) > 256
+        or not _ACCOUNT_RE.fullmatch(account)
         or not _is_int(delta)
         for account, delta in command.postings
     ):
@@ -177,8 +189,21 @@ def _validate_command(command: SettlementCommand, now: datetime) -> None:
     treasury_deltas = [
         delta for account, delta in command.postings if account == "treasury"
     ]
-    if not treasury_deltas or sum(treasury_deltas) < 0:
+    if not treasury_deltas or sum(treasury_deltas) <= 0:
         raise MarketTransportError("every settlement must include the canonical fee posting")
+    if command.action != "settle":
+        raise MarketTransportError("unsupported settlement action")
+    expected = tuple(
+        spot_settlement_entries(
+            escrow_account=command.escrow_account,
+            seller_account=f"user:{authority.host_owner_user_id}",
+            gross_micros=command.amount_micros,
+        )
+    )
+    if command.postings != expected:
+        raise MarketTransportError(
+            "settlement postings were not emitted by the canonical adapter"
+        )
 
 
 def _validate_grant(command: SettlementCommand, now: datetime) -> None:

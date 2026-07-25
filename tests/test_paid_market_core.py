@@ -1354,6 +1354,17 @@ class TestLedger:
                 gross_micros=bad,
             )
 
+    def test_spot_settlement_charges_one_micro_minimum_fee(self):
+        assert spot_settlement_entries(
+            escrow_account="escrow:spot-1",
+            seller_account="user:host",
+            gross_micros=1,
+        ) == [
+            ("escrow:spot-1", -1),
+            ("user:host", 0),
+            ("treasury", 1),
+        ]
+
     def test_assert_drained_fails_before_and_passes_after_spot_settlement(self):
         ledger = Ledger({"escrow:spot-1": 10_000})
         with pytest.raises(LedgerError, match="not drained"):

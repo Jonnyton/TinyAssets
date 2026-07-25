@@ -7,11 +7,18 @@ import os
 import random
 import threading
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from tinyassets.paid_market.ledger import Ledger, LedgerError
+from tinyassets.paid_market.ledger import Ledger, LedgerError, spot_settlement_entries
+from tinyassets.payments.market_transport import (
+    MarketTransport,
+    SettlementCommand,
+    VerifiedMarketAuthority,
+    VerifiedOnBehalfGrant,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = ROOT / "prototype" / "full-platform-v0"
@@ -67,7 +74,26 @@ def _body(
     memo: str = "accepted",
 ) -> bytes:
     value = {
-        "authority": {"tenant_id": tenant},
+        "action": "settle",
+        "amount_micros": -sum(
+            delta for account, delta in postings if account.startswith("escrow:")
+        ),
+        "authority": {
+            "host_owner_user_id": "seller",
+            "requester_user_id": "buyer",
+            "subject_id": "buyer",
+            "tenant_id": tenant,
+        },
+        "business_reference": f"request:{key}",
+        "escrow_account": next(
+            (
+                account
+                for account, _ in postings
+                if account.startswith("escrow:")
+            ),
+            "escrow:missing",
+        ),
+        "expected_state_version": 1,
         "idempotency_key": key,
         "memo": memo,
         "postings": [
@@ -170,11 +196,18 @@ def test_canonical_hash_replay_conflict_and_bounds(market_database):
         assert first == ("applied", replay[1])
         assert replay[0] == "replayed"
         with pytest.raises(psycopg.errors.RaiseException, match="idempotency conflict"):
-            _apply(connection, _body("settle:1", [
-                ("escrow:1", -10_000),
-                ("user:seller", 9_899),
-                ("treasury", 101),
-            ]))
+            _apply(
+                connection,
+                _body(
+                    "settle:1",
+                    [
+                        ("escrow:1", -10_000),
+                        ("user:seller", 9_900),
+                        ("treasury", 100),
+                    ],
+                    memo="changed",
+                ),
+            )
         with pytest.raises(psycopg.errors.RaiseException, match="hash mismatch"):
             _apply(connection, _body("settle:2", [
                 ("escrow:1", -1),
@@ -248,6 +281,117 @@ def test_identical_replay_100_callers_applies_once(market_database):
         assert connection.execute(
             "SELECT count(*) FROM market.postings"
         ).fetchone() == (3,)
+
+
+def test_repeatable_read_replay_never_fabricates_a_null_transaction(
+    market_database,
+):
+    psycopg, dsn = market_database
+    body = _body(
+        "settle:snapshot",
+        [
+            ("escrow:snapshot", -100),
+            ("user:seller", 99),
+            ("treasury", 1),
+        ],
+    )
+    with (
+        psycopg.connect(dsn, autocommit=True) as setup,
+        psycopg.connect(dsn, autocommit=True) as writer,
+        psycopg.connect(dsn) as stale_reader,
+    ):
+        setup.execute(
+            "INSERT INTO market.balances(account, balance_micros) "
+            "VALUES ('escrow:snapshot', 100)"
+        )
+        writer.execute("SET ROLE tinyassets_fixture_settlement")
+        with stale_reader.transaction():
+            stale_reader.execute(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+            )
+            stale_reader.execute("SELECT count(*) FROM market.transactions")
+            assert _apply(writer, body)[0] == "applied"
+            stale_reader.execute("SET ROLE tinyassets_fixture_settlement")
+            with pytest.raises(
+                (psycopg.errors.SerializationFailure, psycopg.errors.RaiseException)
+            ):
+                _apply(stale_reader, body)
+
+
+def test_python_transport_canonical_body_executes_unchanged_in_postgres(
+    market_database,
+):
+    psycopg, dsn = market_database
+    now = datetime.now(UTC)
+    grant = VerifiedOnBehalfGrant(
+        grant_id="grant-postgres",
+        host_actor_id="host-actor",
+        target_actor_id="buyer",
+        target_tenant_id="tenant-a",
+        account="escrow:python",
+        allowed_actions=frozenset({"settle"}),
+        max_amount_micros=10_000,
+        issued_at=now - timedelta(minutes=1),
+        expires_at=now + timedelta(minutes=5),
+        revocation_generation=1,
+        verified_signature_sha256="a" * 64,
+    )
+    authority = VerifiedMarketAuthority(
+        subject_id="host-actor",
+        tenant_id="tenant-a",
+        requester_user_id="buyer",
+        host_owner_user_id="seller",
+        grant=grant,
+    )
+    command = SettlementCommand(
+        idempotency_key="settle:python",
+        business_reference="request:python",
+        expected_state_version=4,
+        authority=authority,
+        action="settle",
+        amount_micros=10_000,
+        escrow_account="escrow:python",
+        postings=tuple(
+            spot_settlement_entries(
+                escrow_account="escrow:python",
+                seller_account="user:seller",
+                gross_micros=10_000,
+            )
+        ),
+        memo="transport parity",
+    )
+
+    class IdentityVerifier:
+        def verify(self, candidate, *, now):
+            return candidate
+
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(
+            "INSERT INTO market.balances(account, balance_micros) "
+            "VALUES ('escrow:python', 10000)"
+        )
+        connection.execute("SET ROLE tinyassets_fixture_settlement")
+
+        class PostgresRpc:
+            def apply_settlement(self, serialized):
+                status, tx_id = _apply(
+                    connection,
+                    serialized.canonical_body,
+                    serialized.request_sha256,
+                )
+                return {"status": status, "tx_id": tx_id}
+
+        result = MarketTransport(
+            PostgresRpc(),
+            enabled=True,
+            authority_verifier=IdentityVerifier(),
+        ).settle(command, now=now)
+        assert result.status == "applied"
+        connection.execute("RESET ROLE")
+        assert connection.execute(
+            "SELECT account, delta_micros FROM market.postings "
+            "ORDER BY posting_id"
+        ).fetchall() == list(command.postings)
 
 
 def test_duplicate_accounts_match_pure_ledger_and_failures_roll_back(

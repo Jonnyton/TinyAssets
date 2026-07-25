@@ -125,6 +125,19 @@ def test_enabled_transport_requires_a_trusted_authority_verifier():
         )
 
 
+def test_transport_rejects_applied_or_replayed_result_without_tx_id():
+    contract, authority, now = _authority_and_grant()
+
+    class MissingIdentityRpc:
+        def apply_settlement(self, command):
+            return {"status": "replayed", "tx_id": None}
+
+    with pytest.raises(contract.MarketTransportError, match="transaction identity"):
+        _enabled_transport(contract, MissingIdentityRpc()).settle(
+            _command(contract, authority), now=now
+        )
+
+
 @pytest.mark.parametrize(
     "mutation, message",
     [
@@ -174,6 +187,20 @@ def test_transport_rejects_non_integer_or_unbalanced_postings():
             _enabled_transport(contract, RecordingRpc()).settle(
                 replace(base, postings=postings), now=now
             )
+
+
+def test_transport_rejects_postings_not_emitted_by_the_spot_adapter():
+    contract, authority, now = _authority_and_grant()
+    command = replace(
+        _command(contract, authority),
+        postings=(
+            ("escrow:req-1", -10_000),
+            ("user:seller", 9_800),
+            ("treasury", 200),
+        ),
+    )
+    with pytest.raises(contract.MarketTransportError, match="canonical adapter"):
+        _enabled_transport(contract, RecordingRpc()).settle(command, now=now)
 
 
 def test_transport_exposes_no_direct_balance_or_table_writer():
