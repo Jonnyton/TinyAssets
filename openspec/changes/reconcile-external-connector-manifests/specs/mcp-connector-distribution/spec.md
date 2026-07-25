@@ -101,7 +101,8 @@ another product's gate.
 #### Scenario: Canonical remote acceptance
 - **WHEN** hosted `/mcp` is accepted
 - **THEN** evidence includes Streamable-HTTP handshake, exact-seven enumeration, safe status projection, neutral instructions, metadata/runtime OAuth agreement, anonymous read, and authenticated mutation
-- **AND** rendered ChatGPT and Claude conversations, Registry resolution, supported-client migration, and concurrency evidence are recorded
+- **AND** at least one rendered supported-chatbot conversation, Registry resolution, supported-client dispositions, and concurrency evidence are recorded
+- **AND** unavailable OpenAI or Claude surfaces are recorded independently rather than blocking acceptance or restoring a retired route
 - **AND** post-change clean use is recorded or retained as an explicit watch item without being misrepresented as proven
 
 #### Scenario: Local MCPB acceptance
@@ -110,29 +111,26 @@ another product's gate.
 - **AND** evidence covers schema, exact-seven enumeration, configuration wiring, observed auth posture, and provider-free usable operations
 - **AND** remote canaries or OAuth proof do not substitute
 
-### Requirement: Directory Route Removal Waits For Proven Migration
-`/mcp-directory` and every versioned descendant SHALL remain temporary only
-until canonical review-safety and supported-consumer migration gates pass.
-After those gates, directory runtime code, mounts, catalog constants,
-discovery metadata, Worker routing, and current operational guidance SHALL be
-removed together. No redirect, proxy alias, or silent translation SHALL remain.
+### Requirement: Directory Route Retirement Does Not Wait For Migration Proof
+`/mcp-directory` and every versioned descendant SHALL be removed as the first
+focused runtime slice after provider-free canonical `/mcp` initialize and tool
+enumeration health is confirmed. Directory runtime code, mounts, catalog
+constants, discovery metadata, Worker routing, and current operational
+guidance SHALL be removed together. Vendor review, Registry publication,
+rendered-client breadth, telemetry, canonical hardening, and post-change clean
+use SHALL NOT gate retirement.
 
-#### Scenario: Supported consumers migrate before removal
-- **WHEN** route retirement is proposed
-- **THEN** the MCP Registry current version is published and resolves to `/mcp`
-- **AND** each maintained OpenAI and Claude registration points to canonical `/mcp`, or is removed/reclassified by the predeclared dated disposition
-- **AND** each external review records its current accepted, published, pending, unavailable, rejected, or withdrawn state without making an unbounded vendor wait a route-retirement gate
-- **AND** a pending or unavailable review proceeds past the cutover gate after its predeclared decision date records the registration as pending, unavailable, withdrawn, or unsupported
-- **AND** current Codex, Cursor, Open WebUI, LibreChat, and every other maintained supported configuration has a recorded `/mcp` disposition
-- **AND** supported consumers have current proof or are explicitly reclassified as read-only/unsupported
-- **AND** a predeclared telemetry window records start, end, evidence source, and zero unexplained maintained callers
-- **AND** the 2026-07-24 host directive supplies standing cutover authorization once these objective gates pass, without a second discretionary approval
+#### Scenario: Maintained registrations do not preserve the route
+- **WHEN** route retirement lands
+- **THEN** each maintained old registration points to canonical `/mcp` or is withdrawn
+- **AND** a pending, unavailable, rejected, or unsupported vendor surface is recorded as a post-removal disposition or watch item
+- **AND** no external acceptance or telemetry state authorizes retaining `/mcp-directory*`
 
 #### Scenario: Removed route is not a shim
 - **WHEN** retirement lands
 - **THEN** `/mcp-directory*` has no mounted MCP server or catalog
-- **AND** requests receive the normal absent-route response
-- **AND** the edge does not redirect or proxy them to `/mcp`
+- **AND** requests receive the ordinary absent-route 404
+- **AND** the edge and application do not emit a `Location` header, redirect, proxy, alias, silently translate to `/mcp`, return 410, or produce a compatibility body
 
 ### Requirement: Connector Acceptance Never Consumes Maintainer Compute
 Package, metadata, and acceptance work SHALL NOT provide or consume a

@@ -42,8 +42,8 @@ Completed MCPB manifest parity remains valid and is preserved.
 - Bind Registry, ChatGPT, Claude, and maintained client guidance to `/mcp`.
 - Preserve dated `/mcp-directory` evidence as historical truth while
   superseding active guidance.
-- Prove supported consumers migrated before removing every directory mount,
-  constant, server, and Worker route.
+- Remove every directory mount, constant, server, and Worker route first;
+  repoint or withdraw maintained registrations and collect proof afterward.
 - Preserve local MCPB as a distinct stdio/configuration/identity product.
 - Keep all acceptance and migration work free of maintainer compute.
 
@@ -115,31 +115,29 @@ destructive hint reflects that. Descriptions disclose persistence, public
 visibility, provider/data sharing, cost, confirmation, and reversibility.
 Errors and results are bounded and secret-free.
 
-### Migrate consumers before removing the route
+### Retire the duplicate route before consumer proof
 
-The Registry manifest is version-bumped and republished for `/mcp`. OpenAI and
-Claude submissions are rebuilt for seven tools and OAuth. Maintained Codex,
-Cursor, Open WebUI, LibreChat, and other supported client packs migrate and
-are re-proven. Hosts unable to support OAuth retain anonymous read-only access
-only where the canonical contract permits it; unsupported claims are removed.
+`/mcp` is already the sole product endpoint by host decision. The first
+runtime slice therefore removes `directory_server`, catalog constants, mounts,
+versioned paths, discovery copy, current operational guidance, and Worker
+routing together. Basic provider-free `/mcp` initialize and tool-enumeration
+health is checked in the same slice, but canonical review hardening, Registry
+publication, vendor acceptance, rendered-client breadth, telemetry, and
+post-change clean use do not gate deletion.
 
-Telemetry and proof establish that supported consumers have migrated. Then
-`directory_server`, catalog constants, mounts, versioned paths, discovery
-copy, and Worker routing are removed together. Requests to the removed path
-receive the normal absent-route response; there is no redirect.
+Each maintained registration that still names `/mcp-directory*` is repointed
+to `/mcp` or withdrawn. If a vendor surface is pending or unavailable, its
+state is recorded and watched after removal rather than preserving the wrong
+route. Cached or unknown callers receive the ordinary absent-route 404. There
+is no redirect, proxy, alias, silent translation, 410 compatibility response,
+or compatibility JSON.
 
-Removal additionally requires the Registry current version to be published,
-every maintained OpenAI/Claude registration to point to `/mcp` or be explicitly
-removed/reclassified, and each external review state to be recorded. Vendor
-acceptance is launch evidence, not an unbounded route-retirement dependency.
-For a pending or unavailable review, a predeclared decision date records the
-registration as pending, unavailable, withdrawn, or unsupported and permits
-cutover without an unbounded wait. A predeclared telemetry window records its
-exact start, end, evidence source, and zero unexplained maintained callers.
-The 2026-07-24 host directive is standing authorization to delete the route
-once these objective gates pass. No second discretionary host approval is
-required; only a concrete newly discovered supported caller or safety failure
-recorded in `STATUS.md` may stop the cutover.
+After retirement, the Registry manifest is version-bumped and republished for
+`/mcp`; OpenAI and Claude submissions are rebuilt for seven tools and OAuth;
+and maintained Codex, Cursor, Open WebUI, LibreChat, and other supported client
+packs are re-proven. Hosts unable to support OAuth retain anonymous read-only
+access only where the canonical contract permits it; unsupported claims are
+removed.
 
 ### Preserve history, supersede guidance
 
@@ -174,9 +172,9 @@ substitutes for the other.
 - **A seven-tool router understates its riskiest action** — aggregate
   annotations conservatively and split only when no truthful contract is
   possible.
-- **Directory removal breaks cached clients** — version and republish metadata,
-  collect supported-client migration proof, then remove; do not hide breakage
-  with a redirect.
+- **Directory removal breaks cached clients** — repoint or withdraw maintained
+  registrations, publish current `/mcp` guidance, and monitor ordinary 404s;
+  do not hide breakage with a redirect or compatibility response.
 - **OAuth excludes no-login hosts** — preserve only canonical anonymous reads;
   mark unsupported mutation flows honestly.
 - **Historical docs look inconsistent** — keep dated evidence immutable and
@@ -189,26 +187,25 @@ substitutes for the other.
 ## Migration Plan
 
 1. Record the host directive and adapt this change from three products to two.
-2. Preserve completed MCPB parity tasks and verify the staged package remains
+2. Prove basic provider-free `/mcp` initialize and tool enumeration, then
+   remove directory runtime, mounts, constants, catalogs, discovery text,
+   Worker routing, and current operational guidance in one reviewed slice.
+3. Prove every `/mcp-directory*` path is an ordinary 404 with no redirect,
+   proxy, alias, translation, 410, or compatibility body; repoint or withdraw
+   every maintained old registration.
+4. Preserve completed MCPB parity tasks and verify the staged package remains
    exact seven.
-3. Add failing tests for safe status projection, neutral instructions,
+5. Add failing tests for safe status projection, neutral instructions,
    security metadata/challenges, truthful annotations/descriptions, and
    bounded failures on canonical `/mcp`.
-4. Implement those canonical hardening requirements and finalize matching
-   privacy disclosures.
-5. Rebuild Registry and ChatGPT/Claude metadata for `/mcp`, exact seven, and
+6. Implement canonical hardening and finalize matching privacy disclosures.
+7. Rebuild Registry and supported-host metadata for `/mcp`, exact seven, and
    OAuth; version and publish through reviewed host flows.
-6. Migrate and re-prove maintained supported clients. Record unsupported hosts
-   or read-only limitations rather than preserving anonymous mutation.
-7. Obtain rendered ChatGPT/Claude, Registry, concurrency, and post-change
-   evidence; record external review states and apply the predeclared dated
-   disposition when a vendor is pending or unavailable; inspect old-route
-   usage through a predeclared bounded telemetry window.
-8. Remove directory runtime, mounts, constants, catalogs, discovery text,
-   Worker routing, and current operational guidance in one reviewed slice as
-   soon as the objective migration gates pass.
-9. Prove `/mcp-directory*` is absent, `/mcp` remains healthy, and no supported
-   registration points at the retired path.
+8. Re-prove maintained supported clients and record unsupported or read-only
+   limitations rather than preserving anonymous mutation.
+9. Obtain at least one rendered supported-chatbot acceptance, Registry,
+   concurrency, post-change, and old-path 404 evidence. Record unavailable
+   vendor surfaces as post-removal watch items, never cutover gates.
 10. Sync canonical specs and archive this change only after all completed
     tasks and evidence are truthful.
 

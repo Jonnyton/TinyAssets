@@ -179,9 +179,13 @@ unavailable retryable error adds
 `retry_status`; access denial adds `reauthenticate`; no upstream free text
 becomes an action.
 
-After the reviewed migration gates in this change pass, `/mcp-directory` and
-every versioned `/mcp-directory*` catalog route SHALL be unmounted. The
-platform SHALL NOT redirect, proxy, or silently translate the retired path.
+In the first focused runtime slice, `/mcp-directory` and every versioned
+`/mcp-directory*` catalog route SHALL be unmounted after provider-free
+canonical `/mcp` initialize and tool enumeration health is confirmed. The
+platform SHALL NOT redirect, proxy, alias, silently translate, return 410, or
+serve a compatibility response at the retired path. Registry publication,
+vendor acceptance, rendered-client breadth, telemetry, and canonical
+hardening SHALL NOT gate this removal.
 
 #### Scenario: Canary fails on advertised-handle drift
 - **WHEN** canonical `/mcp` is missing a required handle or advertises a handle outside the exact seven
@@ -199,7 +203,8 @@ platform SHALL NOT redirect, proxy, or silently translate the retired path.
 #### Scenario: Retired directory route is absent
 - **WHEN** a client calls `/mcp-directory` or a versioned descendant after the cutover
 - **THEN** no MCP transport or catalog is mounted at that path
-- **AND** the response does not redirect or proxy the caller to `/mcp`
+- **AND** the response is the ordinary absent-route 404
+- **AND** it has no `Location` redirect, proxy, alias, translation to `/mcp`, 410 status, or compatibility body
 
 ### Requirement: Cloudflare Worker Public Front Door
 
@@ -209,9 +214,10 @@ Cloudflare Worker on the `tinyassets.io/mcp*` route SHALL proxy only canonical
 the CF Access service-token headers from Worker environment secrets. The Worker
 SHALL stream SSE bodies without buffering, preserve request headers and method,
 and map an unreachable tunnel or upstream `5xx` to an explicit `502` JSON body.
-After cutover it SHALL NOT route, redirect, proxy, or translate
-`/mcp-directory*`. `mcp.tinyassets.io` is an internal origin and MUST NOT be
-presented as user-facing.
+It SHALL NOT route, redirect, proxy, alias, translate, or return a
+compatibility response for `/mcp-directory*`; those paths receive the ordinary
+edge 404. `mcp.tinyassets.io` is an internal origin and MUST NOT be presented
+as user-facing.
 
 #### Scenario: Worker proxies canonical MCP only
 - **WHEN** a client request arrives at `tinyassets.io/mcp`

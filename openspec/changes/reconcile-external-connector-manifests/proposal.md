@@ -8,10 +8,11 @@ on 2026-07-24 that `/mcp` is canonical and `/mcp-directory` retires promptly.
 
 This is not a URL-only replacement. Canonical `/mcp` advertises seven handles,
 uses WorkOS/OAuth, exposes broader graph/page targets, returns operator-heavy
-status, and carries server instructions and annotations that are not yet safe
-for reviewed directories. Retirement therefore requires a gated migration:
-make `/mcp` review-safe, migrate every catalog and supported client, prove the
-real user paths, and only then remove the old route without a redirect shim.
+status, and carries server instructions and annotations that still need
+hardening for reviewed directories. Those improvements do not justify keeping
+a second public endpoint. Route retirement and canonical hardening are
+independent lanes: remove `/mcp-directory*` promptly, then continue improving
+and proving `/mcp` without a redirect or compatibility surface.
 
 The local MCPB package remains a separate product because it runs over stdio
 with local configuration and a different identity boundary.
@@ -38,15 +39,16 @@ with local configuration and a different identity boundary.
   the product name.
 - Treat historical `/mcp-directory` proof as historical evidence; append
   superseding current proof instead of rewriting dated artifacts.
-- Require exact-seven, OAuth, redaction, maintained-client, Registry,
-  concurrency, and bounded old-route telemetry evidence before route removal.
-  The 2026-07-24 host directive is standing cutover authorization once those
-  objective gates pass; no second discretionary approval or indefinitely
-  pending vendor may preserve the old route.
-- Remove `directory_server`, directory catalog constants/mounts, versioned
-  directory URLs, and Worker routing after migration proof. Old
+- Make retirement the first runtime slice after focused public-surface review:
+  remove `directory_server`, directory catalog constants/mounts, versioned
+  directory URLs, current operational guidance, and Worker routing. Old
   `/mcp-directory*` requests become absent/404; no redirect or compatibility
-  shim survives.
+  shim survives. Vendor review, rendered-client breadth, telemetry, Registry
+  publication, and canonical hardening are post-retirement evidence, not
+  permission to preserve the old route.
+- Repoint each maintained old registration to `/mcp` or withdraw it. An
+  unavailable vendor path is recorded and watched; it never retains
+  `/mcp-directory*`.
 - Adapt dependent active OpenSpec changes whose premises preserve the retired
   directory product.
 
@@ -60,8 +62,8 @@ with local configuration and a different identity boundary.
 
 ### Modified Capabilities
 
-- `live-mcp-connector-surface`: Make canonical `/mcp` the sole remote product
-  and directory-review-safe before removing `/mcp-directory`.
+- `live-mcp-connector-surface`: Make canonical `/mcp` the sole remote product,
+  remove `/mcp-directory*` first, and harden the surviving surface.
 
 ## Impact
 
@@ -75,7 +77,8 @@ with local configuration and a different identity boundary.
   Claude/OpenAI registration guidance, MCPB metadata, and current client packs.
 - Website/legal: current privacy disclosures for WorkOS identity, activity
   evidence, public commons, retention/deletion, and BYOC/provider routing.
-- Compatibility: installed `/mcp-directory` clients must migrate and be
-  re-proven before the old route is removed.
+- Compatibility: maintained `/mcp-directory` registrations are repointed or
+  withdrawn; cached callers receive an ordinary 404 and current `/mcp`
+  guidance, never a transport-level compatibility response.
 - Compute: all catalog, auth-failure, redaction, and migration proof remains
   provider-free unless a requester supplies BYOC or an accepted-market grant.
