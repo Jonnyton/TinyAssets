@@ -48,6 +48,7 @@ def test_fixture_checksum_uses_exact_file_bytes(tmp_path):
     path.write_bytes(b"SELECT 1;\r\n")
     first = runner.discover_migrations(tmp_path)[0]
     assert first.sha256 == hashlib.sha256(b"SELECT 1;\r\n").hexdigest()
+    assert first.sql == "SELECT 1;\r\n"
 
     path.write_bytes(b"SELECT 1;\n")
     second = runner.discover_migrations(tmp_path)[0]
@@ -128,6 +129,23 @@ def test_fresh_apply_replay_history_privileges_and_populated_baseline(
                 start=1,
             )
         ]
+        connection.execute("SET ROLE tinyassets_fixture_app")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            connection.execute(
+                "UPDATE public.schema_migrations "
+                "SET sha256 = %s WHERE version = 9",
+                ("f" * 64,),
+            )
+        connection.rollback()
+        connection.execute("RESET ROLE")
+        assert connection.execute(
+            "SELECT "
+            "has_function_privilege("
+            "'public', 'auth.is_request_bidder(uuid)', 'EXECUTE'), "
+            "has_function_privilege("
+            "'tinyassets_fixture_app', "
+            "'auth.is_request_bidder(uuid)', 'EXECUTE')"
+        ).fetchone() == (False, True)
         assert connection.execute(
             "SELECT is_nullable = 'NO' FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = 'forwards' "
@@ -208,6 +226,74 @@ def test_populated_baseline_rejects_missing_late_migration_objects(
         with pytest.raises(
             runner.MigrationError,
             match="exact baseline check: discovery surface",
+        ):
+            runner.run_migrations(
+                connection,
+                MIGRATIONS,
+                baseline_existing=True,
+            )
+        assert connection.execute(
+            "SELECT count(*) FROM public.schema_migrations"
+        ).fetchone() == (0,)
+
+
+def test_populated_baseline_history_is_recorded_atomically(
+    migrated_database,
+    monkeypatch,
+):
+    psycopg, dsn = migrated_database
+    runner = _load_runner()
+    original_record_history = runner._record_history
+
+    def fail_mid_baseline(connection, migration):
+        if migration.version == 5:
+            raise runner.MigrationError("injected baseline history failure")
+        original_record_history(connection, migration)
+
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        runner.run_migrations(connection, MIGRATIONS)
+        connection.execute("DROP TABLE public.schema_migrations")
+        monkeypatch.setattr(runner, "_record_history", fail_mid_baseline)
+        with pytest.raises(
+            runner.MigrationError,
+            match="injected baseline history failure",
+        ):
+            runner.run_migrations(
+                connection,
+                MIGRATIONS,
+                baseline_existing=True,
+            )
+        assert connection.execute(
+            "SELECT count(*) FROM public.schema_migrations"
+        ).fetchone() == (0,)
+
+        monkeypatch.setattr(runner, "_record_history", original_record_history)
+        runner.run_migrations(
+            connection,
+            MIGRATIONS,
+            baseline_existing=True,
+        )
+        assert connection.execute(
+            "SELECT count(*) FROM public.schema_migrations"
+        ).fetchone() == (9,)
+
+
+def test_populated_baseline_rejects_lookalike_function_body(
+    migrated_database,
+):
+    psycopg, dsn = migrated_database
+    runner = _load_runner()
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        runner.run_migrations(connection, MIGRATIONS)
+        connection.execute("DROP TABLE public.schema_migrations")
+        connection.execute(
+            "CREATE OR REPLACE FUNCTION auth.is_request_bidder(p_request_id uuid) "
+            "RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER "
+            "SET search_path = pg_catalog, public AS 'SELECT true'"
+        )
+        with pytest.raises(
+            runner.MigrationError,
+            match="exact baseline check: catalog fingerprint",
         ):
             runner.run_migrations(
                 connection,

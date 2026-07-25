@@ -262,8 +262,23 @@ END
 $$;
 
 GRANT USAGE ON SCHEMA public, auth TO tinyassets_fixture_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public
-  TO tinyassets_fixture_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+  public.users,
+  public.capabilities,
+  public.nodes,
+  public.host_pool,
+  public.requests,
+  public.bids,
+  public.ledger,
+  public.settlements,
+  public.flags
+TO tinyassets_fixture_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public
   TO tinyassets_fixture_app;
 GRANT EXECUTE ON FUNCTION auth.uid() TO tinyassets_fixture_app;
+REVOKE ALL ON FUNCTION auth.is_request_bidder(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION auth.is_request_owner(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION auth.is_request_bidder(uuid)
+  TO tinyassets_fixture_app;
+GRANT EXECUTE ON FUNCTION auth.is_request_owner(uuid)
+  TO tinyassets_fixture_app;

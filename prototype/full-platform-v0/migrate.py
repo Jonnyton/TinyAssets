@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import time
@@ -12,6 +13,9 @@ from typing import NamedTuple
 
 _MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_(?P<name>[a-z0-9_]+)\.sql$")
 _LOCK_KEY = 7_293_461_550_848_602_031
+_FIXTURE_SCHEMA_SHA256 = (
+    "e5bd4ae09e4a198fc051fcce72c9724ba31bbf36707bc3b5c435193cf9af7400"
+)
 
 
 class MigrationError(RuntimeError):
@@ -24,6 +28,7 @@ class Migration(NamedTuple):
     filename: str
     path: Path
     sha256: str
+    sql: str
 
 
 def discover_migrations(directory: Path) -> tuple[Migration, ...]:
@@ -38,13 +43,21 @@ def discover_migrations(directory: Path) -> tuple[Migration, ...]:
         if version in versions:
             raise MigrationError(f"duplicate migration version {version:03d}")
         versions.add(version)
+        raw_sql = path.read_bytes()
+        try:
+            sql = raw_sql.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise MigrationError(
+                f"migration is not valid UTF-8: {path.name}"
+            ) from exc
         migrations.append(
             Migration(
                 version=version,
                 name=match.group("name"),
                 filename=path.name,
                 path=path,
-                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                sha256=hashlib.sha256(raw_sql).hexdigest(),
+                sql=sql,
             )
         )
 
@@ -244,6 +257,169 @@ def _verify_existing_fixture(connection) -> None:
                 raise MigrationError(
                     f"existing fixture failed exact baseline check: {description}"
                 )
+    actual_fingerprint = _fixture_schema_sha256(connection)
+    if actual_fingerprint != _FIXTURE_SCHEMA_SHA256:
+        raise MigrationError(
+            "existing fixture failed exact baseline check: catalog fingerprint "
+            f"{actual_fingerprint}"
+        )
+
+
+def _fixture_schema_sha256(connection) -> str:
+    """Hash the complete fixture-owned catalog surface deterministically."""
+    query = """
+        WITH fixture_objects AS (
+          SELECT 'extension'::text AS kind,
+                 e.extname::text AS identity,
+                 e.extname::text AS definition
+          FROM pg_extension AS e
+          WHERE e.extname = ANY(ARRAY['pgcrypto','vector'])
+
+          UNION ALL
+          SELECT 'role', r.rolname,
+                 concat_ws('|', r.rolcanlogin, r.rolsuper, r.rolinherit)
+          FROM pg_roles AS r
+          WHERE r.rolname = ANY(ARRAY[
+            'tinyassets_fixture_app',
+            'tinyassets_fixture_market_owner',
+            'tinyassets_fixture_settlement',
+            'tinyassets_migration'
+          ])
+
+          UNION ALL
+          SELECT 'schema', n.nspname,
+                 concat_ws(
+                   '|',
+                   CASE pg_get_userbyid(n.nspowner)
+                     WHEN current_user THEN '<runner>'
+                     ELSE pg_get_userbyid(n.nspowner)
+                   END,
+                   coalesce(n.nspacl::text, '')
+                 )
+          FROM pg_namespace AS n
+          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+
+          UNION ALL
+          SELECT 'relation',
+                 n.nspname || '.' || c.relname,
+                 concat_ws(
+                   '|',
+                   c.relkind,
+                   CASE pg_get_userbyid(c.relowner)
+                     WHEN current_user THEN '<runner>'
+                     ELSE pg_get_userbyid(c.relowner)
+                   END,
+                   c.relrowsecurity,
+                   c.relforcerowsecurity,
+                   coalesce(c.relacl::text, '')
+                 )
+          FROM pg_class AS c
+          JOIN pg_namespace AS n ON n.oid = c.relnamespace
+          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+            AND c.relkind = ANY(ARRAY['r','p','S'])
+            AND NOT (
+              n.nspname = 'public' AND c.relname = 'schema_migrations'
+            )
+
+          UNION ALL
+          SELECT 'column',
+                 n.nspname || '.' || c.relname || '.' || a.attname,
+                 concat_ws(
+                   '|',
+                   a.attnum,
+                   format_type(a.atttypid, a.atttypmod),
+                   a.attnotnull,
+                   coalesce(pg_get_expr(d.adbin, d.adrelid), '')
+                 )
+          FROM pg_attribute AS a
+          JOIN pg_class AS c ON c.oid = a.attrelid
+          JOIN pg_namespace AS n ON n.oid = c.relnamespace
+          LEFT JOIN pg_attrdef AS d
+            ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+            AND c.relkind = ANY(ARRAY['r','p'])
+            AND NOT (
+              n.nspname = 'public' AND c.relname = 'schema_migrations'
+            )
+            AND a.attnum > 0
+            AND NOT a.attisdropped
+
+          UNION ALL
+          SELECT 'constraint',
+                 n.nspname || '.' || c.relname || '.' || con.conname,
+                 pg_get_constraintdef(con.oid, true)
+          FROM pg_constraint AS con
+          JOIN pg_class AS c ON c.oid = con.conrelid
+          JOIN pg_namespace AS n ON n.oid = c.relnamespace
+          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+            AND NOT (
+              n.nspname = 'public' AND c.relname = 'schema_migrations'
+            )
+
+          UNION ALL
+          SELECT 'index',
+                 schemaname || '.' || indexname,
+                 indexdef
+          FROM pg_indexes
+          WHERE schemaname = ANY(ARRAY['public','auth','market'])
+            AND NOT (
+              schemaname = 'public' AND tablename = 'schema_migrations'
+            )
+
+          UNION ALL
+          SELECT 'policy',
+                 schemaname || '.' || tablename || '.' || policyname,
+                 concat_ws(
+                   '|',
+                   permissive,
+                   roles::text,
+                   cmd,
+                   coalesce(qual, ''),
+                   coalesce(with_check, '')
+                 )
+          FROM pg_policies
+          WHERE schemaname = ANY(ARRAY['public','auth','market'])
+
+          UNION ALL
+          SELECT 'function',
+                 n.nspname || '.' || p.proname || '('
+                   || pg_get_function_identity_arguments(p.oid) || ')',
+                 concat_ws(
+                   '|',
+                   CASE pg_get_userbyid(p.proowner)
+                     WHEN current_user THEN '<runner>'
+                     ELSE pg_get_userbyid(p.proowner)
+                   END,
+                   p.prosecdef,
+                   p.provolatile,
+                   coalesce(p.proconfig::text, ''),
+                   coalesce(p.proacl::text, ''),
+                   pg_get_functiondef(p.oid)
+                 )
+          FROM pg_proc AS p
+          JOIN pg_namespace AS n ON n.oid = p.pronamespace
+          WHERE n.nspname = ANY(ARRAY['auth','market'])
+             OR (
+               n.nspname = 'public'
+               AND p.proname = ANY(ARRAY[
+                 'discover_nodes',
+                 'strip_private_fields'
+               ])
+             )
+        )
+        SELECT kind, identity, definition
+        FROM fixture_objects
+        ORDER BY kind, identity, definition
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        rows = cursor.fetchall()
+    encoded = json.dumps(
+        rows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _record_history(connection, migration: Migration) -> None:
@@ -278,15 +454,15 @@ def run_migrations(
                     "--baseline-existing after exact verification"
                 )
             _verify_existing_fixture(connection)
-            for migration in migrations:
-                with connection.transaction():
+            with connection.transaction():
+                for migration in migrations:
                     _record_history(connection, migration)
             return migrations
 
         for migration in migrations[len(history) :]:
             with connection.transaction():
                 with connection.cursor() as cursor:
-                    cursor.execute(migration.path.read_text(encoding="utf-8"))
+                    cursor.execute(migration.sql)
                 _record_history(connection, migration)
         return migrations
     finally:
