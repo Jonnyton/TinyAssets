@@ -222,6 +222,31 @@ def test_single_subscription_write_preserves_sibling_fields(tmp_path):
     assert resolve_claude_oauth_token(tmp_path) == "tok-ROTATED"
 
 
+def test_single_subscription_write_replaces_reader_alias_slots(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "claude_config_dir": "old-config",
+        "oauth_token": "tok-OLD",
+    }])
+
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "config_dir": "new-config",
+        "claude_code_oauth_token": "tok-NEW",
+    }])
+
+    assert resolve_claude_config_dir(tmp_path) == tmp_path / "new-config"
+    assert resolve_claude_oauth_token(tmp_path) == "tok-NEW"
+    assert load_credential_vault(tmp_path) == [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "config_dir": "new-config",
+        "claude_code_oauth_token": "tok-NEW",
+    }]
+
+
 def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
     github_credential = {
         "credential_type": "vcs",

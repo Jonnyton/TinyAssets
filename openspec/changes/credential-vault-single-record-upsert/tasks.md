@@ -4,6 +4,7 @@
 - [x] 1.2 Preserve sibling fields across partial subscription upserts
 - [x] 1.3 Key social records by the normalized service slot
 - [x] 1.4 Collapse every matching duplicate during a one-record upsert
+- [x] 1.5 Replace stored resolver aliases when a subscription update names the same slot
 
 ## 2. Contract And Verification
 
