@@ -104,24 +104,27 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
     assert summary["credential_count"] == 2
 
 
-def test_single_record_write_preserves_other_social_account(tmp_path):
-    first_account = {
+def test_single_social_write_uses_service_slot_not_unread_identity_fields(tmp_path):
+    write_credential_vault(tmp_path, [{
         "credential_type": "social",
         "service": "twitter",
         "handle": "@one",
         "token": "first-token",
-    }
-    second_account = {
+    }])
+
+    write_credential_vault(tmp_path, [{
         "credential_type": "social",
         "service": "twitter",
         "handle": "@two",
         "token": "second-token",
-    }
-    write_credential_vault(tmp_path, [first_account])
+    }])
 
-    write_credential_vault(tmp_path, [second_account])
-
-    assert load_credential_vault(tmp_path) == [first_account, second_account]
+    assert load_credential_vault(tmp_path) == [{
+        "credential_type": "social",
+        "service": "twitter",
+        "handle": "@two",
+        "token": "second-token",
+    }]
 
 
 def test_single_record_write_updates_equivalent_llm_api_key_alias(tmp_path):

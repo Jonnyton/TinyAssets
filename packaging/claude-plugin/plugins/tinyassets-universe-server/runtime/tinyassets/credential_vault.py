@@ -120,13 +120,6 @@ def _credential_key(record: dict[str, Any]) -> tuple[Any, ...]:
             credential_type,
             _LLM_API_KEY_ENV_BY_SERVICE.get(service, service),
         )
-    if credential_type == "social":
-        account = ""
-        for field in ("handle", "username", "account", "user_id"):
-            account = str(record.get(field) or "").strip()
-            if account:
-                break
-        return credential_type, service, account
     if credential_type == "vcs":
         destination = str(record.get("destination") or "").strip()
         return credential_type, service, destination
