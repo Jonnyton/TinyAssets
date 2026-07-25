@@ -288,7 +288,8 @@ source PR/commit, and verify that unrelated current-main files are unchanged.
   evidence, not completion.
 - [ ] 7.2 Before any production root or route, obtain explicit host approval of
   trust-manifest distribution, purpose-separated custody, rotation,
-  revocation, and signer-failure behavior.
+  revocation, signer-failure behavior, and an OS-custodied persistent store or
+  proven custom VFS that prevents same-principal authority-namespace rewrites.
 - [ ] 7.3 Before any live route, provider/credential use, GitHub effect,
   market/money behavior, deploy, or rendered acceptance, obtain dual-family
   review of the same integrated current-main candidate.
