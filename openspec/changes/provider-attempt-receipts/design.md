@@ -17,9 +17,10 @@ material routing behavior.
 This change is constrained by the PLAN Providers requirement to preserve
 fallback evidence and fail loudly, the cross-cutting separation of generator
 and learning channels, and the state/artifact rule that durable evidence needs
-an explicit owner. #1606 / R2-1a is an apply blocker because credential
-authority cannot be classified reliably until the universe routing boundary is
-settled.
+an explicit owner. #1592 has settled fail-closed universe credential isolation.
+Runtime application remains blocked because R2-1a does not yet make
+`set_engine` populate `allowed_providers`, and #1691 still owes the call-local
+credential-kind/authority-class evidence contract.
 
 ## Goals / Non-Goals
 
@@ -123,8 +124,10 @@ The provider execution boundary must classify these values from the auth
 resolution used for that exact call, then thread them through the same
 `ProviderResponse`; the receipt must not infer them from provider names or
 ambient environment after completion. A successful remote universe-scoped call
-must never report `host`. Applying this rule waits for #1606 / R2-1a to settle
-the fail-closed routing boundary.
+must never report `host`. #1592's empty-base universe environment and
+fail-closed credential-resolution contract now enforce the isolation premise.
+Applying the receipt classification still waits for R2-1a selected-engine
+`allowed_providers` and #1691's call-local authority-class evidence contract.
 
 No receipt or attempt may include tokens, keys, base64 material, cookies,
 authorization headers, environment values, credential record IDs, auth-home
@@ -184,24 +187,26 @@ operator-only or user-visible. Existing generic run receipts are not selected
 implicitly because `converse` is not guaranteed to own a run ID and their
 current ACL/retention limitations are a separate contract.
 
-### 7. Application waits for the routing-authority blocker
+### 7. Application waits for the residual routing-authority gates
 
 The spec artifacts may be reviewed and landed independently. No runtime
-implementation task begins until #1606 / R2-1a has landed or an explicitly
-named successor has settled:
+implementation task begins until the residual gates have settled:
 
-- fail-closed universe credential isolation;
-- `allowed_providers` behavior for the selected engine; and
-- the call-local source of credential-kind and authority-class evidence.
+- R2-1a makes every `set_engine` path populate `allowed_providers` for the
+  selected engine; and
+- #1691 defines the call-local source and enums for credential-kind and
+  authority-class evidence.
 
-After that blocker clears, the implementer rebases, rereads the canonical
-provider-routing and credential-vault specs, and adapts this delta if their
-semantics changed.
+#1592 (`ec5e7b11`) has already settled fail-closed universe credential
+isolation. After the residual gates clear, the implementer rebases, rereads the
+canonical provider-routing and credential-vault specs, and adapts this delta if
+their semantics changed.
 
 ## Risks / Trade-offs
 
 - **Receipt enums drift from auth resolution** → define them at the provider
-  boundary, validate exhaustively, and block apply until #1606/R2-1a settles.
+  boundary, validate exhaustively, and block apply until R2-1a and #1691
+  settle.
 - **Compatibility wrapper hides evidence from legacy callers** → keep it for
   stability and migrate only the two audited universe-intelligence calls to the
   result-aware path.
@@ -217,8 +222,10 @@ semantics changed.
 
 ## Migration Plan
 
-1. Wait for #1606 / R2-1a or its declared successor to settle and release the
-   provider-routing authority boundary.
+1. Wait for R2-1a selected-engine `allowed_providers` and #1691's call-local
+   credential-kind/authority-class contract to release the remaining
+   provider-routing authority boundary; #1592's fail-closed isolation is
+   already landed.
 2. Rebase and reconcile this delta with the then-current canonical
    `provider-routing` and `credential-vault` specs.
 3. Add result/receipt types and redacted attempt aggregation while retaining
