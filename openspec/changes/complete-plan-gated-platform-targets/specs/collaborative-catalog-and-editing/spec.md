@@ -125,17 +125,33 @@ Every catalog read projection SHALL apply the caller's visibility and ownership 
 - **WHEN** a request supplies an actor identifier that differs from the authenticated subject, or no authenticated subject is present on a restricted read
 - **THEN** the supplied identifier is ignored and the caller is treated as unauthenticated for visibility purposes
 
-### Requirement: Catalog and collaboration behaviors compose under the canonical handle set
+### Requirement: Every behavior in this change and its successors routes under the canonical handle set
 
-Every catalog and collaboration behavior in this capability SHALL be reachable as an action or parameter under the existing canonical MCP handles, and this capability SHALL NOT add an advertised MCP handle. Where the source architecture named a standalone RPC, the implementation SHALL route it as an action under an existing handle. A future top-level handle SHALL be introduced only through a recorded irreducibility finding in its own change.
+**This requirement is the cross-capability handle invariant for this change.** It governs every behavior specified by `collaborative-catalog-and-editing`, `node-discovery-and-remix`, `realtime-collaboration-presence`, `data-portability-and-deletion`, and `platform-succession-and-feedback`, and SHALL be inherited unchanged by every successor change split out of any of them.
 
-#### Scenario: Advertised handle set is unchanged
+The live connector's advertised tool list SHALL remain exactly the seven canonical handles — `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status` — and no capability in this change or its successors SHALL add, rename, or remove an advertised handle. Every behavior the source architecture named as a standalone RPC SHALL be dispatched as an action or parameter under an existing handle, with the routing fixed as follows:
 
-- **WHEN** the live connector's advertised tool list is inspected after this capability ships
-- **THEN** it contains exactly the canonical handle set, with no handle added by this capability
+- node discovery, export enumeration, and stored-query readback SHALL route under `read_graph`;
+- node update, remix from N parents, convergence proposal, convergence ratification, stored-query registration and revocation, account deletion, and deletion confirmation SHALL route under `write_graph`;
+- feedback filing SHALL route under `write_page` through the `wiki-commons` typed-filing contract;
+- commenting SHALL route over the existing unified-notes substrate rather than a new action family.
+
+Each routed action SHALL inherit its host handle's authority, visibility, and audit contract. Realtime subscription and delivery — including the subscription request, presence heartbeat, and change broadcast — SHALL be carried by the **already-approved non-MCP web transport** fixed by the architecture's realtime strategy; they are not MCP handles, SHALL NOT appear in the advertised tool list, and SHALL NOT be introduced as one. A future top-level handle SHALL be introduced only through a recorded irreducibility finding in its own change with its own acceptance evidence.
+
+#### Scenario: Advertised handle set is exactly the seven
+
+- **WHEN** the live connector's advertised tool list is inspected after any capability in this change ships
+- **THEN** it contains exactly `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`
+- **AND** no handle has been added, renamed, or removed by this change or any successor split from it
 
 #### Scenario: A named RPC lands as an action
 
 - **WHEN** a behavior the architecture named as a standalone RPC is implemented
-- **THEN** it is dispatched as an action under an existing canonical handle
+- **THEN** it is dispatched as an action under the handle named by this requirement's routing list
 - **AND** its authority, visibility, and audit behavior match that handle's contract
+
+#### Scenario: Realtime transport is not an MCP handle
+
+- **WHEN** the realtime subscription, presence, and broadcast path is implemented over the non-MCP web transport
+- **THEN** no subscription, presence, or delivery handle appears in the advertised tool list
+- **AND** the collaborative behavior it enhances remains reachable through the canonical handles with that transport unavailable

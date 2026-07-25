@@ -49,7 +49,11 @@ Realtime collaboration SHALL be delivered as broadcast of committed versioned ch
 
 ### Requirement: Presence and realtime streams enforce the same visibility as reads
 
-A principal SHALL receive presence records and change broadcasts only for artifacts they are authorized to read, evaluated at delivery time against current authority rather than at subscription time only. A subscription request naming an artifact the caller cannot read SHALL NOT confirm the artifact's existence, and SHALL be indistinguishable from a subscription to an artifact that does not exist. When a principal's authority over an artifact is revoked, delivery SHALL stop without requiring the client to unsubscribe. Presence SHALL NOT reveal the identity of a principal the observer is not authorized to see as a collaborator.
+A principal SHALL receive presence records and change broadcasts only for artifacts they are authorized to read, evaluated at delivery time against current authority rather than at subscription time only.
+
+The subscription request, the presence heartbeat, and the change broadcast SHALL be carried by the **already-approved non-MCP web transport** fixed by the architecture's realtime strategy. They are transport operations, not MCP handles: this capability SHALL NOT add an advertised MCP handle for subscription, presence, or delivery, and the advertised tool list SHALL remain exactly the seven canonical handles per the cross-capability handle invariant. The transport SHALL resolve authority from the same authenticated subject as the canonical handles, never from a transport-supplied identity claim.
+
+A subscription request naming an artifact the caller cannot read SHALL NOT confirm the artifact's existence, and SHALL be indistinguishable from a subscription to an artifact that does not exist. When a principal's authority over an artifact is revoked, delivery SHALL stop without requiring the client to unsubscribe. Presence SHALL NOT reveal the identity of a principal the observer is not authorized to see as a collaborator.
 
 #### Scenario: Subscription does not confirm existence
 
@@ -62,6 +66,12 @@ A principal SHALL receive presence records and change broadcasts only for artifa
 - **WHEN** a subscribed principal's read authority over an artifact is revoked
 - **THEN** further presence and change events for that artifact are not delivered to them
 - **AND** the change takes effect without the client unsubscribing
+
+#### Scenario: The realtime transport adds no MCP handle
+
+- **WHEN** the connector's advertised tool list is inspected after presence and streaming ship
+- **THEN** no subscription, presence, or delivery handle appears
+- **AND** the transport authorizes from the same authenticated subject as the canonical handles
 
 #### Scenario: Collaborator identity respects visibility
 

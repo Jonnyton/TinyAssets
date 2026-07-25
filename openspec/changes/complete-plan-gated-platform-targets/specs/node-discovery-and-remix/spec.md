@@ -2,7 +2,13 @@
 
 ### Requirement: Discovery answers a build question in one call with a complete signal block
 
-The discovery surface SHALL accept an intent description with optional structural, domain, and inclusion hints and SHALL return ranked candidates in a single response, so a caller can choose between reuse, remix, collaboration, and new authoring without follow-up calls. Each candidate SHALL carry its identity, a semantic-match signal, a structural-match signal, quality signals, provenance references, active-work signals, and negative signals including deprecation and known failure modes. The response SHALL carry a stable query identifier usable to register standing interest. Signals SHALL be returned as values rather than as a single opaque score, and a signal the system cannot compute SHALL be reported as absent rather than defaulted to a value that reads as evidence.
+The discovery surface SHALL accept an intent description with optional structural, domain, and inclusion hints and SHALL return ranked candidates in a single response, so a caller can choose between reuse, remix, collaboration, and new authoring without follow-up calls. Each candidate SHALL carry its identity, a semantic-match signal, a structural-match signal, quality signals, provenance references, active-work signals, and negative signals including deprecation and known failure modes. The response SHALL carry a stable query identifier usable to register standing interest. Signals SHALL be returned as values rather than as a single opaque score, and a signal the system cannot compute SHALL be reported as absent rather than defaulted to a value that reads as evidence. Discovery SHALL be dispatched as an action under `read_graph` per the cross-capability handle invariant and SHALL NOT add an advertised MCP handle.
+
+#### Scenario: Discovery adds no handle
+
+- **WHEN** the connector's advertised tool list is inspected after discovery ships
+- **THEN** no discovery handle appears
+- **AND** discovery is reachable as an action under `read_graph`
 
 #### Scenario: One call returns everything needed to choose
 
@@ -43,7 +49,11 @@ The system SHALL NOT fix a platform weighting formula as the discovery ordering 
 
 ### Requirement: Discovery never reveals content the caller cannot read, including through derived blocks
 
-Every candidate and every derived block within a candidate — provenance parents and children, related artifacts, collaborator and active-work counts, negative signals, and superseded-by references — SHALL be filtered by the same visibility and ownership predicate that governs a direct read of the referenced artifact. A restricted artifact SHALL NOT appear by identifier, path, title, summary, snippet, or count. Its existence SHALL NOT be inferable from rank gaps, result totals, pagination cursors, or timing. Where a visible artifact's lineage passes through a restricted ancestor, the chain SHALL be presented as truncated at an opaque boundary rather than naming the restricted artifact.
+Every candidate and every derived block within a candidate — provenance parents and children, related artifacts, collaborator and active-work counts, negative signals, and superseded-by references — SHALL be filtered by the same visibility and ownership predicate that governs a direct read of the referenced artifact. A restricted artifact SHALL NOT appear by identifier, path, title, summary, snippet, or count. Its existence SHALL NOT be inferable from rank gaps, result totals, or pagination cursors.
+
+Timing is bounded rather than absolutely denied, because an absolute no-timing-inference claim is not checkable. The requirement is a stated **noninterference bound with an executable test model**: for a query whose candidate set differs only by the presence of one restricted artifact, the response-latency distributions of the two cases SHALL be statistically indistinguishable at a documented sample size, statistic, and significance threshold, measured by a repeatable test harness that fixes the query, the visible candidate set, and the environment. The bound and its parameters SHALL be recorded with the implementation, and a measured violation SHALL be treated as a defect in the surface rather than as an accepted limitation. Filtering SHALL therefore be structured so that suppression work does not scale with the number of suppressed candidates in a way that is observable at the stated bound.
+
+Where a visible artifact's lineage passes through a restricted ancestor, the chain SHALL be presented as truncated at an opaque boundary rather than naming the restricted artifact.
 
 #### Scenario: Restricted candidate is fully suppressed
 
@@ -62,6 +72,12 @@ Every candidate and every derived block within a candidate — provenance parent
 - **WHEN** editing or request activity on restricted artifacts would contribute to a returned count
 - **THEN** that activity is excluded from the count rather than aggregated into it
 
+#### Scenario: Timing noninterference is measured against a stated bound
+
+- **WHEN** the test harness runs the same query against a corpus that contains a restricted matching artifact and against one that does not, at the documented sample size
+- **THEN** the two response-latency distributions are indistinguishable under the documented statistic and significance threshold
+- **AND** a measured difference outside the bound is reported as a defect rather than accepted
+
 ### Requirement: Commons content ranks as equal first-class content
 
 Discovery SHALL NOT apply a ranking preference, placement boost, badge, or default filter that favors platform-authored or platform-affiliated content over community-authored content of equivalent signals. Provenance SHALL be surfaceable as a signal the selector may consider, but platform origin SHALL NOT be an input the platform itself weights outside the selector. Cross-domain matches SHALL be surfaceable and labelled rather than excluded by default, so a structurally strong match outside the caller's domain hint remains reachable.
@@ -78,7 +94,11 @@ Discovery SHALL NOT apply a ranking preference, placement boost, badge, or defau
 
 ### Requirement: Remix from N parents records every parent atomically
 
-Creating a derivative from multiple sources SHALL record one derivation edge per parent and the accompanying contributor credit in a single atomic operation, so a partial failure cannot produce a derivative with incomplete lineage or credit. The operation SHALL preserve the existing per-artifact invariant that recorded credit shares sum to no more than one across all parents taken together, SHALL reject a derivation that would create a lineage cycle, SHALL be idempotent under retry with the same derivation identity, and SHALL record the caller-supplied derivation rationale. Each parent's derivative count SHALL reflect the derivation. This capability adds no new lineage primitive; it constrains how the existing multi-parent derivation edges are written.
+Creating a derivative from multiple sources SHALL record one derivation edge per parent and the accompanying contributor credit in a single atomic operation, so a partial failure cannot produce a derivative with incomplete lineage or credit.
+
+The operation SHALL additionally **introduce** aggregate credit enforcement: the recorded credit shares for one artifact SHALL sum to no more than one across all contributors, checked transactionally within the same operation that writes them. This is new enforcement, not preservation of an existing guarantee. As-built, the store constrains each individual `credit_share` to the range `[0, 1]` per row and uniquely per `(artifact_id, actor_id)`; **the aggregate sum across an artifact's contributors is not enforced anywhere** — the ≤ 1.0 aggregate exists only as a schema-module design comment and an advisory `is_credit_valid` helper that no write path is required to consult. An implementing lane SHALL NOT treat the aggregate bound as already held by the substrate, and SHALL specify what happens to pre-existing rows that already violate it rather than assuming there are none.
+
+The operation SHALL reject a derivation that would create a lineage cycle, SHALL be idempotent under retry with the same derivation identity, and SHALL record the caller-supplied derivation rationale. Each parent's derivative count SHALL reflect the derivation. This capability adds no new lineage primitive and no advertised MCP handle: multi-parent derivation edges are already expressible on the shipped substrate, and the operation SHALL be dispatched as an action under `write_graph` per the cross-capability handle invariant.
 
 #### Scenario: All parent edges land or none do
 
@@ -86,10 +106,17 @@ Creating a derivative from multiple sources SHALL record one derivation edge per
 - **THEN** no derivation edge and no credit row from that operation is persisted
 - **AND** the derivative is not left with partial lineage
 
-#### Scenario: Credit stays bounded across all parents
+#### Scenario: Aggregate credit enforcement is added, not assumed
 
-- **WHEN** a derivation from N parents is recorded
-- **THEN** the resulting credit shares for the derivative sum to no more than one across all contributors
+- **WHEN** a derivation from N parents would record credit shares whose sum across the artifact's contributors exceeds one
+- **THEN** the operation is refused by a transactional aggregate check introduced with this capability
+- **AND** the refusal does not depend on any pre-existing store constraint, because the store enforces only the per-row `[0, 1]` range
+
+#### Scenario: Remix adds no handle
+
+- **WHEN** the connector's advertised tool list is inspected after remix ships
+- **THEN** no remix or lineage handle appears
+- **AND** the derivation is reachable as an action under `write_graph`
 
 #### Scenario: Retry is idempotent
 
@@ -103,7 +130,7 @@ Creating a derivative from multiple sources SHALL record one derivation edge per
 
 ### Requirement: Convergence is propose-then-ratify with recusal, and merging supersedes rather than deletes
 
-Merging independently developed artifacts SHALL require a proposal naming its sources and rationale, followed by ratification from each source's authorized owner set, before a canonical successor is created. Ratifications SHALL be authenticated, append-only, and attributable; a proposer SHALL NOT ratify on behalf of a source they control as proposer. On completion the successor SHALL record all sources as parents and each source SHALL be marked superseded with a reference to the successor. Superseded artifacts SHALL remain readable and their lineage SHALL remain walkable. Ratification policy values — the required owner set shape, quorum, and proposal expiry window — SHALL be seeded remixable commons configuration; the authentication, one-ratification-per-source, recusal, and append-only properties SHALL be platform-enforced and SHALL NOT be configurable away.
+Merging independently developed artifacts SHALL require a proposal naming its sources and rationale, followed by ratification from each source's authorized owner set, before a canonical successor is created. Ratifications SHALL be authenticated, append-only, and attributable; a proposer SHALL NOT ratify on behalf of a source they control as proposer. On completion the successor SHALL record all sources as parents and each source SHALL be marked superseded with a reference to the successor. Superseded artifacts SHALL remain readable and their lineage SHALL remain walkable. Ratification policy values — the required owner set shape, quorum, and proposal expiry window — SHALL be seeded remixable commons configuration; the authentication, one-ratification-per-source, recusal, and append-only properties SHALL be platform-enforced and SHALL NOT be configurable away. Both proposal and ratification SHALL be dispatched as actions under `write_graph` per the cross-capability handle invariant, and this behavior SHALL NOT add an advertised MCP handle.
 
 #### Scenario: Merge completes only when every source ratifies
 
@@ -121,6 +148,12 @@ Merging independently developed artifacts SHALL require a proposal naming its so
 - **WHEN** a convergence completes
 - **THEN** each source is marked superseded with a reference to the successor
 - **AND** each source remains readable and its lineage remains walkable
+
+#### Scenario: Convergence adds no handle
+
+- **WHEN** the connector's advertised tool list is inspected after convergence ships
+- **THEN** no proposal or ratification handle appears
+- **AND** both are reachable as actions under `write_graph`
 
 #### Scenario: Policy is remixable but enforcement is not
 

@@ -43,11 +43,18 @@ research to close.
   Branch reusing the shipped DESIGN-008 contract, visibility-filtered candidates
   and derived signal blocks, commons-equal ranking with no platform-origin
   boost, atomic remix-from-N over the shipped multi-parent attribution edge, and
-  propose-then-ratify convergence with supersede-not-delete.
+  propose-then-ratify convergence with supersede-not-delete. Remix-from-N also
+  **introduces** aggregate credit enforcement: the store constrains each
+  `credit_share` row to `[0, 1]` and enforces no aggregate sum, so the
+  ≤ 1.0-across-contributors bound is new enforcement, not a preserved invariant.
+  Discovery's leak prohibition stays absolute for the enumerable channels and
+  becomes a stated, measured noninterference bound for timing.
 - Add a target-only `realtime-collaboration-presence` capability: presence as an
   advisory expiring signal that is never an authority boundary, versioned-row
   broadcast (not CRDT), visibility parity across presence and streams,
-  degradable-by-design realtime, and subscription-bounded fan-out.
+  degradable-by-design realtime, and subscription-bounded fan-out. Its
+  subscription, heartbeat, and broadcast ride the **already-approved non-MCP web
+  transport**, not a new handle.
 - Add a target-only `data-portability-and-deletion` capability, written
   **custody-agnostic** per 1B: per-item custody-mode labelling with inline bytes
   or a resolvable retrieval descriptor, export conformance in every custody mode,
@@ -55,18 +62,30 @@ research to close.
   privacy enforcement, deletion as direct erasure *plus* a verifiable obligation
   to every non-platform holder with unconfirmed items reported as unconfirmed,
   wiki-orphan survival of commons contributions, and identity detachment as
-  resolution-time suppression over append-only ledgers.
+  resolution-time suppression over append-only ledgers. The custody **manifest
+  itself** is custody-mode-scoped: the platform holds its own items plus a holder
+  registration (not an inventory) per non-platform holder, manifests are assembled
+  at request time with per-mode coverage stated, and the post-deletion receipt
+  resolves through a self-contained document plus a bearer capability rather than
+  through the erased account identity.
 - Add a target-only `platform-succession-and-feedback` capability: a machine-
   checkable successor roster over the SPOF inventory, succession that transfers
   operator authority **without** granting access to user content in any custody
   mode, phase-split executable bus-factor gates, staleness-detectable runbook,
-  typed authenticated commons feedback filings, and external-tracker mirroring as
-  a receipted outbound effect that is never the canonical queue.
+  typed authenticated commons feedback filings, and projection of filings into the
+  canonical external queue as an idempotent receipted outbound effect. **The
+  external tracker stays the canonical feedback queue** per the landed
+  architecture §23.1; the platform-side filing is a durable staging record, and
+  whether that should ever reverse is an open host decision, not a decision this
+  change makes.
 - Record an explicit irreducibility call for every standalone RPC the 2026-04-18
   architecture named across §§15, 16, 21, 22, and 23. **Result: zero new
   top-level primitives and zero new advertised MCP handles.** Every behavior
   lands as an action or parameter under the seven canonical handles, or as
-  seeded remixable commons content.
+  seeded remixable commons content. That ledger is carried as one **normative
+  cross-capability requirement** inherited unchanged by every successor, plus a
+  per-behavior no-new-handle condition on discovery, remix, convergence, presence,
+  export, deletion, confirmation, and succession.
 - Keep every requirement active and unsynced. Nothing here is built.
 
 ## Capabilities
@@ -81,15 +100,26 @@ research to close.
 
 ### Modified Capabilities
 
-- None. Every delta is ADDED into a new capability. Where a target surface sits
-  adjacent to shipped behavior — `shared-goals-and-convergence` exact-identifier
-  common-node discovery, `wiki-commons` hash-guarded page deletion,
-  `evaluation-outcomes-and-attribution` append-only attribution edges,
-  `knowledge-retrieval-and-memory` OKF bundle export — this change specifies the
-  target as *additive* and names the boundary in `design.md`. If an implementing
-  lane finds it must change one of those shipped contracts, that lane authors the
-  MODIFIED delta at that time; this change does not pre-emptively rewrite
-  as-built truth.
+- `wiki-commons` — one target-only MODIFIED delta extending the typed-filing
+  requirement so feedback intake has exactly one owner instead of forking a second
+  filing mechanism with its own identifiers and duplicate check. The delta
+  reproduces the as-built paragraph and its three scenarios verbatim (a MODIFIED
+  requirement replaces its predecessor wholesale on sync) and adds the feedback
+  extension: feedback-only categories get their own counters, bug and
+  feature-request feedback reuses the existing BUG and FEAT counters and duplicate
+  check, `attribute_as` is presentation-only and outside filing identity, and
+  `component`/`severity` become optional for feedback-originated kinds only. Like
+  every other delta here it is unsyncable until the extension is built.
+
+Every other delta is ADDED into a new capability. Where a target surface sits
+adjacent to shipped behavior — `shared-goals-and-convergence` exact-identifier
+common-node discovery, `wiki-commons` hash-guarded page deletion,
+`evaluation-outcomes-and-attribution` append-only attribution edges,
+`knowledge-retrieval-and-memory` OKF bundle export, `data-commons` dataset
+manifests and licensing — this change specifies the target as *additive* and names
+the boundary in `design.md`. If an implementing lane finds it must change one of
+those shipped contracts, that lane authors the MODIFIED delta at that time; this
+change does not pre-emptively rewrite as-built truth.
 
 ## Impact
 
@@ -101,8 +131,10 @@ dependencies on `identity-auth-and-access-control` (the permission actor and the
 two orthogonal access axes), `wiki-commons` (typed filings, CAS patch/supersede,
 scoped discovery), `evaluation-outcomes-and-attribution` (append-only attribution
 and contribution ledgers), `shared-goals-and-convergence` (the user-buildable
-selector contract), and `outbound-boundary-layer` (external mirroring as a
-receipted effect).
+selector contract), `outbound-boundary-layer` (projection into the canonical
+external queue as a receipted effect), and `data-commons` (dataset manifests,
+licensing, and retrieval descriptors, where a portability successor includes
+dataset assets).
 
 This change is **target-only**. No requirement in it may be synced into
 `openspec/specs/` and the change may not be archived until the corresponding

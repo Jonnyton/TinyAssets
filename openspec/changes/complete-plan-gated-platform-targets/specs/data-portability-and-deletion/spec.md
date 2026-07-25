@@ -22,9 +22,44 @@ Every item a principal owns SHALL carry a recorded custody mode identifying wher
 - **THEN** portability and deletion continue to function without a change to their contract
 - **AND** no requirement depends on the platform either always or never holding private content
 
+### Requirement: The custody manifest is itself custody-mode-scoped and the platform is not assumed to own the inventory
+
+The item-and-holder manifest that export and deletion depend on SHALL NOT be assumed to be a platform-owned global inventory of a principal's items. The platform's own records SHALL be limited to what it can legitimately know: the items it holds itself, and a **holder registration** for each non-platform holder recording the holder's identity, its custody mode, its reachability, and the time it last answered an enumeration. A holder registration SHALL NOT be presented as an inventory of that holder's contents.
+
+A manifest SHALL be assembled at request time as the union of the platform's own records and each reachable holder's own enumeration of what it holds for the requesting principal, and every entry SHALL name the holder that asserted it. Manifest coverage SHALL be stated per custody mode — which holders answered, which deferred, and which cannot enumerate — and a manifest SHALL NOT claim to be a complete inventory of a mode whose holder did not answer. Every "every owned item" guarantee in this capability SHALL be read as scoped to this assembled union together with its coverage statement.
+
+Resolution SHALL be defined per supported mode:
+
+- **Platform-held** — the platform's own records are authoritative and enumerate directly.
+- **Private universe brain** — the brain enumerates on request under the owner's authenticated authority; the platform holds the registration, not the contents.
+- **Vault** — the vault enumerates under the owner's key authority; the platform holds a reference and SHALL NOT be able to enumerate contents without that authority.
+- **Host machine** — the host enumerates when online; when offline the mode's entries are reported deferred under the unavailable-holder contract rather than as absent or complete.
+
+Adding a custody mode SHALL require defining its enumeration resolution the same way, and a mode with no defined resolution SHALL NOT be offered.
+
+#### Scenario: A holder registration is not an inventory
+
+- **WHEN** a principal has items under a non-platform custody mode
+- **THEN** the platform's record for that mode names the holder, its mode, and its reachability
+- **AND** it does not assert what that holder's contents are
+
+#### Scenario: Coverage is stated per mode, not implied
+
+- **WHEN** one holder answers the enumeration and another is unreachable
+- **THEN** the manifest states the answering holder's coverage and marks the unreachable holder's coverage as deferred
+- **AND** the manifest is not presented as a complete inventory of the deferred mode
+
+#### Scenario: The platform cannot enumerate what it has no authority over
+
+- **WHEN** an enumeration is attempted for a vault-custody mode without the owner's key authority
+- **THEN** the platform reports the mode as unenumerable by it and defers to the owner's authority
+- **AND** it does not synthesize an inventory from its own reference records
+
 ### Requirement: Export enumerates everything owned and states, per item, whether it is enclosed or retrievable elsewhere
 
-An export SHALL enumerate every item the requesting principal owns or produced, including commons contributions, private content, preferences, ledger and settlement history, and derivation and lineage records. For each enumerated item the export SHALL either enclose its content or provide a resolvable retrieval descriptor naming the custody holder and the means of retrieval. The bundle SHALL carry a completeness statement listing every enumerated item that was not enclosed and why. An export SHALL NOT silently omit an item it could not retrieve, and SHALL NOT present a partial bundle as complete. Export SHALL be available without approval gating, subject only to a stated rate limit.
+An export SHALL enumerate every item the requesting principal owns or produced, including commons contributions, private content, preferences, ledger and settlement history, and derivation and lineage records. For each enumerated item the export SHALL either enclose its content or provide a resolvable retrieval descriptor naming the custody holder and the means of retrieval. The bundle SHALL carry a completeness statement listing every enumerated item that was not enclosed and why. An export SHALL NOT silently omit an item it could not retrieve, and SHALL NOT present a partial bundle as complete. Export SHALL be available without approval gating, subject only to a stated rate limit. Export SHALL be dispatched as an action under `read_graph` per the cross-capability handle invariant and SHALL NOT add an advertised MCP handle.
+
+Where an enumerated item is a dataset asset owned by the `data-commons` capability, the export SHALL consume that capability's manifest, license, and retrieval contract as a **read and boundary dependency**: it SHALL carry the dataset's own manifest reference and retrieval descriptor, and SHALL NOT redefine dataset manifests, licensing, pricing, gating, or contributor provenance. A portability successor that includes dataset assets SHALL name `data-commons` in its dependencies.
 
 #### Scenario: Enclosed and referenced items are both enumerated
 
@@ -43,6 +78,18 @@ An export SHALL enumerate every item the requesting principal owns or produced, 
 - **WHEN** retrieval of an owned item fails for any reason
 - **THEN** the item still appears in the enumeration with its failure recorded
 - **AND** the export does not report success as though the item did not exist
+
+#### Scenario: Dataset assets defer to the data-commons contract
+
+- **WHEN** an owned item is a dataset asset governed by `data-commons`
+- **THEN** the export carries that capability's manifest reference and retrieval descriptor
+- **AND** the export does not restate or override its licensing, pricing, gating, or contributor provenance
+
+#### Scenario: Export adds no handle
+
+- **WHEN** the connector's advertised tool list is inspected after export ships
+- **THEN** no export handle appears
+- **AND** export is reachable as an action under `read_graph`
 
 ### Requirement: Every supported custody mode must satisfy the export contract
 
@@ -98,7 +145,9 @@ An export SHALL NOT include private content belonging to another principal, in a
 
 ### Requirement: Deletion erases platform-held content directly and issues a verifiable obligation to every other holder
 
-Account deletion SHALL directly and permanently erase the content the platform holds for the deleting principal, within a stated bounded window, and SHALL emit a per-item erasure record. For content under any other custody mode, the system SHALL issue a deletion obligation to the recorded holder, SHALL record whether that obligation was acknowledged and discharged, and SHALL report each such item as confirmed or unconfirmed. The system SHALL NOT report an item as deleted on the basis of having issued an obligation. A deletion summary SHALL distinguish erased, confirmed-by-holder, and unconfirmed items, and unconfirmed items SHALL remain visible to the principal so they can pursue the holder directly.
+Account deletion SHALL directly and permanently erase the content the platform holds for the deleting principal, within a stated bounded window, and SHALL emit a per-item erasure record. Deletion SHALL be dispatched as an action under `write_graph` per the cross-capability handle invariant and SHALL NOT add an advertised MCP handle. For content under any other custody mode, the system SHALL issue a deletion obligation to the recorded holder, SHALL record whether that obligation was acknowledged and discharged, and SHALL report each such item as confirmed or unconfirmed. The system SHALL NOT report an item as deleted on the basis of having issued an obligation. A deletion summary SHALL distinguish erased, confirmed-by-holder, and unconfirmed items, and unconfirmed items SHALL remain available to the principal so they can pursue the holder directly.
+
+Erasure records and holder obligations SHALL be **custody-mode-scoped**: one obligation and one discharge record per holder, each naming the holder and its mode, with no aggregate claim that outruns the per-holder records. Because the deleting principal's account identity does not survive deletion, the post-deletion summary SHALL NOT be retrievable by authenticating as the deleted principal. It SHALL instead be issued at confirmation time as (a) a self-contained receipt document delivered to the principal, listing each item, its holder, its mode, and its confirmed or unconfirmed state, which remains readable with no platform involvement at all; and (b) a bearer capability the principal holds, which resolves the current confirmation state of those obligations without resolving, requiring, or revealing the deleted identity. The capability's server-side record SHALL contain only what the lookup needs — item and holder references and their obligation state — and SHALL NOT retain the principal's identifying data to serve it. The capability SHALL expire under a stated policy, and its expiry SHALL NOT invalidate the self-contained receipt document.
 
 #### Scenario: Platform-held content is erased and recorded
 
@@ -115,8 +164,20 @@ Account deletion SHALL directly and permanently erase the content the platform h
 #### Scenario: The principal can see what remains unconfirmed
 
 - **WHEN** deletion completes with some obligations undischarged
-- **THEN** the summary lists those items with their holder
-- **AND** the listing remains retrievable by the principal after the deletion completes
+- **THEN** the summary lists those items with their holder and custody mode
+- **AND** the principal holds a self-contained receipt document listing them that needs no platform call to read
+
+#### Scenario: Post-deletion state resolves without the deleted identity
+
+- **WHEN** the principal checks whether an outstanding obligation has since been discharged
+- **THEN** the bearer capability issued at confirmation resolves the obligation state
+- **AND** it does not require authenticating as the deleted principal, and does not resolve or reveal that identity
+
+#### Scenario: The capability record retains no identity
+
+- **WHEN** the capability's server-side record is inspected
+- **THEN** it contains only item and holder references and their obligation state
+- **AND** it contains no identifying data for the deleted principal
 
 ### Requirement: Commons contributions survive deletion with identity detached and derivatives are never cascaded
 
@@ -161,7 +222,7 @@ Where a principal's identifier appears in an append-only record — contribution
 
 ### Requirement: Deletion is explicitly confirmed, initiator-bound, bounded in time, and irreversible from the platform side
 
-Deletion SHALL require an explicit confirmation step bound to the account holder, SHALL NOT be completable by another principal on their behalf, and SHALL NOT be triggerable by a single unauthenticated or replayable request. The confirmation SHALL expire within a stated window. Once confirmed, deletion SHALL proceed to completion without further action by the principal, and the platform SHALL NOT offer recovery of erased content. The irreversibility and the existence of unconfirmed non-platform items SHALL be stated to the principal before confirmation, and the principal SHALL be told that exporting first is the only way to retain their data.
+Deletion SHALL require an explicit confirmation step bound to the account holder, SHALL NOT be completable by another principal on their behalf, and SHALL NOT be triggerable by a single unauthenticated or replayable request. The confirmation request SHALL be dispatched as an action under `write_graph` per the cross-capability handle invariant and SHALL NOT add an advertised MCP handle. The confirmation SHALL expire within a stated window. Once confirmed, deletion SHALL proceed to completion without further action by the principal, and the platform SHALL NOT offer recovery of erased content. The irreversibility and the existence of unconfirmed non-platform items SHALL be stated to the principal before confirmation, and the principal SHALL be told that exporting first is the only way to retain their data.
 
 #### Scenario: Third party cannot delete an account
 
@@ -178,3 +239,9 @@ Deletion SHALL require an explicit confirmation step bound to the account holder
 
 - **WHEN** the principal reaches the confirmation step
 - **THEN** they are told that erasure is irreversible, that export is the only way to retain data, and that items under other custody may remain unconfirmed
+
+#### Scenario: Deletion and confirmation add no handle
+
+- **WHEN** the connector's advertised tool list is inspected after deletion ships
+- **THEN** no deletion or confirmation handle appears
+- **AND** both are reachable as actions under `write_graph`
